@@ -1,7 +1,7 @@
 ---
 id: INV.SOURCE.DECLARATION-BRANCHES-FOLLOW-THE-NAME
 check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::root_declarations_get_branches_and_only_the_named_one_is_addressable
+  - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::root_declarations_get_branches_and_only_the_named_one_is_addressable
 ---
 
 # Именованная декларация читается по собственному адресу

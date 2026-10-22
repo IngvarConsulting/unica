@@ -8,36 +8,9 @@
 //! файлов: им пользуются и маршрутизатор чтения, и применимость операций
 //! `apply`, поэтому второго классификатора быть не может.
 
-use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::platform_profile::PlatformProfile;
-use serde::Deserialize;
-
-/// Дерево, которому принадлежит узел, — и читатель, который его проецирует.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum RouteClass {
-    /// Корень набора исходников.
-    Configuration,
-    /// Объект метаданных, ветвь их видов и члены объекта: реквизиты, табличные
-    /// части, измерения, команды, макеты как узлы владельца.
-    Metadata,
-    /// Форма и её подузлы: элементы, реквизиты, команды, события формы.
-    Form,
-    /// Роль и её права.
-    Role,
-    /// Подсистема и её состав.
-    Subsystem,
-    /// Командный интерфейс подсистемы.
-    Interface,
-    /// Схема компоновки данных внутри макета.
-    Dcs,
-    /// Табличный документ внутри макета.
-    Mxl,
-    /// Пакет XDTO.
-    Xdto,
-    /// Модуль и узлы его текста.
-    Module,
-}
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_bsl::profile::PlatformProfile;
+use unica_source_contract::route::RouteClass;
 
 /// Класс маршрута по сегментам адреса и профилю платформы.
 ///
@@ -122,8 +95,8 @@ pub(crate) fn classify_route(
 #[cfg(test)]
 mod tests {
     use super::{classify_route, RouteClass};
-    use crate::domain::address::QualifiedAddress;
-    use crate::domain::platform_profile::PlatformProfile;
+    use unica_address::address::QualifiedAddress;
+    use unica_bsl::profile::PlatformProfile;
 
     fn route(raw: &str) -> Option<RouteClass> {
         classify_route(

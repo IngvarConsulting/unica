@@ -1,0 +1,2579 @@
+//! Чтение описания объекта метаданных живым движком: `read_local` и проверка
+//! полного чтения валидатором designer. Корень набора — файловая фикстура.
+//! Три теста писателя v0.12 (`call_edit`, `add_catalog`) ждут решения
+//! владельца и остаются на прежнем входе только для записи.
+
+use crate::application::{OperationResult, UnicaApplication};
+use crate::composition::testing::{
+    with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
+    with_subsystem_evidence_processing_hook,
+};
+use crate::infrastructure::metadata_operations::MetadataOperations;
+use crate::infrastructure::support_state::{
+    SupportStateReaderFactory, WorkspaceSupportStateReaderFactory,
+};
+use crate::infrastructure::test_fixtures;
+use serde_json::{Map, Value};
+use std::path::{Path, PathBuf};
+use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_forms_designer::root::require_form_root;
+use unica_metadata::request::MetaInfoRequest;
+use unica_metadata::validation_subject::MetadataSubsystemEvidence;
+use unica_metadata::{MetaDiagnostic, MetaDiagnosticSeverity, MetaValidationStatus};
+use unica_metadata_designer::info_read::{
+    RegistrarProcessingPhase, SubsystemEvidenceProcessingPhase,
+};
+use unica_metadata_designer::validation::{FormRootValidator, MetadataValidator};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::test_support::ProcessCwdGuard;
+use uuid::Uuid;
+
+struct TempWorkspace(PathBuf);
+
+impl TempWorkspace {
+    fn new(label: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "unica-platform-meta-info-{label}-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempWorkspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn meta_info_surface_fixture(part: &str) -> PathBuf {
+    test_fixtures::meta_info_surface_fixture(part)
+}
+
+fn add_fixture_object(
+    workspace: &Path,
+    part: &str,
+    tag: &str,
+    name: &str,
+    renames: &[(&str, &str)],
+) {
+    test_fixtures::add_fixture_object(workspace, part, tag, name, renames);
+}
+
+/// Пустая конфигурация 8.3.27 и справочник `Inspectable`: синоним, реквизиты
+/// `Code` (строка 9) и `Amount` (число 15.2), табличная часть `Rows`.
+fn create_info_workspace(label: &str) -> TempWorkspace {
+    let workspace = TempWorkspace::new(label);
+    test_fixtures::copy_empty_configuration(workspace.path());
+    add_fixture_object(workspace.path(), "catalog", "Catalog", "Inspectable", &[]);
+    workspace
+}
+
+/// Ответ чтения описания объекта живым движком: `read_local` и проверка
+/// полного чтения валидатором designer, без входа v0.12.
+#[derive(Debug)]
+struct InfoResult {
+    ok: bool,
+    data: Option<Value>,
+    diagnostics: Option<Value>,
+    errors: Vec<String>,
+}
+
+fn info_failure(diagnostics: Vec<MetaDiagnostic>, data: Option<Value>) -> InfoResult {
+    InfoResult {
+        ok: false,
+        data,
+        errors: diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect(),
+        diagnostics: Some(serde_json::to_value(&diagnostics).unwrap()),
+    }
+}
+
+fn read_info(
+    workspace: &Path,
+    metadata_path: &str,
+    cancellation: &CancellationToken,
+) -> InfoResult {
+    let context = WorkspaceContext {
+        cwd: workspace.to_path_buf(),
+        workspace_root: workspace.to_path_buf(),
+        cache_root: workspace.join(".build/unica"),
+        workspace_epoch: 0,
+    };
+    let request = MetaInfoRequest {
+        source_set: "main".to_string(),
+        metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path)
+            .unwrap(),
+        sections: Vec::new(),
+        limit: 0,
+    };
+    let readers = WorkspaceSupportStateReaderFactory;
+    let reader = SupportStateReaderFactory::create(&readers, &context);
+    let read =
+        match MetadataOperations::read_local(&request, &context, cancellation, reader.as_ref()) {
+            Ok(read) => read,
+            Err(failure) => return info_failure(failure.diagnostics, None),
+        };
+    let mut validation = MetadataValidator::new(FormRootValidator(require_form_root))
+        .validate_complete_read(&read.validation_subject, &context);
+    if read
+        .local
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
+    {
+        validation.status = MetaValidationStatus::Failed;
+    }
+    validation
+        .diagnostics
+        .extend(read.local.diagnostics.iter().cloned());
+    let (functional_subsystems, interface_subsystems) =
+        match &read.validation_subject.subsystem_evidence {
+            Some(MetadataSubsystemEvidence::Complete {
+                functional_subsystems,
+                interface_subsystems,
+            }) => (
+                Some(functional_subsystems.clone()),
+                Some(interface_subsystems.clone()),
+            ),
+            Some(MetadataSubsystemEvidence::Unavailable(_)) | None => (None, None),
+        };
+    let failed = validation.status == MetaValidationStatus::Failed;
+    let diagnostics = validation.diagnostics.clone();
+    let data = serde_json::to_value(read.local.into_info(
+        validation,
+        Default::default(),
+        functional_subsystems,
+        interface_subsystems,
+    ))
+    .unwrap();
+    if failed {
+        return info_failure(diagnostics, Some(data));
+    }
+    InfoResult {
+        ok: true,
+        data: Some(data),
+        diagnostics: None,
+        errors: Vec::new(),
+    }
+}
+
+fn call_info(workspace: &Path) -> InfoResult {
+    call_info_path(workspace, "Catalog.Inspectable")
+}
+
+fn call_info_path(workspace: &Path, metadata_path: &str) -> InfoResult {
+    read_info(workspace, metadata_path, &CancellationToken::new())
+}
+
+fn call_info_path_cancellable(
+    workspace: &Path,
+    metadata_path: &str,
+    cancellation: CancellationToken,
+) -> InfoResult {
+    read_info(workspace, metadata_path, &cancellation)
+}
+
+fn call_meta_tool(workspace: &Path, tool: &str, args: Map<String, Value>) -> OperationResult {
+    let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
+    UnicaApplication::new()
+        .call_tool(tool, &args)
+        .expect("private typed metadata call")
+}
+
+fn add_catalog(
+    workspace: &Path,
+    name: &str,
+    operations: Option<Value>,
+    dry_run: bool,
+) -> OperationResult {
+    let mut args = Map::from_iter([
+        ("sourceSet".to_string(), Value::String("main".to_string())),
+        ("kind".to_string(), Value::String("Catalog".to_string())),
+        ("name".to_string(), Value::String(name.to_string())),
+        ("dryRun".to_string(), Value::Bool(dry_run)),
+    ]);
+    if let Some(operations) = operations {
+        args.insert("operations".to_string(), operations);
+    }
+    call_meta_tool(workspace, "unica.meta.add", args)
+}
+
+fn replace_first_string_type_with_unqualified_variant(xml: &str, replacement: &str) -> String {
+    let mut replaced = xml.replacen(
+        "<v8:Type>xs:string</v8:Type>",
+        &format!("<v8:Type>{replacement}</v8:Type>"),
+        1,
+    );
+    let variant = format!("<v8:Type>{replacement}</v8:Type>");
+    let variant_end = replaced
+        .find(&variant)
+        .map(|start| start + variant.len())
+        .expect("fixture must contain a string type");
+    let type_end = variant_end
+        + replaced[variant_end..]
+            .find("</Type>")
+            .expect("metadata Type container must be closed");
+    if let Some(relative_start) = replaced[variant_end..type_end].find("<v8:StringQualifiers>") {
+        let start = variant_end + relative_start;
+        let close = "</v8:StringQualifiers>";
+        let end = start
+            + replaced[start..]
+                .find(close)
+                .expect("string qualifier container must be closed")
+            + close.len();
+        replaced.replace_range(start..end, "");
+    }
+    replaced
+}
+
+fn call_edit(
+    workspace: &Path,
+    metadata_path: &str,
+    operations: Value,
+    dry_run: bool,
+) -> OperationResult {
+    call_meta_tool(
+        workspace,
+        "unica.meta.edit",
+        Map::from_iter([
+            ("sourceSet".to_string(), Value::String("main".to_string())),
+            (
+                "metadataPath".to_string(),
+                Value::String(metadata_path.to_string()),
+            ),
+            ("operations".to_string(), operations),
+            ("dryRun".to_string(), Value::Bool(dry_run)),
+        ]),
+    )
+}
+
+fn assert_logical_diagnostic(result: &InfoResult, workspace: &Path, code: &str) {
+    let diagnostics = result
+        .diagnostics
+        .as_ref()
+        .and_then(Value::as_array)
+        .expect("structured diagnostics");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == code),
+        "missing {code} diagnostic: {diagnostics:?}"
+    );
+    assert!(
+        !serde_json::to_string(diagnostics)
+            .unwrap()
+            .contains(&workspace.display().to_string()),
+        "diagnostics must expose logical identities only"
+    );
+}
+
+fn assert_no_error_diagnostic(result: &InfoResult, code: &str) {
+    let Some(diagnostics) = result.diagnostics.as_ref().and_then(Value::as_array) else {
+        return;
+    };
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["code"] != code || diagnostic["severity"] != "error"),
+        "unexpected {code} error diagnostic: {diagnostics:?}"
+    );
+}
+
+fn fixture_workspace(label: &str, fixture: &str, files: &[&str]) -> TempWorkspace {
+    let workspace = TempWorkspace::new(label);
+    std::fs::write(
+        workspace.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/unica_mcp_script_parity")
+        .join(fixture);
+    for relative in files {
+        let destination = workspace.path().join("src").join(relative);
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::copy(fixture_root.join(relative), destination).unwrap();
+    }
+    workspace
+}
+
+#[test]
+fn info_without_sections_is_local_only() {
+    let workspace = create_info_workspace("local");
+
+    let result = call_info(workspace.path());
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(data["metadataPath"], "Catalog.Inspectable");
+    assert_eq!(data["kind"], "Catalog");
+    assert_eq!(data["details"], serde_json::json!({}));
+    assert_eq!(data["name"], "Inspectable");
+    assert_eq!(data["synonym"], "Inspectable synonym");
+    assert_eq!(data["support"], "supported");
+    assert!(!data["properties"].as_array().unwrap().is_empty());
+    assert!(data["relations"]["owners"].as_array().unwrap().is_empty());
+    assert_eq!(data["validation"]["status"], "passed");
+    assert_eq!(data["functionalSubsystems"], serde_json::json!([]));
+    assert_eq!(data["interfaceSubsystems"], serde_json::json!([]));
+    assert_eq!(
+        data["collections"]["attributes"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        data["collections"]["tabularSections"][0]["attributes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        data["collections"]["attributes"][0]["type"]["variants"][0]["kind"],
+        "string"
+    );
+    for collection in [
+        "dimensions",
+        "resources",
+        "enumValues",
+        "columns",
+        "forms",
+        "templates",
+        "commands",
+    ] {
+        assert!(data["collections"][collection].is_array(), "{collection}");
+    }
+    for inapplicable in [
+        "recalculations",
+        "accountingFlags",
+        "extDimensionAccountingFlags",
+        "addressingAttributes",
+    ] {
+        assert!(
+            data["collections"].get(inapplicable).is_none(),
+            "{inapplicable} must be omitted for Catalog"
+        );
+    }
+    // `meta.info` no longer consults a code index at all, so there is no
+    // section left that could be absent for provider reasons.
+    assert!(data.get("related").is_none());
+    assert_eq!(data["usage"], serde_json::json!({}));
+}
+
+#[test]
+fn info_observes_inline_command_without_a_standalone_descriptor() {
+    let workspace = create_info_workspace("inline-command");
+    let edited = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([
+            {"op": "add", "collection": "forms", "elements": [{"name": "ItemForm"}]},
+            {"op": "add", "collection": "commands", "elements": [{"name": "Refresh"}]}
+        ]),
+        false,
+    );
+    assert!(edited.ok, "{:?}", edited.errors);
+
+    let owner_path = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let mut owner_xml = std::fs::read_to_string(&owner_path).unwrap();
+    let form_range = {
+        let document = roxmltree::Document::parse(&owner_xml).unwrap();
+        document
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == "Form")
+            .expect("generated form descriptor")
+            .range()
+    };
+    owner_xml.replace_range(form_range, "<Form>ItemForm</Form>");
+    std::fs::write(&owner_path, owner_xml).unwrap();
+
+    let invented_descriptor = workspace
+        .path()
+        .join("src/Catalogs/Inspectable/Commands/Refresh.xml");
+    assert!(
+        !invented_descriptor.exists(),
+        "command mutation must stay in the owner descriptor"
+    );
+
+    let result = call_info(workspace.path());
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(data["collections"]["forms"][0]["name"], "ItemForm");
+    assert_eq!(data["collections"]["commands"][0]["name"], "Refresh");
+    assert_eq!(data["validation"]["status"], "passed");
+
+    let form_descriptor = workspace
+        .path()
+        .join("src/Catalogs/Inspectable/Forms/ItemForm.xml");
+    let form_bytes = std::fs::read(&form_descriptor).unwrap();
+    std::fs::remove_file(&form_descriptor).unwrap();
+    let incomplete = call_info(workspace.path());
+    assert!(!incomplete.ok, "missing form evidence must stay an error");
+    let errors = incomplete.errors.join("\n");
+    assert!(
+        errors.contains("Catalog.Inspectable.Form.ItemForm"),
+        "{errors}"
+    );
+    assert!(
+        !errors.contains("Catalog.Inspectable.Command.Refresh"),
+        "one missing child must not discard an observed sibling: {errors}"
+    );
+    let incomplete_data = incomplete.data.expect("partial local observation");
+    assert_eq!(
+        incomplete_data["collections"]["commands"][0]["name"],
+        "Refresh"
+    );
+    std::fs::write(&form_descriptor, form_bytes).unwrap();
+
+    let renamed = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([{
+            "op": "update",
+            "collection": "commands",
+            "elements": [{"name": "Refresh", "newName": "Reload"}]
+        }]),
+        false,
+    );
+    assert!(renamed.ok, "{:?}", renamed.errors);
+    let commands_dir = workspace.path().join("src/Catalogs/Inspectable/Commands");
+    assert!(!commands_dir.join("Refresh.xml").exists());
+    assert!(!commands_dir.join("Reload.xml").exists());
+    let data = call_info(workspace.path())
+        .data
+        .expect("typed metadata info after command rename");
+    assert_eq!(data["collections"]["commands"][0]["name"], "Reload");
+
+    let removed = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([{
+            "op": "remove",
+            "collection": "commands",
+            "names": ["Reload"]
+        }]),
+        false,
+    );
+    assert!(removed.ok, "{:?}", removed.errors);
+    let data = call_info(workspace.path())
+        .data
+        .expect("typed metadata info after command removal");
+    assert_eq!(data["collections"]["commands"], serde_json::json!([]));
+}
+
+#[test]
+fn info_returns_the_constant_value_type_in_kind_specific_details() {
+    let workspace = create_info_workspace("constant-details-type");
+    add_fixture_object(
+        workspace.path(),
+        "constant",
+        "Constant",
+        "MainCurrency",
+        &[],
+    );
+
+    let result = call_info_path(workspace.path(), "Constant.MainCurrency");
+
+    assert!(result.ok, "{:?}", result.errors);
+    assert_eq!(
+        result.data.as_ref().unwrap()["details"]["type"],
+        serde_json::json!({
+            "variants": [{
+                "kind": "string",
+                "length": 10,
+                "allowedLength": "variable"
+            }],
+            "mutationCapability": "editable"
+        })
+    );
+}
+
+#[test]
+fn info_localizes_an_unmodelled_constant_type_with_the_warning_code() {
+    let workspace = create_info_workspace("constant-unmodelled-type");
+    add_fixture_object(
+        workspace.path(),
+        "constant",
+        "Constant",
+        "MainCurrency",
+        &[],
+    );
+    let descriptor = workspace.path().join("src/Constants/MainCurrency.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let unknown = replace_first_string_type_with_unqualified_variant(&xml, "v8:FutureOpaque");
+    assert_ne!(unknown, xml, "fixture must contain the constant value type");
+    std::fs::write(&descriptor, unknown).unwrap();
+    let result = call_info_path(workspace.path(), "Constant.MainCurrency");
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.as_ref().unwrap();
+    assert!(data["details"]["type"].is_null());
+    let warning = data["validation"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["field"] == "details.type")
+        .expect("unmodelled constant type needs a localized diagnostic");
+    assert_eq!(warning["severity"], "warning");
+    assert_eq!(warning["code"], "validation_warning");
+    assert_eq!(warning["metadataPath"], "Constant.MainCurrency");
+    assert_eq!(data["validation"]["status"], "passed");
+}
+
+#[test]
+fn info_does_not_silently_drop_an_unknown_compound_root_property() {
+    let workspace = create_info_workspace("unknown-compound-property");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen(
+                    "<Comment/>",
+                    "<Comment/><UnexpectedCompound><Value>evidence</Value></UnexpectedCompound>",
+                    1,
+                )
+                .into_bytes()
+        },
+        || call_info(workspace.path()),
+    );
+
+    assert!(
+        !result.ok,
+        "unknown compound data must not disappear: {result:?}"
+    );
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_does_not_silently_drop_an_unknown_scalar_root_property() {
+    let workspace = create_info_workspace("unknown-scalar-property");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen(
+                    "<Comment/>",
+                    "<Comment/><UnexpectedScalar>evidence</UnexpectedScalar>",
+                    1,
+                )
+                .into_bytes()
+        },
+        || call_info(workspace.path()),
+    );
+
+    assert!(
+        !result.ok,
+        "unknown scalar data must not disappear: {result:?}"
+    );
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_reports_every_unknown_root_node_instead_of_only_the_first() {
+    let workspace = create_info_workspace("two-unknown-root-nodes");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen(
+                    "<Comment/>",
+                    "<Comment/><UnexpectedOne/><UnexpectedTwo/>",
+                    1,
+                )
+                .into_bytes()
+        },
+        || call_info(workspace.path()),
+    );
+
+    assert!(!result.ok, "unknown semantic nodes must fail closed");
+    let diagnostics = result
+        .diagnostics
+        .as_ref()
+        .and_then(Value::as_array)
+        .expect("typed diagnostics");
+    let fields = diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic["field"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        fields.contains("properties.UnexpectedOne"),
+        "{diagnostics:?}"
+    );
+    assert!(
+        fields.contains("properties.UnexpectedTwo"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn info_rejects_a_duplicate_root_child_objects_container() {
+    let workspace = create_info_workspace("duplicate-root-child-objects");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            let text = std::str::from_utf8(bytes).unwrap();
+            let patched = if let Some(index) = text.rfind("</ChildObjects>") {
+                let mut patched = text.to_string();
+                patched.insert_str(index + "</ChildObjects>".len(), "<ChildObjects/>");
+                patched
+            } else if let Some(index) = text.rfind("<ChildObjects/>") {
+                let mut patched = text.to_string();
+                patched.insert_str(index + "<ChildObjects/>".len(), "<ChildObjects/>");
+                patched
+            } else {
+                text.replacen("</Catalog>", "<ChildObjects/><ChildObjects/></Catalog>", 1)
+            };
+            assert_ne!(
+                patched, text,
+                "descriptor has no duplicate-container anchor"
+            );
+            patched.into_bytes()
+        },
+        || call_info(workspace.path()),
+    );
+
+    assert!(!result.ok, "duplicate root container must fail closed");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_foreign_namespace_root_child_objects_container() {
+    let workspace = create_info_workspace("foreign-root-child-objects");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen(
+                    "<ChildObjects>",
+                    "<foreign:ChildObjects xmlns:foreign=\"urn:foreign\">",
+                    1,
+                )
+                .replacen("</ChildObjects>", "</foreign:ChildObjects>", 1)
+                .into_bytes()
+        },
+        || call_info(workspace.path()),
+    );
+
+    assert!(!result.ok, "foreign root container must fail closed");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_never_publishes_a_foreign_synonym_decoy_in_partial_data() {
+    let workspace = create_info_workspace("foreign-synonym-decoy");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen(
+                    "<Synonym>",
+                    "<foreign:Synonym xmlns:foreign=\"urn:foreign\">poison</foreign:Synonym><Synonym>",
+                    1,
+                )
+                .into_bytes()
+        },
+        || call_info(workspace.path()),
+    );
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("safe partial data");
+    assert_ne!(data["synonym"], "poison");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_groups_only_the_current_objects_subsystem_memberships() {
+    let workspace = create_info_workspace("object-subsystem-memberships");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Служебные",
+        "false",
+        &content_item("Catalog.Inspectable"),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Продажи",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Продажи/Subsystems",
+        "ОптовыеПродажи",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Посторонняя",
+        "true",
+        &content_item("Catalog.Other"),
+    );
+
+    let result = call_info(workspace.path());
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(
+        data["functionalSubsystems"],
+        serde_json::json!(["Служебные"])
+    );
+    assert_eq!(
+        data["interfaceSubsystems"],
+        serde_json::json!(["Продажи", "Продажи.ОптовыеПродажи"])
+    );
+    let serialized = serde_json::to_string(&data).unwrap();
+    assert!(!serialized.contains("Посторонняя"), "{serialized}");
+}
+
+#[test]
+fn info_matches_subsystem_memberships_by_address_or_root_descriptor_uuid() {
+    let workspace = create_info_workspace("object-subsystem-uuid-memberships");
+    let target_uuid = metadata_object_uuid(workspace.path(), "Catalogs/Inspectable.xml");
+    let different_uuid = "11111111-2222-4333-8444-555555555555";
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "false",
+        &format!(
+            "{}{}",
+            content_item("Catalog.Other"),
+            content_item(&target_uuid)
+        ),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &format!(
+            "{}{}",
+            content_item("Catalog.Inspectable"),
+            content_item(different_uuid)
+        ),
+    );
+
+    let result = call_info(workspace.path());
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(data["functionalSubsystems"], serde_json::json!(["ПоUUID"]));
+    assert_eq!(data["interfaceSubsystems"], serde_json::json!(["ПоАдресу"]));
+}
+
+#[test]
+fn info_returns_proved_empty_memberships_for_a_nonmatching_valid_uuid() {
+    let workspace = create_info_workspace("object-subsystem-nonmatching-uuid");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Посторонняя",
+        "true",
+        &content_item("11111111-2222-4333-8444-555555555555"),
+    );
+
+    let result = call_info(workspace.path());
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(data["functionalSubsystems"], serde_json::json!([]));
+    assert_eq!(data["interfaceSubsystems"], serde_json::json!([]));
+}
+
+#[test]
+fn info_omits_memberships_when_registered_content_reference_is_malformed() {
+    let workspace = create_info_workspace("object-subsystem-malformed-content-reference");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        &content_item("not-a-metadata-reference"),
+    );
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok);
+    let data = result
+        .data
+        .as_ref()
+        .expect("partial typed metadata info data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_omits_memberships_when_content_type_prefix_has_a_foreign_namespace() {
+    let workspace = create_info_workspace("object-subsystem-foreign-content-qname");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        concat!(
+            "<readable:Item xmlns:readable=\"http://v8.1c.ru/8.3/xcf/readable\" ",
+            "xmlns:xr=\"urn:foreign\" xsi:type=\"xr:MDObjectRef\">",
+            "Catalog.Inspectable</readable:Item>"
+        ),
+    );
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok);
+    let data = result
+        .data
+        .as_ref()
+        .expect("partial typed metadata info data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_omits_memberships_when_content_value_contains_a_nested_element() {
+    let workspace = create_info_workspace("object-subsystem-mixed-content-value");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        concat!(
+            "<xr:Item xsi:type=\"xr:MDObjectRef\">Catalog.Inspectable",
+            "<foreign:Decoy xmlns:foreign=\"urn:foreign\"/>",
+            "</xr:Item>"
+        ),
+    );
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok);
+    let data = result
+        .data
+        .as_ref()
+        .expect("partial typed metadata info data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_omits_memberships_when_content_contains_raw_direct_text() {
+    let workspace = create_info_workspace("object-subsystem-raw-content-text");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        "Catalog.Inspectable",
+    );
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("partial local metadata data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_omits_memberships_when_child_objects_contains_raw_direct_text() {
+    let workspace = create_info_workspace("object-subsystem-raw-registration-text");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+    let configuration = workspace.path().join("src/Configuration.xml");
+    let malformed = std::fs::read_to_string(&configuration)
+        .unwrap()
+        .replace("<Subsystem>Поврежденная</Subsystem>", "Поврежденная");
+    std::fs::write(&configuration, malformed).unwrap();
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("partial local metadata data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_an_invalid_root_descriptor_uuid_instead_of_matching_by_address_only() {
+    let workspace = create_info_workspace("object-invalid-root-uuid");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let descriptor_path = workspace.path().join("src").join(relative_descriptor);
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    let descriptor = std::fs::read_to_string(&descriptor_path).unwrap().replacen(
+        &format!("uuid=\"{target_uuid}\""),
+        "uuid=\"not-a-uuid\"",
+        1,
+    );
+    std::fs::write(&descriptor_path, descriptor).unwrap();
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_missing_root_descriptor_uuid_instead_of_matching_by_address_only() {
+    let workspace = create_info_workspace("object-missing-root-uuid");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let descriptor_path = workspace.path().join("src").join(relative_descriptor);
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    let descriptor = std::fs::read_to_string(&descriptor_path).unwrap().replacen(
+        &format!(" uuid=\"{target_uuid}\""),
+        "",
+        1,
+    );
+    std::fs::write(&descriptor_path, descriptor).unwrap();
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_root_descriptor_name_that_disagrees_with_the_target() {
+    let workspace = create_info_workspace("object-root-name-mismatch");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen("<Name>Inspectable</Name>", "<Name>Other</Name>", 1)
+                .into_bytes()
+        },
+        || call_info(workspace.path()),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_non_exact_properties_and_name_identity_proofs() {
+    type IdentityMutation = (&'static str, fn(&str) -> String);
+    let cases: [IdentityMutation; 3] = [
+        ("foreign-properties", |xml| {
+            xml.replacen(
+                "<Properties>",
+                "<foreign:Properties xmlns:foreign=\"urn:foreign\">",
+                1,
+            )
+            .replacen("</Properties>", "</foreign:Properties>", 1)
+        }),
+        ("foreign-name", |xml| {
+            xml.replacen(
+                "<Name>Inspectable</Name>",
+                "<foreign:Name xmlns:foreign=\"urn:foreign\">Inspectable</foreign:Name>",
+                1,
+            )
+        }),
+        ("mixed-name", |xml| {
+            xml.replacen(
+                "<Name>Inspectable</Name>",
+                "<Name>Inspectable<foreign:Decoy xmlns:foreign=\"urn:foreign\"/></Name>",
+                1,
+            )
+        }),
+    ];
+
+    for (label, mutate) in cases {
+        let workspace = create_info_workspace(&format!("object-{label}"));
+        write_subsystem(
+            workspace.path(),
+            "src/Subsystems",
+            "ПоАдресу",
+            "true",
+            &content_item("Catalog.Inspectable"),
+        );
+        let result = with_meta_info_descriptor_image_hook(
+            move |bytes| mutate(std::str::from_utf8(bytes).unwrap()).into_bytes(),
+            || call_info(workspace.path()),
+        );
+
+        assert!(!result.ok, "{label}: {result:?}");
+        assert!(
+            result
+                .data
+                .as_ref()
+                .is_none_or(|data| data.get("functionalSubsystems").is_none()),
+            "{label}: {:?}",
+            result.data
+        );
+        assert!(
+            result
+                .data
+                .as_ref()
+                .is_none_or(|data| data.get("interfaceSubsystems").is_none()),
+            "{label}: {:?}",
+            result.data
+        );
+        assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    }
+}
+
+#[test]
+fn info_rejects_a_foreign_namespace_descriptor_root_before_publishing_memberships() {
+    let workspace = create_info_workspace("object-foreign-descriptor-root");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "true",
+        &content_item(&target_uuid),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            let xml = std::str::from_utf8(bytes).unwrap();
+            xml.replacen(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
+                "<MetaDataObject xmlns=\"urn:foreign\"",
+                1,
+            )
+            .replacen(
+                "<Catalog uuid=",
+                "<Catalog xmlns=\"http://v8.1c.ru/8.3/MDClasses\" uuid=",
+                1,
+            )
+            .into_bytes()
+        },
+        || call_info(workspace.path()),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_foreign_direct_descriptor_artifact_before_publishing_memberships() {
+    let workspace = create_info_workspace("object-foreign-direct-descriptor-artifact");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "true",
+        &content_item(&target_uuid),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            let xml = std::str::from_utf8(bytes).unwrap();
+            let closing = xml
+                .rfind("</MetaDataObject>")
+                .expect("metadata descriptor root closes");
+            let mut ambiguous = xml.to_string();
+            ambiguous.insert_str(closing, "<foreign:Decoy xmlns:foreign=\"urn:foreign\"/>");
+            ambiguous.into_bytes()
+        },
+        || call_info(workspace.path()),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_duplicate_direct_metadata_objects_before_publishing_memberships() {
+    let workspace = create_info_workspace("object-duplicate-direct-metadata-object");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "true",
+        &content_item(&target_uuid),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        move |bytes| {
+            let xml = std::str::from_utf8(bytes).unwrap();
+            let document = roxmltree::Document::parse(xml).unwrap();
+            let object = document
+                .root_element()
+                .children()
+                .find(roxmltree::Node::is_element)
+                .expect("metadata descriptor has one direct object");
+            let duplicate = xml[object.range()].replacen(
+                &target_uuid,
+                "11111111-2222-4333-8444-555555555555",
+                1,
+            );
+            let closing = xml
+                .rfind("</MetaDataObject>")
+                .expect("metadata descriptor root closes");
+            let mut ambiguous = xml.to_string();
+            ambiguous.insert_str(closing, &duplicate);
+            ambiguous.into_bytes()
+        },
+        || call_info(workspace.path()),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    let diagnostics = result
+        .diagnostics
+        .as_ref()
+        .and_then(Value::as_array)
+        .expect("structured diagnostics");
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "provider_unavailable"
+                && diagnostic["metadataPath"] == "Catalog.Inspectable"
+                && diagnostic["field"] == "uuid"
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn info_preserves_local_structure_when_child_resource_evidence_is_unavailable() {
+    let workspace = create_info_workspace("child-evidence-unavailable");
+    test_fixtures::copy_tree(
+        &meta_info_surface_fixture("catalog_form"),
+        &workspace.path().join("src"),
+    );
+    std::fs::write(
+        workspace
+            .path()
+            .join("src/Catalogs/Inspectable/Forms/Main/unexpected.bin"),
+        b"unexpected",
+    )
+    .unwrap();
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "Inspectable");
+    assert_eq!(
+        result.data.as_ref().unwrap()["collections"]["forms"][0]["name"],
+        "Main"
+    );
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_observes_every_typed_mutation_field() {
+    let workspace = create_info_workspace("round-trip-fields");
+    let owner = add_catalog(workspace.path(), "Owner", None, false);
+    assert!(owner.ok, "{:?}", owner.errors);
+    let seeded = add_catalog(
+        workspace.path(),
+        "RoundTrip",
+        Some(serde_json::json!([{
+            "op": "add",
+            "collection": "attributes",
+            "elements": [
+                {"name": "First"},
+                {"name": "Existing", "type": {"variants": [{"kind": "string", "length": 8, "allowedLength": "variable"}]}},
+                {"name": "RemoveMe"},
+                {"name": "Last"}
+            ]
+        }])),
+        false,
+    );
+    assert!(seeded.ok, "{:?}", seeded.errors);
+    let operations = serde_json::json!([
+        {"op": "setProperties", "values": {"Comment": "Observed comment"}},
+        {"op": "add", "collection": "attributes", "elements": [{
+            "name": "Added",
+            "synonym": "Added synonym",
+            "comment": "Added comment",
+            "type": {"variants": [{"kind": "string", "length": 12, "allowedLength": "fixed"}]},
+            "required": true,
+            "fillValue": {"kind": "string", "value": "seed"},
+            "position": {"before": "Existing"}
+        }]},
+        {"op": "add", "collection": "tabularSections", "elements": [{
+            "name": "Rows",
+            "synonym": "Rows synonym",
+            "comment": "Rows comment",
+            "attributes": [
+                {"name": "LineText", "type": {"variants": [{"kind": "string", "length": 20, "allowedLength": "variable"}]}, "required": true},
+                {"name": "LineNumber", "type": {"variants": [{"kind": "number", "digits": 10, "fraction": 2, "sign": "nonNegative"}]}, "required": false, "position": {"before": "LineText"}}
+            ]
+        }]},
+        {"op": "update", "collection": "attributes", "elements": [{
+            "name": "Existing",
+            "newName": "Renamed",
+            "synonym": "Renamed synonym",
+            "comment": "Renamed comment",
+            "type": {"variants": [{"kind": "number", "digits": 6, "fraction": 2, "sign": "any"}]},
+            "required": true,
+            "fillValue": {"kind": "number", "value": "12.50"},
+            "position": {"before": "First"}
+        }]},
+        {"op": "remove", "collection": "attributes", "names": ["RemoveMe"]},
+        {"op": "editRelations", "relation": "owners", "mode": "replace", "targets": [{"metadataPath": "Catalog.Owner"}]}
+    ]);
+
+    let preview = call_edit(
+        workspace.path(),
+        "Catalog.RoundTrip",
+        operations.clone(),
+        true,
+    );
+    assert!(preview.ok, "{:?}", preview.errors);
+    let effects = preview.data.as_ref().unwrap()["effects"]
+        .as_array()
+        .expect("semantic preview effects");
+    assert_eq!(effects.len(), operations.as_array().unwrap().len());
+    assert_eq!(
+        effects
+            .iter()
+            .map(|effect| effect["operation"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "setProperties",
+            "add",
+            "add",
+            "update",
+            "remove",
+            "editRelations"
+        ]
+    );
+    assert!(effects[1]["before"].is_null());
+    assert!(effects[4]["after"].is_null());
+    assert_eq!(effects[0]["before"], serde_json::json!({"Comment": ""}));
+    assert_eq!(
+        effects[0]["after"],
+        serde_json::json!({"Comment": "Observed comment"})
+    );
+    assert_eq!(effects[1]["after"][0]["name"], "Added");
+    assert_eq!(effects[1]["after"][0]["required"], true);
+    assert_eq!(
+        effects[1]["after"][0]["fillValue"],
+        serde_json::json!({"kind": "string", "value": "seed"})
+    );
+    assert_eq!(effects[3]["before"][0]["name"], "Existing");
+    assert_eq!(effects[3]["after"][0]["name"], "Renamed");
+    assert_eq!(
+        effects[3]["after"][0]["fillValue"],
+        serde_json::json!({"kind": "number", "value": "12.50"})
+    );
+    assert_eq!(effects[4]["before"][0]["name"], "RemoveMe");
+    assert_eq!(effects[5]["before"], serde_json::json!([]));
+    assert_eq!(
+        effects[5]["after"],
+        serde_json::json!([{"kind": "object", "value": "Catalog.Owner"}])
+    );
+    assert!(effects
+        .iter()
+        .enumerate()
+        .all(|(index, effect)| effect["operationIndex"] == Value::Number((index as u64).into())));
+    assert!(!serde_json::to_string(effects)
+        .unwrap()
+        .contains("MetaDataObject"));
+
+    let applied = call_edit(workspace.path(), "Catalog.RoundTrip", operations, false);
+    assert!(applied.ok, "{:?}", applied.errors);
+    let result = call_info_path(workspace.path(), "Catalog.RoundTrip");
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert!(data["properties"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|property| {
+            property["key"] == "Comment" && property["value"] == "Observed comment"
+        }));
+    assert_eq!(
+        data["collections"]["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|element| element["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["Renamed", "First", "Added", "Last"]
+    );
+    let renamed = &data["collections"]["attributes"][0];
+    assert_eq!(renamed["synonym"], "Renamed synonym");
+    assert_eq!(renamed["comment"], "Renamed comment");
+    assert_eq!(renamed["required"], true);
+    assert_eq!(
+        renamed["fillValue"],
+        serde_json::json!({"kind": "number", "value": "12.50"})
+    );
+    assert_eq!(renamed["type"]["variants"][0]["kind"], "number");
+    assert_eq!(renamed["type"]["mutationCapability"], "editable");
+    let rows = &data["collections"]["tabularSections"][0];
+    assert_eq!(rows["synonym"], "Rows synonym");
+    assert_eq!(rows["comment"], "Rows comment");
+    assert_eq!(
+        rows["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|element| element["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["LineNumber", "LineText"]
+    );
+    assert_eq!(rows["attributes"][0]["required"], false);
+    assert_eq!(rows["attributes"][1]["required"], true);
+    assert_eq!(
+        data["relations"]["owners"],
+        serde_json::json!([{"kind": "object", "value": "Catalog.Owner"}])
+    );
+
+    let template_preview = add_catalog(workspace.path(), "TemplateOnly", None, true);
+    assert!(template_preview.ok, "{:?}", template_preview.errors);
+    assert_eq!(
+        template_preview.data.unwrap()["effects"],
+        serde_json::json!([{
+            "operation": "createTemplate",
+            "target": "Catalog.TemplateOnly",
+            "before": null,
+            "after": {"kind": "Catalog", "name": "TemplateOnly"}
+        }])
+    );
+}
+
+#[test]
+fn info_localizes_an_unknown_but_valid_platform_type_as_a_warning() {
+    let workspace = create_info_workspace("unknown-platform-type");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let unknown = replace_first_string_type_with_unqualified_variant(&xml, "v8:FutureOpaque");
+    assert_ne!(unknown, xml, "fixture must contain a typed attribute");
+    std::fs::write(&descriptor, unknown).unwrap();
+
+    let result = call_info(workspace.path());
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.as_ref().expect("partial typed info");
+    assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
+    assert!(data["collections"]["attributes"][0].get("type").is_none());
+    assert!(data["validation"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| {
+            diagnostic["field"] == "collections.attributes[0].type"
+                && diagnostic["severity"] == "warning"
+                && diagnostic["code"] == "validation_warning"
+        }));
+}
+
+#[test]
+fn info_keeps_a_broken_qualifier_in_the_error_severity_branch() {
+    let workspace = create_info_workspace("broken-type-qualifier");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let broken = xml.replacen("<v8:Length>9</v8:Length>", "<v8:Length>abc</v8:Length>", 1);
+    assert_ne!(broken, xml, "fixture must contain string qualifiers");
+    std::fs::write(&descriptor, broken).unwrap();
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok, "a malformed qualifier must remain an error");
+    let data = result.data.as_ref().expect("partial typed info");
+    assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
+    assert!(data["collections"]["attributes"][0].get("type").is_none());
+    assert!(data["validation"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| {
+            diagnostic["field"] == "collections.attributes[0].type"
+                && diagnostic["severity"] == "error"
+        }));
+}
+
+#[test]
+fn info_reads_uuid_as_an_editable_observed_type() {
+    let workspace = create_info_workspace("uuid-observation");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let uuid = replace_first_string_type_with_unqualified_variant(&xml, "v8:UUID");
+    assert_ne!(uuid, xml, "fixture must contain a typed attribute");
+    std::fs::write(&descriptor, uuid).unwrap();
+
+    let result = call_info(workspace.path());
+
+    assert!(result.ok, "{:?}", result.errors);
+    let observed = &result.data.unwrap()["collections"]["attributes"][0]["type"];
+    assert_eq!(observed["variants"], serde_json::json!([{"kind": "uuid"}]));
+    assert_eq!(observed["mutationCapability"], "editable");
+}
+
+#[test]
+fn uuid_writer_round_trips_through_meta_edit_and_info() {
+    let workspace = create_info_workspace("uuid-writer-round-trip");
+    let edited = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([{
+            "op": "add",
+            "collection": "attributes",
+            "elements": [{
+                "name": "ExternalId",
+                "type": {"variants": [{"kind": "uuid"}]}
+            }]
+        }]),
+        false,
+    );
+
+    assert!(edited.ok, "{:?}", edited.errors);
+    let result = call_info(workspace.path());
+    assert!(result.ok, "{:?}", result.errors);
+    let external_id = result.data.unwrap()["collections"]["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|attribute| attribute["name"] == "ExternalId")
+        .cloned()
+        .expect("round-tripped UUID attribute");
+    assert_eq!(
+        external_id["type"],
+        serde_json::json!({
+            "variants": [{"kind": "uuid"}],
+            "mutationCapability": "editable"
+        })
+    );
+    let descriptor =
+        std::fs::read_to_string(workspace.path().join("src/Catalogs/Inspectable.xml")).unwrap();
+    assert!(descriptor.contains("<v8:Type>v8:UUID</v8:Type>"));
+}
+
+#[test]
+fn info_marks_bare_fill_value_incomplete_with_diagnostic() {
+    let workspace = create_info_workspace("malformed-optional-fill-value");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let malformed = xml.replacen("<FillValue xsi:nil=\"true\"/>", "<FillValue/>", 1);
+    assert_ne!(
+        malformed, xml,
+        "fixture must contain an absent fill value marker"
+    );
+    std::fs::write(&descriptor, malformed).unwrap();
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("partial typed info");
+    assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
+    assert!(result
+        .diagnostics
+        .as_ref()
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| diagnostic["field"] == "collections.attributes[0].fillValue"));
+}
+
+#[test]
+fn meta_info_private_coordinator_hard_fails_malformed_xml_but_keeps_semantic_failure_data() {
+    let malformed = create_info_workspace("malformed");
+    std::fs::write(
+        malformed.path().join("src/Catalogs/Inspectable.xml"),
+        b"<MetaDataObject><Catalog>",
+    )
+    .unwrap();
+
+    let malformed_result = call_info(malformed.path());
+    assert!(!malformed_result.ok);
+    assert!(malformed_result.data.is_none());
+
+    let semantic = create_info_workspace("semantic");
+    let descriptor = semantic.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let duplicate = xml.replacen("<Name>Amount</Name>", "<Name>Code</Name>", 1);
+    assert_ne!(duplicate, xml, "fixture must contain the second attribute");
+    std::fs::write(&descriptor, duplicate).unwrap();
+
+    let semantic_result = call_info(semantic.path());
+    assert!(!semantic_result.ok);
+    assert_eq!(
+        semantic_result.data.as_ref().unwrap()["validation"]["status"],
+        "failed"
+    );
+    assert_eq!(
+        semantic_result.data.as_ref().unwrap()["name"],
+        "Inspectable"
+    );
+}
+
+#[test]
+fn meta_info_private_closed_read_preserves_missing_and_empty_child_names_as_incomplete() {
+    let workspace = create_info_workspace("malformed-attribute");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let mut xml = std::fs::read_to_string(&descriptor).unwrap();
+    for replacement in [
+        "<Attribute><Properties><Synonym/></Properties></Attribute>",
+        "<Attribute><Properties><Name> </Name></Properties></Attribute>",
+    ] {
+        let start = xml.find("<Attribute uuid=").expect("compiled attribute");
+        let end = start
+            + xml[start..]
+                .find("</Attribute>")
+                .expect("compiled attribute end")
+            + "</Attribute>".len();
+        xml.replace_range(start..end, replacement);
+    }
+    std::fs::write(&descriptor, xml).unwrap();
+
+    let result = call_info(workspace.path());
+
+    assert!(!result.ok);
+    let data = result
+        .data
+        .as_ref()
+        .expect("local metadata remains available");
+    assert_eq!(data["name"], "Inspectable");
+    assert_eq!(
+        data["collections"]["attributes"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(data["collections"]["attributes"][0]["name"], "");
+    assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
+    assert_eq!(data["collections"]["attributes"][1]["name"], "");
+    assert_eq!(data["collections"]["attributes"][1]["incomplete"], true);
+    assert_eq!(data["validation"]["status"], "failed");
+    assert_logical_diagnostic(&result, workspace.path(), "validation_failed");
+}
+
+#[test]
+fn meta_info_private_closed_read_proof_requires_every_registered_language_image() {
+    let files = [
+        "Configuration.xml",
+        "Enums/LanguageAware.xml",
+        "Languages/English.xml",
+        "Languages/Русский.xml",
+    ];
+    let valid = fixture_workspace("language-valid", "meta-validate-language-aware", &files);
+    let valid_result = call_info_path(valid.path(), "Enum.LanguageAware");
+    assert_eq!(
+        valid_result.data.as_ref().unwrap()["validation"]["status"],
+        "passed"
+    );
+
+    let missing = fixture_workspace("language-missing", "meta-validate-language-aware", &files);
+    std::fs::remove_file(missing.path().join("src/Languages/English.xml")).unwrap();
+    let missing_result = call_info_path(missing.path(), "Enum.LanguageAware");
+
+    assert!(!missing_result.ok);
+    assert_eq!(
+        missing_result.data.as_ref().unwrap()["validation"]["status"],
+        "failed"
+    );
+    assert!(missing_result.data.as_ref().unwrap()["name"].is_string());
+    assert_logical_diagnostic(&missing_result, missing.path(), "provider_unavailable");
+
+    let invalid = fixture_workspace("language-invalid", "meta-validate-language-aware", &files);
+    std::fs::write(invalid.path().join("src/Languages/English.xml"), "not XML").unwrap();
+    let invalid_result = call_info_path(invalid.path(), "Enum.LanguageAware");
+
+    assert!(!invalid_result.ok);
+    assert_eq!(
+        invalid_result.data.as_ref().unwrap()["validation"]["status"],
+        "failed"
+    );
+    assert!(invalid_result.data.as_ref().unwrap()["name"].is_string());
+    assert_logical_diagnostic(&invalid_result, invalid.path(), "provider_unavailable");
+}
+
+#[test]
+fn meta_info_private_closed_read_proof_rejects_a_missing_forward_register_image() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "missing-forward-register",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    std::fs::remove_file(
+        workspace
+            .path()
+            .join("src/InformationRegisters/SubordinateRegister.xml"),
+    )
+    .unwrap();
+
+    let result = call_info_path(workspace.path(), "Document.Регистратор");
+
+    assert!(!result.ok);
+    assert_eq!(
+        result.data.as_ref().unwrap()["validation"]["status"],
+        "failed"
+    );
+    assert_eq!(result.data.as_ref().unwrap()["name"], "Регистратор");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn meta_info_private_closed_read_proof_rejects_reverse_registrar_inconsistency() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "reverse-registrar",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    let registrar = workspace.path().join("src/Documents/Регистратор.xml");
+    let bytes = std::fs::read_to_string(&registrar).unwrap().replace(
+        "InformationRegister.SubordinateRegister",
+        "InformationRegister.Other",
+    );
+    std::fs::write(&registrar, bytes).unwrap();
+
+    let result = call_info_path(workspace.path(), "InformationRegister.SubordinateRegister");
+
+    assert!(!result.ok);
+    assert_eq!(
+        result.data.as_ref().unwrap()["validation"]["status"],
+        "failed"
+    );
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "validation_failed");
+    assert_no_error_diagnostic(&result, "provider_unavailable");
+}
+
+#[test]
+fn meta_info_private_closed_read_accepts_complete_registrar_evidence() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-complete",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+
+    let result = call_info_path(workspace.path(), "InformationRegister.SubordinateRegister");
+
+    assert!(result.ok, "{result:?}");
+    assert_eq!(
+        result.data.as_ref().unwrap()["validation"]["status"],
+        "passed"
+    );
+    assert_no_error_diagnostic(&result, "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_private_closed_read_treats_absent_and_empty_documents_as_complete_empty_graphs() {
+    let files = [
+        "Configuration.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let absent = fixture_workspace(
+        "registrar-documents-absent",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    let absent_result = call_info_path(absent.path(), "InformationRegister.SubordinateRegister");
+    let empty = fixture_workspace(
+        "registrar-documents-empty",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    std::fs::create_dir_all(empty.path().join("src/Documents")).unwrap();
+    let empty_result = call_info_path(empty.path(), "InformationRegister.SubordinateRegister");
+
+    for (result, workspace) in [
+        (&absent_result, absent.path()),
+        (&empty_result, empty.path()),
+    ] {
+        assert!(!result.ok);
+        assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+        assert_eq!(
+            result.data.as_ref().unwrap()["validation"]["status"],
+            "failed"
+        );
+        assert_logical_diagnostic(result, workspace, "validation_failed");
+        assert_no_error_diagnostic(result, "provider_unavailable");
+    }
+}
+
+#[test]
+fn meta_info_private_closed_read_registrar_scan_enforces_byte_cap() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-byte-cap",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    std::fs::File::create(workspace.path().join("src/Documents/000-Oversized.xml"))
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
+
+    let result = call_info_path(workspace.path(), "InformationRegister.SubordinateRegister");
+
+    assert!(!result.ok);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_private_closed_read_reports_malformed_registrar_evidence_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-malformed",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    std::fs::write(
+        workspace.path().join("src/Documents/Регистратор.xml"),
+        "not XML",
+    )
+    .unwrap();
+
+    let result = call_info_path(workspace.path(), "InformationRegister.SubordinateRegister");
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_post_capture_cancellation_after_first_identity_parse_is_provider_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-first-identity-cancel",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_registrar_processing_hook(
+        move |phase| {
+            if matches!(
+                phase,
+                RegistrarProcessingPhase::AfterIdentityParse { ordinal: 0, .. }
+            ) {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            call_info_path_cancellable(
+                workspace.path(),
+                "InformationRegister.SubordinateRegister",
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_post_capture_cancellation_after_large_identity_parse_is_provider_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-large-identity-cancel",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    let original =
+        std::fs::read_to_string(workspace.path().join("src/Documents/Регистратор.xml")).unwrap();
+    let inflated = original.replace(
+        "</MetaDataObject>",
+        &format!("<!--{}--></MetaDataObject>", "x".repeat(4 * 1024 * 1024)),
+    );
+    std::fs::write(
+        workspace.path().join("src/Documents/000-Large.xml"),
+        inflated,
+    )
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_registrar_processing_hook(
+        move |phase| {
+            if matches!(
+                phase,
+                RegistrarProcessingPhase::AfterIdentityParse { logical_path, .. }
+                    if logical_path.ends_with("000-Large.xml")
+            ) {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            call_info_path_cancellable(
+                workspace.path(),
+                "InformationRegister.SubordinateRegister",
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_post_capture_cancellation_after_last_registrar_parse_is_provider_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-last-parse-cancel",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    std::fs::copy(
+        workspace.path().join("src/Documents/Регистратор.xml"),
+        workspace.path().join("src/Documents/Z-Second.xml"),
+    )
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_registrar_processing_hook(
+        move |phase| {
+            if matches!(
+                phase,
+                RegistrarProcessingPhase::AfterRegistrarParse {
+                    ordinal,
+                    total,
+                    ..
+                } if ordinal + 1 == *total
+            ) {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            call_info_path_cancellable(
+                workspace.path(),
+                "InformationRegister.SubordinateRegister",
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_post_capture_cancellation_before_complete_return_is_provider_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-final-return-cancel",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_registrar_processing_hook(
+        move |phase| {
+            if phase == &RegistrarProcessingPhase::BeforeCompleteReturn {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            call_info_path_cancellable(
+                workspace.path(),
+                "InformationRegister.SubordinateRegister",
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+const COMMAND_INTERFACE_RULE: &str = "reaches no command interface section";
+
+fn append_subsystem_registration(path: &Path, name: &str) {
+    let xml = std::fs::read_to_string(path).unwrap();
+    let closing = xml
+        .rfind("</ChildObjects>")
+        .expect("registration owner has ChildObjects");
+    let mut updated = xml;
+    updated.insert_str(closing, &format!("<Subsystem>{name}</Subsystem>"));
+    std::fs::write(path, updated).unwrap();
+}
+
+fn register_subsystem(workspace: &Path, relative_dir: &str, name: &str) {
+    let directory = Path::new(relative_dir);
+    assert_eq!(
+        directory.file_name().and_then(|value| value.to_str()),
+        Some("Subsystems")
+    );
+    let owner = if directory == Path::new("src/Subsystems") {
+        workspace.join("src/Configuration.xml")
+    } else {
+        let relative_owner = directory
+            .parent()
+            .expect("nested Subsystems has a parent subsystem")
+            .with_extension("xml");
+        workspace.join(relative_owner)
+    };
+    append_subsystem_registration(&owner, name);
+}
+
+fn write_subsystem_file(
+    workspace: &Path,
+    relative_dir: &str,
+    file_name: &str,
+    descriptor_name: &str,
+    include: Option<&str>,
+    content: &str,
+    registered: bool,
+) {
+    if registered {
+        register_subsystem(workspace, relative_dir, file_name);
+    }
+    let include = include
+        .map(|value| {
+            format!("\t\t\t<IncludeInCommandInterface>{value}</IncludeInCommandInterface>\n")
+        })
+        .unwrap_or_default();
+    let dir = workspace.join(relative_dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{file_name}.xml")),
+        format!(
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" ",
+                "xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" ",
+                "xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" ",
+                "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\n",
+                "\t<Subsystem uuid=\"77777777-7777-4777-8777-777777777777\">\n",
+                "\t\t<Properties>\n",
+                "\t\t\t<Name>{}</Name>\n",
+                "{}",
+                "\t\t\t<Content>\n",
+                "{}",
+                "\t\t\t</Content>\n",
+                "\t\t</Properties>\n",
+                "\t\t<ChildObjects></ChildObjects>\n",
+                "\t</Subsystem>\n",
+                "</MetaDataObject>\n"
+            ),
+            descriptor_name, include, content
+        ),
+    )
+    .unwrap();
+}
+
+fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &str, content: &str) {
+    write_subsystem_file(
+        workspace,
+        relative_dir,
+        name,
+        name,
+        Some(include),
+        content,
+        true,
+    );
+}
+
+fn content_item(reference: &str) -> String {
+    format!("\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">{reference}</xr:Item>\n")
+}
+
+fn metadata_object_uuid(workspace: &Path, relative_descriptor: &str) -> String {
+    let xml = std::fs::read_to_string(workspace.join("src").join(relative_descriptor)).unwrap();
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    document
+        .root_element()
+        .children()
+        .find(roxmltree::Node::is_element)
+        .and_then(|object| object.attribute("uuid"))
+        .expect("metadata object root has uuid")
+        .to_string()
+}
+
+/// Регистр сведений с одним измерением `Period` (строка 9): целостности
+/// объекта нужно хотя бы одно поле.
+fn add_command_interface_register(workspace: &Path, name: &str) {
+    add_fixture_object(
+        workspace,
+        "register",
+        "InformationRegister",
+        name,
+        &[("CommandInterfaceRegister", name)],
+    );
+}
+
+fn register_command_interface_result(workspace: &Path, name: &str) -> InfoResult {
+    add_command_interface_register(workspace, name);
+    call_info_path(workspace, &format!("InformationRegister.{name}"))
+}
+
+fn register_command_interface_result_cancellable(
+    workspace: &Path,
+    name: &str,
+    cancellation: CancellationToken,
+) -> InfoResult {
+    add_command_interface_register(workspace, name);
+    call_info_path_cancellable(
+        workspace,
+        &format!("InformationRegister.{name}"),
+        cancellation,
+    )
+}
+
+fn register_command_interface_warnings(workspace: &Path, name: &str) -> Vec<String> {
+    let result = register_command_interface_result(workspace, name);
+    assert!(result.ok, "{name}: {:?}", result.errors);
+    let data = result.data.expect("typed meta.info data");
+    data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics")
+        .iter()
+        .filter(|diagnostic| diagnostic["severity"] == "warning")
+        .map(|diagnostic| diagnostic["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn info_does_not_treat_an_unregistered_subsystem_file_as_membership() {
+    let workspace = create_info_workspace("unregistered-subsystem");
+    write_subsystem_file(
+        workspace.path(),
+        "src/Subsystems",
+        "Stray",
+        "Stray",
+        Some("true"),
+        &content_item("InformationRegister.Unregistered"),
+        false,
+    );
+
+    let warnings = register_command_interface_warnings(workspace.path(), "Unregistered");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_reports_unavailable_when_a_registered_subsystem_descriptor_is_missing() {
+    let workspace = create_info_workspace("missing-registered-subsystem");
+    register_subsystem(workspace.path(), "src/Subsystems", "Missing");
+
+    let result = register_command_interface_result(workspace.path(), "MissingDescriptor");
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    let data = result
+        .data
+        .as_ref()
+        .expect("local data survives validation failure");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn info_reports_unavailable_for_missing_or_noncanonical_subsystem_boolean() {
+    for (label, include) in [("missing", None), ("noncanonical", Some("True"))] {
+        let workspace = create_info_workspace(&format!("{label}-subsystem-boolean"));
+        write_subsystem_file(
+            workspace.path(),
+            "src/Subsystems",
+            "Sales",
+            "Sales",
+            include,
+            &content_item(&format!("InformationRegister.{label}")),
+            true,
+        );
+
+        let result = register_command_interface_result(workspace.path(), label);
+
+        assert!(!result.ok, "{label}: {:?}", result.data);
+        assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+        assert!(!serde_json::to_string(&result.data)
+            .unwrap()
+            .contains(COMMAND_INTERFACE_RULE));
+    }
+}
+
+#[test]
+fn info_reports_unavailable_when_registration_and_descriptor_names_disagree() {
+    let workspace = create_info_workspace("renamed-registered-subsystem");
+    write_subsystem_file(
+        workspace.path(),
+        "src/Subsystems",
+        "Sales",
+        "Renamed",
+        Some("true"),
+        &content_item("InformationRegister.RenamedDescriptor"),
+        true,
+    );
+
+    let result = register_command_interface_result(workspace.path(), "RenamedDescriptor");
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn subsystem_evidence_cancellation_after_registered_topology_is_unavailable() {
+    let workspace = create_info_workspace("subsystem-final-cancel");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Sales",
+        "true",
+        &content_item("InformationRegister.FinalCancel"),
+    );
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_subsystem_evidence_processing_hook(
+        move |phase| {
+            if phase == &SubsystemEvidenceProcessingPhase::BeforeCompleteReturn {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            register_command_interface_result_cancellable(
+                workspace.path(),
+                "FinalCancel",
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn subsystem_evidence_cancellation_after_empty_topology_is_unavailable() {
+    let workspace = create_info_workspace("empty-subsystem-final-cancel");
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_subsystem_evidence_processing_hook(
+        move |phase| {
+            if phase == &SubsystemEvidenceProcessingPhase::BeforeCompleteReturn {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            register_command_interface_result_cancellable(
+                workspace.path(),
+                "EmptyFinalCancel",
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn info_warns_when_an_included_subsystem_sits_under_an_excluded_ancestor() {
+    let workspace = create_info_workspace("included-under-excluded");
+    // Mirrors InformationRegister.ДанныеКонтрагентовСоздаваемыхБезусловно of a
+    // real configuration: the owning subsystem carries the flag, but a library
+    // root above it is excluded, so the register reaches no section.
+    write_subsystem(workspace.path(), "src/Subsystems", "Library", "false", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Library/Subsystems",
+        "Service",
+        "true",
+        &content_item("InformationRegister.UnderExcluded"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "UnderExcluded");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_warns_when_the_chain_breaks_below_the_root() {
+    let workspace = create_info_workspace("chain-breaks-midway");
+    write_subsystem(workspace.path(), "src/Subsystems", "Top", "true", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Top/Subsystems",
+        "Middle",
+        "false",
+        "",
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Top/Subsystems/Middle/Subsystems",
+        "Leaf",
+        "true",
+        &content_item("InformationRegister.BrokenChain"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "BrokenChain");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_tells_same_named_subsystems_apart_by_their_path() {
+    let workspace = create_info_workspace("same-named-levels");
+    // Both levels are named Sales; only the nested one lists the register, and
+    // the excluded outer one must not lend it its own verdict either way.
+    write_subsystem(workspace.path(), "src/Subsystems", "Sales", "true", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Sales/Subsystems",
+        "Sales",
+        "true",
+        &content_item("InformationRegister.SameNamed"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "SameNamed");
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_warns_when_a_command_interface_register_is_in_no_subsystem() {
+    let workspace = create_info_workspace("register-without-subsystem");
+    let warnings = register_command_interface_warnings(workspace.path(), "Orphan");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_accepts_a_register_listed_in_a_command_interface_subsystem() {
+    let workspace = create_info_workspace("register-in-subsystem");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Sales",
+        "true",
+        &content_item("InformationRegister.Listed"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "Listed");
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_warns_when_the_only_subsystem_is_excluded_from_the_command_interface() {
+    let workspace = create_info_workspace("register-in-excluded-subsystem");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Service",
+        "false",
+        &content_item("InformationRegister.Excluded"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "Excluded");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_accepts_a_register_listed_in_a_nested_subsystem() {
+    let workspace = create_info_workspace("register-in-nested-subsystem");
+    write_subsystem(workspace.path(), "src/Subsystems", "Parent", "true", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Parent/Subsystems",
+        "Child",
+        "true",
+        &content_item("InformationRegister.Nested"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "Nested");
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+fn add_enum_with_presentations(
+    workspace: &Path,
+    name: &str,
+    synonym: &str,
+    list_presentation: Option<&str>,
+) -> Vec<Value> {
+    add_fixture_object(
+        workspace,
+        "enum",
+        "Enum",
+        name,
+        &[("PresentationEnum", name), ("PresentationSynonym", synonym)],
+    );
+
+    // The fixture descriptor carries the platform emitter's empty
+    // ListPresentation; the case replaces it with the value under test.
+    if let Some(list_presentation) = list_presentation {
+        let descriptor = workspace.join(format!("src/Enums/{name}.xml"));
+        let text = std::fs::read_to_string(&descriptor).unwrap();
+        let value = format!(
+            concat!(
+                "<ListPresentation>\n",
+                "\t\t\t\t<v8:item>\n",
+                "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                "\t\t\t\t\t<v8:content>{}</v8:content>\n",
+                "\t\t\t\t</v8:item>\n",
+                "\t\t\t</ListPresentation>"
+            ),
+            list_presentation
+        );
+        let patched = text.replacen("<ListPresentation/>", &value, 1);
+        assert_ne!(
+            patched, text,
+            "{name}: no ListPresentation anchor in the descriptor"
+        );
+        std::fs::write(&descriptor, patched).unwrap();
+    }
+
+    let result = call_info_path(workspace, &format!("Enum.{name}"));
+    assert!(result.ok, "{name}: {:?}", result.errors);
+    let data = result.data.expect("typed meta.info data");
+    assert_eq!(data["validation"]["status"], "passed", "{name}");
+    data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics")
+        .clone()
+}
+
+fn diagnostic_by_code<'a>(diagnostics: &'a [Value], code: &str) -> Option<&'a Value> {
+    diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == code)
+}
+
+#[test]
+fn info_warns_when_list_presentation_duplicates_the_synonym() {
+    let workspace = create_info_workspace("redundant-list-presentation");
+    let diagnostics = add_enum_with_presentations(
+        workspace.path(),
+        "RedundantList",
+        "Виды оплаты",
+        Some("Виды оплаты"),
+    );
+
+    let warning = diagnostic_by_code(&diagnostics, "redundant_list_presentation")
+        .expect("typed redundancy warning");
+    assert_eq!(warning["severity"], "warning");
+    assert_eq!(warning["metadataPath"], "Enum.RedundantList");
+    assert_eq!(warning["field"], "properties.ListPresentation");
+    assert_eq!(warning["language"], "ru");
+    assert!(warning["message"]
+        .as_str()
+        .is_some_and(|message| !message.is_empty()));
+}
+
+#[test]
+fn info_allows_list_presentation_that_differs_from_the_synonym() {
+    let workspace = create_info_workspace("distinct-list-presentation");
+    let diagnostics = add_enum_with_presentations(
+        workspace.path(),
+        "DistinctList",
+        "Вид оплаты",
+        Some("Виды оплаты"),
+    );
+
+    assert!(
+        diagnostic_by_code(&diagnostics, "redundant_list_presentation").is_none(),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn info_allows_synonym_fallback_without_a_redundancy_warning() {
+    let workspace = create_info_workspace("fallback-list-presentation");
+    let diagnostics =
+        add_enum_with_presentations(workspace.path(), "FallbackList", "Виды оплаты", None);
+
+    assert!(
+        diagnostic_by_code(&diagnostics, "redundant_list_presentation").is_none(),
+        "{diagnostics:?}"
+    );
+}

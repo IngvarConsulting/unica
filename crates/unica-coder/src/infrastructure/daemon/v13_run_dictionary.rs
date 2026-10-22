@@ -1,10 +1,10 @@
 use super::protocol::InvocationRequest;
-use crate::application::invocation_store::ToolIdentity;
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::tool_catalog::{catalog_for, RunIntent};
-use crate::domain::invocation::DomainResult;
-use crate::domain::refusal::RefusalCode;
 use serde_json::{json, Value};
+use unica_execution::invocation_store::ToolIdentity;
+use unica_execution_contract::invocation::DomainResult;
+use unica_refusal::RefusalCode;
 
 /// Словарь операций `run` и отказ по неизвестному имени.
 ///
@@ -224,7 +224,7 @@ mod runner_one_tests {
                 .as_str()
                 .unwrap()
                 .contains("https://github.com/IngvarConsulting/unica/issues/1246"));
-            assert_eq!(published["support"]["adapter"], "v8-runner/0.15.1");
+            assert_eq!(published["support"]["adapter"], "v8-runner/0.15.2");
         }
     }
 

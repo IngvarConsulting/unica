@@ -1,0 +1,99 @@
+{
+  "id": "S-1835-attribute-remove-publish",
+  "issue": 1835,
+  "area": "Метаданные",
+  "task": "Удалить реквизит НаименованиеОрганизации документа: предпросмотр не пишет описание, публикация убирает ровно этот реквизит",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.НаименованиеОрганизации",
+        "ops": [
+          {
+            "op": "attribute.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256",
+          "eq": "d248bb68f4926d989efd993753d01b625fd3fd91fbe7fd8cbfe35fe35f6b5928"
+        },
+        {
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Document/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Организация",
+            "ЮридическийАдресОрганизации",
+            "ОтветственныйЗаОбработкуПерсональныхДанных",
+            "ФИООтветственногоЗаОбработкуПДн",
+            "НаименованиеИнформационнойСистемы",
+            "ДатаУничтожения",
+            "СпособУничтожения",
+            "ПричинаУничтожения",
+            "Ответственный",
+            "Комментарий",
+            "Субъект",
+            "ФИОСубъекта"
+          ]
+        }
+      ]
+    }
+  ]
+}

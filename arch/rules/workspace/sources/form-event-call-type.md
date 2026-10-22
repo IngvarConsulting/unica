@@ -1,7 +1,7 @@
 ---
 id: INV.PLATFORM.FORM-EVENT-CALL-TYPE
 check:
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::form_event_implementation_requires_call_type_valid_for_the_form_definition
+  - crates/unica-bindings-integration-tests/tests/projection.rs::form_event_implementation_requires_call_type_valid_for_the_form_definition
 ---
 
 # Наличие обработчика не делает недопустимую привязку события рабочей

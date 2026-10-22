@@ -12,8 +12,12 @@ use unica_coder::application::{ToolHandler, UnicaApplication};
 
 #[path = "platform/daemon_teardown.rs"]
 mod daemon_teardown;
+#[path = "format_8_3_27_xml_corpus/empty_child_objects.rs"]
+mod empty_child_objects;
 #[path = "platform/format_8_3_27_xml_corpus.rs"]
 mod platform_support;
+#[path = "format_8_3_27_xml_corpus/template_new_xml.rs"]
+mod template_new_xml;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum XmlImpactClass {
@@ -1937,7 +1941,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
     add(
         ".DataSet.Main",
         "field.add",
-        json!({"items":[{"dataPath":"Value","type":"String"},{"dataPath":"Amount","type":"Number(15,2)"}]}),
+        json!({"items":[{"dataPath":"Value"},{"dataPath":"Amount"}]}),
     );
     add(
         ".DataSet.CatalogObject",
@@ -1961,7 +1965,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
         add(
             &format!(".DataSet.Combined.DataSet.{member}"),
             "field.add",
-            json!({"items":[{"dataPath":"Value","type":"String"}]}),
+            json!({"items":[{"dataPath":"Value"}]}),
         );
     }
     add(
@@ -2060,7 +2064,7 @@ fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
     let base = "main:Report.CorpusReport.Template.CorpusDcs";
     let mut ops = match case_id {
         "dcs-edit-owned-template" => vec![
-            json!({"at":format!("{base}.DataSet.Main"),"op":"field.add","args":{"items":[{"dataPath":"Added","type":"String"}]}}),
+            json!({"at":format!("{base}.DataSet.Main"),"op":"field.add","args":{"items":[{"dataPath":"Added"}]}}),
             json!({"at":format!("{base}.Setting.Main"),"op":"selection.add","args":{"items":[{"field":"Added"}]}}),
         ],
         "dcs-edit-add-parameter-after-settings" => {
@@ -4697,7 +4701,6 @@ fn none_impact_rejects_any_xml_map_change() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn source_resource_reads_preserve_every_corpus_byte() {
     let root = unique_temp_dir("source-resource-snapshot-chain");
     let workspace = root.join("workspace");
@@ -4844,7 +4847,6 @@ fn cf_init_public_case_creates_real_xml() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn managed_form_corpus_cases_mutate_content_without_overwriting_metadata_wrapper() {
     let root = unique_temp_dir("managed-form-content-targets");
     let mut gate = SequentialCallGate::default();
@@ -5217,7 +5219,6 @@ fn cfe_patch_method_case_seeds_a_registered_adopted_common_module() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn non_xml_inventory_covers_every_xml_none_impact_case() {
     let expectations = [
         (
@@ -5284,7 +5285,6 @@ fn non_xml_inventory_covers_every_xml_none_impact_case() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn managed_form_cases_address_logform_content_and_spare_the_descriptor() {
     let expectations = [
         ("form-compile-managed", "src/Reports/CorpusReport"),
@@ -5357,7 +5357,6 @@ fn assert_exact_extended_property_state(path: &Path, expected_property: &str) {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn cfe_patch_method_inventory_covers_atomic_xml_and_bsl_change() {
     let expectations = [
         (
@@ -5657,6 +5656,17 @@ fn html_template_case_inventories_the_platform_page_set_layout() {
         .expect("HTML page must be captured as exact non-XML evidence");
     assert_eq!(page["seed"], false);
     assert_eq!(page["delta"], "created");
+    let published_page = root
+        .join("cases/template-add-html-document/workspace")
+        .join(page_suffix);
+    assert_eq!(
+        fs::read(published_page).unwrap(),
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/platform_8_3_27/html-template/native-ru.html"
+        )),
+        "published HTML must match the retained native 8.3.27.2074 page bytes",
+    );
 
     remove_temp_tree(&root);
 }
@@ -5752,7 +5762,6 @@ fn tracked_xdto_package_fixture_is_an_importable_platform_export() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn tracked_xdto_package_fixture_executes_public_corpus_preview_apply_and_noop() {
     let root = unique_temp_dir("xdto-package-pre-contract");
     fs::create_dir_all(&root).unwrap();

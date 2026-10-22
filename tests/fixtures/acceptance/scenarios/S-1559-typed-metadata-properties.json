@@ -1,0 +1,693 @@
+{
+  "id": "S-1559-typed-metadata-properties",
+  "issue": 1559,
+  "area": "Метаданные",
+  "task": "Прочитать все шесть фактов #1559 из независимой XML-фикстуры: табличная часть → КодЯзыка → ПараметрыПрописи. Коллекция и детали сохраняют LineNumberLength/Use, Indexing/FullTextSearch/DataHistory, локализованный ToolTip ru/en, типы строк 10/200 переменной длины, synonym, required:false и адреса. Повреждение подсказки локально; чтение сохраняет исходники и разрешения attribute.set.",
+  "workspace": "tests/fixtures/acceptance/catalog-attribute-tooltip",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items.TabularSection.Представления"
+        },
+        {
+          "pointer": "/data/items/0/props/LineNumberLength",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0/props/Use",
+          "eq": "ForItem"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ],
+      "captures": {
+        "section": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.section"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Items.TabularSection.Представления"
+        },
+        {
+          "pointer": "/data/props/LineNumberLength",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ],
+      "captures": {
+        "attributes": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.attributes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items.TabularSection.Представления.Attribute.КодЯзыка"
+        },
+        {
+          "pointer": "/data/items/0/props/Indexing",
+          "eq": "Index"
+        },
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/items/0/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/0/props/type",
+          "contains": "\"length\":10"
+        },
+        {
+          "pointer": "/data/items/0/props/type",
+          "contains": "\"allowedLength\":\"variable\""
+        },
+        {
+          "pointer": "/data/items/1/props/Indexing",
+          "eq": "DontIndex"
+        },
+        {
+          "pointer": "/data/items/1/props/type",
+          "contains": "\"length\":200"
+        },
+        {
+          "pointer": "/data/items/0/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[]}"
+        },
+        {
+          "pointer": "/data/items/1/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Настройки представления суммы прописью\"},{\"language\":\"en\",\"content\":\"Amount spelling settings & presentation\"}]}"
+        },
+        {
+          "pointer": "/data/items/0/props/synonym",
+          "eq": "Код языка"
+        },
+        {
+          "pointer": "/data/items/1/props/synonym",
+          "eq": "Параметры прописи"
+        },
+        {
+          "pointer": "/data/items/1/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/type",
+          "contains": "\"allowedLength\":\"variable\""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ],
+      "captures": {
+        "language": {
+          "pointer": "/data/items/0/at"
+        },
+        "spelling": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.language"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Items.TabularSection.Представления.Attribute.КодЯзыка"
+        },
+        {
+          "pointer": "/data/props/Indexing",
+          "eq": "Index"
+        },
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Код языка"
+        },
+        {
+          "pointer": "/data/props/type",
+          "contains": "\"length\":10"
+        },
+        {
+          "pointer": "/data/props/type",
+          "contains": "\"allowedLength\":\"variable\""
+        },
+        {
+          "pointer": "/data/props/Use",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/LineNumberLength",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[]}"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.spelling"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Items.TabularSection.Представления.Attribute.ПараметрыПрописи"
+        },
+        {
+          "pointer": "/data/props/Indexing",
+          "eq": "DontIndex"
+        },
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Параметры прописи"
+        },
+        {
+          "pointer": "/data/props/type",
+          "contains": "\"length\":200"
+        },
+        {
+          "pointer": "/data/props/type",
+          "contains": "\"allowedLength\":\"variable\""
+        },
+        {
+          "pointer": "/data/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Настройки представления суммы прописью\"},{\"language\":\"en\",\"content\":\"Amount spelling settings & presentation\"}]}"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Damaged"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits/0",
+          "contains": "ToolTip"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Damaged.TabularSection"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Damaged.TabularSection.Представления"
+        },
+        {
+          "pointer": "/data/items/0/props/LineNumberLength",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0/props/Use",
+          "eq": "ForItem"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ],
+      "captures": {
+        "damagedSection": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.damagedSection"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/LineNumberLength",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ],
+      "captures": {
+        "damagedAttributes": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.damagedAttributes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/Indexing",
+          "eq": "Index"
+        },
+        {
+          "pointer": "/data/items/0/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[]}"
+        },
+        {
+          "pointer": "/data/items/0/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/Indexing",
+          "eq": "DontIndex"
+        },
+        {
+          "pointer": "/data/items/1/props/FullTextSearch",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/items/1/props/DataHistory",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/items/1/props/ToolTip",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/limits/0",
+          "contains": "collections.tabularSections[0].attributes[1].properties.ToolTip"
+        },
+        {
+          "pointer": "/data/items/1/props/type",
+          "contains": "\"length\":200"
+        },
+        {
+          "pointer": "/data/items/1/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ],
+      "captures": {
+        "damagedSpelling": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.damagedSpelling"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Damaged.TabularSection.Представления.Attribute.ПараметрыПрописи"
+        },
+        {
+          "pointer": "/data/props/Indexing",
+          "eq": "DontIndex"
+        },
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/ToolTip",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "collections.tabularSections[0].attributes[1].properties.ToolTip"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Параметры прописи"
+        },
+        {
+          "pointer": "/data/props/type",
+          "contains": "\"length\":200"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Представления.Attribute.ПараметрыПрописи.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/indexing/enum",
+          "eq": [
+            "DontIndex",
+            "Index",
+            "IndexWithAdditionalOrder"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/toolTip",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fullTextSearch",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/dataHistory",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    }
+  ]
+}

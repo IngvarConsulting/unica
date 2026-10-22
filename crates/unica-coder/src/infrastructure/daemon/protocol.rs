@@ -1,9 +1,9 @@
 //! The canonical v0.13 request the daemon's domain service takes. The wire
 //! that carries it is protocol v5 (`protocol_v5.rs`); protocol v3 retired
 //! with its own client, loop and stores.
-use crate::application::invocation_store::ToolIdentity;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use unica_execution::invocation_store::ToolIdentity;
 
 pub(crate) const MAX_TASK_WAIT_MS: u64 = 7_000;
 
@@ -66,8 +66,7 @@ impl InvocationRequest {
     /// root routing and cursor identity are established. Check keeps its
     /// earlier contract that `null` options equal omitted ones. An empty
     /// `cursor` is the untouched field of a form client and means the first
-    /// page (#1216); this holds only for tools whose schema publishes
-    /// `cursor`, elsewhere the argument stays unknown.
+    /// page (#1216) only when the selected tool mode publishes `cursor`.
     pub(super) fn normalize_omitted_options(&mut self) {
         let publishes_cursor = crate::application::v13::tool_catalog::catalog_for(
             crate::application::tool_contracts::SurfaceRelease::V13,
@@ -78,7 +77,8 @@ impl InvocationRequest {
                 .into_iter()
                 .find(|contract| contract.name == self.tool.catalog_name())
         })
-        .is_some_and(|contract| contract.input_schema["properties"].get("cursor").is_some());
+        .is_some_and(|contract| contract.input_schema["properties"].get("cursor").is_some())
+            && (self.tool != ToolIdentity::Diff || self.arguments.contains_key("executionToken"));
         let check = self.tool == ToolIdentity::Check;
         self.arguments.retain(|name, value| match name.as_str() {
             "cursor" if publishes_cursor && value.as_str() == Some("") => false,
@@ -117,5 +117,56 @@ impl InvocationRequest {
             return Err("canonical invocation workspace hint must be non-empty text".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InvocationRequest, ToolIdentity};
+    use serde_json::json;
+
+    #[test]
+    fn omitted_cursor_normalization_respects_the_selected_diff_contract() {
+        for (tool, arguments, expected) in [
+            (
+                ToolIdentity::Diff,
+                json!({"left": "main:Catalog.Items", "right": "main:Catalog.Other", "cursor": ""}),
+                json!({"left": "main:Catalog.Items", "right": "main:Catalog.Other", "cursor": ""}),
+            ),
+            (
+                ToolIdentity::Diff,
+                json!({"executionToken": "saved-plan", "cursor": ""}),
+                json!({"executionToken": "saved-plan"}),
+            ),
+            (
+                ToolIdentity::Diff,
+                json!({"executionToken": null, "cursor": ""}),
+                json!({"executionToken": null}),
+            ),
+            (
+                ToolIdentity::Diff,
+                json!({"executionToken": "", "cursor": ""}),
+                json!({"executionToken": ""}),
+            ),
+            (
+                ToolIdentity::Diff,
+                json!({"executionToken": "saved-plan", "cursor": null}),
+                json!({"executionToken": "saved-plan", "cursor": null}),
+            ),
+            (
+                ToolIdentity::Check,
+                json!({"at": null, "limit": null, "cursor": null}),
+                json!({}),
+            ),
+        ] {
+            let mut request =
+                InvocationRequest::new(tool, arguments.clone(), "workspace", 7_000).unwrap();
+            request.normalize_omitted_options();
+            assert_eq!(
+                request.arguments(),
+                expected.as_object().unwrap(),
+                "normalization must retain invalid arguments for refusal: {arguments}"
+            );
+        }
     }
 }

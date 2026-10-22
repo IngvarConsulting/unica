@@ -1,9 +1,9 @@
 ---
 id: INV.RUNTIME.SERVICE-REQUEST-FRAMING
 check:
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::workspace_service_request_lines_are_bounded_and_resynchronize
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::workspace_service_header_deadline_is_aggregate_across_drip_bytes
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::workspace_service_header_timeout_is_connection_local
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_request_lines_are_bounded_and_resynchronize
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_header_deadline_is_aggregate_across_drip_bytes
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_header_timeout_is_connection_local
 gap: https://github.com/IngvarConsulting/unica/issues/978
 ---
 

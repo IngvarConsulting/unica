@@ -1,8 +1,8 @@
-use crate::domain::apply::{
-    ApplyRequest, ApplyValidationError, OperationFamily, OperationRegistry, OperationSite,
-};
-use crate::domain::node_view::OperationRef;
+use crate::domain::apply::{ApplyRequest, ApplyValidationError};
+
 use serde_json::{Map, Value};
+use unica_operation_contract::OperationRef;
+use unica_operations::OperationFamily;
 
 pub(crate) fn parse_request(
     input: &Map<String, Value>,
@@ -12,13 +12,15 @@ pub(crate) fn parse_request(
 }
 
 pub(crate) fn dispatch_family(operation: &str) -> Option<OperationFamily> {
-    OperationRegistry::closed()
+    crate::domain::apply::operation_registry()
         .lookup(operation)
         .map(|descriptor| descriptor.family())
 }
 
-pub(crate) fn copyable_can(site: &OperationSite<'_>) -> Vec<OperationRef> {
-    OperationRegistry::closed().copyable_skeletons(site)
+pub(crate) fn copyable_can(
+    site: &unica_source_contract::context::OperationSite<'_>,
+) -> Vec<OperationRef> {
+    crate::domain::apply::operation_registry().copyable_skeletons(site)
 }
 
 #[cfg(test)]
@@ -26,8 +28,43 @@ mod tests {
     use super::{copyable_can, dispatch_family, parse_request};
     use crate::application::tool_contracts::SurfaceRelease;
     use crate::application::v13::tool_catalog::catalog_for;
-    use crate::domain::apply::OperationFamily;
     use serde_json::{json, Value};
+    use unica_operations::OperationFamily;
+
+    #[test]
+    fn saved_plan_diff_has_a_read_only_shape_separate_from_node_comparison() {
+        let catalog = catalog_for(SurfaceRelease::V13).unwrap();
+        let schema = &catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == "diff")
+            .unwrap()
+            .input_schema;
+        let validator = jsonschema::validator_for(schema).unwrap();
+        for valid in [
+            json!({"executionToken":"saved-plan"}),
+            json!({"executionToken":"saved-plan", "limit":2, "cursor":"saved-cursor"}),
+            json!({"left":"main:Document.Order", "right":"ext:Document.Order", "limit":2}),
+        ] {
+            assert!(
+                validator.is_valid(&valid),
+                "valid diff request rejected: {valid}"
+            );
+        }
+        for invalid in [
+            json!({"executionToken":""}),
+            json!({"executionToken":"saved-plan", "left":"main:Document.Order"}),
+            json!({"executionToken":"saved-plan", "ops":[]}),
+            json!({"executionToken":"saved-plan", "limit":0}),
+            json!({"executionToken":"saved-plan", "limit":1001}),
+            json!({"left":"main:Document.Order", "right":"ext:Document.Order", "cursor":"saved-cursor"}),
+        ] {
+            assert!(
+                !validator.is_valid(&invalid),
+                "invalid diff request accepted: {invalid}"
+            );
+        }
+    }
 
     #[test]
     fn planning_and_saved_plan_execution_have_disjoint_public_shapes() {
@@ -116,14 +153,14 @@ mod tests {
         assert_eq!(dispatch_family("module.create"), None);
         assert_eq!(
             serde_json::to_value(copyable_can(
-                &crate::domain::apply::OperationSite::new(
-                    &crate::domain::address::QualifiedAddress::parse(
+                &crate::domain::apply::operation_site(
+                    &unica_address::address::QualifiedAddress::parse(
                         "main:Catalog.Items.Module.Object.Event.OnWrite"
                     )
                     .unwrap(),
-                    crate::domain::apply::SourceSetTraits::read(
-                        crate::domain::project_sources::SourceSetKind::Configuration,
-                        crate::domain::platform_profile::PlatformProfile::v8_3_27()
+                    crate::domain::apply::source_set_traits_for_read(
+                        unica_source_contract::SourceSetKind::Configuration,
+                        unica_bsl::profile::PlatformProfile::v8_3_27()
                     )
                 )
                 .unwrap()

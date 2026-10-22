@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from scripts.ci.prepared_binary import binary_path, ensure_binary
+
 import argparse
 import dataclasses
 import hashlib
@@ -346,14 +348,8 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        subprocess.run(
-            ["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"],
-            cwd=REPO_ROOT,
-            check=True,
-        )
-        target_root = Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "target"))
-        suffix = ".exe" if os.name == "nt" else ""
-        cls.unica_bin = target_root / "debug" / f"unica{suffix}"
+        ensure_binary(REPO_ROOT)
+        cls.unica_bin = binary_path(REPO_ROOT)
         if not cls.unica_bin.is_file():
             raise AssertionError(f"built unica binary not found: {cls.unica_bin}")
 

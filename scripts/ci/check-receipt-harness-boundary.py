@@ -37,21 +37,36 @@ import sys
 from pathlib import Path
 
 HARNESS_ROOT = Path(
-    "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs"
+    "crates/unica-coder/tests/support/receipt_scenario.rs"
 )
 HARNESS_DIR = Path(
-    "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5"
+    "crates/unica-coder/tests/support/receipt_scenario"
 )
 # Читаемые файлы обвязки. Новый файл добавляется сюда осознанно.
-SCANNED_FILES = (
+SCANNED_FILES = ("dispatch.rs",)
+CONTRACT_ROOT = Path("crates/unica-execution/src/receipt_runtime/contracts.rs")
+CONTRACT_DIR = Path("crates/unica-execution/src/receipt_runtime/contracts")
+CONTRACT_FILES = (
     "control.rs",
-    "dispatch.rs",
     "scenario_hooks.rs",
-    "scenario_probes.rs",
     "wire.rs",
 )
 # Освобождённые файлы — с причиной, а не молча.
-EXEMPT_FILES = {"tests.rs": "юнит-тесты хранилища, а не обвязка"}
+EXEMPT_FILES = {
+    "tests.rs": "проверки обвязки: их исполняет только `#[test]` бинаря контракта, "
+    "бегунок их не вызывает",
+}
+# Проверки обвязки — код библиотеки под признаком, а не `#[cfg(test)]`. Их
+# освобождение держится, пока читаемые файлы обвязки называют модуль
+# проверок только объявлением: вызов оттуда сделал бы проверку частью бегунка.
+EXEMPT_CHECKS_MODULE = "harness_checks"
+# Тот же модуль снаружи: реэкспорт из `lib.rs` и макрос `#[test]`-обёрток.
+EXEMPT_CHECKS_NAMES = re.compile(
+    r"\b(?:receipt_scenario_harness_checks|receipt_scenario_harness_tests|harness_checks)\b"
+)
+EXEMPT_CHECKS_DECLARATION = re.compile(
+    rf"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+{EXEMPT_CHECKS_MODULE}\s*;\s*$"
+)
 DISPATCHER = "run_supported_receipt_scenario_for_test"
 
 # Durable-переходы квитанции: пишущая поверхность актора ledger (одиночная и
@@ -72,6 +87,7 @@ WRITERS = (
     "bind_reserved_actor",
     "bind_reserved_actor_batch",
     "complete_bound_task_handoff",
+    "complete_bound_task_handoff_for_fixture",
     "complete_staged_task_handoff",
     "expire_cancel_reserved",
     "inject_receipt_identity_collision_for_scenario",
@@ -85,6 +101,8 @@ WRITERS = (
     "publish_direct_terminal_for_scenario",
     "publish_receipt_backed_task_terminal",
     "publish_receipt_backed_task_terminal_for_scenario",
+    "publish_staged_handoff_terminal_reply",
+    "publish_staged_handoff_terminal_reply_for_fixture",
     "reclaim_expired_tombstones",
     "request_cancel_or_reserve",
     "request_task_cancel",
@@ -101,6 +119,9 @@ WRITERS = (
 # запись здесь — это заявление «бегунок играет такого-то владельца», и она
 # должна пройти ревью, а не появиться незаметно внутри диспетчера.
 OWNERS: dict[str, frozenset[str]] = {
+    # Required feature-only entrypoints delegate to the same execution owner.
+    "complete_bound_task_handoff": frozenset({"complete_bound_task_handoff"}),
+    "publish_staged_handoff_terminal_reply": frozenset({"publish_staged_handoff_terminal_reply"}),
     # --- засев durable-состояния перед операцией: живой рантайм доводит
     # квитанцию до нужной фазы, потом отпускает хранилище владельцу операции.
     "seed_receipt_state": frozenset(
@@ -124,6 +145,7 @@ OWNERS: dict[str, frozenset[str]] = {
             "begin_bound_task_handoff",
             "bind_reserved_actor",
             "mark_reserved_begun",
+            "publish_staged_handoff_terminal_reply",
             "reserve",
         }
     ),
@@ -197,6 +219,12 @@ OWNERS: dict[str, frozenset[str]] = {
     "stage_terminal_as_second_owner": frozenset({"stage_bound_handoff_terminal_for_scenario"}),
 }
 
+# These entrypoints call the private runtime's transition, including its fence.
+# A same-named host helper does not acquire that execution ownership.
+EXECUTION_ENTRYPOINT_OWNERS = frozenset(
+    {"complete_bound_task_handoff", "publish_staged_handoff_terminal_reply"}
+)
+
 FORBIDDEN_TYPES = ("ReceiptLedgerStore", "ReceiptLedgerPort")
 
 # Дверь к хранилищу мимо актора — тоже опись, а не освобождённый файл. Эти
@@ -248,7 +276,10 @@ def offenders(path: Path, source: str) -> list[str]:
                     f"{path.as_posix()}:{index}: the action dispatcher writes "
                     f"`{writer}`; give the owner a named helper"
                 )
-            elif writer not in OWNERS.get(enclosing, frozenset()):
+            elif (
+                writer not in OWNERS.get(enclosing, frozenset())
+                or (enclosing in EXECUTION_ENTRYPOINT_OWNERS and path != CONTRACT_ROOT)
+            ):
                 found.append(
                     f"{path.as_posix()}:{index}: `{enclosing}` writes `{writer}`, "
                     f"which the owner inventory does not allow"
@@ -272,26 +303,48 @@ def offenders(path: Path, source: str) -> list[str]:
     return found
 
 
+def exempt_check_references(path: Path, source: str) -> list[str]:
+    """Читаемый файл обвязки называет модуль проверок только объявлением."""
+    return [
+        f"{path.as_posix()}:{index}: the scenario runner reaches the exempt "
+        f"`{EXEMPT_CHECKS_MODULE}`; checks are run only by the contract tests"
+        for index, line in enumerate(source.split("\n"), start=1)
+        if EXEMPT_CHECKS_NAMES.search(line)
+        and not EXEMPT_CHECKS_DECLARATION.match(line)
+    ]
+
+
 def scan(root: Path) -> list[str]:
-    sources = [HARNESS_ROOT] + [HARNESS_DIR / name for name in SCANNED_FILES]
+    sources = (
+        [HARNESS_ROOT, CONTRACT_ROOT]
+        + [HARNESS_DIR / name for name in SCANNED_FILES]
+        + [CONTRACT_DIR / name for name in CONTRACT_FILES]
+    )
     found: list[str] = []
     for source in sources:
         path = root / source
         if not path.is_file():
             found.append(f"{source.as_posix()}: harness source is missing")
             continue
-        found.extend(offenders(source, path.read_text(encoding="utf-8")))
+        text = path.read_text(encoding="utf-8")
+        found.extend(offenders(source, text))
+        if source == HARNESS_ROOT or source.parent == HARNESS_DIR:
+            found.extend(exempt_check_references(source, text))
 
-    directory = root / HARNESS_DIR
-    if directory.is_dir():
-        known = set(SCANNED_FILES) | set(EXEMPT_FILES)
+    for relative_directory, known in (
+        (HARNESS_DIR, set(SCANNED_FILES) | set(EXEMPT_FILES)),
+        (CONTRACT_DIR, set(CONTRACT_FILES)),
+    ):
+        directory = root / relative_directory
+        if not directory.is_dir():
+            continue
         # `rglob`, а не `glob`: `mod rogue;` грузит `rogue/mod.rs`, и вложенный
         # каталог иначе прошёл бы мимо и чтения, и проверки на неназванный файл.
         for path in sorted(directory.rglob("*.rs")):
             relative = path.relative_to(directory).as_posix()
             if relative not in known:
                 found.append(
-                    f"{(HARNESS_DIR / relative).as_posix()}: unclassified harness file; "
+                    f"{(relative_directory / relative).as_posix()}: unclassified harness file; "
                     f"name it a scanned source or an exempt file in the guard"
                 )
     return found

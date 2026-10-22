@@ -1,0 +1,544 @@
+{
+  "id": "S-1721-dcs-final-resource",
+  "issue": 1721,
+  "area": "СКД",
+  "task": "Удалить источник перед ссылающимся набором в одном пакете через сохранённый token: одиночное удаление отказывает без записи, итоговый допустимый образ публикуется, независимое чтение подтверждает отсутствие узлов, владелец и соседние файлы сохранены.",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "before1": {
+          "file": "src/cf/Configuration.xml",
+          "kind": "sha256"
+        },
+        "before2": {
+          "file": "src/cf/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "before3": {
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema.xml",
+          "kind": "sha256"
+        },
+        "before4": {
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "before5": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "TypedDcsFinal",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "create": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.create"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.TypedDcsFinal"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner": {
+          "file": "src/cf/Reports/F05Report.xml",
+          "kind": "sha256"
+        },
+        "scaffold": {
+          "file": "src/cf/Reports/F05Report/Templates/TypedDcsFinal/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.TypedDcsFinal",
+        "ops": [
+          {
+            "op": "dataSource.add",
+            "args": {
+              "items": [
+                {
+                  "name": "TypedSource"
+                }
+              ]
+            }
+          },
+          {
+            "op": "dataSet.add",
+            "args": {
+              "items": [
+                {
+                  "name": "TypedData",
+                  "kind": "Query",
+                  "dataSource": "TypedSource",
+                  "query": "ВЫБРАТЬ 1 КАК Amount"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "populate": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.populate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.TypedDcsFinal.DataSet"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report.Template.TypedDcsFinal.DataSet.TypedData"
+        }
+      ],
+      "captures": {
+        "populated": {
+          "file": "src/cf/Reports/F05Report/Templates/TypedDcsFinal/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.TypedDcsFinal.DataSource.TypedSource",
+        "ops": [
+          {
+            "op": "dataSource.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args"
+        }
+      ],
+      "refusal": "bad_value: dataSource is still referenced by a dataset",
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/TypedDcsFinal/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.populated"
+        },
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/cf/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.TypedDcsFinal",
+        "ops": [
+          {
+            "op": "dataSource.remove",
+            "args": {
+              "at": "cf:Report.F05Report.Template.TypedDcsFinal.DataSource.TypedSource"
+            }
+          },
+          {
+            "op": "dataSet.remove",
+            "args": {
+              "at": "cf:Report.F05Report.Template.TypedDcsFinal.DataSet.TypedData"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "remove": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/TypedDcsFinal/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.populated"
+        },
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/cf/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.remove"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/TypedDcsFinal/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.scaffold"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/TypedDcsFinal/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSource/{http://v8.1c.ru/8.1/data-composition-system/schema}name",
+          "eq": [
+            "ИсточникДанных1"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/TypedDcsFinal/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report.xml",
+          "kind": "sha256",
+          "eq": "$capture.owner"
+        },
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/cf/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.TypedDcsFinal.DataSource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report.Template.TypedDcsFinal.DataSource.ИсточникДанных1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.TypedDcsFinal.DataSet"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "cf:Report.F05Report.Template.TypedDcsFinal"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "dcs"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.TypedDcsFinal.Setting.Основной",
+        "ops": [
+          {
+            "op": "filter.clear",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "noop": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/TypedDcsFinal/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.scaffold"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.noop"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/TypedDcsFinal/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.scaffold"
+        },
+        {
+          "path": "src/cf/Reports/F05Report.xml",
+          "kind": "sha256",
+          "eq": "$capture.owner"
+        },
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/cf/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        }
+      ]
+    }
+  ]
+}

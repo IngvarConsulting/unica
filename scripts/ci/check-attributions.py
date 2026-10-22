@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 
 MARKER_RE = re.compile(
-    r"^<!-- unica-attribution: (project|tool|adapter|upstream) "
+    r"^<!-- unica-attribution: (project|tool|adapter|upstream|library) "
     r"([a-z0-9][a-z0-9._-]*) -->$"
 )
 LABELS = {
@@ -57,6 +57,9 @@ def inventory(repo_root: Path) -> dict[tuple[str, str], dict]:
     )
     result.update({("adapter", adapter["name"]): adapter for adapter in adapters})
     result.update({("upstream", upstream["id"]): upstream for upstream in upstreams})
+    for path in sorted((repo_root / "vendor").glob("*/UPSTREAM.json")):
+        library = load_json(path)
+        result[("library", library["name"])] = library
     return result
 
 
@@ -177,11 +180,11 @@ def validate_attributions(
         if not is_https(author):
             errors.append(f"{label}: author link must be absolute HTTPS")
 
-        needs_license = kind in {"project", "tool"} or (
+        needs_license = kind in {"project", "tool", "library"} or (
             kind == "upstream" and record.get("usage") != "inspiration-only"
         )
         if needs_license:
-            if kind in {"project", "tool"} and record["license"] not in section:
+            if kind in {"project", "tool", "library"} and record["license"] not in section:
                 errors.append(f"{label}: declared license {record['license']} must appear in the section")
             license_error = validate_local_license(
                 root,

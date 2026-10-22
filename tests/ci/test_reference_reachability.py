@@ -65,15 +65,9 @@ DOC_PATH = re.compile(
 KNOWN_UNREACHABLE = frozenset(
     {
         "README.md",
-        "specs/1c-config-objects-spec.md",
-        "specs/1c-configuration-spec.md",
-        "specs/1c-extension-spec.md",
-        "specs/1c-subsystem-spec.md",
         "specs/README.md",
-        "specs/format-index.md",
         "specs/web-spec.md",
         "tooling/runtime-build.md",
-        "tooling/v8project.md",
         "use-cases/autonomous-server-debug.md",
         "use-cases/extensions-cfe.md",
         "use-cases/integrations.md",

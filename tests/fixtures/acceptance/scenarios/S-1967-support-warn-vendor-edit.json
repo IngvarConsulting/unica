@@ -1,0 +1,117 @@
+{
+  "id": "S-1967-support-warn-vendor-edit",
+  "name": "warn-policy-edits-a-locked-vendor-object-with-a-warning",
+  "issue": 1967,
+  "area": "Поддержка поставщика",
+  "task": "Под политикой поддержки warn изменить комментарий каталога поставщика с правилом locked: план и опубликованный результат несут предупреждение support_locked с адресом объекта, правка публикуется, маркер поддержки и конфигурация не меняются",
+  "workspace": "tests/fixtures/acceptance/workspace-support-warn",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "vendor edit"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "support_locked"
+        },
+        {
+          "pointer": "/warnings/0/severity",
+          "eq": "warning"
+        },
+        {
+          "pointer": "/warnings/0/at",
+          "eq": "main:Catalog.Items"
+        }
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "8d4fc93680895cd439415226576e6f0bdbbb81d1303dc359d23897e4c1ccd37a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "e35317ae32b23eca506d5de1f9c7099d04419e968ba9c995742e141fc951e783"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ParentConfigurations.bin",
+          "eq": "2762d952d64311a7bf124d68523ad93ee56c28b3ee9268ca653dd8addee73523"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "support_locked"
+        },
+        {
+          "pointer": "/warnings/0/severity",
+          "eq": "warning"
+        },
+        {
+          "pointer": "/warnings/0/at",
+          "eq": "main:Catalog.Items"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "a77c8ccdb43c7c082c090a45939d07066d4d63444e8c633fbc957d5a2cd7e24d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "e35317ae32b23eca506d5de1f9c7099d04419e968ba9c995742e141fc951e783"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ParentConfigurations.bin",
+          "eq": "2762d952d64311a7bf124d68523ad93ee56c28b3ee9268ca653dd8addee73523"
+        }
+      ]
+    }
+  ]
+}

@@ -12,7 +12,8 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_read_whose_answer_was_lost_inline_is_readable_by_its_task_id
   - crates/unica-coder/src/interfaces/daemon_router.rs::the_task_id_of_a_call_still_inline_can_be_cancelled
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_fenced_frame_never_runs_and_a_held_one_is_answered_by_its_state
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::a_fence_stays_bounded_and_ends_after_its_retention
+  - crates/unica-execution/src/receipt_runtime/joining.rs::a_fence_stays_bounded_and_ends_after_its_retention
+gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 
 # Потерянный ответ на вызов называет задание, в котором его ждать
@@ -32,9 +33,10 @@ check:
 заданием: ещё исполняющийся вызов виден как `queued` и отменяется через
 `unica.task.cancel` или `tasks/cancel`, а завершившийся прямым ответом,
 который никто не получил, — как завершённое задание с тем же результатом.
-Предметная операция при этом не запускается повторно. Эти сведения живут
-в памяти демона; после его перезапуска или вытеснения давней записи `taskId`
-даёт `task_not_found`.
+Предметная операция при этом не запускается повторно. У принятого
+самостоятельного вызова этот lookup сохраняется после перезапуска в своей
+области сборки по [правилу выдачи](../runtime/execution-delivery.md). Это
+не превращает непринятый кадр или временный alias в долговечную попытку.
 
 Если демон не видел вызова, frontend ставит преграду для его точного ключа.
 Кадр вызова читает только процесс демона, которому он отправлен, поэтому
@@ -56,3 +58,7 @@ backend_incompatible` и исходом `needsHuman`: повтор того же
 поведение описано в [правиле присоединения](../runtime/read-call-joining.md).
 Корпус приёмки не выражает потерю ответа демона: проверки исполняют
 frontend с управляемым демоном и настоящий runtime v5 с потерянными ответами.
+
+Нынешний early lookup живёт в памяти и может дать `task_not_found` после
+перезапуска. Проверки подтверждают доступ в живом процессе и semantic fence;
+долговечность принятого lookup и права выдачи остаются в `gap`.

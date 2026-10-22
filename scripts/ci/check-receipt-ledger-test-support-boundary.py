@@ -19,7 +19,7 @@ from tree_sitter import Language, Parser
 import tree_sitter_rust
 
 FEATURE = "receipt-ledger-test-support"
-SOURCE_ROOT = Path("crates/unica-coder/src")
+SOURCE_ROOT = Path("crates")
 RUST_LANGUAGE = Language(tree_sitter_rust.language())
 ITEM_TYPES = {
     "mod_item", "use_declaration", "function_item", "function_signature_item",
@@ -94,7 +94,7 @@ def offenders(path: Path, source: str, line_offset: int = 0) -> list[str]:
 
 def scan(root: Path) -> list[str]:
     found = []
-    for path in sorted((root / SOURCE_ROOT).rglob("*.rs")):
+    for path in sorted((root / SOURCE_ROOT).glob("*/src/**/*.rs")):
         found.extend(offenders(path.relative_to(root), path.read_text(encoding="utf-8")))
     return found
 

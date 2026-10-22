@@ -15,17 +15,17 @@
 //! конвейером — со своим cutoff и Task, потому что поставщики ходят в сеть.
 
 use super::protocol::InvocationRequest;
-use crate::application::invocation_store::ToolIdentity;
-use crate::application::result_store::{SearchCursorBinding, SearchCursorStore};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::invocation::{DomainResult, SafeIdentityHash};
-use crate::domain::refusal::RefusalCode;
-use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
+use unica_execution::invocation_store::ToolIdentity;
+use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_navigation::result_store::{SearchCursorBinding, SearchCursorStore};
+use unica_refusal::RefusalCode;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
 
 #[derive(Clone)]
 pub(super) struct PreparedDocumentationSearch {
@@ -166,8 +166,8 @@ fn page_documentation(
     cursor_token: Option<&str>,
     cancellation: &CancellationToken,
 ) -> DomainResult {
-    use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
     use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+    use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
     if cancellation.is_cancelled() {
         return DomainResult::canonical_rejection(
@@ -374,8 +374,8 @@ fn page_document_text(
     cursor_token: Option<&str>,
     cancellation: &CancellationToken,
 ) -> DomainResult {
-    use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
     use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+    use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
     let refuse = |code, message| DomainResult::canonical_rejection(None, code, message);
     if cancellation.is_cancelled() {
@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn document_over_transport_size_on_one_line_starts_with_a_useful_page() {
         let text =
-            "🙂".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES / 4 + 1);
+            "🙂".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES / 4 + 1);
         let page = page_document_text(
             &SearchCursorStore::default(),
             document_response(&text),
@@ -774,7 +774,7 @@ mod tests {
         assert!(page.ok, "{page:?}");
         assert!(
             serde_json::to_vec(&page).unwrap().len()
-                <= crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES
+                <= unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
         );
         assert_eq!(page.page.as_ref().unwrap()["startByte"], 0);
         assert!(page.page.as_ref().unwrap()["endByte"].as_u64().unwrap() > 0);
@@ -789,7 +789,7 @@ mod tests {
     fn oversized_document_metadata_refuses_before_issuing_a_cursor() {
         let mut result = document_response("текст");
         result.data.as_mut().unwrap()["document"]["title"] =
-            json!("x".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES));
+            json!("x".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES));
         let page = page_document_text(
             &SearchCursorStore::default(),
             result,
@@ -864,7 +864,7 @@ mod tests {
                 let mut oversized_change = response(9);
                 oversized_change.data.as_mut().unwrap()["sections"][2]["hits"][29]["snippet"] =
                     json!("x"
-                        .repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES));
+                        .repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES));
                 let stale_before_size = page_documentation(
                     &store,
                     oversized_change,
@@ -892,7 +892,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut result = response(8);
         result.data.as_mut().unwrap()["sections"][2]["hits"][29]["snippet"] =
-            json!("x".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES));
+            json!("x".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES));
         let page = page_documentation(&store, result, binding(20), None, &cancellation);
         assert!(!page.ok);
         assert_eq!(page.diagnostics[0]["code"], "result_too_large");
@@ -929,7 +929,7 @@ mod tests {
 
     #[test]
     fn prepared_docs_search_continues_across_calls_before_source_admission() {
-        use crate::domain::documentation::{
+        use unica_documentation::model::{
             Authority, DocumentationContext, DocumentationCorpus, DocumentationHit,
             DocumentationProvider, DocumentationProviderId, DocumentationSearchRequest,
             DocumentationSection, DocumentationSectionStatus, SourceKind,
@@ -989,7 +989,7 @@ mod tests {
                             signature: None,
                             snippet: if request.query == "oversize" && rank == 205 {
                                 "x".repeat(
-                                    crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES,
+                                    unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES,
                                 )
                             } else {
                                 "found".into()
@@ -1103,179 +1103,13 @@ mod tests {
     }
 
     #[test]
-    fn docs_refuses_kb_locators_outside_the_complete_guide_roots_before_network() {
-        use crate::infrastructure::documentation_policy::NetworkAccess;
-        use crate::infrastructure::kb_1ci::{
-            tests_support::FakeTransport, InstallationLexiconSource, Kb1ciProvider, KbTransport,
-        };
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let base = "https://kb.1ci.com";
-        let paths = [
-            "Support/Developer_Guides/8.3.27/Probe",
-            "Support/Administrator_Guides/8.3.27/Probe",
-            "1C_Enterprise_Platform/Support/Developer_Guides/8.3.27/Probe",
-            "1C_Enterprise_Platform/Guides/Other/Administrator_Guides/8.3.27/Probe",
-            "1C_Enterprise_Platform/Guides/Developer_Guides_Archive/8.3.27/Probe",
-            "1C_Enterprise_Platform/Guides/Administrator_Guides_Archive/8.3.27/Probe",
-            "1C_Enterprise_Platform/Guides_Archive/Developer_Guides/8.3.27/Probe",
-            "1C_Enterprise_Platform_Archive/Guides/Administrator_Guides/8.3.27/Probe",
-        ];
-        // A server willing to return every forbidden page makes an accidental
-        // GET succeed. A missing fixture response would only prove an HTTP error.
-        let transport = Arc::new(FakeTransport {
-            responses: paths
-                .iter()
-                .map(|path| {
-                    (
-                        format!("{base}/bin/view/OnecInt/KB/{path}/?language=en"),
-                        Ok("<h1>Outside guide roots</h1><div id=\"xwikicontent\"><p>Content outside the declared guide roots.</p></div>".into()),
-                    )
-                })
-                .collect(),
-            calls: AtomicUsize::new(0),
-        });
-        let _provider =
-            crate::infrastructure::application_ports::install_documentation_registry_stand_in(
-                Arc::new(Kb1ciProvider {
-                    base: base.into(),
-                    network: NetworkAccess::Allow,
-                    transport: Arc::clone(&transport) as Arc<dyn KbTransport>,
-                    cancellation: CancellationToken::new(),
-                    cache_ttl: std::time::Duration::from_secs(3600),
-                    lexicon: Arc::new(InstallationLexiconSource),
-                }),
-            );
-        let workspace_dir = tempfile::tempdir().unwrap();
-        let workspace = std::fs::canonicalize(workspace_dir.path()).unwrap();
-        let cursors = Arc::new(SearchCursorStore::default());
-
-        for path in paths {
-            let locator = format!("{base}/{path}/?language=en");
-            let request = InvocationRequest::new(
-                ToolIdentity::Docs,
-                json!({"query": locator, "source": "platform-help"}),
-                workspace.to_string_lossy(),
-                7_000,
-            )
-            .unwrap();
-            let Preparation::Ready(prepared) = prepare(&request, Arc::clone(&cursors)) else {
-                panic!("document locator must prepare: {locator}");
-            };
-            let result = prepared.execute(CancellationToken::new());
-            assert!(!result.ok, "outside locator opened: {locator}: {result:?}");
-            assert_eq!(result.diagnostics[0]["code"], "not_found", "{result:?}");
-            assert!(
-                result.data.is_none(),
-                "refusal returned a document: {result:?}"
-            );
-            assert_eq!(
-                transport.calls.load(Ordering::SeqCst),
-                0,
-                "outside locator reached the transport: {locator}"
-            );
-        }
-    }
-
-    #[test]
-    fn docs_opens_both_kb_guide_roots_with_short_and_long_version_aliases() {
-        use crate::infrastructure::documentation_policy::NetworkAccess;
-        use crate::infrastructure::kb_1ci::{
-            tests_support::FakeTransport, InstallationLexiconSource, Kb1ciProvider, KbTransport,
-        };
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let base = "https://kb.1ci.com";
-        let cases = [
-            (
-                "Developer_Guides/1C_Enterprise_Developer_Guide/8.3.27/Probe",
-                "kb-developer-guide",
-                "Short developer alias.",
-            ),
-            (
-                "Developer_Guides/1C_Enterprise_Developer_Guide/1C_Enterprise_8.3.27_Developer_Guide/Probe",
-                "kb-developer-guide",
-                "Long developer alias.",
-            ),
-            (
-                "Administrator_Guides/Administrator_Guide_Client_Server_Mode/8.3.27/Probe",
-                "kb-administrator-guide",
-                "Short administrator alias.",
-            ),
-            (
-                "Administrator_Guides/Administrator_Guide_Client_Server_Mode/1C_Enterprise_8.3.27_Administrator_Guide._Client_Server_Mode/Probe",
-                "kb-administrator-guide",
-                "Long administrator alias.",
-            ),
-        ];
-        let transport = Arc::new(FakeTransport {
-            responses: cases
-                .iter()
-                .map(|(path, _, text)| {
-                    (
-                        format!("{base}/bin/view/OnecInt/KB/1C_Enterprise_Platform/Guides/{path}/?language=en"),
-                        Ok(format!("<h1>Guide alias</h1><div id=\"xwikicontent\"><p>{text}</p></div>")),
-                    )
-                })
-                .collect(),
-            calls: AtomicUsize::new(0),
-        });
-        let _provider =
-            crate::infrastructure::application_ports::install_documentation_registry_stand_in(
-                Arc::new(Kb1ciProvider {
-                    base: base.into(),
-                    network: NetworkAccess::Allow,
-                    transport: Arc::clone(&transport) as Arc<dyn KbTransport>,
-                    cancellation: CancellationToken::new(),
-                    cache_ttl: std::time::Duration::from_secs(3600),
-                    lexicon: Arc::new(InstallationLexiconSource),
-                }),
-            );
-        let workspace_dir = tempfile::tempdir().unwrap();
-        let workspace = std::fs::canonicalize(workspace_dir.path()).unwrap();
-        let cursors = Arc::new(SearchCursorStore::default());
-
-        for (index, (path, corpus, text)) in cases.into_iter().enumerate() {
-            let locator = format!("{base}/1C_Enterprise_Platform/Guides/{path}/?language=en");
-            let request = InvocationRequest::new(
-                ToolIdentity::Docs,
-                json!({"query": locator, "source": "platform-help"}),
-                workspace.to_string_lossy(),
-                7_000,
-            )
-            .unwrap();
-            let Preparation::Ready(prepared) = prepare(&request, Arc::clone(&cursors)) else {
-                panic!("document locator must prepare: {locator}");
-            };
-            let result = prepared.execute(CancellationToken::new());
-            assert!(
-                result.ok,
-                "supported locator refused: {locator}: {result:?}"
-            );
-            let document = &result.data.as_ref().unwrap()["document"];
-            assert_eq!(document["documentId"], locator);
-            assert_eq!(document["provider"], "kb-1ci");
-            assert_eq!(document["corpus"], corpus);
-            assert_eq!(document["applicableVersion"], "8.3.27");
-            assert_eq!(document["language"], "en");
-            assert_eq!(document["title"], "Guide alias");
-            assert_eq!(document["text"], text);
-            assert_eq!(
-                transport.calls.load(Ordering::SeqCst),
-                index + 1,
-                "opening each document must make exactly one GET: {locator}"
-            );
-        }
-    }
-
-    #[test]
     fn prepared_document_locator_continues_across_calls_before_source_admission() {
-        use crate::domain::documentation::{
+        use std::sync::Mutex;
+        use unica_documentation::model::{
             Authority, DocumentationContext, DocumentationCorpus, DocumentationDocument,
             DocumentationProvider, DocumentationProviderId, DocumentationSearchRequest,
             DocumentationSection, SourceKind,
         };
-        use std::sync::Mutex;
 
         struct PageOwner {
             text: Arc<Mutex<String>>,

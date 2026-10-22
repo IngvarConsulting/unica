@@ -2,22 +2,23 @@ use crate::application::operation_descriptors::{
     native_operation_descriptor, SupportGuardPolicy, SupportGuardRequirement,
 };
 use crate::application::ports::SupportGuardCheck;
-use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
-use crate::domain::workspace::WorkspaceContext;
+use crate::application::{ToolHandler, ToolSpec};
 use crate::infrastructure::native_operations::common::{
-    absolutize, path_arg, required_string, resolve_code_patch_guard_path, support_guard_violation,
-    SupportGuardViolation,
+    resolve_code_patch_guard_path, support_guard_violation, SupportGuardViolation,
 };
-use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+
 use crate::infrastructure::native_operations::role::resolve_role_edit_guard_path;
-use crate::infrastructure::native_operations::support;
-use crate::infrastructure::native_operations::template;
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
-use crate::infrastructure::support_policy_evidence::{
-    support_policy_mode_from_bytes, v8_project_candidates_for_directory, SupportPolicyMode,
-};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_source_contract::proposal::SupportPolicyMode;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_designer::layout::template_add_object_type_folders;
+use unica_workspace::compile_transaction::CompileTransaction;
+use unica_workspace::policy_evidence::{
+    support_policy_mode_from_bytes, v8_project_candidates_for_directory,
+};
 
 pub(crate) enum ResolvedSupportGuardCheck {
     Allow,
@@ -37,7 +38,11 @@ pub(crate) fn evaluate_support_guard(
             ..
         }
     ) {
-        if let Err(error) = support::preflight_support_edit_capability(args, context) {
+        if let Err(error) =
+            crate::infrastructure::support_composition::preflight_support_edit_capability(
+                args, context,
+            )
+        {
             return Ok(SupportGuardCheck::Block(AdapterOutcome {
                 ok: false,
                 summary: "support-edit failed".to_string(),
@@ -188,26 +193,32 @@ fn support_guard_path_arg(
     names: &[&str],
     requirement: SupportGuardRequirement,
 ) -> Option<(PathBuf, SupportGuardRequirement)> {
-    path_arg(args, names).map(|path| (absolutize(path, &context.cwd), requirement))
+    unica_operation_contract::input::path_arg(args, names).map(|path| {
+        (
+            unica_operation_contract::input::absolutize(path, &context.cwd),
+            requirement,
+        )
+    })
 }
 
 fn support_guard_object_name_target(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Option<PathBuf> {
-    let object_name = required_string(
+    let object_name = unica_operation_contract::input::required_string(
         args,
         &["objectName", "ObjectName", "processorName", "ProcessorName"],
         "ObjectName",
     )
     .ok()?;
-    let src_dir = path_arg(args, &["srcDir", "SrcDir"]).unwrap_or_else(|| PathBuf::from("src"));
-    let src_dir = absolutize(src_dir, &context.cwd);
+    let src_dir = unica_operation_contract::input::path_arg(args, &["srcDir", "SrcDir"])
+        .unwrap_or_else(|| PathBuf::from("src"));
+    let src_dir = unica_operation_contract::input::absolutize(src_dir, &context.cwd);
     let direct = src_dir.join(format!("{object_name}.xml"));
     if direct.exists() {
         return Some(direct);
     }
-    for folder in template::template_add_object_type_folders() {
+    for folder in template_add_object_type_folders() {
         let candidate = src_dir.join(folder).join(format!("{object_name}.xml"));
         if candidate.exists() {
             return Some(candidate);
@@ -290,10 +301,9 @@ fn support_guard_blocked_outcome(
 #[cfg(test)]
 mod tests {
     use super::support_guard_mode;
-    use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::support_policy_evidence::{
-        support_policy_mode_value, SupportPolicyMode,
-    };
+    use unica_source_contract::proposal::SupportPolicyMode;
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_workspace::policy_evidence::support_policy_mode_value;
 
     #[test]
     fn project_editing_policy_is_the_closed_support_guard_downgrade_source() {

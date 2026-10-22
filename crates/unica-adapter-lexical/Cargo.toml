@@ -1,0 +1,28 @@
+[package]
+name = "unica-adapter-lexical"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = ["unica-workspace/test-support", "unica-process/test-support", "unica-code-intelligence/test-support"]
+
+[dependencies]
+unica-code-intelligence = { path = "../unica-code-intelligence" }
+unica-process = { path = "../unica-process" }
+unica-work-control = { path = "../unica-work-control" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-workspace = { path = "../unica-workspace" }
+unica-redaction = { path = "../unica-redaction" }
+unica-address = { path = "../unica-address" }
+unica-navigation = { path = "../unica-navigation" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+unica-process = { path = "../unica-process", features = ["test-support"] }
+unica-code-intelligence = { path = "../unica-code-intelligence", features = ["test-support"] }

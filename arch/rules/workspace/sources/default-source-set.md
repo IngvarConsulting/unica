@@ -3,7 +3,7 @@ id: INV.SOURCE.DEFAULT-SET-SELECTION
 check:
   - crates/unica-coder/src/infrastructure/source_roots.rs::selects_the_sole_configuration
   - crates/unica-coder/src/infrastructure/source_roots.rs::rejects_ambiguous_configurations_without_main
-  - crates/unica-coder/src/domain/source_roots.rs::main_source_set_wins_without_io
+  - crates/unica-source-designer/src/selection.rs::main_source_set_wins_without_io
 ---
 
 # Набор main имеет приоритет при выборе по умолчанию

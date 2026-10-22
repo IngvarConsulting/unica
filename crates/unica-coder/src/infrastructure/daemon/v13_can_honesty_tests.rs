@@ -15,32 +15,36 @@
 
 use super::server::V5CanonicalInvocationRuntime;
 use super::v13_service::{preflight_apply_operations, CanonicalV13ReadService};
-use crate::application::invocation_store::ToolIdentity;
-use crate::application::ports::TokioClock;
-use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::apply::{
-    ApplyRequest, FormItemRole, OperationDescriptor, OperationFamily, OperationRegistry,
-    OperationSite, SourceSetTraits,
-};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::invocation::DomainResult;
-use crate::domain::logical_route::{classify_route, RouteClass};
-use crate::domain::platform_profile::PlatformProfile;
-use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-use crate::domain::workspace::WorkspaceContext;
+use crate::domain::apply::ApplyRequest;
+use crate::domain::apply::OperationDescriptorExt;
+use crate::domain::apply::SourceSetWriteSupport;
+
+use crate::domain::logical_route::classify_route;
+use unica_bsl::profile::PlatformProfile;
+use unica_execution::clock::TokioClock;
+use unica_execution::invocation_store::ToolIdentity;
+use unica_forms::FormItemRole;
+use unica_operations::OperationDescriptor;
+use unica_operations::OperationFamily;
+use unica_source_contract::route::RouteClass;
+use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+
 use crate::infrastructure::daemon::protocol::InvocationRequest;
 use crate::infrastructure::native_operations::apply_families::{
     parse_family_operation_for_test, plan_hidden_v13_apply,
 };
-use crate::infrastructure::workspace_actor::{
-    ProviderRootBinding, WorkspaceActor, WorkspaceIdentity, WorkspaceSourceSetInput,
-};
+use crate::infrastructure::source_workspace::WorkspaceActor;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_execution_contract::invocation::DomainResult;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::actor::{ProviderRootBinding, WorkspaceIdentity, WorkspaceSourceSetInput};
 
 /// Узлов на набор не больше этого, и не больше двух на одну форму адреса:
 /// обход — выборка разнообразных узлов, а не перепись.
@@ -313,7 +317,8 @@ fn fixture(name: &str) -> Fixture {
         })
         .collect::<Vec<_>>();
     let identity = WorkspaceIdentity::new(&context, inputs, "can-honesty-test").unwrap();
-    let actor = Arc::new(WorkspaceActor::new(identity, context).unwrap());
+    let actor =
+        Arc::new(crate::infrastructure::source_workspace::new_actor(identity, context).unwrap());
     let sets = declared
         .into_iter()
         .map(|(name, kind, path)| {
@@ -460,7 +465,7 @@ fn dangling_reference(
     };
     let (Some(name), Some(layout)) = (
         root.name(),
-        crate::infrastructure::metadata_kinds::metadata_kind(root.kind().as_str()),
+        unica_source_designer::layout::metadata_kind(root.kind().as_str()),
     ) else {
         return false;
     };
@@ -606,7 +611,7 @@ struct Checked<'a> {
     actor: &'a WorkspaceActor,
     binding: &'a ProviderRootBinding,
     source_root: PathBuf,
-    traits: SourceSetTraits,
+    traits: unica_source_contract::context::SourceSetTraits,
 }
 
 /// Обход одной фикстуры: расхождения, достигнутые маршруты и пары
@@ -625,7 +630,7 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
             actor: &fixture.actor,
             binding,
             source_root: source_root(&fixture.workspace, set),
-            traits: SourceSetTraits::of_source(
+            traits: crate::domain::apply::source_set_traits_of_source(
                 *kind,
                 SourceFormat::PlatformXml,
                 SourceProfile::platform_xml_8_3_27_format_2_20(),
@@ -925,7 +930,7 @@ fn required_write_key(entry: &str) -> String {
     if entry.contains(':') {
         return entry.to_string();
     }
-    let mut named = OperationRegistry::closed().named(entry);
+    let mut named = crate::domain::apply::operation_registry().named(entry);
     let descriptor = named
         .next()
         .unwrap_or_else(|| panic!("`{entry}` is registered"));
@@ -963,12 +968,12 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         .then(|| data["props"]["tag"].as_str().map(FormItemRole::from_tag))
         .flatten();
     NARROWINGS_SEEN.with(|narrowings_seen| {
-    for descriptor in OperationRegistry::closed().descriptors().iter().copied() {
+    for descriptor in crate::domain::apply::operation_registry().descriptors().iter().copied() {
         let op = descriptor.name();
         // Общее имя (`attribute.add` объекта и формы, #1465): вызов на этом
         // адресе исполняет запись, которую выбирает адрес, и сверяется она.
-        let resolved = OperationSite::new(&address, checked.traits)
-            .and_then(|site| OperationRegistry::closed().lookup_at(op, &site));
+        let resolved = crate::domain::apply::operation_site(&address, checked.traits)
+            .and_then(|site| crate::domain::apply::operation_registry().lookup_at(op, &site));
         if resolved.is_some_and(|resolved| resolved.family() != descriptor.family()) {
             continue;
         }
@@ -1106,8 +1111,7 @@ fn check_written_paths(
     let Some(owner_name) = owner.name() else {
         return;
     };
-    let Some(layout) = crate::infrastructure::metadata_kinds::metadata_kind(owner.kind().as_str())
-    else {
+    let Some(layout) = unica_source_designer::layout::metadata_kind(owner.kind().as_str()) else {
         mismatches.push(format!("{at}: `{op}` has no owner layout to check writes"));
         return;
     };
@@ -1181,10 +1185,13 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
         let request = apply_request(at, op, args);
         let refusal = preflight_apply_operations(
             &request,
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+            crate::domain::apply::source_set_traits_for_read(
+                SourceSetKind::Configuration,
+                PlatformProfile::v8_3_27(),
+            ),
             &|template| {
                 (template.to_string() == "cf:Report.Sales.Template.Print")
-                    .then_some(crate::domain::apply::TemplateFormat::SpreadsheetDocument)
+                    .then_some(unica_templates::TemplateFormat::SpreadsheetDocument)
             },
         )
         .expect_err("a misplaced operation refuses before planning");
@@ -1208,7 +1215,10 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
 /// `next` ведёт к словарю того же узла, если он читается, иначе к корню.
 #[test]
 fn without_an_executable_ancestor_the_refusal_names_the_address_shape() {
-    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
     for (at, op, args, next_at, shape) in [
         (
             "cf:Interface",
@@ -1244,7 +1254,7 @@ fn without_an_executable_ancestor_the_refusal_names_the_address_shape() {
         let request = apply_request(at, op, args);
         let refusal = preflight_apply_operations(&request, traits, &|template| {
             (template.to_string() == "cf:Report.Sales.Template.Schema")
-                .then_some(crate::domain::apply::TemplateFormat::DataCompositionSchema)
+                .then_some(unica_templates::TemplateFormat::DataCompositionSchema)
         })
         .expect_err("a misplaced operation refuses");
         let message = refusal.diagnostics[0]["message"].as_str().unwrap();
@@ -1258,7 +1268,7 @@ fn without_an_executable_ancestor_the_refusal_names_the_address_shape() {
 /// по адресу операции ведёт к словарю родителя.
 #[test]
 fn a_missing_target_routes_next_to_the_parent_dictionary() {
-    use crate::infrastructure::native_operations::apply::{ApplyPlanError, ApplyPlanErrorKind};
+    use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
     for (at, parent) in [
         ("cf:Document.Order.Attribute.Missing", "cf:Document.Order"),
         ("cf:Catalog.Missing", "cf:Configuration"),
@@ -1270,7 +1280,7 @@ fn a_missing_target_routes_next_to_the_parent_dictionary() {
             super::v13_service::with_missing_target_parent(
                 DomainResult::canonical_rejection(
                     None,
-                    crate::domain::refusal::RefusalCode::NotFound,
+                    unica_refusal::RefusalCode::NotFound,
                     "not found",
                 ),
                 &request,
@@ -1753,7 +1763,10 @@ fn header_and_catalog_attributes_still_add_at_the_owner() {
 /// значение повторяло сам адрес вызова, отказ говорит снять аргумент.
 #[test]
 fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
-    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
     // Прежний псевдоним запроса ведёт к запросу набора, а операция набора —
     // к самому набору.
     for (op, args, target) in [
@@ -1805,12 +1818,12 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
         &|_| None,
         &|template, name| {
             if template.to_string() == schema && name == "Member" {
-                crate::domain::apply::NamedLookup::Found(vec![
+                unica_operations::recovery::NamedLookup::Found(vec![
                     "Union".to_string(),
                     "Member".to_string(),
                 ])
             } else {
-                crate::domain::apply::NamedLookup::Missing
+                unica_operations::recovery::NamedLookup::Missing
             }
         },
     )
@@ -1912,7 +1925,10 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
 /// этого вида. `*.set`, чей узел создаёт операция родителя, называет её.
 #[test]
 fn retired_subnode_arguments_route_next_to_the_subnode_address() {
-    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
     let schema = "cf:Report.Sales.Template.Schema";
     for (at, op, args, location, next_at, branch, creator) in [
         (
@@ -1999,7 +2015,9 @@ fn retired_subnode_arguments_route_next_to_the_subnode_address() {
     }
     // Контракт операций прав читается по адресу операции, как у других.
     for op in ["right.add", "right.set"] {
-        let descriptor = OperationRegistry::closed().lookup(op).unwrap();
+        let descriptor = crate::domain::apply::operation_registry()
+            .lookup(op)
+            .unwrap();
         let contract = descriptor.argument_contract().expect("role contract");
         assert!(
             contract.normalize(&contract.example_args, "args").is_ok(),
@@ -2123,20 +2141,23 @@ fn retired_subnode_arguments_route_next_to_the_subnode_address() {
 /// ведёт к ветви и к `can` каждого совпавшего элемента.
 #[test]
 fn retired_dcs_container_arguments_route_next_to_the_structure_item() {
-    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
     let schema = "cf:Report.Sales.Template.Schema";
     let setting = format!("{schema}.Setting.Main");
     let lookup = |owner: &QualifiedAddress, name: &str| match name {
         "Details" if owner.to_string().ends_with(".Setting.Main") => {
-            crate::domain::apply::NamedLookup::Found(vec!["Top".into(), "Details".into()])
+            unica_operations::recovery::NamedLookup::Found(vec!["Top".into(), "Details".into()])
         }
         "Twin" if owner.to_string().ends_with(".Setting.Main") => {
-            crate::domain::apply::NamedLookup::Ambiguous(vec![
+            unica_operations::recovery::NamedLookup::Ambiguous(vec![
                 vec!["Top".into(), "Twin".into()],
                 vec!["Table".into(), "Twin".into()],
             ])
         }
-        _ => crate::domain::apply::NamedLookup::Missing,
+        _ => unica_operations::recovery::NamedLookup::Missing,
     };
     for (at, op, args, location, expected) in [
         (
@@ -2218,7 +2239,10 @@ fn retired_dcs_container_arguments_route_next_to_the_structure_item() {
 /// идентификатором, ведёт к коллекции, где видно его имя.
 #[test]
 fn retired_member_arguments_route_next_to_the_member_address() {
-    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
     for (at, op, args, location, next_at, branch) in [
         (
             "cf:Catalog.Items",

@@ -1,0 +1,390 @@
+{
+  "schemaVersion": 1,
+  "status": "RAW_FIXTURES_FROM_COMPLETED_RETAINED_NATIVE_CASES_NOT_CANONICAL_PAYLOAD_ACCEPTANCE",
+  "sourceRevision": "4bf85f5f32c7fdea3728a8a5b50b9aa2b77cb202",
+  "authoredOnRevision": "3ea983a0e1ca71f901f8acf4c93f9a2e56bc143f",
+  "corpusManifest": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/corpus-manifest.json",
+  "corpusManifestSha256": "0a237b093d0e2cbdffcf410424e539cd683e03e594e5012318bfb3c72093725e",
+  "nativeReport": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-report.json",
+  "nativeReportSha256": "db331df7f10c4272a625613138c2471a273a8647f3cc6878dafbe60696e86372",
+  "platform": {
+    "version": "8.3.27.2074",
+    "ibcmdSha256": "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5",
+    "reportInstallProof": {
+      "afterDirectoryCount": 96,
+      "afterFileCount": 4337,
+      "afterSha256": "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef",
+      "beforeDirectoryCount": 96,
+      "beforeFileCount": 4337,
+      "beforeSha256": "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef",
+      "expectedFileCount": 4337,
+      "expectedSha256": "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef",
+      "unchanged": true,
+      "verified": true
+    }
+  },
+  "route": "Each template-add case invokes retained unica.meta.edit in the research test artifact; the Report seed comes from meta-compile-report native export2. No canonical template payload acceptance is inferred.",
+  "fixtures": [
+    {
+      "caseId": "template-add-spreadsheet-document",
+      "toolId": "unica.meta.edit",
+      "branch": "SpreadsheetDocument",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-spreadsheet-document/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "078cc70a9ffca52b6a8e9cea4e5d8420ad618005f02128bbea3901fbee4df375",
+        "bytes": 1274
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-spreadsheet-document/round1/export/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "27c250c4fdaa2938a023e57db80637bea8b61f11f3abd6f75ad13a3cefe5cea8",
+        "bytes": 1269
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-spreadsheet-document/round2/export/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "27c250c4fdaa2938a023e57db80637bea8b61f11f3abd6f75ad13a3cefe5cea8",
+        "bytes": 1269
+      },
+      "rawExportsEqual": true,
+      "fixture": "native-spreadsheet-descriptor.xml",
+      "fixtureSha256": "27c250c4fdaa2938a023e57db80637bea8b61f11f3abd6f75ad13a3cefe5cea8",
+      "control": null
+    },
+    {
+      "caseId": "template-add-spreadsheet-document",
+      "toolId": "unica.meta.edit",
+      "branch": "SpreadsheetDocument",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-spreadsheet-document/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+        "sha256": "cfd17d8b9fb43b4d8650ba0a3e35aacd9bcc1c3b7d01c55a275a439ebff24836",
+        "bytes": 761
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-spreadsheet-document/round1/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+        "sha256": "197eee7ae5f2912997f63cd9a1a4475085d139b7db68587c21c77a56e682d0df",
+        "bytes": 785
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-spreadsheet-document/round2/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+        "sha256": "197eee7ae5f2912997f63cd9a1a4475085d139b7db68587c21c77a56e682d0df",
+        "bytes": 785
+      },
+      "rawExportsEqual": true,
+      "fixture": "native-spreadsheet-content.xml",
+      "fixtureSha256": "197eee7ae5f2912997f63cd9a1a4475085d139b7db68587c21c77a56e682d0df",
+      "control": null
+    },
+    {
+      "caseId": "template-add-data-composition-schema",
+      "toolId": "unica.meta.edit",
+      "branch": "DataCompositionSchema",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-data-composition-schema/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "68e085a31e42d4641aff9554fee8a43c8ed218756243c35e4376d2cc5237cd88",
+        "bytes": 1276
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-data-composition-schema/round1/export/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "b1579ea75dd77315e68b931b73c258d8b59f34c4762e7d1aa1bcd8204c43a139",
+        "bytes": 1271
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-data-composition-schema/round2/export/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "b1579ea75dd77315e68b931b73c258d8b59f34c4762e7d1aa1bcd8204c43a139",
+        "bytes": 1271
+      },
+      "rawExportsEqual": true,
+      "fixture": "native-dcs-descriptor.xml",
+      "fixtureSha256": "b1579ea75dd77315e68b931b73c258d8b59f34c4762e7d1aa1bcd8204c43a139",
+      "control": null
+    },
+    {
+      "caseId": "template-add-data-composition-schema",
+      "toolId": "unica.meta.edit",
+      "branch": "DataCompositionSchema",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-data-composition-schema/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+        "sha256": "e6887da7c50e800ba2f1ff719a42aff7058e28ebae63fa2e2593504947374b9a",
+        "bytes": 1049
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-data-composition-schema/round1/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+        "sha256": "e86956ff99cef8b8ee543cd062764e3942beffc30e5b63ff34a82433223fd289",
+        "bytes": 1049
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-data-composition-schema/round2/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+        "sha256": "e86956ff99cef8b8ee543cd062764e3942beffc30e5b63ff34a82433223fd289",
+        "bytes": 1049
+      },
+      "rawExportsEqual": true,
+      "fixture": "native-dcs-content.xml",
+      "fixtureSha256": "e86956ff99cef8b8ee543cd062764e3942beffc30e5b63ff34a82433223fd289",
+      "control": null
+    },
+    {
+      "caseId": "template-add-html-document",
+      "toolId": "unica.meta.edit",
+      "branch": "HTMLDocument",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-html-document/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "906427ea512e8e83784e0720a7fd24a8e7a7dfa57ab3fc515ab764d6afa47440",
+        "bytes": 1267
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-html-document/round1/export/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "522a02a60cd80e9e72c74b39a3f4e403a6cbbf87f128fd3f02349c89558eccb2",
+        "bytes": 1262
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-html-document/round2/export/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "522a02a60cd80e9e72c74b39a3f4e403a6cbbf87f128fd3f02349c89558eccb2",
+        "bytes": 1262
+      },
+      "rawExportsEqual": true,
+      "fixture": "native-html-descriptor.xml",
+      "fixtureSha256": "522a02a60cd80e9e72c74b39a3f4e403a6cbbf87f128fd3f02349c89558eccb2",
+      "control": null
+    },
+    {
+      "caseId": "template-add-html-document",
+      "toolId": "unica.meta.edit",
+      "branch": "HTMLDocument",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-html-document/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+        "sha256": "0b53a45873992ef238080959c2bb1b23e336ab3269654b8317ea47f48e83b419",
+        "bytes": 226
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-html-document/round1/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+        "sha256": "76aa9ea3f89de48211fc07ae7713bf627d61be458b41c955a87b05c3eb2bcd23",
+        "bytes": 232
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-html-document/round2/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+        "sha256": "76aa9ea3f89de48211fc07ae7713bf627d61be458b41c955a87b05c3eb2bcd23",
+        "bytes": 232
+      },
+      "rawExportsEqual": true,
+      "fixture": "native-html-pages.xml",
+      "fixtureSha256": "76aa9ea3f89de48211fc07ae7713bf627d61be458b41c955a87b05c3eb2bcd23",
+      "control": null
+    },
+    {
+      "caseId": "template-add-html-document",
+      "toolId": "unica.meta.edit",
+      "branch": "HTMLDocument",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template/ru.html",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-html-document/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template/ru.html",
+        "sha256": "84d44700a2db2c62ea25077ab5791770ced70b26e6c01f9e7cd37937b3b94f07",
+        "bytes": 268
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-html-document/round1/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template/ru.html",
+        "sha256": "84d44700a2db2c62ea25077ab5791770ced70b26e6c01f9e7cd37937b3b94f07",
+        "bytes": 268
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-html-document/round2/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template/ru.html",
+        "sha256": "84d44700a2db2c62ea25077ab5791770ced70b26e6c01f9e7cd37937b3b94f07",
+        "bytes": 268
+      },
+      "rawExportsEqual": true,
+      "fixture": null,
+      "fixtureSha256": null,
+      "control": "HTML page reuses html-template/native-ru.html; Text/Binary payloads are exactly empty"
+    },
+    {
+      "caseId": "template-add-text-document",
+      "toolId": "unica.meta.edit",
+      "branch": "TextDocument",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-text-document/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "a0cf31b8cde2ccfb388589be478126a45385e7c12b0b55c67464f67b06b23887",
+        "bytes": 1267
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-text-document/round1/export/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "9a8063fe6e33000b9db3cab9a3c5e58f4e6c6654573eaed97f987c1eea05f102",
+        "bytes": 1262
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-text-document/round2/export/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "9a8063fe6e33000b9db3cab9a3c5e58f4e6c6654573eaed97f987c1eea05f102",
+        "bytes": 1262
+      },
+      "rawExportsEqual": true,
+      "fixture": "native-text-descriptor.xml",
+      "fixtureSha256": "9a8063fe6e33000b9db3cab9a3c5e58f4e6c6654573eaed97f987c1eea05f102",
+      "control": null
+    },
+    {
+      "caseId": "template-add-text-document",
+      "toolId": "unica.meta.edit",
+      "branch": "TextDocument",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.txt",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-text-document/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-text-document/round1/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-text-document/round2/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "rawExportsEqual": true,
+      "fixture": null,
+      "fixtureSha256": null,
+      "control": "HTML page reuses html-template/native-ru.html; Text/Binary payloads are exactly empty"
+    },
+    {
+      "caseId": "template-add-binary-data",
+      "toolId": "unica.meta.edit",
+      "branch": "BinaryData",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-binary-data/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "2c8212099a1ee76a540205d54897f68820a30bc8fbac019a9c48a7e3736c24fe",
+        "bytes": 1265
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-binary-data/round1/export/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "30f71fe192f7052a352c5f3a01012f606a924a2ce269cd804ac084081f7f9625",
+        "bytes": 1260
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-binary-data/round2/export/Reports/CorpusReport/Templates/CorpusTemplate.xml",
+        "sha256": "30f71fe192f7052a352c5f3a01012f606a924a2ce269cd804ac084081f7f9625",
+        "bytes": 1260
+      },
+      "rawExportsEqual": true,
+      "fixture": "native-binary-descriptor.xml",
+      "fixtureSha256": "30f71fe192f7052a352c5f3a01012f606a924a2ce269cd804ac084081f7f9625",
+      "control": null
+    },
+    {
+      "caseId": "template-add-binary-data",
+      "toolId": "unica.meta.edit",
+      "branch": "BinaryData",
+      "relative": "Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.bin",
+      "source": {
+        "path": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/corpus-a/cases/template-add-binary-data/workspace/src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.bin",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "export1": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-binary-data/round1/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.bin",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "export2": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/template-add-binary-data/round2/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.bin",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "rawExportsEqual": true,
+      "fixture": null,
+      "fixtureSha256": null,
+      "control": "HTML page reuses html-template/native-ru.html; Text/Binary payloads are exactly empty"
+    }
+  ],
+  "canonicalWorkspaceSeed": [
+    {
+      "relative": "ConfigDumpInfo.xml",
+      "fixture": "seed/ConfigDumpInfo.xml",
+      "sha256": "a4571b122d0e0bd28857244b45f50724c47ecdcc9e5688508b4c40ff5dc77e20",
+      "bytes": 1273,
+      "export2": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round2/export/ConfigDumpInfo.xml",
+      "export1": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round1/export/ConfigDumpInfo.xml",
+      "export1Sha256": "3feb955761a08d3d9f96bf9de3a0382d11cb6f0060f0ef0c39f1ae46a4f83a6e",
+      "rawExportsEqual": false
+    },
+    {
+      "relative": "Configuration.xml",
+      "fixture": "seed/Configuration.xml",
+      "sha256": "dd7430dd62af9a41dcdef7cd03216312ea03e1f7964b819cc1c91109af3c5156",
+      "bytes": 10475,
+      "export2": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round2/export/Configuration.xml",
+      "export1": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round1/export/Configuration.xml",
+      "export1Sha256": "dd7430dd62af9a41dcdef7cd03216312ea03e1f7964b819cc1c91109af3c5156",
+      "rawExportsEqual": true
+    },
+    {
+      "relative": "Ext/ClientApplicationInterface.xml",
+      "fixture": "seed/Ext/ClientApplicationInterface.xml",
+      "sha256": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8",
+      "bytes": 836,
+      "export2": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round2/export/Ext/ClientApplicationInterface.xml",
+      "export1": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round1/export/Ext/ClientApplicationInterface.xml",
+      "export1Sha256": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8",
+      "rawExportsEqual": true
+    },
+    {
+      "relative": "Languages/Русский.xml",
+      "fixture": "seed/Languages/Русский.xml",
+      "sha256": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250",
+      "bytes": 1251,
+      "export2": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round2/export/Languages/Русский.xml",
+      "export1": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round1/export/Languages/Русский.xml",
+      "export1Sha256": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250",
+      "rawExportsEqual": true
+    },
+    {
+      "relative": "Reports/CorpusReport.xml",
+      "fixture": "seed/Reports/CorpusReport.xml",
+      "sha256": "e7748b4780228c409a194453213f505d3a7cbbdd1f19ed035c93faf0a5168f9a",
+      "bytes": 2083,
+      "export2": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round2/export/Reports/CorpusReport.xml",
+      "export1": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round1/export/Reports/CorpusReport.xml",
+      "export1Sha256": "e7748b4780228c409a194453213f505d3a7cbbdd1f19ed035c93faf0a5168f9a",
+      "rawExportsEqual": true
+    },
+    {
+      "relative": "Reports/CorpusReport/Ext/ManagerModule.bsl",
+      "fixture": "seed/Reports/CorpusReport/Ext/ManagerModule.bsl",
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+      "bytes": 3,
+      "export2": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round2/export/Reports/CorpusReport/Ext/ManagerModule.bsl",
+      "export1": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round1/export/Reports/CorpusReport/Ext/ManagerModule.bsl",
+      "export1Sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+      "rawExportsEqual": true
+    },
+    {
+      "relative": "Reports/CorpusReport/Ext/ObjectModule.bsl",
+      "fixture": "seed/Reports/CorpusReport/Ext/ObjectModule.bsl",
+      "sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+      "bytes": 3,
+      "export2": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round2/export/Reports/CorpusReport/Ext/ObjectModule.bsl",
+      "export1": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-report/round1/export/Reports/CorpusReport/Ext/ObjectModule.bsl",
+      "export1Sha256": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5",
+      "rawExportsEqual": true
+    }
+  ],
+  "constraints": [
+    "Fixtures are raw byte copies; no EOL/BOM/indent/namespace normalization.",
+    "Tests may rebind only the one declared Template UUID after validation; all other descriptor bytes remain fixed.",
+    "Canonical and retained DCS defaults differ. Retained DCS fixture must not replace or be asserted as the canonical payload.",
+    "ConfigDumpInfo seed is copied verbatim from export2; it is the sole seed file not equal between exports and is not an expected mutation output.",
+    "HTML native page and empty Text/Binary payloads are positive preservation controls."
+  ],
+  "canonicalDcs": {
+    "fixture": "native-canonical-dcs-content.xml",
+    "fixtureSha256": "c52388a0ade8f039ba6e4ee6a7de6b166b20a7c07371056e7b13808b3a1183e4",
+    "provenance": "canonical-dcs-provenance.json",
+    "provenanceSha256": "4548ce79b04158ecb1bf32989c571c6cafb84f062c93da50cf78ef33019eb341",
+    "route": "Canonical ordinary-core preview/token publication followed by separately retained native first export and one fresh-IB continuation; original producer raw FAIL remains."
+  }
+}

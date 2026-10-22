@@ -65,18 +65,37 @@ class AllureResult(unittest.TextTestResult):
 
     def startTest(self, test):
         super().startTest(test)
-        self._started = allure_results.now_ms()
+        self._started = (test, allure_results.now_ms())
 
-    def _emit(self, test, status, message=None, trace=None):
+    def _emit(self, test, status, message=None, trace=None, *, scope_skip=False):
         if self.out is None:
             return
         cls = test.__class__
-        full_name = f"{cls.__module__}.{cls.__qualname__}.{test._testMethodName}"
-        doc = (test._testMethodDoc or "").strip().splitlines()
+        method_name = getattr(test, "_testMethodName", None)
+        test_id = test.id()
+        if method_name is not None:
+            full_name = f"{cls.__module__}.{cls.__qualname__}.{method_name}"
+            doc = (getattr(test, "_testMethodDoc", None) or "").strip().splitlines()
+            name = doc[0] if doc else method_name
+            sub_suite = cls.__qualname__
+            size_id = test_id
+        else:
+            # unittest reports class/module fixtures as synthetic test ids,
+            # without TestCase method attributes or a startTest callback.
+            full_name = name = test_id
+            sub_suite = size_id = test_id
+            for hook in ("setUpClass", "tearDownClass", "setUpModule", "tearDownModule"):
+                prefix = f"{hook} ("
+                if test_id.startswith(prefix) and test_id.endswith(")"):
+                    sub_suite = size_id = test_id[len(prefix):-1]
+                    break
+        stop = allure_results.now_ms()
+        started_test, started_at = getattr(self, "_started", (None, None))
+        start = started_at if started_test is test else stop
         allure_results.write(
             self.out,
             allure_results.record(
-                name=doc[0] if doc else test._testMethodName,
+                name=name,
                 full_name=full_name,
                 status=status,
                 runner=self.runner_name,
@@ -85,15 +104,16 @@ class AllureResult(unittest.TextTestResult):
                     "framework": "unittest",
                     "parentSuite": "python",
                     "suite": self.suite_name,
-                    "subSuite": cls.__qualname__,
+                    "subSuite": sub_suite,
                     "profile": self.profile,
-                    "size": self.sizes.size_of(test.id()),
+                    "size": self.sizes.size_of(size_id),
+                    **({"scope_skip": "docs_only"} if scope_skip else {}),
                 },
-                tags=(self.profile,),
+                tags=(self.profile, "docs-only") if scope_skip else (self.profile,),
                 message=message,
                 trace=trace,
-                start=self._started,
-                stop=allure_results.now_ms(),
+                start=start,
+                stop=stop,
             ),
         )
 
@@ -134,21 +154,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--admit", default="", help="какие размеры гонять, через запятую; пусто — все")
     parser.add_argument("--plan-only", action="store_true", help="перечислить тесты и выйти")
     parser.add_argument("--lane", default="", help="полоса размера этой джобы: идёт в план, чтобы сайт нашёл её джобу")
+    parser.add_argument("--scope-skip-medium", action="store_true",
+                        help="queue docs-only: сохранить обнаруженные medium как намеренно пропущенные")
     args = parser.parse_args(argv)
 
     sizes = Sizes.load(args.sizes, args.size)
     admitted = {size.strip() for size in args.admit.split(",") if size.strip()}
-    suite = unittest.defaultTestLoader.discover(args.start_directory)
+    if args.scope_skip_medium and (args.profile != "queue" or admitted != {"small"} or args.lane != "small"):
+        parser.error("--scope-skip-medium требует --profile queue --admit small --lane small")
+    loader = unittest.TestLoader()
+    suite = loader.discover(args.start_directory)
+    cases = list(iter_cases(suite))
+    if args.scope_skip_medium and (loader.errors or any(isinstance(case, unittest.loader._FailedTest) for case in cases)):
+        # _FailedTest — ошибка импорта, а не обнаруженный тест. Такой план
+        # не даёт права объявить состав пропущенным и скрыть ошибку discovery.
+        print("\n".join(loader.errors) or "discovery returned _FailedTest", file=sys.stderr)
+        return 1
+    skipped = [case for case in cases if sizes.size_of(case.id()) == "medium"] if args.scope_skip_medium else []
     # Не допущенный воротами тест — не в этом плане: его результат в отчёте
     # линии даёт другой профиль, а не пропуск от этого.
     if admitted:
-        suite = unittest.TestSuite(case for case in iter_cases(suite) if sizes.size_of(case.id()) in admitted)
+        suite = unittest.TestSuite(case for case in cases if sizes.size_of(case.id()) in admitted)
     if args.plan_only:
         planned = list(iter_cases(suite))
-        for case in planned:
+        for case in [*planned, *skipped]:
             print(case.id())
         if args.results is not None:
-            write_python_plan(args.results, planned, args.start_directory, sizes, args.lane)
+            write_python_plan(args.results, [*planned, *skipped], args.start_directory, sizes, args.lane,
+                              scope_skipped={case.id() for case in skipped})
         return 0
 
     AllureResult.out = args.results
@@ -156,6 +189,10 @@ def main(argv: list[str] | None = None) -> int:
     AllureResult.profile = args.profile
     AllureResult.suite_name = args.start_directory
     AllureResult.sizes = sizes
+    scope_result = AllureResult(sys.stderr, True, 1)
+    for case in skipped:
+        scope_result._emit(case, "skipped", "docs-only: Python medium пропущен по области изменения",
+                           scope_skip=True)
     options = {"resultclass": AllureResult, "verbosity": 1}
     if args.durations is not None:
         options["durations"] = args.durations
@@ -163,7 +200,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if result.wasSuccessful() else 1
 
 
-def write_python_plan(out: Path, cases, suite_name: str, sizes: Sizes, lane: str = "") -> Path:
+def write_python_plan(out: Path, cases, suite_name: str, sizes: Sizes, lane: str = "", *,
+                      scope_skipped: set[str] | None = None) -> Path:
     """Состав набора до запуска: джоба, умершая на середине, оставляет список.
 
     Записи идут с той же подписью, что и результаты; сайт дописывает
@@ -188,6 +226,7 @@ def write_python_plan(out: Path, cases, suite_name: str, sizes: Sizes, lane: str
                 "lane": lane,
                 "subSuite": case.__class__.__qualname__,
                 "size": sizes.size_of(case.id()),
+                **({"scope_skip": {"reason": "docs_only"}} if case.id() in (scope_skipped or ()) else {}),
             }
         )
     path.write_text(json.dumps(entries, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")

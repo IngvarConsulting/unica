@@ -1,0 +1,30 @@
+[package]
+name = "unica-documentation-sources"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Исследования — не тесты: регенерация каталога событий собирается только
+# с этой фичей. Запуск — scripts/research/platform-event-catalog.sh.
+research = []
+
+[dependencies]
+percent-encoding.workspace = true
+unica-documentation = { path = "../unica-documentation" }
+unica-configuration = { path = "../unica-configuration" }
+unica-network = { path = "../unica-network" }
+unica-work-control = { path = "../unica-work-control" }
+serde_json.workspace = true
+toml.workspace = true
+rust-stemmers.workspace = true
+zip.workspace = true
+flate2.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
+unica-metadata = { path = "../unica-metadata" }
+tempfile.workspace = true
+unica-network = { path = "../unica-network", features = ["test-support"] }

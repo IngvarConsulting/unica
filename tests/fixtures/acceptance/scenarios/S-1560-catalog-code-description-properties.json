@@ -1,0 +1,305 @@
+{
+  "id": "S-1560-catalog-code-description-properties",
+  "issue": 1560,
+  "area": "Метаданные",
+  "task": "Прочитать свойства Code и Description справочника через выданные адреса коллекции и деталей, сохранив локализацию и исходный XML",
+  "workspace": "tests/fixtures/acceptance/workspace-standard-attributes",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "attributes": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:Catalog.Items.StandardAttribute"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.attributes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "code": {
+          "pointer": "/data/items/0/at"
+        },
+        "description": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/2/title",
+          "eq": "Ref"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код\"},{\"language\":\"en\",\"content\":\"Numeric code\"}]}"
+        },
+        {
+          "pointer": "/data/items/0/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код валюты\"}]}"
+        },
+        {
+          "pointer": "/data/items/0/props/FillChecking",
+          "eq": "{\"kind\":\"text\",\"value\":\"ShowError\"}"
+        },
+        {
+          "pointer": "/data/items/1/props/Synonym",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код\"}]}"
+        },
+        {
+          "pointer": "/data/items/1/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код валюты\"}]}"
+        },
+        {
+          "pointer": "/data/items/1/props/FillChecking",
+          "eq": "{\"kind\":\"text\",\"value\":\"DontCheck\"}"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.code"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Code"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код\"},{\"language\":\"en\",\"content\":\"Numeric code\"}]}"
+        },
+        {
+          "pointer": "/data/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код валюты\"}]}"
+        },
+        {
+          "pointer": "/data/props/FillChecking",
+          "eq": "{\"kind\":\"text\",\"value\":\"ShowError\"}"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.description"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Description"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код\"}]}"
+        },
+        {
+          "pointer": "/data/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код валюты\"}]}"
+        },
+        {
+          "pointer": "/data/props/FillChecking",
+          "eq": "{\"kind\":\"text\",\"value\":\"DontCheck\"}"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BrokenSynonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeLength",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "standardAttributes[0].properties.Synonym"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BrokenSynonym.StandardAttribute"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes[0].properties.Synonym"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BrokenSynonym.StandardAttribute.Code"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes[0].properties.Synonym"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BrokenToolTip"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeLength",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "standardAttributes[0].properties.ToolTip"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BrokenToolTip.StandardAttribute"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes[0].properties.ToolTip"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BrokenToolTip.StandardAttribute.Code"
+      },
+      "expect": [
+        "provider"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "c84c11640a8ca82972b75b6d974c285780d557a61cfa3e3a7f0002ceebc73b80"
+        },
+        {
+          "path": "src/Catalogs/BrokenSynonym.xml",
+          "kind": "sha256",
+          "eq": "4ff58a335d9cd065862e2ab7fe63d6d5914fb503b61b96065ace0267f0cdbe75"
+        },
+        {
+          "path": "src/Catalogs/BrokenToolTip.xml",
+          "kind": "sha256",
+          "eq": "84b6ec1716bba95d1e0b20208c73f04e486a631a91a0109ed2f4277efd364665"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes[0].properties.ToolTip"
+        }
+      ]
+    }
+  ]
+}

@@ -6,10 +6,14 @@
 //! protocol sessions, daemon processes, barriers and clocks and performs every assertion here. The
 //! bridge is not a second ReceiptLedger and must not synthesize observations from a scenario name.
 
+#[path = "daemon_receipt_ledger/facade_guards.rs"]
+mod facade_guards;
 #[path = "support/frontend_process.rs"]
 mod frontend_process;
 #[path = "daemon_receipt_ledger/frontend_restart.rs"]
 mod frontend_restart;
+#[path = "daemon_receipt_ledger/receipt_scenario_harness.rs"]
+mod receipt_scenario_harness;
 
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
@@ -94,6 +98,7 @@ enum Action {
     WaitForEvent {
         event: EventKind,
     },
+    WaitForTerminalTaskProjection,
     WaitForEventCount {
         event: EventKind,
         count: u32,
@@ -228,6 +233,7 @@ enum Action {
         count: u32,
     },
     FillTaskLinks,
+    InspectTaskProjectionFromDisk,
     FillTaskLinksLeavingOneReservationSlot,
     FillTombstones,
     SeedTombstoneCatalog {
@@ -11432,6 +11438,7 @@ fn cancel_after_working_before_receipt_begun_waits_and_is_post_begun() {
         Action::JoinOperation {
             label: "waiting-cancel".to_string(),
         },
+        Action::WaitForTerminalTaskProjection,
         checkpoint_action("post-begun-cancel"),
     ]));
 
@@ -12527,6 +12534,7 @@ fn task_store_4097_materialization_preserves_existing_tasks_listener_and_recover
             V5SafeFailureReason::OutcomeUncertain,
         ),
     ] {
+        eprintln!("TASK4097_BRANCH {state:?}");
         let report = execute(Scenario::fake(vec![
             Action::FillTaskLinks,
             Action::PublishListener,
@@ -12544,6 +12552,7 @@ fn task_store_4097_materialization_preserves_existing_tasks_listener_and_recover
             },
             checkpoint_action("materialized"),
             Action::Restart,
+            Action::InspectTaskProjectionFromDisk,
             Action::PublishListener,
             Action::Recover {
                 key: KeyCase::Exact,

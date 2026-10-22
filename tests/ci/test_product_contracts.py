@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 import gc
 import importlib.util
 import json
@@ -9,6 +9,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -360,6 +361,80 @@ def rmcp_dependency_contract_errors(metadata: dict) -> list[str]:
 
 def workspace_rmcp_dependency_errors(repo_root: Path) -> list[str]:
     return rmcp_dependency_contract_errors(cargo_workspace_metadata(repo_root))
+
+
+RMCP_HANDLER_ASSERTION = "assert_unica_server_implements_official_rmcp_server_handler"
+RMCP_HANDLER_MODULE_CHAIN = (
+    ("crates/unica-coder/src/lib.rs", "interfaces"),
+    ("crates/unica-coder/src/interfaces/mod.rs", "mcp"),
+)
+
+
+def top_level_rust_items(source: bytes) -> tuple[list[tuple[str, str, list[str], bytes]], bool]:
+    """Top-level items with their outer attributes, and whether a file-level cfg gates them."""
+    code = productive_rust_code(source)
+    tree = Parser(Language(tree_sitter_rust.language())).parse(code)
+    items, attributes, gated = [], [], False
+    for node in tree.root_node.named_children:
+        text = re.sub(rb"\s+", b"", code[node.start_byte : node.end_byte])
+        if node.type == "inner_attribute_item":
+            gated = gated or text.startswith(b"#![cfg")
+        elif node.type == "attribute_item":
+            attributes.append(text.decode())
+        elif node.type.endswith("comment"):
+            continue
+        else:
+            name = node.child_by_field_name("name")
+            items.append((
+                node.type,
+                code[name.start_byte : name.end_byte].decode() if name else "",
+                attributes,
+                text,
+            ))
+            attributes = []
+    return items, gated
+
+
+def production_rmcp_handler_assertion_errors(sources: dict[str, bytes]) -> list[str]:
+    # Любая не-тестовая сборка библиотеки проверяет эту границу компилятором;
+    # здесь — только что граница и путь модулей к ней не закрыты cfg.
+    errors = []
+    for path, module in RMCP_HANDLER_MODULE_CHAIN:
+        items, gated = top_level_rust_items(sources[path])
+        # Файловое объявление без атрибутов: ни cfg, ни #[path], ни тела.
+        declarations = [
+            (attrs, text) for kind, name, attrs, text in items if (kind, name) == ("mod_item", module)
+        ]
+        if gated or len(declarations) != 1 or declarations[0][0] or not declarations[0][1].endswith(b";"):
+            errors.append(f"{path}: module {module} must be declared once as a plain file module")
+    items, gated = top_level_rust_items(sources[RMCP_OWNER])
+    bounds = [
+        (attrs, text)
+        for kind, name, attrs, text in items
+        if (kind, name) == ("function_item", RMCP_HANDLER_ASSERTION)
+    ]
+    if (
+        gated
+        or len(bounds) != 1
+        or bounds[0][0] != ["#[allow(dead_code)]"]
+        or not bounds[0][1].endswith(b"whereUnicaServer:::rmcp::ServerHandler,{}")
+    ):
+        errors.append(
+            f"{RMCP_OWNER}: production code must assert UnicaServer: rmcp::ServerHandler "
+            "once at module level without cfg"
+        )
+    return errors
+
+
+def load_ci_rust_lanes_module():
+    scripts = Path(__file__).resolve().parents[2] / "scripts" / "ci"
+    spec = importlib.util.spec_from_file_location("ci_rust_lanes", scripts / "ci_rust_lanes.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("failed to load ci_rust_lanes.py")
+    module = importlib.util.module_from_spec(spec)
+    with patch("sys.path", [str(scripts), *sys.path]):
+        spec.loader.exec_module(module)
+    return module
 
 
 def load_contract_module():
@@ -723,18 +798,93 @@ class ProductContractTests(unittest.TestCase):
     ) -> None:
         self.assertEqual(workspace_rmcp_dependency_errors(REPO_ROOT), [])
 
+    def test_production_rmcp_handler_assertion_rejects_test_only_or_gated_bound(
+        self,
+    ) -> None:
+        bound = (
+            b"#[allow(dead_code)]\n"
+            b"fn assert_unica_server_implements_official_rmcp_server_handler()\n"
+            b"where\n    UnicaServer: ::rmcp::ServerHandler,\n{\n}\n"
+        )
+        chain = {
+            "crates/unica-coder/src/lib.rs": b"pub mod interfaces;\n",
+            "crates/unica-coder/src/interfaces/mod.rs": b"pub mod mcp;\n",
+        }
+        owner_error = [
+            f"{RMCP_OWNER}: production code must assert UnicaServer: rmcp::ServerHandler "
+            "once at module level without cfg"
+        ]
+        cfg = b'#[cfg(feature = "research")]\n'
+        fixtures = {
+            "production": ({RMCP_OWNER: b"struct UnicaServer;\n" + bound}, []),
+            "absent": ({RMCP_OWNER: b"struct UnicaServer;\n"}, owner_error),
+            "test_only": ({RMCP_OWNER: b"#[cfg(test)]\n" + bound}, owner_error),
+            "commented": ({RMCP_OWNER: b"/*\n" + bound + b"*/\n"}, owner_error),
+            "duplicated": ({RMCP_OWNER: bound + bound}, owner_error),
+            "feature_gated": ({RMCP_OWNER: cfg + bound}, owner_error),
+            "nested_gated_module": (
+                {RMCP_OWNER: cfg + b"mod gated {\n" + bound + b"}\n"},
+                owner_error,
+            ),
+            "file_gated": ({RMCP_OWNER: b'#![cfg(feature = "research")]\n' + bound}, owner_error),
+            "weakened_bound": (
+                {RMCP_OWNER: bound.replace(b"::rmcp::ServerHandler", b"Clone")},
+                owner_error,
+            ),
+            "gated_interfaces": (
+                {
+                    RMCP_OWNER: bound,
+                    "crates/unica-coder/src/lib.rs": cfg + b"pub mod interfaces;\n",
+                },
+                ["crates/unica-coder/src/lib.rs: module interfaces must be declared once as a plain file module"],
+            ),
+            "redirected_mcp_module": (
+                {
+                    RMCP_OWNER: bound,
+                    "crates/unica-coder/src/interfaces/mod.rs": b'#[path = "other.rs"]\npub mod mcp;\n',
+                },
+                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
+            ),
+            "inline_mcp_module": (
+                {RMCP_OWNER: bound, "crates/unica-coder/src/interfaces/mod.rs": b"pub mod mcp {}\n"},
+                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
+            ),
+            "missing_mcp_module": (
+                {RMCP_OWNER: bound, "crates/unica-coder/src/interfaces/mod.rs": b"pub mod other;\n"},
+                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
+            ),
+        }
+        for name, (sources, expected) in fixtures.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    production_rmcp_handler_assertion_errors({**chain, **sources}), expected
+                )
+
     def test_unica_coder_production_library_satisfies_rmcp_handler_bound(
         self,
     ) -> None:
-        result = subprocess.run(
-            ["cargo", "check", "-q", "-p", "unica-coder", "--lib"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        # Граница — проверка компилятора в production-коде библиотеки. Python-набор
+        # её не собирает: в каждом профиле, включая PR, это делает ordinary-архив
+        # Rust (не-тестовый бинарь `unica`, фичи объединены с dev-зависимостями
+        # тестов), а вне PR и push в main — шаг `product` точным
+        # production-набором фич (`cargo build -p unica-coder --bin unica`).
+        sources = {
+            path: (REPO_ROOT / path).read_bytes()
+            for path in (RMCP_OWNER, *(path for path, _ in RMCP_HANDLER_MODULE_CHAIN))
+        }
+        self.assertEqual(production_rmcp_handler_assertion_errors(sources), [])
 
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        lanes = load_ci_rust_lanes_module()
+        for profile in ("pr", "queue", "main", "release", "large", "all"):
+            with self.subTest(profile=profile):
+                self.assertIn("ordinary", lanes.lanes(profile))
+        command = lanes.archive_command("ordinary", Path("tests.tar.zst"))
+        self.assertEqual(lanes.selection("ordinary"), ("--workspace",))
+        self.assertFalse(
+            {"--features", "--all-features", "--no-default-features", "--lib", "--tests"}
+            & set(command)
+        )
+        self.assertEqual(lanes.prepared_binary.ORDINARY_FEATURES, ["default"])
 
     def test_rmcp_module_preserves_legacy_public_exports_only(self) -> None:
         source = tracked_workspace_production_rust_sources(REPO_ROOT)[RMCP_OWNER]
@@ -819,6 +969,230 @@ class ProductContractTests(unittest.TestCase):
                 )
             ),
         )
+
+    def test_v8_runner_full_pull_windows_verbatim_paths_keep_the_exact_target(self) -> None:
+        module = load_contract_module()
+        normalize = module._ordinary_v8_runner_publication_path
+        for ordinary, reported in [
+            (r"C:\guard\1cv8.exe", r"\\?\C:\guard\1cv8.exe"),
+            (r"\\server\share\sources", r"\\?\UNC\server\share\sources"),
+            (r"C:\guard\stage", "//?/C:/guard/stage"),
+        ]:
+            with self.subTest(reported=reported):
+                self.assertEqual(normalize(reported), ordinary)
+        self.assertEqual(normalize(r"C:\guard\1cv8.exe"), r"C:\guard\1cv8.exe")
+        self.assertNotEqual(normalize(r"\\?\C:\other\1cv8.exe"), r"C:\guard\1cv8.exe")
+
+    def test_v8_runner_full_pull_frames_require_nonce_executor_and_prepared_target(self) -> None:
+        module = load_contract_module()
+        nonce = "11111111-1111-4111-8111-111111111111"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
+            selected = {"phase": "selected", "version": 1, "nonce": nonce,
+                        "provider": {"selected": "designer", "origin": {"kind": "override", "file": "v8project.yaml"}},
+                        "executor": {"kind": "local", "executable": str(platform), "endpoint": None}}
+            ready = {"phase": "ready", "version": 1, "nonce": nonce, "command": "pull",
+                     "requested_mode": "FULL", "mode": "FULL", "mode_reason": None,
+                     "extension": None, "provider_dispatched": True, "source_set": "main",
+                     "target_path": str(source), "stage_path": str(stage),
+                     "snapshot": "prepared", "snapshot_warning": None}
+            terminal = {"phase": "terminal", "version": 1, "nonce": nonce,
+                        "publication": "published", "memory": "saved", "result": {
+                            "ok": True, "command": "pull", "duration_ms": 0,
+                            "data": {}, "warnings": [], "steps": []}}
+            for value in [selected, ready, terminal]:
+                self.assertEqual(module.validate_v8_runner_publication_frame(
+                    value, value["phase"], nonce, source, stage, platform), [])
+            defects = [
+                (selected, {"nonce": "not-a-uuid"}),
+                (selected, {"executor": {**selected["executor"], "kind": "attached"}}),
+                (selected, {"executor": {**selected["executor"], "executable": str(root / "other")}}),
+                (selected, {"executor": {**selected["executor"], "endpoint": "foreign:1545"}}),
+                (selected, {"provider": {"selected": "agent"}}),
+                (ready, {"nonce": "22222222-2222-4222-8222-222222222222"}),
+                (ready, {"version": True}),
+                (ready, {"version": 2}),
+                (ready, {"phase": "terminal"}),
+                (ready, {"target_path": str(root / "other")}),
+                (ready, {"stage_path": "relative-stage"}),
+                (ready, {"snapshot": "unavailable"}),
+                (ready, {"provider_dispatched": False}),
+                (ready, {"source_set": "other"}),
+                (ready, {"unexpected": True}),
+                (terminal, {"nonce": "22222222-2222-4222-8222-222222222222"}),
+            ]
+            for value, defect in defects:
+                with self.subTest(phase=value["phase"], fields=sorted(defect)):
+                    self.assertTrue(module.validate_v8_runner_publication_frame(
+                        {**value, **defect}, value["phase"], nonce, source, stage, platform))
+
+    def test_v8_runner_full_pull_selected_requires_closed_configured_provider_receipt(self) -> None:
+        module = load_contract_module()
+        nonce = "11111111-1111-4111-8111-111111111111"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
+            origin = {"kind": "override", "file": "v8project.yaml"}
+            provider = {"selected": "designer", "origin": origin}
+            selected = {"phase": "selected", "version": 1, "nonce": nonce,
+                        "provider": provider,
+                        "executor": {"kind": "local", "executable": str(platform), "endpoint": None}}
+            for receipt in [provider, {**provider, "skipped": [], "endpoint": None}]:
+                self.assertEqual(module.validate_v8_runner_publication_frame(
+                    {**selected, "provider": receipt}, "selected", nonce, source, stage, platform), [])
+            invalid_receipts = [
+                {"selected": "designer"},
+                {**provider, "origin": None},
+                {**provider, "origin": {"kind": "override"}},
+                {**provider, "origin": {"kind": "default"}},
+                {**provider, "origin": {**origin, "file": "v8project.local.yaml"}},
+                {**provider, "origin": {**origin, "file": None}},
+                {**provider, "origin": {**origin, "unexpected": True}},
+                {**provider, "unexpected": True},
+                {**provider, "skipped": None},
+                {**provider, "skipped": [{"provider": "agent", "reason": "not this explicit override"}]},
+                {**provider, "endpoint": {"mode": "attached", "address": "other:1545"}},
+            ]
+            for receipt in invalid_receipts:
+                with self.subTest(receipt=receipt):
+                    self.assertTrue(module.validate_v8_runner_publication_frame(
+                        {**selected, "provider": receipt}, "selected", nonce, source, stage, platform))
+            for executor in [
+                {"kind": "local", "executable": str(platform)},
+                {**selected["executor"], "unexpected": True},
+            ]:
+                with self.subTest(executor=executor):
+                    self.assertTrue(module.validate_v8_runner_publication_frame(
+                        {**selected, "executor": executor}, "selected", nonce, source, stage, platform))
+
+    def test_v8_runner_full_pull_terminal_requires_closed_common_envelope(self) -> None:
+        module = load_contract_module()
+        nonce = "11111111-1111-4111-8111-111111111111"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
+            result = {"ok": True, "command": "pull", "duration_ms": 0,
+                      "data": {}, "warnings": [], "steps": []}
+            terminal = {"phase": "terminal", "version": 1, "nonce": nonce,
+                        "publication": "published", "memory": "saved", "result": result}
+            failure = {**result, "ok": False, "error": {
+                "code": "runtime_failure", "kind": "runtime", "message": "control input closed"}}
+            for envelope in [result, {**result, "error": None}, {**result, "warnings": ["diagnostic"]}, failure]:
+                self.assertEqual(module.validate_v8_runner_publication_frame(
+                    {**terminal, "result": envelope}, "terminal", nonce, source, stage, platform), [])
+            invalid_results = [
+                {key: value for key, value in result.items() if key != removed}
+                for removed in result
+            ] + [
+                {**result, "unexpected": True},
+                {**result, "ok": 1},
+                {**result, "command": None},
+                {**result, "duration_ms": True},
+                {**result, "duration_ms": -1},
+                {**result, "duration_ms": "0"},
+                {**result, "warnings": {}},
+                {**result, "warnings": [1]},
+                {**result, "steps": {}},
+                {**result, "steps": [{}]},
+                {**result, "error": []},
+                {**result, "ok": False},
+                {**failure, "error": {"code": "runtime_failure", "kind": "runtime"}},
+                {**failure, "error": {**failure["error"], "unexpected": True}},
+                {**failure, "error": {**failure["error"], "code": True}},
+                {**failure, "error": {**failure["error"], "kind": "platform"}},
+                {**failure, "error": {**failure["error"], "message": ""}},
+            ]
+            for envelope in invalid_results:
+                with self.subTest(envelope=envelope):
+                    self.assertTrue(module.validate_v8_runner_publication_frame(
+                        {**terminal, "result": envelope}, "terminal", nonce, source, stage, platform))
+
+    def test_v8_runner_full_pull_preview_cannot_hide_missing_memory_or_a_late_edit(self) -> None:
+        module = load_contract_module()
+        def envelope(mode):
+            return {"ok": True, "command": "push", "data": {
+                "ok": True, "provider_dispatched": False,
+                "steps": [{"source_set": "main", "mode": mode, "ok": True, "applied": False}]}}
+        unchanged = envelope("skipped")
+        changed = envelope({"partial": {"file_count": 1}})
+        full = envelope("full")
+        self.assertEqual(module.validate_v8_runner_post_pull_preview(unchanged, 0, changed=False), [])
+        self.assertEqual(module.validate_v8_runner_post_pull_preview(changed, 0, changed=True), [])
+        self.assertEqual(module.validate_v8_runner_post_pull_preview(full, 0, changed=True), [])
+        cases = [
+            (unchanged, 0, True), (changed, 0, False),
+            (full, 0, False),
+            ({**unchanged, "ok": False, "error": {"code": "no_memory"}}, 2, False),
+            ({**unchanged, "data": {**unchanged["data"], "steps": []}}, 0, False),
+            ({**unchanged, "data": {**unchanged["data"], "provider_dispatched": True}}, 0, False),
+            (envelope(None), 0, True),
+            (envelope({"partial": {"file_count": 0}}), 0, True),
+            (envelope({"partial": {"file_count": True}}), 0, True),
+        ]
+        for index, (value, status, expect_changed) in enumerate(cases):
+            with self.subTest(case=index):
+                self.assertTrue(module.validate_v8_runner_post_pull_preview(value, status, changed=expect_changed))
+
+    def test_v8_runner_full_pull_preserves_every_prepared_file(self) -> None:
+        module = load_contract_module()
+        prepared = {"Configuration.xml": b"configuration", "Module.bsl": b"prepared",
+                    "ConfigDumpInfo.xml": b"dump info"}
+        late_edit = {**prepared, "Module.bsl": b"late edit"}
+        self.assertEqual(module.validate_v8_runner_publication_tree(dict(prepared), prepared), [])
+        self.assertEqual(module.validate_v8_runner_publication_tree(dict(late_edit), late_edit), [])
+        defects = [
+            {name: payload for name, payload in prepared.items() if name != "Configuration.xml"},
+            {**prepared, "Configuration.xml": b"corrupted configuration"},
+            {name: payload for name, payload in prepared.items() if name != "ConfigDumpInfo.xml"},
+            {**prepared, "ConfigDumpInfo.xml": b"corrupted dump info"},
+            {**prepared, "unexpected.bsl": b"extra"},
+            {**prepared, "Module.bsl": b"unexpected edit"},
+        ]
+        for index, tree in enumerate(defects):
+            with self.subTest(case=index):
+                self.assertTrue(module.validate_v8_runner_publication_tree(tree, prepared))
+
+    def test_v8_runner_full_pull_invalid_frame_still_closes_each_owned_process(self) -> None:
+        from io import StringIO
+        from queue import Queue
+        from types import SimpleNamespace
+        module = load_contract_module()
+        sessions = []
+        def start(command, environment, timeout_seconds, *, cwd, deadline):
+            del timeout_seconds, deadline
+            calls = Path(environment["UNICA_FULL_PULL_CALLS"])
+            if not calls.exists():
+                calls.write_bytes(b"probe\n")
+            output = {"ok": True} if "pull" in command else {"ok": True, "command": "push", "data": {
+                "ok": True, "provider_dispatched": False,
+                "steps": [{"source_set": "main", "mode": "skipped", "ok": True, "applied": False}]}}
+            if "--publication-stdio" in command:
+                output = {"phase": "selected"}  # Invalid before any reply or publication.
+            lines = Queue()
+            lines.put(json.dumps(output) + "\n")
+            lines.put("")
+            reader = SimpleNamespace(join=lambda timeout: None, is_alive=lambda: False)
+            session = SimpleNamespace(
+                process=SimpleNamespace(stdin=StringIO(), wait=lambda timeout: 0),
+                lines=lines, reader=reader, error_reader=reader, diagnostics=[])
+            sessions.append(session)
+            return session
+        def close(session, root):
+            del root
+            session.process.stdin.close()
+        with tempfile.TemporaryDirectory() as raw:
+            runner = Path(raw) / "v8-runner"
+            runner.write_bytes(b"test-only supplied binary stand-in")
+            with patch.object(module, "compile_rust_platform_stub", return_value=[]), patch.object(
+                module, "load_shared_mcp_smoke_module", return_value=SimpleNamespace(McpSession=start)
+            ), patch.object(module, "terminate_shared_mcp_session", side_effect=close) as cleanup:
+                errors = module.check_v8_runner_full_pull_publication_contract(runner, "linux-x64")
+        self.assertEqual(len(sessions), 3)
+        self.assertEqual(cleanup.call_count, 3)
+        self.assertTrue(all(session.process.stdin.closed for session in sessions))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("selected frame", errors[0])
 
     def test_v8_runner_platform_stub_compilation_timeout_is_bounded(self) -> None:
         module = load_contract_module()
@@ -1442,31 +1816,26 @@ class ProductContractTests(unittest.TestCase):
                     self.assertEqual(len(errors), 1, errors)
                     self.assertIn(expected, errors[0])
 
-    def test_targeted_tool_contracts_run_both_v8_runner_behavioral_smokes(self) -> None:
+    def test_targeted_tool_contracts_run_all_v8_runner_behavioral_smokes(self) -> None:
         module = load_contract_module()
-
+        checks = [
+            "check_v8_runner_partial_load_contract",
+            "check_v8_runner_bounded_external_epf_contract",
+            "check_v8_runner_windows_external_publication_contract",
+            "check_v8_runner_full_pull_publication_contract",
+        ]
         with tempfile.TemporaryDirectory() as tmp:
             tools_dir = Path(tmp)
             runner = tools_dir / "v8-runner"
             runner.write_bytes(b"runner")
-            with (
-                patch.object(module, "TOOL_HELP_CHECKS", []),
-                patch.object(
-                    module,
-                    "check_v8_runner_partial_load_contract",
-                    return_value=["behavioral failure"],
-                ) as behavioral_check,
-                patch.object(
-                    module,
-                    "check_v8_runner_bounded_external_epf_contract",
-                    return_value=["bounded failure"],
-                ) as bounded_check,
-            ):
+            with ExitStack() as patches:
+                patches.enter_context(patch.object(module, "TOOL_HELP_CHECKS", []))
+                mocks = [patches.enter_context(patch.object(module, name, return_value=[name]))
+                         for name in checks]
                 errors = module.check_tool_contracts(tools_dir, "linux-x64")
-
-        self.assertEqual(errors, ["behavioral failure", "bounded failure"])
-        behavioral_check.assert_called_once_with(runner.resolve(), "linux-x64")
-        bounded_check.assert_called_once_with(runner.resolve(), "linux-x64")
+        self.assertEqual(errors, checks)
+        for check in mocks:
+            check.assert_called_once_with(runner.resolve(), "linux-x64")
 
     def test_tool_contracts_find_the_runner_inside_its_publisher_archive_directory(
         self,
@@ -1523,6 +1892,11 @@ class ProductContractTests(unittest.TestCase):
                     "check_v8_runner_windows_external_publication_contract",
                     return_value=["windows publication failure"],
                 ) as publication_check,
+                patch.object(
+                    module,
+                    "check_v8_runner_full_pull_publication_contract",
+                    return_value=[],
+                ),
             ):
                 errors = module.check_tool_contracts(tools_dir, "win-x64")
 
@@ -1806,12 +2180,13 @@ class ProductContractTests(unittest.TestCase):
         """
         repo_root = Path(__file__).resolve().parents[2]
         dictionary = (
-            repo_root / "crates" / "unica-coder" / "src" / "domain" / "refusal.rs"
+            repo_root / "crates" / "unica-refusal" / "src" / "lib.rs"
         )
         sources = [
             path
-            for path in (repo_root / "crates" / "unica-coder" / "src").rglob("*.rs")
-            if path.name != "refusal.rs"
+            for crate in (repo_root / "crates").iterdir()
+            for path in (crate / "src").rglob("*.rs")
+            if path != dictionary
         ]
         corpus = "".join(path.read_text(encoding="utf-8") for path in sources)
         detail_names = re.findall(
@@ -2696,7 +3071,7 @@ fn test_only() { std::process::Command::new("git"); }
             encoding="utf-8"
         )
         validator = (
-            repo_root / "crates/unica-bootstrap/src/manifest.rs"
+            repo_root / "crates/unica-artifact-delivery/src/manifest.rs"
         ).read_text(encoding="utf-8")
 
         approved = {

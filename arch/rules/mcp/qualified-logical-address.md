@@ -1,23 +1,23 @@
 ---
 id: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 check:
-  - crates/unica-coder/src/domain/address.rs::body_line_suffix_keeps_the_bsl_node_and_round_trips
-  - crates/unica-coder/src/domain/address.rs::body_line_suffix_rejects_malformed_ranges_and_other_nodes
-  - crates/unica-coder/src/domain/address.rs::a_hash_inside_a_free_text_dcs_item_is_not_a_body_line_selector
-  - crates/unica-coder/src/domain/address.rs::metadata_is_a_terminal_nameless_form_descriptor_and_keeps_operation_queries
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::form_metadata_has_its_own_descriptor_properties_and_resource_identity
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::form_metadata_rejects_orphans_and_does_not_follow_descriptor_links
-  - crates/unica-coder/src/domain/address.rs::qualified_addresses_are_table_driven_canonical_and_arbitrarily_deep
-  - crates/unica-coder/src/domain/address.rs::qualified_addresses_reject_unqualified_malformed_and_noncanonical_roots
-  - crates/unica-coder/src/domain/address.rs::metadata_aliases_reuse_v12_evidence_while_structural_aliases_stay_separate
-  - crates/unica-coder/src/domain/address.rs::unqualified_input_resolves_only_with_one_source_set_and_stays_qualified
-  - crates/unica-coder/src/domain/address.rs::configuration_kind_is_rejected_everywhere_except_the_sole_root
-  - crates/unica-coder/src/domain/address.rs::nameless_kinds_do_not_consume_the_next_segment_as_a_name
-  - crates/unica-coder/src/domain/address.rs::a_named_kind_still_takes_the_segment_that_follows_it
-  - crates/unica-coder/src/domain/address.rs::neither_a_configuration_prefix_nor_an_invented_interface_name_is_accepted
-  - crates/unica-coder/src/domain/address.rs::a_can_segment_takes_the_rest_of_the_address_as_the_operation_name
-  - crates/unica-coder/src/domain/address.rs::an_escaped_dot_stays_inside_one_name_and_round_trips
-  - crates/unica-coder/src/domain/address.rs::an_escaped_dot_is_a_name_only_on_document_routes
+  - crates/unica-address/src/address.rs::body_line_suffix_keeps_the_bsl_node_and_round_trips
+  - crates/unica-address/src/address.rs::body_line_suffix_rejects_malformed_ranges_and_other_nodes
+  - crates/unica-address/src/address.rs::a_hash_inside_a_free_text_dcs_item_is_not_a_body_line_selector
+  - crates/unica-address/src/address.rs::metadata_is_a_terminal_nameless_form_descriptor_and_keeps_operation_queries
+  - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::form_metadata_has_its_own_descriptor_properties_and_resource_identity
+  - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::form_metadata_rejects_orphans_and_does_not_follow_descriptor_links
+  - crates/unica-address/src/address.rs::qualified_addresses_are_table_driven_canonical_and_arbitrarily_deep
+  - crates/unica-address/src/address.rs::qualified_addresses_reject_unqualified_malformed_and_noncanonical_roots
+  - crates/unica-address/src/address.rs::metadata_aliases_reuse_v12_evidence_while_structural_aliases_stay_separate
+  - crates/unica-address/src/address.rs::unqualified_input_resolves_only_with_one_source_set_and_stays_qualified
+  - crates/unica-address/src/address.rs::configuration_kind_is_rejected_everywhere_except_the_sole_root
+  - crates/unica-address/src/address.rs::nameless_kinds_do_not_consume_the_next_segment_as_a_name
+  - crates/unica-address/src/address.rs::a_named_kind_still_takes_the_segment_that_follows_it
+  - crates/unica-address/src/address.rs::neither_a_configuration_prefix_nor_an_invented_interface_name_is_accepted
+  - crates/unica-address/src/address.rs::a_can_segment_takes_the_rest_of_the_address_as_the_operation_name
+  - crates/unica-address/src/address.rs::an_escaped_dot_stays_inside_one_name_and_round_trips
+  - crates/unica-address/src/address.rs::an_escaped_dot_is_a_name_only_on_document_routes
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::names_with_a_dot_are_published_escaped_and_read_back
   - crates/unica-coder/src/domain/apply.rs::retired_names_with_a_dot_route_to_escaped_addresses
   - crates/unica-coder/src/infrastructure/v13_read_projection.rs::dcs_structure_tests::setting_structure_rows_never_fabricate_or_choose_named_addresses

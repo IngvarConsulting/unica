@@ -1,0 +1,4678 @@
+pub mod observation;
+
+use crate::receipt_ledger::{
+    receipt_key_digest, AcknowledgedTombstoneReceipt, CancelResolution, CommittedDirectPublication,
+    DirectTerminalUnackedReceipt, OriginalCutoffDescriptor, ProvenTaskLinkCapacity, ReceiptKey,
+    ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion,
+    ReserveOutcome, ReservedReceipt, StagedTerminalTransferCertificate, TaskBoundReceipt,
+    TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
+    TaskPromisedUnboundReceipt, TaskReceiptOwnedActorBoundReceipt, TaskTerminalBoundReceipt,
+    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
+};
+use crate::receipt_ledger::{ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
+use unica_execution_contract::invocation::SafeIdentityHash;
+use unica_work_control::operation_deadline::OperationDeadline;
+
+const RECEIPT_LEDGER_CHANNEL_CAPACITY: usize = 64;
+const READY: u8 = 0;
+const RECOVERY_REQUIRED: u8 = 1;
+const ENQUEUE_RETRY_SLICE: Duration = Duration::from_millis(1);
+
+struct HeavyResultSlot {
+    occupied: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl HeavyResultSlot {
+    fn available() -> Self {
+        Self {
+            occupied: Mutex::new(false),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn acquire(
+        self: &Arc<Self>,
+        deadline: OperationDeadline,
+        health: &ActorHealth,
+    ) -> Result<HeavyResultPermit, ReceiptLedgerError> {
+        self.acquire_inner(deadline, health, || {})
+    }
+
+    fn acquire_inner(
+        self: &Arc<Self>,
+        deadline: OperationDeadline,
+        health: &ActorHealth,
+        mut before_wait: impl FnMut(),
+    ) -> Result<HeavyResultPermit, ReceiptLedgerError> {
+        let mut occupied = self
+            .occupied
+            .lock()
+            .expect("receipt heavy-result permit mutex poisoned");
+        loop {
+            if !health.is_ready() {
+                return Err(ReceiptLedgerError::StoreUnavailable);
+            }
+
+            let now = Instant::now();
+            if deadline.is_elapsed_at(now) {
+                return Err(ReceiptLedgerError::DeadlineExceeded);
+            }
+            if !*occupied {
+                *occupied = true;
+                return Ok(HeavyResultPermit {
+                    slot: Arc::clone(self),
+                });
+            }
+
+            before_wait();
+            occupied = match deadline.remaining_at(now) {
+                Some(remaining) => {
+                    self.changed
+                        .wait_timeout(occupied, remaining)
+                        .expect("receipt heavy-result permit mutex poisoned while waiting")
+                        .0
+                }
+                None => self
+                    .changed
+                    .wait(occupied)
+                    .expect("receipt heavy-result permit mutex poisoned while waiting"),
+            };
+        }
+    }
+
+    fn wake_all(&self) {
+        // Synchronize health changes with the same mutex used by `acquire`.
+        // Otherwise fail-stop could be published after the waiter checks
+        // health but before it enters the condvar, losing the only wake-up.
+        let occupied = self
+            .occupied
+            .lock()
+            .expect("receipt heavy-result permit mutex poisoned while waking");
+        self.changed.notify_all();
+        drop(occupied);
+    }
+}
+
+struct HeavyResultPermit {
+    slot: Arc<HeavyResultSlot>,
+}
+
+impl Drop for HeavyResultPermit {
+    fn drop(&mut self) {
+        let mut occupied = self
+            .slot
+            .occupied
+            .lock()
+            .expect("receipt heavy-result permit mutex poisoned while releasing");
+        debug_assert!(*occupied, "receipt heavy-result permit released only once");
+        *occupied = false;
+        self.slot.changed.notify_all();
+    }
+}
+
+#[derive(Clone)]
+pub struct ReceiptLedgerActor {
+    worker: Arc<ReceiptLedgerWorkerOwner>,
+    health: Arc<ActorHealth>,
+}
+
+struct ReceiptLedgerWorkerOwner {
+    sender: Option<SyncSender<Command>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    health: Arc<ActorHealth>,
+}
+
+impl ReceiptLedgerWorkerOwner {
+    fn sender(&self) -> &SyncSender<Command> {
+        self.sender
+            .as_ref()
+            .expect("receipt ledger sender exists while an actor handle is alive")
+    }
+}
+
+impl Drop for ReceiptLedgerWorkerOwner {
+    fn drop(&mut self) {
+        drop(self.sender.take());
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        if !self.health.is_ready() {
+            // A timed-out running port call is process-owned fail-stop work.
+            // Joining it here would keep the process alive indefinitely and
+            // violate the bounded caller contract.
+            drop(worker);
+            return;
+        }
+        if worker.thread().id() == std::thread::current().id() {
+            return;
+        }
+        let _ = worker.join();
+    }
+}
+
+struct ActorHealth {
+    state: AtomicU8,
+    wake_generation: Mutex<u64>,
+    changed: Condvar,
+    heavy_result_slot: Arc<HeavyResultSlot>,
+    /// The least time a port call gets once it has begun, counted from its
+    /// start. The caller's deadline still bounds the wait in the queue.
+    running_floor: Duration,
+}
+
+impl ActorHealth {
+    fn ready(running_floor: Duration) -> Self {
+        Self {
+            state: AtomicU8::new(READY),
+            wake_generation: Mutex::new(0),
+            changed: Condvar::new(),
+            heavy_result_slot: Arc::new(HeavyResultSlot::available()),
+            running_floor,
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        self.state.load(Ordering::SeqCst) == READY
+    }
+
+    fn latch_recovery_required(&self) {
+        self.state.store(RECOVERY_REQUIRED, Ordering::SeqCst);
+        self.heavy_result_slot.wake_all();
+        self.wake_all();
+    }
+
+    fn acquire_heavy_result_permit(
+        &self,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<HeavyResultPermit, ReceiptLedgerError> {
+        self.heavy_result_slot.acquire(deadline.into(), self)
+    }
+
+    fn wake_all(&self) {
+        let mut generation = self
+            .wake_generation
+            .lock()
+            .expect("receipt actor wake mutex poisoned");
+        *generation = generation.wrapping_add(1);
+        self.changed.notify_all();
+    }
+
+    fn generation(&self) -> u64 {
+        *self
+            .wake_generation
+            .lock()
+            .expect("receipt actor wake mutex poisoned")
+    }
+
+    fn wait_for_change(&self, observed_generation: u64, timeout: Option<Duration>) {
+        let generation = self
+            .wake_generation
+            .lock()
+            .expect("receipt actor wake mutex poisoned");
+        let generation = match timeout {
+            Some(timeout) => {
+                self.changed
+                    .wait_timeout_while(generation, timeout, |generation| {
+                        *generation == observed_generation
+                    })
+                    .expect("receipt actor wake mutex poisoned while waiting")
+                    .0
+            }
+            None => self
+                .changed
+                .wait_while(generation, |generation| *generation == observed_generation)
+                .expect("receipt actor wake mutex poisoned while waiting"),
+        };
+        drop(generation);
+    }
+}
+
+enum Command {
+    /// An observer's read of the whole catalog; production never sends it.
+    #[allow(dead_code)]
+    SnapshotCatalog {
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<ReceiptLedgerCatalogSnapshot>>,
+    },
+    Generation {
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<u64>>,
+    },
+    /// An observer's retention rotation; production never sends it.
+    #[allow(dead_code)]
+    RotateGenerationForTest {
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<u64>>,
+    },
+    Reserve {
+        key: ReceiptKey,
+        original_cutoff: OriginalCutoffDescriptor,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<ReserveOutcome>>,
+    },
+    BindReservedActor {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        bound_workspace_identity: SafeIdentityHash,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<ReservedReceipt>>,
+    },
+    MarkReservedBegun {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<ReservedReceipt>>,
+    },
+    PromiseTaskUnbound {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        created_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<TaskPromisedUnboundReceipt>>,
+    },
+    BindPromisedTaskActor {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        workspace_identity_hash: SafeIdentityHash,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<TaskPromisedActorBoundReceipt>>,
+    },
+    BeginBoundTaskHandoff {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        created_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<TaskHandoffActorBoundReceipt>>,
+    },
+    StageBoundTaskHandoffTerminal {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        certificate: Box<StagedTerminalTransferCertificate>,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<TaskHandoffActorBoundReceipt>>,
+    },
+    RetainBegunTaskAfterLinkCapacity {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        proven_link_capacity: ProvenTaskLinkCapacity,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<TaskReceiptOwnedActorBoundReceipt>>,
+    },
+    CompleteBoundTaskHandoff {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        confirmed_task_bound: Box<TaskBoundReceipt>,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<TaskBoundReceipt>>,
+    },
+    CompleteStagedTaskHandoff {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        confirmed_terminal_bound: Box<TaskTerminalBoundReceipt>,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<TaskTerminalBoundReceipt>>,
+    },
+    RequestTaskCancel {
+        key: ReceiptKey,
+        expected_state: Box<TaskCancellationReceipt>,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<TaskCancellationReceipt>>,
+    },
+    PublishReceiptBackedTaskTerminal {
+        key: ReceiptKey,
+        expected_state: Box<TaskCancellationReceipt>,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<TaskTerminalReceiptBackedReceipt>>,
+    },
+    RequestCancelOrReserve {
+        key: ReceiptKey,
+        cancel_reserved_at_epoch_ms: u64,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<CancelResolution>>,
+    },
+    PublishCancelledDirectBatch {
+        requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<Vec<DirectTerminalUnackedReceipt>>>,
+    },
+    ReserveBatch {
+        requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<Vec<ReserveOutcome>>>,
+    },
+    BindReservedActorBatch {
+        requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<Vec<ReservedReceipt>>>,
+    },
+    MarkReservedBegunBatch {
+        requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<Vec<ReservedReceipt>>>,
+    },
+    PublishDirectTerminalBatch {
+        requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<Vec<CommittedDirectPublication>>>,
+    },
+    AcknowledgeDirectBatch {
+        requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<Vec<AcknowledgedTombstoneReceipt>>>,
+    },
+    PublishDirectTerminal {
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<CommittedDirectPublication>>,
+    },
+    AcknowledgeDirect {
+        key: ReceiptKey,
+        terminal_digest: TerminalDigest,
+        acknowledged_at_epoch_ms: u64,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<AcknowledgedTombstoneReceipt>>,
+    },
+    ReclaimExpiredTombstones {
+        observed_at_epoch_ms: u64,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<usize>>,
+    },
+    Recover {
+        key: ReceiptKey,
+        observed_at_epoch_ms: Option<u64>,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<ReceiptState>>,
+    },
+    ResolveTask {
+        task_id: unica_execution_contract::invocation::TaskId,
+        deadline: OperationDeadline,
+        ticket: Arc<Ticket<ReceiptState>>,
+    },
+}
+
+impl Command {
+    fn observation(&self) -> observation::Context {
+        match self {
+            Self::SnapshotCatalog { ticket, .. } => ticket.observation.clone(),
+            Self::Generation { ticket, .. } => ticket.observation.clone(),
+            Self::RotateGenerationForTest { ticket, .. } => ticket.observation.clone(),
+            Self::Reserve { ticket, .. } => ticket.observation.clone(),
+            Self::BindReservedActor { ticket, .. } => ticket.observation.clone(),
+            Self::MarkReservedBegun { ticket, .. } => ticket.observation.clone(),
+            Self::PromiseTaskUnbound { ticket, .. } => ticket.observation.clone(),
+            Self::BindPromisedTaskActor { ticket, .. } => ticket.observation.clone(),
+            Self::BeginBoundTaskHandoff { ticket, .. } => ticket.observation.clone(),
+            Self::StageBoundTaskHandoffTerminal { ticket, .. } => ticket.observation.clone(),
+            Self::RetainBegunTaskAfterLinkCapacity { ticket, .. } => ticket.observation.clone(),
+            Self::CompleteBoundTaskHandoff { ticket, .. } => ticket.observation.clone(),
+            Self::CompleteStagedTaskHandoff { ticket, .. } => ticket.observation.clone(),
+            Self::RequestTaskCancel { ticket, .. } => ticket.observation.clone(),
+            Self::PublishReceiptBackedTaskTerminal { ticket, .. } => ticket.observation.clone(),
+            Self::RequestCancelOrReserve { ticket, .. } => ticket.observation.clone(),
+            Self::PublishCancelledDirectBatch { ticket, .. } => ticket.observation.clone(),
+            Self::ReserveBatch { ticket, .. } => ticket.observation.clone(),
+            Self::BindReservedActorBatch { ticket, .. } => ticket.observation.clone(),
+            Self::MarkReservedBegunBatch { ticket, .. } => ticket.observation.clone(),
+            Self::PublishDirectTerminalBatch { ticket, .. } => ticket.observation.clone(),
+            Self::AcknowledgeDirectBatch { ticket, .. } => ticket.observation.clone(),
+            Self::PublishDirectTerminal { ticket, .. } => ticket.observation.clone(),
+            Self::AcknowledgeDirect { ticket, .. } => ticket.observation.clone(),
+            Self::ReclaimExpiredTombstones { ticket, .. } => ticket.observation.clone(),
+            Self::Recover { ticket, .. } => ticket.observation.clone(),
+            Self::ResolveTask { ticket, .. } => ticket.observation.clone(),
+        }
+    }
+}
+
+enum TicketState<R> {
+    Queued,
+    /// Begun, with the deadline the running port call is held to.
+    Running(OperationDeadline),
+    Finished(Option<Result<R, ReceiptLedgerError>>),
+    TimedOut(Option<ReceiptLedgerError>),
+}
+
+struct Ticket<R> {
+    observation: observation::Context,
+    deadline: OperationDeadline,
+    running_timeout_error: ReceiptLedgerError,
+    _heavy_result_permit: Option<HeavyResultPermit>,
+    state: Mutex<TicketState<R>>,
+}
+
+impl<R> Ticket<R> {
+    fn queued(deadline: impl Into<OperationDeadline>, timeout_class: TimeoutClass) -> Self {
+        let deadline = deadline.into();
+        observation::mark(
+            "actor.ticket",
+            "queued_original_deadline",
+            deadline.remaining_at(Instant::now()),
+        );
+        Self {
+            observation: observation::capture(),
+            deadline,
+            running_timeout_error: timeout_class.running_error(),
+            _heavy_result_permit: None,
+            state: Mutex::new(TicketState::Queued),
+        }
+    }
+
+    fn queued_with_heavy_result_permit(
+        deadline: impl Into<OperationDeadline>,
+        timeout_class: TimeoutClass,
+        heavy_result_permit: HeavyResultPermit,
+    ) -> Self {
+        let deadline = deadline.into();
+        observation::mark(
+            "actor.ticket",
+            "queued_original_deadline",
+            deadline.remaining_at(Instant::now()),
+        );
+        Self {
+            observation: observation::capture(),
+            deadline,
+            running_timeout_error: timeout_class.running_error(),
+            _heavy_result_permit: Some(heavy_result_permit),
+            state: Mutex::new(TicketState::Queued),
+        }
+    }
+
+    /// Atomically decides whether the port invocation may begin.
+    ///
+    /// The time check and `Queued -> Running` transition share one gate with
+    /// the caller's timeout path, so a queued command cannot start after its
+    /// caller has returned `DeadlineExceeded`.
+    ///
+    /// A begun call is held to its caller's deadline, but never to less than
+    /// the actor's running floor from this moment: a durable write that
+    /// started late in a short or nearly spent budget is not cut short and
+    /// declared uncertain (#1387). Returns the deadline the port gets.
+    fn begin(&self, health: &ActorHealth) -> Option<OperationDeadline> {
+        let mut state = self.state.lock().expect("receipt ticket mutex poisoned");
+        let now = Instant::now();
+        let started = match &*state {
+            TicketState::Queued if health.is_ready() && !self.deadline.is_elapsed_at(now) => {
+                let running = match self.deadline {
+                    OperationDeadline::NoDeadline => OperationDeadline::NoDeadline,
+                    OperationDeadline::Finite(deadline) => OperationDeadline::Finite(
+                        now.checked_add(health.running_floor)
+                            .map_or(deadline, |floor| deadline.max(floor)),
+                    ),
+                };
+                observation::mark(
+                    "actor.ticket",
+                    "started_original_deadline",
+                    self.deadline.remaining_at(now),
+                );
+                observation::mark(
+                    "actor.ticket",
+                    "started_effective_deadline",
+                    running.remaining_at(now),
+                );
+                *state = TicketState::Running(running);
+                Some(running)
+            }
+            TicketState::Queued => {
+                let error = if health.is_ready() {
+                    ReceiptLedgerError::DeadlineExceeded
+                } else {
+                    ReceiptLedgerError::StoreUnavailable
+                };
+                observation::failure(
+                    "actor.ticket.before_port",
+                    if health.is_ready() {
+                        "DeadlineExceeded"
+                    } else {
+                        "StoreUnavailable"
+                    },
+                    self.deadline.remaining_at(now),
+                );
+                *state = TicketState::Finished(Some(Err(error)));
+                None
+            }
+            TicketState::TimedOut(_) | TicketState::Finished(_) => None,
+            TicketState::Running(_) => unreachable!("receipt ticket can begin only once"),
+        };
+        drop(state);
+        if started.is_none() {
+            health.wake_all();
+        }
+        started
+    }
+
+    #[cfg(test)]
+    fn try_begin(&self, health: &ActorHealth) -> bool {
+        self.begin(health).is_some()
+    }
+
+    fn finish(&self, result: Result<R, ReceiptLedgerError>, health: &ActorHealth) {
+        self.finish_at(result, Instant::now(), health);
+    }
+
+    fn finish_at(
+        &self,
+        result: Result<R, ReceiptLedgerError>,
+        completed_at: Instant,
+        health: &ActorHealth,
+    ) {
+        observation::mark(
+            "actor.ticket",
+            if result.is_ok() {
+                "port_returned_ok"
+            } else {
+                "port_returned_error"
+            },
+            self.deadline.remaining_at(completed_at),
+        );
+        let mut state = self.state.lock().expect("receipt ticket mutex poisoned");
+        let should_latch = match &*state {
+            TicketState::Running(running) if running.is_elapsed_at(completed_at) => {
+                *state = TicketState::TimedOut(Some(self.running_timeout_error.clone()));
+                true
+            }
+            TicketState::Running(_) => {
+                let should_latch = result
+                    .as_ref()
+                    .is_err_and(ReceiptLedgerError::requires_reopen);
+                *state = TicketState::Finished(Some(result));
+                should_latch
+            }
+            TicketState::TimedOut(_) => {
+                // The caller already classified the running timeout and
+                // latched the actor. A late port result has no authority.
+                false
+            }
+            TicketState::Queued | TicketState::Finished(_) => {
+                unreachable!("only a running receipt ticket can finish")
+            }
+        };
+        if should_latch {
+            // Keep the ticket locked until the fail-stop latch is visible, so
+            // no caller can consume a fail-stop or late-completion result and
+            // race a second operation against an apparently healthy actor.
+            health.latch_recovery_required();
+        }
+        drop(state);
+        if !should_latch {
+            health.wake_all();
+        }
+    }
+
+    fn wait(&self, health: &ActorHealth) -> Result<R, ReceiptLedgerError> {
+        loop {
+            let observed_generation = health.generation();
+            let mut state = self.state.lock().expect("receipt ticket mutex poisoned");
+            match &mut *state {
+                TicketState::Finished(result) => {
+                    return result
+                        .take()
+                        .expect("receipt ticket result can be consumed only once");
+                }
+                TicketState::TimedOut(error) => {
+                    return Err(error
+                        .take()
+                        .expect("receipt ticket timeout can be consumed only once"));
+                }
+                TicketState::Queued if !health.is_ready() => {
+                    *state = TicketState::TimedOut(None);
+                    return Err(ReceiptLedgerError::StoreUnavailable);
+                }
+                TicketState::Queued if self.deadline.is_elapsed_at(Instant::now()) => {
+                    observation::failure(
+                        "actor.wait.queued",
+                        "DeadlineExceeded",
+                        Some(Duration::ZERO),
+                    );
+                    *state = TicketState::TimedOut(None);
+                    drop(state);
+                    return Err(ReceiptLedgerError::DeadlineExceeded);
+                }
+                TicketState::Running(running) if running.is_elapsed_at(Instant::now()) => {
+                    observation::failure(
+                        "actor.wait.running",
+                        "RunningDeadlineExceeded",
+                        Some(Duration::ZERO),
+                    );
+                    *state = TicketState::TimedOut(None);
+                    drop(state);
+                    health.latch_recovery_required();
+                    return Err(self.running_timeout_error.clone());
+                }
+                TicketState::Queued => {
+                    let remaining = self.deadline.remaining_at(Instant::now());
+                    drop(state);
+                    health.wait_for_change(observed_generation, remaining);
+                }
+                TicketState::Running(running) => {
+                    let remaining = running.remaining_at(Instant::now());
+                    drop(state);
+                    health.wait_for_change(observed_generation, remaining);
+                }
+            }
+        }
+    }
+}
+
+enum TimeoutClass {
+    #[allow(dead_code)]
+    SnapshotCatalog,
+    Generation,
+    #[allow(dead_code)]
+    RotateGenerationForTest,
+    Reserve(ReceiptKeyDigest),
+    BindReservedActor(ReceiptKeyDigest),
+    MarkReservedBegun(ReceiptKeyDigest),
+    PromiseTaskUnbound(ReceiptKeyDigest),
+    BindPromisedTaskActor(ReceiptKeyDigest),
+    BeginBoundTaskHandoff(ReceiptKeyDigest),
+    StageBoundTaskHandoffTerminal(ReceiptKeyDigest),
+    RetainBegunTaskAfterLinkCapacity(ReceiptKeyDigest),
+    CompleteBoundTaskHandoff(ReceiptKeyDigest),
+    CompleteStagedTaskHandoff(ReceiptKeyDigest),
+    RequestTaskCancel(ReceiptKeyDigest),
+    PublishReceiptBackedTaskTerminal(ReceiptKeyDigest),
+    RequestCancelOrReserve(ReceiptKeyDigest),
+    PublishCancelledDirectBatch(ReceiptKeyDigest),
+    ReserveBatch(ReceiptKeyDigest),
+    BindReservedActorBatch(ReceiptKeyDigest),
+    MarkReservedBegunBatch(ReceiptKeyDigest),
+    PublishDirectTerminalBatch(ReceiptKeyDigest),
+    AcknowledgeDirectBatch(ReceiptKeyDigest),
+    PublishDirectTerminal(ReceiptKeyDigest),
+    AcknowledgeDirect(ReceiptKeyDigest),
+    ReclaimExpiredTombstones,
+    Recover,
+    ResolveTask,
+}
+
+impl TimeoutClass {
+    fn running_error(self) -> ReceiptLedgerError {
+        match self {
+            Self::SnapshotCatalog => ReceiptLedgerError::StoreUnavailable,
+            Self::Generation => ReceiptLedgerError::StoreUnavailable,
+            Self::RotateGenerationForTest => ReceiptLedgerError::StoreUnavailable,
+            Self::Reserve(receipt_key_digest)
+            | Self::BindReservedActor(receipt_key_digest)
+            | Self::MarkReservedBegun(receipt_key_digest)
+            | Self::PromiseTaskUnbound(receipt_key_digest)
+            | Self::BindPromisedTaskActor(receipt_key_digest)
+            | Self::BeginBoundTaskHandoff(receipt_key_digest)
+            | Self::StageBoundTaskHandoffTerminal(receipt_key_digest)
+            | Self::RetainBegunTaskAfterLinkCapacity(receipt_key_digest)
+            | Self::CompleteBoundTaskHandoff(receipt_key_digest)
+            | Self::CompleteStagedTaskHandoff(receipt_key_digest)
+            | Self::RequestTaskCancel(receipt_key_digest)
+            | Self::PublishReceiptBackedTaskTerminal(receipt_key_digest)
+            | Self::RequestCancelOrReserve(receipt_key_digest)
+            | Self::PublishCancelledDirectBatch(receipt_key_digest)
+            | Self::ReserveBatch(receipt_key_digest)
+            | Self::BindReservedActorBatch(receipt_key_digest)
+            | Self::MarkReservedBegunBatch(receipt_key_digest)
+            | Self::PublishDirectTerminalBatch(receipt_key_digest)
+            | Self::AcknowledgeDirectBatch(receipt_key_digest)
+            | Self::PublishDirectTerminal(receipt_key_digest)
+            | Self::AcknowledgeDirect(receipt_key_digest) => {
+                ReceiptLedgerError::CommitUncertain { receipt_key_digest }
+            }
+            Self::ReclaimExpiredTombstones => ReceiptLedgerError::StoreUnavailable,
+            Self::Recover => ReceiptLedgerError::StoreUnavailable,
+            Self::ResolveTask => ReceiptLedgerError::StoreUnavailable,
+        }
+    }
+}
+
+impl ReceiptLedgerActor {
+    /// An actor whose begun port calls are held to their callers' deadlines
+    /// exactly.
+    pub fn spawn(port: impl ReceiptLedgerPort) -> Self {
+        Self::spawn_with_running_floor(port, Duration::ZERO)
+    }
+
+    /// An actor whose begun port calls get at least `running_floor` from
+    /// their start, whatever their callers had left.
+    pub fn spawn_with_running_floor(port: impl ReceiptLedgerPort, running_floor: Duration) -> Self {
+        let (sender, receiver) = mpsc::sync_channel(RECEIPT_LEDGER_CHANNEL_CAPACITY);
+        let health = Arc::new(ActorHealth::ready(running_floor));
+        let worker_health = Arc::clone(&health);
+        let worker = std::thread::Builder::new()
+            .name("unica-receipt-ledger".to_owned())
+            .spawn(move || run_worker(port, receiver, worker_health))
+            .expect("spawn receipt ledger actor");
+        Self {
+            worker: Arc::new(ReceiptLedgerWorkerOwner {
+                sender: Some(sender),
+                worker: Some(worker),
+                health: Arc::clone(&health),
+            }),
+            health,
+        }
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub fn snapshot_catalog(
+        &self,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<ReceiptLedgerCatalogSnapshot, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::SnapshotCatalog,
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::SnapshotCatalog {
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn generation(
+        &self,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<u64, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let ticket = Arc::new(Ticket::queued(deadline, TimeoutClass::Generation));
+        self.enqueue(
+            Command::Generation {
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub fn rotate_generation_for_test(
+        &self,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<u64, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::RotateGenerationForTest,
+        ));
+        self.enqueue(
+            Command::RotateGenerationForTest {
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn restart_required(&self) -> bool {
+        !self.health.is_ready()
+    }
+
+    pub fn reserve(
+        &self,
+        key: ReceiptKey,
+        original_cutoff: OriginalCutoffDescriptor,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            observation::failure(
+                "actor.reserve.before_enqueue",
+                "DeadlineExceeded",
+                Some(Duration::ZERO),
+            );
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::Reserve(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::Reserve {
+                key,
+                original_cutoff,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn bind_reserved_actor(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        bound_workspace_identity: SafeIdentityHash,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::BindReservedActor(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::BindReservedActor {
+                key,
+                expected_version,
+                bound_workspace_identity,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn mark_reserved_begun(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::MarkReservedBegun(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::MarkReservedBegun {
+                key,
+                expected_version,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn promise_task_unbound(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        created_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<TaskPromisedUnboundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::PromiseTaskUnbound(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::PromiseTaskUnbound {
+                key,
+                expected_version,
+                created_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn bind_promised_task_actor(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        workspace_identity_hash: SafeIdentityHash,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<TaskPromisedActorBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::BindPromisedTaskActor(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::BindPromisedTaskActor {
+                key,
+                expected_version,
+                workspace_identity_hash,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn begin_bound_task_handoff(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        created_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::BeginBoundTaskHandoff(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::BeginBoundTaskHandoff {
+                key,
+                expected_version,
+                created_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn stage_bound_task_handoff_terminal(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        certificate: StagedTerminalTransferCertificate,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::StageBoundTaskHandoffTerminal(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::StageBoundTaskHandoffTerminal {
+                key,
+                expected_version,
+                terminal_epoch_ms,
+                terminal,
+                certificate: Box::new(certificate),
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn complete_bound_task_handoff(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        confirmed_task_bound: TaskBoundReceipt,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::CompleteBoundTaskHandoff(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::CompleteBoundTaskHandoff {
+                key,
+                expected_version,
+                confirmed_task_bound: Box::new(confirmed_task_bound),
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn complete_staged_task_handoff(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        confirmed_terminal_bound: TaskTerminalBoundReceipt,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<TaskTerminalBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::CompleteStagedTaskHandoff(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::CompleteStagedTaskHandoff {
+                key,
+                expected_version,
+                confirmed_terminal_bound: Box::new(confirmed_terminal_bound),
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn retain_begun_task_after_link_capacity(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        proven_link_capacity: ProvenTaskLinkCapacity,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<TaskReceiptOwnedActorBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::RetainBegunTaskAfterLinkCapacity(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::RetainBegunTaskAfterLinkCapacity {
+                key,
+                expected_version,
+                proven_link_capacity,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn request_task_cancel(
+        &self,
+        key: ReceiptKey,
+        expected_state: TaskCancellationReceipt,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::RequestTaskCancel(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::RequestTaskCancel {
+                key,
+                expected_state: Box::new(expected_state),
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn publish_receipt_backed_task_terminal(
+        &self,
+        key: ReceiptKey,
+        expected_state: TaskCancellationReceipt,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<TaskTerminalReceiptBackedReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::PublishReceiptBackedTaskTerminal(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::PublishReceiptBackedTaskTerminal {
+                key,
+                expected_state: Box::new(expected_state),
+                terminal_epoch_ms,
+                terminal,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn request_cancel_or_reserve(
+        &self,
+        key: ReceiptKey,
+        cancel_reserved_at_epoch_ms: u64,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<CancelResolution, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::RequestCancelOrReserve(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::RequestCancelOrReserve {
+                key,
+                cancel_reserved_at_epoch_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn publish_cancelled_direct_batch(
+        &self,
+        requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<Vec<DirectTerminalUnackedReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::PublishCancelledDirectBatch(digest),
+        ));
+        self.enqueue(
+            Command::PublishCancelledDirectBatch {
+                requests,
+                terminal_epoch_ms,
+                terminal,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn reserve_batch(
+        &self,
+        requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<Vec<ReserveOutcome>, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(deadline, TimeoutClass::ReserveBatch(digest)));
+        self.enqueue(
+            Command::ReserveBatch {
+                requests,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn bind_reserved_actor_batch(
+        &self,
+        requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::BindReservedActorBatch(digest),
+        ));
+        self.enqueue(
+            Command::BindReservedActorBatch {
+                requests,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn mark_reserved_begun_batch(
+        &self,
+        requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::MarkReservedBegunBatch(digest),
+        ));
+        self.enqueue(
+            Command::MarkReservedBegunBatch {
+                requests,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn publish_direct_terminal_batch(
+        &self,
+        requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<Vec<CommittedDirectPublication>, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::PublishDirectTerminalBatch(digest),
+        ));
+        self.enqueue(
+            Command::PublishDirectTerminalBatch {
+                requests,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn acknowledge_direct_batch(
+        &self,
+        requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::AcknowledgeDirectBatch(digest),
+        ));
+        self.enqueue(
+            Command::AcknowledgeDirectBatch {
+                requests,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn recover(
+        &self,
+        key: ReceiptKey,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        self.recover_inner(key, None, deadline)
+    }
+
+    pub fn recover_at(
+        &self,
+        key: ReceiptKey,
+        observed_at_epoch_ms: u64,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        self.recover_inner(key, Some(observed_at_epoch_ms), deadline)
+    }
+
+    fn recover_inner(
+        &self,
+        key: ReceiptKey,
+        observed_at_epoch_ms: Option<u64>,
+        deadline: OperationDeadline,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::Recover,
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::Recover {
+                key,
+                observed_at_epoch_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn resolve_task(
+        &self,
+        task_id: unica_execution_contract::invocation::TaskId,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::ResolveTask,
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::ResolveTask {
+                task_id,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn publish_direct_terminal(
+        &self,
+        key: ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::PublishDirectTerminal(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::PublishDirectTerminal {
+                key,
+                expected_version,
+                terminal_epoch_ms,
+                terminal,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn acknowledge_direct(
+        &self,
+        key: ReceiptKey,
+        terminal_digest: TerminalDigest,
+        acknowledged_at_epoch_ms: u64,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
+        let digest = receipt_key_digest(&key);
+        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
+            deadline,
+            TimeoutClass::AcknowledgeDirect(digest),
+            heavy_result_permit,
+        ));
+        self.enqueue(
+            Command::AcknowledgeDirect {
+                key,
+                terminal_digest,
+                acknowledged_at_epoch_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    pub fn reclaim_expired_tombstones(
+        &self,
+        observed_at_epoch_ms: u64,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<usize, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
+            return Err(ReceiptLedgerError::DeadlineExceeded);
+        }
+        if !self.health.is_ready() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+
+        let ticket = Arc::new(Ticket::queued(
+            deadline,
+            TimeoutClass::ReclaimExpiredTombstones,
+        ));
+        self.enqueue(
+            Command::ReclaimExpiredTombstones {
+                observed_at_epoch_ms,
+                deadline,
+                ticket: Arc::clone(&ticket),
+            },
+            deadline,
+        )?;
+        ticket.wait(&self.health)
+    }
+
+    fn enqueue(
+        &self,
+        mut command: Command,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<(), ReceiptLedgerError> {
+        let deadline = deadline.into();
+        loop {
+            if !self.health.is_ready() {
+                return Err(ReceiptLedgerError::StoreUnavailable);
+            }
+            let now = Instant::now();
+            if deadline.is_elapsed_at(now) {
+                return Err(ReceiptLedgerError::DeadlineExceeded);
+            }
+
+            match self.worker.sender().try_send(command) {
+                Ok(()) => return Ok(()),
+                Err(TrySendError::Full(returned)) => {
+                    command = returned;
+                    std::thread::park_timeout(
+                        deadline
+                            .remaining_at(now)
+                            .map_or(ENQUEUE_RETRY_SLICE, |remaining| {
+                                ENQUEUE_RETRY_SLICE.min(remaining)
+                            }),
+                    );
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.health.latch_recovery_required();
+                    return Err(ReceiptLedgerError::StoreUnavailable);
+                }
+            }
+        }
+    }
+}
+
+fn batch_digest<T>(
+    requests: &[T],
+    deadline: OperationDeadline,
+    health: &ActorHealth,
+    key: impl Fn(&T) -> &ReceiptKey,
+) -> Result<ReceiptKeyDigest, ReceiptLedgerError> {
+    if deadline.is_elapsed_at(Instant::now()) {
+        return Err(ReceiptLedgerError::DeadlineExceeded);
+    }
+    if !health.is_ready() {
+        return Err(ReceiptLedgerError::StoreUnavailable);
+    }
+    batch_receipt_key_digest(requests, key)
+}
+
+fn batch_receipt_key_digest<T>(
+    requests: &[T],
+    key: impl Fn(&T) -> &ReceiptKey,
+) -> Result<ReceiptKeyDigest, ReceiptLedgerError> {
+    requests
+        .first()
+        .map(|request| receipt_key_digest(key(request)))
+        .ok_or(ReceiptLedgerError::EmptyBatch)
+}
+
+fn run_worker(
+    mut port: impl ReceiptLedgerPort,
+    receiver: mpsc::Receiver<Command>,
+    health: Arc<ActorHealth>,
+) {
+    while let Ok(command) = receiver.recv() {
+        let _observation = command.observation().install();
+        match command {
+            Command::SnapshotCatalog {
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.snapshot_catalog(ReceiptLedgerCatalogSnapshotAuthority::new(), deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::ReserveBatch {
+                requests,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated reserve batch is nonempty");
+                let result =
+                    catch_unwind(AssertUnwindSafe(|| port.reserve_batch(requests, deadline)))
+                        .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                            receipt_key_digest: digest,
+                        }));
+                ticket.finish(result, &health);
+            }
+            Command::BindReservedActorBatch {
+                requests,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated actor-binding batch is nonempty");
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.bind_reserved_actor_batch(requests, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::MarkReservedBegunBatch {
+                requests,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated begun batch is nonempty");
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.mark_reserved_begun_batch(requests, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::PublishDirectTerminalBatch {
+                requests,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated terminal batch is nonempty");
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.publish_direct_terminal_batch(requests, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::AcknowledgeDirectBatch {
+                requests,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated acknowledgement batch is nonempty");
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.acknowledge_direct_batch(requests, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::PublishCancelledDirectBatch {
+                requests,
+                terminal_epoch_ms,
+                terminal,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = batch_receipt_key_digest(&requests, |request| &request.0)
+                    .expect("validated cancelled Direct batch is nonempty");
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.publish_cancelled_direct_batch(
+                        requests,
+                        terminal_epoch_ms,
+                        terminal,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::Generation {
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let result = catch_unwind(AssertUnwindSafe(|| port.generation(deadline)))
+                    .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::RotateGenerationForTest {
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.rotate_generation_for_test(deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::Reserve {
+                key,
+                original_cutoff,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.reserve(key, original_cutoff, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::BindReservedActor {
+                key,
+                expected_version,
+                bound_workspace_identity,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.bind_reserved_actor(
+                        &key,
+                        expected_version,
+                        bound_workspace_identity,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::MarkReservedBegun {
+                key,
+                expected_version,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.mark_reserved_begun(&key, expected_version, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::PromiseTaskUnbound {
+                key,
+                expected_version,
+                created_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.promise_task_unbound(
+                        &key,
+                        expected_version,
+                        created_at_epoch_ms,
+                        ttl_ms,
+                        poll_interval_ms,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::BindPromisedTaskActor {
+                key,
+                expected_version,
+                workspace_identity_hash,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.bind_promised_task_actor(
+                        &key,
+                        expected_version,
+                        workspace_identity_hash,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::BeginBoundTaskHandoff {
+                key,
+                expected_version,
+                created_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.begin_bound_task_handoff(
+                        &key,
+                        expected_version,
+                        created_at_epoch_ms,
+                        ttl_ms,
+                        poll_interval_ms,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::StageBoundTaskHandoffTerminal {
+                key,
+                expected_version,
+                terminal_epoch_ms,
+                terminal,
+                certificate,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.stage_bound_task_handoff_terminal(
+                        &key,
+                        expected_version,
+                        terminal_epoch_ms,
+                        terminal,
+                        *certificate,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::CompleteBoundTaskHandoff {
+                key,
+                expected_version,
+                confirmed_task_bound,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.complete_bound_task_handoff(
+                        &key,
+                        expected_version,
+                        *confirmed_task_bound,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::CompleteStagedTaskHandoff {
+                key,
+                expected_version,
+                confirmed_terminal_bound,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.complete_staged_task_handoff(
+                        &key,
+                        expected_version,
+                        *confirmed_terminal_bound,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::RetainBegunTaskAfterLinkCapacity {
+                key,
+                expected_version,
+                proven_link_capacity,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.retain_begun_task_after_link_capacity(
+                        &key,
+                        expected_version,
+                        proven_link_capacity,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::RequestTaskCancel {
+                key,
+                expected_state,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.request_task_cancel(&key, *expected_state, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::PublishReceiptBackedTaskTerminal {
+                key,
+                expected_state,
+                terminal_epoch_ms,
+                terminal,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.publish_receipt_backed_task_terminal(
+                        &key,
+                        *expected_state,
+                        terminal_epoch_ms,
+                        terminal,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::RequestCancelOrReserve {
+                key,
+                cancel_reserved_at_epoch_ms,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.request_cancel_or_reserve(key, cancel_reserved_at_epoch_ms, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::PublishDirectTerminal {
+                key,
+                expected_version,
+                terminal_epoch_ms,
+                terminal,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.publish_direct_terminal(
+                        &key,
+                        expected_version,
+                        terminal_epoch_ms,
+                        terminal,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::AcknowledgeDirect {
+                key,
+                terminal_digest,
+                acknowledged_at_epoch_ms,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let digest = receipt_key_digest(&key);
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.acknowledge_direct(
+                        &key,
+                        &terminal_digest,
+                        acknowledged_at_epoch_ms,
+                        deadline,
+                    )
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: digest,
+                }));
+                ticket.finish(result, &health);
+            }
+            Command::ReclaimExpiredTombstones {
+                observed_at_epoch_ms,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    port.reclaim_expired_tombstones(observed_at_epoch_ms, deadline)
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::Recover {
+                key,
+                observed_at_epoch_ms,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let result = catch_unwind(AssertUnwindSafe(|| match observed_at_epoch_ms {
+                    Some(observed_at_epoch_ms) => {
+                        port.recover_at(&key, observed_at_epoch_ms, deadline)
+                    }
+                    None => port.recover(&key, deadline),
+                }))
+                .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+            Command::ResolveTask {
+                task_id,
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
+                    continue;
+                };
+                let result =
+                    catch_unwind(AssertUnwindSafe(|| port.resolve_task(task_id, deadline)))
+                        .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
+                ticket.finish(result, &health);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ActorHealth, Command, ReceiptLedgerActor, ReceiptLedgerPort, Ticket, TimeoutClass,
+    };
+    use crate::invocation::normalized_arguments_hash;
+    use crate::receipt_ledger::{
+        canonical_v5_terminal, receipt_key_digest, request_scope_hash,
+        AcknowledgedTombstoneReceipt, AttemptPhase, CancelReservedReceipt, CancelResolution,
+        CommittedDirectPublication, CoreIdentityDigest, LifecycleLinkRecordHeader,
+        OriginalCutoffDescriptor, ReceiptKey, ReceiptLedgerError, ReceiptRecordHeader,
+        ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome, ReceiptVersion,
+        RequestIdentity, ReserveOutcome, ReservedReceipt, TaskBoundReceipt,
+        TaskCancellationReceipt, TaskLinkReference, TaskPromisedUnboundReceipt, TerminalDigest,
+        V5CanonicalTerminal, V5ToolIdentity,
+    };
+    use std::cell::Cell;
+    use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use unica_execution_contract::invocation::{InvocationId, SafeIdentityHash, TaskId};
+    use unica_work_control::operation_deadline::OperationDeadline;
+
+    #[test]
+    fn empty_batches_report_the_caller_error_without_entering_the_port() {
+        let actor = ReceiptLedgerActor::spawn(PanickingPort);
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        let errors = [
+            actor
+                .publish_cancelled_direct_batch(Vec::new(), 1_000, cancelled_terminal(), deadline)
+                .expect_err("an empty cancelled batch is invalid"),
+            actor
+                .reserve_batch(Vec::new(), deadline)
+                .expect_err("an empty reserve batch is invalid"),
+        ];
+
+        for error in errors {
+            assert_eq!(error.to_string(), "receipt batch must not be empty");
+        }
+    }
+
+    struct BlockingPort {
+        entered: Option<mpsc::Sender<()>>,
+        release: mpsc::Receiver<()>,
+        calls: Arc<AtomicUsize>,
+        direct_calls: Arc<AtomicUsize>,
+    }
+
+    impl ReceiptLedgerPort for BlockingPort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(entered) = self.entered.take() {
+                entered.send(()).expect("report first port entry");
+                self.release.recv().expect("release first port call");
+            }
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            self.direct_calls.fetch_add(1, Ordering::SeqCst);
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        }
+    }
+
+    struct PanickingPort;
+
+    impl ReceiptLedgerPort for PanickingPort {
+        fn reserve_batch(
+            &mut self,
+            _requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+            _deadline: OperationDeadline,
+        ) -> Result<Vec<ReserveOutcome>, ReceiptLedgerError> {
+            panic!("injected reserve batch panic")
+        }
+
+        fn bind_reserved_actor_batch(
+            &mut self,
+            _requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+            _deadline: OperationDeadline,
+        ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+            panic!("injected bind batch panic")
+        }
+
+        fn mark_reserved_begun_batch(
+            &mut self,
+            _requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
+            _deadline: OperationDeadline,
+        ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+            panic!("injected begun batch panic")
+        }
+
+        fn publish_direct_terminal_batch(
+            &mut self,
+            _requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
+            _deadline: OperationDeadline,
+        ) -> Result<Vec<CommittedDirectPublication>, ReceiptLedgerError> {
+            panic!("injected terminal batch panic")
+        }
+
+        fn acknowledge_direct_batch(
+            &mut self,
+            _requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
+            _deadline: OperationDeadline,
+        ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
+            panic!("injected acknowledgement batch panic")
+        }
+
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            panic!("injected receipt port panic")
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            panic!("injected direct terminal panic")
+        }
+
+        fn request_task_cancel(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_state: TaskCancellationReceipt,
+            _deadline: OperationDeadline,
+        ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
+            panic!("injected Task cancellation panic")
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            panic!("injected cancel reservation panic")
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            panic!("injected receipt recover panic")
+        }
+    }
+
+    struct ErrorPort {
+        error: ReceiptLedgerError,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ReceiptLedgerPort for ErrorPort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(self.error.clone())
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(self.error.clone())
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(self.error.clone())
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(self.error.clone())
+        }
+    }
+
+    struct DeadlineRecordingSendOnlyPort {
+        calls: Cell<usize>,
+        seen: mpsc::Sender<(OperationDeadline, usize)>,
+    }
+
+    impl ReceiptLedgerPort for DeadlineRecordingSendOnlyPort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            self.calls.set(self.calls.get() + 1);
+            self.seen
+                .send((deadline, self.calls.get()))
+                .expect("record exact port deadline");
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            self.calls.set(self.calls.get() + 1);
+            self.seen
+                .send((deadline, self.calls.get()))
+                .expect("record exact port deadline");
+            Err(ReceiptLedgerError::TerminalMismatch)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            self.calls.set(self.calls.get() + 1);
+            self.seen
+                .send((deadline, self.calls.get()))
+                .expect("record exact port deadline");
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            self.calls.set(self.calls.get() + 1);
+            self.seen
+                .send((deadline, self.calls.get()))
+                .expect("record exact port deadline");
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        }
+    }
+
+    struct BlockingRecoverPort {
+        entered: Option<mpsc::Sender<()>>,
+        release: mpsc::Receiver<()>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ReceiptLedgerPort for BlockingRecoverPort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(entered) = self.entered.take() {
+                entered.send(()).expect("report recover port entry");
+                self.release.recv().expect("release recover port call");
+            }
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        }
+    }
+
+    struct WorkerGenerationGate {
+        actor_to_drop: Option<Arc<Mutex<Option<ReceiptLedgerActor>>>>,
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    struct DropNotifyingPort {
+        generation: u64,
+        dropped: mpsc::Sender<()>,
+        worker_generation: Option<WorkerGenerationGate>,
+    }
+
+    impl Drop for DropNotifyingPort {
+        fn drop(&mut self) {
+            let _ = self.dropped.send(());
+        }
+    }
+
+    impl ReceiptLedgerPort for DropNotifyingPort {
+        fn generation(&mut self, _deadline: OperationDeadline) -> Result<u64, ReceiptLedgerError> {
+            if let Some(gate) = self.worker_generation.take() {
+                gate.entered.send(()).expect("report generation entry");
+                gate.release.recv().expect("release worker generation");
+                if let Some(actor) = gate.actor_to_drop {
+                    drop(actor.lock().expect("self-drop actor mutex poisoned").take());
+                }
+            }
+            Ok(self.generation)
+        }
+
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+    }
+
+    fn receipt_key() -> ReceiptKey {
+        ReceiptKey::new(
+            InvocationId::new(),
+            TaskId::new(),
+            RequestIdentity::new(
+                CoreIdentityDigest::from_str(&"55".repeat(32)).expect("core identity digest"),
+                V5ToolIdentity::View,
+                normalized_arguments_hash(&serde_json::Map::new()),
+                request_scope_hash("workspace-a").expect("request scope"),
+            ),
+        )
+    }
+
+    fn cutoff() -> OriginalCutoffDescriptor {
+        OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original cutoff")
+    }
+
+    fn cancel_reserved_receipt() -> CancelReservedReceipt {
+        CancelReservedReceipt::new(receipt_key(), ReceiptVersion::initial(), 1, 512, 1_000)
+            .expect("valid cancellation reservation")
+    }
+
+    fn cancelled_terminal() -> V5CanonicalTerminal {
+        canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
+            .expect("cancelled terminal is canonical")
+    }
+
+    fn confirmed_task_bound_proof() -> TaskBoundReceipt {
+        let key = receipt_key();
+        let link = TaskLinkReference::new(
+            receipt_key_digest(&key),
+            key.reserved_task_id(),
+            key.invocation_id(),
+            SafeIdentityHash::from_sha256([0x77; 32]),
+        );
+        let header = LifecycleLinkRecordHeader::new(key.clone(), link, 2, 1, 512)
+            .expect("valid lifecycle-link header");
+        TaskBoundReceipt::new(
+            header,
+            ReceiptTaskProjection::new(
+                key.reserved_task_id(),
+                key.invocation_id(),
+                1_000,
+                1_000,
+                3_600_000,
+                250,
+                1,
+            )
+            .expect("valid Task projection"),
+            1,
+            1_001,
+            AttemptPhase::Begun,
+        )
+        .expect("valid confirmed TaskBound proof")
+    }
+
+    struct CompleteHandoffPort {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ReceiptLedgerPort for CompleteHandoffPort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn complete_bound_task_handoff(
+            &mut self,
+            key: &ReceiptKey,
+            expected_version: ReceiptVersion,
+            confirmed_task_bound: TaskBoundReceipt,
+            _deadline: OperationDeadline,
+        ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(key, confirmed_task_bound.key());
+            assert_eq!(expected_version.get(), 4);
+            assert_eq!(confirmed_task_bound.phase(), AttemptPhase::Begun);
+            Ok(confirmed_task_bound)
+        }
+
+        fn request_task_cancel(
+            &mut self,
+            key: &ReceiptKey,
+            expected_state: TaskCancellationReceipt,
+            _deadline: OperationDeadline,
+        ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(key, expected_state.key());
+            Ok(expected_state)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+    }
+
+    #[test]
+    fn complete_bound_task_handoff_round_trips_through_serial_actor() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(CompleteHandoffPort {
+            calls: Arc::clone(&calls),
+        });
+        let proof = confirmed_task_bound_proof();
+        let completed = actor
+            .complete_bound_task_handoff(
+                proof.key().clone(),
+                ReceiptVersion::new(4).expect("nonzero receipt version"),
+                proof.clone(),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .expect("serial actor completes exact handoff");
+
+        assert_eq!(completed, proof);
+        assert_eq!(completed.phase(), AttemptPhase::Begun);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn request_task_cancel_round_trips_exact_state_through_serial_actor() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(CompleteHandoffPort {
+            calls: Arc::clone(&calls),
+        });
+        let key = receipt_key();
+        let task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            1_000,
+            1_000,
+            3_600_000,
+            250,
+            1,
+        )
+        .expect("valid promised Task projection");
+        let expected = TaskCancellationReceipt::PromisedUnbound(
+            TaskPromisedUnboundReceipt::new(
+                ReceiptRecordHeader::new(
+                    key.clone(),
+                    receipt_key_digest(&key),
+                    ReceiptVersion::new(2).expect("nonzero receipt version"),
+                    2,
+                    700,
+                ),
+                task,
+                false,
+                1_024,
+            )
+            .expect("valid promised Task receipt"),
+        );
+
+        assert_eq!(
+            actor.request_task_cancel(key.clone(), expected.clone(), Instant::now()),
+            Err(ReceiptLedgerError::DeadlineExceeded)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        assert_eq!(
+            actor
+                .request_task_cancel(
+                    key,
+                    expected.clone(),
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect("serial actor forwards exact Task cancellation"),
+            expected
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn task_cancel_panic_is_commit_uncertain_and_fail_stops_actor() {
+        let actor = ReceiptLedgerActor::spawn(PanickingPort);
+        let key = receipt_key();
+        let expected_digest = receipt_key_digest(&key);
+        let task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            1_000,
+            1_000,
+            3_600_000,
+            250,
+            1,
+        )
+        .expect("valid promised Task projection");
+        let expected = TaskCancellationReceipt::PromisedUnbound(
+            TaskPromisedUnboundReceipt::new(
+                ReceiptRecordHeader::new(
+                    key.clone(),
+                    expected_digest.clone(),
+                    ReceiptVersion::new(2).expect("nonzero receipt version"),
+                    2,
+                    700,
+                ),
+                task,
+                false,
+                1_024,
+            )
+            .expect("valid promised Task receipt"),
+        );
+
+        assert_eq!(
+            actor
+                .request_task_cancel(key, expected, Instant::now() + Duration::from_secs(1),)
+                .expect_err("Task cancellation panic cannot be a clean failure"),
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: expected_digest,
+            }
+        );
+        assert_eq!(
+            actor
+                .recover(receipt_key(), Instant::now() + Duration::from_secs(1))
+                .expect_err("panicked actor requires recovery"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+    }
+
+    struct AcknowledgePort {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ReceiptLedgerPort for AcknowledgePort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+
+        fn acknowledge_direct(
+            &mut self,
+            key: &ReceiptKey,
+            terminal_digest: &TerminalDigest,
+            acknowledged_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            AcknowledgedTombstoneReceipt::new(
+                key.clone(),
+                receipt_key_digest(key),
+                terminal_digest.clone(),
+                acknowledged_at_epoch_ms,
+                256,
+            )
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        }
+    }
+
+    #[test]
+    fn acknowledge_direct_round_trips_through_the_serial_actor() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(AcknowledgePort {
+            calls: Arc::clone(&calls),
+        });
+        let key = receipt_key();
+        let digest = cancelled_terminal().digest().clone();
+
+        let acknowledged = actor
+            .acknowledge_direct(
+                key.clone(),
+                digest.clone(),
+                1_234,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .expect("acknowledgement reaches the ledger port");
+
+        assert_eq!(acknowledged.key(), &key);
+        assert_eq!(acknowledged.terminal_digest(), &digest);
+        assert_eq!(acknowledged.acknowledged_at_epoch_ms(), 1_234);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dropping_last_actor_waits_until_the_port_is_released() {
+        let (entered, observed_entry) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (dropped, observed_drop) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(DropNotifyingPort {
+            generation: 41,
+            dropped,
+            worker_generation: Some(WorkerGenerationGate {
+                actor_to_drop: None,
+                entered,
+                release: released,
+            }),
+        });
+        let health = Arc::clone(&actor.health);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let ticket = Arc::new(Ticket::queued(deadline, TimeoutClass::Generation));
+        actor
+            .enqueue(
+                Command::Generation {
+                    deadline: deadline.into(),
+                    ticket: Arc::clone(&ticket),
+                },
+                deadline,
+            )
+            .expect("enqueue blocked generation probe");
+        observed_entry.recv().expect("worker enters generation");
+        let (drop_returned, observed_drop_return) = mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            drop(actor);
+            drop_returned.send(()).expect("report actor drop return");
+        });
+
+        let returned_before_release =
+            match observed_drop_return.recv_timeout(Duration::from_millis(100)) {
+                Ok(()) => true,
+                Err(mpsc::RecvTimeoutError::Timeout) => false,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("actor dropper disconnected before reporting return")
+                }
+            };
+        release.send(()).expect("release blocked generation");
+
+        assert_eq!(ticket.wait(&health), Ok(41));
+        observed_drop
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker releases its port after generation returns");
+        if !returned_before_release {
+            observed_drop_return
+                .recv_timeout(Duration::from_secs(1))
+                .expect("actor drop returns after port release");
+        }
+        dropper.join().expect("actor dropper does not panic");
+        assert!(
+            !returned_before_release,
+            "last actor drop returned while its worker still owned the port"
+        );
+    }
+
+    #[test]
+    fn fail_stopped_actor_drop_does_not_wait_for_a_stuck_port() {
+        let (entered, observed_entry) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(BlockingPort {
+            entered: Some(entered),
+            release: released,
+            calls: Arc::new(AtomicUsize::new(0)),
+            direct_calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let caller = actor.clone();
+        let key = receipt_key();
+        let call = std::thread::spawn(move || {
+            caller.reserve(key, cutoff(), Instant::now() + Duration::from_millis(30))
+        });
+        observed_entry
+            .recv_timeout(Duration::from_secs(1))
+            .expect("stuck port enters the mutation");
+        assert!(matches!(
+            call.join().expect("join timed-out actor caller"),
+            Err(ReceiptLedgerError::CommitUncertain { .. })
+        ));
+        assert!(actor.restart_required());
+
+        let (drop_returned, observed_drop_return) = mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            drop(actor);
+            drop_returned
+                .send(())
+                .expect("report fail-stopped actor drop return");
+        });
+        let returned_without_port = observed_drop_return
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+        release
+            .send(())
+            .expect("release stuck port after observation");
+        if !returned_without_port {
+            observed_drop_return
+                .recv_timeout(Duration::from_secs(1))
+                .expect("actor drop returns after cleanup release");
+        }
+        dropper.join().expect("join actor dropper");
+
+        assert!(
+            returned_without_port,
+            "fail-stop waited for a worker that process death must own"
+        );
+    }
+
+    #[test]
+    fn dropping_a_non_last_clone_keeps_the_worker_available() {
+        let (dropped, observed_drop) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(DropNotifyingPort {
+            generation: 41,
+            dropped,
+            worker_generation: None,
+        });
+        let survivor = actor.clone();
+
+        drop(actor);
+
+        assert_eq!(
+            observed_drop.try_recv(),
+            Err(mpsc::TryRecvError::Empty),
+            "a non-last clone cannot release the shared port"
+        );
+        assert_eq!(
+            survivor.generation(Instant::now() + Duration::from_secs(1)),
+            Ok(41)
+        );
+        drop(survivor);
+        observed_drop
+            .try_recv()
+            .expect("last surviving clone releases the port synchronously");
+    }
+
+    #[test]
+    fn dropping_last_actor_on_its_worker_never_self_joins() {
+        let actor_slot = Arc::new(Mutex::new(None));
+        let (entered, observed_entry) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (dropped, observed_drop) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(DropNotifyingPort {
+            generation: 43,
+            dropped,
+            worker_generation: Some(WorkerGenerationGate {
+                actor_to_drop: Some(Arc::clone(&actor_slot)),
+                entered,
+                release: released,
+            }),
+        });
+        actor_slot
+            .lock()
+            .expect("self-drop actor mutex poisoned")
+            .replace(actor.clone());
+        let health = Arc::clone(&actor.health);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let ticket = Arc::new(Ticket::queued(deadline, TimeoutClass::Generation));
+        actor
+            .enqueue(
+                Command::Generation {
+                    deadline: deadline.into(),
+                    ticket: Arc::clone(&ticket),
+                },
+                deadline,
+            )
+            .expect("enqueue self-drop probe");
+        observed_entry
+            .recv()
+            .expect("worker enters self-drop probe");
+
+        drop(actor);
+        release.send(()).expect("release worker self-drop");
+
+        assert_eq!(ticket.wait(&health), Ok(43));
+        observed_drop
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker exits and releases the port without self-join");
+    }
+
+    #[test]
+    fn no_deadline_actor_queue_waits_for_running_port_then_returns_success() {
+        let (entered, observed_entry) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (dropped, _observed_drop) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(DropNotifyingPort {
+            generation: 41,
+            dropped,
+            worker_generation: Some(WorkerGenerationGate {
+                actor_to_drop: None,
+                entered,
+                release: released,
+            }),
+        });
+        let first_actor = actor.clone();
+        let first =
+            std::thread::spawn(move || first_actor.generation(OperationDeadline::NoDeadline));
+        observed_entry
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first command is running");
+        let ticket = Arc::new(Ticket::queued(
+            OperationDeadline::NoDeadline,
+            TimeoutClass::Generation,
+        ));
+        actor
+            .enqueue(
+                Command::Generation {
+                    deadline: OperationDeadline::NoDeadline,
+                    ticket: Arc::clone(&ticket),
+                },
+                OperationDeadline::NoDeadline,
+            )
+            .expect("second command is queued behind the first");
+        let health = Arc::clone(&actor.health);
+        let (finished, observed_finish) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            finished
+                .send(ticket.wait(&health))
+                .expect("report queued result")
+        });
+        let before_release = observed_finish.recv_timeout(Duration::from_millis(50));
+        release.send(()).expect("release running command");
+        assert_eq!(first.join().expect("join first caller"), Ok(41));
+        assert_eq!(
+            observed_finish
+                .recv_timeout(Duration::from_secs(1))
+                .expect("queued command finishes"),
+            Ok(41)
+        );
+        second.join().expect("join queued caller");
+        assert_eq!(before_release, Err(mpsc::RecvTimeoutError::Timeout));
+        assert!(!actor.restart_required());
+    }
+
+    #[test]
+    fn no_deadline_mutation_keeps_late_successful_completion_authority() {
+        let health = ActorHealth::ready(Duration::ZERO);
+        let ticket = Ticket::<u64>::queued(
+            OperationDeadline::NoDeadline,
+            TimeoutClass::Reserve(receipt_key_digest(&receipt_key())),
+        );
+        assert!(ticket.try_begin(&health));
+        // The controlled completion clock crosses every finite deadline used by
+        // the neighboring one-second completion-authority tests.
+        ticket.finish_at(Ok(41), Instant::now() + Duration::from_secs(3_600), &health);
+        assert_eq!(ticket.wait(&health), Ok(41));
+        assert!(health.is_ready());
+    }
+
+    #[test]
+    fn no_deadline_permit_wait_is_released_by_fail_stop() {
+        let health = Arc::new(ActorHealth::ready(Duration::ZERO));
+        let held = health
+            .acquire_heavy_result_permit(OperationDeadline::NoDeadline)
+            .expect("hold permit");
+        let waiter_health = Arc::clone(&health);
+        let (finished, observed_finish) = mpsc::channel();
+        let (entered, observed_entry) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let mut gate = Some((entered, released));
+            let result = waiter_health
+                .heavy_result_slot
+                .acquire_inner(OperationDeadline::NoDeadline, &waiter_health, move || {
+                    if let Some((entered, released)) = gate.take() {
+                        entered.send(()).expect("occupied permit branch reached");
+                        released.recv().expect("release entry into permit wait");
+                    }
+                })
+                .map(|_| ());
+            finished.send(result).expect("report permit result");
+        });
+        observed_entry
+            .recv_timeout(Duration::from_secs(1))
+            .expect("waiter reaches occupied permit branch while holding its mutex");
+        // The hook holds the same mutex as wake_all. Once released, its next
+        // step atomically enters the condvar wait and releases that mutex;
+        // fail-stop cannot deliver its notification before that transition.
+        release.send(()).expect("release entry into condvar wait");
+        health.latch_recovery_required();
+        assert_eq!(
+            observed_finish
+                .recv_timeout(Duration::from_secs(1))
+                .expect("fail-stop wakes unlimited waiter"),
+            Err(ReceiptLedgerError::StoreUnavailable)
+        );
+        waiter.join().expect("join permit waiter");
+        drop(held);
+    }
+
+    #[test]
+    fn late_clean_mutation_finish_is_commit_uncertain_and_latches_health() {
+        let health = ActorHealth::ready(Duration::ZERO);
+        let key = receipt_key();
+        let digest = receipt_key_digest(&key);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let ticket =
+            Ticket::<ReserveOutcome>::queued(deadline, TimeoutClass::Reserve(digest.clone()));
+        assert!(ticket.try_begin(&health));
+
+        ticket.finish_at(Err(ReceiptLedgerError::CapacityExceeded), deadline, &health);
+
+        assert_eq!(
+            ticket
+                .wait(&health)
+                .expect_err("late clean mutation completion has no authority"),
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: digest,
+            }
+        );
+        assert!(
+            !health.is_ready(),
+            "late mutation completion must fail-stop"
+        );
+    }
+
+    #[test]
+    fn late_clean_recover_finish_is_store_unavailable_and_latches_health() {
+        let health = ActorHealth::ready(Duration::ZERO);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let ticket = Ticket::<ReceiptState>::queued(deadline, TimeoutClass::Recover);
+        assert!(ticket.try_begin(&health));
+
+        ticket.finish_at(Err(ReceiptLedgerError::ReceiptNotFound), deadline, &health);
+
+        assert_eq!(
+            ticket
+                .wait(&health)
+                .expect_err("late clean recover completion has no authority"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        assert!(!health.is_ready(), "late recover completion must fail-stop");
+    }
+
+    #[test]
+    fn clean_finish_before_deadline_retains_completion_authority() {
+        let health = ActorHealth::ready(Duration::ZERO);
+        let key = receipt_key();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let ticket = Ticket::<ReserveOutcome>::queued(
+            deadline,
+            TimeoutClass::Reserve(receipt_key_digest(&key)),
+        );
+        assert!(ticket.try_begin(&health));
+        ticket.finish_at(
+            Err(ReceiptLedgerError::CapacityExceeded),
+            deadline - Duration::from_nanos(1),
+            &health,
+        );
+
+        assert_eq!(
+            ticket
+                .wait(&health)
+                .expect_err("pre-deadline completion owns the result"),
+            ReceiptLedgerError::CapacityExceeded
+        );
+        assert!(health.is_ready(), "clean completion must not fail-stop");
+    }
+
+    #[test]
+    fn permit_release_wakes_every_waiter_by_contract() {
+        let source = include_str!("receipt_ledger_actor.rs");
+        let drop_body = source
+            .split("impl Drop for ")
+            .nth(1)
+            .expect("permit has a Drop implementation")
+            .split("#[derive(Clone)]")
+            .next()
+            .expect("permit Drop body ends before the actor declaration");
+
+        assert!(
+            drop_body.contains("notify_all()"),
+            "a timed-out waiter may consume notify_one and strand a live waiter"
+        );
+        assert!(
+            !drop_body.contains("notify_one()"),
+            "permit release must not select a single possibly expired waiter"
+        );
+    }
+
+    #[test]
+    fn reserve_cannot_bypass_the_actor_heavy_result_permit() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(ErrorPort {
+            error: ReceiptLedgerError::CapacityExceeded,
+            calls: Arc::clone(&calls),
+        });
+        let held = actor
+            .health
+            .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
+            .expect("hold the only actor heavy-result permit");
+
+        let result = actor.reserve(
+            receipt_key(),
+            cutoff(),
+            Instant::now() + Duration::from_millis(200),
+        );
+
+        assert_eq!(result, Err(ReceiptLedgerError::DeadlineExceeded));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "reserve must acquire the common permit before it can reach the port"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn recover_cannot_bypass_the_actor_heavy_result_permit() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(ErrorPort {
+            error: ReceiptLedgerError::ReceiptNotFound,
+            calls: Arc::clone(&calls),
+        });
+        let held = actor
+            .health
+            .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
+            .expect("hold the only actor heavy-result permit");
+
+        let result = actor.recover(receipt_key(), Instant::now() + Duration::from_millis(200));
+
+        assert_eq!(result, Err(ReceiptLedgerError::DeadlineExceeded));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "recover must acquire the common permit before it can reach the port"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn cancel_reservation_cannot_bypass_the_actor_heavy_result_permit() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(ErrorPort {
+            error: ReceiptLedgerError::CapacityExceeded,
+            calls: Arc::clone(&calls),
+        });
+        let held = actor
+            .health
+            .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
+            .expect("hold the only actor heavy-result permit");
+
+        let result = actor.request_cancel_or_reserve(
+            receipt_key(),
+            1_000,
+            Instant::now() + Duration::from_millis(200),
+        );
+
+        assert_eq!(result, Err(ReceiptLedgerError::DeadlineExceeded));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "cancel can return an existing Direct winner and must acquire the common permit"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn existing_cancel_winner_cannot_bypass_the_actor_heavy_result_permit() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(CancelOutcomePort {
+            outcome: CancelResolution::ExistingWinner(Box::new(ReceiptState::TaskBound(
+                confirmed_task_bound_proof(),
+            ))),
+            calls: Arc::clone(&calls),
+        });
+        let held = actor
+            .health
+            .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
+            .expect("hold the only actor heavy-result permit");
+
+        let result = actor.request_cancel_or_reserve(
+            receipt_key(),
+            8_125,
+            Instant::now() + Duration::from_millis(200),
+        );
+
+        assert_eq!(result, Err(ReceiptLedgerError::DeadlineExceeded));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "cancellation can return an existing Direct winner and must acquire the common permit"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn abandoned_queued_direct_ticket_retains_permit_until_command_arc_drops() {
+        let health = Arc::new(ActorHealth::ready(Duration::ZERO));
+        let permit = health
+            .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
+            .expect("acquire the only direct-publication permit");
+        let key = receipt_key();
+        let caller = Arc::new(
+            Ticket::<CommittedDirectPublication>::queued_with_heavy_result_permit(
+                Instant::now(),
+                TimeoutClass::PublishDirectTerminal(receipt_key_digest(&key)),
+                permit,
+            ),
+        );
+        let queued_command = Arc::clone(&caller);
+
+        assert_eq!(
+            caller
+                .wait(&health)
+                .expect_err("queued caller abandons at its original deadline"),
+            ReceiptLedgerError::DeadlineExceeded
+        );
+        drop(caller);
+        assert!(matches!(
+            health.acquire_heavy_result_permit(Instant::now() + Duration::from_millis(10)),
+            Err(ReceiptLedgerError::DeadlineExceeded)
+        ));
+
+        drop(queued_command);
+        assert!(health
+            .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
+            .is_ok());
+    }
+
+    #[test]
+    fn finished_direct_ticket_retains_permit_until_result_is_consumed_and_last_arc_drops() {
+        let health = Arc::new(ActorHealth::ready(Duration::ZERO));
+        let permit = health
+            .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
+            .expect("acquire the only direct-publication permit");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let key = receipt_key();
+        let caller = Arc::new(
+            Ticket::<CommittedDirectPublication>::queued_with_heavy_result_permit(
+                deadline,
+                TimeoutClass::PublishDirectTerminal(receipt_key_digest(&key)),
+                permit,
+            ),
+        );
+        let worker = Arc::clone(&caller);
+        assert!(worker.try_begin(&health));
+        worker.finish(Err(ReceiptLedgerError::TerminalMismatch), &health);
+        drop(worker);
+
+        assert!(matches!(
+            health.acquire_heavy_result_permit(Instant::now() + Duration::from_millis(10)),
+            Err(ReceiptLedgerError::DeadlineExceeded)
+        ));
+        assert_eq!(
+            caller
+                .wait(&health)
+                .expect_err("consume the finished publication result"),
+            ReceiptLedgerError::TerminalMismatch
+        );
+        assert!(matches!(
+            health.acquire_heavy_result_permit(Instant::now() + Duration::from_millis(10)),
+            Err(ReceiptLedgerError::DeadlineExceeded)
+        ));
+
+        drop(caller);
+        assert!(health
+            .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
+            .is_ok());
+    }
+
+    #[test]
+    fn direct_permit_waiter_wakes_with_store_unavailable_after_fail_stop() {
+        let health = Arc::new(ActorHealth::ready(Duration::ZERO));
+        let held = health
+            .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
+            .expect("hold the only direct-publication permit");
+        let waiter_health = Arc::clone(&health);
+        let (started, started_wait) = mpsc::channel();
+        let (result, result_wait) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            started.send(()).expect("report permit waiter start");
+            let acquired =
+                waiter_health.acquire_heavy_result_permit(Instant::now() + Duration::from_secs(10));
+            result
+                .send(acquired.map(|_permit| ()))
+                .expect("report permit waiter result");
+        });
+        started_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("permit waiter started");
+        std::thread::sleep(Duration::from_millis(10));
+
+        health.latch_recovery_required();
+        assert_eq!(
+            result_wait
+                .recv_timeout(Duration::from_secs(2))
+                .expect("fail-stop wakes the permit waiter"),
+            Err(ReceiptLedgerError::StoreUnavailable)
+        );
+        waiter.join().expect("permit waiter does not panic");
+        drop(held);
+    }
+
+    struct BlockingDirectTerminalPort {
+        entered: Option<mpsc::Sender<OperationDeadline>>,
+        release: mpsc::Receiver<()>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ReceiptLedgerPort for BlockingDirectTerminalPort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(entered) = self.entered.take() {
+                entered
+                    .send(deadline)
+                    .expect("report direct terminal entry");
+                self.release.recv().expect("release direct terminal call");
+            }
+            Err(ReceiptLedgerError::TerminalMismatch)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        }
+    }
+
+    struct BlockingCancelReservationPort {
+        entered: Option<mpsc::Sender<OperationDeadline>>,
+        release: mpsc::Receiver<()>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ReceiptLedgerPort for BlockingCancelReservationPort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(entered) = self.entered.take() {
+                entered
+                    .send(deadline)
+                    .expect("report cancel reservation entry");
+                self.release
+                    .recv()
+                    .expect("release cancel reservation call");
+            }
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        }
+    }
+
+    struct CancelOutcomePort {
+        outcome: CancelResolution,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ReceiptLedgerPort for CancelOutcomePort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            _deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.outcome.clone())
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        }
+    }
+
+    #[test]
+    fn running_direct_terminal_deadline_is_commit_uncertain_and_fail_stops_actor() {
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(BlockingDirectTerminalPort {
+            entered: Some(entered),
+            release: release_wait,
+            calls: Arc::clone(&calls),
+        });
+        let key = receipt_key();
+        let expected_digest = receipt_key_digest(&key);
+        let deadline = Instant::now() + Duration::from_millis(80);
+        let first_actor = actor.clone();
+        let first = std::thread::spawn(move || {
+            first_actor.publish_direct_terminal(
+                key,
+                ReceiptVersion::initial(),
+                1_234,
+                cancelled_terminal(),
+                deadline,
+            )
+        });
+        assert_eq!(
+            entered_wait
+                .recv_timeout(Duration::from_secs(1))
+                .expect("direct terminal entered the port"),
+            OperationDeadline::from(deadline)
+        );
+
+        assert_eq!(
+            first
+                .join()
+                .expect("direct terminal caller does not panic")
+                .expect_err("running write cannot report a clean timeout"),
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: expected_digest,
+            }
+        );
+        assert_eq!(
+            actor
+                .recover(receipt_key(), Instant::now() + Duration::from_secs(1))
+                .expect_err("uncertain actor requires recovery"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        release.send(()).expect("release uncertain fixture call");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn running_cancel_reservation_deadline_is_commit_uncertain_and_fail_stops_actor() {
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(BlockingCancelReservationPort {
+            entered: Some(entered),
+            release: release_wait,
+            calls: Arc::clone(&calls),
+        });
+        let key = receipt_key();
+        let expected_digest = receipt_key_digest(&key);
+        let deadline = Instant::now() + Duration::from_millis(80);
+        let first_actor = actor.clone();
+        let first =
+            std::thread::spawn(move || first_actor.request_cancel_or_reserve(key, 1_000, deadline));
+        assert_eq!(
+            entered_wait
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cancel reservation entered the port"),
+            OperationDeadline::from(deadline)
+        );
+
+        assert_eq!(
+            first
+                .join()
+                .expect("cancel reservation caller does not panic")
+                .expect_err("running cancel write cannot report a clean timeout"),
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: expected_digest,
+            }
+        );
+        assert_eq!(
+            actor
+                .request_cancel_or_reserve(
+                    receipt_key(),
+                    1_000,
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect_err("uncertain actor requires recovery"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        release.send(()).expect("release uncertain fixture call");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn expired_command_queued_behind_running_reserve_never_reaches_the_port() {
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(BlockingPort {
+            entered: Some(entered),
+            release: release_wait,
+            calls: Arc::clone(&calls),
+            direct_calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let first_actor = actor.clone();
+        let first = std::thread::spawn(move || {
+            first_actor.reserve(
+                receipt_key(),
+                cutoff(),
+                Instant::now() + Duration::from_secs(2),
+            )
+        });
+        entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first reserve entered the port");
+
+        assert_eq!(
+            actor
+                .reserve(
+                    receipt_key(),
+                    cutoff(),
+                    Instant::now() + Duration::from_millis(40),
+                )
+                .expect_err("queued reserve must expire"),
+            ReceiptLedgerError::DeadlineExceeded
+        );
+        release.send(()).expect("release first reserve");
+        assert_eq!(
+            first
+                .join()
+                .expect("first caller does not panic")
+                .expect_err("fixture rejects first reserve"),
+            ReceiptLedgerError::CapacityExceeded
+        );
+        assert_eq!(
+            actor
+                .reserve(
+                    receipt_key(),
+                    cutoff(),
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect_err("third reserve reaches fixture"),
+            ReceiptLedgerError::CapacityExceeded
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// Holds each reserve in the port until released; reports the deadline
+    /// it was given on entry.
+    struct GatedReservePort {
+        entered: mpsc::Sender<OperationDeadline>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl ReceiptLedgerPort for GatedReservePort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            self.entered.send(deadline).expect("report port entry");
+            self.release.recv().expect("release the port call");
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            unreachable!("only reserves run here")
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            unreachable!("only reserves run here")
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            unreachable!("only reserves run here")
+        }
+    }
+
+    /// #1387: a step queued behind a slow one starts with little of its
+    /// caller's deadline left. Once begun it is held to the actor's running
+    /// floor from its own start, not to the caller's remainder: overrunning
+    /// the caller's deadline is neither uncertain nor a fail-stop.
+    #[test]
+    fn step_begun_late_in_its_deadline_gets_the_running_floor_from_its_start() {
+        let floor = Duration::from_secs(3);
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn_with_running_floor(
+            GatedReservePort {
+                entered,
+                release: release_wait,
+            },
+            floor,
+        );
+        let slow_actor = actor.clone();
+        let slow = std::thread::spawn(move || {
+            slow_actor.reserve(
+                receipt_key(),
+                cutoff(),
+                Instant::now() + Duration::from_secs(10),
+            )
+        });
+        entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the slow step entered the port");
+        let caller_deadline = Instant::now() + Duration::from_millis(500);
+        let late_actor = actor.clone();
+        let late = std::thread::spawn(move || {
+            late_actor.reserve(receipt_key(), cutoff(), caller_deadline)
+        });
+        // The late step waits in the queue; then it begins well inside its
+        // caller's deadline and is held in the port past that deadline.
+        std::thread::sleep(Duration::from_millis(100));
+        release.send(()).expect("release the slow step");
+        let begun_with = entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the late step entered the port");
+        let begun_at = Instant::now();
+        assert!(
+            begun_at < caller_deadline,
+            "the fixture began the step too late"
+        );
+        let held_to = begun_with.as_instant().expect("a finite running deadline");
+        assert!(
+            held_to >= begun_at + floor - Duration::from_millis(100),
+            "the begun step got only {:?}",
+            held_to.saturating_duration_since(begun_at)
+        );
+        std::thread::sleep(
+            caller_deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(200),
+        );
+        release.send(()).expect("release the late step");
+
+        assert_eq!(
+            late.join().expect("late caller"),
+            Err(ReceiptLedgerError::CapacityExceeded),
+            "the step's own answer, not an uncertain commit"
+        );
+        assert_eq!(
+            slow.join().expect("slow caller"),
+            Err(ReceiptLedgerError::CapacityExceeded)
+        );
+        assert!(!actor.restart_required(), "no fail-stop");
+    }
+
+    #[test]
+    fn running_reserve_deadline_is_commit_uncertain_and_fail_stops_actor() {
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(BlockingPort {
+            entered: Some(entered),
+            release: release_wait,
+            calls: Arc::clone(&calls),
+            direct_calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let first_key = receipt_key();
+        let expected_digest = crate::receipt_ledger::receipt_key_digest(&first_key);
+        let first_actor = actor.clone();
+        let first = std::thread::spawn(move || {
+            first_actor.reserve(
+                first_key,
+                cutoff(),
+                Instant::now() + Duration::from_millis(40),
+            )
+        });
+        entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reserve entered the port");
+
+        assert_eq!(
+            first
+                .join()
+                .expect("deadline caller does not panic")
+                .expect_err("running reserve cannot report a clean timeout"),
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: expected_digest,
+            }
+        );
+        assert_eq!(
+            actor
+                .reserve(
+                    receipt_key(),
+                    cutoff(),
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect_err("uncertain actor requires recovery"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        release.send(()).expect("release uncertain fixture call");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn reserve_panic_is_commit_uncertain_and_fail_stops_actor() {
+        let actor = ReceiptLedgerActor::spawn(PanickingPort);
+        let key = receipt_key();
+        let expected_digest = crate::receipt_ledger::receipt_key_digest(&key);
+
+        assert_eq!(
+            actor
+                .reserve(key, cutoff(), Instant::now() + Duration::from_secs(1))
+                .expect_err("port panic cannot escape as a clean failure"),
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: expected_digest,
+            }
+        );
+        assert_eq!(
+            actor
+                .reserve(
+                    receipt_key(),
+                    cutoff(),
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect_err("panicked actor requires recovery"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+    }
+
+    #[test]
+    fn batch_mutation_panics_preserve_the_reconciliation_digest() {
+        let key = receipt_key();
+        let expected = ReceiptLedgerError::CommitUncertain {
+            receipt_key_digest: receipt_key_digest(&key),
+        };
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        assert_eq!(
+            ReceiptLedgerActor::spawn(PanickingPort)
+                .reserve_batch(vec![(key.clone(), cutoff())], deadline)
+                .expect_err("reserve batch panic is commit-uncertain"),
+            expected
+        );
+        assert_eq!(
+            ReceiptLedgerActor::spawn(PanickingPort)
+                .bind_reserved_actor_batch(
+                    vec![(
+                        key.clone(),
+                        ReceiptVersion::initial(),
+                        SafeIdentityHash::from_sha256([7; 32]),
+                    )],
+                    deadline,
+                )
+                .expect_err("bind batch panic is commit-uncertain"),
+            expected
+        );
+        assert_eq!(
+            ReceiptLedgerActor::spawn(PanickingPort)
+                .mark_reserved_begun_batch(
+                    vec![(
+                        key.clone(),
+                        ReceiptVersion::initial(),
+                        SafeIdentityHash::from_sha256([7; 32]),
+                    )],
+                    deadline,
+                )
+                .expect_err("begun batch panic is commit-uncertain"),
+            expected
+        );
+        assert_eq!(
+            ReceiptLedgerActor::spawn(PanickingPort)
+                .publish_direct_terminal_batch(
+                    vec![(
+                        key.clone(),
+                        ReceiptVersion::initial(),
+                        1_234,
+                        cancelled_terminal(),
+                    )],
+                    deadline,
+                )
+                .expect_err("terminal batch panic is commit-uncertain"),
+            expected
+        );
+        let terminal = cancelled_terminal();
+        assert_eq!(
+            ReceiptLedgerActor::spawn(PanickingPort)
+                .acknowledge_direct_batch(vec![(key, terminal.digest().clone(), 1_235)], deadline,)
+                .expect_err("acknowledgement batch panic is commit-uncertain"),
+            expected
+        );
+    }
+
+    #[test]
+    fn direct_terminal_panic_is_commit_uncertain_and_fail_stops_actor() {
+        let actor = ReceiptLedgerActor::spawn(PanickingPort);
+        let key = receipt_key();
+        let expected_digest = receipt_key_digest(&key);
+
+        assert_eq!(
+            actor
+                .publish_direct_terminal(
+                    key,
+                    ReceiptVersion::initial(),
+                    1_234,
+                    cancelled_terminal(),
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect_err("direct terminal panic cannot escape as a clean failure"),
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: expected_digest,
+            }
+        );
+        assert_eq!(
+            actor
+                .recover(receipt_key(), Instant::now() + Duration::from_secs(1))
+                .expect_err("panicked actor requires recovery"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+    }
+
+    #[test]
+    fn cancel_reservation_panic_is_commit_uncertain_and_fail_stops_actor() {
+        let actor = ReceiptLedgerActor::spawn(PanickingPort);
+        let key = receipt_key();
+        let expected_digest = receipt_key_digest(&key);
+
+        assert_eq!(
+            actor
+                .request_cancel_or_reserve(key, 1_000, Instant::now() + Duration::from_secs(1),)
+                .expect_err("cancel reservation panic cannot escape as a clean failure"),
+            ReceiptLedgerError::CommitUncertain {
+                receipt_key_digest: expected_digest,
+            }
+        );
+        assert_eq!(
+            actor
+                .recover(receipt_key(), Instant::now() + Duration::from_secs(1))
+                .expect_err("panicked actor requires recovery"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+    }
+
+    #[test]
+    fn clean_direct_terminal_mismatches_do_not_latch_actor() {
+        let mismatches = [
+            ReceiptLedgerError::ReceiptVersionMismatch {
+                expected: ReceiptVersion::initial(),
+                actual: ReceiptVersion::initial()
+                    .checked_next()
+                    .expect("second receipt version"),
+            },
+            ReceiptLedgerError::TerminalMismatch,
+        ];
+
+        for mismatch in mismatches {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let actor = ReceiptLedgerActor::spawn(ErrorPort {
+                error: mismatch.clone(),
+                calls: Arc::clone(&calls),
+            });
+            for _ in 0..2 {
+                assert_eq!(
+                    actor
+                        .publish_direct_terminal(
+                            receipt_key(),
+                            ReceiptVersion::initial(),
+                            1_234,
+                            cancelled_terminal(),
+                            Instant::now() + Duration::from_secs(1),
+                        )
+                        .expect_err("fixture returns a clean direct terminal mismatch"),
+                    mismatch
+                );
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn fail_stop_port_error_latches_but_clean_capacity_rejection_does_not() {
+        let fail_stop_calls = Arc::new(AtomicUsize::new(0));
+        let fail_stop = ReceiptLedgerActor::spawn(ErrorPort {
+            error: ReceiptLedgerError::Storage {
+                operation: "injected receipt write",
+                message: "failed".to_owned(),
+            },
+            calls: Arc::clone(&fail_stop_calls),
+        });
+        assert!(matches!(
+            fail_stop.reserve(
+                receipt_key(),
+                cutoff(),
+                Instant::now() + Duration::from_secs(1),
+            ),
+            Err(ReceiptLedgerError::Storage { .. })
+        ));
+        assert_eq!(
+            fail_stop
+                .reserve(
+                    receipt_key(),
+                    cutoff(),
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect_err("storage failure latches actor"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        assert_eq!(fail_stop_calls.load(Ordering::SeqCst), 1);
+
+        let capacity_calls = Arc::new(AtomicUsize::new(0));
+        let capacity = ReceiptLedgerActor::spawn(ErrorPort {
+            error: ReceiptLedgerError::CapacityExceeded,
+            calls: Arc::clone(&capacity_calls),
+        });
+        for _ in 0..2 {
+            assert_eq!(
+                capacity
+                    .reserve(
+                        receipt_key(),
+                        cutoff(),
+                        Instant::now() + Duration::from_secs(1),
+                    )
+                    .expect_err("capacity fixture rejects without fail-stop"),
+                ReceiptLedgerError::CapacityExceeded
+            );
+        }
+        assert_eq!(capacity_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn cancel_reservation_fail_stop_error_latches_but_clean_rejection_does_not() {
+        let fail_stop_calls = Arc::new(AtomicUsize::new(0));
+        let fail_stop = ReceiptLedgerActor::spawn(ErrorPort {
+            error: ReceiptLedgerError::Storage {
+                operation: "injected cancel reservation write",
+                message: "failed".to_owned(),
+            },
+            calls: Arc::clone(&fail_stop_calls),
+        });
+        assert!(matches!(
+            fail_stop.request_cancel_or_reserve(
+                receipt_key(),
+                1_000,
+                Instant::now() + Duration::from_secs(1),
+            ),
+            Err(ReceiptLedgerError::Storage { .. })
+        ));
+        assert_eq!(
+            fail_stop
+                .request_cancel_or_reserve(
+                    receipt_key(),
+                    1_000,
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect_err("storage failure latches actor"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        assert_eq!(fail_stop_calls.load(Ordering::SeqCst), 1);
+
+        let capacity_calls = Arc::new(AtomicUsize::new(0));
+        let capacity = ReceiptLedgerActor::spawn(ErrorPort {
+            error: ReceiptLedgerError::CapacityExceeded,
+            calls: Arc::clone(&capacity_calls),
+        });
+        for _ in 0..2 {
+            assert_eq!(
+                capacity
+                    .request_cancel_or_reserve(
+                        receipt_key(),
+                        1_000,
+                        Instant::now() + Duration::from_secs(1),
+                    )
+                    .expect_err("capacity fixture rejects without fail-stop"),
+                ReceiptLedgerError::CapacityExceeded
+            );
+        }
+        assert_eq!(capacity_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn existing_cancel_outcomes_and_version_mismatch_do_not_latch_actor() {
+        let clean_outcomes = [
+            CancelResolution::ExistingExact(cancel_reserved_receipt()),
+            CancelResolution::ExistingWinner(Box::new(ReceiptState::TaskBound(
+                confirmed_task_bound_proof(),
+            ))),
+        ];
+        for outcome in clean_outcomes {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let actor = ReceiptLedgerActor::spawn(CancelOutcomePort {
+                outcome: outcome.clone(),
+                calls: Arc::clone(&calls),
+            });
+            for _ in 0..2 {
+                assert_eq!(
+                    actor
+                        .request_cancel_or_reserve(
+                            receipt_key(),
+                            8_125,
+                            Instant::now() + Duration::from_secs(1),
+                        )
+                        .expect("clean cancellation resolution"),
+                    outcome
+                );
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mismatch = ReceiptLedgerError::ReceiptVersionMismatch {
+            expected: ReceiptVersion::initial(),
+            actual: ReceiptVersion::new(2).expect("nonzero second version"),
+        };
+        let actor = ReceiptLedgerActor::spawn(ErrorPort {
+            error: mismatch.clone(),
+            calls: Arc::clone(&calls),
+        });
+        for _ in 0..2 {
+            assert_eq!(
+                actor
+                    .request_cancel_or_reserve(
+                        receipt_key(),
+                        8_125,
+                        Instant::now() + Duration::from_secs(1),
+                    )
+                    .expect_err("fixture reports an exact version mismatch"),
+                mismatch
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn deadline_expired_before_enqueue_never_reaches_the_port() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(ErrorPort {
+            error: ReceiptLedgerError::CapacityExceeded,
+            calls: Arc::clone(&calls),
+        });
+
+        assert_eq!(
+            actor
+                .reserve(receipt_key(), cutoff(), Instant::now())
+                .expect_err("expired command is rejected before enqueue"),
+            ReceiptLedgerError::DeadlineExceeded
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        assert_eq!(
+            actor
+                .recover_at(receipt_key(), 8_125, Instant::now())
+                .expect_err("expired timestamped recovery is rejected before enqueue"),
+            ReceiptLedgerError::DeadlineExceeded
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        assert_eq!(
+            actor
+                .request_cancel_or_reserve(receipt_key(), 1_000, Instant::now())
+                .expect_err("expired cancel reservation is rejected before enqueue"),
+            ReceiptLedgerError::DeadlineExceeded
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        assert_eq!(
+            actor
+                .publish_direct_terminal(
+                    receipt_key(),
+                    ReceiptVersion::initial(),
+                    1_234,
+                    cancelled_terminal(),
+                    Instant::now(),
+                )
+                .expect_err("expired direct terminal is rejected before enqueue"),
+            ReceiptLedgerError::DeadlineExceeded
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn expired_direct_terminal_queued_behind_running_reserve_never_reaches_the_port() {
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let reserve_calls = Arc::new(AtomicUsize::new(0));
+        let direct_calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(BlockingPort {
+            entered: Some(entered),
+            release: release_wait,
+            calls: Arc::clone(&reserve_calls),
+            direct_calls: Arc::clone(&direct_calls),
+        });
+        let first_actor = actor.clone();
+        let first = std::thread::spawn(move || {
+            first_actor.reserve(
+                receipt_key(),
+                cutoff(),
+                Instant::now() + Duration::from_secs(2),
+            )
+        });
+        entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reserve entered the port");
+
+        assert_eq!(
+            actor
+                .publish_direct_terminal(
+                    receipt_key(),
+                    ReceiptVersion::initial(),
+                    1_234,
+                    cancelled_terminal(),
+                    Instant::now() + Duration::from_millis(40),
+                )
+                .expect_err("queued direct terminal must expire"),
+            ReceiptLedgerError::DeadlineExceeded
+        );
+        release.send(()).expect("release first reserve");
+        assert_eq!(
+            first
+                .join()
+                .expect("first caller does not panic")
+                .expect_err("fixture rejects first reserve"),
+            ReceiptLedgerError::CapacityExceeded
+        );
+        assert_eq!(
+            actor
+                .recover(receipt_key(), Instant::now() + Duration::from_secs(1))
+                .expect_err("recover is a worker barrier"),
+            ReceiptLedgerError::ReceiptNotFound
+        );
+        assert_eq!(reserve_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(direct_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn send_only_port_receives_the_original_absolute_deadline_without_reset() {
+        let (seen, seen_wait) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(DeadlineRecordingSendOnlyPort {
+            calls: Cell::new(0),
+            seen,
+        });
+        let reserve_deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            actor
+                .reserve(receipt_key(), cutoff(), reserve_deadline)
+                .expect_err("fixture rejects reserve"),
+            ReceiptLedgerError::CapacityExceeded
+        );
+        assert_eq!(
+            seen_wait.recv().expect("reserve deadline observation"),
+            (OperationDeadline::from(reserve_deadline), 1)
+        );
+
+        let cancel_deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            actor
+                .request_cancel_or_reserve(receipt_key(), 1_000, cancel_deadline)
+                .expect_err("fixture rejects cancel reservation"),
+            ReceiptLedgerError::CapacityExceeded
+        );
+        assert_eq!(
+            seen_wait
+                .recv()
+                .expect("cancel reservation deadline observation"),
+            (OperationDeadline::from(cancel_deadline), 2)
+        );
+
+        let repeated_cancel_deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            actor
+                .request_cancel_or_reserve(receipt_key(), 8_125, repeated_cancel_deadline,)
+                .expect_err("fixture rejects repeated cancellation"),
+            ReceiptLedgerError::CapacityExceeded
+        );
+        assert_eq!(
+            seen_wait
+                .recv()
+                .expect("repeated cancellation deadline observation"),
+            (OperationDeadline::from(repeated_cancel_deadline), 3)
+        );
+
+        let recover_deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            actor
+                .recover(receipt_key(), recover_deadline)
+                .expect_err("fixture misses receipt"),
+            ReceiptLedgerError::ReceiptNotFound
+        );
+        assert_eq!(
+            seen_wait.recv().expect("recover deadline observation"),
+            (OperationDeadline::from(recover_deadline), 4)
+        );
+
+        let direct_deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            actor
+                .publish_direct_terminal(
+                    receipt_key(),
+                    ReceiptVersion::initial(),
+                    1_234,
+                    cancelled_terminal(),
+                    direct_deadline,
+                )
+                .expect_err("fixture rejects direct publication"),
+            ReceiptLedgerError::TerminalMismatch
+        );
+        assert_eq!(
+            seen_wait.recv().expect("direct deadline observation"),
+            (OperationDeadline::from(direct_deadline), 5)
+        );
+    }
+
+    #[test]
+    fn receipt_not_found_is_a_clean_recover_result_and_actor_remains_reusable() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(ErrorPort {
+            error: ReceiptLedgerError::ReceiptNotFound,
+            calls: Arc::clone(&calls),
+        });
+
+        for _ in 0..2 {
+            assert_eq!(
+                actor
+                    .recover(receipt_key(), Instant::now() + Duration::from_secs(1),)
+                    .expect_err("fixture misses receipt"),
+                ReceiptLedgerError::ReceiptNotFound
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn running_recover_deadline_is_store_unavailable_and_fail_stops_actor() {
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(BlockingRecoverPort {
+            entered: Some(entered),
+            release: release_wait,
+            calls: Arc::clone(&calls),
+        });
+        let first_actor = actor.clone();
+        let first = std::thread::spawn(move || {
+            first_actor.recover(receipt_key(), Instant::now() + Duration::from_millis(40))
+        });
+        entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("recover entered the port");
+
+        assert_eq!(
+            first
+                .join()
+                .expect("recover caller does not panic")
+                .expect_err("running read cannot report a clean deadline"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        assert_eq!(
+            actor
+                .reserve(
+                    receipt_key(),
+                    cutoff(),
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect_err("timed-out recover requires reopen"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        release.send(()).expect("release recover fixture");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn recover_panic_is_store_unavailable_and_fail_stops_actor() {
+        let actor = ReceiptLedgerActor::spawn(PanickingPort);
+
+        assert_eq!(
+            actor
+                .recover(receipt_key(), Instant::now() + Duration::from_secs(1),)
+                .expect_err("recover panic cannot escape"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        assert_eq!(
+            actor
+                .reserve(
+                    receipt_key(),
+                    cutoff(),
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .expect_err("panicked actor requires reopen"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+    }
+
+    #[test]
+    fn heavy_result_permit_waiter_wakes_after_running_timeout_latches_actor() {
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let direct_calls = Arc::new(AtomicUsize::new(0));
+        let actor = ReceiptLedgerActor::spawn(BlockingPort {
+            entered: Some(entered),
+            release: release_wait,
+            calls: Arc::clone(&calls),
+            direct_calls: Arc::clone(&direct_calls),
+        });
+        let first_actor = actor.clone();
+        let first = std::thread::spawn(move || {
+            first_actor.reserve(
+                receipt_key(),
+                cutoff(),
+                Instant::now() + Duration::from_millis(80),
+            )
+        });
+        entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first reserve entered the port");
+
+        let waiting_actor = actor.clone();
+        let waiter = std::thread::spawn(move || {
+            waiting_actor.publish_direct_terminal(
+                receipt_key(),
+                ReceiptVersion::initial(),
+                1_234,
+                cancelled_terminal(),
+                Instant::now() + Duration::from_millis(300),
+            )
+        });
+        assert!(matches!(
+            first.join().expect("first caller does not panic"),
+            Err(ReceiptLedgerError::CommitUncertain { .. })
+        ));
+        assert_eq!(
+            waiter
+                .join()
+                .expect("permit waiter does not panic")
+                .expect_err("permit waiter wakes after the fail-stop latch"),
+            ReceiptLedgerError::StoreUnavailable
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            direct_calls.load(Ordering::SeqCst),
+            0,
+            "the waiting publication never reaches the port"
+        );
+        release.send(()).expect("release first reserve");
+    }
+}

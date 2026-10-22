@@ -1,0 +1,120 @@
+{
+  "id": "S-1370-legacy-inline-warning",
+  "issue": 1370,
+  "area": "Метаданные",
+  "task": "Проверка владельца предупреждает о legacy inline Form и Template при отдельных дескрипторах, сохраняет passed и исходные байты; inline Command допустим",
+  "workspace": "tests/fixtures/acceptance/workspace-legacy-inline",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Editable"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Editable"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "diagnostic": "validation_warning",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": true
+        },
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "contains": {
+            "code": "validation_warning",
+            "severity": "warning",
+            "metadataPath": "Catalog.Editable",
+            "field": "childObjects.Form.Main",
+            "validator": "meta",
+            "message": "Legacy inline registration Catalog.Editable.Form.Main exists alongside its separate descriptor; platform 8.3.27 may hang while importing this owner"
+          }
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "contains": {
+            "code": "validation_warning",
+            "severity": "warning",
+            "metadataPath": "Catalog.Editable",
+            "field": "childObjects.Template.Print",
+            "validator": "meta",
+            "message": "Legacy inline registration Catalog.Editable.Template.Print exists alongside its separate descriptor; platform 8.3.27 may hang while importing this owner"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Editable/Commands/Open/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "64a9663667190daed4976862985dcf7ebfa07647be89c37f6d4c70a7b8efecae"
+        },
+        {
+          "path": "src/Catalogs/Editable/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "4fb9fa510483d9cbe8b2c036715c7a4687afb59f9e9885a76376d91f5bfa6ccb"
+        },
+        {
+          "path": "src/Catalogs/Editable/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c62590a94019d3df1eeec53b8bdf883d1b60044364696515882da086526fdfa9"
+        },
+        {
+          "path": "src/Catalogs/Editable/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "4c028c76772cf0919f34718bb8ed002b46c6055867d9fa81bbcaef608f14c767"
+        },
+        {
+          "path": "src/Catalogs/Editable/Templates/Print/Ext/Template.txt",
+          "kind": "sha256",
+          "eq": "8f8f83766e65be0433ff93b49af748512ed54864912e565bd9a9680b1563050c"
+        },
+        {
+          "path": "src/Catalogs/Editable/Templates/Print.xml",
+          "kind": "sha256",
+          "eq": "6cdedfa446b86732b732a0952388dd42c966b3c6fa602ff1c819c54a3aca5f9a"
+        },
+        {
+          "path": "src/Catalogs/Editable.xml",
+          "kind": "sha256",
+          "eq": "83aee7f0f5e58bd629d4d77664a46148c810eea40d1285ddb28b7bccb9925d6c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "5a0ba96763eff2ddaa5d9acf47f7dbef378815b11f01caac7862dab5a52501e0"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ef405fcde88a961d87c8e416062dc0780c19b4b438a9b5ca942830ab352ea875"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    }
+  ]
+}

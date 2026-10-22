@@ -1,11 +1,12 @@
 use super::selected_scalar_props;
-use crate::application::v13::view::ViewError;
-use crate::domain::address::{escape_name, AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
-use crate::infrastructure::metadata_kinds::metadata_kind;
+use unica_execution_contract::view_error::ViewError;
+
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+use unica_address::address::{escape_name, AddressSegment, NodeKind, QualifiedAddress};
+use unica_refusal::{RefusalCode, RefusalDetail};
+use unica_source_designer::layout::metadata_kind;
 
 #[derive(Debug, Clone)]
 struct RoleObject {
@@ -294,7 +295,7 @@ fn restricted_rights(object: &RoleObject) -> BTreeMap<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::metadata_kinds::METADATA_KIND_TAGS;
+    use unica_source_designer::layout::METADATA_KIND_TAGS;
 
     #[test]
     fn configuration_rights_are_addressed_as_a_configuration_right_object() {

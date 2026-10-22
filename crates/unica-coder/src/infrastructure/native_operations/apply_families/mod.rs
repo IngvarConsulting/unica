@@ -1,17 +1,23 @@
+use crate::domain::apply::SourceSetWriteSupport;
+
 mod borrow;
 pub(crate) mod dcs_mxl;
 pub(crate) mod form_resource;
+#[cfg(test)]
 pub(crate) mod metadata;
-mod request;
 
-use crate::domain::apply::{ApplyRequest, OperationDescriptor, OperationFamily};
-use crate::domain::project_sources::SourceSetKind;
-use crate::infrastructure::native_operations::apply::{
-    hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState,
-    PlannedApplyEffects,
+use crate::domain::apply::ApplyRequest;
+use unica_operations::OperationDescriptor;
+use unica_operations::OperationFamily;
+use unica_source_contract::proposal::{
+    hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind, PlannedApplyEffects,
 };
-use crate::infrastructure::workspace_actor::{ApplyAdmission, ProviderRootBinding};
-use request::{reconcile_effects, IndexedPlanOperation, ProvisionalApplyEffect};
+use unica_source_contract::proposal::{
+    reconcile_effects, IndexedPlanOperation, ProvisionalApplyEffect,
+};
+use unica_source_contract::SourceSetKind;
+use unica_workspace::actor::{ApplyAdmission, ProviderRootBinding};
+use unica_workspace::apply::ApplyStagedState;
 
 /// The writable platform XML profile is single (`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE`):
 /// a write outside it refuses before the first byte. The retired v0.12
@@ -24,7 +30,18 @@ fn refuse_targets_outside_writable_profile(
     staged: &mut ApplyStagedState,
 ) -> Result<(), ApplyPlanError> {
     let at = request.at().to_string();
-    for relative in writable_profile_owner_chain(request, binding.source_kind()) {
+    let mut owner_chain = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for target in
+        std::iter::once(request.at()).chain(request.ops().iter().map(|operation| operation.at()))
+    {
+        for relative in writable_profile_owner_chain(target, binding.source_kind()) {
+            if seen.insert(relative.clone()) {
+                owner_chain.push(relative);
+            }
+        }
+    }
+    for relative in owner_chain {
         let Some(bytes) = staged
             .read(&relative)
             .map_err(|error| ApplyPlanError::staging(error, at.clone()))?
@@ -48,19 +65,22 @@ fn refuse_targets_outside_writable_profile(
 /// to unlock an object, so the lock they edit never refuses them.
 fn changes_support_state(
     operation: &str,
-    at: Option<&crate::domain::address::QualifiedAddress>,
+    at: Option<&unica_address::address::QualifiedAddress>,
     binding: &ProviderRootBinding,
 ) -> bool {
     resolved_descriptor(operation, at, binding)
-        .and_then(OperationDescriptor::support_operation)
+        .and_then(OperationDescriptor::operation::<unica_metadata::support::SupportOperation>)
         .is_some_and(|operation| operation.changes_support_state())
 }
 
-/// Vendor-support gate of the canonical mutation path. When the actor's
-/// support policy is `deny`, a request whose owner is a vendor object with
-/// the rule `locked`, or whose configuration is on support with changes
-/// disabled, refuses `invalid_state` before any family stages a byte. The
-/// owner is the top-level metadata object of the addressed node, or the
+/// Vendor-support gate of the canonical mutation path. A request whose owner
+/// is a vendor object with the rule `locked`, or whose configuration is on
+/// support with changes disabled, refuses `invalid_state` before any family
+/// stages a byte when the actor's support policy is `deny`; under `warn` it
+/// proceeds and returns the `support_locked` warning the plan carries; `off`
+/// is silent. Under `deny`, removing a vendor object also requires its own
+/// rule to be `off-support`: permission to edit it does not permit removal.
+/// The owner is the top-level metadata object of the addressed node, or the
 /// configuration root for root-level targets; nested forms, templates and
 /// attributes inherit the rule of their owner, as they do in the platform.
 fn refuse_targets_on_locked_vendor_objects(
@@ -68,62 +88,106 @@ fn refuse_targets_on_locked_vendor_objects(
     binding: &ProviderRootBinding,
     admission: &ApplyAdmission,
     staged: &mut ApplyStagedState,
-) -> Result<(), ApplyPlanError> {
-    use crate::infrastructure::native_operations::common::{
+) -> Result<Option<serde_json::Value>, ApplyPlanError> {
+    use unica_metadata_designer::support::{
         parse_support_state_compat_bytes, support_root_uuid_from_bytes,
     };
-    use crate::infrastructure::support_policy_evidence::SupportPolicyMode;
+    use unica_source_contract::proposal::SupportPolicyMode;
 
-    if admission.support_policy_mode() != SupportPolicyMode::Deny {
-        return Ok(());
-    }
+    let deny = match admission.support_policy_mode() {
+        SupportPolicyMode::Deny => true,
+        SupportPolicyMode::Warn => false,
+        SupportPolicyMode::Off => return Ok(None),
+    };
     if request
         .ops()
         .iter()
         .all(|operation| changes_support_state(operation.name(), Some(operation.at()), binding))
     {
-        return Ok(());
+        return Ok(None);
     }
+    let support_locked = |owner: &str, message: String| {
+        serde_json::json!({
+            "code": "support_locked",
+            "severity": "warning",
+            "at": format!("{}:{owner}", request.at().source_set()),
+            "message": message,
+        })
+    };
     let at = request.at().to_string();
     let marker_path = std::path::Path::new("Ext/ParentConfigurations.bin");
     let marker = staged
         .read(marker_path)
         .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
     let Some(state) = parse_support_state_compat_bytes(marker.as_deref()) else {
-        return Ok(());
+        return Ok(None);
     };
     if state.removed() {
-        return Ok(());
+        return Ok(None);
     }
     if !state.global_editing_enabled() {
+        if !deny {
+            let owner = support_owner_relative(request, binding.source_kind())
+                .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
+            return Ok(Some(support_locked(
+                &owner,
+                "the configuration is on vendor support with changes disabled; the project support policy `warn` permits this edit".to_string(),
+            )));
+        }
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
-            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first",
+            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits",
         )
         .at_path(at));
     }
     let Some((owner, owner_relative)) = support_owner_relative(request, binding.source_kind())
     else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(bytes) = staged
         .read(&owner_relative)
         .map_err(|error| ApplyPlanError::staging(error, at.clone()))?
     else {
-        return Ok(());
+        return Ok(None);
     };
-    let locked =
-        support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid)) == Some(0);
-    if locked {
+    let support_rule =
+        support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
+    if deny
+        && matches!(support_rule, Some(0 | 1))
+        && request.ops().iter().any(|operation| {
+            unica_metadata::apply_operations::MetadataOperation::named(operation.name())
+                == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove)
+        })
+    {
+        let rule_name = if support_rule == Some(0) {
+            "locked"
+        } else {
+            "editable"
+        };
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             format!(
-                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+                "`{owner}` is a vendor object with the support rule `{rule_name}`; set `off-support` with `supportRule.set` in a separate apply before removal"
             ),
         )
         .at_path(at));
     }
-    Ok(())
+    if support_rule == Some(0) {
+        if !deny {
+            return Ok(Some(support_locked(
+                &owner,
+                format!("`{owner}` is a vendor object with the support rule `locked`; the project support policy `warn` permits this edit"),
+            )));
+        }
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            format!(
+                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+            ),
+        )
+        .at_path(at));
+    }
+    Ok(None)
 }
 
 /// The descriptor that carries the support rule of the addressed node: the
@@ -132,9 +196,9 @@ fn support_owner_relative(
     request: &ApplyRequest,
     source_kind: SourceSetKind,
 ) -> Option<(String, std::path::PathBuf)> {
-    use crate::domain::address::NodeKind;
-    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-    use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
+    use unica_address::address::NodeKind;
+    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_source_designer::layout::metadata_descriptor_relative;
 
     let segments = request.at().segments();
     let owner = segments.first()?;
@@ -162,14 +226,12 @@ fn support_owner_relative(
 /// descriptor of every metadata segment, the wrapper of a nested form,
 /// template or command, and the attached content the kind owns.
 fn writable_profile_owner_chain(
-    request: &ApplyRequest,
+    at: &unica_address::address::QualifiedAddress,
     source_kind: SourceSetKind,
 ) -> Vec<std::path::PathBuf> {
-    use crate::domain::address::NodeKind;
-    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-    use crate::infrastructure::logical_event_source::{
-        attached_resource_relative, metadata_descriptor_relative,
-    };
+    use unica_address::address::NodeKind;
+    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_source_designer::layout::{attached_resource_relative, metadata_descriptor_relative};
 
     let mut chain = Vec::new();
     if matches!(
@@ -178,7 +240,7 @@ fn writable_profile_owner_chain(
     ) {
         chain.push(std::path::PathBuf::from("Configuration.xml"));
     }
-    let segments = request.at().segments();
+    let segments = at.segments();
     let Some(owner) = segments.first() else {
         return chain;
     };
@@ -234,14 +296,12 @@ fn writable_profile_owner_chain(
 
 enum ParsedApplyOperation {
     Borrow(borrow::BorrowOperation),
-    Metadata(IndexedPlanOperation<metadata::MetadataPlanOperation>),
+    Metadata(IndexedPlanOperation<unica_metadata_designer::decode::MetadataPlanOperation>),
     FormResource(IndexedPlanOperation<form_resource::FormResourcePlanOperation>),
     DcsMxl(IndexedPlanOperation<dcs_mxl::DcsMxlPlanOperation>),
-    Code(IndexedPlanOperation<crate::infrastructure::native_operations::code::CodePlanOperation>),
-    Xdto(IndexedPlanOperation<crate::infrastructure::native_operations::xdto::XdtoPlanOperation>),
-    Event(
-        IndexedPlanOperation<crate::infrastructure::native_operations::event::EventImplementArgs>,
-    ),
+    Code(IndexedPlanOperation<unica_bsl::input::CodePlanOperation>),
+    Xdto(IndexedPlanOperation<unica_xdto::operations::XdtoPlanOperation>),
+    Event(IndexedPlanOperation<unica_metadata::event_input::EventImplementArgs>),
     Unsupported(usize),
 }
 
@@ -249,143 +309,6 @@ impl ParsedApplyOperation {
     /// Consecutive operations of one family plan as a single batch.
     fn same_family(&self, other: &Self) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
-    }
-}
-
-/// A planner that already reconciled its events against its own staged
-/// changes reports them tied to every path the batch changed: the request
-/// finalizer then keeps an event only while all of those paths stay changed
-/// in the final postimage.
-/// Object and manager events by their Russian names, as developers write them.
-const RUSSIAN_EVENT_NAMES: &[(&str, &str)] = &[
-    ("ПередЗаписью", "BeforeWrite"),
-    ("ПриЗаписи", "OnWrite"),
-    ("ПередУдалением", "BeforeDelete"),
-    ("ОбработкаЗаполнения", "Filling"),
-    ("ОбработкаПроверкиЗаполнения", "FillCheckProcessing"),
-    ("ПриКопировании", "OnCopy"),
-    ("ПриУстановкеНовогоНомера", "OnSetNewNumber"),
-    ("ПриУстановкеНовогоКода", "OnSetNewCode"),
-    ("ОбработкаПроведения", "Posting"),
-    ("ОбработкаУдаленияПроведения", "UndoPosting"),
-    ("ОбработкаПолученияДанныхВыбора", "ChoiceDataGetProcessing"),
-    ("ОбработкаПолученияФормы", "FormGetProcessing"),
-    (
-        "ОбработкаПолученияПолейПредставления",
-        "PresentationFieldsGetProcessing",
-    ),
-    (
-        "ОбработкаПолученияПредставления",
-        "PresentationGetProcessing",
-    ),
-    (
-        "ОбработкаФормированияИзВерсииИсторииДанных",
-        "GenerateFromDataHistoryVersionProcessing",
-    ),
-    (
-        "ОбработкаПослеЗаписиВерсийИсторииДанных",
-        "AfterWriteDataHistoryVersionsProcessing",
-    ),
-];
-
-const MANAGER_EVENTS: &[&str] = &[
-    "ChoiceDataGetProcessing",
-    "FormGetProcessing",
-    "PresentationFieldsGetProcessing",
-    "PresentationGetProcessing",
-    "AfterWriteDataHistoryVersionsProcessing",
-];
-
-/// `Owner.Name.Event.ПриЗаписи` is how a developer names an object event; the
-/// event planner addresses the module that hosts it
-/// (`Owner.Name.Module.Object.Event.OnWrite`). Both spellings are accepted:
-/// the module role follows the owner kind and the event, and Russian event
-/// names map onto the registry. Anything else passes through unchanged.
-fn canonical_event_args(args: serde_json::Value) -> serde_json::Value {
-    use crate::domain::address::{NodeKind, QualifiedAddress};
-    let Some(raw) = args.get("at").and_then(serde_json::Value::as_str) else {
-        return args;
-    };
-    let Ok(address) = QualifiedAddress::parse(raw) else {
-        return args;
-    };
-    let segments = address.segments();
-    let english = |name: &str| -> String {
-        RUSSIAN_EVENT_NAMES
-            .iter()
-            .find(|(russian, _)| *russian == name)
-            .map_or_else(|| name.to_string(), |(_, english)| (*english).to_string())
-    };
-    let rewritten = match segments {
-        [owner, event] if event.kind() == NodeKind::Event => {
-            let (Some(owner_name), Some(event_name)) = (owner.name(), event.name()) else {
-                return args;
-            };
-            let event_name = english(event_name);
-            let role = if MANAGER_EVENTS.contains(&event_name.as_str()) {
-                "Manager"
-            } else {
-                match owner.kind() {
-                    NodeKind::InformationRegister
-                    | NodeKind::AccumulationRegister
-                    | NodeKind::AccountingRegister
-                    | NodeKind::CalculationRegister => "RecordSet",
-                    NodeKind::Constant => "ValueManager",
-                    _ => "Object",
-                }
-            };
-            format!(
-                "{}:{}.{owner_name}.Module.{role}.Event.{event_name}",
-                address.source_set(),
-                owner.kind().as_str()
-            )
-        }
-        [owner, module, role, event]
-            if module.kind() == NodeKind::Module && event.kind() == NodeKind::Event =>
-        {
-            let (Some(owner_name), Some(role_name), Some(event_name)) = (
-                owner.name(),
-                role.name().or(Some(role.kind().as_str())),
-                event.name(),
-            ) else {
-                return args;
-            };
-            format!(
-                "{}:{}.{owner_name}.Module.{role_name}.Event.{}",
-                address.source_set(),
-                owner.kind().as_str(),
-                english(event_name)
-            )
-        }
-        _ => return args,
-    };
-    let mut args = args;
-    if let Some(object) = args.as_object_mut() {
-        object.insert("at".to_string(), serde_json::Value::String(rewritten));
-    }
-    args
-}
-
-/// The event planner reports through its own error type; the apply seam
-/// speaks one refusal vocabulary, so the kinds map one to one.
-fn event_plan_error_to_apply(
-    error: crate::infrastructure::native_operations::event::EventPlanError,
-) -> ApplyPlanError {
-    use crate::infrastructure::native_operations::event::EventPlanErrorKind;
-    let kind = match error.kind() {
-        EventPlanErrorKind::BadValue => ApplyPlanErrorKind::BadValue,
-        EventPlanErrorKind::NotFound => ApplyPlanErrorKind::NotFound,
-        EventPlanErrorKind::ProviderUnavailable => ApplyPlanErrorKind::ProviderUnavailable,
-        EventPlanErrorKind::InvalidState => ApplyPlanErrorKind::InvalidState,
-        EventPlanErrorKind::InvalidSource => ApplyPlanErrorKind::InvalidSource,
-        EventPlanErrorKind::Staging(kind) => ApplyPlanErrorKind::Staging(kind),
-        EventPlanErrorKind::Postcondition => ApplyPlanErrorKind::Postcondition,
-    };
-    let path = error.path().map(str::to_string);
-    let planned = ApplyPlanError::new(kind, error.to_string());
-    match path {
-        Some(path) => planned.at_path(path),
-        None => planned,
     }
 }
 
@@ -416,25 +339,23 @@ fn batch_effects_as_provisional(
         .collect()
 }
 
-/// Пишет ли семейство операции в допущенный набор — ответ единственного
-/// владельца признака (`SourceSetTraits::writes`), общий с предварительной
-/// проверкой `apply` и словарём `can`.
+/// Политику записи семейства задаёт `SourceSetWriteSupport`; предварительная
+/// проверка `apply`, планировщик и словарь `can` спрашивают одного владельца.
 /// Запись реестра для вызова: общее имя (`attribute.add` и `command.add`
 /// объекта и формы, #1465) выбирает её адрес вызова, как предварительная
 /// проверка `apply`.
 pub(super) fn resolved_descriptor(
     operation: &str,
-    at: Option<&crate::domain::address::QualifiedAddress>,
+    at: Option<&unica_address::address::QualifiedAddress>,
     binding: &ProviderRootBinding,
-) -> Option<crate::domain::apply::OperationDescriptor> {
-    use crate::domain::apply::{OperationRegistry, OperationSite, SourceSetTraits};
-    let registry = OperationRegistry::closed();
-    let traits = SourceSetTraits::of_source(
+) -> Option<unica_operations::OperationDescriptor> {
+    let registry = crate::domain::apply::operation_registry();
+    let traits = crate::domain::apply::source_set_traits_of_source(
         binding.source_kind(),
         binding.source_format(),
         binding.source_profile(),
     );
-    at.and_then(|at| OperationSite::new(at, traits))
+    at.and_then(|at| crate::domain::apply::operation_site(at, traits))
         .and_then(|site| registry.lookup_at(operation, &site))
         .or_else(|| registry.lookup(operation))
 }
@@ -444,7 +365,7 @@ fn validate_platform_xml_binding(
     operation: &str,
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
-    let traits = crate::domain::apply::SourceSetTraits::of_source(
+    let traits = crate::domain::apply::source_set_traits_of_source(
         binding.source_kind(),
         binding.source_format(),
         binding.source_profile(),
@@ -471,19 +392,18 @@ fn refuse_misplaced_operation(
     operation: &crate::domain::apply::ApplyOp,
     binding: &ProviderRootBinding,
 ) -> Result<(), ApplyPlanError> {
-    use crate::domain::apply::{OperationSite, SourceSetTraits};
     let Some(descriptor) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
     else {
         return Ok(());
     };
     validate_platform_xml_binding(binding, operation.name(), op_index)?;
-    let traits = SourceSetTraits::of_source(
+    let traits = crate::domain::apply::source_set_traits_of_source(
         binding.source_kind(),
         binding.source_format(),
         binding.source_profile(),
     );
-    let applies =
-        OperationSite::new(operation.at(), traits).is_some_and(|site| descriptor.applies_at(&site));
+    let applies = crate::domain::apply::operation_site(operation.at(), traits)
+        .is_some_and(|site| descriptor.applies_at(&site));
     if applies {
         return Ok(());
     }
@@ -580,17 +500,23 @@ fn parse_family_operation(
         return Err(hidden_apply_family_unimplemented(op_index));
     };
     let args = serde_json::Value::Object(operation.args().clone());
-    if operation.name() == "object.borrow" {
+    if descriptor.operation::<unica_metadata::apply_operations::MetadataOperation>()
+        == Some(unica_metadata::apply_operations::MetadataOperation::ObjectBorrow)
+    {
         return borrow::parse(&args, op_index, binding).map(ParsedApplyOperation::Borrow);
     }
     let parsed = match descriptor.family() {
         OperationFamily::Metadata | OperationFamily::Properties => {
-            let parsed = metadata::parse_metadata_plan_operation_in(
+            validate_platform_xml_binding(binding, operation.name(), op_index)?;
+            let parsed = unica_metadata_designer::decode::parse_metadata_plan_operation_in(
                 Some(descriptor),
                 operation.name(),
                 &args,
                 op_index,
-                binding,
+                &unica_metadata_designer::decode::MetadataDecodeContext {
+                    source_set_name: binding.source_set_name(),
+                    registry: crate::domain::apply::operation_registry(),
+                },
             )?;
             ParsedApplyOperation::Metadata(IndexedPlanOperation::new(op_index, parsed))
         }
@@ -612,36 +538,45 @@ fn parse_family_operation(
             ParsedApplyOperation::FormResource(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Dcs | OperationFamily::Mxl => {
-            let parsed =
-                dcs_mxl::parse_dcs_mxl_plan_operation(operation.name(), &args, op_index, binding)?;
-            ParsedApplyOperation::DcsMxl(IndexedPlanOperation::new(op_index, parsed))
-        }
-        OperationFamily::Code => {
-            let parsed = crate::infrastructure::native_operations::code::parse_code_plan_operation(
+            let parsed = dcs_mxl::parse_dcs_mxl_plan_operation_in(
+                Some(descriptor),
                 operation.name(),
                 &args,
                 op_index,
                 binding,
+            )?;
+            ParsedApplyOperation::DcsMxl(IndexedPlanOperation::new(op_index, parsed))
+        }
+        OperationFamily::Code => {
+            let parsed = unica_bsl::input::parse_code_plan_operation(
+                operation.name(),
+                &args,
+                op_index,
+                (binding).source_set_name(),
             )?;
             ParsedApplyOperation::Code(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Xdto => {
-            let parsed = crate::infrastructure::native_operations::xdto::parse_xdto_plan_operation(
-                operation.name(),
+            let operation = descriptor
+                .operation::<unica_xdto::operations::XdtoOperation>()
+                .ok_or_else(|| hidden_apply_family_unimplemented(op_index))?;
+            let parsed = unica_xdto_designer::planner::decode_xdto_plan_operation(
+                operation,
                 &args,
                 op_index,
-                binding,
+                binding.source_set_name(),
             )?;
             ParsedApplyOperation::Xdto(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Event => {
-            let args = canonical_event_args(args);
-            let parsed =
-                crate::infrastructure::native_operations::event::parse_event_implement_args(
-                    &args,
-                    &format!("ops[{op_index}].args"),
-                )
-                .map_err(event_plan_error_to_apply)?;
+            let operation = descriptor
+                .operation::<unica_metadata::event::EventOperation>()
+                .ok_or_else(|| hidden_apply_family_unimplemented(op_index))?;
+            let parsed = unica_metadata::event_input::parse_event_operation(
+                operation,
+                args,
+                &format!("ops[{op_index}].args"),
+            )?;
             ParsedApplyOperation::Event(IndexedPlanOperation::new(op_index, parsed))
         }
     };
@@ -674,10 +609,10 @@ pub(crate) fn parse_apply_operation_for_test(
 /// макет `Kind.Name.Form.F` / `Kind.Name.Template.T`, и число сегментов
 /// адреса, которые это описание покрывает.
 fn descriptor_node(
-    at: &crate::domain::address::QualifiedAddress,
-) -> Option<(crate::domain::source_target::MetadataAddress, usize)> {
-    use crate::domain::address::NodeKind;
-    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    at: &unica_address::address::QualifiedAddress,
+) -> Option<(unica_address::source_target::MetadataAddress, usize)> {
+    use unica_address::address::NodeKind;
+    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     let segments = at.segments();
     let owner = segments.first()?;
     let owner_path = format!("{}.{}", owner.kind().as_str(), owner.name()?);
@@ -703,19 +638,20 @@ fn descriptor_node(
 pub(crate) fn staged_template_format(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
-    template: &crate::domain::address::QualifiedAddress,
-) -> Option<crate::domain::apply::TemplateFormat> {
+    template: &unica_address::address::QualifiedAddress,
+) -> Option<unica_templates::TemplateFormat> {
     let (address, covered) = descriptor_node(template)?;
     if covered != template.segments().len() {
         return None;
     }
-    let relative = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+    let relative = unica_source_designer::layout::metadata_descriptor_relative(
         &address,
         binding.source_kind(),
     )
     .ok()?;
     let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
-    dcs_mxl::template_type_of(&bytes).map(|raw| crate::domain::apply::TemplateFormat::parse(&raw))
+    unica_templates_designer::descriptor::template_type_of(&bytes)
+        .map(|raw| unica_templates::TemplateFormat::parse(&raw))
 }
 
 /// Поиск узла схемы по имени в стадированном макете: владелец — адрес
@@ -725,16 +661,16 @@ pub(crate) fn staged_template_format(
 fn staged_schema_lookup(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
-    owner: &crate::domain::address::QualifiedAddress,
+    owner: &unica_address::address::QualifiedAddress,
     name: &str,
-) -> crate::domain::apply::NamedLookup {
-    use crate::domain::address::NodeKind;
-    use crate::domain::apply::NamedLookup;
+) -> unica_operations::recovery::NamedLookup {
+    use unica_address::address::NodeKind;
+    use unica_operations::recovery::NamedLookup;
     let segments = owner.segments();
     let (template, variant) = match segments.last() {
         Some(last) if last.kind() == NodeKind::Template => (owner.clone(), None),
         Some(last) if last.kind() == NodeKind::Setting && segments.len() > 1 => (
-            crate::domain::address::QualifiedAddress {
+            unica_address::address::QualifiedAddress {
                 line_range: None,
                 source_set: owner.source_set().to_string(),
                 segments: segments[..segments.len() - 1].to_vec(),
@@ -749,19 +685,19 @@ fn staged_schema_lookup(
     if covered != template.segments().len() {
         return NamedLookup::Missing;
     }
-    let Some(bytes) = crate::infrastructure::logical_event_source::attached_resource_relative(
-        &address,
-        "Template.xml",
-        binding.source_kind(),
-    )
-    .ok()
-    .and_then(|relative| admission.staged_state().ok()?.read(&relative).ok()?) else {
+    let Ok(mut staged) = admission.staged_state() else {
         return NamedLookup::Missing;
     };
-    match variant {
-        Some(variant) => dcs_mxl::structure_item_path_in_schema(&bytes, variant, name),
-        None => dcs_mxl::data_set_path_in_schema(&bytes, name),
-    }
+    let member = match variant {
+        Some(variant) => unica_dcs::codec::DcsMember::StructureItem { variant, name },
+        None => unica_dcs::codec::DcsMember::DataSet(name),
+    };
+    crate::infrastructure::family_codecs::dcs_codec().member_path(
+        &mut staged.proposal(),
+        binding.source_kind(),
+        &address,
+        member,
+    )
 }
 
 /// Путь узла с именем `name` под контейнером в стадированном состоянии:
@@ -771,14 +707,14 @@ fn staged_schema_lookup(
 pub(crate) fn staged_member_path(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
-    container: &crate::domain::address::QualifiedAddress,
+    container: &unica_address::address::QualifiedAddress,
     name: &str,
-) -> crate::domain::apply::NamedLookup {
+) -> unica_operations::recovery::NamedLookup {
     match container.segments().last().map(|segment| segment.kind()) {
-        Some(crate::domain::address::NodeKind::Form) => {
+        Some(unica_address::address::NodeKind::Form) => {
             match staged_form_items(admission, binding, container) {
-                Some(items) => form_resource::form_item_path(&items, name),
-                None => crate::domain::apply::NamedLookup::Missing,
+                Some(items) => unica_forms_designer::planner::form_item_path(&items, name),
+                None => unica_operations::recovery::NamedLookup::Missing,
             }
         }
         _ => staged_schema_lookup(admission, binding, container, name),
@@ -790,9 +726,9 @@ pub(crate) fn staged_member_path(
 pub(crate) fn staged_form_item_role(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
-    item: &crate::domain::address::QualifiedAddress,
-) -> Option<crate::domain::apply::FormItemRole> {
-    use crate::domain::address::NodeKind;
+    item: &unica_address::address::QualifiedAddress,
+) -> Option<unica_forms::FormItemRole> {
+    use unica_address::address::NodeKind;
     let segments = item.segments();
     if segments.len() < 3
         || segments[1].kind() != NodeKind::Form
@@ -802,7 +738,7 @@ pub(crate) fn staged_form_item_role(
     {
         return None;
     }
-    let form = crate::domain::address::QualifiedAddress {
+    let form = unica_address::address::QualifiedAddress {
         line_range: None,
         source_set: item.source_set().to_string(),
         segments: segments[..2].to_vec(),
@@ -812,8 +748,8 @@ pub(crate) fn staged_form_item_role(
         .iter()
         .filter_map(|segment| segment.name().map(str::to_string))
         .collect::<Vec<_>>();
-    form_resource::form_item_at(&items, &chain)
-        .map(|element| crate::domain::apply::FormItemRole::from_tag(&element.tag))
+    unica_forms_designer::planner::form_item_at(&items, &chain)
+        .map(|element| unica_forms::FormItemRole::from_tag(&element.tag))
 }
 
 /// Дерево элементов стадированной формы `Owner.X.Form.F`, как его читает
@@ -821,20 +757,20 @@ pub(crate) fn staged_form_item_role(
 fn staged_form_items(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
-    form: &crate::domain::address::QualifiedAddress,
-) -> Option<Vec<crate::infrastructure::native_operations::form::FormInfoElement>> {
+    form: &unica_address::address::QualifiedAddress,
+) -> Option<Vec<unica_forms::facts::FormInfoElement>> {
     let (address, covered) = descriptor_node(form)?;
     if covered != 2 {
         return None;
     }
-    let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+    let relative = unica_source_designer::layout::attached_resource_relative(
         &address,
         "Form.xml",
         binding.source_kind(),
     )
     .ok()?;
     let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
-    form_resource::form_items_of(std::str::from_utf8(&bytes).ok()?).ok()
+    unica_forms_designer::planner::form_items_of(std::str::from_utf8(&bytes).ok()?).ok()
 }
 
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
@@ -845,10 +781,10 @@ fn staged_form_items(
 pub(crate) fn staged_node_existence(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
-    at: &crate::domain::address::QualifiedAddress,
+    at: &unica_address::address::QualifiedAddress,
 ) -> Option<bool> {
     let (address, covered) = descriptor_node(at)?;
-    let relative = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+    let relative = unica_source_designer::layout::metadata_descriptor_relative(
         &address,
         binding.source_kind(),
     )
@@ -869,18 +805,16 @@ pub(crate) fn staged_node_existence(
     }
     let route = crate::domain::logical_route::classify_route(
         at,
-        binding
-            .source_profile()
-            .platform_profile()
-            .unwrap_or_else(crate::domain::platform_profile::PlatformProfile::v8_3_27),
+        crate::domain::source_capabilities::bsl_profile_for_source(binding.source_profile())
+            .unwrap_or_else(unica_bsl::profile::PlatformProfile::v8_3_27),
     )?;
     // Запись прав роли и область макета живут в присоединённом файле: их
     // создаёт операция родителя (`right.add`, `area.add`, #1354).
-    use crate::domain::address::NodeKind;
-    use crate::domain::logical_route::RouteClass;
+    use unica_address::address::NodeKind;
+    use unica_source_contract::route::RouteClass;
     let terminal = at.segments().last()?;
     let resource = |name: &str| -> Option<Vec<u8>> {
-        let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+        let relative = unica_source_designer::layout::attached_resource_relative(
             &address,
             name,
             binding.source_kind(),
@@ -892,13 +826,16 @@ pub(crate) fn staged_node_existence(
         (RouteClass::Metadata, _, _) => Some(false),
         (RouteClass::Role, NodeKind::Right, 1) => {
             let (kind, name) = terminal.name()?.split_once('_')?;
-            form_resource::staged_rights_entry_exists(
+            unica_roles_designer::planner::staged_rights_entry_exists(
                 &resource("Rights.xml")?,
                 &format!("{kind}.{name}"),
             )
         }
         (RouteClass::Mxl, NodeKind::Area, 1) => {
-            dcs_mxl::spreadsheet_area_exists(&resource("Template.xml")?, terminal.name()?)
+            unica_templates_designer::planner::spreadsheet_area_exists(
+                &resource("Template.xml")?,
+                terminal.name()?,
+            )
         }
         // Элемент формы и его событие: есть, когда цепочка `Item` ведёт к
         // элементу формы; имя события проверяет матрица событий.
@@ -915,7 +852,7 @@ pub(crate) fn staged_node_existence(
             {
                 return None;
             }
-            let form = crate::domain::address::QualifiedAddress {
+            let form = unica_address::address::QualifiedAddress {
                 line_range: None,
                 source_set: at.source_set().to_string(),
                 segments: at.segments()[..covered].to_vec(),
@@ -925,7 +862,7 @@ pub(crate) fn staged_node_existence(
                 .iter()
                 .filter_map(|segment| segment.name().map(str::to_string))
                 .collect::<Vec<_>>();
-            Some(form_resource::form_item_at(&items, &chain).is_some())
+            Some(unica_forms_designer::planner::form_item_at(&items, &chain).is_some())
         }
         _ => None,
     }
@@ -947,7 +884,8 @@ pub(crate) fn plan_hidden_v13_apply(
         .staged_state()
         .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
-    refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
+    let support_warning =
+        refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
     let support_operations = request
         .ops()
         .iter()
@@ -961,6 +899,7 @@ pub(crate) fn plan_hidden_v13_apply(
         .at_path("ops"));
     }
     let mut provisional = Vec::new();
+    let mut xdto_validation = unica_xdto_designer::planner::XdtoValidationLedger::default();
     let mut borrowing = Vec::new();
     let mut cursor = 0;
     while cursor < parsed.len() {
@@ -998,14 +937,13 @@ pub(crate) fn plan_hidden_v13_apply(
                     .map(|change| change.relative_path)
                     .collect::<Vec<_>>();
                 let authority = admission.code_planning_authority(binding)?;
-                let planned = crate::infrastructure::native_operations::code::plan_code_batch(
-                    staged,
-                    authority,
+                let planned = crate::infrastructure::native_operations::code_patch_composition::plan_code_batch(
+                    &mut staged.proposal(),
+                    &authority,
                     &operations,
                 )?;
-                staged = planned.0;
                 provisional.extend(batch_effects_as_provisional(
-                    &before, &staged, planned.1, cursor,
+                    &before, &staged, planned, cursor,
                 ));
             }
             ParsedApplyOperation::Event(_) => {
@@ -1023,42 +961,39 @@ pub(crate) fn plan_hidden_v13_apply(
                     .collect::<Vec<_>>();
                 let authority = admission.metadata_planning_authority(binding)?;
                 let planned =
-                    crate::infrastructure::native_operations::event::plan_event_implement_batch(
-                        staged,
+                    crate::infrastructure::native_operations::event_implementation::plan_event_implement_batch(
+                        &mut staged.proposal(),
                         authority.source_set_name(),
                         authority.source_kind(),
-                        authority.profile(),
+                        crate::domain::source_capabilities::bsl_profile_for_source(
+                            authority.source_profile(),
+                        )
+                        .expect(
+                            "an issued metadata authority has the exact writable source profile",
+                        ),
                         &operations,
                     )
-                    .map_err(event_plan_error_to_apply)?;
-                staged = planned.0;
+                    ?;
                 provisional.extend(batch_effects_as_provisional(
-                    &before, &staged, planned.1, cursor,
+                    &before, &staged, planned, cursor,
                 ));
             }
             ParsedApplyOperation::Xdto(_) => {
                 let operations = parsed[cursor..end]
                     .iter()
                     .map(|operation| match operation {
-                        ParsedApplyOperation::Xdto(operation) => operation.operation().clone(),
+                        ParsedApplyOperation::Xdto(operation) => operation.clone(),
                         _ => unreachable!("the selected run is XDTO-only"),
                     })
                     .collect::<Vec<_>>();
-                let before = staged
-                    .planned_changes()
-                    .into_iter()
-                    .map(|change| change.relative_path)
-                    .collect::<Vec<_>>();
                 let authority = admission.xdto_planning_authority(binding)?;
-                let planned = crate::infrastructure::native_operations::xdto::plan_xdto_batch(
-                    staged,
-                    authority,
+                let planned = unica_xdto_designer::planner::plan_xdto_batch(
+                    &mut staged.proposal(),
+                    &authority,
                     &operations,
+                    &mut xdto_validation,
                 )?;
-                staged = planned.0;
-                provisional.extend(batch_effects_as_provisional(
-                    &before, &staged, planned.1, cursor,
-                ));
+                provisional.extend(planned);
             }
             ParsedApplyOperation::Metadata(_) => {
                 let operations = parsed[cursor..end]
@@ -1069,9 +1004,9 @@ pub(crate) fn plan_hidden_v13_apply(
                     })
                     .collect::<Vec<_>>();
                 let authority = admission.metadata_planning_authority(binding)?;
-                let planned = metadata::plan_metadata_batch(staged, authority, &operations)?;
-                staged = planned.0;
-                provisional.extend(planned.1);
+                let planned =
+                    unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml),&mut staged.proposal(), &authority, &operations)?;
+                provisional.extend(planned);
             }
             ParsedApplyOperation::FormResource(_) => {
                 let operations = parsed[cursor..end]
@@ -1082,10 +1017,12 @@ pub(crate) fn plan_hidden_v13_apply(
                     })
                     .collect::<Vec<_>>();
                 let authority = admission.form_resource_planning_authority(binding)?;
-                let planned =
-                    form_resource::plan_form_resource_batch(staged, authority, &operations)?;
-                staged = planned.0;
-                provisional.extend(planned.1);
+                let planned = form_resource::plan_form_resource_batch(
+                    &mut staged.proposal(),
+                    &authority,
+                    &operations,
+                )?;
+                provisional.extend(planned);
             }
             ParsedApplyOperation::DcsMxl(_) => {
                 let operations = parsed[cursor..end]
@@ -1096,17 +1033,85 @@ pub(crate) fn plan_hidden_v13_apply(
                     })
                     .collect::<Vec<_>>();
                 let authority = admission.dcs_mxl_planning_authority(binding)?;
-                let planned = dcs_mxl::plan_dcs_mxl_batch(staged, authority, &operations)?;
-                staged = planned.0;
-                provisional.extend(planned.1);
+                let planned =
+                    dcs_mxl::plan_dcs_mxl_batch(&mut staged.proposal(), &authority, &operations)?;
+                provisional.extend(planned);
             }
             ParsedApplyOperation::Unsupported(_) => unreachable!("unsupported run handled above"),
         }
         cursor = end;
     }
 
-    metadata::validate_final_object_integrity(&staged, binding)?;
-    let mut effects = reconcile_effects(&staged, provisional);
+    unica_metadata_designer::planner::validate_final_object_integrity(
+        &mut staged.proposal(),
+        binding.source_set_name(),
+        binding.source_kind(),
+    )?;
+    let dcs_edits = parsed
+        .iter()
+        .filter_map(|operation| match operation {
+            ParsedApplyOperation::DcsMxl(operation) => operation
+                .operation()
+                .dcs_plan()
+                .map(|edit| (operation.index(), edit)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    crate::infrastructure::family_codecs::dcs_codec().check_staged(
+        &mut staged.proposal(),
+        binding.source_kind(),
+        &dcs_edits,
+    )?;
+    if !xdto_validation.is_empty() {
+        let authority = admission.xdto_planning_authority(binding)?;
+        unica_xdto_designer::planner::validate_final_xdto_resources(
+            &mut staged.proposal(),
+            &authority,
+            &xdto_validation,
+            parsed.iter().filter_map(|operation| match operation {
+                ParsedApplyOperation::Xdto(operation) => Some(operation),
+                _ => None,
+            }),
+        )?;
+    }
+    let xdto_operations = parsed
+        .iter()
+        .filter_map(|operation| match operation {
+            ParsedApplyOperation::Xdto(operation) => Some(operation.operation().clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let xdto_objects = unica_xdto_designer::planner::final_object_addition_details(
+        &mut staged.proposal(),
+        binding.source_set_name(),
+        binding.source_kind(),
+        &xdto_operations,
+    )?;
+    let exchange_content = unica_metadata_designer::planner::final_exchange_content(
+        &mut staged.proposal(),
+        binding.source_set_name(),
+        binding.source_kind(),
+        parsed.iter().filter_map(|operation| match operation {
+            ParsedApplyOperation::Metadata(operation) => {
+                operation.operation().exchange_content_owner().cloned()
+            }
+            _ => None,
+        }),
+    )?;
+    let mut effects = reconcile_effects(staged.planned_changes(), provisional);
+    // A plan whose operations cancel out edits nothing protected.
+    if let Some(warning) = support_warning.filter(|_| !staged.planned_changes().is_empty()) {
+        effects.push_warning(warning);
+    }
+    let detail_error = |error: serde_json::Error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, error.to_string()).at_path("ops")
+    };
+    effects
+        .set_details(unica_xdto::results::XDTO_OBJECTS, &xdto_objects)
+        .map_err(detail_error)?;
+    effects
+        .set_details(unica_metadata::EXCHANGE_CONTENT, &exchange_content)
+        .map_err(detail_error)?;
     effects.set_borrowing(borrowing);
     Ok((staged, effects))
 }
@@ -1120,19 +1125,20 @@ mod object_integrity_tests;
 #[cfg(test)]
 mod tests {
     use super::plan_hidden_v13_apply;
-    use super::request::{reconcile_effects, ProvisionalApplyEffect};
     use crate::domain::apply::ApplyRequest;
-    use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-    use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
-    use crate::infrastructure::workspace_actor::{
-        ApplyAdmission, ProviderRootBinding, WorkspaceActor, WorkspaceIdentity,
-        WorkspaceSourceSetInput,
-    };
+    use unica_source_contract::proposal::{reconcile_effects, ProvisionalApplyEffect};
+    use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+
+    use crate::infrastructure::source_workspace::WorkspaceActor;
     use std::sync::Arc;
     use std::time::Duration;
+    use unica_source_contract::proposal::ApplyPlanErrorKind;
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_work_control::cancellation::CancellationToken;
+    use unica_work_control::provider_deadline::ProviderDeadline;
+    use unica_workspace::actor::{
+        ApplyAdmission, ProviderRootBinding, WorkspaceIdentity, WorkspaceSourceSetInput,
+    };
 
     pub(super) struct ApplySeamFixture {
         _root: tempfile::TempDir,
@@ -1195,7 +1201,9 @@ mod tests {
                 "apply-family-seam-test",
             )
             .unwrap();
-            let actor = Arc::new(WorkspaceActor::new(identity, context).unwrap());
+            let actor = Arc::new(
+                crate::infrastructure::source_workspace::new_actor(identity, context).unwrap(),
+            );
             let binding = actor.bind_provider_root("main", &source).unwrap();
             Self {
                 _root: root,
@@ -1332,17 +1340,15 @@ mod tests {
             .into_iter()
             .find(|change| change.relative_path.ends_with("Print/Ext/Template.xml"))
             .expect("the spreadsheet body is staged");
-        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
-            written.current
-        else {
+        let unica_source_contract::proposal::StagedFileState::Bytes(bytes) = written.current else {
             panic!("the spreadsheet keeps bytes");
         };
         assert_eq!(
-            super::dcs_mxl::spreadsheet_area_exists(&bytes, "Header"),
+            unica_templates_designer::planner::spreadsheet_area_exists(&bytes, "Header"),
             Some(true)
         );
         assert_eq!(
-            super::dcs_mxl::spreadsheet_area_exists(&bytes, "Headr"),
+            unica_templates_designer::planner::spreadsheet_area_exists(&bytes, "Headr"),
             Some(false)
         );
         let text = String::from_utf8_lossy(&bytes);
@@ -1363,13 +1369,11 @@ mod tests {
             .into_iter()
             .find(|change| change.relative_path.ends_with("Print/Ext/Template.xml"))
             .expect("the spreadsheet body is staged");
-        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
-            written.current
-        else {
+        let unica_source_contract::proposal::StagedFileState::Bytes(bytes) = written.current else {
             panic!("the spreadsheet keeps bytes");
         };
         assert_eq!(
-            super::dcs_mxl::spreadsheet_area_exists(&bytes, "Head.er"),
+            unica_templates_designer::planner::spreadsheet_area_exists(&bytes, "Head.er"),
             Some(true)
         );
         assert!(
@@ -1436,7 +1440,7 @@ mod tests {
             super::staged_node_existence(
                 &admission,
                 &fixture.binding,
-                &crate::domain::address::QualifiedAddress::parse(raw).unwrap(),
+                &unica_address::address::QualifiedAddress::parse(raw).unwrap(),
             )
         };
         for (raw, expected) in [
@@ -1545,12 +1549,11 @@ mod tests {
 
     #[test]
     fn support_state_classification_preserves_names_across_targets_and_profiles() {
-        use crate::domain::address::QualifiedAddress;
-        use crate::domain::apply::OperationRegistry;
+        use unica_address::address::QualifiedAddress;
         let fixture = ApplySeamFixture::new();
         let source = fixture.source_dir();
         let workspace = source.parent().unwrap().to_path_buf();
-        let mut names = OperationRegistry::closed().names();
+        let mut names = crate::domain::apply::operation_registry().names();
         names.extend(["", "supportCapability.set.extra", "supportRule.unknown"]);
         for (kind, format, profile) in [
             (
@@ -1608,7 +1611,8 @@ mod tests {
                 "support-state-classification",
             )
             .unwrap();
-            let actor = WorkspaceActor::new(identity, context).unwrap();
+            let actor =
+                crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
             let binding = actor.bind_provider_root("main", &source).unwrap();
             for raw_target in [
                 None,
@@ -1678,13 +1682,206 @@ mod tests {
         }
     }
 
+    #[test]
+    fn vendor_object_removal_requires_separate_off_support_apply() {
+        use unica_workspace::test_support::tree_snapshot;
+
+        for rule in [1, 0] {
+            let fixture = ApplySeamFixture::new();
+            let marker = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(&marker, vendor_removal_support_marker(rule, true)).unwrap();
+            let before = tree_snapshot(&fixture.source_dir());
+            if rule == 1 {
+                let ordinary = seam_request(
+                    "main:Document.First",
+                    "props.set",
+                    serde_json::json!({"values": {"Comment": "editable"}}),
+                );
+                let (staged, _) =
+                    plan_hidden_v13_apply(&ordinary, &fixture.binding, &fixture.admission())
+                        .expect("the editable rule still permits ordinary property edits");
+                assert!(!staged.planned_changes().is_empty());
+            }
+            for force in [false, true] {
+                let request = seam_request(
+                    "main:Document.First",
+                    "object.remove",
+                    serde_json::json!({"force": force}),
+                );
+                let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                    .expect_err("a vendor object must be off support before removal");
+                assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+                assert!(error.to_string().contains("off-support"), "{error}");
+                assert!(error.to_string().contains("supportRule.set"), "{error}");
+                assert!(error.to_string().contains("separate apply"), "{error}");
+                assert_eq!(tree_snapshot(&fixture.source_dir()), before);
+            }
+        }
+    }
+
+    fn vendor_removal_support_marker(rule: u8, editing_enabled: bool) -> String {
+        let global_flag = u8::from(!editing_enabled);
+        format!(
+            "\u{feff}{{6,{global_flag},1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,33333333-3333-4333-8333-333333333333,\"1.0\",\"Vendor\",\"VendorConf\",3,{rule},0,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111}}"
+        )
+    }
+
+    #[test]
+    fn vendor_object_removal_preserves_allowed_support_states() {
+        use unica_workspace::test_support::tree_snapshot;
+
+        for (policy, marker) in [
+            ("deny", None),
+            ("deny", Some(vendor_removal_support_marker(2, true))),
+            ("deny", Some("\u{feff}{6,0,0}".to_string())),
+            (
+                "deny",
+                Some(vendor_removal_support_marker(0, true).replace(
+                    "11111111-1111-4111-8111-111111111111",
+                    "22222222-2222-4222-8222-222222222222",
+                )),
+            ),
+            ("warn", Some(vendor_removal_support_marker(0, false))),
+            ("warn", Some(vendor_removal_support_marker(1, true))),
+            ("off", Some(vendor_removal_support_marker(0, false))),
+            ("off", Some(vendor_removal_support_marker(1, true))),
+        ] {
+            let fixture = ApplySeamFixture::new();
+            std::fs::write(
+                fixture
+                    .source_dir()
+                    .parent()
+                    .unwrap()
+                    .join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            if let Some(marker) = marker {
+                let path = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, marker).unwrap();
+            }
+            let before = tree_snapshot(&fixture.source_dir());
+            let request = seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            );
+            let (mut staged, _) =
+                plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                    .unwrap_or_else(|error| panic!("allowed removal under {policy}: {error}"));
+            assert!(staged
+                .read(std::path::Path::new("Documents/First.xml"))
+                .unwrap()
+                .is_none());
+            assert_eq!(tree_snapshot(&fixture.source_dir()), before);
+        }
+    }
+
+    #[test]
+    fn warn_policy_reports_support_locked_only_for_a_plan_that_changes_the_object() {
+        let fixture = ApplySeamFixture::new();
+        std::fs::write(
+            fixture
+                .source_dir()
+                .parent()
+                .unwrap()
+                .join(".v8-project.json"),
+            serde_json::json!({"editingAllowedCheck": "warn"}).to_string(),
+        )
+        .unwrap();
+        let marker = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(marker, vendor_removal_support_marker(0, true)).unwrap();
+
+        let edit = seam_request(
+            "main:Document.First",
+            "props.set",
+            serde_json::json!({"values": {"Comment": "vendor edit"}}),
+        );
+        let (staged, effects) =
+            plan_hidden_v13_apply(&edit, &fixture.binding, &fixture.admission())
+                .expect("warn permits editing a locked vendor object");
+        assert!(!staged.planned_changes().is_empty());
+        let codes = effects
+            .warnings()
+            .iter()
+            .map(|warning| warning["code"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, vec![serde_json::json!("support_locked")]);
+        assert_eq!(effects.warnings()[0]["at"], "main:Document.First");
+
+        // Restating the stored comment changes nothing.
+        let descriptor = fixture.source_dir().join("Documents/First.xml");
+        let text = std::fs::read_to_string(&descriptor).unwrap();
+        std::fs::write(
+            &descriptor,
+            text.replacen("<Comment></Comment>", "<Comment>kept</Comment>", 1),
+        )
+        .unwrap();
+        let unchanged = seam_request(
+            "main:Document.First",
+            "props.set",
+            serde_json::json!({"values": {"Comment": "kept"}}),
+        );
+        let (staged, effects) =
+            plan_hidden_v13_apply(&unchanged, &fixture.binding, &fixture.admission())
+                .expect("a no-op plan is still planned");
+        assert!(staged.planned_changes().is_empty());
+        assert_eq!(effects.warnings().len(), 0);
+    }
+
+    #[test]
+    fn support_removal_and_object_removal_require_separate_batches_under_every_policy() {
+        use unica_workspace::test_support::tree_snapshot;
+
+        for policy in ["deny", "warn", "off"] {
+            let fixture = ApplySeamFixture::new();
+            std::fs::write(
+                fixture
+                    .source_dir()
+                    .parent()
+                    .unwrap()
+                    .join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            let marker = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(marker, vendor_removal_support_marker(1, true)).unwrap();
+            let before = tree_snapshot(&fixture.source_dir());
+            let request = ApplyRequest::parse(
+                serde_json::json!({
+                    "at": "main:Document.First",
+                    "ops": [
+                        {"op": "supportRule.set", "args": {"values": {"rule": "off-support"}}},
+                        {"op": "object.remove", "args": {}}
+                    ], "dryRun": true
+                })
+                .as_object()
+                .unwrap(),
+                &["main"],
+            )
+            .unwrap();
+            let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                .expect_err("support removal cannot authorize removal in the same apply");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            assert!(
+                error.to_string().contains("separate apply"),
+                "{policy}: {error}"
+            );
+            assert_eq!(tree_snapshot(&fixture.source_dir()), before);
+        }
+    }
+
     /// The vendor-support gate of the canonical path: a locked vendor object
     /// refuses every family before a byte is staged, the support operations
     /// stay the way out of the lock, and a source without the marker is not
     /// on support at all.
     #[test]
     fn locked_vendor_objects_refuse_every_family_before_staging() {
-        use crate::domain::apply::{OperationFamily, OperationRegistry};
+        use unica_operations::OperationFamily;
 
         let fixture = ApplySeamFixture::new();
         let ext = fixture.source_dir().join("Ext");
@@ -1801,7 +1998,7 @@ mod tests {
                 crate::application::v13::apply::dispatch_family(operation).unwrap()
             })
             .collect::<Vec<_>>();
-        for descriptor in OperationRegistry::closed().descriptors() {
+        for descriptor in crate::domain::apply::operation_registry().descriptors() {
             assert!(
                 descriptor.family() == OperationFamily::Support
                     || covered.contains(&descriptor.family()),
@@ -1872,18 +2069,29 @@ mod tests {
         )
         .unwrap();
         let admission = fixture.admission();
+        let before = snapshot();
+        for (operation, args) in [
+            (
+                "props.set",
+                serde_json::json!({"values": {"Comment": "edited"}}),
+            ),
+            ("object.remove", serde_json::json!({})),
+        ] {
+            let request = seam_request("main:Document.Second", operation, args);
+            let error = plan_hidden_v13_apply(&request, &fixture.binding, &admission).unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            assert!(error.to_string().contains("changes disabled"), "{error}");
+            assert_eq!(snapshot(), before);
+        }
+
+        // Without the marker the source is not on support and edits plan.
+        std::fs::remove_file(ext.join("ParentConfigurations.bin")).unwrap();
+        let admission = fixture.admission();
         let request = seam_request(
             "main:Document.Second",
             "props.set",
             serde_json::json!({"values": {"Comment": "edited"}}),
         );
-        let error = plan_hidden_v13_apply(&request, &fixture.binding, &admission).unwrap_err();
-        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
-        assert!(error.to_string().contains("changes disabled"), "{error}");
-
-        // Without the marker the source is not on support and edits plan.
-        std::fs::remove_file(ext.join("ParentConfigurations.bin")).unwrap();
-        let admission = fixture.admission();
         plan_hidden_v13_apply(&request, &fixture.binding, &admission)
             .expect("a source without the support marker is editable");
     }
@@ -1954,8 +2162,8 @@ mod tests {
 
     #[test]
     fn batch_effects_keep_each_event_with_its_own_file() {
-        use crate::domain::events::{DomainEvent, DomainEventKind};
-        use crate::infrastructure::native_operations::apply::PlannedApplyEffects;
+        use unica_source_contract::events::{DomainEvent, DomainEventKind};
+        use unica_source_contract::proposal::PlannedApplyEffects;
 
         let fixture = ApplySeamFixture::new();
         let admission = fixture.admission();
@@ -2002,7 +2210,7 @@ mod tests {
         staged
             .replace(first, &first_current, first_preimage.clone())
             .unwrap();
-        let reconciled = reconcile_effects(&staged, provisional);
+        let reconciled = reconcile_effects(staged.planned_changes(), provisional);
         assert_eq!(
             reconciled
                 .events()
@@ -2049,45 +2257,45 @@ mod tests {
             ["Documents/Second.xml"]
         );
         let effects = reconcile_effects(
-            &staged,
+            staged.planned_changes(),
             vec![
                 // The surviving duplicate arrives before its earlier sibling.
                 ProvisionalApplyEffect::single(
                     second_path,
-                    crate::domain::events::DomainEvent::new(
-                        crate::domain::events::DomainEventKind::MetadataChanged,
+                    unica_source_contract::events::DomainEvent::new(
+                        unica_source_contract::events::DomainEventKind::MetadataChanged,
                         "shared",
                     ),
                     3,
                 ),
                 ProvisionalApplyEffect::single(
                     first_path,
-                    crate::domain::events::DomainEvent::new(
-                        crate::domain::events::DomainEventKind::MetadataChanged,
+                    unica_source_contract::events::DomainEvent::new(
+                        unica_source_contract::events::DomainEventKind::MetadataChanged,
                         "shared",
                     ),
                     0,
                 ),
                 ProvisionalApplyEffect::spanning(
                     vec![first_path.to_path_buf(), second_path.to_path_buf()],
-                    crate::domain::events::DomainEvent::new(
-                        crate::domain::events::DomainEventKind::MetadataChanged,
+                    unica_source_contract::events::DomainEvent::new(
+                        unica_source_contract::events::DomainEventKind::MetadataChanged,
                         "partly-restored",
                     ),
                     4,
                 ),
                 ProvisionalApplyEffect::single(
                     second_path,
-                    crate::domain::events::DomainEvent::new(
-                        crate::domain::events::DomainEventKind::MetadataChanged,
+                    unica_source_contract::events::DomainEvent::new(
+                        unica_source_contract::events::DomainEventKind::MetadataChanged,
                         "shared",
                     ),
                     2,
                 ),
                 ProvisionalApplyEffect::single(
                     second_path,
-                    crate::domain::events::DomainEvent::new(
-                        crate::domain::events::DomainEventKind::SourceSetChanged,
+                    unica_source_contract::events::DomainEvent::new(
+                        unica_source_contract::events::DomainEventKind::SourceSetChanged,
                         "earlier",
                     ),
                     1,
@@ -2102,11 +2310,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (
-                    crate::domain::events::DomainEventKind::SourceSetChanged,
+                    unica_source_contract::events::DomainEventKind::SourceSetChanged,
                     "earlier"
                 ),
                 (
-                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    unica_source_contract::events::DomainEventKind::MetadataChanged,
                     "shared"
                 )
             ]

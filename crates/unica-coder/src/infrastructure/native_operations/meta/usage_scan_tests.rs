@@ -1,12 +1,12 @@
-use super::usage_scan::{
-    scan_local_enrichment as scan_local_enrichment_by_address, LocalEnrichment, LocalSection,
-};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::metadata::MetadataKind;
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_metadata::MetadataKind;
+use unica_metadata_designer::usage_scan::{
+    scan_local_enrichment as scan_local_enrichment_by_address, LocalEnrichment, LocalSection,
+};
+use unica_work_control::cancellation::CancellationToken;
 
 fn temp_root(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -43,10 +43,14 @@ fn scan_local_enrichment(
     )
     .unwrap();
     scan_local_enrichment_by_address(
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(source_root),
+        &super::predefined::PredefinedResourceReadBinding,
         source_root,
-        kind,
-        &metadata_path,
-        Some("String"),
+        unica_metadata_designer::usage_scan::MetadataUsageTarget {
+            kind,
+            metadata_path: &metadata_path,
+            predefined_code_type: Some("String"),
+        },
         sections,
         limit,
         cancellation,
@@ -331,7 +335,7 @@ fn requested_malformed_predefined_data_reports_validation_diagnostic() {
     assert_eq!(found.diagnostics.len(), 1);
     assert_eq!(
         found.diagnostics[0].code,
-        crate::domain::metadata::MetaDiagnosticCode::ValidationFailed
+        unica_metadata::MetaDiagnosticCode::ValidationFailed
     );
     fs::remove_dir_all(root).unwrap();
 }
@@ -347,10 +351,14 @@ fn predefined_items_are_validated_against_the_owner_code_type() {
     let metadata_path =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Goods").unwrap();
     let found = scan_local_enrichment_by_address(
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(&root),
+        &super::predefined::PredefinedResourceReadBinding,
         &root,
-        MetadataKind::Catalog,
-        &metadata_path,
-        Some("Number"),
+        unica_metadata_designer::usage_scan::MetadataUsageTarget {
+            kind: MetadataKind::Catalog,
+            metadata_path: &metadata_path,
+            predefined_code_type: Some("Number"),
+        },
         &[LocalSection::PredefinedItems],
         50,
         &CancellationToken::new(),
@@ -359,7 +367,7 @@ fn predefined_items_are_validated_against_the_owner_code_type() {
     assert_eq!(found.diagnostics.len(), 1);
     assert_eq!(
         found.diagnostics[0].code,
-        crate::domain::metadata::MetaDiagnosticCode::ValidationFailed
+        unica_metadata::MetaDiagnosticCode::ValidationFailed
     );
     assert!(found.diagnostics[0].message.contains("numeric Code"));
     fs::remove_dir_all(root).unwrap();
@@ -380,7 +388,7 @@ fn predefined_section_on_unsupported_owner_reports_unsupported_kind() {
     assert_eq!(found.diagnostics.len(), 1);
     assert_eq!(
         found.diagnostics[0].code,
-        crate::domain::metadata::MetaDiagnosticCode::UnsupportedKind
+        unica_metadata::MetaDiagnosticCode::UnsupportedKind
     );
     fs::remove_dir_all(root).unwrap();
 }

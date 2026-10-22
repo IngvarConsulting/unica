@@ -48,10 +48,17 @@ class FakeWindowsApi:
         *failures: str,
         active_counts: tuple[int, ...] = (0,),
         wait_signaled: bool = True,
+        member_pids: tuple[int, ...] = (),
+        foreign_pids: tuple[int, ...] = (),
+        unsignaled: tuple[str, ...] = (),
     ) -> None:
         self.failures = list(failures)
         self.active_counts = list(active_counts)
         self.wait_signaled = wait_signaled
+        self.member_pids = member_pids
+        self.foreign_pids = set(foreign_pids)
+        self.unsignaled = set(unsignaled)
+        self.waited: list[object] = []
         self.events: list[str] = []
         self.open_handles = {"process"}
 
@@ -94,7 +101,8 @@ class FakeWindowsApi:
 
     def wait_for_single_object(self, handle, timeout_seconds: float) -> bool:
         self._record("WaitForSingleObject")
-        return self.wait_signaled
+        self.waited.append(handle)
+        return self.wait_signaled and handle not in self.unsignaled
 
     def close_popen_handle(self, process) -> None:
         self._record("CloseHandle(process)")
@@ -113,6 +121,104 @@ class FakeWindowsApi:
         if len(self.active_counts) > 1:
             return self.active_counts.pop(0)
         return self.active_counts[0]
+
+    def job_process_ids(self, job) -> tuple[int, ...]:
+        self._record("QueryInformationJobObject(ProcessIdList)")
+        return self.member_pids
+
+    def open_job_member(self, job, pid: int):
+        self._record(f"OpenProcess({pid})")
+        if pid in self.foreign_pids:
+            return None
+        handle = f"member-{pid}"
+        self.open_handles.add(handle)
+        return handle
+
+
+class FakeKernel32:
+    """The kernel32 calls behind job membership, driven through real ctypes."""
+
+    def __init__(
+        self,
+        *,
+        member_pids: tuple[int, ...] = (),
+        foreign_pids: tuple[int, ...] = (),
+        open_errors: dict[int, int] | None = None,
+        query_error: int | None = None,
+        in_job_error: int | None = None,
+        outgrow: bool = False,
+    ) -> None:
+        self.member_pids = member_pids
+        self.outgrow = outgrow
+        self.foreign_pids = set(foreign_pids)
+        self.open_errors = dict(open_errors or {})
+        self.query_error = query_error
+        self.in_job_error = in_job_error
+        self.last_error = 0
+        self.list_capacities: list[int] = []
+        self.open_handles: set[str] = set()
+        self.closed: list[str] = []
+
+    def QueryInformationJobObject(self, job, information_class, info, size, returned):
+        assert information_class == 3, information_class
+        structure = info._obj
+        capacity = len(structure.ProcessIdList)
+        self.list_capacities.append(capacity)
+        if self.query_error is not None:
+            self.last_error = self.query_error
+            return False
+        if self.outgrow:
+            self.member_pids = tuple(range(1, capacity + 2))
+        structure.NumberOfAssignedProcesses = len(self.member_pids)
+        if len(self.member_pids) > capacity:
+            self.last_error = 234
+            return False
+        structure.NumberOfProcessIdsInList = len(self.member_pids)
+        for index, pid in enumerate(self.member_pids):
+            structure.ProcessIdList[index] = pid
+        return True
+
+    def OpenProcess(self, access, inherit, pid):
+        assert access == 0x00100000 | 0x1000, hex(access)
+        if pid in self.open_errors:
+            self.last_error = self.open_errors[pid]
+            return None
+        handle = f"process-{pid}"
+        self.open_handles.add(handle)
+        return handle
+
+    def IsProcessInJob(self, handle, job, result):
+        if self.in_job_error is not None:
+            self.last_error = self.in_job_error
+            return False
+        pid = int(handle.removeprefix("process-"))
+        result._obj.value = pid not in self.foreign_pids
+        return True
+
+    def CloseHandle(self, handle):
+        self.open_handles.remove(handle)
+        self.closed.append(handle)
+        return True
+
+
+def fake_kernel32_windows_api(module, kernel32: FakeKernel32):
+    """A real ``_WindowsApi`` whose kernel32 and last-error source are fakes."""
+
+    import ctypes
+    import types
+    from ctypes import wintypes
+
+    api = object.__new__(module._WIRE_PROBE._WindowsApi)
+    api.ctypes = types.SimpleNamespace(
+        Structure=ctypes.Structure,
+        c_size_t=ctypes.c_size_t,
+        byref=ctypes.byref,
+        sizeof=ctypes.sizeof,
+        get_last_error=lambda: kernel32.last_error,
+    )
+    api.wintypes = wintypes
+    api.kernel32 = kernel32
+    return api
 
 
 class SmokeUnicaMcpTests(unittest.TestCase):
@@ -1009,6 +1115,162 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             api.events,
         )
 
+    def test_windows_job_zero_is_not_cleanup_until_held_members_are_signaled(
+        self,
+    ) -> None:
+        # ActiveProcesses уже 0, а потомок ещё не signaled: TerminateJobObject
+        # асинхронен, счётчик задания снимается раньше сигнала объекта процесса.
+        module = load_module()
+        process = FakeWindowsProcess()
+        api = FakeWindowsApi(
+            active_counts=(0,),
+            member_pids=(99, 41, 77),
+            foreign_pids=(77,),
+            unsignaled=("member-41",),
+        )
+        api.open_handles.add("job")
+        job = module._WIRE_PROBE._WindowsProcessJob("job", api, process)
+        identity = module.ProcessIdentity(99, None, None, "start-99")
+        ownership = module.ProcessOwnership(process, identity, None, job)
+
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=None,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_process_is_running",
+            return_value=False,
+        ):
+            result = ownership.quiesce({identity}, 0.5)
+
+        self.assertFalse(result.complete)
+        self.assertEqual(result.active_processes, 0)
+        self.assertEqual(
+            result.incomplete,
+            (
+                "Windows Job Object member 41 was not signaled "
+                "before the cleanup deadline",
+            ),
+        )
+        self.assertLess(
+            api.events.index("OpenProcess(41)"),
+            api.events.index("TerminateJobObject"),
+            api.events,
+        )
+        self.assertIn("member-41", api.waited)
+        self.assertIn("member-99", api.waited)
+        self.assertNotIn("member-77", api.waited)
+        self.assertEqual(api.open_handles, set())
+
+    def test_windows_job_member_hold_failure_keeps_cleanup_incomplete(self) -> None:
+        module = load_module()
+        for injected in ("QueryInformationJobObject(ProcessIdList)", "OpenProcess(41)"):
+            with self.subTest(injected=injected):
+                process = FakeWindowsProcess()
+                api = FakeWindowsApi(injected, member_pids=(41,))
+                api.open_handles.add("job")
+                job = module._WIRE_PROBE._WindowsProcessJob("job", api, process)
+                identity = module.ProcessIdentity(99, None, None, "start-99")
+                ownership = module.ProcessOwnership(process, identity, None, job)
+
+                with mock.patch.object(
+                    module._WIRE_PROBE.os, "name", "nt"
+                ), mock.patch.object(
+                    module._WIRE_PROBE,
+                    "_current_process_identity",
+                    return_value=None,
+                ), mock.patch.object(
+                    module._WIRE_PROBE,
+                    "_process_is_running",
+                    return_value=False,
+                ):
+                    result = ownership.quiesce({identity}, 0.5)
+
+                self.assertFalse(result.complete)
+                self.assertTrue(
+                    any(injected in detail for detail in result.incomplete),
+                    result.incomplete,
+                )
+                self.assertEqual(api.open_handles, set())
+
+    def test_windows_api_job_process_ids_grows_buffer_on_more_data(self) -> None:
+        module = load_module()
+        for count, capacities in ((100, [64, 128]), (1000, [64, 1016])):
+            with self.subTest(count=count):
+                pids = tuple(range(1000, 1000 + count))
+                kernel32 = FakeKernel32(member_pids=pids)
+                api = fake_kernel32_windows_api(module, kernel32)
+
+                self.assertEqual(api.job_process_ids("job"), pids)
+                self.assertEqual(kernel32.list_capacities, capacities)
+
+    def test_windows_api_job_process_ids_stops_growing_at_the_limit(self) -> None:
+        module = load_module()
+        # Задание растёт быстрее буфера: перезапросы ограничены, а не вечны.
+        kernel32 = FakeKernel32(outgrow=True)
+        api = fake_kernel32_windows_api(module, kernel32)
+
+        with self.assertRaisesRegex(
+            RuntimeError, r"QueryInformationJobObject\(ProcessIdList\).*234"
+        ):
+            api.job_process_ids("job")
+        self.assertEqual(
+            kernel32.list_capacities, [64 * 2**step for step in range(11)]
+        )
+
+    def test_windows_api_job_process_ids_reports_other_query_errors(self) -> None:
+        module = load_module()
+        kernel32 = FakeKernel32(query_error=6)
+        api = fake_kernel32_windows_api(module, kernel32)
+
+        with self.assertRaisesRegex(
+            RuntimeError, r"QueryInformationJobObject\(ProcessIdList\).*error 6"
+        ):
+            api.job_process_ids("job")
+        self.assertEqual(kernel32.list_capacities, [64])
+
+    def test_windows_api_open_job_member_rejects_processes_outside_the_job(
+        self,
+    ) -> None:
+        module = load_module()
+        kernel32 = FakeKernel32(member_pids=(41,), foreign_pids=(42,))
+        api = fake_kernel32_windows_api(module, kernel32)
+
+        self.assertEqual(api.open_job_member("job", 41), "process-41")
+        self.assertIsNone(api.open_job_member("job", 42))
+        self.assertEqual(kernel32.open_handles, {"process-41"})
+        self.assertEqual(kernel32.closed, ["process-42"])
+
+    def test_windows_api_open_job_member_treats_gone_pids_as_absent(self) -> None:
+        module = load_module()
+        for error in (0, 5, 87, 1168):
+            with self.subTest(error=error):
+                kernel32 = FakeKernel32(open_errors={41: error})
+                api = fake_kernel32_windows_api(module, kernel32)
+
+                self.assertIsNone(api.open_job_member("job", 41))
+                self.assertEqual(kernel32.open_handles, set())
+
+        kernel32 = FakeKernel32(open_errors={41: 6})
+        api = fake_kernel32_windows_api(module, kernel32)
+        with self.assertRaisesRegex(RuntimeError, r"OpenProcess\(41\).*error 6"):
+            api.open_job_member("job", 41)
+
+    def test_windows_api_open_job_member_closes_handle_when_job_check_fails(
+        self,
+    ) -> None:
+        module = load_module()
+        kernel32 = FakeKernel32(member_pids=(41,), in_job_error=6)
+        api = fake_kernel32_windows_api(module, kernel32)
+
+        with self.assertRaisesRegex(
+            RuntimeError, r"IsProcessInJob\(41\).*error 6"
+        ):
+            api.open_job_member("job", 41)
+        self.assertEqual(kernel32.open_handles, set())
+        self.assertEqual(kernel32.closed, ["process-41"])
+
     def test_windows_job_cleanup_is_handle_bound_and_uses_one_deadline(self) -> None:
         module = load_module()
 
@@ -1215,14 +1477,17 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     int(value)
                     for value in pid_path.read_text(encoding="utf-8").split()
                 }
+                ownership = session.process_ownership
+                # Голый PID после очистки может достаться чужому процессу,
+                # поэтому выживших ищем по идентичности со временем создания.
+                identities = ownership.capture_identities(pids)
+                self.assertEqual({identity.pid for identity in identities}, pids)
 
-                result = session.process_ownership.terminate(timeout_seconds=1.0)
+                result = ownership.terminate(timeout_seconds=1.0)
 
                 self.assertTrue(result.complete, result.incomplete)
                 self.assertEqual(result.active_processes, 0)
-                self.assertFalse(
-                    any(module._WIRE_PROBE._process_is_running(pid) for pid in pids)
-                )
+                self.assertEqual(ownership.survivors(identities), set())
             finally:
                 session.terminate_tree(root)
 

@@ -11,11 +11,13 @@
 from __future__ import annotations
 
 import re
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SOURCE_ROOT = REPO_ROOT / "crates" / "unica-coder" / "src"
+SOURCE_ROOT = REPO_ROOT / "crates"
 
 # Потолок опускается вместе с каждым срезом D-1 (#871): читатели
 # `v13_read.rs`/`v13_read_port.rs` (дефекты дескриптора и нечитаемые файлы
@@ -51,16 +53,29 @@ def production_text(path: Path) -> str:
 
 def undetailed_sites() -> dict[str, int]:
     counts: dict[str, int] = {}
-    for path in sorted(SOURCE_ROOT.rglob("*.rs")):
-        if path.name == "tests.rs" or "tests" in path.parts:
-            continue
-        count = production_text(path).count("RefusalCode::ProviderUnavailable")
-        if count:
-            counts[path.relative_to(REPO_ROOT).as_posix()] = count
+    for root in sorted(SOURCE_ROOT.glob("*/src")):
+        for path in sorted(root.rglob("*.rs")):
+            if path.name == "tests.rs" or "tests" in path.parts:
+                continue
+            count = production_text(path).count("RefusalCode::ProviderUnavailable")
+            if count:
+                counts[path.relative_to(REPO_ROOT).as_posix()] = count
     return counts
 
 
 class RefusalDetailRatchetTests(unittest.TestCase):
+    def test_a_moved_site_still_counts_and_test_fixtures_do_not(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            crates = root / "crates"
+            site = crates / "another-owner/src/refusal.rs"
+            fixture = crates / "another-owner/src/tests/fixture.rs"
+            for path in (site, fixture):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fn refusal() { RefusalCode::ProviderUnavailable; }", encoding="utf-8")
+            with patch.dict(globals(), REPO_ROOT=root, SOURCE_ROOT=crates):
+                self.assertEqual(undetailed_sites(), {"crates/another-owner/src/refusal.rs": 1})
+
     def test_undetailed_provider_unavailable_only_decreases(self) -> None:
         counts = undetailed_sites()
         total = sum(counts.values())

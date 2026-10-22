@@ -2,10 +2,10 @@ use crate::application::ports::FormatGuardCheck;
 use crate::application::v13::check::{
     CheckDiagnostic, CheckValidator, NativeCheckOutcome, NodeFacts, TemplateFlavour,
 };
-use crate::domain::address::QualifiedAddress;
-use crate::domain::project_sources::SourceSetKind;
-use crate::domain::workspace::WorkspaceContext;
 use serde_json::{json, Map, Value};
+use unica_address::address::QualifiedAddress;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_contract::SourceSetKind;
 
 /// Closed native validator registry for the hidden A0 analysis seam. The
 /// family validators remain the source of validation truth; this adapter only
@@ -33,15 +33,25 @@ pub(crate) fn validate_with_availability(
     if availability == ValidatorAvailability::Unavailable {
         return unavailable_dependency();
     }
+    if validator == CheckValidator::Xdto {
+        return NativeCheckOutcome::unavailable("XDTO check requires retained source evidence");
+    }
     validate_with_format_guard(validator, args, context, || match validator {
         CheckValidator::Cf => super::cf::validate_cf(args, context),
         CheckValidator::Cfe => super::cfe::validate_cfe(args, context),
-        CheckValidator::Form => super::form::validate_form(args, context),
+        CheckValidator::Form => {
+            crate::infrastructure::form_composition::validate_form(args, context)
+        }
         CheckValidator::Dcs => super::dcs::validate_dcs(args, context),
-        CheckValidator::Mxl => super::mxl::validate_mxl(args, context),
+        CheckValidator::Mxl => super::mxl_composition::validate_mxl(args, context),
         CheckValidator::Role => super::role::validate_role(args, context),
-        CheckValidator::Subsystem => super::subsystem::validate_subsystem(args, context),
-        CheckValidator::Interface => super::interface::validate_interface(args, context),
+        CheckValidator::Subsystem => {
+            crate::infrastructure::subsystem_composition::validate_subsystem(args, context)
+        }
+        CheckValidator::Interface => {
+            crate::infrastructure::interface_composition::validate_interface(args, context)
+        }
+        CheckValidator::Xdto => unreachable!("XDTO requires retained source evidence"),
     })
 }
 
@@ -60,13 +70,13 @@ pub(crate) fn validate_mxl_input(
     input: crate::infrastructure::v13_read_port::TemplateValidationInput,
 ) -> NativeCheckOutcome {
     with_format_guard(Ok(input.format_guard), || {
-        super::mxl::validate_mxl_input(&Map::new(), &input.text, input.artifact)
+        super::mxl_composition::validate_mxl_input(&Map::new(), &input.text, input.artifact)
     })
 }
 
 pub(crate) fn subsystem_validation_outcome(
     guard: Result<FormatGuardCheck, crate::application::ports::FormatGuardError>,
-    outcome: crate::application::AdapterOutcome,
+    outcome: unica_execution_contract::adapter_outcome::AdapterOutcome,
 ) -> NativeCheckOutcome {
     with_format_guard(guard, || outcome)
 }
@@ -75,7 +85,7 @@ fn validate_with_format_guard(
     validator: CheckValidator,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-    validate: impl FnOnce() -> crate::application::AdapterOutcome,
+    validate: impl FnOnce() -> unica_execution_contract::adapter_outcome::AdapterOutcome,
 ) -> NativeCheckOutcome {
     // The retired `*.validate` tools ran the export-format guard before their
     // handler; the canonical check keeps that read-only warning so a root
@@ -92,7 +102,7 @@ fn validate_with_format_guard(
 
 fn with_format_guard(
     guard: Result<FormatGuardCheck, crate::application::ports::FormatGuardError>,
-    validate: impl FnOnce() -> crate::application::AdapterOutcome,
+    validate: impl FnOnce() -> unica_execution_contract::adapter_outcome::AdapterOutcome,
 ) -> NativeCheckOutcome {
     let format_warning = match guard {
         Ok(FormatGuardCheck::Allow) | Err(_) => None,
@@ -120,7 +130,7 @@ fn with_format_guard(
 /// nameless segment anywhere else names no descriptor.
 pub(crate) fn validator_metadata_path(address: &QualifiedAddress) -> Option<String> {
     let segments = address.segments();
-    if segments.len() == 1 && segments[0].kind() == crate::domain::address::NodeKind::Configuration
+    if segments.len() == 1 && segments[0].kind() == unica_address::address::NodeKind::Configuration
     {
         return None;
     }
@@ -185,7 +195,7 @@ pub(crate) fn validator_selector(
             if owner.is_empty()
                 || owner
                     .iter()
-                    .any(|segment| segment.kind() != crate::domain::address::NodeKind::Subsystem)
+                    .any(|segment| segment.kind() != unica_address::address::NodeKind::Subsystem)
             {
                 return Err(format!(
                     "`{address}` does not name the command interface of a subsystem"
@@ -240,7 +250,7 @@ pub(crate) fn node_facts(
     let is_template = address
         .segments()
         .last()
-        .is_some_and(|segment| segment.kind() == crate::domain::address::NodeKind::Template);
+        .is_some_and(|segment| segment.kind() == unica_address::address::NodeKind::Template);
     let from_projection = viewed
         .and_then(|data| data.get("props"))
         .and_then(|props| props.get("format"))
@@ -269,12 +279,12 @@ pub(crate) fn node_facts(
     let subsystem_owned = !owners.is_empty()
         && owners
             .iter()
-            .all(|segment| segment.kind() == crate::domain::address::NodeKind::Subsystem);
+            .all(|segment| segment.kind() == unica_address::address::NodeKind::Subsystem);
     let in_template = segments.iter().any(|segment| {
         matches!(
             segment.kind(),
-            crate::domain::address::NodeKind::Template
-                | crate::domain::address::NodeKind::CommonTemplate
+            unica_address::address::NodeKind::Template
+                | unica_address::address::NodeKind::CommonTemplate
         )
     });
     NodeFacts {
@@ -311,7 +321,7 @@ fn template_flavour_from_descriptor(
         &selector,
         context,
         AttachedResource::Template,
-        super::mxl::TEMPLATE_KINDS,
+        unica_templates::mxl::TEMPLATE_KINDS,
     )?
     .ok()?;
     // `<Templates>/<Name>/Ext/Template.xml` sits next to `<Templates>/<Name>.xml`.
@@ -358,11 +368,11 @@ mod tests {
     use crate::application::v13::check::{
         normalize_native_outcome, CheckValidator, NodeFacts, TemplateFlavour,
     };
-    use crate::domain::address::QualifiedAddress;
-    use crate::domain::workspace::WorkspaceContext;
     use serde_json::{json, Map};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use unica_address::address::QualifiedAddress;
+    use unica_source_contract::workspace::WorkspaceContext;
 
     fn context() -> (WorkspaceContext, std::path::PathBuf) {
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -490,8 +500,7 @@ mod tests {
         let root_address = QualifiedAddress::parse("ext:Configuration").unwrap();
         let selector = validator_selector(CheckValidator::Cfe, &root_address, &context).unwrap();
         let extension_path =
-            crate::infrastructure::source_roots::normalize_path_identity(&root.join("src-ext"))
-                .unwrap();
+            unica_workspace::paths::normalize_path_identity(&root.join("src-ext")).unwrap();
         assert_eq!(
             selector["ExtensionPath"],
             json!(extension_path.display().to_string())
@@ -503,7 +512,7 @@ mod tests {
         let interface = QualifiedAddress::parse("main:Subsystem.Sales.Interface").unwrap();
         let selector = validator_selector(CheckValidator::Interface, &interface, &context).unwrap();
         assert_eq!(selector["metadataPath"], "Subsystem.Sales");
-        let interface_path = crate::infrastructure::source_roots::normalize_path_identity(
+        let interface_path = unica_workspace::paths::normalize_path_identity(
             &root.join("src/Subsystems/Sales/Ext/CommandInterface.xml"),
         )
         .unwrap();

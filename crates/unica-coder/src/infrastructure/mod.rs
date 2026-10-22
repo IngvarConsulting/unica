@@ -1,73 +1,55 @@
 pub(crate) mod application_ports;
-pub(crate) mod bsl_outline;
-// Hidden v0.13 module projection remains unreachable from the package-selected v0.12 surface.
-#[allow(dead_code)]
-pub(crate) mod bsl_module_projection;
+
 pub(crate) mod bundled_tools;
 pub(crate) mod capacity_observation;
+#[cfg(test)]
+#[path = "../../tests/platform/code_intelligence_integration.rs"]
 pub(crate) mod code_intelligence;
-pub(crate) mod configuration_help;
 pub(crate) mod daemon;
-mod deadline_lock;
 pub(crate) mod diagnostics;
-pub(crate) mod diagnostics_baseline;
-mod diagnostics_filters;
-pub(crate) mod diagnostics_jsonl;
-pub(crate) mod documentation_policy;
-pub(crate) mod documentation_retrieval;
+#[cfg(feature = "receipt-ledger-test-support")]
+#[path = "../../tests/support/receipt_scenario.rs"]
+pub(crate) mod receipt_scenario;
+
 pub(crate) mod engine_delivery;
 #[allow(dead_code)]
-pub(crate) mod event_projection;
+pub(crate) mod event_views;
+pub(crate) mod family_codecs;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
-pub(crate) mod kb_1ci;
 // Hidden v0.13 routing remains unreachable from the package-selected v0.12 surface.
 #[allow(dead_code)]
-pub(crate) mod logical_event_source;
+pub(crate) mod event_sources;
 #[allow(dead_code)]
 pub(crate) mod logical_tree;
 pub(crate) mod metadata_kinds;
 pub(crate) mod metadata_operations;
 pub mod native_operations;
 pub(crate) mod operational_config;
-pub mod path_policy;
 pub(crate) mod platform;
-pub mod platform_help;
 pub(crate) mod platform_xml_owner;
-pub(crate) mod platform_xml_roots;
-pub(crate) mod standards_documentation;
 // This foundational provider is consumed by the public migration in the next slice.
 #[allow(dead_code)]
 pub(crate) mod platform_xml_source_targets;
 pub mod plugin_runtime;
 #[allow(dead_code)]
-pub(crate) mod project_health;
 pub(crate) mod project_sources;
-pub(crate) mod redaction;
-// The v5 runtime consumes this production store in the following W0a slice.
-#[allow(dead_code)]
-pub(crate) mod receipt_ledger;
 mod revision_artifact_policy;
-pub(crate) mod rlm_generation_collection;
-pub(crate) mod rlm_navigation;
-pub(crate) mod runtime_build_fallback;
-pub(crate) mod runtime_build_preflight;
-pub(crate) mod runtime_jobs;
+
+pub(crate) mod runtime_composition;
+#[cfg(test)]
+pub(crate) mod runtime_jobs_integration;
+#[cfg(test)]
+mod runtime_preflight_integration;
 pub(crate) mod source_roots;
-mod source_selection_evidence;
 // The topology provider is introduced before both public consumers migrate to it.
 #[allow(dead_code)]
-pub(crate) mod subsystem_topology;
 pub(crate) mod support_guard;
 #[allow(dead_code)]
-pub(crate) mod support_policy_evidence;
-pub(crate) mod task_store_v5;
-// The isolated protocol-v5 lifecycle-link pool is wired into the recovery
-// coordinator in the following D0 slice.
-#[allow(dead_code)]
-pub(crate) mod task_lifecycle_link_store_v5;
 // Hidden v0.13 typed read adapter remains unreachable from the v0.12 tool ledger.
 pub(crate) mod support_state;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub(crate) mod tool_context;
 mod v13_large_configuration;
 #[allow(dead_code)]
@@ -80,12 +62,49 @@ pub(crate) mod v13_find;
 pub(crate) mod workspace;
 // Publication and Invocation routing consume the remaining actor seams in Task 7.
 #[allow(dead_code)]
-pub(crate) mod workspace_actor;
-pub(crate) mod workspace_config;
+#[cfg(test)]
 pub mod workspace_index;
+#[cfg(test)]
+#[path = "../../tests/platform/workspace_services_integration.rs"]
 pub mod workspace_services;
-pub mod workspace_state;
-pub(crate) mod workspace_state_scope;
 
 #[cfg(test)]
 pub(crate) static V8TR_CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod documentation_policy_integration;
+
+mod source_diff;
+
+pub(crate) mod source_workspace;
+
+#[cfg(test)]
+mod workspace_state_integration_tests;
+
+#[cfg(test)]
+mod workspace_actor_contract_tests;
+#[cfg(test)]
+mod workspace_metadata_publication_tests;
+
+#[cfg(test)]
+#[path = "../../tests/platform/full_dump_integration.rs"]
+mod full_dump_integration;
+
+#[cfg(test)]
+mod source_discovery_integration_tests;
+
+pub(crate) mod analysis_composition;
+
+pub(crate) mod form_composition;
+
+pub(crate) mod subsystem_composition;
+
+pub(crate) mod interface_composition;
+
+pub(crate) mod support_composition;
+
+#[cfg(test)]
+mod meta_add_surface_tests;
+#[cfg(test)]
+mod meta_info_surface_tests;
+mod source_ids;

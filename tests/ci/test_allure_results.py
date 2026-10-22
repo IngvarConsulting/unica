@@ -71,6 +71,17 @@ class JunitTranslationTests(unittest.TestCase):
         records = self.module.junit_records(self.junit, runner=runner, profile="all", reasons=reasons)
         return {entry["name"]: entry for entry in records}
 
+    def test_os_conditional_ignore_keeps_its_reason(self) -> None:
+        """Тест, которому нужна возможность ОС, пропущен с причиной на остальных (#1893)."""
+        source = (
+            '#[test]\n#[cfg_attr(not(unix), ignore = "host capability: unix process groups")]\nfn unix_only() {}\n'
+            '#[cfg_attr(any(windows, all(target_os = "macos", not(unix))), ignore = "nested")]\n#[test]\nfn nested() {}\n'
+            '#[cfg_attr(unix, allow(dead_code))]\n#[test]\nfn not_ignored() {}\n'
+        )
+        (self.root / "crates" / "unica-coder" / "src" / "lib.rs").write_text(source, encoding="utf-8")
+        self.assertEqual(self.module.ignore_reasons(self.root),
+                         {"unix_only": "host capability: unix process groups", "nested": "nested"})
+
     def test_statuses_distinguish_product_defect_from_broken_test(self) -> None:
         """JUnit от nextest пишет `<failure>` на любую панику; различаем по тексту."""
         entries = self.entries()
@@ -153,6 +164,26 @@ class JunitTranslationTests(unittest.TestCase):
         self.assertEqual(matcher.size("unica-coder::other_target", "load_b"), "medium")
         labels = {l["name"]: l["value"] for l in self.entries()["address::resolves_catalog"]["labels"]}
         self.assertIn(labels["size"], ("small", "medium"))
+
+    def test_sizes_do_not_cross_component_binary_boundaries(self) -> None:
+        matcher = self.module.SizeMatcher(
+            "kind(test) | (binary(unica_network) & test(/^(tests)::/))",
+            "(binary(unica_workspace) & (test(/^selection::capacity$/))) | "
+            "(binary(unica_coder) & (test(/^daemon::capacity$/)))",
+        )
+        for binary, name, expected in [
+            ("unica-network", "tests::connect", "medium"),
+            ("unica-metadata", "tests::connect", "small"),
+            ("unica-workspace", "selection::capacity", "large"),
+            ("unica-coder", "selection::capacity", "small"),
+            ("unica-coder", "daemon::capacity", "large"),
+            ("unica-workspace", "daemon::capacity", "small"),
+        ]:
+            with self.subTest(binary=binary, name=name):
+                self.assertEqual(matcher.size(binary, name), expected)
+        for expression in ("binary(unica_network) &", "(test(/^x$/)", "unknown()"):
+            with self.subTest(expression=expression), self.assertRaises(ValueError):
+                self.module.SizeMatcher(expression)
 
     def test_write_produces_one_uuid_named_file_per_record(self) -> None:
         out = self.root / "allure-results"

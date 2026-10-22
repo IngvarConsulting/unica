@@ -1,0 +1,52 @@
+{
+  "id": "S-1119-wide-literal-search",
+  "issue": 1119,
+  "area": "Код BSL",
+  "task": "Найти BSL после каталога с 16 385 посторонними файлами и доказать полный пустой результат отсутствующего текста",
+  "workspace": "tests/fixtures/acceptance/workspace-search-wide",
+  "profile": "source",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "WideSearchNeedle1119",
+        "scope": "main:Configuration",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "main:CommonModule.SearchProbe.Body#L1"
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "AbsentWideSearch1119",
+        "scope": "main:Configuration",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches",
+          "eq": []
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ]
+    }
+  ]
+}

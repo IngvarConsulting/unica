@@ -1,0 +1,110 @@
+{
+  "id": "S-1835-command-order-publish",
+  "issue": 1835,
+  "area": "Подсистемы и интерфейс",
+  "task": "Поставить группы доступа первыми среди важных команд Администрирования: предпросмотр не пишет интерфейс, публикация переставляет только команды этой группы",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
+        "ops": [
+          {
+            "op": "commandOrder.set",
+            "args": {
+              "values": {
+                "commands": [
+                  "Catalog.ГруппыДоступа.StandardCommand.OpenList",
+                  "Catalog.Пользователи.StandardCommand.OpenList",
+                  "Catalog.ВнешниеПользователи.StandardCommand.OpenList",
+                  "DataProcessor.ЖурналРегистрации.Command.ЖурналРегистрации",
+                  "DataProcessor.ЗащитаПерсональныхДанных.Command.ЗащитаПерсональныхДанных",
+                  "Catalog.ВариантыОтчетов.StandardCommand.OpenList",
+                  "Catalog.ДополнительныеОтчетыИОбработки.StandardCommand.OpenList",
+                  "Catalog.РассылкиОтчетов.StandardCommand.OpenList"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "639bc05c46a6133c1774e273e6295bb9ad70cba3b0174a9ef2a5e0a4ee1fd7cf"
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsOrder/{http://v8.1c.ru/8.3/xcf/extrnprops}Command[1][@name='Catalog.ГруппыДоступа.StandardCommand.OpenList']/{http://v8.1c.ru/8.3/xcf/extrnprops}CommandGroup",
+          "eq": [
+            "NavigationPanelImportant"
+          ]
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsOrder/{http://v8.1c.ru/8.3/xcf/extrnprops}Command[2][@name='Catalog.Пользователи.StandardCommand.OpenList']/{http://v8.1c.ru/8.3/xcf/extrnprops}CommandGroup",
+          "eq": [
+            "NavigationPanelImportant"
+          ]
+        }
+      ]
+    }
+  ]
+}

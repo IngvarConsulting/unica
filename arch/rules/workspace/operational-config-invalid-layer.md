@@ -3,9 +3,9 @@ id: INV.CONFIG.INVALID-LAYER
 check:
   - crates/unica-coder/src/infrastructure/operational_config.rs::invalid_shared_layer_is_not_masked_by_a_local_override
   - crates/unica-coder/src/infrastructure/operational_config.rs::invalid_local_overlay_is_not_ignored
-  - crates/unica-coder/src/infrastructure/workspace_config.rs::rejects_version_as_unknown_root_field
-  - crates/unica-coder/src/infrastructure/documentation_policy.rs::characterization_policy_ignores_invalid_operational_subtree
-  - crates/unica-coder/src/infrastructure/documentation_policy.rs::characterization_operational_loader_ignores_invalid_policy_subtrees
+  - crates/unica-configuration/src/lib.rs::rejects_version_as_unknown_root_field
+  - crates/unica-documentation-sources/src/documentation_policy.rs::characterization_policy_ignores_invalid_operational_subtree
+  - crates/unica-coder/src/infrastructure/documentation_policy_integration.rs::characterization_operational_loader_ignores_invalid_policy_subtrees
 ---
 
 # Корректное переопределение не скрывает ошибку файла настроек

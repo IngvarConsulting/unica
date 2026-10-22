@@ -561,6 +561,122 @@
           "eq": "aadd0b45b3512ee3213b6eb6b53745de62519d2b28b3af7a90bfdcdf147e89ef"
         }
       ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "borrowedTemplates": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.borrowedTemplates"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "borrowedAppearance": {
+          "pointer": "/data/items/0/at"
+        },
+        "borrowedHtml": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.borrowedAppearance"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/content",
+          "eq": "inherited"
+        },
+        {
+          "pointer": "/data/props/format",
+          "eq": null
+        },
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.borrowedAppearance"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.borrowedHtml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/content",
+          "eq": "inherited"
+        },
+        {
+          "pointer": "/data/props/format",
+          "eq": null
+        },
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.borrowedHtml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": [],
+      "fileAssertions": [
+        {
+          "path": "ext/CommonTemplates/Appearance.xml",
+          "kind": "sha256",
+          "eq": "bdb7c374e39fee34026492472f0a43b94192e262e3168b4b9c8691c18e8389d5"
+        },
+        {
+          "path": "ext/CommonTemplates/Html.xml",
+          "kind": "sha256",
+          "eq": "e4793ef756c7164427ed27cef470bd6399229f43cca5ce0a6e2cff7a098a0c21"
+        },
+        {
+          "path": "ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "8ae0378c62de200d4a683978b371844bf4329f509e3e120c153bcb4720e206a9"
+        }
+      ]
     }
   ]
 }

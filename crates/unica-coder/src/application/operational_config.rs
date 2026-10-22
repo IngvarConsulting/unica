@@ -1,8 +1,9 @@
 use crate::application::{ApplicationPorts, CodeIntelligenceOperation, ToolHandler, ToolSpec};
-use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
-use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::time::Duration;
+use unica_configuration::operational::OperationalConfig;
+use unica_configuration::operational::OperationalConfigDiagnostic;
+use unica_source_contract::workspace::WorkspaceContext;
 
 pub(crate) fn resolve_for_call(
     ports: &dyn ApplicationPorts,

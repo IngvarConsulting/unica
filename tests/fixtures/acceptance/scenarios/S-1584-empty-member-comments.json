@@ -1,0 +1,549 @@
+{
+  "id": "S-1584-empty-member-comments",
+  "issue": 1584,
+  "area": "Метаданные",
+  "task": "Прочитать пустой Comment и парное отсутствующее свойство у шести видов метаданных по выданным адресам, сохранив исходные XML",
+  "workspace": "tests/fixtures/acceptance/workspace-member-comments",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/comment",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "attribute_empty": {
+          "pointer": "/data/items/0/at"
+        },
+        "attribute_absent": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.attribute_empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Attribute Empty"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.attribute_absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Attribute Absent"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/comment",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "command_empty": {
+          "pointer": "/data/items/0/at"
+        },
+        "command_absent": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.command_empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Command Empty"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.command_absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Command Absent"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Rates.Dimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/comment",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "dimension_empty": {
+          "pointer": "/data/items/0/at"
+        },
+        "dimension_absent": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Rates.xml",
+          "kind": "sha256",
+          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dimension_empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Dimension Empty"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Rates.xml",
+          "kind": "sha256",
+          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dimension_absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Dimension Absent"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Rates.xml",
+          "kind": "sha256",
+          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Rates.Resource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/comment",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "resource_empty": {
+          "pointer": "/data/items/0/at"
+        },
+        "resource_absent": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Rates.xml",
+          "kind": "sha256",
+          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.resource_empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Resource Empty"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Rates.xml",
+          "kind": "sha256",
+          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.resource_absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Resource Absent"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Rates.xml",
+          "kind": "sha256",
+          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.Entries.Column"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/comment",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "column_empty": {
+          "pointer": "/data/items/0/at"
+        },
+        "column_absent": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "f5455d5f8102918a5ebc66f572627bb8aabff2010d7735ace6b02d333b6c1639"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.column_empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Column Empty"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "f5455d5f8102918a5ebc66f572627bb8aabff2010d7735ace6b02d333b6c1639"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.column_absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Column Absent"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "f5455d5f8102918a5ebc66f572627bb8aabff2010d7735ace6b02d333b6c1639"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.Codes.EnumValue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/comment",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "enumvalue_empty": {
+          "pointer": "/data/items/0/at"
+        },
+        "enumvalue_absent": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "sha256",
+          "eq": "5771bd68140f880230f91597371c316f46805858b3be9f4a43a7c1135a8a8ee5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.enumvalue_empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "EnumValue Empty"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "sha256",
+          "eq": "5771bd68140f880230f91597371c316f46805858b3be9f4a43a7c1135a8a8ee5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.enumvalue_absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "EnumValue Absent"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "sha256",
+          "eq": "5771bd68140f880230f91597371c316f46805858b3be9f4a43a7c1135a8a8ee5"
+        }
+      ]
+    }
+  ]
+}

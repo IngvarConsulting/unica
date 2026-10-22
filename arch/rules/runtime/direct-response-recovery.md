@@ -8,6 +8,7 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::malformed_direct_receipt_is_recovered_by_key_and_only_the_strict_one_is_acknowledged
   - crates/unica-coder/src/interfaces/daemon_router.rs::direct_terminal_is_projected_before_it_is_acknowledged_with_the_exact_digest
   - crates/unica-coder/src/interfaces/daemon_router.rs::failed_and_cancelled_direct_terminals_answer_closed_errors_after_acknowledgement
+gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 
 # Потерянный прямой ответ восстанавливается без повторной отправки операции
@@ -17,7 +18,9 @@ check:
 Квитанция с неверным хешем не подтверждается.
 
 Для проверенного результата frontend формирует ответ клиенту и отправляет
-подтверждение с точными ключом и хешем. Ошибка подтверждения не отнимает уже
+подтверждение с точными ключом, хешем и capability владельца. После выдачи
+Task поздний Direct не разрешает ACK; этот необратимый выбор описан в
+[правиле выдачи](execution-delivery.md). Ошибка подтверждения не отнимает уже
 полученный результат. Завершение с ошибкой или отменой также подтверждается
 и возвращает закрытую причину, без произвольного текста демона.
 
@@ -27,3 +30,7 @@ check:
 Если восстановление встречает ещё исполняющуюся квитанцию, frontend
 ждёт окончания её первоначального бюджета в пределах собственного срока.
 Истечение срока не вызывает повторной отправки предметной операции.
+
+Существующие проверки подтверждают восстановление и сохранение готового ответа
+при отказе ACK. Новая capability и необратимый выбор Direct/Task ещё требуют
+проверки продуктивного frontend; это граница `gap`.

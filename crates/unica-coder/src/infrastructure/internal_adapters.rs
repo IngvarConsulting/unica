@@ -1,283 +1,52 @@
-use crate::application::{
-    AdapterOutcome, RuntimeJobAction, DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
-    DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+#[cfg(test)]
+use unica_adapter_bsl_analyzer::adapter::{
+    AnalyzerRunFailureKind, BslAnalyzerMcpAdapter, BslAnalyzerOutcome, BslMcpCommand, BslMcpOutput,
+    BslMcpRunner,
 };
-use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
-use crate::domain::operational_config::OperationalConfig;
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bundled_tools::{resolve_bundled_tool, BundledTool, BundledToolError};
-use crate::infrastructure::diagnostics_baseline::{broken_baseline_outcome, cli_baseline_failure};
-use crate::infrastructure::diagnostics_jsonl::{
-    AnalyzerDiagnosticsBatch, AnalyzerDiagnosticsFileTotals, DiagnosticsJsonlParser,
-    MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
-};
-use crate::infrastructure::platform::filesystem::path_lock_identity;
-use crate::infrastructure::platform::{
-    ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
-    ManagedSpawnFailure, PendingProcessHandoff, PendingRunFailure, StreamControl,
-    STREAM_LINE_TOO_LONG_ERROR,
-};
-use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
-use crate::infrastructure::redaction::{is_secret_key, redactor};
-use crate::infrastructure::runtime_build_preflight::{
-    RuntimeBuildPreflight, RuntimeInvocationPlan,
-};
-use crate::infrastructure::runtime_jobs::{
-    self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
-};
-use crate::infrastructure::source_roots::normalize_path_identity;
+
+use crate::application::RuntimeJobAction;
+use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::plugin_runtime::find_plugin_root;
+#[cfg(test)]
+use unica_adapter_bsl_analyzer::jsonl::MAX_DIAGNOSTICS_JSONL_LINE_BYTES;
+use unica_adapter_v8_runner::adapter::runtime_args;
+#[cfg(test)]
+use unica_adapter_v8_runner::adapter::{validate_runtime_mapper_payload, RuntimeAdapter};
+use unica_adapter_v8_runner::preflight::RuntimeBuildPreflight;
+use unica_adapter_v8_runner::request::RuntimeJobRequest;
+use unica_artifact_delivery::engine::BundledTool;
+use unica_execution::runtime_jobs;
+use unica_execution_contract::adapter_outcome::cancelled_process_outcome;
+use unica_execution_contract::adapter_outcome::merge_warnings;
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_process::arguments::process_timeout_error;
+use unica_process::arguments::{kebab_case, reported_cli_value};
+use unica_process::runner::{system_process_runner, ProcessCommand, ProcessRunner};
+#[cfg(test)]
+use unica_process::runner::{ProcessOutput, ProcessStreamFailure, ProcessStreamOutput};
+use unica_redaction::redactor;
+use unica_runner::operation::RuntimeJobOperation;
+use unica_source_contract::workspace::WorkspaceContext;
+#[cfg(test)]
+use unica_workspace::paths::path_lock_identity;
+type RuntimeJobService = runtime_jobs::RuntimeJobService<RuntimeJobRequest>;
+#[cfg(test)]
 use crate::infrastructure::source_roots::resolve_source_root;
+#[cfg(test)]
 use crate::infrastructure::workspace::discover_workspace;
-use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use serde_json::{json, Map, Value};
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
+#[cfg(test)]
+use unica_process::StreamControl;
+use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
+#[cfg(test)]
+use unica_workspace::paths::normalize_path_identity;
+
+#[cfg(test)]
+use unica_process::ProcessLineReply;
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
-
-#[derive(Debug, Clone)]
-pub struct ProcessCommand {
-    pub program: PathBuf,
-    pub args: Vec<String>,
-    pub cwd: PathBuf,
-    pub env: Vec<(OsString, OsString)>,
-    pub env_remove: Vec<OsString>,
-    pub capture_limits: Option<(usize, usize)>,
-    pub timeout: Option<Duration>,
-    pub cancellation: CancellationToken,
-}
-
-#[derive(Debug, Clone)]
-pub struct ProcessOutput {
-    pub status_success: bool,
-    pub status: String,
-    pub stdout: String,
-    pub stderr: String,
-    pub timed_out: bool,
-    pub cancelled: bool,
-    pub stdout_truncated: bool,
-    pub stderr_truncated: bool,
-    pub stdout_had_invalid_utf8: bool,
-    pub stderr_had_invalid_utf8: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ProcessStreamOutput {
-    pub status_success: bool,
-    pub status: String,
-    pub stderr: String,
-    pub timed_out: bool,
-    pub cancelled: bool,
-    pub stopped_by_consumer: bool,
-    pub line_error: Option<(usize, String)>,
-}
-
-/// Where a process run failed: before the process existed, or while it was
-/// being waited for or stopped.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProcessStreamFailure {
-    Spawn(String),
-    Run(String),
-}
-
-impl ProcessStreamFailure {
-    /// The failure's own text, whichever side of the start it happened on.
-    pub(crate) fn message(&self) -> &str {
-        match self {
-            Self::Spawn(message) | Self::Run(message) => message,
-        }
-    }
-
-    /// Only a launch the operating system refused is `Spawn`: a process tree
-    /// or working directory that was not ready never tried the program, and
-    /// a process that existed but could not be attached did start. Neither
-    /// may be reported as an unstartable program.
-    pub(crate) fn from_spawn(failure: ManagedSpawnFailure) -> Self {
-        match failure {
-            ManagedSpawnFailure::Launch(message) => Self::Spawn(message),
-            ManagedSpawnFailure::Prepare(message) | ManagedSpawnFailure::Attach(message) => {
-                Self::Run(message)
-            }
-        }
-    }
-}
-
-fn managed_command(command: &ProcessCommand) -> ManagedCommand {
-    ManagedCommand {
-        program: command.program.clone(),
-        args: command.args.iter().map(Into::into).collect(),
-        cwd: command.cwd.clone(),
-        env: command.env.clone(),
-        env_remove: command.env_remove.clone(),
-        capture_limits: command.capture_limits,
-        timeout: command.timeout,
-        cancellation: command.cancellation.clone(),
-    }
-}
-
-pub trait ProcessRunner {
-    fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String>;
-
-    /// [`ProcessRunner::run`] that keeps whether the process was ever
-    /// started. A runner that cannot tell reports a failure after start, so
-    /// nothing is classified as an unstartable engine by guess.
-    fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
-        self.run(command).map_err(ProcessStreamFailure::Run)
-    }
-
-    /// [`ProcessRunner::run_streaming`] that keeps whether the process was
-    /// ever started. A runner that cannot tell reports a failure after start.
-    fn run_streaming_staged(
-        &self,
-        command: &ProcessCommand,
-        max_line_bytes: usize,
-        on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
-    ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
-        self.run_streaming(command, max_line_bytes, on_line)
-            .map_err(ProcessStreamFailure::Run)
-    }
-
-    fn run_pending_handoff(
-        &self,
-        _command: &ProcessCommand,
-    ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
-        Err("process_failed: process runner does not support ownership handoff".to_string())
-    }
-
-    /// [`ProcessRunner::run_pending_handoff`] that keeps whether the launcher
-    /// was ever started. A runner that cannot tell reports a failure after
-    /// start.
-    fn run_pending_handoff_staged(
-        &self,
-        command: &ProcessCommand,
-    ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
-        self.run_pending_handoff(command)
-            .map_err(ProcessStreamFailure::Run)
-    }
-
-    fn run_with_input(
-        &self,
-        command: &ProcessCommand,
-        input: &[u8],
-    ) -> Result<ProcessOutput, String> {
-        if input.is_empty() {
-            self.run(command)
-        } else {
-            Err("process_failed: process runner does not support stdin".to_string())
-        }
-    }
-
-    fn run_streaming(
-        &self,
-        command: &ProcessCommand,
-        max_line_bytes: usize,
-        on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
-    ) -> Result<ProcessStreamOutput, String> {
-        let output = self.run(command)?;
-        let mut line_error = None;
-        let logical_line_count = output.stdout.lines().count();
-        for (index, bytes) in output
-            .stdout
-            .as_bytes()
-            .split(|byte| *byte == b'\n')
-            .enumerate()
-        {
-            if bytes.is_empty() && index + 1 == logical_line_count + 1 {
-                continue;
-            }
-            if bytes.len() > max_line_bytes {
-                line_error
-                    .get_or_insert_with(|| (index + 1, STREAM_LINE_TOO_LONG_ERROR.to_string()));
-            } else {
-                if on_line(index + 1, bytes) == StreamControl::Stop {
-                    return Ok(ProcessStreamOutput {
-                        status_success: false,
-                        status: "stopped by consumer".to_string(),
-                        stderr: output.stderr,
-                        timed_out: false,
-                        cancelled: output.cancelled,
-                        stopped_by_consumer: true,
-                        line_error,
-                    });
-                }
-            }
-        }
-        Ok(ProcessStreamOutput {
-            status_success: output.status_success,
-            status: output.status,
-            stderr: output.stderr,
-            timed_out: output.timed_out,
-            cancelled: output.cancelled,
-            stopped_by_consumer: false,
-            line_error,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct BslMcpCommand {
-    pub args: Vec<String>,
-    pub cwd: PathBuf,
-    pub source_dir: PathBuf,
-    pub timeout: Duration,
-    pub tool_name: &'static str,
-    pub tool_args: Value,
-    pub cancellation: CancellationToken,
-}
-
-#[derive(Debug, Clone)]
-pub struct BslMcpOutput {
-    pub result_text: String,
-    pub stderr: String,
-}
-
-pub trait BslMcpRunner {
-    fn call(&self, command: &BslMcpCommand) -> Result<BslMcpOutput, String>;
-}
-
-pub(crate) struct SystemProcessRunner;
-struct SystemBslMcpRunner;
-
-static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
-
-/// Тестовый наблюдатель запусков процессов системным исполнителем: записывает
-/// программу каждого запуска, рабочий каталог которого лежит под корнем.
-#[cfg(test)]
-pub(crate) mod process_launch_probe {
-    use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
-
-    static LAUNCHES: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
-
-    fn canonical(path: &Path) -> PathBuf {
-        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-    }
-
-    pub(super) fn record(cwd: &Path, program: &std::ffi::OsStr) {
-        LAUNCHES
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push((canonical(cwd), program.to_string_lossy().into_owned()));
-    }
-
-    /// Programs launched so far with a working directory below `root`.
-    pub(crate) fn launches_under_for_test(root: &Path) -> Vec<String> {
-        let root = canonical(root);
-        LAUNCHES
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .iter()
-            .filter(|(cwd, _)| cwd.starts_with(&root))
-            .map(|(_, program)| program.clone())
-            .collect()
-    }
-}
-static SYSTEM_BSL_MCP_RUNNER: SystemBslMcpRunner = SystemBslMcpRunner;
-
-pub(crate) fn system_process_runner() -> &'static (dyn ProcessRunner + Send + Sync) {
-    &SYSTEM_PROCESS_RUNNER
-}
 
 pub struct CliAdapter<'a> {
     tool_name: &'static str,
@@ -287,21 +56,12 @@ pub struct CliAdapter<'a> {
     process_timeout: Duration,
 }
 
-pub struct RuntimeAdapter<'a> {
-    runner: &'a dyn ProcessRunner,
-}
-
-pub struct RuntimeAdapterOutcome {
-    pub outcome: AdapterOutcome,
-    pub data: Option<Value>,
-}
-
 /// Что показывает предпросмотр.
 ///
 /// Если движка на диске нет, план не выдаёт себя за исполнимый: `ok` ложно, а
 /// отказ назван кодом и следующим шагом. Команда при этом остаётся в ответе —
 /// она объясняет, что было бы запущено, но уже не читается как готовая.
-fn dry_run_outcome(
+pub(crate) fn dry_run_outcome(
     tool_name: &str,
     label: &str,
     mutating: bool,
@@ -342,33 +102,12 @@ fn dry_run_outcome(
     }
 }
 
-impl RuntimeAdapterOutcome {
-    fn plain(outcome: AdapterOutcome) -> Self {
-        Self {
-            outcome,
-            data: None,
-        }
-    }
-}
-
 pub struct RuntimeJobAdapterOutcome {
     pub outcome: AdapterOutcome,
     pub job: Option<Value>,
 }
 
 pub struct RuntimeJobAdapter;
-
-pub(crate) struct RuntimeInvocation<'a> {
-    pub(crate) tool_name: &'a str,
-    pub(crate) args: &'a Map<String, Value>,
-    pub(crate) context: &'a WorkspaceContext,
-    pub(crate) dry_run: bool,
-    pub(crate) mutating: bool,
-}
-pub struct BslAnalyzerMcpAdapter<'a> {
-    runner: &'a dyn BslMcpRunner,
-    process_runner: &'a dyn ProcessRunner,
-}
 
 impl<'a> CliAdapter<'a> {
     pub fn new(
@@ -380,7 +119,7 @@ impl<'a> CliAdapter<'a> {
             tool_name,
             default_command,
             label,
-            runner: &SYSTEM_PROCESS_RUNNER,
+            runner: system_process_runner(),
             process_timeout: DEFAULT_PROCESS_TIMEOUT,
         }
     }
@@ -520,650 +259,6 @@ impl<'a> CliAdapter<'a> {
     }
 }
 
-fn plan_runtime_invocation(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Result<RuntimeInvocationPlan, String> {
-    if args.get("operation").and_then(Value::as_str) == Some("build") {
-        validate_runtime_mapper_payload("build", args)?;
-    }
-    crate::infrastructure::runtime_build_preflight::plan_runtime_invocation(args, context)
-}
-fn merge_warnings(mut left: Vec<String>, right: Vec<String>) -> Vec<String> {
-    left.extend(right);
-    left
-}
-impl<'a> RuntimeAdapter<'a> {
-    pub fn new() -> Self {
-        Self {
-            runner: &SYSTEM_PROCESS_RUNNER,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn with_runner(runner: &'a dyn ProcessRunner) -> Self {
-        Self { runner }
-    }
-
-    #[allow(dead_code)]
-    pub fn invoke(
-        &self,
-        tool_name: &str,
-        args: &Map<String, Value>,
-        context: &WorkspaceContext,
-        dry_run: bool,
-        mutating: bool,
-    ) -> Result<AdapterOutcome, String> {
-        self.invoke_with_data(tool_name, args, context, dry_run, mutating)
-            .map(|outcome| outcome.outcome)
-    }
-
-    pub fn invoke_with_data(
-        &self,
-        tool_name: &str,
-        args: &Map<String, Value>,
-        context: &WorkspaceContext,
-        dry_run: bool,
-        mutating: bool,
-    ) -> Result<RuntimeAdapterOutcome, String> {
-        self.invoke_cancellable_with_data(
-            tool_name,
-            args,
-            context,
-            dry_run,
-            mutating,
-            &CancellationToken::new(),
-        )
-    }
-
-    pub fn invoke_cancellable_with_data(
-        &self,
-        tool_name: &str,
-        args: &Map<String, Value>,
-        context: &WorkspaceContext,
-        dry_run: bool,
-        mutating: bool,
-        cancellation: &CancellationToken,
-    ) -> Result<RuntimeAdapterOutcome, String> {
-        self.invoke_cancellable(
-            RuntimeInvocation {
-                tool_name,
-                args,
-                context,
-                dry_run,
-                mutating,
-            },
-            cancellation,
-        )
-    }
-
-    pub(crate) fn invoke_cancellable(
-        &self,
-        invocation: RuntimeInvocation<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<RuntimeAdapterOutcome, String> {
-        self.invoke_cancellable_with_limits(invocation, cancellation, None, None)
-    }
-
-    fn invoke_cancellable_with_limits(
-        &self,
-        invocation: RuntimeInvocation<'_>,
-        cancellation: &CancellationToken,
-        process_timeout: Option<Duration>,
-        capture_limits: Option<(usize, usize)>,
-    ) -> Result<RuntimeAdapterOutcome, String> {
-        let RuntimeInvocation {
-            tool_name,
-            args,
-            context,
-            dry_run,
-            mutating,
-        } = invocation;
-        if cancellation.is_cancelled() {
-            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
-                format!("{tool_name} cancelled before adapter work"),
-            )));
-        }
-        let invocation = plan_runtime_invocation(args, context)?;
-        reject_missing_client_mcp_extension(&invocation.args, context)?;
-        if let Some(outcome) = bind_external_processor_config(args, context, dry_run)? {
-            return Ok(RuntimeAdapterOutcome::plain(outcome));
-        }
-        let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
-            "could not locate Unica plugin root for internal adapter lookup".to_string()
-        })?;
-        if cancellation.is_cancelled() {
-            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
-                format!("{tool_name} cancelled during runtime build preflight"),
-            )));
-        }
-        let report_args = runtime_args(&invocation.args, true)?;
-        let execution_args = runtime_args(&invocation.args, false)?;
-        validate_bounded_external_epf_artifact_paths(&invocation.args, &context.cwd)?;
-        let bundled_tool = resolve_bundled_tool(&plugin_root, "v8-runner", !dry_run)?;
-        let mut command = vec![bundled_tool.program.display().to_string()];
-        command.extend(report_args.iter().cloned());
-
-        if dry_run {
-            let mut outcome = dry_run_outcome(
-                tool_name,
-                "v8-runner runtime",
-                mutating,
-                bundled_tool,
-                command,
-            );
-            outcome.warnings = merge_warnings(invocation.warnings, outcome.warnings);
-            return Ok(RuntimeAdapterOutcome::plain(outcome));
-        }
-
-        if cancellation.is_cancelled() {
-            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
-                format!("{tool_name} cancelled before v8-runner launch"),
-            )));
-        }
-
-        let process_command = ProcessCommand {
-            program: bundled_tool.program.clone(),
-            args: execution_args,
-            cwd: context.cwd.clone(),
-            env: Vec::new(),
-            env_remove: Vec::new(),
-            capture_limits,
-            timeout: process_timeout,
-            cancellation: cancellation.clone(),
-        };
-        let runtime_warnings = invocation.warnings;
-        let output = match self.runner.run(&process_command) {
-            Ok(output) => output,
-            Err(error) => {
-                let error = redactor(&error);
-                let mut warnings = runtime_warnings;
-                warnings
-                    .push("internal v8-runner runtime adapter failed to spawn process".to_string());
-                return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome {
-                    ok: false,
-                    summary: format!(
-                        "{tool_name} failed through internal v8-runner runtime adapter"
-                    ),
-                    changes: Vec::new(),
-                    warnings,
-                    errors: vec![error.clone()],
-                    artifacts: Vec::new(),
-                    stdout: None,
-                    stderr: Some(format!("{error}\n")),
-                    command: Some(command),
-                }));
-            }
-        };
-        // This synchronous adapter runs one attempt. A full retry belongs
-        // to the durable worker, which owns both attempts.
-        let mut runner_error = if args.get("operation").and_then(Value::as_str) == Some("build")
-            && !output.status_success
-        {
-            parse_runner_json_envelope(&output.stdout)
-                .ok()
-                .and_then(|envelope| runner_error_message(&envelope).map(redactor))
-        } else {
-            None
-        };
-        let mut ok = output.status_success;
-        let stdout = redactor(&output.stdout);
-        let stderr = redactor(&output.stderr);
-        if output.cancelled {
-            let mut outcome = cancelled_process_outcome(tool_name, stdout, stderr, Some(command));
-            outcome.warnings = merge_warnings(runtime_warnings, outcome.warnings);
-            return Ok(RuntimeAdapterOutcome::plain(outcome));
-        }
-        let waited_epf = args
-            .get("waitForExit")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let mut artifacts = Vec::new();
-        let mut wait_error = None;
-        let mut data = None;
-        if waited_epf {
-            match parse_runner_json_envelope(&output.stdout) {
-                Ok(envelope) => {
-                    runner_error = runner_error_message(&envelope).map(redactor);
-                    match parse_external_epf_wait(&envelope) {
-                        Ok(Some(wait)) => {
-                            match validate_external_epf_wait_receipt(&wait, args, &context.cwd) {
-                                Ok(()) => {
-                                    artifacts.extend(requested_external_epf_artifacts(args));
-                                    data = Some(json!({
-                                        "external_epf_wait": external_epf_wait_value(&wait)
-                                    }));
-                                    if wait.timed_out {
-                                        ok = false;
-                                        wait_error = Some(
-                                            "bounded external EPF launch timed out".to_string(),
-                                        );
-                                    } else if wait.exit_code != Some(0) {
-                                        ok = false;
-                                        wait_error = Some(match wait.exit_code {
-                                            Some(code) => {
-                                                format!(
-                                                    "bounded external EPF exited with code {code}"
-                                                )
-                                            }
-                                            None => "bounded external EPF exit code is missing"
-                                                .to_string(),
-                                        });
-                                    }
-                                }
-                                Err(error) => {
-                                    ok = false;
-                                    wait_error = Some(error);
-                                }
-                            }
-                        }
-                        Ok(None) if output.status_success => {
-                            ok = false;
-                            wait_error = Some(
-                                "bounded external EPF runner result is missing `data.external_epf_wait`"
-                                    .to_string(),
-                            );
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            ok = false;
-                            wait_error = Some(error);
-                        }
-                    }
-                }
-                Err(error) if output.status_success => {
-                    ok = false;
-                    wait_error = Some(error);
-                }
-                Err(_) => {}
-            }
-        }
-        let wait_failed = wait_error.is_some();
-        Ok(RuntimeAdapterOutcome {
-            outcome: AdapterOutcome {
-                ok,
-                summary: if ok {
-                    format!("{tool_name} completed through internal v8-runner runtime adapter")
-                } else {
-                    format!("{tool_name} failed through internal v8-runner runtime adapter")
-                },
-                changes: if mutating && ok {
-                    vec!["internal v8-runner runtime adapter executed".to_string()]
-                } else {
-                    Vec::new()
-                },
-                warnings: if ok || wait_failed {
-                    runtime_warnings
-                } else if output.timed_out {
-                    merge_warnings(
-                        runtime_warnings,
-                        vec!["internal v8-runner runtime adapter timed out".to_string()],
-                    )
-                } else {
-                    merge_warnings(
-                        runtime_warnings,
-                        vec![format!(
-                            "internal v8-runner runtime adapter exited with status {}",
-                            output.status
-                        )],
-                    )
-                },
-                errors: if let Some(error) = wait_error {
-                    vec![error]
-                } else if ok {
-                    Vec::new()
-                } else if let Some(error) = runner_error {
-                    vec![error]
-                } else if stderr.trim().is_empty() && output.timed_out {
-                    vec![process_timeout_error("v8-runner runtime", process_timeout)]
-                } else if stderr.trim().is_empty() {
-                    vec![format!(
-                        "internal v8-runner runtime adapter exited with status {}",
-                        output.status
-                    )]
-                } else {
-                    vec![stderr.trim().to_string()]
-                },
-                artifacts,
-                stdout: Some(stdout),
-                stderr: Some(stderr),
-                command: Some(command),
-            },
-            data,
-        })
-    }
-}
-
-fn validate_bounded_external_epf_artifact_paths(
-    args: &Map<String, Value>,
-    cwd: &Path,
-) -> Result<(), String> {
-    if args.get("waitForExit").and_then(Value::as_bool) != Some(true) {
-        return Ok(());
-    }
-    // The mapper rejects identical path strings; this resolved host identity check also
-    // catches aliases such as relative/absolute, symlinked, and case-only spellings.
-    let resolve = |key: &str| {
-        args.get(key)
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("bounded external EPF launch requires `{key}`"))
-            .and_then(|path| runtime_path_identity(path, cwd))
-    };
-    if resolve("output")? == resolve("stderrOutput")? {
-        return Err(
-            "bounded external EPF `output` and `stderrOutput` resolve to the same path".to_string(),
-        );
-    }
-    Ok(())
-}
-
-fn runtime_path_identity(path: &str, cwd: &Path) -> Result<String, String> {
-    let path = Path::new(path);
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    };
-    normalize_path_identity(&candidate).map(|path| path_lock_identity(&path))
-}
-
-struct ExternalEpfWait {
-    pid: u64,
-    execute_path: String,
-    exit_code: Option<i64>,
-    timed_out: bool,
-    output_path: String,
-    stderr_path: String,
-}
-
-fn parse_runner_json_envelope(stdout: &str) -> Result<Value, String> {
-    serde_json::from_str(stdout).map_err(|error| {
-        format!("bounded external EPF runner returned invalid JSON result: {error}")
-    })
-}
-
-fn runner_error_message(envelope: &Value) -> Option<&str> {
-    envelope
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .or_else(|| envelope.pointer("/data/message").and_then(Value::as_str))
-}
-
-fn parse_external_epf_wait(envelope: &Value) -> Result<Option<ExternalEpfWait>, String> {
-    let Some(wait) = envelope.pointer("/data/external_epf_wait") else {
-        return Ok(None);
-    };
-    let wait = wait.as_object().ok_or_else(|| {
-        "bounded external EPF runner result has invalid `data.external_epf_wait`".to_string()
-    })?;
-    let path = |key: &str| {
-        wait.get(key)
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| format!("bounded external EPF runner result is missing `{key}`"))
-    };
-    if !wait.contains_key("exit_code") {
-        return Err("bounded external EPF runner result is missing `exit_code`".to_string());
-    }
-    Ok(Some(ExternalEpfWait {
-        pid: wait
-            .get("pid")
-            .and_then(Value::as_u64)
-            .filter(|pid| *pid > 0)
-            .ok_or_else(|| {
-                "bounded external EPF runner result is missing positive `pid`".to_string()
-            })?,
-        execute_path: path("execute_path")?,
-        exit_code: wait.get("exit_code").and_then(Value::as_i64),
-        timed_out: wait
-            .get("timed_out")
-            .and_then(Value::as_bool)
-            .ok_or_else(|| {
-                "bounded external EPF runner result is missing `timed_out`".to_string()
-            })?,
-        output_path: path("output_path")?,
-        stderr_path: path("stderr_path")?,
-    }))
-}
-
-fn validate_external_epf_wait_receipt(
-    wait: &ExternalEpfWait,
-    args: &Map<String, Value>,
-    cwd: &Path,
-) -> Result<(), String> {
-    for (receipt_key, returned, argument_key) in [
-        ("execute_path", wait.execute_path.as_str(), "execute"),
-        ("output_path", wait.output_path.as_str(), "output"),
-        ("stderr_path", wait.stderr_path.as_str(), "stderrOutput"),
-    ] {
-        let requested = args
-            .get(argument_key)
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("bounded external EPF launch requires `{argument_key}`"))?;
-        if runtime_path_identity(returned, cwd)? != runtime_path_identity(requested, cwd)? {
-            return Err(format!(
-                "bounded external EPF receipt `{receipt_key}` does not match requested `{argument_key}`"
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn requested_external_epf_artifacts(args: &Map<String, Value>) -> [String; 2] {
-    ["output", "stderrOutput"].map(|key| {
-        redactor(
-            args.get(key)
-                .and_then(Value::as_str)
-                .expect("bounded external EPF arguments were validated"),
-        )
-    })
-}
-
-fn external_epf_wait_value(wait: &ExternalEpfWait) -> Value {
-    json!({
-        "pid": wait.pid,
-        "execute_path": redactor(&wait.execute_path),
-        "exit_code": wait.exit_code,
-        "timed_out": wait.timed_out,
-        "output_path": redactor(&wait.output_path),
-        "stderr_path": redactor(&wait.stderr_path),
-    })
-}
-
-impl<'a> Default for RuntimeAdapter<'a> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn bind_external_processor_config(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    dry_run: bool,
-) -> Result<Option<AdapterOutcome>, String> {
-    if args.get("operation").and_then(Value::as_str) != Some("config-init")
-        || !args.contains_key("sourceSet")
-    {
-        return Ok(None);
-    }
-    validate_runtime_mapper_payload("config-init", args)?;
-    for key in ["format", "builder", "force"] {
-        if args.contains_key(key) {
-            return Err(format!(
-                "operation `config-init` with `sourceSet` does not accept `{key}`"
-            ));
-        }
-    }
-    let source_set_name = required_non_empty_runtime_string(args, "sourceSet")?;
-    let connection = required_non_empty_runtime_string(args, "connection")?;
-    let config_arg = required_non_empty_runtime_string(args, "config")?;
-    let unresolved_config = context.cwd.join(config_arg);
-    let config_path = unresolved_config.canonicalize().map_err(|error| {
-        format!(
-            "external source-set bind requires an existing config `{}`: {error}",
-            unresolved_config.display()
-        )
-    })?;
-    let workspace_root = context.workspace_root.canonicalize().map_err(|error| {
-        format!(
-            "failed to resolve workspace root `{}`: {error}",
-            context.workspace_root.display()
-        )
-    })?;
-    if !config_path.starts_with(&workspace_root) {
-        return Err(format!(
-            "external source-set config `{}` is outside workspace root `{}`",
-            config_path.display(),
-            workspace_root.display()
-        ));
-    }
-    let config_text = std::fs::read_to_string(&config_path)
-        .map_err(|error| format!("failed to read {}: {error}", config_path.display()))?;
-    let config: serde_yaml::Value = serde_yaml::from_str(&config_text)
-        .map_err(|error| format!("failed to parse {}: {error}", config_path.display()))?;
-    validate_external_processor_source_set(&config, source_set_name, &config_path)?;
-
-    let local_path = config_path
-        .parent()
-        .expect("canonical config path has a parent")
-        .join("v8project.local.yaml");
-    if local_path.exists() {
-        return Err(format!(
-            "external source-set bind refuses to overwrite existing local overlay `{}`",
-            local_path.display()
-        ));
-    }
-    let mut infobase = serde_yaml::Mapping::new();
-    infobase.insert(
-        serde_yaml::Value::String("connection".to_string()),
-        serde_yaml::Value::String(connection.to_string()),
-    );
-    let mut overlay = serde_yaml::Mapping::new();
-    overlay.insert(
-        serde_yaml::Value::String("infobase".to_string()),
-        serde_yaml::Value::Mapping(infobase),
-    );
-    let overlay_text = serde_yaml::to_string(&overlay)
-        .map_err(|error| format!("failed to serialize local runtime config: {error}"))?;
-
-    if dry_run {
-        return Ok(Some(AdapterOutcome {
-            ok: true,
-            summary: "dry run: unica.runtime.execute would bind an external processor source-set to a local infobase".to_string(),
-            changes: vec!["no files changed because dryRun is true".to_string()],
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![local_path.display().to_string()],
-            stdout: None,
-            stderr: None,
-            command: None,
-        }));
-    }
-
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    let mut file = options.open(&local_path).map_err(|error| {
-        format!(
-            "failed to create local runtime config `{}`: {error}",
-            local_path.display()
-        )
-    })?;
-    use std::io::Write as _;
-    file.write_all(overlay_text.as_bytes()).map_err(|error| {
-        format!(
-            "failed to write local runtime config `{}`: {error}",
-            local_path.display()
-        )
-    })?;
-
-    Ok(Some(AdapterOutcome {
-        ok: true,
-        summary: "unica.runtime.execute bound an external processor source-set to a local infobase"
-            .to_string(),
-        changes: vec![format!("created {}", local_path.display())],
-        warnings: Vec::new(),
-        errors: Vec::new(),
-        artifacts: vec![local_path.display().to_string()],
-        stdout: None,
-        stderr: None,
-        command: None,
-    }))
-}
-
-fn required_non_empty_runtime_string<'a>(
-    args: &'a Map<String, Value>,
-    key: &str,
-) -> Result<&'a str, String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            format!("operation `config-init` with `sourceSet` requires non-empty `{key}`")
-        })
-}
-
-fn validate_external_processor_source_set(
-    config: &serde_yaml::Value,
-    selected_name: &str,
-    config_path: &Path,
-) -> Result<(), String> {
-    let source_sets = config
-        .as_mapping()
-        .and_then(|mapping| mapping.get(serde_yaml::Value::String("source-set".to_string())))
-        .ok_or_else(|| format!("{} has no `source-set`", config_path.display()))?;
-    let mut matches = Vec::new();
-    match source_sets {
-        serde_yaml::Value::Sequence(entries) => {
-            for entry in entries {
-                let Some(mapping) = entry.as_mapping() else {
-                    continue;
-                };
-                if yaml_mapping_string(mapping, "name") == Some(selected_name) {
-                    matches.push(mapping);
-                }
-            }
-        }
-        serde_yaml::Value::Mapping(entries) => {
-            if let Some(entry) = entries.get(serde_yaml::Value::String(selected_name.to_string())) {
-                if let Some(mapping) = entry.as_mapping() {
-                    matches.push(mapping);
-                }
-            }
-        }
-        _ => {
-            return Err(format!(
-                "{} field `source-set` must be a list or mapping",
-                config_path.display()
-            ));
-        }
-    }
-    if matches.len() != 1 {
-        return Err(format!(
-            "{} must contain exactly one source-set named `{selected_name}`",
-            config_path.display()
-        ));
-    }
-    let source_set = matches[0];
-    if yaml_mapping_string(source_set, "type") != Some("EXTERNAL_DATA_PROCESSORS") {
-        return Err(format!(
-            "source-set `{selected_name}` must have type `EXTERNAL_DATA_PROCESSORS`"
-        ));
-    }
-    if yaml_mapping_string(source_set, "path").is_none_or(|path| path.trim().is_empty()) {
-        return Err(format!(
-            "source-set `{selected_name}` must have a non-empty `path`"
-        ));
-    }
-    Ok(())
-}
-
-fn yaml_mapping_string<'a>(mapping: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
-    mapping
-        .get(serde_yaml::Value::String(key.to_string()))
-        .and_then(serde_yaml::Value::as_str)
-}
-
 impl RuntimeJobAdapter {
     #[cfg(test)]
     pub fn invoke(
@@ -1220,7 +315,11 @@ impl RuntimeJobAdapter {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
-        let invocation = plan_runtime_invocation(args, context)?;
+        let invocation = unica_adapter_v8_runner::adapter::plan_runtime_invocation(
+            args,
+            context,
+            super::runtime_composition::workspace_observer(),
+        )?;
         if cancellation.is_cancelled() {
             return Ok(RuntimeJobAdapterOutcome {
                 outcome: AdapterOutcome::cancelled(format!(
@@ -1262,7 +361,7 @@ impl RuntimeJobAdapter {
 
         let request =
             runtime_job_start_request(tool_name, args, context, execution_args, build_preflight)?;
-        match runtime_jobs::start_detached_worker(
+        match unica_adapter_v8_runner::worker::start_detached_worker(
             context.cache_root.clone(),
             bundled_tool.program,
             context.cwd.clone(),
@@ -1530,776 +629,13 @@ fn runtime_job_snapshot_value(snapshot: &runtime_jobs::RuntimeJobSnapshot) -> Va
     })
 }
 
-fn format_section(name: &str, text: &str) -> String {
-    let body = text.trim_end();
-    if body.is_empty() {
-        format!("=== {name} ===")
-    } else {
-        format!("=== {name} ===\n{body}")
-    }
-}
-
-fn cancelled_process_outcome(
-    tool_name: &str,
-    stdout: String,
-    stderr: String,
-    command: Option<Vec<String>>,
-) -> AdapterOutcome {
-    let mut outcome = AdapterOutcome::cancelled(format!("{tool_name} process stopped"));
-    outcome.stdout = Some(stdout);
-    outcome.stderr = Some(stderr);
-    outcome.command = command;
-    outcome
-}
-
-fn process_timeout_error(label: &str, timeout: Option<Duration>) -> String {
-    match timeout {
-        Some(timeout) => format!(
-            "internal {label} adapter timed out after {} seconds",
-            timeout.as_secs()
-        ),
-        None => format!("internal {label} adapter timed out"),
-    }
-}
-
 #[cfg(test)]
 fn process_exit_code_is(status: &str, code: i32) -> bool {
     let status = status.trim();
     status == code.to_string() || status.ends_with(&format!(": {code}"))
 }
 
-/// Почему прогон анализатора не дал пакета диагностик.
-///
-/// Вид определяется местом, где прогон остановился, а не разбором текста
-/// процесса: только так «движок не доставлен», «не запустился», «превысил
-/// срок» и «завершился ошибкой» не схлопываются в одно «недоступен» (#1338).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AnalyzerRunFailureKind {
-    /// Движка нет на машине: не доставлен, не собран, нет манифеста.
-    EngineMissing,
-    /// Движок на месте, но не прошёл проверку поставки: контрольная сумма,
-    /// манифест, платформа.
-    EngineInvalid,
-    /// Процесс движка не удалось запустить.
-    StartFailed,
-    /// Процесс превысил заданный пользователем срок.
-    TimedOut,
-    /// Процесс запустился и завершился ошибкой до результата.
-    Exited,
-    Cancelled,
-    /// Остальное: подготовка запроса, резидентный сеанс и прочее.
-    Other,
-}
-
-/// Отказ прогона анализатора: закрытый вид и внутренний текст. Текст
-/// остаётся внутри адаптера; наружу причина выходит только видом.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AnalyzerRunFailure {
-    pub(crate) kind: AnalyzerRunFailureKind,
-    pub(crate) message: String,
-    /// Чего не хватает, когда движка нет: инструмент, цель, путь, версия
-    /// и следующий шаг по режиму установки. Есть только у `EngineMissing`.
-    pub(crate) missing: Option<Box<crate::domain::engine::MissingEngine>>,
-}
-
-impl AnalyzerRunFailure {
-    pub(crate) fn new(kind: AnalyzerRunFailureKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-            missing: None,
-        }
-    }
-
-    /// Движка нет на диске: вид и типизированное описание отсутствия.
-    pub(crate) fn engine_missing(
-        missing: Option<crate::domain::engine::MissingEngine>,
-        message: impl Into<String>,
-    ) -> Self {
-        Self {
-            missing: missing.map(Box::new),
-            ..Self::new(AnalyzerRunFailureKind::EngineMissing, message)
-        }
-    }
-
-    /// Ошибка разрешения поставляемого движка. Отсутствие определяется
-    /// состоянием диска через типизированный [`MissingEngine`], а не текстом
-    /// ошибки; поставка, которая есть, но не прошла проверку, — отдельный вид.
-    ///
-    /// [`MissingEngine`]: crate::domain::engine::MissingEngine
-    pub(crate) fn bundled_tool(
-        plugin_root: &Path,
-        tool: &str,
-        error: crate::infrastructure::bundled_tools::BundledToolError,
-    ) -> Self {
-        let error = error.to_string();
-        match crate::infrastructure::bundled_tools::missing_engine(plugin_root, tool) {
-            Some(missing) => Self::engine_missing(Some(missing), error),
-            None => Self::new(AnalyzerRunFailureKind::EngineInvalid, error),
-        }
-    }
-}
-
-impl From<String> for AnalyzerRunFailure {
-    fn from(message: String) -> Self {
-        let kind = if message.starts_with(crate::domain::cancellation::CANCELLED_PREFIX) {
-            AnalyzerRunFailureKind::Cancelled
-        } else {
-            AnalyzerRunFailureKind::Other
-        };
-        Self::new(kind, message)
-    }
-}
-
-impl<'a> BslAnalyzerMcpAdapter<'a> {
-    pub fn new() -> Self {
-        Self {
-            runner: &SYSTEM_BSL_MCP_RUNNER,
-            process_runner: &SYSTEM_PROCESS_RUNNER,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn with_runner(runner: &'a dyn BslMcpRunner) -> Self {
-        Self {
-            runner,
-            process_runner: &SYSTEM_PROCESS_RUNNER,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn with_process_runner(process_runner: &'a dyn ProcessRunner) -> Self {
-        Self {
-            runner: &SYSTEM_BSL_MCP_RUNNER,
-            process_runner,
-        }
-    }
-
-    pub(crate) fn analyze_diagnostic_batch(
-        &self,
-        context: &WorkspaceContext,
-        source_root: &Path,
-        module: Option<&Path>,
-        timeout: Option<Duration>,
-        cancellation: &CancellationToken,
-    ) -> Result<AnalyzerDiagnosticsBatch, AnalyzerRunFailure> {
-        let mut args = Map::new();
-        args.insert(
-            "sourceDir".to_string(),
-            Value::String(source_root.display().to_string()),
-        );
-        // Без заданного срока процесс анализатора идёт до конца (#1251).
-        if let Some(timeout_seconds) = timeout.map(analyzer_analyze_timeout_seconds) {
-            args.insert("timeoutSeconds".to_string(), json!(timeout_seconds));
-        }
-        let result = self.invoke_diagnostics_analyze_scoped(
-            "unica.code.diagnostics",
-            &args,
-            context,
-            false,
-            None,
-            cancellation,
-            module,
-        )?;
-        result.diagnostics.ok_or_else(|| {
-            AnalyzerRunFailure::new(
-                result.run_failure.unwrap_or(AnalyzerRunFailureKind::Other),
-                result
-                    .outcome
-                    .errors
-                    .first()
-                    .cloned()
-                    .unwrap_or(result.outcome.summary),
-            )
-        })
-    }
-
-    #[allow(dead_code)]
-    pub fn invoke(
-        &self,
-        tool_name: &str,
-        args: &Map<String, Value>,
-        context: &WorkspaceContext,
-        dry_run: bool,
-    ) -> Result<BslAnalyzerOutcome, String> {
-        self.invoke_cancellable(tool_name, args, context, dry_run, &CancellationToken::new())
-    }
-
-    pub fn invoke_cancellable(
-        &self,
-        tool_name: &str,
-        args: &Map<String, Value>,
-        context: &WorkspaceContext,
-        dry_run: bool,
-        cancellation: &CancellationToken,
-    ) -> Result<BslAnalyzerOutcome, String> {
-        self.invoke_cancellable_with_operational_config(
-            tool_name,
-            args,
-            context,
-            dry_run,
-            None,
-            cancellation,
-        )
-    }
-
-    pub(crate) fn invoke_cancellable_with_operational_config(
-        &self,
-        tool_name: &str,
-        args: &Map<String, Value>,
-        context: &WorkspaceContext,
-        dry_run: bool,
-        _operational_config: Option<&OperationalConfig>,
-        cancellation: &CancellationToken,
-    ) -> Result<BslAnalyzerOutcome, String> {
-        if cancellation.is_cancelled() {
-            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome::cancelled(
-                format!("{tool_name} cancelled before adapter work"),
-            )));
-        }
-        let plugin_root = match find_plugin_root(&context.cwd) {
-            Some(plugin_root) => plugin_root,
-            None => {
-                return Ok(provider_unavailable_outcome(
-                    tool_name,
-                    "could not locate Unica plugin root for bsl-analyzer MCP adapter lookup"
-                        .to_string(),
-                ))
-            }
-        };
-        let source_dir = resolve_source_dir(context, args)?;
-        let (remote_tool, tool_args) = bsl_mcp_tool_request(tool_name, args)?;
-        // A workspace that has not downloaded the tools has no analyzer in its
-        // manifest. `code.search` already answers that state with an
-        // unavailable section and a working result; answering it
-        // here with a failed call made the same workstation look broken (#275).
-        // A provider that ran and failed is a different case and still fails.
-        let bundled_tool = match resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run) {
-            Ok(bundled_tool) => bundled_tool,
-            Err(error @ BundledToolError::Missing(_)) => {
-                return Ok(provider_unavailable_outcome(tool_name, error.into()))
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let command = bsl_mcp_command(
-            &source_dir,
-            context,
-            remote_tool,
-            tool_args,
-            cancellation.clone(),
-        );
-        let mut reported_command = vec![bundled_tool.program.display().to_string()];
-        reported_command.extend(command.args.clone());
-
-        if dry_run {
-            let mut outcome = dry_run_outcome(
-                tool_name,
-                "typed bsl-analyzer MCP",
-                false,
-                bundled_tool,
-                reported_command,
-            );
-            outcome.artifacts = vec![source_dir.display().to_string()];
-            return Ok(BslAnalyzerOutcome::plain(outcome));
-        }
-
-        let output = self.runner.call(&command)?;
-        let section = "bsl-analyzer-graph";
-        let readiness_warnings = bsl_mcp_readiness_warnings(&output.result_text);
-        let summary = format!("{tool_name} completed through typed bsl-analyzer MCP adapter");
-        // ADR-0023: the analyzer answers this tool with JSON, and wrapping that
-        // JSON in a section header made the caller unwrap a string to reach it.
-        // `analyze` is the analyzer MCP tool name, not a spawned 1C process, so
-        // `code.diagnostics` returns the same kind of reply as `code.graph` and
-        // the ADR-0023 §4 carve-out for external process streams does not reach
-        // it.
-        // A reply that is not JSON must still reach the caller: failing here
-        // dropped the analyzer text, its stderr and the reported command, so a
-        // plain-text diagnostic became "unparsable reply" and nothing else.
-        let mut parse_error = None;
-        let data = match serde_json::from_str::<Value>(output.result_text.trim()) {
-            Ok(value) => Some(value),
-            Err(error) => {
-                parse_error = Some(format!(
-                    "{tool_name} received an unparsable bsl-analyzer reply: {error}"
-                ));
-                None
-            }
-        };
-        let mut errors = Vec::new();
-        if let Some(parse_error) = parse_error {
-            errors.push(parse_error);
-        }
-        let unparsable = data.is_none();
-        Ok(BslAnalyzerOutcome {
-            outcome: AdapterOutcome {
-                ok: !unparsable,
-                summary,
-                changes: Vec::new(),
-                warnings: readiness_warnings,
-                errors,
-                artifacts: vec![
-                    source_dir.display().to_string(),
-                    command.tool_name.to_string(),
-                ],
-                // The raw reply survives only when it could not be typed;
-                // ADR-0023 keeps `stdout` empty for a well-formed answer.
-                stdout: data
-                    .is_none()
-                    .then(|| format_section(section, &output.result_text)),
-                stderr: if output.stderr.trim().is_empty() {
-                    None
-                } else {
-                    Some(output.stderr)
-                },
-                command: Some(reported_command),
-            },
-            data,
-            diagnostics: None,
-            run_failure: None,
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn invoke_diagnostics_analyze_scoped(
-        &self,
-        tool_name: &str,
-        args: &Map<String, Value>,
-        context: &WorkspaceContext,
-        dry_run: bool,
-        operational_config: Option<&OperationalConfig>,
-        cancellation: &CancellationToken,
-        module: Option<&Path>,
-    ) -> Result<BslAnalyzerOutcome, AnalyzerRunFailure> {
-        let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
-            AnalyzerRunFailure::engine_missing(
-                None,
-                "could not locate Unica plugin root for diagnostics adapter lookup",
-            )
-        })?;
-        let source_dir = resolve_source_dir(context, args)?;
-        let mut normalized_args = diagnostics_analyze_args(args);
-        // Keep the full configuration root for metadata and cross-module facts.
-        // A JSON file preserves commas and spaces in physical module paths.
-        let _scope_file = if let Some(module) = module {
-            if !module.is_absolute() {
-                return Err("diagnostics module path must be absolute"
-                    .to_string()
-                    .into());
-            }
-            let module = module
-                .to_str()
-                .ok_or_else(|| "diagnostics module path must be UTF-8".to_string())?;
-            let scratch_root = normalize_path_identity(&std::env::temp_dir())?;
-            if scratch_root.starts_with(normalize_path_identity(&source_dir)?) {
-                return Err("diagnostics scope file would be inside source root"
-                    .to_string()
-                    .into());
-            }
-            let mut scope = tempfile::NamedTempFile::new_in(scratch_root)
-                .map_err(|_| "cannot create diagnostics scope file".to_string())?;
-            serde_json::to_writer(
-                scope.as_file_mut(),
-                &json!({
-                    "base_ref": "unica-check",
-                    "head_ref": "current",
-                    "files": {module: {"hunks": null}},
-                }),
-            )
-            .map_err(|_| "cannot write diagnostics scope file".to_string())?;
-            let filter_path = scope
-                .path()
-                .to_str()
-                .ok_or_else(|| "diagnostics scope path must be UTF-8".to_string())?;
-            normalized_args.insert(
-                "diffFilter".to_string(),
-                Value::String(filter_path.to_string()),
-            );
-            Some(scope)
-        } else {
-            None
-        };
-        let process_timeout = diagnostics_analyze_timeout(args, operational_config)?;
-        let bundled_tool =
-            resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run).map_err(|error| {
-                AnalyzerRunFailure::bundled_tool(&plugin_root, "bsl-analyzer", error)
-            })?;
-        let reported_args = cli_args(&normalized_args, true)?;
-        let execution_args = cli_args(&normalized_args, false)?;
-        let mut reported_command = vec![bundled_tool.program.display().to_string()];
-        reported_command.push("analyze".to_string());
-        reported_command.extend(reported_args);
-
-        if dry_run {
-            let mut outcome = dry_run_outcome(
-                tool_name,
-                "bsl-analyzer code analysis",
-                false,
-                bundled_tool,
-                reported_command,
-            );
-            outcome.artifacts = vec![source_dir.display().to_string()];
-            return Ok(BslAnalyzerOutcome::plain(outcome));
-        }
-
-        let mut process_args = vec!["analyze".to_string()];
-        process_args.extend(execution_args);
-        let mut parser = match module {
-            Some(module) => DiagnosticsJsonlParser::for_module(&source_dir, module)?,
-            None => DiagnosticsJsonlParser::new(&source_dir)?,
-        };
-        let mut consume = |line_number, bytes: &[u8]| {
-            parser.push_line(line_number, bytes);
-            StreamControl::Continue
-        };
-        let explicit_config = normalized_args
-            .get("config")
-            .and_then(Value::as_str)
-            .map(|path| {
-                let path = PathBuf::from(path);
-                if path.is_absolute() {
-                    path
-                } else {
-                    context.cwd.join(path)
-                }
-            });
-        let mut filter_errors = crate::infrastructure::diagnostics_filters::cli_filter_errors(
-            &source_dir,
-            explicit_config.as_deref(),
-            module.is_some(),
-        );
-        let started = std::time::Instant::now();
-        let output = self
-            .process_runner
-            .run_streaming_staged(
-                &ProcessCommand {
-                    program: bundled_tool.program,
-                    args: process_args,
-                    cwd: context.cwd.clone(),
-                    env: Vec::new(),
-                    env_remove: Vec::new(),
-                    capture_limits: None,
-                    timeout: process_timeout,
-                    cancellation: cancellation.clone(),
-                },
-                MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
-                &mut consume,
-            )
-            .map_err(|failure| match failure {
-                // The process never existed: the engine could not be started.
-                ProcessStreamFailure::Spawn(error) => {
-                    AnalyzerRunFailure::new(AnalyzerRunFailureKind::StartFailed, error)
-                }
-                // Waiting for or stopping a started process failed. Past the
-                // user's deadline that is a timeout whose stop failed;
-                // otherwise the run failed for a reason Unica cannot name.
-                ProcessStreamFailure::Run(error) => AnalyzerRunFailure::new(
-                    if process_timeout.is_some_and(|limit| started.elapsed() >= limit) {
-                        AnalyzerRunFailureKind::TimedOut
-                    } else {
-                        AnalyzerRunFailureKind::Other
-                    },
-                    error,
-                ),
-            })?;
-        if let Some((line_number, reason)) = &output.line_error {
-            use crate::domain::diagnostics::stream_error::StreamErrorKind;
-            let kind = if reason == STREAM_LINE_TOO_LONG_ERROR {
-                StreamErrorKind::LineTooLong
-            } else {
-                StreamErrorKind::ReadFailure
-            };
-            parser.reject_line(*line_number, kind);
-        }
-        let stderr = redactor(&output.stderr);
-        if output.cancelled {
-            let mut outcome = AdapterOutcome::cancelled(format!("{tool_name} process stopped"));
-            outcome.stderr = (!stderr.trim().is_empty()).then_some(stderr);
-            outcome.command = Some(reported_command);
-            let mut outcome = BslAnalyzerOutcome::plain(outcome);
-            outcome.run_failure = Some(AnalyzerRunFailureKind::Cancelled);
-            return Ok(outcome);
-        }
-        if !output.status_success {
-            // A broken `[diagnostics.baseline]` stops the analyzer before
-            // `start`, so only its stderr names the cause. That run is a
-            // named incompleteness, not an unavailable provider.
-            let baseline_failure = (!output.timed_out)
-                .then(|| cli_baseline_failure(&output.stderr))
-                .flatten();
-            let timeout_error = output
-                .timed_out
-                .then(|| process_timeout_error("code analysis", process_timeout));
-            let mut errors = timeout_error.iter().cloned().collect::<Vec<_>>();
-            if !stderr.trim().is_empty() {
-                errors.push(stderr.trim().to_string());
-            }
-            if errors.is_empty() {
-                errors.push(format!(
-                    "internal code analysis adapter exited with status {}",
-                    output.status
-                ));
-            }
-            let outcome = AdapterOutcome {
-                ok: false,
-                summary: format!("{tool_name} failed through internal code analysis adapter"),
-                changes: Vec::new(),
-                warnings: if output.timed_out {
-                    timeout_error.into_iter().collect()
-                } else {
-                    vec![format!(
-                        "internal code analysis adapter exited with status {}",
-                        output.status
-                    )]
-                },
-                errors,
-                artifacts: vec![source_dir.display().to_string()],
-                stdout: None,
-                stderr: (!stderr.trim().is_empty()).then_some(stderr),
-                command: Some(reported_command),
-            };
-            let kind = if output.timed_out {
-                AnalyzerRunFailureKind::TimedOut
-            } else {
-                AnalyzerRunFailureKind::Exited
-            };
-            return Ok(BslAnalyzerOutcome {
-                outcome,
-                data: None,
-                diagnostics: baseline_failure.map(|reason| AnalyzerDiagnosticsBatch {
-                    outcome: broken_baseline_outcome(reason),
-                    files: AnalyzerDiagnosticsFileTotals {
-                        discovered: None,
-                        processed: None,
-                        failed: None,
-                    },
-                    diagnostics_reported: None,
-                    elapsed_seconds: None,
-                }),
-                run_failure: Some(kind),
-            });
-        }
-
-        let mut batch = parser.finish();
-        // A removed filter must not hide that it may have applied while the
-        // process ran; conversely a newly observed filter is also unproven.
-        for error in crate::infrastructure::diagnostics_filters::cli_filter_errors(
-            &source_dir,
-            explicit_config.as_deref(),
-            module.is_some(),
-        ) {
-            if !filter_errors.iter().any(|before| before.code == error.code) {
-                filter_errors.push(error);
-            }
-        }
-        crate::infrastructure::diagnostics_filters::mark_cli_filter_limits(
-            &mut batch.outcome,
-            module,
-            filter_errors,
-        );
-        let protocol_error = batch.outcome.error.as_ref();
-        let outcome = AdapterOutcome {
-            ok: protocol_error.is_none(),
-            summary: if let Some(error) = protocol_error {
-                format!(
-                    "{tool_name} finished with {} {}",
-                    error.code.trim_end_matches(':'),
-                    if error.retryable {
-                        "retryable state"
-                    } else {
-                        "protocol failure"
-                    }
-                )
-            } else {
-                format!("{tool_name} completed through typed JSONL diagnostics adapter")
-            },
-            changes: Vec::new(),
-            warnings: bundled_tool.warnings,
-            errors: protocol_error
-                .map(|error| vec![format!("{} {}", error.code, error.message)])
-                .unwrap_or_default(),
-            artifacts: vec![source_dir.display().to_string()],
-            stdout: None,
-            stderr: (!stderr.trim().is_empty()).then_some(stderr),
-            command: Some(reported_command),
-        };
-        Ok(BslAnalyzerOutcome {
-            outcome,
-            data: None,
-            diagnostics: Some(batch),
-            run_failure: None,
-        })
-    }
-}
-
-/// An analyzer answer plus the typed payload, for the tools whose contract is
-/// already the analyzer's own JSON.
-#[derive(Debug)]
-pub struct BslAnalyzerOutcome {
-    pub outcome: AdapterOutcome,
-    pub data: Option<Value>,
-    pub(crate) diagnostics: Option<AnalyzerDiagnosticsBatch>,
-    /// Where the analyze run stopped when it produced no diagnostics batch.
-    pub(crate) run_failure: Option<AnalyzerRunFailureKind>,
-}
-
-impl BslAnalyzerOutcome {
-    fn plain(outcome: AdapterOutcome) -> Self {
-        Self {
-            outcome,
-            data: None,
-            diagnostics: None,
-            run_failure: None,
-        }
-    }
-}
-
-/// The answer for a provider that is not present in this workspace: a normal
-/// tool result that states the cause, not a failed call. The
-/// `provider_unavailable:` prefix is the machine-readable part — it separates
-/// "the analyzer is not here" from "the analyzer ran and failed", which the
-/// caller has to tell apart to decide whether retrying is worth anything.
-fn provider_unavailable_outcome(tool_name: &str, error: String) -> BslAnalyzerOutcome {
-    BslAnalyzerOutcome::plain(AdapterOutcome {
-        ok: false,
-        summary: format!(
-            "{tool_name} is unavailable: bsl-analyzer is not bundled in this workspace"
-        ),
-        changes: Vec::new(),
-        warnings: Vec::new(),
-        errors: vec![format!("provider_unavailable: {error}")],
-        artifacts: Vec::new(),
-        stdout: None,
-        stderr: None,
-        command: None,
-    })
-}
-
-impl Default for BslAnalyzerMcpAdapter<'_> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn required_string<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("missing required `{key}` argument"))
-}
-
-/// Caller budget the analyzer run is allowed to take, in whole seconds.
-///
-/// The remaining budget is always a fraction below the configured one because
-/// the deadline starts before the provider worker does, so truncating would
-/// push the documented minimum of 30 seconds out of the accepted band and drop
-/// the caller budget entirely.
-fn analyzer_analyze_timeout_seconds(timeout: Duration) -> u64 {
-    let seconds = timeout.as_secs() + u64::from(timeout.subsec_nanos() > 0);
-    seconds.clamp(
-        DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
-        DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
-    )
-}
-
-fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
-    let mut filtered = Map::new();
-    for key in ["cwd", "confirm", "sourceDir", "config"] {
-        if let Some(value) = args.get(key) {
-            filtered.insert(key.to_string(), value.clone());
-        }
-    }
-    filtered.insert("format".to_string(), json!("jsonl"));
-    filtered
-}
-
-/// `None` — срок анализа никто не задал, и процесс идёт до конечного исхода.
-fn diagnostics_analyze_timeout(
-    args: &Map<String, Value>,
-    operational_config: Option<&OperationalConfig>,
-) -> Result<Option<Duration>, String> {
-    let Some(value) = args.get("timeoutSeconds") else {
-        return Ok(
-            operational_config.and_then(|config| config.code_diagnostics().analyze_timeout())
-        );
-    };
-    let Some(seconds) = value.as_u64() else {
-        return Err("unica.code.diagnostics argument `timeoutSeconds` must be integer".to_string());
-    };
-    if !(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS..=DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
-        .contains(&seconds)
-    {
-        return Err(format!(
-            "unica.code.diagnostics argument `timeoutSeconds` must be between {} and {}",
-            DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS
-        ));
-    }
-    Ok(Some(Duration::from_secs(seconds)))
-}
-
-fn bsl_mcp_command(
-    source_dir: &Path,
-    context: &WorkspaceContext,
-    remote_tool: &'static str,
-    tool_args: Value,
-    cancellation: CancellationToken,
-) -> BslMcpCommand {
-    BslMcpCommand {
-        args: vec![
-            "mcp".to_string(),
-            "serve".to_string(),
-            "--profile".to_string(),
-            "workspace".to_string(),
-            "--source-dir".to_string(),
-            source_dir.display().to_string(),
-            "--mode".to_string(),
-            "stdio".to_string(),
-        ],
-        cwd: context.cwd.clone(),
-        source_dir: source_dir.to_path_buf(),
-        timeout: DEFAULT_PROCESS_TIMEOUT,
-        tool_name: remote_tool,
-        tool_args,
-        cancellation,
-    }
-}
-
-fn bsl_mcp_tool_request(
-    tool_name: &str,
-    args: &Map<String, Value>,
-) -> Result<(&'static str, Value), String> {
-    match tool_name {
-        "unica.code.graph" => {
-            let mode = required_string(args, "mode")?;
-            let mut payload = Map::new();
-            payload.insert("action".to_string(), json!(mode));
-            copy_json_arg(&mut payload, args, "id", "id");
-            copy_json_arg(&mut payload, args, "ids", "ids");
-            copy_json_arg(&mut payload, args, "query", "query");
-            copy_json_arg(&mut payload, args, "dir", "dir");
-            copy_json_arg(&mut payload, args, "detail", "detail");
-            copy_json_arg(&mut payload, args, "edgeKinds", "edge_kinds");
-            copy_json_arg(&mut payload, args, "provenance", "provenance");
-            copy_json_arg(&mut payload, args, "limit", "max_nodes");
-            copy_json_arg(&mut payload, args, "maxOutputTokens", "max_output_tokens");
-            Ok(("graph", Value::Object(payload)))
-        }
-        _ => Err(format!("unsupported bsl-analyzer MCP tool: {tool_name}")),
-    }
-}
-
-fn copy_json_arg(
-    payload: &mut Map<String, Value>,
-    args: &Map<String, Value>,
-    from: &str,
-    to: &str,
-) {
-    if let Some(value) = args.get(from).filter(|value| !value.is_null()) {
-        payload.insert(to.to_string(), value.clone());
-    }
-}
-
+#[cfg(test)]
 fn resolve_source_dir(
     context: &WorkspaceContext,
     args: &Map<String, Value>,
@@ -2308,914 +644,7 @@ fn resolve_source_dir(
         .map(|resolved| resolved.path)
 }
 
-fn bsl_mcp_readiness_warnings(text: &str) -> Vec<String> {
-    if bsl_mcp_reply_is_pending(text) {
-        vec![
-            "bsl-analyzer workspace model is not ready yet; retry status or the request after reload completes"
-                .to_string(),
-        ]
-    } else {
-        Vec::new()
-    }
-}
-
-const BSL_MCP_READINESS_STATES: &[(&str, &str)] = &[
-    ("reload", "running"),
-    ("state", "loading"),
-    ("status", "loading"),
-];
-
-const BSL_MCP_READINESS_MESSAGE_FIELDS: &[&str] = &["error", "message", "state", "status"];
-
-fn bsl_mcp_reply_is_pending(text: &str) -> bool {
-    let Ok(Value::Object(reply)) = serde_json::from_str::<Value>(text) else {
-        return names_not_ready(text);
-    };
-    BSL_MCP_READINESS_STATES
-        .iter()
-        .any(|(field, pending)| reply.get(*field).and_then(Value::as_str) == Some(*pending))
-        || BSL_MCP_READINESS_MESSAGE_FIELDS.iter().any(|field| {
-            reply
-                .get(*field)
-                .and_then(Value::as_str)
-                .is_some_and(names_not_ready)
-        })
-}
-
-fn names_not_ready(text: &str) -> bool {
-    text.contains("not_ready") || text.contains("not ready")
-}
-
-impl ProcessRunner for SystemProcessRunner {
-    fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
-        #[cfg(test)]
-        process_launch_probe::record(&command.cwd, command.program.as_ref());
-        let mut child = ManagedChild::spawn_staged(managed_command(command))
-            .map_err(ProcessStreamFailure::from_spawn)?;
-        let output = child.wait_for_output().map_err(ProcessStreamFailure::Run)?;
-        Ok(map_managed_process_output(output))
-    }
-
-    fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-        #[cfg(test)]
-        process_launch_probe::record(&command.cwd, command.program.as_ref());
-        let output = ManagedChild::run(ManagedCommand {
-            program: command.program.clone(),
-            args: command.args.iter().map(Into::into).collect(),
-            cwd: command.cwd.clone(),
-            env: command.env.clone(),
-            env_remove: command.env_remove.clone(),
-            capture_limits: command.capture_limits,
-            timeout: command.timeout,
-            cancellation: command.cancellation.clone(),
-        })?;
-        Ok(map_managed_process_output(output))
-    }
-
-    fn run_pending_handoff(
-        &self,
-        command: &ProcessCommand,
-    ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
-        self.run_pending_handoff_staged(command)
-            .map_err(|failure| failure.message().to_string())
-    }
-
-    fn run_pending_handoff_staged(
-        &self,
-        command: &ProcessCommand,
-    ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
-        #[cfg(test)]
-        process_launch_probe::record(&command.cwd, command.program.as_ref());
-        let (output, handoff) = ManagedChild::run_pending_handoff_staged(managed_command(command))
-            .map_err(|failure| match failure {
-                PendingRunFailure::Spawn(failure) => ProcessStreamFailure::from_spawn(failure),
-                PendingRunFailure::Run(message) => ProcessStreamFailure::Run(message),
-            })?;
-        Ok((map_managed_process_output(output), handoff))
-    }
-
-    fn run_with_input(
-        &self,
-        command: &ProcessCommand,
-        input: &[u8],
-    ) -> Result<ProcessOutput, String> {
-        #[cfg(test)]
-        process_launch_probe::record(&command.cwd, command.program.as_ref());
-        let output = ManagedChild::run_with_input(
-            ManagedCommand {
-                program: command.program.clone(),
-                args: command.args.iter().map(Into::into).collect(),
-                cwd: command.cwd.clone(),
-                env: command.env.clone(),
-                env_remove: command.env_remove.clone(),
-                capture_limits: command.capture_limits,
-                timeout: command.timeout,
-                cancellation: command.cancellation.clone(),
-            },
-            input.to_vec(),
-        )?;
-        Ok(map_managed_process_output(output))
-    }
-
-    fn run_streaming(
-        &self,
-        command: &ProcessCommand,
-        max_line_bytes: usize,
-        on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
-    ) -> Result<ProcessStreamOutput, String> {
-        self.run_streaming_staged(command, max_line_bytes, on_line)
-            .map_err(|failure| match failure {
-                ProcessStreamFailure::Spawn(message) | ProcessStreamFailure::Run(message) => {
-                    message
-                }
-            })
-    }
-
-    fn run_streaming_staged(
-        &self,
-        command: &ProcessCommand,
-        max_line_bytes: usize,
-        on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
-    ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
-        #[cfg(test)]
-        process_launch_probe::record(&command.cwd, command.program.as_ref());
-        let mut child = ManagedChild::spawn_staged(managed_command(command))
-            .map_err(ProcessStreamFailure::from_spawn)?;
-        let output = child
-            .wait_for_line_output(max_line_bytes, on_line)
-            .map_err(ProcessStreamFailure::Run)?;
-        Ok(map_managed_line_output(output))
-    }
-}
-
-fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
-    let stdout_truncated = output.stdout_truncated;
-    let stderr_truncated = output.stderr_truncated;
-    let stdout_had_invalid_utf8 = output.stdout_had_invalid_utf8;
-    let stderr_had_invalid_utf8 = output.stderr_had_invalid_utf8;
-    ensure_truncation_diagnostics(&mut output);
-    let output = ProcessOutput {
-        status_success: output.status_success,
-        status: output.status,
-        stdout: output.stdout,
-        stderr: output.stderr,
-        timed_out: output.timed_out,
-        cancelled: output.cancelled,
-        stdout_truncated,
-        stderr_truncated,
-        stdout_had_invalid_utf8,
-        stderr_had_invalid_utf8,
-    };
-    debug_assert!(!(output.timed_out && output.cancelled));
-    output
-}
-
-fn map_managed_line_output(output: ManagedLineOutput) -> ProcessStreamOutput {
-    ProcessStreamOutput {
-        status_success: output.status_success,
-        status: output.status,
-        stderr: output.stderr,
-        timed_out: output.timed_out,
-        cancelled: output.cancelled,
-        stopped_by_consumer: output.stopped_by_consumer,
-        line_error: output.line_error,
-    }
-}
-
-impl BslMcpRunner for SystemBslMcpRunner {
-    fn call(&self, command: &BslMcpCommand) -> Result<BslMcpOutput, String> {
-        let context = discover_workspace(Some(command.cwd.clone()))?;
-        let output = WorkspaceServiceManager::new().call_bsl_mcp_cancellable(
-            &context,
-            &command.source_dir,
-            command.tool_name,
-            command.tool_args.clone(),
-            command.timeout,
-            &command.cancellation,
-        )?;
-        Ok(BslMcpOutput {
-            result_text: output.result_text,
-            stderr: output.stderr,
-        })
-    }
-}
-
-pub struct StandardsAdapter;
-
-pub trait HttpClient {
-    fn post_json(&self, endpoint: &str, payload: &Value) -> Result<String, String>;
-}
-
-/// Продовый клиент сервера стандартов поверх общего HTTP-клиента процесса.
-#[derive(Default)]
-pub(crate) struct NetworkHttpClient {
-    /// `None` — общий клиент процесса.
-    client: Option<std::sync::Arc<unica_bootstrap::network::NetworkClient>>,
-}
-
-impl NetworkHttpClient {
-    #[cfg(test)]
-    pub(crate) fn with_client(
-        client: std::sync::Arc<unica_bootstrap::network::NetworkClient>,
-    ) -> Self {
-        Self {
-            client: Some(client),
-        }
-    }
-}
-
-/// Общий продовый HTTP-клиент для потребителей за пределами модуля:
-/// поставщик `v8std` реестра документации держит его в `Arc`, а не через
-/// статическую ссылку, чтобы тесты подменяли транспорт значением.
-pub(crate) fn shared_http_client() -> std::sync::Arc<dyn HttpClient + Send + Sync> {
-    std::sync::Arc::new(NetworkHttpClient::default())
-}
-
-impl StandardsAdapter {
-    const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-
-    pub fn outcome_from_http_body(
-        operation: &str,
-        endpoint: &str,
-        remote_method: &str,
-        text: &str,
-    ) -> StandardsOutcome {
-        let normalized = match normalize_mcp_http_body(text) {
-            Ok(text) => text,
-            Err(error) => {
-                return StandardsOutcome::plain(AdapterOutcome {
-                    ok: false,
-                    summary: format!(
-                        "unica.standards.{operation} received invalid v8std MCP response"
-                    ),
-                    changes: Vec::new(),
-                    warnings: Vec::new(),
-                    errors: vec![error],
-                    artifacts: vec![endpoint.to_string(), remote_method.to_string()],
-                    stdout: None,
-                    stderr: None,
-                    command: None,
-                })
-            }
-        };
-
-        match serde_json::from_str::<Value>(&normalized) {
-            Ok(Value::Object(object)) if object.contains_key("error") => {
-                let message = object
-                    .get("error")
-                    .and_then(|error| error.get("message"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("remote JSON-RPC error");
-                StandardsOutcome::plain(AdapterOutcome {
-                    ok: false,
-                    summary: format!(
-                        "unica.standards.{operation} failed through internal v8std MCP proxy"
-                    ),
-                    changes: Vec::new(),
-                    warnings: Vec::new(),
-                    errors: vec![message.to_string()],
-                    artifacts: vec![endpoint.to_string(), remote_method.to_string()],
-                    stdout: None,
-                    stderr: None,
-                    command: None,
-                })
-            }
-            // ADR-0023: the JSON-RPC envelope is transport. The tool publishes
-            // the `result` payload it carried, not the envelope as a string.
-            Ok(Value::Object(mut object)) if object.contains_key("result") => StandardsOutcome {
-                outcome: AdapterOutcome {
-                    ok: true,
-                    summary: format!(
-                        "unica.standards.{operation} completed through internal v8std MCP proxy"
-                    ),
-                    changes: Vec::new(),
-                    warnings: Vec::new(),
-                    errors: Vec::new(),
-                    artifacts: vec![endpoint.to_string(), remote_method.to_string()],
-                    stdout: None,
-                    stderr: None,
-                    command: None,
-                },
-                data: object.remove("result"),
-            },
-            Ok(_) => StandardsOutcome::plain(AdapterOutcome {
-                ok: false,
-                summary: format!(
-                    "unica.standards.{operation} received non-JSON-RPC v8std MCP response"
-                ),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec!["missing JSON-RPC result or error".to_string()],
-                artifacts: vec![endpoint.to_string(), remote_method.to_string()],
-                stdout: None,
-                stderr: None,
-                command: None,
-            }),
-            Err(error) => StandardsOutcome::plain(AdapterOutcome {
-                ok: false,
-                summary: format!("unica.standards.{operation} received invalid v8std MCP JSON"),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![error.to_string()],
-                artifacts: vec![endpoint.to_string(), remote_method.to_string()],
-                stdout: None,
-                stderr: None,
-                command: None,
-            }),
-        }
-    }
-}
-
-/// A standards answer plus the `result` payload the remote MCP returned.
-#[derive(Debug)]
-pub struct StandardsOutcome {
-    pub outcome: AdapterOutcome,
-    pub data: Option<Value>,
-}
-
-impl StandardsOutcome {
-    fn plain(outcome: AdapterOutcome) -> Self {
-        Self {
-            outcome,
-            data: None,
-        }
-    }
-}
-
-impl HttpClient for NetworkHttpClient {
-    fn post_json(&self, endpoint: &str, payload: &Value) -> Result<String, String> {
-        let client = match &self.client {
-            Some(client) => std::sync::Arc::clone(client),
-            None => {
-                unica_bootstrap::network::NetworkClient::shared().map_err(|err| err.to_string())?
-            }
-        };
-        client
-            .post(
-                endpoint,
-                &[
-                    ("Content-Type", "application/json"),
-                    ("Accept", "application/json, text/event-stream"),
-                    ("User-Agent", unica_bootstrap::network::DOCS_USER_AGENT),
-                ],
-                &payload.to_string(),
-                Some(StandardsAdapter::DEFAULT_TIMEOUT),
-            )
-            .map_err(|err| err.to_string())?
-            .into_string()
-            .map_err(|err| err.to_string())
-    }
-}
-
-fn normalize_mcp_http_body(text: &str) -> Result<String, String> {
-    let data_lines = text
-        .lines()
-        .filter_map(|line| line.strip_prefix("data:"))
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    if data_lines.is_empty() {
-        return Ok(text.trim().to_string());
-    }
-    let joined = data_lines.join("\n");
-    serde_json::from_str::<Value>(&joined)
-        .map_err(|err| format!("invalid JSON-RPC SSE data: {err}"))?;
-    Ok(joined)
-}
-
-const RUNTIME_MAPPER_CONFIG_INIT_ARGS: &[&str] = &[
-    "operation",
-    "config",
-    "workdir",
-    "sourceSet",
-    "connection",
-    "format",
-    "builder",
-    "force",
-];
-const RUNTIME_MAPPER_INIT_ARGS: &[&str] = &["operation", "config", "workdir"];
-const RUNTIME_MAPPER_BUILD_ARGS: &[&str] =
-    &["operation", "config", "workdir", "sourceSet", "fullRebuild"];
-const RUNTIME_MAPPER_DUMP_ARGS: &[&str] = &[
-    "operation",
-    "config",
-    "workdir",
-    "mode",
-    "object",
-    "objects",
-    "sourceSet",
-    "extension",
-];
-const RUNTIME_MAPPER_CONVERT_ARGS: &[&str] =
-    &["operation", "config", "workdir", "sourceSet", "output"];
-const RUNTIME_MAPPER_MAKE_ARGS: &[&str] = &[
-    "operation",
-    "config",
-    "workdir",
-    "output",
-    "sourceSet",
-    "extension",
-];
-const RUNTIME_MAPPER_LOAD_ARGS: &[&str] = &[
-    "operation",
-    "config",
-    "workdir",
-    "path",
-    "mode",
-    "settings",
-    "extension",
-];
-const RUNTIME_MAPPER_SYNTAX_ARGS: &[&str] = &[
-    "operation",
-    "config",
-    "workdir",
-    "mode",
-    "server",
-    "thinClient",
-    "webClient",
-    "mobileClient",
-    "externalConnection",
-    "externalConnectionServer",
-    "thickClientManagedApplication",
-    "thickClientServerManagedApplication",
-    "thickClientOrdinaryApplication",
-    "thickClientServerOrdinaryApplication",
-    "mobileAppClient",
-    "mobileAppServer",
-    "mobileClientDigiSign",
-    "distributiveModules",
-    "unreferenceProcedures",
-    "handlersExistence",
-    "emptyHandlers",
-    "extendedModulesCheck",
-    "checkUseSynchronousCalls",
-    "checkUseModality",
-    "unsupportedFunctional",
-    "configLogIntegrity",
-    "incorrectReferences",
-    "extension",
-    "allExtensions",
-    "projects",
-];
-const RUNTIME_MAPPER_TEST_ARGS: &[&str] = &[
-    "operation",
-    "config",
-    "workdir",
-    "testRunner",
-    "testScope",
-    "module",
-    "fullOutput",
-    "features",
-    "filterTags",
-    "ignoreTags",
-    "scenarioFilters",
-];
-const RUNTIME_MAPPER_LAUNCH_ARGS: &[&str] = &[
-    "operation",
-    "config",
-    "workdir",
-    "clientMode",
-    "mode",
-    "mcpConfig",
-    "mcpPort",
-    "c",
-    "execute",
-    "usePrivilegedMode",
-    "output",
-    "stderrOutput",
-    "waitForExit",
-    "waitTimeoutMs",
-    "rawKeys",
-];
-const RUNTIME_MAPPER_EXTENSIONS_ARGS: &[&str] =
-    &["operation", "config", "workdir", "sourceSet", "sourceSets"];
-const RUNTIME_MAPPER_ARRAY_ARGS: &[&str] = &[
-    "features",
-    "filterTags",
-    "ignoreTags",
-    "objects",
-    "projects",
-    "rawKeys",
-    "scenarioFilters",
-    "sourceSets",
-];
-const RUNTIME_MAPPER_LOAD_MODES: &[&str] = &["load", "merge"];
-const RUNTIME_MAPPER_DUMP_MODES: &[&str] = &["full", "incremental", "partial"];
-const RUNTIME_MAPPER_TEST_RUNNERS: &[&str] = &["yaxunit", "va"];
-const RUNTIME_MAPPER_TEST_SCOPES: &[&str] = &["all", "module"];
-
-fn runtime_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, String> {
-    if args.contains_key("args") {
-        return Err(
-            "raw args are not accepted by internal adapters; use typed tool arguments".to_string(),
-        );
-    }
-
-    let operation = args
-        .get("operation")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "unica.runtime.execute requires string `operation` argument".to_string())?;
-    validate_runtime_mapper_payload(operation, args)?;
-    let mut result = Vec::new();
-
-    append_runtime_global_args(&mut result, operation, args, redact);
-
-    match operation {
-        "config-init" => {
-            result.extend(["config".to_string(), "init".to_string()]);
-            append_arg(&mut result, "--output", args, "config", redact);
-            append_arg(&mut result, "--connection", args, "connection", redact);
-            append_arg(&mut result, "--format", args, "format", redact);
-            append_arg(&mut result, "--builder", args, "builder", redact);
-            append_bool_flag(&mut result, "--force", args, "force");
-        }
-        "init" => result.push("init".to_string()),
-        "build" => {
-            result.push("build".to_string());
-            append_bool_flag(&mut result, "--full-rebuild", args, "fullRebuild");
-            append_arg(&mut result, "--source-set", args, "sourceSet", redact);
-        }
-        "dump" => {
-            result.push("dump".to_string());
-            append_arg(&mut result, "--mode", args, "mode", redact);
-            append_arg(&mut result, "--object", args, "object", redact);
-            append_array_args(&mut result, "--object", args, "objects", redact);
-            append_arg(&mut result, "--source-set", args, "sourceSet", redact);
-            append_arg(&mut result, "--extension", args, "extension", redact);
-        }
-        "convert" => {
-            result.push("convert".to_string());
-            append_arg(&mut result, "--source-set", args, "sourceSet", redact);
-            append_arg(&mut result, "--output", args, "output", redact);
-        }
-        "make" => {
-            result.push("make".to_string());
-            append_arg(&mut result, "--output", args, "output", redact);
-            append_arg(&mut result, "--source-set", args, "sourceSet", redact);
-            append_arg(&mut result, "--extension", args, "extension", redact);
-        }
-        "load" => {
-            result.push("load".to_string());
-            append_arg(&mut result, "--path", args, "path", redact);
-            append_arg(&mut result, "--mode", args, "mode", redact);
-            append_arg(&mut result, "--settings", args, "settings", redact);
-            append_arg(&mut result, "--extension", args, "extension", redact);
-        }
-        "syntax" => {
-            result.push("syntax".to_string());
-            if let Some(mode) = string_arg(args, "mode", redact) {
-                result.push(mode);
-            }
-            append_syntax_args(&mut result, args, redact);
-        }
-        "test" => {
-            result.push("test".to_string());
-            if let Some(test_runner) = string_arg(args, "testRunner", redact) {
-                result.push(test_runner);
-            }
-            append_bool_flag(&mut result, "--full", args, "fullOutput");
-            if let Some(test_scope) = string_arg(args, "testScope", redact) {
-                result.push(test_scope);
-            }
-            if let Some(module) = string_arg(args, "module", redact) {
-                result.push(module);
-            }
-            append_array_args(&mut result, "--feature", args, "features", redact);
-            append_array_args(&mut result, "--filter-tag", args, "filterTags", redact);
-            append_array_args(&mut result, "--ignore-tag", args, "ignoreTags", redact);
-            append_array_args(
-                &mut result,
-                "--scenario-filter",
-                args,
-                "scenarioFilters",
-                redact,
-            );
-        }
-        "launch" => {
-            result.push("launch".to_string());
-            match args.get("clientMode").and_then(Value::as_str) {
-                Some("mcp-va") => {
-                    result.extend(["mcp".to_string(), "va".to_string()]);
-                    append_arg(&mut result, "--mode", args, "mode", redact);
-                    append_arg(&mut result, "--mcp-port", args, "mcpPort", redact);
-                    append_arg(&mut result, "--mcp-config", args, "mcpConfig", redact);
-                }
-                Some("mcp") => {
-                    result.push("mcp".to_string());
-                    append_arg(&mut result, "--mode", args, "mode", redact);
-                    append_arg(&mut result, "--mcp-port", args, "mcpPort", redact);
-                    append_arg(&mut result, "--mcp-config", args, "mcpConfig", redact);
-                }
-                Some(client_mode) => {
-                    result.push(client_mode.to_string());
-                    append_launch_direct_args(&mut result, args, redact);
-                }
-                None => {}
-            }
-        }
-        "extensions" => {
-            result.push("extensions".to_string());
-            append_arg(&mut result, "--name", args, "sourceSet", redact);
-            append_array_args(&mut result, "--name", args, "sourceSets", redact);
-        }
-        other => return Err(format!("unknown runtime operation: {other}")),
-    }
-
-    Ok(result)
-}
-
-fn append_runtime_global_args(
-    result: &mut Vec<String>,
-    operation: &str,
-    args: &Map<String, Value>,
-    redact: bool,
-) {
-    if args.get("waitForExit").and_then(Value::as_bool) == Some(true)
-        || (operation == "build" && args.get("fullRebuild").and_then(Value::as_bool) != Some(true))
-    {
-        result.push("--json-message".to_string());
-    }
-    if operation != "config-init" {
-        append_arg(result, "--config", args, "config", redact);
-    }
-    append_arg(result, "--workdir", args, "workdir", redact);
-}
-
-/// Credentials belong to `infobase.user`/`infobase.password`, not to the
-/// connection string. Written into `connection` they reached the project
-/// config and were dropped on the way to the platform, so the run reported a
-/// wrong password while the same connection worked in Designer (#343).
-///
-/// The refusal names the field and never echoes the value: the argument it is
-/// refusing is the one carrying the secret.
-/// A project that declares a client MCP extension must have its artifact where
-/// it says. Without this the run reached the platform and failed late, deep in
-/// the build, on a cause the caller could have been told before it started
-/// (#408).
-fn reject_missing_client_mcp_extension(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Result<(), String> {
-    if args.get("operation").and_then(Value::as_str) != Some("build") {
-        return Ok(());
-    }
-    let config_arg = args
-        .get("config")
-        .and_then(Value::as_str)
-        .unwrap_or("v8project.yaml");
-    let config_path = context.cwd.join(config_arg);
-    let Ok(text) = std::fs::read_to_string(&config_path) else {
-        return Ok(());
-    };
-    let Ok(config) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
-        return Ok(());
-    };
-    let declared = ["tools", "client_mcp", "extension", "artifact", "path"]
-        .iter()
-        .try_fold(&config, |node, key| node.get(key))
-        .and_then(serde_yaml::Value::as_str);
-    let Some(declared) = declared.filter(|path| !path.trim().is_empty()) else {
-        return Ok(());
-    };
-    let artifact = config_path.parent().unwrap_or(&context.cwd).join(declared);
-    if artifact.is_file() {
-        return Ok(());
-    }
-    Err(format!(
-        "project declares `tools.client_mcp.extension.artifact.path` = `{declared}` but the artifact is missing; put the built `.cfe` at that path before `build` — the product does not fetch it, delivery of client-mcp is the toolchain of 0.14 (#870)"
-    ))
-}
-
-fn reject_credentials_in_connection(args: &Map<String, Value>) -> Result<(), String> {
-    let Some(connection) = args.get("connection").and_then(Value::as_str) else {
-        return Ok(());
-    };
-    let carries = |field: &str| {
-        connection.split(';').any(|part| {
-            part.trim().split_once('=').is_some_and(|(name, value)| {
-                name.trim().eq_ignore_ascii_case(field) && !value.trim().is_empty()
-            })
-        })
-    };
-    if carries("Usr") || carries("Pwd") {
-        return Err(
-            "`connection` must not carry `Usr` or `Pwd`; the platform never receives them from it — put the credentials in infobase.user and infobase.password of v8project.local.yaml"
-                .to_string(),
-        );
-    }
-    Ok(())
-}
-
-fn validate_runtime_mapper_payload(
-    operation: &str,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    let allowed = runtime_mapper_operation_args(operation)
-        .ok_or_else(|| format!("unknown runtime operation: {operation}"))?;
-    for key in args.keys() {
-        if matches!(key.as_str(), "cwd" | "dryRun" | "confirm") {
-            continue;
-        }
-        if !allowed.contains(&key.as_str()) {
-            return Err(format!("operation `{operation}` does not accept `{key}`"));
-        }
-    }
-    for key in RUNTIME_MAPPER_ARRAY_ARGS {
-        validate_mapper_string_array(args, key)?;
-    }
-    reject_credentials_in_connection(args)?;
-
-    match operation {
-        "dump" => {
-            validate_mapper_enum(args, "mode", RUNTIME_MAPPER_DUMP_MODES)?;
-            if args
-                .get("mode")
-                .and_then(Value::as_str)
-                .is_some_and(|mode| mode == "partial")
-                && !args.contains_key("object")
-                && !mapper_has_non_empty_array_arg(args, "objects")
-            {
-                return Err(
-                    "operation `dump` with mode `partial` requires `object` or `objects`"
-                        .to_string(),
-                );
-            }
-        }
-        "load" => {
-            if args
-                .get("mode")
-                .and_then(Value::as_str)
-                .is_some_and(|mode| mode == "update")
-            {
-                return Err(
-                    "load --mode update is not supported; use `load` or `merge`".to_string()
-                );
-            }
-            validate_mapper_enum(args, "mode", RUNTIME_MAPPER_LOAD_MODES)?;
-            if args
-                .get("mode")
-                .and_then(Value::as_str)
-                .is_some_and(|mode| mode == "merge")
-                && !args.contains_key("settings")
-            {
-                return Err("operation `load` with mode `merge` requires `settings`".to_string());
-            }
-            if args.contains_key("settings")
-                && args.get("mode").and_then(Value::as_str) != Some("merge")
-            {
-                return Err(
-                    "operation `load` accepts `settings` only with mode `merge`".to_string()
-                );
-            }
-        }
-        "test" => {
-            validate_mapper_enum(args, "testRunner", RUNTIME_MAPPER_TEST_RUNNERS)?;
-            validate_mapper_enum(args, "testScope", RUNTIME_MAPPER_TEST_SCOPES)?;
-        }
-        "launch" => validate_bounded_external_epf_launch(args)?,
-        _ => {}
-    }
-
-    Ok(())
-}
-
-fn validate_bounded_external_epf_launch(args: &Map<String, Value>) -> Result<(), String> {
-    let wait = args.get("waitForExit").and_then(Value::as_bool);
-    if args.contains_key("waitForExit") && wait.is_none() {
-        return Err("bounded external EPF `waitForExit` must be boolean".to_string());
-    }
-    if !wait.unwrap_or(false) {
-        if args.contains_key("stderrOutput") || args.contains_key("waitTimeoutMs") {
-            return Err(
-                "bounded external EPF output and timeout require `waitForExit: true`".to_string(),
-            );
-        }
-        return Ok(());
-    }
-
-    if args.get("clientMode").and_then(Value::as_str) != Some("thin") {
-        return Err("bounded external EPF launch requires `clientMode: thin`".to_string());
-    }
-    let required_string = |key: &str| {
-        args.get(key)
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| format!("bounded external EPF launch requires non-empty `{key}`"))
-    };
-    let execute = required_string("execute")?;
-    if !execute.to_ascii_lowercase().ends_with(".epf") {
-        return Err("bounded external EPF `execute` must name an .epf file".to_string());
-    }
-    let output = required_string("output")?;
-    let stderr_output = required_string("stderrOutput")?;
-    if Path::new(output) == Path::new(stderr_output) {
-        return Err(
-            "bounded external EPF `output` and `stderrOutput` must be distinct".to_string(),
-        );
-    }
-    args.get("waitTimeoutMs")
-        .and_then(Value::as_u64)
-        .filter(|value| (1..=86_400_000).contains(value))
-        .ok_or_else(|| {
-            "bounded external EPF `waitTimeoutMs` must be an integer from 1 to 86400000".to_string()
-        })?;
-
-    if args
-        .get("rawKeys")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .any(|key| {
-            ["c", "execute", "out"]
-                .iter()
-                .any(|reserved| launch_key_alias_matches(key, reserved))
-        })
-    {
-        return Err(
-            "bounded external EPF rawKeys must not override /C, /Execute, or /Out".to_string(),
-        );
-    }
-    Ok(())
-}
-
-fn launch_key_alias_matches(raw: &str, key: &str) -> bool {
-    let trimmed = raw.trim_start();
-    if !trimmed.starts_with(['/', '-']) {
-        return false;
-    }
-    let normalized = trimmed
-        .trim_start_matches(['/', '-'])
-        .trim_end()
-        .to_ascii_lowercase();
-    if normalized == key {
-        return true;
-    }
-    normalized
-        .strip_prefix(key)
-        .and_then(|rest| rest.chars().next())
-        .is_some_and(|ch| matches!(ch, '"' | '=' | ':' | ' ' | '\t'))
-}
-
-fn runtime_mapper_operation_args(operation: &str) -> Option<&'static [&'static str]> {
-    match operation {
-        "config-init" => Some(RUNTIME_MAPPER_CONFIG_INIT_ARGS),
-        "init" => Some(RUNTIME_MAPPER_INIT_ARGS),
-        "build" => Some(RUNTIME_MAPPER_BUILD_ARGS),
-        "dump" => Some(RUNTIME_MAPPER_DUMP_ARGS),
-        "convert" => Some(RUNTIME_MAPPER_CONVERT_ARGS),
-        "make" => Some(RUNTIME_MAPPER_MAKE_ARGS),
-        "load" => Some(RUNTIME_MAPPER_LOAD_ARGS),
-        "syntax" => Some(RUNTIME_MAPPER_SYNTAX_ARGS),
-        "test" => Some(RUNTIME_MAPPER_TEST_ARGS),
-        "launch" => Some(RUNTIME_MAPPER_LAUNCH_ARGS),
-        "extensions" => Some(RUNTIME_MAPPER_EXTENSIONS_ARGS),
-        _ => None,
-    }
-}
-
-fn validate_mapper_string_array(args: &Map<String, Value>, key: &str) -> Result<(), String> {
-    let Some(value) = args.get(key) else {
-        return Ok(());
-    };
-    let Some(items) = value.as_array() else {
-        return Err(format!("argument `{key}` must be array"));
-    };
-    for item in items {
-        if !item.is_string() {
-            return Err(format!("argument `{key}` must contain strings"));
-        }
-    }
-    Ok(())
-}
-
-fn validate_mapper_enum(
-    args: &Map<String, Value>,
-    key: &str,
-    allowed: &[&str],
-) -> Result<(), String> {
-    let Some(value) = args.get(key) else {
-        return Ok(());
-    };
-    let Some(value) = value.as_str() else {
-        return Err(format!("argument `{key}` must be string"));
-    };
-    if !allowed.contains(&value) {
-        return Err(format!(
-            "argument `{key}` must be one of: {}",
-            allowed.join(", ")
-        ));
-    }
-    Ok(())
-}
-
-fn mapper_has_non_empty_array_arg(args: &Map<String, Value>, key: &str) -> bool {
-    args.get(key)
-        .and_then(Value::as_array)
-        .is_some_and(|items| !items.is_empty())
-}
-
-fn cli_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, String> {
+pub(crate) fn cli_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, String> {
     if args.contains_key("args") {
         return Err(
             "raw args are not accepted by internal adapters; use typed tool arguments".to_string(),
@@ -3246,133 +675,6 @@ fn cli_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, Stri
     Ok(result)
 }
 
-fn append_arg(
-    result: &mut Vec<String>,
-    flag: &str,
-    args: &Map<String, Value>,
-    key: &str,
-    redact: bool,
-) {
-    if let Some(value) = string_arg(args, key, redact) {
-        result.push(flag.to_string());
-        result.push(value);
-    }
-}
-
-fn append_array_args(
-    result: &mut Vec<String>,
-    flag: &str,
-    args: &Map<String, Value>,
-    key: &str,
-    redact: bool,
-) {
-    let Some(items) = args.get(key).and_then(Value::as_array) else {
-        return;
-    };
-    for item in items {
-        result.push(flag.to_string());
-        result.push(reported_cli_value(key, item, redact));
-    }
-}
-
-fn append_syntax_args(result: &mut Vec<String>, args: &Map<String, Value>, redact: bool) {
-    for (key, flag) in [
-        ("server", "--server"),
-        ("thinClient", "--thin-client"),
-        ("webClient", "--web-client"),
-        ("mobileClient", "--mobile-client"),
-        ("externalConnection", "--external-connection"),
-        ("externalConnectionServer", "--external-connection-server"),
-        (
-            "thickClientManagedApplication",
-            "--thick-client-managed-application",
-        ),
-        (
-            "thickClientServerManagedApplication",
-            "--thick-client-server-managed-application",
-        ),
-        (
-            "thickClientOrdinaryApplication",
-            "--thick-client-ordinary-application",
-        ),
-        (
-            "thickClientServerOrdinaryApplication",
-            "--thick-client-server-ordinary-application",
-        ),
-        ("mobileAppClient", "--mobile-app-client"),
-        ("mobileAppServer", "--mobile-app-server"),
-        ("mobileClientDigiSign", "--mobile-client-digi-sign"),
-        ("distributiveModules", "--distributive-modules"),
-        ("unreferenceProcedures", "--unreference-procedures"),
-        ("handlersExistence", "--handlers-existence"),
-        ("emptyHandlers", "--empty-handlers"),
-        ("extendedModulesCheck", "--extended-modules-check"),
-        ("checkUseSynchronousCalls", "--check-use-synchronous-calls"),
-        ("checkUseModality", "--check-use-modality"),
-        ("unsupportedFunctional", "--unsupported-functional"),
-        ("configLogIntegrity", "--config-log-integrity"),
-        ("incorrectReferences", "--incorrect-references"),
-        ("allExtensions", "--all-extensions"),
-    ] {
-        append_bool_flag(result, flag, args, key);
-    }
-    append_arg(result, "--extension", args, "extension", redact);
-    append_array_args(result, "--project", args, "projects", redact);
-}
-
-fn append_launch_direct_args(result: &mut Vec<String>, args: &Map<String, Value>, redact: bool) {
-    append_arg(result, "--c", args, "c", redact);
-    append_arg(result, "--execute", args, "execute", redact);
-    append_bool_flag(result, "--use-privileged-mode", args, "usePrivilegedMode");
-    append_arg(result, "--output", args, "output", redact);
-    append_arg(result, "--stderr-output", args, "stderrOutput", redact);
-    append_bool_flag(result, "--wait-for-exit", args, "waitForExit");
-    append_arg(result, "--wait-timeout-ms", args, "waitTimeoutMs", redact);
-    append_array_args(result, "--raw-key", args, "rawKeys", redact);
-}
-
-fn append_bool_flag(result: &mut Vec<String>, flag: &str, args: &Map<String, Value>, key: &str) {
-    if args.get(key).and_then(Value::as_bool).unwrap_or(false) {
-        result.push(flag.to_string());
-    }
-}
-
-fn string_arg(args: &Map<String, Value>, key: &str, redact: bool) -> Option<String> {
-    args.get(key).and_then(|value| {
-        if value.is_null() {
-            return None;
-        }
-        Some(reported_cli_value(key, value, redact))
-    })
-}
-
-fn reported_cli_value(key: &str, value: &Value, redact: bool) -> String {
-    if !redact {
-        return value_to_cli_string(value);
-    }
-    if is_secret_key(key) {
-        return "<redacted>".to_string();
-    }
-    redactor(&value_to_cli_string(value))
-}
-
-fn kebab_case(key: &str) -> String {
-    let mut out = String::new();
-    for (index, ch) in key.chars().enumerate() {
-        if ch == '_' {
-            out.push('-');
-        } else if ch.is_ascii_uppercase() {
-            if index > 0 {
-                out.push('-');
-            }
-            out.push(ch.to_ascii_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
 #[allow(dead_code)]
 fn _path_list(paths: &[PathBuf]) -> Vec<String> {
     paths
@@ -3384,7 +686,6 @@ fn _path_list(paths: &[PathBuf]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::platform::testing;
     use serde_json::json;
     use std::cell::RefCell;
     use std::ffi::{OsStr, OsString};
@@ -3393,37 +694,7 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn analyzer_analyze_budget_survives_the_deadline_that_already_started() {
-        // The provider deadline starts before the worker thread does, so the
-        // smallest configured budget always arrives here a fraction short.
-        let almost_minimum =
-            Duration::from_secs(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS) - Duration::from_millis(1);
-        assert_eq!(
-            analyzer_analyze_timeout_seconds(almost_minimum),
-            DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
-            "the caller budget must reach the analyzer instead of being dropped"
-        );
-
-        let almost_maximum =
-            Duration::from_secs(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS) - Duration::from_millis(1);
-        assert_eq!(
-            analyzer_analyze_timeout_seconds(almost_maximum),
-            DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS
-        );
-
-        // An exhausted deadline still bounds the analyzer by the smallest
-        // accepted value rather than handing it its own default.
-        assert_eq!(
-            analyzer_analyze_timeout_seconds(Duration::from_secs(1)),
-            DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS
-        );
-        assert_eq!(
-            analyzer_analyze_timeout_seconds(Duration::from_secs(7_200)),
-            DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS
-        );
-    }
+    use unica_adapter_v8_runner::adapter::test_support::reject_missing_client_mcp_extension;
 
     #[test]
     fn build_runtime_adapter_dry_run_builds_v8_runner_command() {
@@ -3451,15 +722,15 @@ mod tests {
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("build"));
 
-        let outcome = RuntimeAdapter::new()
-            .invoke("unica.runtime.execute", &args, &context, true, true)
-            .expect("preview remains structured");
+        let outcome =
+            RuntimeAdapter::new(crate::infrastructure::runtime_composition::runtime_environment())
+                .invoke("unica.runtime.execute", &args, &context, true, true)
+                .expect("preview remains structured");
 
         assert!(!outcome.ok);
-        assert!(outcome
-            .errors
-            .iter()
-            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
+        assert!(outcome.errors.iter().any(|error| {
+            error.contains(unica_artifact_delivery::engine::BUNDLED_TOOL_MISSING)
+        }));
         cleanup_context(&context);
     }
 
@@ -3486,9 +757,12 @@ mod tests {
         args.insert("sourceSet".to_string(), json!("main"));
         args.insert("fullRebuild".to_string(), json!(true));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
@@ -3534,9 +808,12 @@ mod tests {
         };
         let args = Map::from_iter([("operation".to_string(), json!("build"))]);
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(!outcome.ok);
         assert_eq!(
@@ -3573,8 +850,12 @@ mod tests {
             ("sourceSet".to_string(), json!(" main ")),
         ]);
 
-        let invocation = plan_runtime_invocation(&args, &context)
-            .expect("runner-compatible selector must reach v8-runner");
+        let invocation = unica_adapter_v8_runner::adapter::plan_runtime_invocation(
+            &args,
+            &context,
+            crate::infrastructure::runtime_composition::workspace_observer(),
+        )
+        .expect("runner-compatible selector must reach v8-runner");
 
         assert_runtime_args_with_primary(
             &context,
@@ -3615,8 +896,12 @@ mod tests {
             ("sourceSet".to_string(), json!("extension")),
         ]);
 
-        let invocation = plan_runtime_invocation(&args, &context)
-            .expect("unselected contradictory evidence must not block an extension build");
+        let invocation = unica_adapter_v8_runner::adapter::plan_runtime_invocation(
+            &args,
+            &context,
+            crate::infrastructure::runtime_composition::workspace_observer(),
+        )
+        .expect("unselected contradictory evidence must not block an extension build");
 
         assert_runtime_args_with_primary(
             &context,
@@ -3673,10 +958,9 @@ mod tests {
         .outcome;
 
         assert!(!outcome.ok);
-        assert!(outcome
-            .errors
-            .iter()
-            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
+        assert!(outcome.errors.iter().any(|error| {
+            error.contains(unica_artifact_delivery::engine::BUNDLED_TOOL_MISSING)
+        }));
         cleanup_context(&context);
     }
 
@@ -3687,7 +971,12 @@ mod tests {
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("build"));
 
-        let invocation = plan_runtime_invocation(&args, &context).unwrap();
+        let invocation = unica_adapter_v8_runner::adapter::plan_runtime_invocation(
+            &args,
+            &context,
+            crate::infrastructure::runtime_composition::workspace_observer(),
+        )
+        .unwrap();
         let execution_args = runtime_args(&invocation.args, false).unwrap();
         let request = runtime_job_start_request(
             "unica.runtime.job.start",
@@ -3728,9 +1017,12 @@ mod tests {
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("build"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(outcome.ok);
         assert_runtime_args_with_primary(&context, &runner.commands.borrow()[0].args, &["build"]);
@@ -3769,9 +1061,12 @@ mod tests {
         };
         let args = Map::from_iter([("operation".to_string(), json!("build"))]);
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(outcome.ok);
         assert_runtime_args_with_primary(&context, &runner.commands.borrow()[0].args, &["build"]);
@@ -3789,7 +1084,12 @@ mod tests {
         fs::write(marker, []).expect("write removed support marker");
         let args = Map::from_iter([("operation".to_string(), json!("build"))]);
 
-        let invocation = plan_runtime_invocation(&args, &context).unwrap();
+        let invocation = unica_adapter_v8_runner::adapter::plan_runtime_invocation(
+            &args,
+            &context,
+            crate::infrastructure::runtime_composition::workspace_observer(),
+        )
+        .unwrap();
 
         assert_runtime_args_with_primary(
             &context,
@@ -3824,7 +1124,12 @@ mod tests {
             ("fullRebuild".to_string(), json!(false)),
         ]);
 
-        let invocation = plan_runtime_invocation(&args, &context).unwrap();
+        let invocation = unica_adapter_v8_runner::adapter::plan_runtime_invocation(
+            &args,
+            &context,
+            crate::infrastructure::runtime_composition::workspace_observer(),
+        )
+        .unwrap();
 
         assert_runtime_args_with_primary(
             &context,
@@ -3881,9 +1186,12 @@ mod tests {
         args.insert("operation".to_string(), json!("build"));
         args.insert("sourceSet".to_string(), json!("extension"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(outcome.ok);
         assert_runtime_args_with_primary(
@@ -3928,9 +1236,12 @@ mod tests {
         args.insert("operation".to_string(), json!("build"));
         args.insert("fullRebuild".to_string(), json!(true));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(outcome.ok);
         assert_runtime_args_with_primary(
@@ -3971,9 +1282,12 @@ mod tests {
         args.insert("operation".to_string(), json!("build"));
         args.insert("config".to_string(), json!("alternate/v8project.yaml"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .expect("fallback policy must not depend on the primary support reader");
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .expect("fallback policy must not depend on the primary support reader");
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
@@ -4013,8 +1327,12 @@ mod tests {
             ),
         ]);
 
-        let plan = plan_runtime_invocation(&args, &context)
-            .expect("an explicit config has its own build identity");
+        let plan = unica_adapter_v8_runner::adapter::plan_runtime_invocation(
+            &args,
+            &context,
+            crate::infrastructure::runtime_composition::workspace_observer(),
+        )
+        .expect("an explicit config has its own build identity");
 
         assert_eq!(
             plan.args.get("config").and_then(Value::as_str),
@@ -4050,8 +1368,12 @@ mod tests {
             ("sourceSet".to_string(), json!("main")),
         ]);
 
-        let invocation = plan_runtime_invocation(&args, &context)
-            .expect("global EDT mode reaches v8-runner unchanged");
+        let invocation = unica_adapter_v8_runner::adapter::plan_runtime_invocation(
+            &args,
+            &context,
+            crate::infrastructure::runtime_composition::workspace_observer(),
+        )
+        .expect("global EDT mode reaches v8-runner unchanged");
 
         assert_runtime_args_with_primary(
             &context,
@@ -4084,9 +1406,12 @@ mod tests {
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("build"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(outcome.ok);
         assert_eq!(
@@ -4204,9 +1529,12 @@ mod tests {
             ),
         ]);
 
-        let error = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .expect_err("external config must be rejected before its YAML is inspected");
+        let error = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .expect_err("external config must be rejected before its YAML is inspected");
 
         assert!(error.contains("outside the workspace"), "{error}");
         assert!(!error.contains("outside.cfe"), "{error}");
@@ -4277,9 +1605,12 @@ mod tests {
             json!("File=/private/local/epf-harness"),
         );
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(outcome.ok, "{outcome:?}");
         assert!(runner.commands.borrow().is_empty());
@@ -4326,9 +1657,12 @@ mod tests {
         args.insert("sourceSet".to_string(), json!("external-processors"));
         args.insert("connection".to_string(), json!("File=build/ib"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, true, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, true, true)
+        .unwrap();
 
         assert!(outcome.ok, "{outcome:?}");
         assert!(outcome.summary.contains("dry run"));
@@ -4362,7 +1696,7 @@ mod tests {
             ),
         ] {
             std::fs::write(context.cwd.join("v8project.yaml"), config).unwrap();
-            let error = RuntimeAdapter::new()
+            let error = RuntimeAdapter::new(crate::infrastructure::runtime_composition::runtime_environment())
                 .invoke("unica.runtime.execute", &args, &context, false, true)
                 .unwrap_err();
             assert!(error.contains(expected), "{error}");
@@ -4383,9 +1717,11 @@ mod tests {
                     json!("x")
                 },
             );
-            let error = RuntimeAdapter::new()
-                .invoke("unica.runtime.execute", &args, &context, false, true)
-                .unwrap_err();
+            let error = RuntimeAdapter::new(
+                crate::infrastructure::runtime_composition::runtime_environment(),
+            )
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap_err();
             assert!(
                 error.contains(&format!("does not accept `{key}`")),
                 "{error}"
@@ -4393,9 +1729,10 @@ mod tests {
             args.remove(key);
         }
         std::fs::write(context.cwd.join("v8project.local.yaml"), "infobase: {}\n").unwrap();
-        let error = RuntimeAdapter::new()
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap_err();
+        let error =
+            RuntimeAdapter::new(crate::infrastructure::runtime_composition::runtime_environment())
+                .invoke("unica.runtime.execute", &args, &context, false, true)
+                .unwrap_err();
         assert!(error.contains("refuses to overwrite"), "{error}");
         cleanup_context(&context);
     }
@@ -4424,9 +1761,12 @@ mod tests {
         args.insert("config".to_string(), json!("v8project.yaml"));
         args.insert("connection".to_string(), json!("File=build/ib"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(outcome.ok, "{outcome:?}");
         assert_eq!(runner.commands.borrow().len(), 1);
@@ -4629,9 +1969,12 @@ mod tests {
         .unwrap()
         .clone();
 
-        let result = RuntimeAdapter::with_runner(&runner)
-            .invoke_with_data("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let result = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke_with_data("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
         let outcome = result.outcome;
 
         assert!(!outcome.ok);
@@ -4694,9 +2037,12 @@ mod tests {
         .unwrap()
         .clone();
 
-        let result = RuntimeAdapter::with_runner(&runner)
-            .invoke_with_data("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let result = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke_with_data("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
         let outcome = result.outcome;
 
         assert!(outcome.ok, "{:?}", outcome.errors);
@@ -4745,9 +2091,12 @@ mod tests {
         };
         let args = bounded_external_epf_args();
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(!outcome.ok);
         assert!(outcome
@@ -4793,9 +2142,12 @@ mod tests {
         };
         let args = bounded_external_epf_args();
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(!outcome.ok);
         assert!(outcome
@@ -4809,6 +2161,10 @@ mod tests {
     #[test]
     fn bounded_external_epf_rejects_case_only_output_aliases() {
         if path_lock_identity(Path::new("Out.log")) != path_lock_identity(Path::new("out.log")) {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::CaseInsensitiveFilesystem,
+                "case-only aliases exist only where path identity ignores case",
+            );
             return;
         }
 
@@ -4822,7 +2178,11 @@ mod tests {
         .unwrap()
         .clone();
 
-        let error = validate_bounded_external_epf_artifact_paths(&args, &context.cwd).unwrap_err();
+        let error = unica_adapter_v8_runner::adapter::validate_bounded_external_epf_artifact_paths(
+            &args,
+            &context.cwd,
+        )
+        .unwrap_err();
 
         assert!(error.contains("resolve to the same path"), "{error}");
         cleanup_context(&context);
@@ -5079,13 +2439,18 @@ mod tests {
         remove_fake_tool_binaries(&context, "bsl-analyzer");
         let args = Map::new();
 
-        let outcome = invoke_analyze(&BslAnalyzerMcpAdapter::new(), &args, &context, true).outcome;
+        let outcome = invoke_analyze(
+            &BslAnalyzerMcpAdapter::new(crate::infrastructure::analysis_composition::environment()),
+            &args,
+            &context,
+            true,
+        )
+        .outcome;
 
         assert!(!outcome.ok);
-        assert!(outcome
-            .errors
-            .iter()
-            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
+        assert!(outcome.errors.iter().any(|error| {
+            error.contains(unica_artifact_delivery::engine::BUNDLED_TOOL_MISSING)
+        }));
         cleanup_context(&context);
     }
 
@@ -5129,7 +2494,13 @@ source-set:
         args.insert("format".to_string(), json!("json"));
         args.insert("limit".to_string(), json!(20));
 
-        let outcome = invoke_analyze(&BslAnalyzerMcpAdapter::new(), &args, &context, true).outcome;
+        let outcome = invoke_analyze(
+            &BslAnalyzerMcpAdapter::new(crate::infrastructure::analysis_composition::environment()),
+            &args,
+            &context,
+            true,
+        )
+        .outcome;
 
         let command = outcome.command.unwrap().join(" ");
         assert!(command.contains("bin/"));
@@ -5156,7 +2527,10 @@ source-set:
         };
 
         let analyzer = invoke_analyze(
-            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &BslAnalyzerMcpAdapter::with_process_runner(
+                &runner,
+                crate::infrastructure::analysis_composition::environment(),
+            ),
             &Map::new(),
             &context,
             false,
@@ -5167,7 +2541,7 @@ source-set:
         let batch = analyzer.diagnostics.as_ref().expect("typed diagnostics");
         assert_eq!(
             batch.outcome.status,
-            crate::domain::diagnostics::DiagnosticProviderStatus::Empty
+            unica_diagnostics::model::DiagnosticProviderStatus::Empty
         );
         assert!(batch.outcome.observations.is_empty());
         assert!(runner.commands.borrow()[0]
@@ -5209,7 +2583,10 @@ source-set:
         };
 
         let analyzer = invoke_analyze(
-            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &BslAnalyzerMcpAdapter::with_process_runner(
+                &runner,
+                crate::infrastructure::analysis_composition::environment(),
+            ),
             &Map::new(),
             &context,
             false,
@@ -5225,8 +2602,8 @@ source-set:
             .observations[0];
         assert!(matches!(
             observation,
-            crate::domain::diagnostics::DiagnosticObservation::Diagnostic {
-                location: crate::domain::diagnostics::DiagnosticObservationLocation::Resource { handle },
+            unica_diagnostics::model::DiagnosticObservation::Diagnostic {
+                location: unica_diagnostics::model::DiagnosticObservationLocation::Resource { handle },
                 message,
                 ..
             } if handle == expected_path && message == "Длина строки превышает максимальную"
@@ -5249,7 +2626,10 @@ source-set:
         args.insert("timeoutSeconds".to_string(), json!(900));
 
         let analyzer = invoke_analyze(
-            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &BslAnalyzerMcpAdapter::with_process_runner(
+                &runner,
+                crate::infrastructure::analysis_composition::environment(),
+            ),
             &args,
             &context,
             false,
@@ -5286,18 +2666,21 @@ source-set:
             )
             .unwrap();
 
-        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke_diagnostics_analyze_scoped(
-                "unica.code.diagnostics",
-                &Map::new(),
-                &context,
-                false,
-                Some(&operational_config),
-                &CancellationToken::new(),
-                None,
-            )
-            .unwrap()
-            .outcome;
+        let outcome = BslAnalyzerMcpAdapter::with_process_runner(
+            &runner,
+            crate::infrastructure::analysis_composition::environment(),
+        )
+        .test_invoke_diagnostics_analyze_scoped(
+            "unica.code.diagnostics",
+            &Map::new(),
+            &context,
+            false,
+            Some(&operational_config),
+            &CancellationToken::new(),
+            None,
+        )
+        .unwrap()
+        .outcome;
 
         assert!(outcome.ok);
         assert_eq!(
@@ -5332,18 +2715,21 @@ analyze_timeout_seconds = 900
             )
             .unwrap();
 
-        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke_diagnostics_analyze_scoped(
-                "unica.code.diagnostics",
-                &Map::new(),
-                &context,
-                false,
-                Some(&operational_config),
-                &CancellationToken::new(),
-                None,
-            )
-            .unwrap()
-            .outcome;
+        let outcome = BslAnalyzerMcpAdapter::with_process_runner(
+            &runner,
+            crate::infrastructure::analysis_composition::environment(),
+        )
+        .test_invoke_diagnostics_analyze_scoped(
+            "unica.code.diagnostics",
+            &Map::new(),
+            &context,
+            false,
+            Some(&operational_config),
+            &CancellationToken::new(),
+            None,
+        )
+        .unwrap()
+        .outcome;
 
         assert!(outcome.ok);
         assert_eq!(
@@ -5374,7 +2760,10 @@ analyze_timeout_seconds = 900
         args.insert("timeoutSeconds".to_string(), json!(900));
 
         let analyzer = invoke_analyze(
-            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &BslAnalyzerMcpAdapter::with_process_runner(
+                &runner,
+                crate::infrastructure::analysis_composition::environment(),
+            ),
             &args,
             &context,
             false,
@@ -5421,9 +2810,12 @@ analyze_timeout_seconds = 900
         args.insert("mode".to_string(), json!("resolve"));
         args.insert("query".to_string(), json!("ВидыНоменклатуры"));
 
-        let analyzer = BslAnalyzerMcpAdapter::with_runner(&runner)
-            .invoke("unica.code.graph", &args, &context, false)
-            .expect("an absent provider is a reportable state, not a failed call");
+        let analyzer = BslAnalyzerMcpAdapter::with_runner(
+            &runner,
+            crate::infrastructure::analysis_composition::environment(),
+        )
+        .invoke("unica.code.graph", &args, &context, false)
+        .expect("an absent provider is a reportable state, not a failed call");
 
         assert!(!analyzer.outcome.ok, "{:?}", analyzer.outcome);
         assert!(
@@ -5459,16 +2851,16 @@ analyze_timeout_seconds = 900
         args.insert("mode".to_string(), json!("resolve"));
         args.insert("query".to_string(), json!("ВидыНоменклатуры"));
 
-        let outcome = BslAnalyzerMcpAdapter::new()
-            .invoke("unica.code.graph", &args, &context, true)
-            .expect("preview remains structured")
-            .outcome;
+        let outcome =
+            BslAnalyzerMcpAdapter::new(crate::infrastructure::analysis_composition::environment())
+                .invoke("unica.code.graph", &args, &context, true)
+                .expect("preview remains structured")
+                .outcome;
 
         assert!(!outcome.ok);
-        assert!(outcome
-            .errors
-            .iter()
-            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
+        assert!(outcome.errors.iter().any(|error| {
+            error.contains(unica_artifact_delivery::engine::BUNDLED_TOOL_MISSING)
+        }));
         cleanup_context(&context);
     }
 
@@ -5490,9 +2882,12 @@ analyze_timeout_seconds = 900
         args.insert("maxOutputTokens".to_string(), json!(1200));
         args.insert("limit".to_string(), json!(25));
 
-        let analyzer = BslAnalyzerMcpAdapter::with_runner(&runner)
-            .invoke("unica.code.graph", &args, &context, false)
-            .unwrap();
+        let analyzer = BslAnalyzerMcpAdapter::with_runner(
+            &runner,
+            crate::infrastructure::analysis_composition::environment(),
+        )
+        .invoke("unica.code.graph", &args, &context, false)
+        .unwrap();
 
         assert!(analyzer.outcome.ok);
         // ADR-0023: the analyzer reply is the result, not a JSON string wrapped
@@ -5522,69 +2917,6 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
-    fn legacy_diagnostics_file_route_is_not_available_through_graph_adapter() {
-        let context = temp_context("diagnostics-mcp");
-        let runner = RecordingBslMcpRunner {
-            commands: RefCell::new(Vec::new()),
-            output: BslMcpOutput {
-                result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
-                stderr: String::new(),
-            },
-        };
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("file"));
-        args.insert(
-            "path".to_string(),
-            json!("CommonModules/SmokeModule/Ext/Module.bsl"),
-        );
-        args.insert("codes".to_string(), json!(["UnusedLocalVariable"]));
-        args.insert("minSeverity".to_string(), json!("warning"));
-        args.insert("rangeStart".to_string(), json!(3));
-        args.insert("rangeEnd".to_string(), json!(7));
-        args.insert("detail".to_string(), json!("detailed"));
-        args.insert("limit".to_string(), json!(5));
-
-        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap_err();
-
-        assert_eq!(
-            error,
-            "unsupported bsl-analyzer MCP tool: unica.code.diagnostics"
-        );
-        assert!(runner.commands.borrow().is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn legacy_absolute_diagnostics_path_does_not_restore_adapter_route() {
-        let context = temp_context("diagnostics-absolute-inside");
-        let path = context
-            .cwd
-            .join("CommonModules/SmokeModule/Ext/Module.bsl")
-            .display()
-            .to_string();
-        let runner = RecordingBslMcpRunner {
-            commands: RefCell::new(Vec::new()),
-            output: BslMcpOutput {
-                result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
-                stderr: String::new(),
-            },
-        };
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("file"));
-        args.insert("path".to_string(), json!(path));
-
-        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap_err();
-
-        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
-        assert!(runner.commands.borrow().is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
     fn legacy_diagnostics_paths_are_rejected_before_any_runner_call() {
         let context = temp_context("diagnostics-path-containment");
         fs::create_dir_all(context.workspace_root.join("src")).unwrap();
@@ -5603,12 +2935,10 @@ analyze_timeout_seconds = 900
             "../outside/Module.bsl".to_string(),
             absolute_outside_path.display().to_string(),
         ];
-        if let Some(symlink_result) =
-            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
-                &outside,
-                context.workspace_root.join("src").join("escape"),
-            )
-        {
+        if let Some(symlink_result) = unica_workspace::test_support::create_dir_symlink_for_test(
+            &outside,
+            context.workspace_root.join("src").join("escape"),
+        ) {
             symlink_result.unwrap();
             paths.push("escape/Module.bsl".to_string());
         }
@@ -5626,9 +2956,12 @@ analyze_timeout_seconds = 900
             args.insert("sourceDir".to_string(), json!("src"));
             args.insert("path".to_string(), json!(path));
 
-            let error = BslAnalyzerMcpAdapter::with_runner(&runner)
-                .invoke("unica.code.diagnostics", &args, &context, false)
-                .unwrap_err();
+            let error = BslAnalyzerMcpAdapter::with_runner(
+                &runner,
+                crate::infrastructure::analysis_composition::environment(),
+            )
+            .invoke("unica.code.diagnostics", &args, &context, false)
+            .unwrap_err();
             assert!(
                 error.starts_with("unsupported bsl-analyzer MCP tool:"),
                 "{error}"
@@ -5638,35 +2971,6 @@ analyze_timeout_seconds = 900
 
         cleanup_context(&context);
         let _ = fs::remove_dir_all(outside);
-    }
-
-    #[test]
-    fn legacy_non_string_diagnostics_paths_cannot_reach_runner() {
-        let context = temp_context("diagnostics-non-string-path");
-
-        for path in [Value::Null, json!(true), json!(1), json!([]), json!({})] {
-            let runner = RecordingBslMcpRunner {
-                commands: RefCell::new(Vec::new()),
-                output: BslMcpOutput {
-                    result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
-                    stderr: String::new(),
-                },
-            };
-            let mut args = Map::new();
-            args.insert("mode".to_string(), json!("file"));
-            args.insert("path".to_string(), path.clone());
-
-            let error = BslAnalyzerMcpAdapter::with_runner(&runner)
-                .invoke("unica.code.diagnostics", &args, &context, false)
-                .unwrap_err();
-            assert!(
-                error.starts_with("unsupported bsl-analyzer MCP tool:"),
-                "{path}: {error}"
-            );
-            assert!(runner.commands.borrow().is_empty(), "{path}");
-        }
-
-        cleanup_context(&context);
     }
 
     #[test]
@@ -5683,92 +2987,19 @@ analyze_timeout_seconds = 900
         let mut args = Map::new();
         args.insert("mode".to_string(), json!("status"));
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
-            .invoke("unica.code.graph", &args, &context, false)
-            .unwrap()
-            .outcome;
+        let outcome = BslAnalyzerMcpAdapter::with_runner(
+            &runner,
+            crate::infrastructure::analysis_composition::environment(),
+        )
+        .invoke("unica.code.graph", &args, &context, false)
+        .unwrap()
+        .outcome;
 
         assert!(outcome.ok);
         assert!(outcome
             .warnings
             .iter()
             .any(|warning| warning.contains("not ready")));
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn legacy_diagnostics_loading_route_is_not_available() {
-        let context = temp_context("diagnostics-loading");
-        let runner = RecordingBslMcpRunner {
-            commands: RefCell::new(Vec::new()),
-            output: BslMcpOutput {
-                result_text: "{\"action\":\"file\",\"status\":\"loading\"}".to_string(),
-                stderr: String::new(),
-            },
-        };
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("file"));
-        args.insert(
-            "path".to_string(),
-            json!("CommonModules/Probe/Ext/Module.bsl"),
-        );
-
-        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap_err();
-
-        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
-        assert!(runner.commands.borrow().is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn legacy_diagnostics_status_route_is_not_available() {
-        let context = temp_context("diagnostics-status-loading");
-        let runner = RecordingBslMcpRunner {
-            commands: RefCell::new(Vec::new()),
-            output: BslMcpOutput {
-                result_text: "{\"action\":\"status\",\"reload\":\"running\",\"state\":\"loading\"}"
-                    .to_string(),
-                stderr: String::new(),
-            },
-        };
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("status"));
-
-        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap_err();
-
-        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
-        assert!(runner.commands.borrow().is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn legacy_diagnostics_findings_route_is_not_available() {
-        let context = temp_context("diagnostics-quoted-loading");
-        let runner = RecordingBslMcpRunner {
-            commands: RefCell::new(Vec::new()),
-            output: BslMcpOutput {
-                result_text: "{\"action\":\"file\",\"findings\":[{\"code\":\"LineLength\",\"message\":\"literal \\\"status\\\":\\\"loading\\\" is not ready for review\"}]}"
-                    .to_string(),
-                stderr: String::new(),
-            },
-        };
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("file"));
-        args.insert(
-            "path".to_string(),
-            json!("CommonModules/Probe/Ext/Module.bsl"),
-        );
-
-        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap_err();
-
-        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
-        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
@@ -5800,7 +3031,7 @@ analyze_timeout_seconds = 900
         dry_run: bool,
     ) -> BslAnalyzerOutcome {
         adapter
-            .invoke_diagnostics_analyze_scoped(
+            .test_invoke_diagnostics_analyze_scoped(
                 "bsl-analyzer diagnostics provider",
                 args,
                 context,
@@ -5823,7 +3054,10 @@ analyze_timeout_seconds = 900
         }
 
         let outcome = invoke_analyze(
-            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &BslAnalyzerMcpAdapter::with_process_runner(
+                &runner,
+                crate::infrastructure::analysis_composition::environment(),
+            ),
             &args,
             &context,
             false,
@@ -5852,7 +3086,7 @@ analyze_timeout_seconds = 900
                 .expect("typed diagnostics")
                 .outcome
                 .status,
-            crate::domain::diagnostics::DiagnosticProviderStatus::Unavailable
+            unica_diagnostics::model::DiagnosticProviderStatus::Unavailable
         );
         assert!(outcome.outcome.stdout.is_none());
         assert!(outcome
@@ -6062,14 +3296,17 @@ analyze_timeout_seconds = 900
                 filter: RefCell::new(None),
                 exit,
             };
-            let result = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-                .analyze_diagnostic_batch(
-                    &context,
-                    &root,
-                    Some(&module),
-                    Some(Duration::from_secs(30)),
-                    &CancellationToken::new(),
-                );
+            let result = BslAnalyzerMcpAdapter::with_process_runner(
+                &runner,
+                crate::infrastructure::analysis_composition::environment(),
+            )
+            .analyze_diagnostic_batch(
+                &context,
+                &root,
+                Some(&module),
+                Some(Duration::from_secs(30)),
+                &CancellationToken::new(),
+            );
             let filter = runner
                 .filter
                 .borrow()
@@ -6108,7 +3345,11 @@ analyze_timeout_seconds = 900
             output.stderr = stderr.to_string();
             output.timed_out = timed_out;
             let runner = FakeProcessRunner { output };
-            BslAnalyzerMcpAdapter::with_process_runner(&runner).analyze_diagnostic_batch(
+            BslAnalyzerMcpAdapter::with_process_runner(
+                &runner,
+                crate::infrastructure::analysis_composition::environment(),
+            )
+            .analyze_diagnostic_batch(
                 &context,
                 &root,
                 Some(&module),
@@ -6124,7 +3365,7 @@ analyze_timeout_seconds = 900
         let outcome = batch.outcome;
         assert_eq!(
             outcome.status,
-            crate::domain::diagnostics::DiagnosticProviderStatus::Completed
+            unica_diagnostics::model::DiagnosticProviderStatus::Completed
         );
         assert!(!outcome.complete);
         assert!(outcome.error.is_none());
@@ -6173,15 +3414,18 @@ analyze_timeout_seconds = 900
         let context = temp_context("run failure kinds, анализ");
         let root = normalize_path_identity(&context.cwd).unwrap();
         let analyze = |runner: &dyn ProcessRunner| {
-            BslAnalyzerMcpAdapter::with_process_runner(runner)
-                .analyze_diagnostic_batch(
-                    &context,
-                    &root,
-                    None,
-                    Some(Duration::from_secs(30)),
-                    &CancellationToken::new(),
-                )
-                .expect_err("a failed run has no batch")
+            BslAnalyzerMcpAdapter::with_process_runner(
+                runner,
+                crate::infrastructure::analysis_composition::environment(),
+            )
+            .analyze_diagnostic_batch(
+                &context,
+                &root,
+                None,
+                Some(Duration::from_secs(30)),
+                &CancellationToken::new(),
+            )
+            .expect_err("a failed run has no batch")
         };
         let failed = |timed_out: bool| {
             let mut output = analyze_process_output("");
@@ -6240,14 +3484,17 @@ analyze_timeout_seconds = 900
         assert_eq!(absent.kind, AnalyzerRunFailureKind::EngineMissing);
         let missing = absent.missing.expect("an absent engine is described");
         assert_eq!(missing.tool, "bsl-analyzer");
-        assert_eq!(missing.code, crate::domain::engine::BUNDLED_TOOL_MISSING);
+        assert_eq!(
+            missing.code,
+            unica_artifact_delivery::engine::BUNDLED_TOOL_MISSING
+        );
         cleanup_context(&context);
     }
 
     /// The real runner tells a process that never started from one that did.
     #[test]
     fn streaming_runner_reports_a_spawn_failure_as_such() {
-        let failure = SYSTEM_PROCESS_RUNNER
+        let failure = system_process_runner()
             .run_streaming_staged(
                 &ProcessCommand {
                     program: std::env::temp_dir().join("unica-1338-no-such-engine"),
@@ -6284,18 +3531,25 @@ analyze_timeout_seconds = 900
             timeout: None,
             cancellation: CancellationToken::new(),
         };
-        let staged = SYSTEM_PROCESS_RUNNER
+        let staged = system_process_runner()
             .run_staged(&command)
             .expect_err("a missing working directory cannot run");
         assert!(matches!(staged, ProcessStreamFailure::Run(_)), "{staged:?}");
-        let streaming = SYSTEM_PROCESS_RUNNER
+        let streaming = system_process_runner()
             .run_streaming_staged(&command, 1024, &mut |_, _| StreamControl::Continue)
             .expect_err("a missing working directory cannot run");
         assert!(
             matches!(streaming, ProcessStreamFailure::Run(_)),
             "{streaming:?}"
         );
-        let handoff = match SYSTEM_PROCESS_RUNNER.run_pending_handoff_staged(&command) {
+        let controlled = system_process_runner()
+            .run_controlled_streaming_staged(&command, 1024, &mut |_, _| ProcessLineReply::Continue)
+            .expect_err("a missing working directory cannot run");
+        assert!(
+            matches!(controlled, ProcessStreamFailure::Run(_)),
+            "{controlled:?}"
+        );
+        let handoff = match system_process_runner().run_pending_handoff_staged(&command) {
             Ok(_) => panic!("a missing working directory cannot run"),
             Err(failure) => failure,
         };
@@ -6303,6 +3557,32 @@ analyze_timeout_seconds = 900
             matches!(handoff, ProcessStreamFailure::Run(_)),
             "{handoff:?}"
         );
+    }
+
+    #[test]
+    fn controlled_streaming_refuses_a_runner_without_live_pipe_support() {
+        struct CapturedOnlyRunner;
+        impl ProcessRunner for CapturedOnlyRunner {
+            fn run(&self, _: &ProcessCommand) -> Result<ProcessOutput, String> {
+                panic!("controlled streaming must never replay captured output")
+            }
+        }
+        let command = ProcessCommand {
+            program: PathBuf::from("unused-captured-runner"),
+            args: Vec::new(),
+            cwd: std::env::temp_dir(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: None,
+            cancellation: CancellationToken::new(),
+        };
+        let failure = CapturedOnlyRunner
+            .run_controlled_streaming_staged(&command, 1024, &mut |_, _| {
+                panic!("unsupported runner must not invoke the live callback")
+            })
+            .expect_err("captured-only runner has no live decisions");
+        assert!(matches!(failure, ProcessStreamFailure::Run(_)));
     }
 
     #[test]
@@ -6337,7 +3617,10 @@ analyze_timeout_seconds = 900
         }
         let context = temp_context("diagnostics-read-failure");
         let result = invoke_analyze(
-            &BslAnalyzerMcpAdapter::with_process_runner(&ReadFailureRunner),
+            &BslAnalyzerMcpAdapter::with_process_runner(
+                &ReadFailureRunner,
+                crate::infrastructure::analysis_composition::environment(),
+            ),
             &Map::new(),
             &context,
             false,
@@ -6372,7 +3655,10 @@ analyze_timeout_seconds = 900
             output.status = "exit status: 2".to_string();
             let runner = FakeProcessRunner { output };
             let result = invoke_analyze(
-                &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+                &BslAnalyzerMcpAdapter::with_process_runner(
+                    &runner,
+                    crate::infrastructure::analysis_composition::environment(),
+                ),
                 &Map::new(),
                 &context,
                 false,
@@ -6443,9 +3729,10 @@ analyze_timeout_seconds = 900
             json!("Srvr=prod-secret-host;Ref=ib"),
         );
 
-        let outcome = RuntimeAdapter::new()
-            .invoke("unica.runtime.execute", &args, &context, true, true)
-            .unwrap();
+        let outcome =
+            RuntimeAdapter::new(crate::infrastructure::runtime_composition::runtime_environment())
+                .invoke("unica.runtime.execute", &args, &context, true, true)
+                .unwrap();
 
         let command = outcome.command.unwrap().join(" ");
         assert!(command.contains("--connection <redacted>"));
@@ -6567,9 +3854,12 @@ analyze_timeout_seconds = 900
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("build"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(outcome.errors[0].starts_with("cancelled:"));
         cleanup_context(&context);
@@ -6695,9 +3985,12 @@ analyze_timeout_seconds = 900
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("build"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(!outcome.ok);
         assert!(outcome
@@ -6732,9 +4025,12 @@ analyze_timeout_seconds = 900
         args.insert("operation".to_string(), json!("build"));
         args.insert("sourceSet".to_string(), json!("main"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(!outcome.ok);
         assert!(outcome
@@ -6776,9 +4072,12 @@ analyze_timeout_seconds = 900
         args.insert("operation".to_string(), json!("load"));
         args.insert("path".to_string(), json!("build/config.cf"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(!outcome.ok);
         assert!(outcome
@@ -6805,9 +4104,12 @@ analyze_timeout_seconds = 900
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("build"));
 
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
+        let outcome = RuntimeAdapter::with_runner(
+            &runner,
+            crate::infrastructure::runtime_composition::runtime_environment(),
+        )
+        .invoke("unica.runtime.execute", &args, &context, false, true)
+        .unwrap();
 
         assert!(!outcome.ok);
         assert!(outcome.summary.contains("failed"));
@@ -6824,15 +4126,15 @@ analyze_timeout_seconds = 900
     #[test]
     fn production_secret_redaction_surfaces_are_closed() {
         assert_eq!(
-            crate::infrastructure::redaction::production_secret_key_matrix(),
+            unica_redaction::production_secret_key_matrix(),
             ["connection", "pwd", "password", "token", "secret"]
         );
         assert_eq!(
-            crate::infrastructure::runtime_jobs::production_runtime_secret_flags(),
+            unica_adapter_v8_runner::request::production_runtime_secret_flags(),
             ["password", "pwd", "token", "secret", "connection", "c"]
         );
         assert_eq!(
-            crate::infrastructure::runtime_jobs::production_runtime_connection_markers(),
+            unica_adapter_v8_runner::request::production_runtime_connection_markers(),
             ["file=", "srvr=", "ref=", "usr=", "pwd=", "dbsrvr=", "dbname="]
         );
 
@@ -6840,13 +4142,12 @@ analyze_timeout_seconds = 900
         runtime_adapter_redacts_connection_string_from_reported_command();
         runtime_adapter_redacts_non_zero_process_output();
         runtime_adapter_returns_failure_outcome_for_spawn_failure();
-        crate::infrastructure::redaction::tests::stream_redactor_covers_production_secret_keys_at_every_chunk_boundary();
-        crate::infrastructure::runtime_jobs::tests::production_secret_key_matrix_is_redacted_from_runtime_surfaces();
-        crate::infrastructure::runtime_jobs::tests::terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts();
-        crate::infrastructure::runtime_jobs::tests::persisted_command_redacts_a_launch_connection_string_completely();
-        crate::infrastructure::runtime_jobs::tests::worker_handoff_never_persists_actual_argv_or_output_secrets();
-        crate::infrastructure::runtime_jobs::tests::direct_status_rejects_corrupt_unknown_schema_and_non_uuid_without_touching_active_lock();
-        crate::infrastructure::runtime_jobs::tests::list_skips_a_corrupt_record_and_redacts_its_warning();
+        crate::infrastructure::runtime_jobs_integration::tests::production_secret_key_matrix_is_redacted_from_runtime_surfaces();
+        crate::infrastructure::runtime_jobs_integration::tests::terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts();
+        crate::infrastructure::runtime_jobs_integration::tests::persisted_command_redacts_a_launch_connection_string_completely();
+        crate::infrastructure::runtime_jobs_integration::tests::worker_handoff_never_persists_actual_argv_or_output_secrets();
+        crate::infrastructure::runtime_jobs_integration::tests::direct_status_rejects_corrupt_unknown_schema_and_non_uuid_without_touching_active_lock();
+        crate::infrastructure::runtime_jobs_integration::tests::list_skips_a_corrupt_record_and_redacts_its_warning();
         crate::infrastructure::operational_config::tests::diagnostics_never_expose_absolute_paths_raw_toml_or_values();
         crate::infrastructure::operational_config::tests::read_errors_are_redacted_to_the_fixed_basename();
     }
@@ -6878,7 +4179,7 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn system_process_runner_drains_large_stdout_while_running() {
-        let output = SYSTEM_PROCESS_RUNNER
+        let output = system_process_runner()
             .run(&ProcessCommand {
                 program: std::env::current_exe().unwrap(),
                 args: vec![
@@ -6928,7 +4229,7 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn system_process_runner_honors_larger_bounded_capture_limit() {
-        let output = SYSTEM_PROCESS_RUNNER
+        let output = system_process_runner()
             .run(&ProcessCommand {
                 program: std::env::current_exe().unwrap(),
                 args: vec![
@@ -6955,7 +4256,7 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn system_process_runner_drains_large_stderr_while_running() {
-        let output = SYSTEM_PROCESS_RUNNER
+        let output = system_process_runner()
             .run(&ProcessCommand {
                 program: std::env::current_exe().unwrap(),
                 args: vec![
@@ -6994,9 +4295,9 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn system_process_runner_does_not_timeout_when_timeout_is_none() {
-        let command = testing::command_writing_stdout("ok");
+        let command = unica_process::test_support::command_writing_stdout("ok");
 
-        let output = SYSTEM_PROCESS_RUNNER
+        let output = system_process_runner()
             .run(&ProcessCommand {
                 program: command.program,
                 args: command.args,
@@ -7016,11 +4317,11 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn cancelled_runner_stops_process_without_reporting_timeout() {
-        let command = testing::long_running_command();
-        let token = crate::domain::cancellation::CancellationToken::new();
+        let command = unica_process::test_support::long_running_command();
+        let token = unica_work_control::cancellation::CancellationToken::new();
         token.cancel();
 
-        let output = SYSTEM_PROCESS_RUNNER
+        let output = system_process_runner()
             .run(&ProcessCommand {
                 program: command.program,
                 args: command.args,
@@ -7035,58 +4336,6 @@ analyze_timeout_seconds = 900
 
         assert!(output.cancelled);
         assert!(!output.timed_out);
-    }
-
-    #[test]
-    fn standards_mcp_error_body_is_reported_as_failure() {
-        let outcome = StandardsAdapter::outcome_from_http_body(
-            "explain",
-            "https://example.test/mcp",
-            "v8std_get_page",
-            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad id"}}"#,
-        );
-
-        assert!(!outcome.outcome.ok);
-        assert!(outcome
-            .outcome
-            .errors
-            .iter()
-            .any(|error| error.contains("bad id")));
-        assert!(outcome.outcome.stdout.is_none());
-        assert!(outcome.data.is_none());
-    }
-
-    #[test]
-    fn standards_sse_body_extracts_structured_json_result() {
-        let outcome = StandardsAdapter::outcome_from_http_body(
-            "search",
-            "https://example.test/mcp",
-            "v8std_search",
-            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n",
-        );
-
-        assert!(outcome.outcome.ok);
-        // ADR-0023: the JSON-RPC envelope is transport; the tool publishes the
-        // result it carried.
-        assert!(outcome.outcome.stdout.is_none());
-        assert_eq!(outcome.data.unwrap(), json!({"ok": true}));
-    }
-
-    #[test]
-    fn standards_protocol_mismatch_is_failure() {
-        let outcome = StandardsAdapter::outcome_from_http_body(
-            "search",
-            "https://example.test/mcp",
-            "v8std_search",
-            r#"{"not":"json-rpc"}"#,
-        );
-
-        assert!(!outcome.outcome.ok);
-        assert!(outcome
-            .outcome
-            .errors
-            .iter()
-            .any(|error| error.contains("missing JSON-RPC")));
     }
 
     struct FakeProcessRunner {
@@ -7257,14 +4506,13 @@ analyze_timeout_seconds = 900
             actual
         };
         assert_eq!(actual.first().map(String::as_str), Some("--config"));
-        let expected_config =
-            crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(
-                &context
-                    .workspace_root
-                    .join("v8project.yaml")
-                    .canonicalize()
-                    .expect("canonical primary runtime config"),
-            );
+        let expected_config = unica_workspace::paths::strip_windows_extended_length_prefix(
+            &context
+                .workspace_root
+                .join("v8project.yaml")
+                .canonicalize()
+                .expect("canonical primary runtime config"),
+        );
         assert_eq!(
             actual.get(1).map(Path::new),
             Some(expected_config.as_path())
@@ -7428,32 +4676,11 @@ analyze_timeout_seconds = 900
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 }
-#[test]
-fn managed_truncation_is_visible_at_process_adapter_boundary() {
-    let output = map_managed_process_output(ManagedOutput {
-        status_success: false,
-        status: "exit status: 0".into(),
-        stdout: "tail".into(),
-        stderr: "diagnostic tail".into(),
-        timed_out: false,
-        cancelled: false,
-        stdout_truncated: true,
-        stderr_truncated: true,
-        stdout_had_invalid_utf8: true,
-        stderr_had_invalid_utf8: true,
-    });
-    assert!(output.stderr.contains("stdout capture truncated"));
-    assert!(output.stderr.contains("earlier stderr diagnostics omitted"));
-    assert!(output.stdout_truncated);
-    assert!(output.stderr_truncated);
-    assert!(output.stdout_had_invalid_utf8);
-    assert!(output.stderr_had_invalid_utf8);
-}
-
 #[cfg(test)]
 mod dry_run_honesty_tests {
     use super::*;
-    use crate::domain::engine::{InstallMode, MissingEngine};
+    use unica_artifact_delivery::engine::InstallMode;
+    use unica_artifact_delivery::engine::MissingEngine;
 
     fn tool(missing: Option<MissingEngine>) -> BundledTool {
         BundledTool {
@@ -7486,7 +4713,7 @@ mod dry_run_honesty_tests {
             outcome
                 .errors
                 .iter()
-                .any(|error| error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING)),
+                .any(|error| error.contains(unica_artifact_delivery::engine::BUNDLED_TOOL_MISSING)),
             "отказ назван кодом: {:?}",
             outcome.errors
         );
