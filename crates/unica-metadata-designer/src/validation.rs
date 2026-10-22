@@ -2,6 +2,7 @@ use super::xml_model::MD_CLASSES_NS;
 use roxmltree::Document;
 use std::collections::HashSet;
 use unica_address::source_target::MetadataAddress;
+use unica_metadata::validation_subject::MetadataTemplateType;
 use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::owner::{PlatformXmlRootExpectation, DCS_ROOT, MXL_ROOT};
 use unica_source_designer::roots::root_version_literal;
@@ -2069,20 +2070,9 @@ pub fn parse_child_artifact(
     let profile = match kind {
         "Form" => form_profile(*properties)?,
         "Command" => unica_metadata::validation_subject::MetadataChildProfile::Command,
-        "Template" => {
-            let template_types =
-                exact_mdclasses_children(*properties, "TemplateType", "Template descriptor")?;
-            let [template_type] = template_types.as_slice() else {
-                return Err("Template descriptor must contain exactly one TemplateType".into());
-            };
-            let value = unica_xml_format::read::direct_text(*template_type);
-            unica_metadata::validation_subject::MetadataChildProfile::Template(
-                unica_metadata::validation_subject::MetadataTemplateType::from_descriptor_value(
-                    value.trim(),
-                )
-                .ok_or_else(|| "Template descriptor has unsupported TemplateType".to_string())?,
-            )
-        }
+        "Template" => unica_metadata::validation_subject::MetadataChildProfile::Template(
+            template_descriptor_type(*properties)?,
+        ),
         _ => unreachable!(),
     };
     let child = MetadataAddress::parse(
@@ -2091,6 +2081,78 @@ pub fn parse_child_artifact(
     )
     .map_err(|_| "child descriptor identity is not representable".to_string())?;
     Ok(ClosedChildDescriptor { child, profile })
+}
+
+fn template_descriptor_type(
+    properties: roxmltree::Node<'_, '_>,
+) -> Result<MetadataTemplateType, String> {
+    let types = exact_mdclasses_children(properties, "TemplateType", "Template descriptor")?;
+    let [value] = types.as_slice() else {
+        return Err("Template descriptor must contain exactly one TemplateType".into());
+    };
+    if value.children().any(|child| child.is_element()) {
+        return Err("TemplateType must be a scalar".into());
+    }
+    MetadataTemplateType::from_descriptor_value(unica_xml_format::read::direct_text(*value).trim())
+        .ok_or_else(|| "Template descriptor has unsupported TemplateType".into())
+}
+
+/// Read the top-level template through the same closed type vocabulary and
+/// descriptor admission as a physical child template. This is a read profile,
+/// not a new metadata creation kind.
+pub struct CommonTemplateDescriptorFacts {
+    pub template_type: MetadataTemplateType,
+    pub synonym: Option<String>,
+    pub unreadable_synonym: Option<String>,
+}
+
+pub fn parse_common_template_descriptor_from_bytes(
+    bytes: &[u8],
+    target: &MetadataAddress,
+) -> Result<CommonTemplateDescriptorFacts, String> {
+    let (_, document) = unica_xml_format::read::parse_metadata_image(bytes)?;
+    let artifact = exact_metadata_artifact(&document, MetadataAdmission::Read)?;
+    if artifact.tag_name().name() != "CommonTemplate" {
+        return Err("common template descriptor has the wrong artifact kind".into());
+    }
+    let properties = exact_mdclasses_children(artifact, "Properties", "CommonTemplate descriptor")?;
+    let [properties] = properties.as_slice() else {
+        return Err("CommonTemplate descriptor must contain exactly one Properties".into());
+    };
+    let name = exact_child_name(*properties, "CommonTemplate")?;
+    if target.as_str() != format!("CommonTemplate.{name}") {
+        return Err("common template descriptor belongs to another logical address".into());
+    }
+    let template_type = template_descriptor_type(*properties)?;
+    let synonyms = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Synonym")
+        .collect::<Vec<_>>();
+    let (synonym, unreadable_synonym) = match synonyms.as_slice() {
+        [] => (None, None),
+        [node]
+            if super::info_projection::meta_info_property_value_is_valid(
+                *node,
+                unica_metadata::MetaInfoPropertyValueKind::LocalizedString,
+            ) && super::info_projection::direct_text_content(*node)
+                .trim()
+                .is_empty() =>
+        {
+            let value = super::xml_model::meta_info_ml_text(*node);
+            ((!value.is_empty()).then_some(value), None)
+        }
+        _ => (
+            None,
+            Some(
+                "CommonTemplate Synonym is malformed, duplicated or has a foreign namespace".into(),
+            ),
+        ),
+    };
+    Ok(CommonTemplateDescriptorFacts {
+        template_type,
+        synonym,
+        unreadable_synonym,
+    })
 }
 
 pub fn form_profile(

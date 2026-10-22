@@ -26,6 +26,7 @@ use unica_metadata::support_state::{
     ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
     SupportCounts,
 };
+use unica_metadata::validation_subject::MetadataChildProfile;
 use unica_metadata::{MetaPredefinedItemsData, MetaSupportStatus, MetadataKind};
 use unica_metadata_designer::subsystem::{
     build_subsystem_info_result, parse_subsystem_command_interface_data,
@@ -33,7 +34,9 @@ use unica_metadata_designer::subsystem::{
 use unica_metadata_designer::support::{
     support_root_uuid_from_bytes, SupportState, SupportStateStreamParser,
 };
-use unica_metadata_designer::validation::parse_child_profile_from_bytes;
+use unica_metadata_designer::validation::{
+    parse_child_profile_from_bytes, parse_common_template_descriptor_from_bytes,
+};
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_roles_designer::info::parse_role_info_xml;
 use unica_source_contract::read::SourceDirectory;
@@ -1437,10 +1440,24 @@ impl ProviderReadAuthority {
         path_text(self.module_relative(target)?)
     }
 
+    pub(crate) fn common_template_facts(
+        &self,
+        target: &MetadataAddress,
+    ) -> Result<unica_metadata_designer::validation::CommonTemplateDescriptorFacts, ViewError> {
+        let bytes = self.metadata_descriptor(target)?;
+        parse_common_template_descriptor_from_bytes(&bytes, target)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
     pub(crate) fn metadata_child_profile(
         &self,
         target: &MetadataAddress,
-    ) -> Result<unica_metadata::validation_subject::MetadataChildProfile, ViewError> {
+    ) -> Result<MetadataChildProfile, ViewError> {
+        if target.as_str().starts_with("CommonTemplate.") {
+            return self
+                .common_template_facts(target)
+                .map(|facts| MetadataChildProfile::Template(facts.template_type));
+        }
         let descriptor = self.metadata_descriptor(target)?;
         let owner_text = target
             .as_str()

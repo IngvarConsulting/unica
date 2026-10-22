@@ -224,11 +224,9 @@ pub(crate) fn source_set_is_extension(
         .unwrap_or(false)
 }
 
-/// The facts `check` derives from a readable node before it chooses
-/// validators: the source-set kind and, for a template, the flavour its
-/// descriptor declares (`TemplateType`). The projection states the flavour
-/// only for a data composition schema (its `DataSet` branch), so the
-/// descriptor is the authority for both kinds of template.
+/// Facts `check` derives from the readable node. Template projections publish
+/// their descriptor format, including empty and opaque common templates. The
+/// legacy descriptor fallback remains for child templates without format facts.
 pub(crate) fn node_facts(
     address: &QualifiedAddress,
     viewed: Option<&Value>,
@@ -252,9 +250,18 @@ pub(crate) fn node_facts(
     let is_template = address
         .segments()
         .last()
-        .map(|segment| segment.kind() == unica_address::address::NodeKind::Template)
-        .unwrap_or(false);
-    let template = match from_branches {
+        .is_some_and(|segment| segment.kind() == unica_address::address::NodeKind::Template);
+    let from_projection = viewed
+        .and_then(|data| data.get("props"))
+        .and_then(|props| props.get("format"))
+        .and_then(Value::as_str)
+        .and_then(|format| match format {
+            "DataCompositionSchema" => Some(TemplateFlavour::DataCompositionSchema),
+            "SpreadsheetDocument" => Some(TemplateFlavour::SpreadsheetDocument),
+            _ => None,
+        })
+        .or(from_branches);
+    let template = match from_projection {
         Some(flavour) => Some(flavour),
         None if is_template => template_flavour_from_descriptor(address, context),
         None => None,
