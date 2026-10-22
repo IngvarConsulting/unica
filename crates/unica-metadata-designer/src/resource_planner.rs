@@ -413,6 +413,45 @@ pub fn parse_subsystem_operation(
 ) -> Result<MetadataResourcePlan, ApplyPlanError> {
     let target =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
+    let contract = unica_metadata::subsystem_operations::SubsystemOperation::from_name(operation)
+        .map(|operation| operation.contract())
+        .or_else(|| {
+            unica_metadata::interface_operations::InterfaceOperation::from_name(operation)
+                .map(|operation| operation.contract())
+        })
+        .ok_or_else(|| hidden_apply_family_unimplemented(op_index))?;
+    // The contract excludes this pair too; the refusal names the key.
+    if args.contains_key("items") && args.contains_key("values") {
+        return Err(bad(
+            op_index,
+            "values",
+            "pass either `items` or `values`, not both",
+        ));
+    }
+    if operation == "childSubsystem.remove" {
+        if let Some(key) = ["items", "values"]
+            .into_iter()
+            .find(|key| args.contains_key(*key))
+        {
+            return Err(bad(
+                    op_index,
+                    key,
+                    "childSubsystem.remove takes the child from its address: `Subsystem.Parent.Subsystem.Child`",
+                ));
+        }
+    }
+    contract
+        .normalize(
+            &Value::Object(args.clone()),
+            &format!("ops[{op_index}].args"),
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("{}: {}", error.path, error.message),
+            )
+            .at_path(error.path)
+        })?;
     if let Some(section) = operation.strip_suffix(".set").filter(|section| {
         matches!(
             *section,
@@ -439,16 +478,6 @@ pub fn parse_subsystem_operation(
         "childSubsystem.remove" => {
             // The child travels only in the address
             // (`...Subsystem.Parent.Subsystem.Child`, #1353).
-            if let Some(key) = ["items", "values"]
-                .into_iter()
-                .find(|key| args.contains_key(*key))
-            {
-                return Err(bad(
-                    op_index,
-                    key,
-                    "childSubsystem.remove takes the child from its address: `Subsystem.Parent.Subsystem.Child`",
-                ));
-            }
             let segments = target.segments();
             let [_, .., child] = segments else {
                 return Err(bad(
@@ -1170,5 +1199,47 @@ pub mod test_support {
     /// Existing canonical fixture emitter; delegates to the same production algorithm.
     pub fn subsystem_stub_xml(name: &str, format_version: &str, uuid: &str) -> String {
         super::subsystem_stub_xml(name, format_version, uuid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_remove_retired_shapes_keep_address_guidance() {
+        for (retired, key) in [
+            (json!({"items":[]}), "items"),
+            (json!({"values":{}}), "values"),
+            (json!({"items":null}), "items"),
+            (json!({"values":null}), "values"),
+            (json!({"items":[{}]}), "items"),
+            (json!({"values":{"name":null}}), "values"),
+        ] {
+            let mut args = retired.as_object().unwrap().clone();
+            args.insert("at".into(), json!("main:Subsystem.Parent.Subsystem.Child"));
+            let error =
+                parse_subsystem_operation("childSubsystem.remove", &args, 2, "main").unwrap_err();
+            assert_eq!(error.path(), Some(format!("ops[2].args.{key}").as_str()));
+            assert!(
+                error
+                    .to_string()
+                    .contains("Subsystem.Parent.Subsystem.Child"),
+                "{retired}: {}",
+                error
+            );
+        }
+        let args = json!({"at":"main:Subsystem.Parent.Subsystem.Child","items":[],"values":{}});
+        let error = parse_subsystem_operation(
+            "childSubsystem.remove",
+            args.as_object().unwrap(),
+            2,
+            "main",
+        )
+        .unwrap_err();
+        assert_eq!(error.path(), Some("ops[2].args.values"));
+        assert!(error
+            .to_string()
+            .contains("pass either `items` or `values`, not both"));
     }
 }
