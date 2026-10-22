@@ -350,24 +350,29 @@ fn canonical_remove_keeps_foreign_public_directory_and_original_recovery_on_roll
     assert!(recovery.join("Order/Empty/Deep").is_dir());
 }
 
+/// Writers that synthesize synonyms need the configuration default language.
+fn add_default_language(source: &Path) {
+    let configuration = source.join("Configuration.xml");
+    let text = std::fs::read_to_string(&configuration)
+        .unwrap()
+        .replace(
+            "<Name>Store</Name>",
+            "<Name>Store</Name><DefaultLanguage>Language.Русский</DefaultLanguage>",
+        )
+        .replace(
+            "<ChildObjects>",
+            "<ChildObjects><Language>Русский</Language>",
+        );
+    std::fs::write(configuration, text).unwrap();
+    std::fs::create_dir(source.join("Languages")).unwrap();
+    std::fs::write(source.join("Languages/Русский.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Русский</Name><Comment/><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#).unwrap();
+}
+
 #[test]
 fn canonical_form_remove_deletes_its_payload_directories_and_only_its_collection() {
     for unknown_sibling in [false, true] {
         let (workspace, source) = object_fixture(false);
-        let configuration = source.join("Configuration.xml");
-        let text = std::fs::read_to_string(&configuration)
-            .unwrap()
-            .replace(
-                "<Name>Store</Name>",
-                "<Name>Store</Name><DefaultLanguage>Language.Русский</DefaultLanguage>",
-            )
-            .replace(
-                "<ChildObjects>",
-                "<ChildObjects><Language>Русский</Language>",
-            );
-        std::fs::write(configuration, text).unwrap();
-        std::fs::create_dir(source.join("Languages")).unwrap();
-        std::fs::write(source.join("Languages/Русский.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Русский</Name><Comment/><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#).unwrap();
+        add_default_language(&source);
         let owner = source.join("Documents/Order.xml");
         let text = std::fs::read_to_string(&owner).unwrap().replace(
             "<Comment/>",
@@ -496,4 +501,272 @@ fn canonical_remove_preserves_a_foreign_entry_added_to_displaced_tree() {
         std::fs::read(recovery.join("Order/Ext/ObjectModule.bsl")).unwrap(),
         b"Procedure Execute() Export\nEndProcedure\n"
     );
+}
+
+/// Every directory under `root`, so empty template directories are visible.
+fn directory_set(root: &Path) -> std::collections::BTreeSet<std::path::PathBuf> {
+    fn visit(
+        root: &Path,
+        current: &Path,
+        output: &mut std::collections::BTreeSet<std::path::PathBuf>,
+    ) {
+        for entry in std::fs::read_dir(current).unwrap() {
+            let path = entry.unwrap().path();
+            if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+                output.insert(path.strip_prefix(root).unwrap().to_path_buf());
+                visit(root, &path, output);
+            }
+        }
+    }
+    let mut output = std::collections::BTreeSet::new();
+    visit(root, root, &mut output);
+    output
+}
+
+/// `Document.Order` with a spreadsheet, a DCS and a binary template. The
+/// spreadsheet payload also carries an empty nested directory.
+fn template_fixture() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    V5CanonicalInvocationRuntime,
+) {
+    let (workspace, source) = object_fixture(false);
+    add_default_language(&source);
+    let runtime = runtime();
+    let add = invoke_apply(
+        &runtime,
+        workspace.path(),
+        serde_json::json!({"at":"main:Document.Order","ops":[{"op":"template.add","args":{"items":[
+            {"name":"Sheet","templateType":"SpreadsheetDocument"},
+            {"name":"Schema","templateType":"DataCompositionSchema"}
+        ]}}]}),
+    );
+    assert!(add.ok, "{add:?}");
+    let published = invoke_apply(
+        &runtime,
+        workspace.path(),
+        serde_json::json!({"executionToken":add.data.unwrap()["executionToken"]}),
+    );
+    assert!(published.ok, "{published:?}");
+    let templates = source.join("Documents/Order/Templates");
+    // The binary template is the sheet descriptor with another identity;
+    // its registration follows the sheet one in the owner.
+    let sheet = std::fs::read_to_string(templates.join("Sheet.xml")).unwrap();
+    let uuid_start = sheet.find("uuid=\"").unwrap() + "uuid=\"".len();
+    let uuid = &sheet[uuid_start..uuid_start + 36];
+    let data = sheet
+        .replace(uuid, "22222222-2222-4222-8222-222222222222")
+        .replace("<Name>Sheet</Name>", "<Name>Data</Name>")
+        .replace(
+            "<TemplateType>SpreadsheetDocument</TemplateType>",
+            "<TemplateType>BinaryData</TemplateType>",
+        );
+    assert_ne!(data, sheet);
+    std::fs::write(templates.join("Data.xml"), data).unwrap();
+    std::fs::create_dir_all(templates.join("Data/Ext")).unwrap();
+    std::fs::write(
+        templates.join("Data/Ext/Template.bin"),
+        b"\x00\x01binary\xff",
+    )
+    .unwrap();
+    let owner = source.join("Documents/Order.xml");
+    let text = std::fs::read_to_string(&owner).unwrap();
+    assert_eq!(text.matches("<Template>Sheet</Template>").count(), 1);
+    std::fs::write(
+        &owner,
+        text.replace(
+            "<Template>Sheet</Template>",
+            "<Template>Sheet</Template><Template>Data</Template>",
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(templates.join("Sheet/Ext/Empty/Deep")).unwrap();
+    (workspace, source, runtime)
+}
+
+fn template_removal_preview(
+    runtime: &V5CanonicalInvocationRuntime,
+    workspace: &Path,
+    name: &str,
+) -> serde_json::Value {
+    let at = format!("main:Document.Order.Template.{name}");
+    let preview = invoke_apply(
+        runtime,
+        workspace,
+        serde_json::json!({"at":at,"ops":[{"op":"template.remove","args":{"at":at}}]}),
+    );
+    assert!(preview.ok, "{name}: {preview:?}");
+    assert_eq!(preview.data.as_ref().unwrap()["mode"], "preview");
+    preview.data.unwrap()["executionToken"].clone()
+}
+
+#[test]
+fn canonical_template_remove_deletes_its_payload_directories_and_only_its_collection() {
+    for foreign_entry in [false, true] {
+        let (workspace, source, runtime) = template_fixture();
+        let templates = source.join("Documents/Order/Templates");
+        let foreign = templates.join("Unrelated/Empty");
+        if foreign_entry {
+            std::fs::create_dir_all(&foreign).unwrap();
+            std::fs::write(templates.join("notes.txt"), b"foreign owner").unwrap();
+        }
+        let owner_module = source.join("Documents/Order/Ext/ObjectModule.bsl");
+        let owner_bytes = std::fs::read(&owner_module).unwrap();
+        let mut remaining = vec!["Sheet", "Schema", "Data"];
+        while let Some(name) = (!remaining.is_empty()).then(|| remaining.remove(0)) {
+            let payload = templates.join(name);
+            assert!(payload.join("Ext").is_dir(), "{name}");
+            let neighbors = remaining
+                .iter()
+                .map(|other| {
+                    let path = templates.join(other);
+                    let identity = RetainedDirectoryCapability::open(&path).unwrap().identity();
+                    (path, identity)
+                })
+                .collect::<Vec<_>>();
+            let before = unica_workspace::test_support::tree_snapshot(&source);
+            let directories = directory_set(&source);
+            let token = template_removal_preview(&runtime, workspace.path(), name);
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&source),
+                before
+            );
+            assert_eq!(directory_set(&source), directories, "{name}: preview wrote");
+            let published = invoke_apply(
+                &runtime,
+                workspace.path(),
+                serde_json::json!({"executionToken":token}),
+            );
+            assert!(published.ok, "{name}: {published:?}");
+            assert_eq!(published.data.as_ref().unwrap()["mode"], "published");
+            assert!(!payload.exists(), "{name}: payload directories remain");
+            assert!(!templates.join(format!("{name}.xml")).exists());
+            assert_eq!(
+                templates.exists(),
+                foreign_entry || !remaining.is_empty(),
+                "{name}: collection"
+            );
+            for (path, identity) in &neighbors {
+                assert_eq!(
+                    RetainedDirectoryCapability::open(path).unwrap().identity(),
+                    *identity,
+                    "{name}: neighbor {path:?}"
+                );
+            }
+            let removed_directories = directories
+                .difference(&directory_set(&source))
+                .cloned()
+                .collect::<Vec<_>>();
+            let payload_relative = payload.strip_prefix(&source).unwrap();
+            assert!(removed_directories.iter().all(|path| {
+                path.starts_with(payload_relative)
+                    || (remaining.is_empty()
+                        && !foreign_entry
+                        && path == templates.strip_prefix(&source).unwrap())
+            }));
+        }
+        assert_eq!(std::fs::read(&owner_module).unwrap(), owner_bytes);
+        assert!(source.join("Documents/Order/Empty/Deep").is_dir());
+        assert!(!std::fs::read_to_string(source.join("Documents/Order.xml"))
+            .unwrap()
+            .contains("<Template>"));
+        if foreign_entry {
+            assert!(foreign.is_dir());
+            assert_eq!(
+                std::fs::read(templates.join("notes.txt")).unwrap(),
+                b"foreign owner"
+            );
+        }
+    }
+}
+
+#[test]
+fn canonical_template_remove_rejects_a_late_entry_in_its_payload_without_deleting_it() {
+    for late_file in [false, true] {
+        let (workspace, source, runtime) = template_fixture();
+        let token = template_removal_preview(&runtime, workspace.path(), "Sheet");
+        let late = source.join("Documents/Order/Templates/Sheet/Ext/late");
+        if late_file {
+            std::fs::write(&late, b"late owner").unwrap();
+        } else {
+            std::fs::create_dir(&late).unwrap();
+        }
+        let before = unica_workspace::test_support::tree_snapshot(&source);
+        let directories = directory_set(&source);
+        let result = invoke_apply(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken":token}),
+        );
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.diagnostics[0]["code"], "stale_revision");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
+        assert_eq!(directory_set(&source), directories);
+    }
+}
+
+#[test]
+fn canonical_template_remove_restores_its_directories_on_each_publication_failure() {
+    use unica_workspace::compile_transaction::{
+        set_retained_apply_failpoint, RetainedApplyFailpoint,
+    };
+    for failpoint in [
+        RetainedApplyFailpoint::Source(1),
+        RetainedApplyFailpoint::StateMarker,
+        RetainedApplyFailpoint::AfterAllPostimages,
+    ] {
+        let (workspace, source, runtime) = template_fixture();
+        // The last template takes its collection along; a rollback must
+        // bring back both levels with their identities.
+        for name in ["Sheet", "Schema"] {
+            let token = template_removal_preview(&runtime, workspace.path(), name);
+            let published = invoke_apply(
+                &runtime,
+                workspace.path(),
+                serde_json::json!({"executionToken":token}),
+            );
+            assert!(published.ok, "{published:?}");
+        }
+        let templates = source.join("Documents/Order/Templates");
+        let paths = [templates.clone(), templates.join("Data/Ext")];
+        let identities = paths
+            .iter()
+            .map(|path| RetainedDirectoryCapability::open(path).unwrap().identity())
+            .collect::<Vec<_>>();
+        let token = template_removal_preview(&runtime, workspace.path(), "Data");
+        let before = unica_workspace::test_support::tree_snapshot(&source);
+        let directories = directory_set(&source);
+        set_retained_apply_failpoint(failpoint);
+        let result = invoke_apply(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken":token}),
+        );
+        assert!(!result.ok, "{failpoint:?}: {result:?}");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before,
+            "{failpoint:?}"
+        );
+        assert_eq!(directory_set(&source), directories, "{failpoint:?}");
+        for (path, identity) in paths.iter().zip(identities) {
+            assert_eq!(
+                RetainedDirectoryCapability::open(path).unwrap().identity(),
+                identity,
+                "{failpoint:?}: {path:?}"
+            );
+        }
+        // The restored state is the one a new plan removes completely.
+        let token = template_removal_preview(&runtime, workspace.path(), "Data");
+        let retried = invoke_apply(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken":token}),
+        );
+        assert!(retried.ok, "{failpoint:?}: {retried:?}");
+        assert!(!templates.exists(), "{failpoint:?}");
+    }
 }

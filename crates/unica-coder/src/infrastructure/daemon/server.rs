@@ -16854,6 +16854,13 @@ fn main() {
             assert_eq!(applied.data.as_ref().unwrap()["mode"], "published");
             let post = own_removal_snapshot(&source);
             assert_eq!(own_removal_file_bytes(&post), expected);
+            // The selected payload leaves no directory behind; the collection
+            // still holds the neighbor (#1997).
+            assert!(post.keys().all(|path| !path.starts_with(OWN_REMOVAL_BASE)));
+            assert_eq!(
+                post.get(std::path::Path::new("Reports/OwnRemovalReport/Templates")),
+                Some(&OwnRemovalEntry::Directory)
+            );
             for (path, entry) in &post {
                 assert!(before.contains_key(path), "new postimage entry: {path:?}");
                 match entry {
@@ -17815,6 +17822,7 @@ fn main() {
         const OWNER: &str = "cf/Reports/F05Report.xml";
         const DESCRIPTOR: &str = "cf/Reports/F05Report/Templates/F05Schema.xml";
         const PAYLOAD: &str = "cf/Reports/F05Report/Templates/F05Schema";
+        const TEMPLATES: &str = "cf/Reports/F05Report/Templates";
         const BODY: &str = "cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml";
         const PROPERTIES_START: &str = "<Properties><Name>F05Report</Name>";
         const REGISTRATION: &str = "<Template>F05Schema</Template>";
@@ -17880,9 +17888,15 @@ fn main() {
             assert_eq!(applied.data.as_ref().unwrap()["mode"], "published");
             let after = own_removal_snapshot(&source);
             assert_eq!(own_removal_file_bytes(&after), expected_files);
-            // Every surviving directory must be an existing directory. Empty
-            // directories under the removed payload may remain or disappear;
-            // every entry outside that payload and the two edited paths stays.
+            // The payload directories and the `Templates` collection the sole
+            // template leaves empty go with it (#1997); the report directory
+            // and every other entry outside them stay.
+            assert!(!after.contains_key(std::path::Path::new(PAYLOAD)));
+            assert!(!after.contains_key(std::path::Path::new(TEMPLATES)));
+            assert_eq!(
+                after.get(std::path::Path::new("cf/Reports/F05Report")),
+                Some(&OwnRemovalEntry::Directory)
+            );
             for (path, entry) in &after {
                 assert!(before.contains_key(path), "new postimage entry: {path:?}");
                 match entry {
@@ -17897,6 +17911,7 @@ fn main() {
             }
             for (path, entry) in &before {
                 if !path.starts_with(PAYLOAD)
+                    && path != std::path::Path::new(TEMPLATES)
                     && path != std::path::Path::new(DESCRIPTOR)
                     && path != std::path::Path::new(OWNER)
                 {
