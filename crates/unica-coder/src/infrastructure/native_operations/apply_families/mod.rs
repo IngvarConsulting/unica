@@ -117,6 +117,11 @@ fn refuse_targets_on_locked_vendor_objects(
         })
     };
     let at = request.at().to_string();
+    let source_set = request.at().source_set();
+    let removes = request.ops().iter().any(|operation| {
+        unica_metadata::apply_operations::MetadataOperation::named(operation.name())
+            == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove)
+    });
     let marker_path = std::path::Path::new("Ext/ParentConfigurations.bin");
     let marker = staged
         .read(marker_path)
@@ -136,9 +141,10 @@ fn refuse_targets_on_locked_vendor_objects(
                 "the configuration is on vendor support with changes disabled; the project support policy `warn` permits this edit".to_string(),
             )));
         }
+        let before = if removes { "removal" } else { "ordinary edits" };
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
-            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits",
+            format!("the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before {before}"),
         )
         .at_path(at));
     }
@@ -154,27 +160,30 @@ fn refuse_targets_on_locked_vendor_objects(
     };
     let support_rule =
         support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
-    let removes = request.ops().iter().any(|operation| {
-        unica_metadata::apply_operations::MetadataOperation::named(operation.name())
-            == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove)
-    });
     if removes {
         // An editable vendor object is removed without leaving support, as
         // the configurator does; only a lock on it or on one of its own
         // child objects stands in the way.
         // An object taken off support no longer answers for its children.
         let reason = if support_rule == Some(0) {
-            format!("`{owner}` is a vendor object with the support rule `locked`")
+            format!("`{source_set}:{owner}` is a vendor object with the support rule `locked`")
         } else if support_rule != Some(1) {
             return Ok(None);
         } else {
-            let children =
-                locked_vendor_children(&state, &owner, &owner_relative, &bytes, staged, &at)?;
+            let children = locked_vendor_children(
+                &state,
+                source_set,
+                &owner,
+                &owner_relative,
+                &bytes,
+                staged,
+                &at,
+            )?;
             if children.is_empty() {
                 return Ok(None);
             }
             format!(
-                "`{owner}` has vendor child objects with the support rule `locked`: {}",
+                "`{source_set}:{owner}` has vendor child objects with the support rule `locked`: {}",
                 children.join(", ")
             )
         };
@@ -196,13 +205,13 @@ fn refuse_targets_on_locked_vendor_objects(
         if !deny {
             return Ok(Some(support_locked(
                 &owner,
-                format!("`{owner}` is a vendor object with the support rule `locked`; the project support policy `warn` permits this edit"),
+                format!("`{source_set}:{owner}` is a vendor object with the support rule `locked`; the project support policy `warn` permits this edit"),
             )));
         }
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             format!(
-                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+                "`{source_set}:{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
             ),
         )
         .at_path(at));
@@ -216,12 +225,15 @@ fn refuse_targets_on_locked_vendor_objects(
 /// descriptors under its directory.
 fn locked_vendor_children(
     state: &unica_metadata_designer::support::SupportState,
+    source_set: &str,
     owner: &str,
     owner_relative: &std::path::Path,
     owner_bytes: &[u8],
     staged: &mut ApplyStagedState,
     at: &str,
 ) -> Result<Vec<String>, ApplyPlanError> {
+    use unica_metadata_designer::remove::{declared_chain, declared_name};
+
     let mut locked = Vec::new();
     let mut collect = |base: &str, bytes: &[u8]| {
         let Some(document) = std::str::from_utf8(bytes)
@@ -230,34 +242,19 @@ fn locked_vendor_children(
         else {
             return;
         };
-        let named = |node: roxmltree::Node<'_, '_>| {
-            node.children()
-                .find(|child| child.has_tag_name("Properties"))?
-                .children()
-                .find(|child| child.has_tag_name("Name"))?
-                .text()
-                .map(|name| name.trim().to_string())
-        };
         for node in document.descendants().filter(|node| node.is_element()) {
             let Some(uuid) = node.attribute("uuid") else {
                 continue;
             };
-            if state.object_rule(uuid) != Some(0) || named(node).is_none() {
+            if state.object_rule(uuid) != Some(0) || declared_name(node).is_none() {
                 continue;
             }
-            // The outermost named node is the described object itself.
-            let mut chain = node
-                .ancestors()
-                .filter_map(|ancestor| {
-                    named(ancestor).map(|name| format!(".{}.{name}", ancestor.tag_name().name()))
-                })
-                .collect::<Vec<_>>();
-            chain.pop();
+            let chain = declared_chain(node);
+            // The owner's own rule is checked by the caller.
             if chain.is_empty() && base == owner {
                 continue;
             }
-            chain.reverse();
-            locked.push(format!("`{base}{}`", chain.concat()));
+            locked.push(format!("`{source_set}:{base}{}`", chain.concat()));
         }
     };
     collect(owner, owner_bytes);
@@ -1853,7 +1850,7 @@ mod tests {
         let error = outcome.expect_err("a locked vendor object is not removed under deny");
         assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
         let message = error.to_string();
-        assert!(message.contains("`Document.First`"), "{message}");
+        assert!(message.contains("`main:Document.First`"), "{message}");
         assert!(message.contains("support rule `locked`"), "{message}");
         assert!(message.contains("supportRule.set"), "{message}");
         assert!(message.contains("off-support"), "{message}");
@@ -1896,8 +1893,8 @@ mod tests {
             .unwrap();
         };
         for (marker, child) in [
-            (attribute.as_str(), "`Document.First.Attribute.Total`"),
-            (form.as_str(), "`Document.First.Form.Card`"),
+            (attribute.as_str(), "`main:Document.First.Attribute.Total`"),
+            (form.as_str(), "`main:Document.First.Form.Card`"),
         ] {
             let (outcome, unchanged, _) = plan_vendor_removal("deny", marker, with_form);
             let error = outcome.expect_err("a locked child keeps its owner under deny");
@@ -1949,6 +1946,14 @@ mod tests {
             ("deny", None),
             ("deny", Some(vendor_removal_support_marker(2, true))),
             ("deny", Some("\u{feff}{6,0,0}".to_string())),
+            // A locked object the removed one does not contain does not keep it.
+            (
+                "deny",
+                Some(vendor_removal_support_marker(0, true).replace(
+                    "11111111-1111-4111-8111-111111111111",
+                    "99999999-9999-4999-8999-999999999999",
+                )),
+            ),
             ("warn", Some(vendor_removal_support_marker(0, false))),
             ("warn", Some(vendor_removal_support_marker(1, true))),
             ("off", Some(vendor_removal_support_marker(0, false))),
@@ -2448,6 +2453,109 @@ mod tests {
             after,
             "main:Configuration",
             "CommandInterface",
+        );
+    }
+
+    /// The main section command interface loses the commands of the removed object.
+    #[test]
+    fn object_removal_cleans_the_main_section_command_interface() {
+        assert_removal_cleans_composition(
+            "Ext/MainSectionCommandInterface.xml",
+            "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\n\t<CommandsVisibility>\n\t\t<Command name=\"Document.Second.StandardCommand.OpenList\">\n\t\t\t<Visibility>\n\t\t\t\t<xr:Common>true</xr:Common>\n\t\t\t</Visibility>\n\t\t</Command>\n\t\t<Command name=\"Document.First.StandardCommand.OpenList\">\n\t\t\t<Visibility>\n\t\t\t\t<xr:Common>true</xr:Common>\n\t\t\t</Visibility>\n\t\t</Command>\n\t</CommandsVisibility>\n</CommandInterface>\n",
+            "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\n\t<CommandsVisibility>\n\t\t<Command name=\"Document.Second.StandardCommand.OpenList\">\n\t\t\t<Visibility>\n\t\t\t\t<xr:Common>true</xr:Common>\n\t\t\t</Visibility>\n\t\t</Command>\n\t</CommandsVisibility>\n</CommandInterface>\n",
+            "main:Configuration",
+            "MainSectionCommandInterface",
+        );
+    }
+
+    /// Registers a common module `Tools` next to the fixture documents, so it
+    /// can be removed.
+    fn register_common_module(source: &std::path::Path) {
+        let configuration = source.join("Configuration.xml");
+        let text = std::fs::read_to_string(&configuration).unwrap().replace(
+            "<Document>Second</Document>",
+            "<Document>Second</Document><CommonModule>Tools</CommonModule>",
+        );
+        std::fs::write(&configuration, text).unwrap();
+        std::fs::create_dir_all(source.join("CommonModules")).unwrap();
+        std::fs::write(
+            source.join("CommonModules/Tools.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Tools</Name><Server>true</Server></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+    }
+
+    /// A reference held in an attribute value counts like one in text: the
+    /// characteristics of another object that take their types from the
+    /// removed one, `<xr:CharacteristicTypes from="Document.First…">`, refuse
+    /// the removal and name that object and property.
+    #[test]
+    fn object_removal_refuses_references_in_attribute_values() {
+        use unica_workspace::test_support::tree_snapshot;
+
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        let second = source.join("Documents/Second.xml");
+        let text = std::fs::read_to_string(&second).unwrap().replace(
+            "<Synonym/>",
+            r#"<Synonym/><Characteristics xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><xr:Characteristic><xr:CharacteristicTypes from="Document.First.TabularSection.Kinds"/></xr:Characteristic></Characteristics>"#,
+        );
+        std::fs::write(&second, text).unwrap();
+        let before = tree_snapshot(&source);
+        let error = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("`main:Document.Second` → Characteristics"),
+            "{message}"
+        );
+        assert_eq!(tree_snapshot(&source), before);
+    }
+
+    /// The bare `Tools.` of a common module is a call only in code: a
+    /// synonym starting with the module name in metadata does not block its
+    /// removal, while `CommonModule.Tools` in metadata still does.
+    #[test]
+    fn common_module_removal_ignores_its_bare_name_in_metadata_text() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        register_common_module(&source);
+        let second = source.join("Documents/Second.xml");
+        let text = std::fs::read_to_string(&second)
+            .unwrap()
+            .replace("<Synonym/>", "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Tools. Печать</v8:content></v8:item></Synonym>");
+        std::fs::write(&second, text).unwrap();
+        let request = seam_request(
+            "main:CommonModule.Tools",
+            "object.remove",
+            serde_json::json!({}),
+        );
+        let (staged, _) = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+            .expect("a synonym is not a reference to the module");
+        assert!(!staged.planned_changes().is_empty());
+
+        std::fs::create_dir_all(source.join("EventSubscriptions")).unwrap();
+        std::fs::write(
+            source.join("EventSubscriptions/OnWrite.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><EventSubscription uuid="44444444-4444-4444-8444-444444444444"><Properties><Name>OnWrite</Name><Handler>CommonModule.Tools.OnWrite</Handler></Properties></EventSubscription></MetaDataObject>"#,
+        )
+        .unwrap();
+        let error =
+            plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("`main:EventSubscription.OnWrite` → Handler"),
+            "{error}"
         );
     }
 

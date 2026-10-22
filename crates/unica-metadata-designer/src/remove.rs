@@ -115,6 +115,9 @@ pub fn meta_remove_composition(
     match parts.as_slice() {
         ["Roles", _, "Ext", "Rights.xml"] => Some((RIGHTS, "Rights")),
         [.., "Ext", "CommandInterface.xml"] => Some((COMMAND_INTERFACE, "CommandInterface")),
+        ["Ext", "MainSectionCommandInterface.xml"] => {
+            Some((COMMAND_INTERFACE, "MainSectionCommandInterface"))
+        }
         ["Ext", "HomePageWorkArea.xml"] => Some((HOME_PAGE, "HomePageWorkArea")),
         ["ExchangePlans", _, "Ext", "Content.xml"] => Some((EXCHANGE_CONTENT, "Content")),
         ["FunctionalOptions", descriptor] if descriptor.ends_with(".xml") => {
@@ -549,9 +552,9 @@ pub fn meta_remove_search_patterns(
     }
     patterns.push(format!("{type_plural}.{obj_name}"));
     if obj_type == "CommonModule" {
+        // Module code calls a common module by its bare name; metadata names
+        // it `CommonModule.X`, which the caller adds for XML.
         patterns.push(format!("{obj_name}."));
-        patterns.push(format!("<Handler>{obj_name}."));
-        patterns.push(format!("<MethodName>{obj_name}."));
     }
     patterns
 }
@@ -652,9 +655,20 @@ pub fn meta_remove_references(
         }
         return found;
     };
-    for node in document.descendants().filter(|node| node.is_text()) {
-        let value = node.text().unwrap_or_default();
-        if !patterns.iter().any(|pattern| mentions(value, pattern)) {
+    // A reference is a text or an attribute value: `<v8:Type>cfg:CatalogRef.X</v8:Type>`,
+    // `<xr:Value name="Role.X">` or `<Command name="Catalog.X.StandardCommand.OpenList">`.
+    for node in document.descendants() {
+        let named = if node.is_text() {
+            node.text()
+                .is_some_and(|value| patterns.iter().any(|pattern| mentions(value, pattern)))
+        } else {
+            node.attributes().any(|attribute| {
+                patterns
+                    .iter()
+                    .any(|pattern| mentions(attribute.value(), pattern))
+            })
+        };
+        if !named {
             continue;
         }
         let reference = if descriptor {
@@ -712,24 +726,7 @@ pub fn meta_remove_referrer(relative: &Path) -> (String, bool) {
 /// tabular section, dimension and so on it is declared in, as long as the
 /// address grammar names that node.
 fn nested_referrer(source_set: &str, owner: &str, node: roxmltree::Node<'_, '_>) -> String {
-    let mut chain = node
-        .ancestors()
-        .filter(|ancestor| ancestor.is_element())
-        .filter_map(|ancestor| {
-            let name = ancestor
-                .children()
-                .find(|child| child.has_tag_name("Properties"))?
-                .children()
-                .find(|child| child.has_tag_name("Name"))?
-                .text()?
-                .trim()
-                .to_string();
-            Some(format!(".{}.{name}", ancestor.tag_name().name()))
-        })
-        .collect::<Vec<_>>();
-    // The outermost named node is the owner itself.
-    chain.pop();
-    chain.reverse();
+    let mut chain = declared_chain(node);
     while !chain.is_empty() {
         let candidate = format!("{source_set}:{owner}{}", chain.concat());
         if unica_address::address::QualifiedAddress::parse(&candidate).is_ok() {
@@ -740,17 +737,51 @@ fn nested_referrer(source_set: &str, owner: &str, node: roxmltree::Node<'_, '_>)
     format!("{source_set}:{owner}")
 }
 
+/// The name a descriptor node declares in its `<Properties><Name>`.
+pub fn declared_name(node: roxmltree::Node<'_, '_>) -> Option<String> {
+    node.children()
+        .find(|child| child.has_tag_name("Properties"))?
+        .children()
+        .find(|child| child.has_tag_name("Name"))?
+        .text()
+        .map(|name| name.trim().to_string())
+}
+
+/// The `.Kind.Name` segments of the declared descriptor nodes from below the
+/// described object down to `node` itself: an attribute of a tabular section
+/// is `[".TabularSection.T", ".Attribute.A"]`, the object itself is `[]`.
+pub fn declared_chain(node: roxmltree::Node<'_, '_>) -> Vec<String> {
+    let mut chain = node
+        .ancestors()
+        .filter(|ancestor| ancestor.is_element())
+        .filter_map(|ancestor| {
+            declared_name(ancestor).map(|name| format!(".{}.{name}", ancestor.tag_name().name()))
+        })
+        .collect::<Vec<_>>();
+    // The outermost declared node is the described object itself.
+    chain.pop();
+    chain.reverse();
+    chain
+}
+
 /// The property of the descriptor node that holds the reference: the element
 /// right under `<Properties>`, or the enclosing element when there is none.
 fn descriptor_property(node: roxmltree::Node<'_, '_>) -> String {
-    node.ancestors()
+    let holder = if node.is_element() {
+        Some(node)
+    } else {
+        node.parent_element()
+    };
+    holder
+        .into_iter()
+        .flat_map(|holder| holder.ancestors())
         .filter(|ancestor| ancestor.is_element())
         .find(|ancestor| {
             ancestor
                 .parent_element()
                 .is_some_and(|parent| parent.has_tag_name("Properties"))
         })
-        .or_else(|| node.parent_element())
+        .or(holder)
         .map(|element| element.tag_name().name().to_string())
         .unwrap_or_default()
 }

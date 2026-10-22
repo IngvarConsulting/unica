@@ -252,11 +252,6 @@
 			<Language>Русский</Language>
 			<CommonModule>EventHandlers</CommonModule>
 			<EventSubscription>CorpusEventSubscription</EventSubscription>
-			<DefinedType>Inner</DefinedType>
-			<DefinedType>LoopA</DefinedType>
-			<DefinedType>LoopB</DefinedType>
-			<DefinedType>Outer</DefinedType>
-			<DefinedType>Unfit</DefinedType>
 			<Catalog>ПримерВ</Catalog>
 			<Catalog>ПримерА</Catalog>
 			<Catalog>ПримерБ</Catalog>

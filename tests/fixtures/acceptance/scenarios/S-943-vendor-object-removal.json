@@ -67,7 +67,7 @@
      "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
     }
    ],
-   "refusal": "invalid_state: `Catalog.Items` has vendor child objects with the support rule `locked`: `Catalog.Items.Form.Main`, `Catalog.Items.Form.Other`; take the object off support with",
+   "refusal": "invalid_state: `main:Catalog.Items` has vendor child objects with the support rule `locked`: `main:Catalog.Items.Form.Main`, `main:Catalog.Items.Form.Other`; take the object o",
    "assertions": [
     {
      "pointer": "/diagnostics/0/code",
@@ -148,7 +148,7 @@
      "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
     }
    ],
-   "refusal": "invalid_state: `Catalog.Items` has vendor child objects with the support rule `locked`: `Catalog.Items.Form.Main`, `Catalog.Items.Form.Other`; take the object off support with",
+   "refusal": "invalid_state: `main:Catalog.Items` has vendor child objects with the support rule `locked`: `main:Catalog.Items.Form.Main`, `main:Catalog.Items.Form.Other`; take the object o",
    "assertions": [
     {
      "pointer": "/diagnostics/0/code",

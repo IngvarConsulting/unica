@@ -923,7 +923,14 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         .enumerate_tree(Path::new(""))
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
     let code_patterns = meta_remove_search_patterns(kind.as_str(), name, layout.directory);
-    let mut metadata_patterns = code_patterns.clone();
+    // The bare `X.` of a common module is a call in code; in XML it would
+    // match a synonym such as «X.Печать» rather than the module.
+    let bare = format!("{name}.");
+    let mut metadata_patterns = code_patterns
+        .iter()
+        .filter(|pattern| **pattern != bare)
+        .cloned()
+        .collect::<Vec<_>>();
     metadata_patterns.push(format!("{}.{name}", kind.as_str()));
     let source_set = authority.source_set_name();
     let removed = format!("{source_set}:{}", target.as_str());
