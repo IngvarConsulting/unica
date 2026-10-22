@@ -3429,7 +3429,7 @@
   },
   {
    "area": "Создание и удаление объектов",
-   "task": "Удалить справочник, на который ссылаются права роли, — поверхность отказывает и называет роль адресом и свойством",
+   "task": "Удалить справочник, на который ссылаются права роли и состав подсистемы, — план вычищает права роли, состав и командный интерфейс подсистемы и называет их адресами",
    "wire": [
     {
      "tool": "unica.apply",
@@ -3470,9 +3470,39 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_state: `main:Catalog.Валюты` is referenced by other metadata: `main:Role.SalesReader` → Rights; remove these references first"
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "composition_cleaned"
+      },
+      {
+       "pointer": "/warnings/0/entries",
+       "contains": {
+        "at": "main:Role.SalesReader",
+        "property": "Rights"
+       }
+      },
+      {
+       "pointer": "/warnings/0/entries",
+       "contains": {
+        "at": "main:Subsystem.Администрирование",
+        "property": "Content"
+       }
+      },
+      {
+       "pointer": "/warnings/0/entries",
+       "contains": {
+        "at": "main:Subsystem.Администрирование",
+        "property": "CommandInterface"
+       }
+      }
+     ]
     },
     {
      "tool": "unica.view",

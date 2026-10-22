@@ -2353,13 +2353,139 @@ mod tests {
         for referrer in [
             "`main:Document.Second.Attribute.Total` → Type",
             "`main:EventSubscription.OnWrite` → Source",
-            "`main:Role.Reader` → Rights",
         ] {
             assert!(message.contains(referrer), "{referrer}: {message}");
         }
+        // Role rights are a composition cleaned with the object, not a reference.
+        assert!(!message.contains("Role.Reader"), "{message}");
         assert!(!message.contains("Constant.Other"), "{message}");
         assert!(!message.contains(".xml"), "{message}");
         assert_eq!(tree_snapshot(&source), before);
+    }
+
+    /// Plans the removal of `Document.First` with `composition` written at
+    /// `relative`, and checks that the plan rewrites exactly that file into
+    /// `expected` and names the cleaned referrer.
+    fn assert_removal_cleans_composition(
+        relative: &str,
+        composition: &str,
+        expected: &str,
+        referrer: &str,
+        property: &str,
+    ) {
+        let fixture = ApplySeamFixture::new();
+        let path = fixture.source_dir().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("\u{feff}{composition}")).unwrap();
+        let (mut staged, effects) = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .unwrap_or_else(|error| panic!("{relative}: {error}"));
+        assert_eq!(
+            String::from_utf8(
+                staged
+                    .read(std::path::Path::new(relative))
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            format!("\u{feff}{expected}"),
+            "{relative}"
+        );
+        let cleaned = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "composition_cleaned")
+            .unwrap_or_else(|| panic!("{relative}: {:?}", effects.warnings()));
+        assert_eq!(
+            cleaned["entries"],
+            serde_json::json!([{"at": referrer, "property": property}]),
+            "{relative}"
+        );
+        let message = cleaned["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("`{referrer}` → {property}")),
+            "{message}"
+        );
+        assert!(!message.contains(".xml"), "{message}");
+    }
+
+    /// Role rights to the removed object and its children go with it; the
+    /// rights to other objects stay byte for byte.
+    #[test]
+    fn object_removal_cleans_role_rights() {
+        assert_removal_cleans_composition(
+            "Roles/Reader/Ext/Rights.xml",
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" version=\"2.20\">\n\t<object>\n\t\t<name>Document.First</name>\n\t\t<right><name>Read</name><value>true</value></right>\n\t</object>\n\t<object>\n\t\t<name>Document.FirstArchive</name>\n\t</object>\n\t<object>\n\t\t<name>Document.First.Attribute.Total</name>\n\t\t<right><name>View</name><value>true</value></right>\n\t</object>\n\t<object>\n\t\t<name>Document.Second</name>\n\t</object>\n</Rights>\n",
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" version=\"2.20\">\n\t<object>\n\t\t<name>Document.FirstArchive</name>\n\t</object>\n\t<object>\n\t\t<name>Document.Second</name>\n\t</object>\n</Rights>\n",
+            "main:Role.Reader",
+            "Rights",
+        );
+    }
+
+    /// A command interface loses the commands of the removed object and
+    /// keeps the rest, including the visibility of other commands.
+    #[test]
+    fn object_removal_cleans_command_interfaces() {
+        let before = "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\r\n\t<CommandsVisibility>\r\n\t\t<Command name=\"Document.First.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>true</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t\t<Command name=\"Document.Second.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>\r\n\t<CommandsOrder>\r\n\t\t<Command name=\"Document.First.StandardCommand.OpenList\">\r\n\t\t\t<CommandGroup>NavigationPanelOrdinary</CommandGroup>\r\n\t\t</Command>\r\n\t</CommandsOrder>\r\n</CommandInterface>\r\n";
+        let after = "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\r\n\t<CommandsVisibility>\r\n\t\t<Command name=\"Document.Second.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>\r\n\t<CommandsOrder>\r\n\t</CommandsOrder>\r\n</CommandInterface>\r\n";
+        assert_removal_cleans_composition(
+            "Subsystems/Sales/Ext/CommandInterface.xml",
+            before,
+            after,
+            "main:Subsystem.Sales",
+            "CommandInterface",
+        );
+        assert_removal_cleans_composition(
+            "Ext/CommandInterface.xml",
+            before,
+            after,
+            "main:Configuration",
+            "CommandInterface",
+        );
+    }
+
+    /// The home page loses the forms of the removed object.
+    #[test]
+    fn object_removal_cleans_home_page_forms() {
+        assert_removal_cleans_composition(
+            "Ext/HomePageWorkArea.xml",
+            "<HomePageWorkArea xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"2.20\">\n\t<LeftColumn>\n\t\t<Item>\n\t\t\t<Form>Document.First.Form.Card</Form>\n\t\t\t<Height>10</Height>\n\t\t</Item>\n\t\t<Item>\n\t\t\t<Form>Document.Second.Form.Card</Form>\n\t\t\t<Height>10</Height>\n\t\t</Item>\n\t</LeftColumn>\n</HomePageWorkArea>\n",
+            "<HomePageWorkArea xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"2.20\">\n\t<LeftColumn>\n\t\t<Item>\n\t\t\t<Form>Document.Second.Form.Card</Form>\n\t\t\t<Height>10</Height>\n\t\t</Item>\n\t</LeftColumn>\n</HomePageWorkArea>\n",
+            "main:Configuration",
+            "HomePageWorkArea",
+        );
+    }
+
+    /// The content of an exchange plan loses the removed object only.
+    #[test]
+    fn object_removal_cleans_exchange_plan_content() {
+        assert_removal_cleans_composition(
+            "ExchangePlans/Sync/Ext/Content.xml",
+            "<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"2.20\">\n\t<Item>\n\t\t<Metadata>Document.Second</Metadata>\n\t\t<AutoRecord>Allow</AutoRecord>\n\t</Item>\n\t<Item>\n\t\t<Metadata>Document.First</Metadata>\n\t\t<AutoRecord>Deny</AutoRecord>\n\t</Item>\n</ExchangePlanContent>\n",
+            "<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"2.20\">\n\t<Item>\n\t\t<Metadata>Document.Second</Metadata>\n\t\t<AutoRecord>Allow</AutoRecord>\n\t</Item>\n</ExchangePlanContent>\n",
+            "main:ExchangePlan.Sync",
+            "Content",
+        );
+    }
+
+    /// The content of a functional option loses the removed object and its
+    /// children; its other properties and entries stay.
+    #[test]
+    fn object_removal_cleans_functional_option_content() {
+        assert_removal_cleans_composition(
+            "FunctionalOptions/UseFirst.xml",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\n\t<FunctionalOption uuid=\"88888888-8888-4888-8888-888888888888\">\n\t\t<Properties>\n\t\t\t<Name>UseFirst</Name>\n\t\t\t<Content>\n\t\t\t\t<xr:Object>Document.First</xr:Object>\n\t\t\t\t<xr:Object>Document.Second</xr:Object>\n\t\t\t\t<xr:Object>Document.First.Attribute.Total</xr:Object>\n\t\t\t</Content>\n\t\t</Properties>\n\t</FunctionalOption>\n</MetaDataObject>\n",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\n\t<FunctionalOption uuid=\"88888888-8888-4888-8888-888888888888\">\n\t\t<Properties>\n\t\t\t<Name>UseFirst</Name>\n\t\t\t<Content>\n\t\t\t\t<xr:Object>Document.Second</xr:Object>\n\t\t\t</Content>\n\t\t</Properties>\n\t</FunctionalOption>\n</MetaDataObject>\n",
+            "main:FunctionalOption.UseFirst",
+            "Content",
+        );
     }
 
     /// References only in module code do not block the removal: the plan

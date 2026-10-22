@@ -38,35 +38,143 @@ fn meta_remove_preserved_utf8_image(original: &[u8], updated: String) -> Vec<u8>
     image
 }
 
-fn remove_subsystem_content_items(
+/// How a composition entry names the object it lists.
+#[derive(Clone, Copy)]
+pub enum CompositionKey {
+    /// The entry's own text: `<Item>Catalog.X</Item>`.
+    Text,
+    /// An attribute of the entry: `<Command name="Catalog.X.StandardCommand.OpenList">`.
+    Attribute(&'static str),
+    /// The text of a child element: `<object><name>Catalog.X</name>…</object>`.
+    Child(&'static str),
+}
+
+/// One kind of entry a composition lists, optionally only directly under
+/// a parent element of the given local name.
+#[derive(Clone, Copy)]
+pub struct CompositionRule {
+    pub entry: &'static str,
+    pub parent: Option<&'static str>,
+    pub key: CompositionKey,
+}
+
+const SUBSYSTEM_CONTENT: &[CompositionRule] = &[CompositionRule {
+    entry: "Item",
+    parent: Some("Content"),
+    key: CompositionKey::Text,
+}];
+
+/// The compositions that list other objects and are cleaned with the
+/// removed object, as the configurator cleans them, and the property each
+/// one is reported as. Subsystem descriptors are walked separately by
+/// [`plan_meta_remove_subsystem_replacements`].
+pub fn meta_remove_composition(
+    relative: &Path,
+) -> Option<(&'static [CompositionRule], &'static str)> {
+    const RIGHTS: &[CompositionRule] = &[CompositionRule {
+        entry: "object",
+        parent: None,
+        key: CompositionKey::Child("name"),
+    }];
+    const COMMAND_INTERFACE: &[CompositionRule] = &[
+        CompositionRule {
+            entry: "Command",
+            parent: None,
+            key: CompositionKey::Attribute("name"),
+        },
+        CompositionRule {
+            entry: "Subsystem",
+            parent: None,
+            key: CompositionKey::Text,
+        },
+        CompositionRule {
+            entry: "Value",
+            parent: None,
+            key: CompositionKey::Attribute("name"),
+        },
+    ];
+    const HOME_PAGE: &[CompositionRule] = &[CompositionRule {
+        entry: "Item",
+        parent: None,
+        key: CompositionKey::Child("Form"),
+    }];
+    const EXCHANGE_CONTENT: &[CompositionRule] = &[CompositionRule {
+        entry: "Item",
+        parent: None,
+        key: CompositionKey::Child("Metadata"),
+    }];
+    const FUNCTIONAL_OPTION_CONTENT: &[CompositionRule] = &[CompositionRule {
+        entry: "Object",
+        parent: Some("Content"),
+        key: CompositionKey::Text,
+    }];
+    let parts = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["Roles", _, "Ext", "Rights.xml"] => Some((RIGHTS, "Rights")),
+        [.., "Ext", "CommandInterface.xml"] => Some((COMMAND_INTERFACE, "CommandInterface")),
+        ["Ext", "HomePageWorkArea.xml"] => Some((HOME_PAGE, "HomePageWorkArea")),
+        ["ExchangePlans", _, "Ext", "Content.xml"] => Some((EXCHANGE_CONTENT, "Content")),
+        ["FunctionalOptions", descriptor] if descriptor.ends_with(".xml") => {
+            Some((FUNCTIONAL_OPTION_CONTENT, "Content"))
+        }
+        _ => None,
+    }
+}
+
+/// Removes every entry the rules recognise that names `qualified_object_name`
+/// or one of its children (`Catalog.X.Attribute.Y`), with the line it stood
+/// on; the rest of the text is kept byte for byte. The text has no BOM.
+pub fn remove_composition_entries(
     xml_text: &str,
+    rules: &[CompositionRule],
     qualified_object_name: &str,
 ) -> Result<(String, usize), String> {
-    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
-        .map_err(|error| format!("XML parse error: {error}"))?;
-    let content = document
-        .descendants()
-        .find(|node| unica_xml_format::names::element_has_name(*node, "Content", Some(MD_NS)));
-    let Some(content) = content else {
-        return Ok((xml_text.to_string(), 0));
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let child_prefix = format!("{qualified_object_name}.");
+    let names_object = |value: &str| {
+        let value = value.trim();
+        value == qualified_object_name || value.starts_with(&child_prefix)
     };
-    let mut ranges = content
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Item")
+    let mut ranges = document
+        .descendants()
+        .filter(|node| node.is_element())
         .filter(|node| {
-            node.text()
-                .is_some_and(|text| text.trim() == qualified_object_name)
+            rules.iter().any(|rule| {
+                node.tag_name().name() == rule.entry
+                    && rule.parent.is_none_or(|parent| {
+                        node.parent_element()
+                            .is_some_and(|element| element.tag_name().name() == parent)
+                    })
+                    && match rule.key {
+                        CompositionKey::Text => node.text().is_some_and(names_object),
+                        CompositionKey::Attribute(name) => {
+                            node.attribute(name).is_some_and(names_object)
+                        }
+                        CompositionKey::Child(name) => node
+                            .children()
+                            .find(|child| child.is_element() && child.tag_name().name() == name)
+                            .and_then(|child| child.text())
+                            .is_some_and(names_object),
+                    }
+            })
         })
         .map(|node| node.range())
         .collect::<Vec<_>>();
-    if ranges.is_empty() {
-        return Ok((xml_text.to_string(), 0));
-    }
     ranges.sort_by_key(|range| range.start);
-    let removed = ranges.len();
+    // An entry inside another removed entry goes with it.
+    let mut outer: Vec<std::ops::Range<usize>> = Vec::new();
+    for range in ranges {
+        if outer.last().is_none_or(|last| range.start >= last.end) {
+            outer.push(range);
+        }
+    }
+    let removed = outer.len();
     let mut updated = xml_text.to_string();
-    for range in ranges.into_iter().rev() {
+    for range in outer.into_iter().rev() {
         let line_start = updated[..range.start]
             .rfind('\n')
             .map_or(0, |index| index + 1);
@@ -83,6 +191,11 @@ fn remove_subsystem_content_items(
         updated.replace_range(removal, "");
     }
     Ok((updated, removed))
+}
+
+/// The image of a cleaned composition, keeping the BOM of the original.
+pub fn meta_remove_composition_image(original: &[u8], updated: String) -> Vec<u8> {
+    meta_remove_preserved_utf8_image(original, updated)
 }
 
 fn meta_remove_path_is_link_or_reparse_point(
@@ -332,7 +445,7 @@ pub fn plan_meta_remove_subsystem_replacements_bounded(
     for path in descriptors {
         let snapshot = read_utf8_sig_snapshot(reader, &path)?;
         let (updated, removed_references) =
-            remove_subsystem_content_items(&snapshot.text, qualified_object_name)?;
+            remove_composition_entries(&snapshot.text, SUBSYSTEM_CONTENT, qualified_object_name)?;
         descriptor_reads.push(MetaRemoveTextRead {
             path: path.clone(),
             raw: snapshot.raw.clone(),
@@ -580,18 +693,17 @@ pub fn meta_remove_referrer(relative: &Path) -> (String, bool) {
     let strip = |part: &str| part.strip_suffix(".xml").unwrap_or(part).to_string();
     let mut address = format!("{}.{}", layout.tag, strip(owner));
     let mut rest = &parts[2..];
-    if let [directory, child, tail @ ..] = rest {
+    while let [directory, child, tail @ ..] = rest {
         let kind = match *directory {
-            "Forms" => Some("Form"),
-            "Templates" => Some("Template"),
-            "Commands" => Some("Command"),
-            "Recalculations" => Some("Recalculation"),
-            _ => None,
+            "Forms" => "Form",
+            "Templates" => "Template",
+            "Commands" => "Command",
+            "Recalculations" => "Recalculation",
+            "Subsystems" => "Subsystem",
+            _ => break,
         };
-        if let Some(kind) = kind {
-            address.push_str(&format!(".{kind}.{}", strip(child)));
-            rest = tail;
-        }
+        address.push_str(&format!(".{kind}.{}", strip(child)));
+        rest = tail;
     }
     (address, rest.is_empty())
 }

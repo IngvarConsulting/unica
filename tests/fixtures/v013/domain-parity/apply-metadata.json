@@ -62,7 +62,7 @@
           },
           "caseIds": [
             "batch2-object-remove-unreferenced",
-            "batch2-object-remove-referenced-refuses"
+            "batch2-object-remove-referenced-cleans"
           ]
         },
         {
@@ -120,7 +120,7 @@
       }
     },
     {
-      "caseId": "batch2-object-remove-referenced-refuses",
+      "caseId": "batch2-object-remove-referenced-cleans",
       "entry": "apply",
       "operation": "object.remove",
       "mode": "preview;referenced",
@@ -128,8 +128,7 @@
       "expected": {
         "scenario": "S112",
         "wireStep": 3,
-        "class": "refused",
-        "code": "invalid_state"
+        "class": "ok"
       }
     }
   ],

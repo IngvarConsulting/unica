@@ -893,8 +893,9 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     use crate::remove::{
-        meta_remove_references, meta_remove_search_patterns, meta_remove_should_skip_file,
-        plan_meta_remove_subsystem_replacements, MetaRemoveReference,
+        meta_remove_composition, meta_remove_composition_image, meta_remove_references,
+        meta_remove_referrer, meta_remove_search_patterns, meta_remove_should_skip_file,
+        plan_meta_remove_subsystem_replacements, remove_composition_entries, MetaRemoveReference,
         META_REMOVE_REFERENCE_FILE_MAX_BYTES,
     };
     let at_path = format!("ops[{op_index}].args.at");
@@ -926,8 +927,13 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     metadata_patterns.push(format!("{}.{name}", kind.as_str()));
     let source_set = authority.source_set_name();
     let removed = format!("{source_set}:{}", target.as_str());
+    let qualified = format!("{}.{name}", kind.as_str());
     let mut metadata_references = Vec::new();
     let mut code_references = Vec::new();
+    // Compositions that list the object — role rights, command interfaces,
+    // exchange plan and functional option content — lose its entries with it.
+    let mut cleaned = Vec::new();
+    let mut cleaned_files = Vec::new();
     for relative in &files {
         let extension = relative
             .extension()
@@ -941,14 +947,17 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             continue;
         };
         let absolute = root.join(relative);
-        if meta_remove_should_skip_file(
+        let skipped = meta_remove_should_skip_file(
             &absolute,
             root,
             &descriptor_absolute,
             &object_dir,
             true,
             true,
-        ) {
+        );
+        let composition =
+            meta_remove_composition(relative).filter(|_| !absolute.starts_with(&object_dir));
+        if skipped && composition.is_none() {
             continue;
         }
         let bytes = staged
@@ -966,7 +975,28 @@ fn stage_object_remove<R: MetadataPlanningRead>(
                 format!("reference input is not UTF-8: {error}"),
             )
         })?;
-        for reference in meta_remove_references(source_set, relative, text, patterns) {
+        let mut text = text.trim_start_matches('\u{feff}').to_string();
+        if let Some((rules, property)) = composition {
+            let (updated, removed_entries) = remove_composition_entries(&text, rules, &qualified)
+                .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
+                    .at_path(at_path.clone())
+            })?;
+            if removed_entries > 0 {
+                let (referrer, _) = meta_remove_referrer(relative);
+                cleaned.push((format!("{source_set}:{referrer}"), property));
+                cleaned_files.push((
+                    relative.clone(),
+                    bytes.clone(),
+                    meta_remove_composition_image(&bytes, updated.clone()),
+                ));
+                text = updated;
+            }
+        }
+        if skipped {
+            continue;
+        }
+        for reference in meta_remove_references(source_set, relative, &text, patterns) {
             match reference {
                 MetaRemoveReference::Metadata { at, property } => {
                     metadata_references.push(format!("`{at}` → {property}"));
@@ -1069,11 +1099,19 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         }
         for replacement in replacements {
             let relative = staged_relative(root, &replacement.path, op_index)?;
+            let (referrer, _) = meta_remove_referrer(&relative);
+            cleaned.push((format!("{source_set}:{referrer}"), "Content"));
             staged
                 .replace(&relative, &replacement.original, replacement.replacement)
                 .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
             touched.push(relative);
         }
+    }
+    for (relative, original, replacement) in cleaned_files {
+        staged
+            .replace(&relative, &original, replacement)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+        touched.push(relative);
     }
     let owner_relative = PathBuf::from("Configuration.xml");
     let owner_preimage = staged
@@ -1123,10 +1161,33 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         ),
         op_index,
     );
-    provisional.push(match code_warning {
+    let mut effect = match code_warning {
         Some(warning) => effect.with_warning(warning),
         None => effect,
-    });
+    };
+    if !cleaned.is_empty() {
+        let mut shown = cleaned
+            .iter()
+            .take(10)
+            .map(|(at, property)| format!("`{at}` → {property}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if cleaned.len() > 10 {
+            shown.push_str(&format!(" and {} more", cleaned.len() - 10));
+        }
+        effect = effect.with_warning(serde_json::json!({
+            "code": "composition_cleaned",
+            "at": format!("ops[{op_index}].args.at"),
+            "count": cleaned.len(),
+            "entries": cleaned
+                .iter()
+                .take(20)
+                .map(|(at, property)| serde_json::json!({"at": at, "property": property}))
+                .collect::<Vec<_>>(),
+            "message": format!("the removal also takes `{removed}` out of {shown}"),
+        }));
+    }
+    provisional.push(effect);
     Ok(())
 }
 
