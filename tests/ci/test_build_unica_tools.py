@@ -154,12 +154,6 @@ def runtime_manifest(binary: bytes = b"multidist") -> dict:
     }
 
 
-def urllib_error_module():
-    import urllib.error
-
-    return urllib.error
-
-
 class BuildUnicaToolsTests(unittest.TestCase):
     def setUp(self) -> None:
         # Проверенные инструменты кешируются по сумме; тест не читает и не
@@ -205,7 +199,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         uncached = {"assetName": "tool", "sha256": hashlib.sha256(b"not cached").hexdigest()}
         for failure in (
-            urllib_error_module().HTTPError("https://example.invalid/tool", 404, "Not Found", {}, None),
+            module.urllib.error.HTTPError("https://example.invalid/tool", 404, "Not Found", {}, None),
             ValueError("not a network failure"),
         ):
             with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as raw, patch.object(
@@ -217,6 +211,42 @@ class BuildUnicaToolsTests(unittest.TestCase):
                         tool_name="tool", target="linux-x64",
                     )
                 download_call.assert_called_once()
+
+    def test_unwritable_cache_does_not_reject_a_verified_download(self) -> None:
+        module = load_build_module()
+        payload = b"pinned tool"
+        asset = {"assetName": "tool", "sha256": hashlib.sha256(payload).hexdigest()}
+
+        def fetch(_url: str, destination: Path, *, timeout: float | None = None) -> None:
+            destination.write_bytes(payload)
+
+        with tempfile.TemporaryDirectory() as raw:
+            blocker = Path(raw) / "not-a-directory"
+            blocker.write_bytes(b"")
+            with patch.dict("os.environ", {"UNICA_TOOL_CACHE": str(blocker / "cache")}), patch.object(
+                module, "download", side_effect=fetch
+            ):
+                module.fetch_verified_asset(
+                    "https://example.invalid/tool", Path(raw) / "tool", asset, tool_name="tool", target="linux-x64"
+                )
+            self.assertEqual((Path(raw) / "tool").read_bytes(), payload)
+
+    def test_server_errors_are_retried_until_the_attempts_run_out(self) -> None:
+        module = load_build_module()
+        asset = {"assetName": "tool", "sha256": hashlib.sha256(b"pinned tool").hexdigest()}
+        unavailable = module.urllib.error.HTTPError(
+            "https://example.invalid/tool", 503, "Service Unavailable", {}, None
+        )
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(
+            module, "download", side_effect=unavailable
+        ) as download_call:
+            with self.assertRaises(module.urllib.error.HTTPError):
+                module.fetch_verified_asset(
+                    "https://example.invalid/tool", Path(raw) / "tool", asset,
+                    tool_name="tool", target="linux-x64",
+                )
+        self.assertEqual(download_call.call_count, module.DOWNLOAD_ATTEMPTS)
 
     def test_checksum_mismatch_on_a_full_body_is_not_retried_or_cached(self) -> None:
         module = load_build_module()
@@ -266,6 +296,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 download_call.assert_called_once()
             self.assertEqual((root / "third").read_bytes(), payload)
             self.assertEqual((module.tool_cache_dir() / asset["sha256"]).read_bytes(), payload)
+            self.assertEqual([path.name for path in module.tool_cache_dir().iterdir()], [asset["sha256"]])
 
     def test_main_requires_python_3_12(self) -> None:
         module = load_build_module()

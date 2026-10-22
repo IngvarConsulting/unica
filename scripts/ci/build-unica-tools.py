@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import http.client
 import json
@@ -11,6 +12,7 @@ import os
 import platform
 import re
 import shutil
+import ssl
 import stat
 import subprocess
 import sys
@@ -144,7 +146,7 @@ def download(url: str, dest: Path, *, timeout: float | None = None) -> None:
     response = urllib.request.urlopen(url) if timeout is None else urllib.request.urlopen(url, timeout=timeout)
     with response, dest.open("wb") as out:
         shutil.copyfileobj(response, out)
-        announced = response.headers.get("Content-Length") if hasattr(response, "headers") else None
+        announced = response.headers.get("Content-Length")
         received = out.tell()
     if announced is not None and received != int(announced):
         raise DownloadInterrupted(f"download of {url} ended after {received} of {announced} bytes")
@@ -160,17 +162,16 @@ def is_network_failure(error: BaseException) -> bool:
             http.client.HTTPException,
             ConnectionError,
             TimeoutError,
+            ssl.SSLError,
             DownloadInterrupted,
         ),
     )
 
 
 def tool_cache_dir() -> Path:
+    # Умолчание совпадает с путём `~/.cache/unica-tools`, который CI сохраняет.
     configured = os.environ.get(TOOL_CACHE_ENV)
-    if configured:
-        return Path(configured)
-    base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
-    return Path(base) / "unica-tools"
+    return Path(configured) if configured else Path.home() / ".cache" / "unica-tools"
 
 
 def fetch_verified_asset(
@@ -202,10 +203,17 @@ def fetch_verified_asset(
                 raise
             print(f"download attempt {attempt} failed, retrying: {error}", flush=True)
     verify_asset_checksum(dest, asset, tool_name=tool_name, target=target)
-    cached.parent.mkdir(parents=True, exist_ok=True)
+    # Кеш только ускоряет следующие прогоны: недоступный для записи каталог
+    # не отменяет уже проверенную загрузку.
     partial = cached.with_name(f"{cached.name}.{os.getpid()}.part")
-    shutil.copyfile(dest, partial)
-    os.replace(partial, cached)
+    try:
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(dest, partial)
+        os.replace(partial, cached)
+    except OSError as error:
+        print(f"tool cache not updated: {error}", flush=True)
+        with contextlib.suppress(OSError):
+            partial.unlink(missing_ok=True)
 
 
 def release_asset_url(tool: dict, asset: dict) -> str:

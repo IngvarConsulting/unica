@@ -325,8 +325,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/unica-tools
-          key: tool-assets-${{ runner.os }}-${{ hashFiles('plugins/unica/third-party/tools.lock.json') }}
-          restore-keys: tool-assets-${{ runner.os }}-
+          key: tool-assets-acceptance-${{ runner.os }}-${{ hashFiles('plugins/unica/third-party/tools.lock.json') }}
       - id: python
         if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && github.event_name != 'pull_request' }}
         env:
@@ -767,8 +766,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/unica-tools
-          key: tool-assets-${{ runner.os }}-${{ hashFiles('plugins/unica/third-party/tools.lock.json') }}
-          restore-keys: tool-assets-${{ runner.os }}-
+          key: tool-assets-build-${{ matrix.target }}-${{ hashFiles('plugins/unica/third-party/tools.lock.json') }}
       - name: Build target bundle and bootstrap
         if: matrix.target != 'win-x64'
         run: >
