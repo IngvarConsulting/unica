@@ -926,6 +926,10 @@ pub(crate) mod tests {
         let outcome = create_directory_link_fixture_for_test(&linked_target, &linked_job_dir)
             .expect("create linked job directory fixture");
         if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 
@@ -947,6 +951,10 @@ pub(crate) mod tests {
         let outcome = create_file_link_fixture_for_test(&missing_target, &record_path)
             .expect("create broken record link fixture");
         if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 
@@ -1379,6 +1387,10 @@ pub(crate) mod tests {
     #[test]
     fn symlinked_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer() {
         if !unica_process::test_support::unix_runtime_authority_tests_supported() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::UnixProcessGroups,
+                "the producer admission fault exists only on Unix",
+            );
             return;
         }
 

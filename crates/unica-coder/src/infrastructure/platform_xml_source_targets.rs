@@ -1924,6 +1924,10 @@ mod tests {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
             | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
                 cleanup(&context);
                 return;
             }
@@ -2321,6 +2325,10 @@ mod tests {
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
             cleanup(&context);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 
@@ -2346,6 +2354,10 @@ mod tests {
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
             cleanup(&context);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 
@@ -2373,12 +2385,9 @@ mod tests {
             "CommonModule",
             "Shared",
         );
-        let Some(result) =
+        let result =
             create_dir_symlink_for_test(root.join("RealCommonModules"), root.join("CommonModules"))
-        else {
-            cleanup(&context);
-            return;
-        };
+                .expect("symlink fixtures exist on Unix and Windows");
         result.unwrap();
 
         let error =
@@ -2598,11 +2607,8 @@ mod tests {
         let real = context.workspace_root.join("real-src");
         fs::create_dir_all(&real).unwrap();
         fs::write(real.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
-        let Some(result) = create_dir_symlink_for_test(&real, context.workspace_root.join("src"))
-        else {
-            cleanup(&context);
-            return;
-        };
+        let result = create_dir_symlink_for_test(&real, context.workspace_root.join("src"))
+            .expect("symlink fixtures exist on Unix and Windows");
         result.unwrap();
 
         let error = resolve_platform_xml_root_target(&context, &root_target("main")).unwrap_err();
@@ -2631,10 +2637,8 @@ mod tests {
         let resolution = resolve_platform_xml_root_target(&context, &root_target("main")).unwrap();
         let replacement = context.workspace_root.join("replacement");
         fs::rename(&root, &replacement).unwrap();
-        let Some(result) = create_dir_symlink_for_test(&replacement, &root) else {
-            cleanup(&context);
-            return;
-        };
+        let result = create_dir_symlink_for_test(&replacement, &root)
+            .expect("symlink fixtures exist on Unix and Windows");
         result.unwrap();
 
         let error = revalidate_platform_xml_target(&context, &resolution.handle).unwrap_err();
@@ -3519,6 +3523,10 @@ mod tests {
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
             cleanup(&context);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 

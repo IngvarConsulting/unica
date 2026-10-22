@@ -309,6 +309,10 @@ pub(crate) mod tests {
         )
         .expect("create dangling config link fixture");
         if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 

@@ -248,6 +248,10 @@ fn command_module_lifecycle_late_case_rename_rolls_back_owned_files_and_cache() 
 
     if !unica_workspace::test_support::can_swap_named_child_behind_retained_handle_for_test() {
         eprintln!("[SKIPPED FIXTURE] host prevents relocation behind retained handles");
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
 

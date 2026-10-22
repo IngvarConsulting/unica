@@ -447,6 +447,10 @@ mod tests {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
             | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
                 cleanup(&context);
                 return;
             }
