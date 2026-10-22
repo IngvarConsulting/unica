@@ -376,7 +376,7 @@
         },
         {
           "pointer": "/data/props/implemented",
-          "eq": true
+          "absent": true
         },
         {
           "pointer": "/data/props/contract/argsSchema/additionalProperties",
@@ -613,7 +613,7 @@
         },
         {
           "pointer": "/data/props/implemented",
-          "eq": true
+          "absent": true
         },
         {
           "pointer": "/data/props/contract/argsSchema/additionalProperties",
@@ -850,7 +850,7 @@
         },
         {
           "pointer": "/data/props/implemented",
-          "eq": true
+          "absent": true
         },
         {
           "pointer": "/data/props/contract/argsSchema/additionalProperties",
@@ -1087,7 +1087,7 @@
         },
         {
           "pointer": "/data/props/implemented",
-          "eq": true
+          "absent": true
         },
         {
           "pointer": "/data/props/contract/argsSchema/additionalProperties",

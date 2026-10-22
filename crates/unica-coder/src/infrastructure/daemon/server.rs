@@ -9766,7 +9766,7 @@ struct ActorLogicalReadLease {"#,
         };
         assert_eq!(
             entry("props.set"),
-            serde_json::json!({"op": "props.set", "args": "values", "implemented": true})
+            serde_json::json!({"op": "props.set", "args": "values"})
         );
         // Новый объект создаёт его родитель — корень конфигурации.
         assert!(
@@ -9775,7 +9775,7 @@ struct ActorLogicalReadLease {"#,
         );
         assert_eq!(
             entry("form.add"),
-            serde_json::json!({"op": "form.add", "args": "items", "implemented": true})
+            serde_json::json!({"op": "form.add", "args": "items"})
         );
         assert!(
             can.iter().all(|entry| entry["op"] != "enumValue.add"),
@@ -9795,7 +9795,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(contract["at"], "main:Catalog.Bare.Can.attribute.add");
         assert_eq!(contract["kind"], "Can");
         assert_eq!(contract["props"]["op"], "attribute.add");
-        assert_eq!(contract["props"]["implemented"], true);
+        assert!(contract["props"].get("implemented").is_none());
         assert!(
             contract["props"]["contract"]["argsSchema"].is_object(),
             "the contract publishes its argument schema"
@@ -14913,8 +14913,15 @@ struct ActorLogicalReadLease {"#,
                 "duplicate operation {name}"
             );
         }
-        assert_eq!(published.len(), catalog.run_dictionary.len());
-        for operation in &catalog.run_dictionary {
+        // Only available operations are listed; an unavailable one keeps
+        // its refusal on call.
+        let available = catalog
+            .run_dictionary
+            .iter()
+            .filter(|operation| operation.implemented)
+            .collect::<Vec<_>>();
+        assert_eq!(published.len(), available.len());
+        for operation in available {
             let name = operation.name();
             let entry = published.get(name).expect("catalog operation is published");
             assert_eq!(entry["description"], operation.description(), "{name}");
@@ -14929,7 +14936,7 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!(operation.effects()),
                 "{name}"
             );
-            assert_eq!(entry["implemented"], operation.implemented, "{name}");
+            assert!(entry.get("implemented").is_none(), "{name}");
             let preview_apply = operation.execution() == "previewApply";
             assert_eq!(entry["dryRunRequired"], preview_apply, "{name}");
             assert_eq!(entry["previewRequired"], false, "{name}");

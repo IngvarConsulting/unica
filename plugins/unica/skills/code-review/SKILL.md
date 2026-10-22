@@ -11,12 +11,11 @@ description: "Код-ревью BSL и изменений 1С. Использу�
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `dryRunRequired`. Контракт вызова бери оттуда, а не из этого текста;
-при `implemented: true` используй опубликованную `argsSchema`; при
-`support.state: limited` разрешено только подмножество `support.supportedArgs`.
-При `support.state: unavailable` остановись; не выдумывай аргументов при
-`argsSchema: null`. Для плановой операции сначала проверь результат `dryRun: true`,
-затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
-вызовами. Не обходи контракт прямым runner-ом.
+используй опубликованную `argsSchema`; при `support.state: limited`
+разрешено только подмножество `support.supportedArgs`. Недоступной операции
+в словаре нет. Для плановой операции сначала проверь результат
+`dryRun: true`, затем исполняй запрос с `dryRun: false`. Preview
+не фиксирует входы между вызовами. Не обходи контракт прямым runner-ом.
 - Use `unica.view` at the object's logical address before reviewing code that depends on metadata shape, form structure, rights, DCS, or interfaces; a spreadsheet template is read by `unica.view` at its template address.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 

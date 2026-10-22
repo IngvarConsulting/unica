@@ -13,19 +13,18 @@ subsystems, interfaces, and templates.
 ## Primary path
 
 Use the package-selected MCP runtime surface directly. In v0.13, call
-`unica.run {}` first and select only an operation whose dictionary entry says
-`implemented: true`, or exactly the subset declared by `support.state: limited` and `support.supportedArgs`; refuse unavailable operations. Do not infer arguments for operations whose
-`argsSchema` is `null`.
+`unica.run {}` first and select only an operation the dictionary lists; for
+`support.state: limited` use exactly the subset in `support.supportedArgs`.
+An unavailable operation is not listed and its call is refused.
 
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `dryRunRequired`. Контракт вызова бери оттуда, а не из этого текста;
-при `implemented: true` используй опубликованную `argsSchema`; при
-`support.state: limited` разрешено только подмножество `support.supportedArgs`.
-При `support.state: unavailable` остановись; не выдумывай аргументов при
-`argsSchema: null`. Для плановой операции сначала проверь результат `dryRun: true`,
-затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
-вызовами. Не обходи контракт прямым runner-ом.
+используй опубликованную `argsSchema`; при `support.state: limited`
+разрешено только подмножество `support.supportedArgs`. Недоступной операции
+в словаре нет. Для плановой операции сначала проверь результат
+`dryRun: true`, затем исполняй запрос с `dryRun: false`. Preview
+не фиксирует входы между вызовами. Не обходи контракт прямым runner-ом.
 
 Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `no_memory` when this working copy has no memory of the infobase; the refusal offers a `pull` preview and a `push` preview with `force:true`. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Full pulling requires explicit `force:true` and provides no local-work protection; inspect the preview before execution.
 For source readiness independently of runtime availability, first

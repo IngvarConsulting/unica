@@ -121,7 +121,7 @@ fn publish_template(kind: &str, with_cache: bool) -> tempfile::TempDir {
     let declaration = can.data.as_ref().unwrap();
     assert_eq!(declaration["kind"], "Can");
     assert_eq!(declaration["props"]["op"], "template.add");
-    assert_eq!(declaration["props"]["implemented"], true);
+    assert!(declaration["props"].get("implemented").is_none());
     let planned = invoke(
         ToolIdentity::Apply,
         json!({"at":AT,"ops":[{
@@ -838,7 +838,7 @@ fn canonical_set_preserves_new_template(kind: MetaTemplateKind) {
     let declaration = can.data.as_ref().unwrap();
     assert_eq!(declaration["kind"], "Can");
     assert_eq!(declaration["props"]["op"], "template.set");
-    assert_eq!(declaration["props"]["implemented"], true);
+    assert!(declaration["props"].get("implemented").is_none());
     let planned = invoke(
         ToolIdentity::Apply,
         json!({"at":TEMPLATE_AT,"ops":[{

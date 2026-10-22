@@ -905,7 +905,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         rendered = module.render_document()
         for operation, args in [("role.create", "values"), ("right.add", "items"), ("right.set", "values")]:
             self.assertIn(operation, implemented)
-            self.assertIn(f"| `{operation}` | `{args}` | да | ", rendered)
+            self.assertIn(f"| `{operation}` | `{args}` | ", rendered)
 
     def registration_fixture(self, table, metadata, additional_metadata=None, *, complete_support=True, complete_context=True, complete_mxl_event=True, complete_dcs=True, complete_properties=True, complete_xdto=True):
         # These focused parser fixtures exercise the original nine families,
@@ -935,8 +935,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             root = Path(raw)
             registry = root / "apply.rs"
             registry.write_text(
-                "\noperation_descriptors!(\n" + table + "\n);\n"
-                'const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &["role.create", "right.add", "right.set"];\n',
+                "\noperation_descriptors!(\n" + table + "\n);\n",
                 encoding="utf-8",
             )
             if metadata is not None:
@@ -1250,7 +1249,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         rendered = module.render_document()
         for operation in ["supportCapability.set", "supportRule.set"]:
             self.assertIn(operation, implemented)
-            self.assertIn(f"| `{operation}` | `values` | да | ", rendered)
+            self.assertIn(f"| `{operation}` | `values` | ", rendered)
 
     def test_typed_rows_preserve_colliding_names_and_raw_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")

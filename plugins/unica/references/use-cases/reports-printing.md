@@ -15,12 +15,11 @@ target `push`/`pull` source transfer is unavailable for external sets.
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `dryRunRequired`. Контракт вызова бери оттуда, а не из этого текста;
-при `implemented: true` используй опубликованную `argsSchema`; при
-`support.state: limited` разрешено только подмножество `support.supportedArgs`.
-При `support.state: unavailable` остановись; не выдумывай аргументов при
-`argsSchema: null`. Для плановой операции сначала проверь результат `dryRun: true`,
-затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
-вызовами. Не обходи контракт прямым runner-ом.
+используй опубликованную `argsSchema`; при `support.state: limited`
+разрешено только подмножество `support.supportedArgs`. Недоступной операции
+в словаре нет. Для плановой операции сначала проверь результат
+`dryRun: true`, затем исполняй запрос с `dryRun: false`. Preview
+не фиксирует входы между вызовами. Не обходи контракт прямым runner-ом.
 
 - Read schemas and layouts through `unica.view`, change them through
   `unica.apply`, and validate the template through `unica.check`.
@@ -32,8 +31,8 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 
   This is a `unica.view` argument example over the acceptance fixture;
   choose actual source-set, template and dataset names from your workspace.
-  `implemented:false` means a registered operation has no implementation.
-  An unknown operation is refused. Use the returned `props.contract.argsSchema`,
+  The dictionary lists only operations that work at the node; an unlisted
+  or unknown operation is refused. Use the returned `props.contract.argsSchema`,
   target, effects and example arguments; this reference does not duplicate
   the operation catalogue.
 - Add or remove metadata templates using the owning node's `can` dictionary.

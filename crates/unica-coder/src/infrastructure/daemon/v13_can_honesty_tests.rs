@@ -1665,7 +1665,7 @@ fn a_retired_scope_call_recovers_through_next_to_a_published_tabular_attribute()
     assert!(viewed.ok, "{viewed_value}");
     let entry = &viewed_value["data"]["props"];
     assert_eq!(entry["op"], "attribute.add", "{viewed_value}");
-    assert_eq!(entry["implemented"], true, "{viewed_value}");
+    assert!(entry.get("implemented").is_none(), "{viewed_value}");
     let contract = &entry["contract"];
     assert!(
         contract["argsSchema"]["properties"]["items"]["items"]["properties"]["type"].is_object(),
@@ -2458,7 +2458,7 @@ fn support_can_contract_examples_preview_without_source_changes() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|entry| entry["op"] == operation && entry["implemented"] == true));
+            .any(|entry| entry["op"] == operation));
         let detailed = invoke_on(
             &runtime,
             &fixture.workspace,

@@ -19,8 +19,7 @@
           "eq": [
             {
               "op": "supportRule.set",
-              "args": "values",
-              "implemented": true
+              "args": "values"
             }
           ]
         }

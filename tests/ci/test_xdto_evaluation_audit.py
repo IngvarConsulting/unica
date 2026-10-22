@@ -128,7 +128,7 @@ class XdtoEvidenceTests(unittest.TestCase):
                     properties["values"] = payloads[operation]
                 schema = closed_object(properties, ["values"] if operation in payloads else [])
                 call("unica.view", {"at": operation_at}, {"ok": True, "at": operation_at, "data": {
-                    "at": operation_at, "kind": "Can", "props": {"op": operation, "implemented": True,
+                    "at": operation_at, "kind": "Can", "props": {"op": operation,
                     "contract": {"argsSchema": copy.deepcopy(schema)}}}}, old, old)
                 operations.append({"op": operation, "args": {"at": target, **copy.deepcopy(arguments)}})
             call("unica.apply", {"at": evidence.PACKAGE, "ops": operations}, {"ok": True, "data": {
@@ -338,7 +338,7 @@ class XdtoEvidenceTests(unittest.TestCase):
                     return next(r for r in records if r["direction"] == "response" and r["payload"]["id"] == request["payload"]["id"])
                 if mutation == "missing Can":
                     request = next(r for r in requests if r["payload"]["params"]["arguments"].get("at") == evidence.PACKAGE + ".Can.valueType.add")
-                    response(request)["payload"]["result"]["structuredContent"]["data"]["props"]["implemented"] = False
+                    response(request)["payload"]["result"]["structuredContent"]["data"]["props"]["implemented"] = True
                 elif mutation == "token swap":
                     publication["payload"]["params"]["arguments"]["executionToken"] = "other"
                 elif mutation in {"preview writes", "foreign publication"}:

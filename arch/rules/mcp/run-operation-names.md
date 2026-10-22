@@ -21,10 +21,12 @@ check:
 `make`) и базу целиком (`infobase.dump`/`infobase.restore`). `unica.apply`
 изменяет исходники; `unica.run` с `op: apply` изменяет конфигурацию БД.
 
-Каждая операция публикует назначение, схему аргументов, эффекты, режим
-исполнения, `implemented` и `support`. Режим `previewApply` требует явный
-boolean `dryRun`: `true` выбирает preview, `false` исполняет текущий запрос
-без предшествующего просмотра. Каталог сообщает `dryRunRequired: true`
+Каталог перечисляет только доступные операции; вызов недоступной получает
+отказ `unsupported_operation` с причиной. Каждая операция каталога публикует
+назначение, схему аргументов, эффекты, режим исполнения и `support`.
+Режим `previewApply` требует явный boolean `dryRun`: `true` выбирает
+preview, `false` исполняет текущий запрос без предшествующего просмотра.
+Каталог сообщает `dryRunRequired: true`
 и `previewRequired: false`. У терминального `launch` `dryRun` необязателен
 и `dryRunRequired: false`; его поведение задаёт [контракт запуска](../runtime/client-launch.md).
 

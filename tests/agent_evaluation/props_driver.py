@@ -92,7 +92,7 @@ def audit(records):
                         and all(isinstance(item, dict) and isinstance(item.get("op"), str) and item["op"]
                                 and item["op"] == item["op"].strip()
                                 and isinstance(item.get("args"), str) and item["args"]
-                                and type(item.get("implemented")) is bool for item in capabilities)):
+                                and "implemented" not in item for item in capabilities)):
                     operations = [item["op"] for item in capabilities]
                     if len(set(operations)) == len(operations) and "props.set" not in operations:
                         configuration = True
@@ -112,7 +112,7 @@ def audit(records):
                 schema = (props.get("contract") or {}).get("argsSchema") or {}
                 if (target in PATHS and at == target + ".Can.props.set" and data.get("at") == at
                         and result.get("at") == at and data.get("kind") == "Can"
-                        and props.get("op") == "props.set" and props.get("implemented") is True
+                        and props.get("op") == "props.set" and "implemented" not in props
                         and schema.get("type") == "object" and schema.get("additionalProperties") is False):
                     contracts[target] = min(contracts.get(target, call["done"]), call["done"])
             continue

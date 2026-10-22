@@ -135,7 +135,7 @@ Emergency bridge between a logical address and the source layout, in both direct
 
 ### `unica.run`
 
-List canonical runtime operations and their invocation contract, or preview/execute one implemented operation.
+List canonical runtime operations and their invocation contract, or preview/execute one listed operation.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |

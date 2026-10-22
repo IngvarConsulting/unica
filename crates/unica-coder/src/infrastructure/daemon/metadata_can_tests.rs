@@ -198,7 +198,7 @@ fn contract(
     let data = detailed.data.unwrap();
     assert_eq!(data["kind"], "Can");
     assert_eq!(data["props"]["op"], op);
-    assert_eq!(data["props"]["implemented"], true);
+    assert!(data["props"].get("implemented").is_none());
     let contract = data["props"]["contract"].clone();
     assert_eq!(contract["argsSchema"]["additionalProperties"], false);
     assert!(contract["exampleArgs"].get("at").is_none());
@@ -258,7 +258,7 @@ fn assert_props_can_and_preview(at: &str, preview_args: Value, samples: &[(Value
     assert_eq!(data["at"], operation_at);
     assert_eq!(data["kind"], "Can");
     assert_eq!(data["props"]["op"], "props.set");
-    assert_eq!(data["props"]["implemented"], true);
+    assert!(data["props"].get("implemented").is_none());
     let contract = &data["props"]["contract"];
     let schema = &contract["argsSchema"];
     assert_eq!(schema["additionalProperties"], false);

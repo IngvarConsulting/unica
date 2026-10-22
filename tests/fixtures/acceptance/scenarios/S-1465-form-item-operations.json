@@ -18,8 +18,7 @@
      "pointer": "/data/can",
      "contains": {
       "op": "item.add",
-      "args": "items",
-      "implemented": true
+      "args": "items"
      }
     }
    ],
@@ -43,16 +42,14 @@
      "pointer": "/data/can",
      "contains": {
       "op": "item.add",
-      "args": "items",
-      "implemented": true
+      "args": "items"
      }
     },
     {
      "pointer": "/data/can",
      "contains": {
       "op": "item.remove",
-      "args": "at",
-      "implemented": true
+      "args": "at"
      }
     }
    ]

@@ -19,8 +19,7 @@
           "pointer": "/data/can",
           "contains": {
             "op": "content.set",
-            "args": "items",
-            "implemented": true
+            "args": "items"
           }
         }
       ],

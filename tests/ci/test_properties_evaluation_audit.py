@@ -176,7 +176,7 @@ class PropertiesEvidenceTests(unittest.TestCase):
         for target in props_driver.PATHS:
             at = target + ".Can.props.set"
             call("unica.view", {"at": at}, {"ok": True, "at": at, "data": {"at": at, "kind": "Can", "props": {
-                "op": "props.set", "implemented": True, "contract": {"argsSchema": {"type": "object", "additionalProperties": False}}}}})
+                "op": "props.set", "contract": {"argsSchema": {"type": "object", "additionalProperties": False}}}}})
         values_by_target = {
             props_driver.MODULE: props_driver.TARGET_VALUES[props_driver.MODULE],
             props_driver.ROLE: {"synonym": "Agent1721 role", "Comment": "Agent1721 role comment"},
@@ -213,8 +213,8 @@ class PropertiesEvidenceTests(unittest.TestCase):
         response["payload"]["result"]["structuredContent"] = {
             "ok": True, "at": "main:Configuration", "data": {
                 "at": "main:Configuration", "kind": "Configuration", "can": [
-                    {"op": "object.create", "args": "values", "implemented": True},
-                    {"op": "role.create", "args": "values", "implemented": True},
+                    {"op": "object.create", "args": "values"},
+                    {"op": "role.create", "args": "values"},
                 ]}}
         return records, response
 
@@ -227,7 +227,7 @@ class PropertiesEvidenceTests(unittest.TestCase):
     def test_audit_rejects_unproven_direct_configuration_capabilities(self):
         for mutation in ["missing can", "null can", "empty can", "non-list can", "non-object capability", "missing op", "empty op",
                          "whitespace op", "non-text op", "duplicate op", "missing args", "non-text args",
-                         "missing implemented", "non-boolean implemented", "foreign result at", "foreign data at", "foreign kind",
+                         "stale implemented", "foreign result at", "foreign data at", "foreign kind",
                          "props.set", "MCP error"]:
             with self.subTest(mutation=mutation):
                 records, response = self.direct_configuration_records()
@@ -257,10 +257,8 @@ class PropertiesEvidenceTests(unittest.TestCase):
                     del data["can"][0]["args"]
                 elif mutation == "non-text args":
                     data["can"][0]["args"] = {}
-                elif mutation == "missing implemented":
-                    del data["can"][0]["implemented"]
-                elif mutation == "non-boolean implemented":
-                    data["can"][0]["implemented"] = "true"
+                elif mutation == "stale implemented":
+                    data["can"][0]["implemented"] = True
                 elif mutation == "foreign result at":
                     answer["at"] = props_driver.ROLE
                 elif mutation == "foreign data at":
@@ -268,7 +266,7 @@ class PropertiesEvidenceTests(unittest.TestCase):
                 elif mutation == "foreign kind":
                     data["kind"] = "Role"
                 elif mutation == "props.set":
-                    data["can"].append({"op": "props.set", "args": "values", "implemented": False})
+                    data["can"].append({"op": "props.set", "args": "values"})
                 else:
                     response["payload"]["result"]["isError"] = True
                 with self.assertRaises(ValueError):

@@ -17,8 +17,7 @@
           "pointer": "/data/can",
           "contains": {
             "op": "item.add",
-            "args": "items",
-            "implemented": true
+            "args": "items"
           }
         }
       ],

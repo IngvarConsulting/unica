@@ -22,16 +22,14 @@
           "pointer": "/data/can",
           "contains": {
             "op": "command.set",
-            "args": "values",
-            "implemented": true
+            "args": "values"
           }
         },
         {
           "pointer": "/data/can",
           "contains": {
             "op": "command.remove",
-            "args": "at",
-            "implemented": true
+            "args": "at"
           }
         }
       ],

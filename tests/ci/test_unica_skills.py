@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import importlib.util
 import json
 import re
 import unittest
@@ -972,17 +973,17 @@ SCENARIO_RETIRED_TOKENS = {
 def implemented_apply_operations(repo_root: Path) -> set[str]:
     """Имена, которые `unica.apply` действительно исполняет.
 
-    Список живёт в Rust и меняется вместе с продуктом; переписать его здесь
-    значило бы держать второй реестр, который устаревает молча. Пример скилла,
-    назвавший имя вне этого списка, учит вызову, отвечающему отказом.
+    Это имена закрытого реестра `domain/apply.rs`: зарегистрированная операция
+    исполняется. Список не переписывается здесь вторым реестром; пример скилла,
+    назвавший имя вне реестра, учит вызову, отвечающему отказом.
     """
-    source = (
-        repo_root / "crates/unica-coder/src/domain/apply.rs"
-    ).read_text(encoding="utf-8")
-    marker = "pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &["
-    start = source.index(marker) + len(marker)
-    body = source[start : source.index("];", start)]
-    return set(re.findall(r'"([^"]+)"', body))
+    spec = importlib.util.spec_from_file_location(
+        "acceptance_registry", repo_root / "scripts/ci/render-acceptance-registry.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    entries, _ = module.load_apply_registry()
+    return {entry[0] for entry in entries}
 
 
 def markdown_routing_units(text: str) -> list[str]:

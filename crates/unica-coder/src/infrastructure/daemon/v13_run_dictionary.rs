@@ -119,6 +119,8 @@ pub(super) fn run_dictionary_result() -> DomainResult {
     let operations = catalog
         .run_dictionary
         .iter()
+        // An unavailable operation is not listed; its call keeps its refusal.
+        .filter(|operation| operation.implemented)
         .map(|operation| {
             let dry_run_required = matches!(
                 operation.intent,
@@ -141,8 +143,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 "argsSchema": operation.args_schema(),
                 "execution": operation.execution(),
                 "effects": operation.effects(),
-                "implemented": operation.implemented,
-                "support": {"adapter":format!("v8-runner/{}", super::runner_015::VERSION), "state": if !operation.implemented {"unavailable"} else if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
+                "support": {"adapter":format!("v8-runner/{}", super::runner_015::VERSION), "state": if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
                 "terminal": operation.terminal,
                 "rejectsSessions": operation.rejects_sessions,
                 "previewRequired": false,
@@ -217,14 +218,8 @@ mod runner_one_tests {
                 assert!(result.summary.contains("issues/1246"), "{}", result.summary);
                 assert!(result.summary.contains("push"), "{}", result.summary);
             }
-            let published = operations.iter().find(|v| v["op"] == op).unwrap();
-            assert_eq!(published["implemented"], false, "{op}");
-            assert_eq!(published["support"]["state"], "unavailable", "{op}");
-            assert!(published["support"]["reason"]
-                .as_str()
-                .unwrap()
-                .contains("https://github.com/IngvarConsulting/unica/issues/1246"));
-            assert_eq!(published["support"]["adapter"], "v8-runner/0.15.2");
+            // An unavailable operation is not listed; its call above is refused.
+            assert!(operations.iter().all(|v| v["op"] != op), "{op}");
         }
     }
 
@@ -279,7 +274,7 @@ mod runner_one_tests {
             .as_array()
             .unwrap();
         let push = operations.iter().find(|v| v["op"] == "push").unwrap();
-        assert_eq!(push["implemented"], true);
+        assert!(push.get("implemented").is_none());
         assert_eq!(push["support"]["state"], "limited");
         assert!(push["support"]["supportedArgs"]["properties"]
             .get("delete")
