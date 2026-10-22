@@ -23,7 +23,6 @@ import host_capability_guard as guard
 
 # Ранние выходы, существовавшие до механизма (#1893). Список только сокращается.
 ALLOWLIST = frozenset({
-    "crates/unica-adapter-bsl-analyzer/src/jsonl.rs::reported_path_cannot_escape_the_source_root_through_a_symlink",
     "crates/unica-adapter-rlm/src/generation_collection.rs::a_link_named_like_a_generation_is_neither_followed_nor_removed",
     "crates/unica-adapter-rlm/src/generation_collection.rs::a_linked_generation_parent_is_not_walked",
     "crates/unica-adapter-rlm/src/generation_collection.rs::a_recent_file_deep_in_a_generation_keeps_it",
@@ -120,16 +119,6 @@ ALLOWLIST = frozenset({
     "crates/unica-coder/tests/platform/workspace_services_integration.rs::rlm_execute_rejects_replaced_root_and_retires_its_session",
     "crates/unica-coder/tests/platform/workspace_services_integration.rs::rlm_reader_command_preserves_native_generation_environment_bytes",
     "crates/unica-coder/tests/platform/workspace_services_integration.rs::rlm_ready_rejects_unsafe_provider_state_root",
-    "crates/unica-daemon/src/state_collection.rs::a_link_named_like_a_state_is_neither_followed_nor_removed",
-    "crates/unica-daemon/tests/platform/identity_admission.rs::symlinked_provider_state_root_is_rejected_before_creating_identity_state",
-    "crates/unica-daemon/tests/platform/identity_admission.rs::world_readable_identity_directory_is_rejected",
-    "crates/unica-metadata-integration-tests/tests/subsystem_topology.rs::registered_descriptor_symlink_is_not_followed",
-    "crates/unica-metadata-integration-tests/tests/subsystem_topology.rs::unregistered_directory_symlink_branch_does_not_affect_the_topology",
-    "crates/unica-metadata-integration-tests/tests/subsystem_topology.rs::unregistered_file_symlink_does_not_affect_the_topology",
-    "crates/unica-process/src/runtime_job.rs::external_cancel_error_binds_system_drop_to_the_same_cleanup_deadline",
-    "crates/unica-process/src/runtime_job.rs::reap_authority_loss_makes_cancel_and_drop_send_zero_group_signals",
-    "crates/unica-process/src/runtime_job.rs::system_process_drop_uses_no_second_window_after_cleanup_deadline_is_consumed",
-    "crates/unica-process/src/runtime_job.rs::waitid_authority_loss_makes_cancel_and_drop_send_zero_group_signals",
     "crates/unica-workspace/src/actor_local_tests.rs::actor_state_scope_distinguishes_native_non_unicode_paths",
     "crates/unica-workspace/src/actor_local_tests.rs::descriptor_relative_read_never_follows_a_nested_directory_link",
     "crates/unica-workspace/src/actor_local_tests.rs::retained_binding_rejects_a_root_replaced_by_another_source_set_link",
