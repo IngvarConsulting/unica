@@ -1415,6 +1415,12 @@ mod tests {
             "target_path",
             "provider_dispatched",
             "xml",
+            "unknown_root",
+            "wrong_version",
+            "versionless_with_version",
+            "malformed_xml",
+            "missing_owner",
+            "empty_dump",
             "cancel",
             "platform",
             "config",
@@ -1453,6 +1459,21 @@ mod tests {
                     Some(staged.parent().unwrap().parent().unwrap().to_path_buf());
                 match defect {
                     "xml" => fs::write(staged.join("Configuration.xml"), "<invalid/>").unwrap(),
+                    "unknown_root" => fs::write(staged.join("Unknown.xml"), r#"<UnregisteredDumpRoot xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#).unwrap(),
+                    "wrong_version" => {
+                        let owner = staged.join("Configuration.xml");
+                        let text = fs::read_to_string(&owner).unwrap().replace("2.20", "2.19");
+                        fs::write(owner, text).unwrap();
+                    },
+                    "versionless_with_version" => fs::write(staged.join("Unknown.xml"), r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#).unwrap(),
+                    "malformed_xml" => fs::write(staged.join("Unknown.xml"), "<broken password=provider-secret stdout-marker /private/private-marker>").unwrap(),
+                    "missing_owner" => fs::remove_file(staged.join("Configuration.xml")).unwrap(),
+                    "empty_dump" => {
+                        for entry in fs::read_dir(staged).unwrap() {
+                            let path = entry.unwrap().path();
+                            if path.is_dir() { fs::remove_dir_all(path).unwrap(); } else { fs::remove_file(path).unwrap(); }
+                        }
+                    },
                     "cancel" => command.cancellation.cancel(),
                     "platform" => {
                         fs::write(
@@ -1473,6 +1494,37 @@ mod tests {
                 &runner,
             );
             assert!(!result.ok, "{defect}");
+            let expected = match defect {
+                "xml" => Some(("invalidOwner", Some("Configuration.xml"))),
+                "unknown_root" => Some(("unsupportedRoot", Some("Unknown.xml"))),
+                "wrong_version" => Some(("wrongVersion", Some("Configuration.xml"))),
+                "versionless_with_version" => Some(("wrongVersion", Some("Unknown.xml"))),
+                "malformed_xml" => Some(("invalidXml", Some("Unknown.xml"))),
+                "missing_owner" => Some(("missingOwner", Some("Configuration.xml"))),
+                "empty_dump" => Some(("emptyDump", None)),
+                _ => None,
+            };
+            if let Some((reason, path)) = expected {
+                let data = result
+                    .data
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{defect}: {result:?}"));
+                assert_eq!(data["state"], "notPublished", "{defect}");
+                assert_eq!(data["validation"]["reason"], reason, "{defect}");
+                assert_eq!(data["validation"]["path"], json!(path), "{defect}");
+                assert!(
+                    result.summary.contains(reason),
+                    "text-only client needs the reason"
+                );
+                assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+                assert!(
+                    result
+                        .warnings
+                        .iter()
+                        .any(|warning| warning["reason"] == "writerCompletionUnconfirmed"),
+                    "{defect}: separate cleanup reason survives validation failure"
+                );
+            }
             let private_root = retained_stage.lock().unwrap().take().unwrap();
             assert_eq!(result.artifacts.len(), 1, "{defect}");
             assert_eq!(result.artifacts[0]["kind"], "recovery", "{defect}");
@@ -1485,6 +1537,14 @@ mod tests {
             let encoded = serde_json::to_string(&result).unwrap();
             assert!(!encoded.contains("1cv8"), "{defect}");
             assert!(!encoded.contains("--config"), "{defect}");
+            for private in [
+                "provider-secret",
+                "stdout-marker",
+                "private-marker",
+                root.path().to_str().unwrap(),
+            ] {
+                assert!(!encoded.contains(private), "{defect}: leaked {private}");
+            }
             // Only the checked recovery artifact may name private staging.
             let mut without_recovery = serde_json::to_value(&result).unwrap();
             without_recovery
@@ -2047,7 +2107,13 @@ mod tests {
                             "private location uncertainty must not change public publication facts"
                         );
                     }
-                    let annotation = format!("original name: {}", private.display());
+                    let annotation = format!(
+                        "original name: {}",
+                        private
+                            .strip_prefix(normalize_path_identity(root.path()).unwrap())
+                            .unwrap()
+                            .display()
+                    );
                     let mut without_location_note = serde_json::to_value(&result).unwrap();
                     let warnings = without_location_note["warnings"].as_array_mut().unwrap();
                     let before_count = warnings.len();

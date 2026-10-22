@@ -3,6 +3,64 @@
 use crate::{SourceFormat, SourceSetKind};
 use std::path::Path;
 
+/// Format-owned observations; arbitrary parser and filesystem text stays private.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DumpValidationReason {
+    UnsupportedRoot,
+    WrongVersion,
+    InvalidXml,
+    InvalidOwner,
+    MissingOwner,
+    EmptyDump,
+    UnreadableSource,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(tag = "kind", content = "literal", rename_all = "camelCase")]
+pub enum DumpVersionRequirement {
+    Exact(&'static str),
+    Absent,
+}
+
+#[derive(Debug)]
+pub struct DumpValidationFailure {
+    pub reason: DumpValidationReason,
+    pub path: Option<std::path::PathBuf>,
+    pub root: Option<(String, String)>,
+    pub version_requirement: Option<DumpVersionRequirement>,
+    detail: Box<str>,
+}
+impl DumpValidationFailure {
+    pub fn new(reason: DumpValidationReason, path: Option<&Path>, detail: String) -> Self {
+        Self {
+            reason,
+            path: path.map(Path::to_path_buf),
+            root: None,
+            version_requirement: None,
+            detail: detail.into_boxed_str(),
+        }
+    }
+    pub fn with_version(mut self, requirement: DumpVersionRequirement) -> Self {
+        self.version_requirement = Some(requirement);
+        self
+    }
+    pub fn with_root(mut self, namespace: &str, local_name: &str) -> Self {
+        self.root = Some((namespace.to_owned(), local_name.to_owned()));
+        self
+    }
+}
+impl std::fmt::Display for DumpValidationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+impl From<String> for DumpValidationFailure {
+    fn from(detail: String) -> Self {
+        Self::new(DumpValidationReason::UnreadableSource, None, detail)
+    }
+}
+
 pub trait DumpTreeReadPort {
     fn display_root(&self) -> &Path;
     fn is_directory(&self) -> bool;
@@ -64,7 +122,7 @@ pub trait DumpSemanticValidator: Send + Sync {
         &self,
         tree: &DumpTreeObservation<'_>,
         kind: SourceSetKind,
-    ) -> Result<(), String>;
+    ) -> Result<(), DumpValidationFailure>;
     fn validate_existing_target(
         &self,
         tree: &DumpTreeObservation<'_>,
