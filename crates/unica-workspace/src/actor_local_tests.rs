@@ -121,12 +121,12 @@ fn retained_binding_rejects_a_root_replaced_by_another_source_set_link() {
         FileLinkFixtureOutcome::Created => {}
         FileLinkFixtureOutcome::Unsupported
         | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            let _ = std::fs::rename(&displaced, &fixture.roots[0]);
+            fixture.cleanup();
             unica_process::test_support::skip_without_host_capability(
                 unica_process::test_support::HostCapability::Symlink,
                 "creating a link fixture needs the symlink privilege",
             );
-            let _ = std::fs::rename(&displaced, &fixture.roots[0]);
-            fixture.cleanup();
             return;
         }
     }
@@ -175,11 +175,11 @@ fn descriptor_relative_read_never_follows_a_nested_directory_link() {
         FileLinkFixtureOutcome::Created => {}
         FileLinkFixtureOutcome::Unsupported
         | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            fixture.cleanup();
             unica_process::test_support::skip_without_host_capability(
                 unica_process::test_support::HostCapability::Symlink,
                 "creating a link fixture needs the symlink privilege",
             );
-            fixture.cleanup();
             return;
         }
     }

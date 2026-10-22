@@ -535,16 +535,19 @@ mod tests {
     }
 
     /// Sets the modification time of every entry under `root`, deepest first.
+    /// Backdates the tree. Only setting a directory's time may fail as a
+    /// host capability; walking the tree and aging files must succeed.
     fn age_tree(root: &Path, time: SystemTime) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(root)? {
-            let path = entry?.path();
+        for entry in std::fs::read_dir(root).expect("read the fixture tree") {
+            let path = entry.expect("read a fixture entry").path();
             if path.is_dir() {
                 age_tree(&path, time)?;
             } else {
                 File::options()
                     .write(true)
-                    .open(&path)?
-                    .set_modified(time)?;
+                    .open(&path)
+                    .and_then(|file| file.set_modified(time))
+                    .expect("backdate a fixture file");
             }
         }
         File::open(root)?.set_modified(time)

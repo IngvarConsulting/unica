@@ -2079,11 +2079,11 @@ mod tests {
         let target = root.join("existing.bin");
         fs::write(&target, b"original").unwrap();
         if !set_unix_mode_for_test(&target, 0o640).unwrap() {
+            fs::remove_dir_all(root).unwrap();
             unica_process::test_support::skip_without_host_capability(
                 unica_process::test_support::HostCapability::UnixPermissionBits,
                 "the test sets Unix permission bits",
             );
-            fs::remove_dir_all(root).unwrap();
             return;
         }
 

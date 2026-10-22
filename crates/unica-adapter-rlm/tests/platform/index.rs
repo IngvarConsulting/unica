@@ -743,8 +743,9 @@ fn active_build_collects_an_idle_previous_generation_but_not_the_current_one() {
     let aged = previous.iter().chain([&current]).try_for_each(|directory| {
         File::options()
             .write(true)
-            .open(directory.join("payload"))?
-            .set_modified(old)?;
+            .open(directory.join("payload"))
+            .and_then(|payload| payload.set_modified(old))
+            .expect("backdate the payload file");
         File::open(directory)?.set_modified(old)
     });
     if aged.is_err() {
