@@ -726,11 +726,13 @@ def uuid_normalized_semantic_sha256(
     """Digest XML semantics while alpha-renaming declared object identities only."""
     uuid_tokens: dict[str, str] = {}
 
-    def is_random_v4_identity(value: str) -> bool:
+    def is_generated_identity(value: str) -> bool:
+        # Version 4 is random; version 8 is derived from the source-set root
+        # (borrowing). Both differ between independent corpus generations.
         parts = value.lower().split("-")
         return (
             len(parts) == 5
-            and parts[2].startswith("4")
+            and parts[2][:1] in {"4", "8"}
             and parts[3][:1] in {"8", "9", "a", "b"}
         )
 
@@ -751,7 +753,7 @@ def uuid_normalized_semantic_sha256(
                 if (
                     attribute_local_name in {"uuid", "id"}
                     and UUID_TEXT_RE.fullmatch(attribute_value) is not None
-                    and is_random_v4_identity(attribute_value)
+                    and is_generated_identity(attribute_value)
                     and not (
                         element_local_name == "panelDef"
                         and attribute_local_name == "id"
@@ -766,7 +768,7 @@ def uuid_normalized_semantic_sha256(
             if (
                 local_name in {"TypeId", "ValueId", "ObjectId", "ThisNode"}
                 and UUID_TEXT_RE.fullmatch(text_value) is not None
-                and is_random_v4_identity(text_value)
+                and is_generated_identity(text_value)
             ):
                 lexical = text_value.lower()
                 uuid_tokens.setdefault(

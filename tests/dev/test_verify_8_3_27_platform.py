@@ -422,6 +422,38 @@ class SemanticXmlTests(unittest.TestCase):
                     verifier.semantic_xml(payload, f"{label}.xml"),
                 )
 
+    def test_derived_version_8_identities_are_normalized_like_random_ones(self) -> None:
+        # Borrowing derives v8 identities from the source-set root, so two
+        # independent corpus generations differ only by them.
+        verifier = load_verifier()
+        first = {
+            "a.xml": b'<r><Catalog uuid="d1455153-f6ed-824b-8506-bd8963306e15"/><TypeId>d1455153-f6ed-824b-8506-bd8963306e15</TypeId></r>'
+        }
+        regenerated = {
+            "a.xml": b'<r><Catalog uuid="0b7c2e11-5a33-8c01-9a77-1f2e3d4c5b6a"/><TypeId>0b7c2e11-5a33-8c01-9a77-1f2e3d4c5b6a</TypeId></r>'
+        }
+        split = {
+            "a.xml": b'<r><Catalog uuid="d1455153-f6ed-824b-8506-bd8963306e15"/><TypeId>0b7c2e11-5a33-8c01-9a77-1f2e3d4c5b6a</TypeId></r>'
+        }
+        fixed_version_1 = {
+            "a.xml": b'<r><Catalog uuid="d1455153-f6ed-124b-8506-bd8963306e15"/></r>'
+        }
+        other_version_1 = {
+            "a.xml": b'<r><Catalog uuid="0b7c2e11-5a33-1c01-9a77-1f2e3d4c5b6a"/></r>'
+        }
+        self.assertEqual(
+            verifier.uuid_normalized_semantic_sha256(first, "first"),
+            verifier.uuid_normalized_semantic_sha256(regenerated, "regenerated"),
+        )
+        self.assertNotEqual(
+            verifier.uuid_normalized_semantic_sha256(first, "first"),
+            verifier.uuid_normalized_semantic_sha256(split, "split"),
+        )
+        self.assertNotEqual(
+            verifier.uuid_normalized_semantic_sha256(fixed_version_1, "fixed"),
+            verifier.uuid_normalized_semantic_sha256(other_version_1, "other"),
+        )
+
     def test_semantic_digest_alpha_renames_uuids_but_keeps_content(self):
         verifier = load_verifier()
         first = {

@@ -845,7 +845,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn random_v4_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
+fn generated_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
     const UUID_LEN: usize = 36;
     let candidate = payload.get(offset..offset + UUID_LEN)?;
     if (offset > 0 && payload[offset - 1].is_ascii_hexdigit())
@@ -861,7 +861,9 @@ fn random_v4_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
             return None;
         }
     }
-    if candidate[14] != b'4'
+    // Версия 4 — случайные идентичности, версия 8 — выведенные из корня
+    // набора (заимствование): обе меняются от порождения к порождению.
+    if !matches!(candidate[14], b'4' | b'8')
         || !matches!(
             candidate[19].to_ascii_lowercase(),
             b'8' | b'9' | b'a' | b'b'
@@ -872,7 +874,7 @@ fn random_v4_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
     Some(std::str::from_utf8(candidate).ok()?.to_ascii_lowercase())
 }
 
-fn normalize_random_v4_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+fn normalize_generated_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
     let mut identities = BTreeMap::<String, Vec<u8>>::new();
     for payload in payloads.values() {
         let text = std::str::from_utf8(payload)
@@ -889,7 +891,7 @@ fn normalize_random_v4_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<S
                 }
                 let value = attribute.value();
                 let Some(identity) = (value.len() == 36)
-                    .then(|| random_v4_uuid_lexeme(value.as_bytes(), 0))
+                    .then(|| generated_uuid_lexeme(value.as_bytes(), 0))
                     .flatten()
                 else {
                     continue;
@@ -904,7 +906,7 @@ fn normalize_random_v4_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<S
             }
             let value = element.text().unwrap_or_default().trim();
             let Some(identity) = (value.len() == 36)
-                .then(|| random_v4_uuid_lexeme(value.as_bytes(), 0))
+                .then(|| generated_uuid_lexeme(value.as_bytes(), 0))
                 .flatten()
             else {
                 continue;
@@ -920,7 +922,7 @@ fn normalize_random_v4_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<S
         let mut bytes = Vec::with_capacity(payload.len());
         let mut offset = 0;
         while offset < payload.len() {
-            if let Some(identity) = random_v4_uuid_lexeme(payload, offset) {
+            if let Some(identity) = generated_uuid_lexeme(payload, offset) {
                 if let Some(token) = identities.get(&identity) {
                     bytes.extend_from_slice(token);
                     offset += 36;
@@ -956,8 +958,8 @@ fn isolated_corpus_transition_normalization_only_alpha_renames_declared_identiti
         .into_bytes(),
     );
     assert_eq!(
-        normalize_random_v4_uuids(&first),
-        normalize_random_v4_uuids(&renamed)
+        normalize_generated_uuids(&first),
+        normalize_generated_uuids(&renamed)
     );
 
     let fixed_a = b"<r><ClassId>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</ClassId><panelDef id=\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\"/><value>dddddddd-dddd-4ddd-8ddd-dddddddddddd</value></r>";
@@ -965,8 +967,8 @@ fn isolated_corpus_transition_normalization_only_alpha_renames_declared_identiti
     let fixed_first = BTreeMap::from([("a.xml".to_string(), fixed_a.to_vec())]);
     let fixed_changed = BTreeMap::from([("a.xml".to_string(), fixed_b.to_vec())]);
     assert_ne!(
-        normalize_random_v4_uuids(&fixed_first),
-        normalize_random_v4_uuids(&fixed_changed),
+        normalize_generated_uuids(&fixed_first),
+        normalize_generated_uuids(&fixed_changed),
         "fixed UUID contexts must remain significant"
     );
 }
@@ -984,7 +986,7 @@ fn normalized_xml_transition(
         post.iter()
             .map(|(path, payload)| (format!("1-post/{path}"), payload.clone())),
     );
-    normalize_random_v4_uuids(&transition)
+    normalize_generated_uuids(&transition)
 }
 
 fn is_xml_payload_path(path: &Path) -> bool {
