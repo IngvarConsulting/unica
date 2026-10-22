@@ -48,11 +48,19 @@ FINAL = re.compile(r"HTTP 40[0124]|HTTP 41[0-9]|HTTP 422")
 GONE = re.compile(r"HTTP 404|HTTP 410")
 # Поставочный хвост: идёт после ворот только на теге и ручном запуске.
 DELIVERY_TAIL = (
+    "Delivery CI",
     "Build tools", "Package thin", "P0 dry RC", "Probe thin bootstrap", "Assess Linux runtime",
     "Publish runtime assets", "Smoke published thin plugin", "Re-download and verify",
 )
 # Джобы, чьи логи нужны для образа, toolchain, кеша и строк компиляции.
-RUST_JOB = re.compile(r"^(Rust |Build Rust |Warm Rust |Ordinary binary)")
+# Джобы раскладки до #1813: по ним прогон узнаётся как прежний.
+LEGACY_JOBS = ("Rust tests (", "Build Rust ", "Python tests (", "Guards")
+RUST_JOB = re.compile(r"^(Rust |Build Rust |Warm Rust |Ordinary binary|Unica CI$)")
+RUNNER_ARTIFACT = re.compile(r"(plan|results)-(ubuntu-latest|macos-14|windows-latest)\Z")
+LANE_MEMBER_ROOT = re.compile(r"lane\.json\Z")
+SHARD_MEMBER_ROOT = re.compile(r"shard\.json\Z")
+LANE_MEMBER = re.compile(r"(?:.*/)?plan-rust-[^/]+/lane\.json\Z")
+SHARD_MEMBER = re.compile(r"(?:.*/)?results-rust-[^/]+/shard\.json\Z")
 # Rust-тесты исполнялись: до #1861 — `Rust tests (<ОС>)`, после — полосы.
 RUST_TESTS = re.compile(r"^(Rust tests \((?!complete)|Rust ordinary \()")
 
@@ -233,7 +241,11 @@ def run_metrics(run: dict, jobs: list[dict], logs: dict[int, dict], lanes: list[
     ran = [job for job, raw in zip(measured, jobs)
            if executed(raw) and (raw.get("run_attempt") or attempt) == attempt]
     gate = next((job for job in measured if job["name"] == GATE_JOB), None)
-    gate_jobs = [job for job in ran if job["name"] != GATE_JOB and not is_tail(job["name"])]
+    # До #1813 `Unica CI` только собирал исходы джоб, а на ручном запуске ждал
+    # и хвост; теперь он сам исполняет Linux. Сравнимое время — до последней
+    # непоставочной джобы, куда прежний гейт-агрегатор не входит.
+    legacy = any(job["name"].startswith(LEGACY_JOBS) for job in ran)
+    gate_jobs = [job for job in ran if not is_tail(job["name"]) and not (legacy and job["name"] == GATE_JOB)]
     last = max(gate_jobs, key=lambda job: job["completedAt"], default=None)
     minutes: dict[str, float] = {}
     for job in ran:
@@ -265,7 +277,7 @@ def run_metrics(run: dict, jobs: list[dict], logs: dict[int, dict], lanes: list[
         "lastGateJob": None if last is None else last["name"],
         "deliveryTailRan": any(is_tail(job["name"]) for job in ran),
         # Документационная очередь пропускает Rust: её время не сравнимо с кодовой.
-        "rustTestsRan": any(RUST_TESTS.match(job["name"]) for job in ran),
+        "rustTestsRan": any(RUST_TESTS.match(job["name"]) for job in ran) or bool(shards),
         "runnerMinutes": {"total": sum(minutes.values()), **minutes},
         "runnerWait": {
             "maxSeconds": max((job["waitSeconds"] or 0.0 for job in ran), default=0.0),
@@ -470,12 +482,15 @@ class GitHub:
         return self.paged(f"repos/{self.repo}/actions/runs/{run_id}/artifacts", "artifacts", cached=False)
 
     def artifact_member(self, artifact_id: int, member: str) -> dict | None:
+        found = self.artifact_members(artifact_id, re.compile(re.escape(member) + r"\Z"))
+        return found[0] if found else None
+
+    def artifact_members(self, artifact_id: int, pattern: re.Pattern) -> list[dict]:
         try:
             archive = zipfile.ZipFile(io.BytesIO(self.get(f"repos/{self.repo}/actions/artifacts/{artifact_id}/zip")))
         except (RuntimeError, zipfile.BadZipFile):
-            return None
-        names = set(archive.namelist())
-        return json.loads(archive.read(member)) if member in names else None
+            return []
+        return [json.loads(archive.read(name)) for name in sorted(archive.namelist()) if pattern.match(name)]
 
 
 def collect(github: GitHub, run_id: int, attempt: int | None, *, logs: bool, artifacts: bool) -> dict:
@@ -495,10 +510,16 @@ def collect(github: GitHub, run_id: int, attempt: int | None, *, logs: bool, art
             if artifact.get("expired"):
                 continue
             name = artifact["name"]
-            if name.startswith("plan-rust-") and (document := github.artifact_member(artifact["id"], "lane.json")):
-                lanes.append(lane_metrics(document))
-            elif name.startswith("results-rust-") and (document := github.artifact_member(artifact["id"], "shard.json")):
-                shards.append(shard_metrics(document))
+            # Одна полоса на артефакт (до #1813) или каталоги всех полос раннера
+            # внутри `plan-<runner>` и `results-<runner>`.
+            if name.startswith("plan-rust-"):
+                lanes += [lane_metrics(document) for document in github.artifact_members(artifact["id"], LANE_MEMBER_ROOT)]
+            elif name.startswith("results-rust-"):
+                shards += [shard_metrics(document) for document in github.artifact_members(artifact["id"], SHARD_MEMBER_ROOT)]
+            elif RUNNER_ARTIFACT.match(name) and name.startswith("plan-"):
+                lanes += [lane_metrics(document) for document in github.artifact_members(artifact["id"], LANE_MEMBER)]
+            elif RUNNER_ARTIFACT.match(name):
+                shards += [shard_metrics(document) for document in github.artifact_members(artifact["id"], SHARD_MEMBER)]
         # Артефакты с `overwrite: true` переживают попытки: брать только свою.
         lanes = [lane for lane in lanes if str(lane["attempt"] or attempt) == str(attempt)]
         shards = [shard for shard in shards if str(shard["attempt"] or attempt) == str(attempt)]

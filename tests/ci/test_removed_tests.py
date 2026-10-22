@@ -128,15 +128,15 @@ class RemovedTestsTests(unittest.TestCase):
 
     def test_pull_request_runs_check_removed_tests_against_their_base(self):
         workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-plugin-release.yml").read_text())
-        steps = workflow["jobs"]["test-rust-platforms"]["steps"]
+        steps = workflow["jobs"]["unica-ci"]["steps"]
         names = [step.get("run", "") for step in steps]
         index = next(i for i, run in enumerate(names) if "removed_tests.py" in run)
         step = steps[index]
-        self.assertEqual(step["if"], "${{ !cancelled() && github.event_name == 'pull_request' }}")
+        self.assertEqual(step["if"], "${{ !cancelled() && github.event_name == 'pull_request' && steps.classify.outputs.rust_required == 'true' }}")
         self.assertIn("--base HEAD^1", step["run"])
         # After verify: its own failure never hides or confuses the inventory verdict.
         self.assertLess(next(i for i, run in enumerate(names) if "--phase verify" in run), index)
-        self.assertIn("pull-requests", workflow["jobs"]["test-rust-platforms"]["permissions"])
+        self.assertIn("pull-requests", workflow["jobs"]["unica-ci"]["permissions"])
 
 
 if __name__ == "__main__":
