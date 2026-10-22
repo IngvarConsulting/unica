@@ -220,7 +220,10 @@ fn canonical_form_support_refuses_linked_marker_and_ext() {
             .unwrap()
         };
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let result = fixture
