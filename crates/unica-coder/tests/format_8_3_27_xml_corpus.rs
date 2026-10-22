@@ -2,13 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use unica_coder::application::{ToolHandler, UnicaApplication};
 
 #[path = "platform/daemon_teardown.rs"]
 mod daemon_teardown;
@@ -26,10 +24,12 @@ enum XmlImpactClass {
     RemoveOrModify,
 }
 
+/// Семейство кейсов корпуса: метка `operation` в манифесте и канонические
+/// операции `unica.apply`, из которых состоит целевой вызов кейса.
 #[derive(Debug, Clone, Copy)]
 struct MutatorRegistryEntry {
-    tool: &'static str,
     operation: &'static str,
+    ops: &'static [&'static str],
     impact: XmlImpactClass,
     case_ids: &'static [&'static str],
     required_branches: &'static [&'static str],
@@ -44,82 +44,43 @@ pub(crate) struct ExecutableCase {
 
 static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
     MutatorRegistryEntry {
-        tool: "unica.cf.edit",
-        operation: "cf-edit",
+        operation: "object-borrow",
+        ops: &["object.borrow"],
         impact: XmlImpactClass::CreateOrModify,
-        case_ids: &[
-            "cf-edit-root-property",
-            "cf-edit-set-panels",
-            "cf-edit-set-home-page",
-        ],
-        required_branches: &["root-property", "set-panels", "set-home-page"],
+        case_ids: &["cfe-borrow-object"],
+        required_branches: &["metadata-object"],
     },
     MutatorRegistryEntry {
-        tool: "unica.cf.init",
-        operation: "cf-init",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["cf-init-default"],
-        required_branches: &["default"],
-    },
-    MutatorRegistryEntry {
-        tool: "unica.cfe.borrow",
-        operation: "cfe-borrow",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["cfe-borrow-object", "cfe-borrow-managed-form"],
-        required_branches: &["metadata-object", "managed-form"],
-    },
-    MutatorRegistryEntry {
-        tool: "unica.cfe.init",
-        operation: "cfe-init",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["cfe-init-default"],
-        required_branches: &["default"],
-    },
-    MutatorRegistryEntry {
-        tool: "unica.cfe.patch_method",
-        operation: "cfe-patch-method",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &[
-            "cfe-patch-method-bsl-only",
-            "cfe-patch-method-catalog-object-module",
-            "cfe-patch-method-catalog-manager-module",
-            "cfe-patch-method-information-register-record-set-module",
-            "cfe-patch-method-catalog-form-module",
-            "cfe-patch-method-constant-value-manager-module",
-        ],
-        required_branches: &[
-            "CommonModule",
-            "Catalog.ObjectModule",
-            "Catalog.ManagerModule",
-            "InformationRegister.RecordSetModule",
-            "Catalog.Form",
-            "Constant.ValueManagerModule",
-        ],
-    },
-    MutatorRegistryEntry {
-        tool: "unica.code.patch",
-        operation: "code-patch",
+        operation: "code-insert",
+        ops: &["code.insert"],
         impact: XmlImpactClass::None,
         case_ids: &["code-patch-bsl-only"],
         required_branches: &["bsl-only"],
     },
     MutatorRegistryEntry {
-        tool: CANONICAL_APPLY_TOOL,
         operation: "xdto-edit",
+        ops: &["property.add"],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["xdto-add-nested-property"],
         required_branches: &["nested-property"],
     },
     MutatorRegistryEntry {
-        tool: CANONICAL_APPLY_TOOL,
         operation: "dcs-component-create",
+        ops: &["template.add"],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["dcs-compile-owned-template"],
         required_branches: &["owned-template"],
     },
     MutatorRegistryEntry {
-        tool: CANONICAL_APPLY_TOOL,
         operation: "dcs-component-modify",
+        ops: &[
+            "field.add",
+            "selection.add",
+            "parameter.add",
+            "structure.set",
+            "field.set",
+            "fieldRole.set",
+        ],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &[
             "dcs-edit-owned-template",
@@ -135,57 +96,55 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         ],
     },
     MutatorRegistryEntry {
-        tool: "unica.epf.init",
-        operation: "epf-init",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["epf-init-managed-form"],
-        required_branches: &["managed-form"],
-    },
-    MutatorRegistryEntry {
-        tool: "unica.erf.init",
-        operation: "erf-init",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["erf-init-managed-form"],
-        required_branches: &["managed-form"],
-    },
-    MutatorRegistryEntry {
-        tool: "unica.apply",
         operation: "form-add",
+        ops: &["form.add"],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["form-add-managed"],
         required_branches: &["managed-form"],
     },
     MutatorRegistryEntry {
-        tool: "unica.form.compile",
-        operation: "form-compile",
+        operation: "form-compose",
+        ops: &["attribute.add", "command.add", "item.add"],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["form-compile-managed"],
         required_branches: &["managed-form"],
     },
     MutatorRegistryEntry {
-        tool: "unica.form.edit",
-        operation: "form-edit",
+        operation: "form-attribute-add",
+        ops: &["attribute.add"],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["form-edit-managed"],
         required_branches: &["managed-form"],
     },
     MutatorRegistryEntry {
-        tool: CANONICAL_APPLY_TOOL,
         operation: "form-remove",
+        ops: &["form.remove"],
         impact: XmlImpactClass::RemoveOrModify,
         case_ids: &["form-remove-managed"],
         required_branches: &["remove-managed-form"],
     },
     MutatorRegistryEntry {
-        tool: "unica.interface.edit",
-        operation: "interface-edit",
+        operation: "help-create",
+        ops: &["help.create"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["help-add-object"],
+        required_branches: &["object-help"],
+    },
+    MutatorRegistryEntry {
+        operation: "command-visibility-set",
+        ops: &["commandVisibility.set"],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["interface-edit-subsystem"],
         required_branches: &["subsystem-command-interface"],
     },
     MutatorRegistryEntry {
-        tool: "unica.meta.add",
-        operation: "meta-add",
+        operation: "object-create",
+        ops: &[
+            "object.create",
+            "dimension.add",
+            "resource.add",
+            "props.set",
+        ],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &[
             "meta-compile-catalog",
@@ -239,8 +198,13 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         ],
     },
     MutatorRegistryEntry {
-        tool: "unica.meta.edit",
-        operation: "meta-edit",
+        operation: "metadata-edit",
+        ops: &[
+            "props.set",
+            "predefinedItem.add",
+            "relation.replace",
+            "resource.add",
+        ],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &[
             "meta-edit-predefined-items",
@@ -248,13 +212,6 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
             "meta-edit-event-source",
             "meta-edit-resource-append",
             "meta-edit-resource-position-after",
-            "help-add-object",
-            "template-add-spreadsheet-document",
-            "template-add-data-composition-schema",
-            "template-add-text-document",
-            "template-add-html-document",
-            "template-add-binary-data",
-            "template-remove-object-template",
         ],
         required_branches: &[
             "predefined-items",
@@ -262,119 +219,71 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
             "event-source",
             "resource-append",
             "resource-position-after",
-            "object-help",
-            "SpreadsheetDocument",
-            "DataCompositionSchema",
-            "TextDocument",
-            "HTMLDocument",
-            "BinaryData",
-            "remove-object-template",
         ],
     },
     MutatorRegistryEntry {
-        tool: CANONICAL_APPLY_TOOL,
         operation: "meta-remove",
+        ops: &["object.remove"],
         impact: XmlImpactClass::RemoveOrModify,
         case_ids: &["meta-remove-object"],
         required_branches: &["remove-object"],
     },
     MutatorRegistryEntry {
-        tool: "unica.role.edit",
-        operation: "role-edit",
+        operation: "right-set",
+        ops: &["right.set"],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["role-edit-set-right"],
         required_branches: &["set-right"],
     },
     MutatorRegistryEntry {
-        tool: "unica.subsystem.edit",
-        operation: "subsystem-edit",
+        operation: "child-subsystem-add",
+        ops: &["childSubsystem.add"],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["subsystem-edit-add-child"],
         required_branches: &["add-child"],
     },
     MutatorRegistryEntry {
-        tool: "unica.apply",
         operation: "support-edit",
+        ops: &["supportCapability.set"],
         impact: XmlImpactClass::None,
         case_ids: &["support-edit-bin-only"],
         required_branches: &["parent-configurations-bin-only"],
     },
+    MutatorRegistryEntry {
+        operation: "template-add",
+        ops: &["template.add"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["template-add-spreadsheet-document"],
+        required_branches: &["SpreadsheetDocument"],
+    },
+    MutatorRegistryEntry {
+        operation: "template-remove",
+        ops: &["template.remove"],
+        impact: XmlImpactClass::RemoveOrModify,
+        case_ids: &["template-remove-object-template"],
+        required_branches: &["remove-object-template"],
+    },
 ];
 
+/// Каждый кейс публикуется каноническим `unica.apply` собранного бинаря.
+/// Кейсы без канонической операции сняты: инициализаторы и перехват метода
+/// расширения (#1813), правка корня конфигурации (#1981), заимствование
+/// формы (#1982), макеты TextDocument/HTMLDocument/BinaryData (#992) и
+/// повтор первой публикации `dcs-compile-owned-template`.
 pub(crate) static EXECUTABLE_CASES: &[ExecutableCase] = &[
     ExecutableCase {
-        id: "cf-edit-root-property",
-        tool: "unica.cf.edit",
-        branch: "root-property",
-    },
-    ExecutableCase {
-        id: "cf-edit-set-panels",
-        tool: "unica.cf.edit",
-        branch: "set-panels",
-    },
-    ExecutableCase {
-        id: "cf-edit-set-home-page",
-        tool: "unica.cf.edit",
-        branch: "set-home-page",
-    },
-    ExecutableCase {
-        id: "cf-init-default",
-        tool: "unica.cf.init",
-        branch: "default",
-    },
-    ExecutableCase {
         id: "cfe-borrow-object",
-        tool: "unica.cfe.borrow",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "metadata-object",
     },
     ExecutableCase {
-        id: "cfe-borrow-managed-form",
-        tool: "unica.cfe.borrow",
-        branch: "managed-form",
-    },
-    ExecutableCase {
-        id: "cfe-init-default",
-        tool: "unica.cfe.init",
-        branch: "default",
-    },
-    ExecutableCase {
-        id: "cfe-patch-method-bsl-only",
-        tool: "unica.cfe.patch_method",
-        branch: "CommonModule",
-    },
-    ExecutableCase {
-        id: "cfe-patch-method-catalog-object-module",
-        tool: "unica.cfe.patch_method",
-        branch: "Catalog.ObjectModule",
-    },
-    ExecutableCase {
-        id: "cfe-patch-method-catalog-manager-module",
-        tool: "unica.cfe.patch_method",
-        branch: "Catalog.ManagerModule",
-    },
-    ExecutableCase {
-        id: "cfe-patch-method-information-register-record-set-module",
-        tool: "unica.cfe.patch_method",
-        branch: "InformationRegister.RecordSetModule",
-    },
-    ExecutableCase {
-        id: "cfe-patch-method-catalog-form-module",
-        tool: "unica.cfe.patch_method",
-        branch: "Catalog.Form",
-    },
-    ExecutableCase {
-        id: "cfe-patch-method-constant-value-manager-module",
-        tool: "unica.cfe.patch_method",
-        branch: "Constant.ValueManagerModule",
-    },
-    ExecutableCase {
         id: "code-patch-bsl-only",
-        tool: "unica.code.patch",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "bsl-only",
     },
     ExecutableCase {
         id: "xdto-add-nested-property",
-        tool: "unica.apply",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "nested-property",
     },
     ExecutableCase {
@@ -403,233 +312,203 @@ pub(crate) static EXECUTABLE_CASES: &[ExecutableCase] = &[
         branch: "modify-field-role-restriction",
     },
     ExecutableCase {
-        id: "epf-init-managed-form",
-        tool: "unica.epf.init",
-        branch: "managed-form",
-    },
-    ExecutableCase {
-        id: "erf-init-managed-form",
-        tool: "unica.erf.init",
-        branch: "managed-form",
-    },
-    ExecutableCase {
         id: "form-add-managed",
-        tool: "unica.apply",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "managed-form",
     },
     ExecutableCase {
         id: "form-compile-managed",
-        tool: "unica.form.compile",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "managed-form",
     },
     ExecutableCase {
         id: "form-edit-managed",
-        tool: "unica.form.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "managed-form",
     },
     ExecutableCase {
         id: "form-remove-managed",
-        tool: "unica.apply",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "remove-managed-form",
     },
     ExecutableCase {
         id: "help-add-object",
-        tool: "unica.meta.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "object-help",
     },
     ExecutableCase {
         id: "interface-edit-subsystem",
-        tool: "unica.interface.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "subsystem-command-interface",
     },
     ExecutableCase {
         id: "meta-compile-catalog",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "Catalog",
     },
     ExecutableCase {
         id: "meta-compile-document",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "Document",
     },
     ExecutableCase {
         id: "meta-compile-enum",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "Enum",
     },
     ExecutableCase {
         id: "meta-compile-constant",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "Constant",
     },
     ExecutableCase {
         id: "meta-compile-information-register",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "InformationRegister",
     },
     ExecutableCase {
         id: "meta-compile-accumulation-register",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "AccumulationRegister",
     },
     ExecutableCase {
         id: "meta-compile-accounting-register",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "AccountingRegister",
     },
     ExecutableCase {
         id: "meta-compile-calculation-register",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "CalculationRegister",
     },
     ExecutableCase {
         id: "meta-compile-chart-of-accounts",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "ChartOfAccounts",
     },
     ExecutableCase {
         id: "meta-compile-chart-of-characteristic-types",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "ChartOfCharacteristicTypes",
     },
     ExecutableCase {
         id: "meta-compile-chart-of-calculation-types",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "ChartOfCalculationTypes",
     },
     ExecutableCase {
         id: "meta-compile-business-process",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "BusinessProcess",
     },
     ExecutableCase {
         id: "meta-compile-task",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "Task",
     },
     ExecutableCase {
         id: "meta-compile-exchange-plan",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "ExchangePlan",
     },
     ExecutableCase {
         id: "meta-compile-document-journal",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "DocumentJournal",
     },
     ExecutableCase {
         id: "meta-compile-report",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "Report",
     },
     ExecutableCase {
         id: "meta-compile-data-processor",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "DataProcessor",
     },
     ExecutableCase {
         id: "meta-compile-common-module",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "CommonModule",
     },
     ExecutableCase {
         id: "meta-compile-scheduled-job",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "ScheduledJob",
     },
     ExecutableCase {
         id: "meta-compile-event-subscription",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "EventSubscription",
     },
     ExecutableCase {
         id: "meta-compile-http-service",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "HTTPService",
     },
     ExecutableCase {
         id: "meta-compile-web-service",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "WebService",
     },
     ExecutableCase {
         id: "meta-compile-defined-type",
-        tool: "unica.meta.add",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "DefinedType",
     },
     ExecutableCase {
         id: "meta-edit-predefined-items",
-        tool: "unica.meta.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "predefined-items",
     },
     ExecutableCase {
         id: "meta-edit-property",
-        tool: "unica.meta.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "modify-property",
     },
     ExecutableCase {
         id: "meta-edit-event-source",
-        tool: "unica.meta.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "event-source",
     },
     ExecutableCase {
         id: "meta-edit-resource-append",
-        tool: "unica.meta.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "resource-append",
     },
     ExecutableCase {
         id: "meta-edit-resource-position-after",
-        tool: "unica.meta.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "resource-position-after",
     },
     ExecutableCase {
         id: "meta-remove-object",
-        tool: "unica.apply",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "remove-object",
     },
     ExecutableCase {
         id: "role-edit-set-right",
-        tool: "unica.role.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "set-right",
     },
     ExecutableCase {
         id: "subsystem-edit-add-child",
-        tool: "unica.subsystem.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "add-child",
     },
     ExecutableCase {
         id: "support-edit-bin-only",
-        tool: "unica.apply",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "parent-configurations-bin-only",
     },
     ExecutableCase {
         id: "template-add-spreadsheet-document",
-        tool: "unica.meta.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "SpreadsheetDocument",
     },
     ExecutableCase {
-        id: "template-add-data-composition-schema",
-        tool: "unica.meta.edit",
-        branch: "DataCompositionSchema",
-    },
-    ExecutableCase {
-        id: "template-add-text-document",
-        tool: "unica.meta.edit",
-        branch: "TextDocument",
-    },
-    ExecutableCase {
-        id: "template-add-html-document",
-        tool: "unica.meta.edit",
-        branch: "HTMLDocument",
-    },
-    ExecutableCase {
-        id: "template-add-binary-data",
-        tool: "unica.meta.edit",
-        branch: "BinaryData",
-    },
-    ExecutableCase {
         id: "template-remove-object-template",
-        tool: "unica.meta.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "remove-object-template",
     },
 ];
@@ -746,6 +625,17 @@ fn call_canonical_apply(args: &Map<String, Value>) -> Result<String, String> {
 /// Один канонический вызов по stdio: рабочее пространство берётся из `cwd`,
 /// состояние поставщика живёт вне него, ответ проверяется на ok и ошибки.
 fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, String> {
+    call_canonical_tool_response(tool, args).map(|structured| {
+        structured["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    })
+}
+
+/// То же, но с полным `structuredContent` ответа: тестам жизненного цикла
+/// нужны данные предпросмотра и публикации, а не только сводка.
+fn call_canonical_tool_response(tool: &str, args: &Map<String, Value>) -> Result<Value, String> {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
 
@@ -925,57 +815,17 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
     if !ok || !errors.is_empty() {
         return Err(format!("{tool} failed: {summary}; errors={errors:?}"));
     }
-    Ok(summary)
+    Ok(structured)
 }
 
-fn call_public_tool_result(
-    tool: &str,
-    args: &Map<String, Value>,
-) -> Result<unica_coder::application::OperationResult, String> {
-    if tool == CANONICAL_APPLY_TOOL {
-        return Err(format!(
-            "{tool} answers through the canonical stdio surface; use call_public_tool"
-        ));
-    }
-    let app = UnicaApplication::new();
-    let result = if matches!(
-        tool,
-        "unica.meta.add" | "unica.meta.edit" | "unica.role.edit"
-    ) {
-        static PROCESS_CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = PROCESS_CWD_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let workspace = args
-            .get("cwd")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("{tool} corpus call has no workspace"))?;
-        let previous = std::env::current_dir().map_err(|error| error.to_string())?;
-        std::env::set_current_dir(workspace).map_err(|error| error.to_string())?;
-        let mut typed_args = args.clone();
-        typed_args.remove("cwd");
-        let result = app.call_tool(tool, &typed_args);
-        std::env::set_current_dir(previous).map_err(|error| error.to_string())?;
-        result?
-    } else {
-        app.call_tool(tool, args)?
-    };
-    if !result.ok || !result.errors.is_empty() {
-        return Err(format!(
-            "{tool} failed: {}; errors={:?}",
-            result.summary, result.errors
-        ));
-    }
-    Ok(result)
-}
-
+/// Публикующий вызов корпуса: предпросмотр с последующим исполнением.
 fn call_public_tool(tool: &str, args: &Map<String, Value>) -> Result<String, String> {
     assert_eq!(args.get("dryRun"), Some(&Value::Bool(false)));
-    if tool == CANONICAL_APPLY_TOOL {
-        return call_canonical_apply(args);
-    }
-    Ok(call_public_tool_result(tool, args)?.summary)
+    assert_eq!(
+        tool, CANONICAL_APPLY_TOOL,
+        "corpus cases publish through unica.apply"
+    );
+    call_canonical_apply(args)
 }
 
 fn call_target_tool(
@@ -995,7 +845,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn random_v4_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
+fn generated_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
     const UUID_LEN: usize = 36;
     let candidate = payload.get(offset..offset + UUID_LEN)?;
     if (offset > 0 && payload[offset - 1].is_ascii_hexdigit())
@@ -1011,7 +861,9 @@ fn random_v4_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
             return None;
         }
     }
-    if candidate[14] != b'4'
+    // Версия 4 — случайные идентичности, версия 8 — выведенные из корня
+    // набора (заимствование): обе меняются от порождения к порождению.
+    if !matches!(candidate[14], b'4' | b'8')
         || !matches!(
             candidate[19].to_ascii_lowercase(),
             b'8' | b'9' | b'a' | b'b'
@@ -1022,7 +874,7 @@ fn random_v4_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
     Some(std::str::from_utf8(candidate).ok()?.to_ascii_lowercase())
 }
 
-fn normalize_random_v4_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+fn normalize_generated_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
     let mut identities = BTreeMap::<String, Vec<u8>>::new();
     for payload in payloads.values() {
         let text = std::str::from_utf8(payload)
@@ -1039,7 +891,7 @@ fn normalize_random_v4_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<S
                 }
                 let value = attribute.value();
                 let Some(identity) = (value.len() == 36)
-                    .then(|| random_v4_uuid_lexeme(value.as_bytes(), 0))
+                    .then(|| generated_uuid_lexeme(value.as_bytes(), 0))
                     .flatten()
                 else {
                     continue;
@@ -1054,7 +906,7 @@ fn normalize_random_v4_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<S
             }
             let value = element.text().unwrap_or_default().trim();
             let Some(identity) = (value.len() == 36)
-                .then(|| random_v4_uuid_lexeme(value.as_bytes(), 0))
+                .then(|| generated_uuid_lexeme(value.as_bytes(), 0))
                 .flatten()
             else {
                 continue;
@@ -1070,7 +922,7 @@ fn normalize_random_v4_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<S
         let mut bytes = Vec::with_capacity(payload.len());
         let mut offset = 0;
         while offset < payload.len() {
-            if let Some(identity) = random_v4_uuid_lexeme(payload, offset) {
+            if let Some(identity) = generated_uuid_lexeme(payload, offset) {
                 if let Some(token) = identities.get(&identity) {
                     bytes.extend_from_slice(token);
                     offset += 36;
@@ -1106,8 +958,8 @@ fn isolated_corpus_transition_normalization_only_alpha_renames_declared_identiti
         .into_bytes(),
     );
     assert_eq!(
-        normalize_random_v4_uuids(&first),
-        normalize_random_v4_uuids(&renamed)
+        normalize_generated_uuids(&first),
+        normalize_generated_uuids(&renamed)
     );
 
     let fixed_a = b"<r><ClassId>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</ClassId><panelDef id=\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\"/><value>dddddddd-dddd-4ddd-8ddd-dddddddddddd</value></r>";
@@ -1115,8 +967,8 @@ fn isolated_corpus_transition_normalization_only_alpha_renames_declared_identiti
     let fixed_first = BTreeMap::from([("a.xml".to_string(), fixed_a.to_vec())]);
     let fixed_changed = BTreeMap::from([("a.xml".to_string(), fixed_b.to_vec())]);
     assert_ne!(
-        normalize_random_v4_uuids(&fixed_first),
-        normalize_random_v4_uuids(&fixed_changed),
+        normalize_generated_uuids(&fixed_first),
+        normalize_generated_uuids(&fixed_changed),
         "fixed UUID contexts must remain significant"
     );
 }
@@ -1134,7 +986,7 @@ fn normalized_xml_transition(
         post.iter()
             .map(|(path, payload)| (format!("1-post/{path}"), payload.clone())),
     );
-    normalize_random_v4_uuids(&transition)
+    normalize_generated_uuids(&transition)
 }
 
 fn is_xml_payload_path(path: &Path) -> bool {
@@ -1538,24 +1390,7 @@ fn registry_entry_for_case(case_id: &str) -> &'static MutatorRegistryEntry {
 }
 
 fn effective_xml_impact(case_id: &str) -> XmlImpactClass {
-    if case_id == "cfe-patch-method-catalog-form-module" {
-        // cfe.borrow must already mark an adopted managed form as Extended.
-        // Patching its module is therefore idempotent for XML while the other
-        // supported module families atomically add their PropertyState.
-        XmlImpactClass::None
-    } else {
-        registry_entry_for_case(case_id).impact
-    }
-}
-
-fn cf_init_args(workspace: &Path, name: &str, output_dir: &str) -> Map<String, Value> {
-    let mut args = common_args(workspace);
-    args.insert("Name".to_string(), Value::String(name.to_string()));
-    args.insert(
-        "OutputDir".to_string(),
-        Value::String(output_dir.to_string()),
-    );
-    args
+    registry_entry_for_case(case_id).impact
 }
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1662,96 +1497,6 @@ fn seed_platform_support_fixture(workspace: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn seed_configuration(workspace: &Path) -> Result<(), String> {
-    call_public_tool(
-        "unica.cf.init",
-        &cf_init_args(workspace, "CorpusConfiguration", "src"),
-    )?;
-    write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])
-}
-
-fn write_json_input(workspace: &Path, name: &str, value: &Value) -> Result<String, String> {
-    let relative = format!("inputs/{name}.json");
-    let path = workspace.join(&relative);
-    fs::create_dir_all(path.parent().expect("input parent"))
-        .map_err(|error| format!("cannot create inputs: {error}"))?;
-    let bytes = serde_json::to_vec_pretty(value)
-        .map_err(|error| format!("cannot serialize input {name}: {error}"))?;
-    fs::write(&path, bytes).map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-    Ok(relative)
-}
-
-/// Минимальные `operations`, делающие объект целостным.
-///
-/// Виды без записи в таблице условий ничего не требуют, и инструмент за них
-/// ничего не придумывает, поэтому здесь для них пусто.
-fn meta_operations(kind: &str) -> Option<Value> {
-    let string50 =
-        json!({"variants": [{"kind": "string", "length": 50, "allowedLength": "variable"}]});
-    let number = |digits: u32, fraction: u32| json!({"variants": [{"kind": "number", "digits": digits, "fraction": fraction, "sign": "any"}]});
-    match kind {
-        "InformationRegister" => Some(json!([
-            {"op": "add", "collection": "dimensions",
-             "elements": [{"name": "Item", "type": string50}]},
-            {"op": "add", "collection": "resources",
-             "elements": [{"name": "Price", "type": number(15, 2)}]}
-        ])),
-        "AccumulationRegister" => Some(json!([
-            {"op": "add", "collection": "dimensions",
-             "elements": [{"name": "Warehouse", "type": string50}]},
-            {"op": "add", "collection": "resources",
-             "elements": [{"name": "Quantity", "type": number(15, 3)}]}
-        ])),
-        "AccountingRegister" => Some(json!([
-            {"op": "add", "collection": "resources",
-             "elements": [{"name": "Amount", "type": number(15, 2)}]}
-        ])),
-        "WebService" => Some(json!([
-            {"op": "setProperties", "values": {"Namespace": "urn:corpus"}}
-        ])),
-        _ => None,
-    }
-}
-
-fn seed_metadata(workspace: &Path, input_name: &str, definition: Value) -> Result<(), String> {
-    let kind = definition
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("metadata seed {input_name} has no type"))?;
-    let name = definition
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("metadata seed {input_name} has no name"))?;
-    let mut args = common_args(workspace);
-    args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-    args.insert("kind".to_string(), Value::String(kind.to_string()));
-    args.insert("name".to_string(), Value::String(name.to_string()));
-    if let Some(operations) = meta_operations(kind) {
-        args.insert("operations".to_string(), operations);
-    }
-    call_public_tool("unica.meta.add", &args)?;
-    Ok(())
-}
-
-fn catalog_definition(name: &str) -> Value {
-    json!({
-        "type": "Catalog",
-        "name": name,
-        "synonym": "Corpus catalog",
-        "codeLength": 9,
-        "descriptionLength": 50,
-        "attributes": [{"name": "Article", "type": "String(32)"}]
-    })
-}
-
-fn seed_catalog(workspace: &Path) -> Result<(), String> {
-    seed_metadata(
-        workspace,
-        "seed-catalog",
-        catalog_definition("CorpusCatalog"),
-    )
-}
-
 /// Canonical `unica.apply` arguments that add one object form: the owner is
 /// addressed logically and the default-form property follows the purpose.
 fn canonical_form_add_args(
@@ -1775,57 +1520,8 @@ fn form_add_args(workspace: &Path) -> Map<String, Value> {
     canonical_form_add_args(workspace, "main:Catalog.CorpusCatalog", "CorpusForm")
 }
 
-fn seed_catalog_form(workspace: &Path) -> Result<(), String> {
-    seed_catalog(workspace)?;
-    call_public_tool(CANONICAL_APPLY_TOOL, &form_add_args(workspace))?;
-    Ok(())
-}
-
-fn report_definition(name: &str) -> Value {
-    json!({"type": "Report", "name": name, "synonym": "Corpus report"})
-}
-
-fn seed_report(workspace: &Path) -> Result<(), String> {
-    seed_metadata(workspace, "seed-report", report_definition("CorpusReport"))
-}
-
 fn report_form_add_args(workspace: &Path) -> Map<String, Value> {
     canonical_form_add_args(workspace, "main:Report.CorpusReport", "CorpusForm")
-}
-
-fn seed_report_form(workspace: &Path) -> Result<(), String> {
-    seed_report(workspace)?;
-    call_public_tool(CANONICAL_APPLY_TOOL, &report_form_add_args(workspace))?;
-    Ok(())
-}
-
-fn seed_document_recorder(workspace: &Path, register: &str) -> Result<(), String> {
-    seed_metadata(
-        workspace,
-        "seed-recorder-document",
-        json!({
-            "type": "Document",
-            "name": "CorpusRecorder",
-            "registerRecords": [register]
-        }),
-    )
-}
-
-fn seed_event_handlers(workspace: &Path) -> Result<(), String> {
-    seed_metadata(
-        workspace,
-        "seed-event-handlers",
-        json!({
-            "type": "CommonModule",
-            "name": "EventHandlers",
-            "context": "server"
-        }),
-    )?;
-    fs::write(
-        workspace.join("src/CommonModules/EventHandlers/Ext/Module.bsl"),
-        event_handlers_module(false),
-    )
-    .map_err(|error| format!("cannot seed EventHandlers module: {error}"))
 }
 
 fn event_handlers_module(include_record_set_handler: bool) -> String {
@@ -1843,24 +1539,6 @@ fn event_handlers_module(include_record_set_handler: bool) -> String {
         ));
     }
     module
-}
-
-fn template_args(workspace: &Path, template_name: &str, template_type: &str) -> Map<String, Value> {
-    let mut args = common_args(workspace);
-    args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-    args.insert(
-        "metadataPath".to_string(),
-        Value::String("Report.CorpusReport".to_string()),
-    );
-    args.insert(
-        "operations".to_string(),
-        json!([{
-            "op": "add",
-            "collection": "templates",
-            "elements": [{"name": template_name, "templateType": template_type}]
-        }]),
-    );
-    args
 }
 
 fn canonical_dcs_template_add_args(workspace: &Path, name: &str) -> Map<String, Value> {
@@ -1891,32 +1569,6 @@ fn seed_parent_subsystem(workspace: &Path) -> Result<(), String> {
         }]),
     );
     call_canonical_apply(&args)?;
-    Ok(())
-}
-
-fn cfe_init_args(workspace: &Path) -> Map<String, Value> {
-    let mut args = common_args(workspace);
-    args.insert(
-        "Name".to_string(),
-        Value::String("CorpusExtension".to_string()),
-    );
-    args.insert("OutputDir".to_string(), Value::String("ext".to_string()));
-    args.insert(
-        "ConfigPath".to_string(),
-        Value::String("src/Configuration.xml".to_string()),
-    );
-    args
-}
-
-fn seed_extension(workspace: &Path) -> Result<(), String> {
-    write_designer_project(
-        workspace,
-        &[
-            ("main", "CONFIGURATION", "src"),
-            ("extension", "EXTENSION", "ext"),
-        ],
-    )?;
-    call_public_tool("unica.cfe.init", &cfe_init_args(workspace))?;
     Ok(())
 }
 
@@ -2089,907 +1741,197 @@ fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
     ops
 }
 
-fn meta_definition(kind: &str) -> Option<Value> {
+fn repository_fixture(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("tests/fixtures")
+        .join(relative)
+}
+
+/// Корень набора `main` — выгрузка пустой конфигурации 8.3.27 / 2.20
+/// (`platform_8_3_27/empty_configuration`, имя `CorpusConfiguration`).
+fn seed_configuration(workspace: &Path) -> Result<(), String> {
+    copy_fixture_tree(
+        &repository_fixture("platform_8_3_27/empty_configuration/src"),
+        &workspace.join("src"),
+    )?;
+    write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])
+}
+
+/// Корень набора `extension` — пустое расширение `CorpusExtension` над той же
+/// конфигурацией, записанное по скиллу `cfe-init`
+/// (`platform_8_3_27/empty_extension`). Канонической операции создания
+/// расширения нет.
+fn seed_extension(workspace: &Path) -> Result<(), String> {
+    copy_fixture_tree(
+        &repository_fixture("platform_8_3_27/empty_extension/ext"),
+        &workspace.join("ext"),
+    )?;
+    write_designer_project(
+        workspace,
+        &[
+            ("main", "CONFIGURATION", "src"),
+            ("extension", "EXTENSION", "ext"),
+        ],
+    )
+}
+
+fn number_type(digits: u32, fraction: u32) -> Value {
+    json!({"variants": [{"kind": "number", "digits": digits, "fraction": fraction, "sign": "any"}]})
+}
+
+fn string50_type() -> Value {
+    json!({"variants": [{"kind": "string", "length": 50, "allowedLength": "variable"}]})
+}
+
+/// Имя объекта корпуса каждого вида метаданных.
+fn meta_object_name(kind: &str) -> Option<&'static str> {
     Some(match kind {
-        "Catalog" => json!({
-            "type": "Catalog",
-            "name": "CorpusCatalog",
-            "synonym": "Corpus catalog",
-            "codeLength": 9,
-            "descriptionLength": 50,
-            "attributes": [
-                {"name": "Article", "type": "String(32)"},
-                {"name": "TypedValue", "type": "DefinedType.CorpusDefinedType"},
-                {"name": "Storage", "type": "ValueStorage"}
-            ]
-        }),
-        "Document" => json!({
-            "type": "Document", "name": "CorpusDocument", "numberLength": 8,
-            "attributes": ["Partner:String(100)|req,index"],
-            "tabularSections": {"Lines": ["Quantity:Number(10,2)"]}
-        }),
-        "Enum" => json!({"type": "Enum", "name": "CorpusEnum", "values": ["New", "Closed"]}),
-        "Constant" => json!({"type": "Constant", "name": "CorpusConstant", "valueType": "Boolean"}),
-        "InformationRegister" => json!({
-            "type": "InformationRegister", "name": "CorpusInformationRegister", "periodicity": "Month",
-            "dimensions": ["Item:String(50)|master,index"], "resources": ["Price:Number(15,2)"]
-        }),
-        "AccumulationRegister" => json!({
-            "type": "AccumulationRegister", "name": "CorpusAccumulationRegister", "registerType": "Balance",
-            "dimensions": ["Warehouse:String(50)|index"], "resources": ["Quantity:Number(15,3)"]
-        }),
-        "AccountingRegister" => json!({
-            "type": "AccountingRegister", "name": "CorpusAccountingRegister",
-            "chartOfAccounts": "ChartOfAccounts.CorpusAccounts",
-            "dimensions": ["Department:String(50)"], "resources": ["Amount:Number(15,2)"]
-        }),
-        "CalculationRegister" => json!({
-            "type": "CalculationRegister", "name": "CorpusCalculationRegister",
-            "chartOfCalculationTypes": "ChartOfCalculationTypes.CorpusCalculationTypes", "periodicity": "Month",
-            "dimensions": ["Employee:String(50)"], "resources": ["Result:Number(15,2)"]
-        }),
-        "ChartOfAccounts" => json!({
-            "type": "ChartOfAccounts", "name": "CorpusAccounts",
-            "accountingFlags": ["Tax"]
-        }),
-        "ChartOfCharacteristicTypes" => json!({
-            "type": "ChartOfCharacteristicTypes", "name": "CorpusCharacteristics",
-            "valueTypes": ["String(50)", "Number(15,2)"]
-        }),
-        "ChartOfCalculationTypes" => json!({
-            "type": "ChartOfCalculationTypes", "name": "CorpusCalculationTypes",
-            "dependenceOnCalculationTypes": "OnActionPeriod",
-            "baseCalculationTypes": ["ChartOfCalculationTypes.CorpusCalculationTypes"]
-        }),
-        "BusinessProcess" => json!({
-            "type": "BusinessProcess", "name": "CorpusBusinessProcess", "task": "Task.CorpusTask",
-            "attributes": ["Subject:String(100)"]
-        }),
-        "Task" => json!({
-            "type": "Task", "name": "CorpusTask",
-            "attributes": ["Priority:Number(3,0)"]
-        }),
-        "ExchangePlan" => json!({
-            "type": "ExchangePlan", "name": "CorpusExchangePlan", "distributedInfoBase": true,
-            "includeConfigurationExtensions": true, "attributes": ["NodeKind:String(20)"]
-        }),
-        "DocumentJournal" => json!({
-            "type": "DocumentJournal", "name": "CorpusDocumentJournal",
-            "registeredDocuments": ["Document.CorpusDocument"],
-            "columns": [{"name": "Partner", "references": ["Document.CorpusDocument"]}]
-        }),
-        "Report" => report_definition("CorpusReport"),
-        "DataProcessor" => json!({
-            "type": "DataProcessor", "name": "CorpusDataProcessor", "attributes": ["FileName:String(260)"],
-            "tabularSections": {"Rows": ["Value:String(100)"]}
-        }),
-        "CommonModule" => json!({
-            "type": "CommonModule", "name": "CorpusCommonModule", "context": "server",
-            "returnValuesReuse": "DuringRequest"
-        }),
-        "ScheduledJob" => json!({
-            "type": "ScheduledJob", "name": "CorpusScheduledJob", "methodName": "EventHandlers.RunJob",
-            "description": "Corpus job", "key": "corpus", "use": true, "predefined": true
-        }),
-        "EventSubscription" => json!({
-            "type": "EventSubscription", "name": "CorpusEventSubscription",
-            "source": ["String(10)", "DocumentObject.CorpusDocument", "CatalogObject.CorpusCatalog"], "event": "BeforeWrite",
-            "handler": "EventHandlers.OnBeforeWrite"
-        }),
-        "HTTPService" => json!({
-            "type": "HTTPService", "name": "CorpusHTTPService", "rootURL": "corpus", "reuseSessions": "AutoUse",
-            "urlTemplates": {"Items": {"template": "/items/{id}", "methods": {"Get": "GET"}}}
-        }),
-        "WebService" => json!({
-            "type": "WebService", "name": "CorpusWebService", "namespace": "urn:corpus", "reuseSessions": "AutoUse",
-            "operations": {"Ping": {"returnType": "xs:string", "parameters": {"Text": "xs:string"}}}
-        }),
-        "DefinedType" => json!({
-            "type": "DefinedType", "name": "CorpusDefinedType", "valueTypes": ["String(100)", "Number(15,2)"]
-        }),
+        "Catalog" => "CorpusCatalog",
+        "Document" => "CorpusDocument",
+        "Enum" => "CorpusEnum",
+        "Constant" => "CorpusConstant",
+        "InformationRegister" => "CorpusInformationRegister",
+        "AccumulationRegister" => "CorpusAccumulationRegister",
+        "AccountingRegister" => "CorpusAccountingRegister",
+        "CalculationRegister" => "CorpusCalculationRegister",
+        "ChartOfAccounts" => "CorpusAccounts",
+        "ChartOfCharacteristicTypes" => "CorpusCharacteristics",
+        "ChartOfCalculationTypes" => "CorpusCalculationTypes",
+        "BusinessProcess" => "CorpusBusinessProcess",
+        "Task" => "CorpusTask",
+        "ExchangePlan" => "CorpusExchangePlan",
+        "DocumentJournal" => "CorpusDocumentJournal",
+        "Report" => "CorpusReport",
+        "DataProcessor" => "CorpusDataProcessor",
+        "CommonModule" => "CorpusCommonModule",
+        "ScheduledJob" => "CorpusScheduledJob",
+        "EventSubscription" => "CorpusEventSubscription",
+        "HTTPService" => "CorpusHTTPService",
+        "WebService" => "CorpusWebService",
+        "DefinedType" => "CorpusDefinedType",
         _ => return None,
     })
 }
 
-fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String, Value>, String> {
-    fs::create_dir_all(workspace)
-        .map_err(|error| format!("cannot create {}: {error}", workspace.display()))?;
+/// `object.create` и операции той же публикации, без которых объект не
+/// целостен: у регистра есть поля, у веб-сервиса — пространство имён. Виды
+/// без условий ничего не требуют, и корпус за них ничего не дописывает.
+fn object_create_ops(kind: &str, name: &str) -> Vec<Value> {
+    let at = format!("main:{kind}.{name}");
+    let mut ops = vec![json!({
+        "op": "object.create",
+        "args": {"values": {"kind": kind, "name": name}}
+    })];
+    let member = |op: &str, member: &str, member_type: Value| json!({"op": op, "args": {"at": at, "items": [{"name": member, "type": member_type}]}});
+    match kind {
+        "InformationRegister" => {
+            ops.push(member("dimension.add", "Item", string50_type()));
+            ops.push(member("resource.add", "Price", number_type(15, 2)));
+        }
+        "AccumulationRegister" => {
+            ops.push(member("dimension.add", "Warehouse", string50_type()));
+            ops.push(member("resource.add", "Quantity", number_type(15, 3)));
+        }
+        "AccountingRegister" => {
+            ops.push(member("resource.add", "Amount", number_type(15, 2)));
+        }
+        "WebService" => ops.push(json!({
+            "op": "props.set",
+            "args": {"at": at, "values": {"Namespace": "urn:corpus"}}
+        })),
+        _ => {}
+    }
+    ops
+}
 
-    if case.id == "cf-init-default" {
-        return Ok(cf_init_args(workspace, "CorpusConfiguration", "src"));
+fn apply_args(workspace: &Path, at: &str, ops: Vec<Value>) -> Map<String, Value> {
+    let mut args = common_args(workspace);
+    args.insert("at".to_string(), Value::String(at.to_string()));
+    args.insert("ops".to_string(), Value::Array(ops));
+    args
+}
+
+fn seed_apply(workspace: &Path, at: &str, ops: Vec<Value>) -> Result<(), String> {
+    call_canonical_apply(&apply_args(workspace, at, ops)).map(|_| ())
+}
+
+fn seed_metadata(workspace: &Path, kind: &str, name: &str) -> Result<(), String> {
+    seed_apply(
+        workspace,
+        "main:Configuration",
+        object_create_ops(kind, name),
+    )
+}
+
+fn seed_catalog(workspace: &Path) -> Result<(), String> {
+    seed_metadata(workspace, "Catalog", "CorpusCatalog")
+}
+
+fn seed_catalog_form(workspace: &Path) -> Result<(), String> {
+    seed_catalog(workspace)?;
+    call_canonical_apply(&form_add_args(workspace))?;
+    Ok(())
+}
+
+fn seed_report(workspace: &Path) -> Result<(), String> {
+    seed_metadata(workspace, "Report", "CorpusReport")
+}
+
+fn seed_report_form(workspace: &Path) -> Result<(), String> {
+    seed_report(workspace)?;
+    call_canonical_apply(&report_form_add_args(workspace))?;
+    Ok(())
+}
+
+fn write_seed_bytes(workspace: &Path, relative: &str, bytes: &[u8]) -> Result<(), String> {
+    let path = workspace.join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
     }
-    if matches!(case.id, "epf-init-managed-form" | "erf-init-managed-form") {
-        let (kind, path, name, form) = if case.id.starts_with("epf") {
-            (
-                "EXTERNAL_DATA_PROCESSORS",
-                "epf",
-                "CorpusProcessor",
-                "CorpusForm",
-            )
-        } else {
-            ("EXTERNAL_REPORTS", "erf", "CorpusReport", "CorpusForm")
-        };
-        write_designer_project(workspace, &[("external", kind, path)])?;
-        let mut args = common_args(workspace);
-        args.insert("Name".to_string(), Value::String(name.to_string()));
-        args.insert("OutputDir".to_string(), Value::String(path.to_string()));
-        args.insert("FormName".to_string(), Value::String(form.to_string()));
-        return Ok(args);
-    }
-    if case.id == "dcs-compile-owned-template" {
-        seed_configuration(workspace)?;
-        seed_report(workspace)?;
-        seed_catalog(workspace)?;
-        seed_metadata(
-            workspace,
-            "seed-unicode-defined-type",
+    fs::write(&path, bytes).map_err(|error| format!("cannot seed {}: {error}", path.display()))
+}
+
+fn seed_event_handlers(workspace: &Path, include_record_set_handler: bool) -> Result<(), String> {
+    seed_metadata(workspace, "CommonModule", "EventHandlers")?;
+    write_seed_bytes(
+        workspace,
+        "src/CommonModules/EventHandlers/Ext/Module.bsl",
+        event_handlers_module(include_record_set_handler).as_bytes(),
+    )
+}
+
+fn seed_unicode_defined_type(workspace: &Path) -> Result<(), String> {
+    seed_metadata(workspace, "DefinedType", "ТипКорпуса")
+}
+
+/// Командный интерфейс подсистемы канон правит, но не создаёт: пустой
+/// документ лежит в семени кейса (#1983).
+fn seed_parent_subsystem_command_interface(workspace: &Path) -> Result<(), String> {
+    let document = unica_metadata_designer::interface::emit_empty_command_interface_document(
+        unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+    );
+    write_seed_bytes(
+        workspace,
+        "src/Subsystems/CorpusParent/Ext/CommandInterface.xml",
+        &unica_xml_format::text::utf8_bom_bytes(&document),
+    )
+}
+
+fn seed_role_reader(workspace: &Path) -> Result<(), String> {
+    seed_catalog(workspace)?;
+    // Роль с правами просмотра справочника заводят канонические
+    // `role.create` и `right.add` одной публикацией.
+    seed_apply(
+        workspace,
+        "main:Configuration",
+        vec![
             json!({
-                "type": "DefinedType",
-                "name": "ТипКорпуса",
-                "valueTypes": ["String(16)"]
-            }),
-        )?;
-        return Ok(canonical_dcs_template_add_args(workspace, "CorpusTemplate"));
-    }
-    if case.id == "support-edit-bin-only" {
-        seed_platform_support_fixture(workspace)?;
-        let mut args = common_args(workspace);
-        args.insert(
-            "at".to_string(),
-            // Возможность изменения — свойство корня конфигурации на поддержке.
-            Value::String("main:Configuration".to_string()),
-        );
-        args.insert(
-            "ops".to_string(),
-            json!([{
-                "op": "supportCapability.set",
-                "args": {"values": {"enabled": false}}
-            }]),
-        );
-        return Ok(args);
-    }
-
-    if case.id == "xdto-add-nested-property" {
-        fs::create_dir_all(workspace)
-            .map_err(|error| format!("cannot create XDTO corpus workspace: {error}"))?;
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("tests/fixtures/xdto/enterprise-data-minimal");
-        copy_fixture_tree(&fixture, &workspace.join("src"))?;
-        write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])?;
-        let mut args = common_args(workspace);
-        args.insert(
-            "at".to_string(),
-            Value::String(
-                "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
-                    .to_string(),
-            ),
-        );
-        args.insert(
-            "ops".to_string(),
-            json!([{
-                "op": "property.add",
-                "args": {"values": {
-                    "property": {
-                        "name": "Документ_Корпус",
-                        "type": "tns:Документ_ЗаказКлиента",
-                        "minOccurs": 0
-                    }
-                }}
-            }]),
-        );
-        return Ok(args);
-    }
-
-    seed_configuration(workspace)?;
-
-    if case.id.starts_with("cf-edit-") {
-        if case.id == "cf-edit-set-home-page" {
-            seed_catalog_form(workspace)?;
-        }
-        let (operation, value) = match case.id {
-            "cf-edit-root-property" => ("modify-property", "Version=1.0".to_string()),
-            "cf-edit-set-panels" => ("set-panels", json!({"top": ["open"]}).to_string()),
-            "cf-edit-set-home-page" => (
-                "set-home-page",
-                json!({
-                    "template": "OneColumn",
-                    "left": [{
-                        "form": "Catalog.CorpusCatalog.Form.CorpusForm",
-                        "height": 15,
-                        "visibility": true
-                    }]
-                })
-                .to_string(),
-            ),
-            _ => unreachable!(),
-        };
-        let mut args = common_args(workspace);
-        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
-        args.insert(
-            "Operation".to_string(),
-            Value::String(operation.to_string()),
-        );
-        args.insert("Value".to_string(), Value::String(value));
-        args.insert("NoValidate".to_string(), Value::Bool(true));
-        return Ok(args);
-    }
-
-    if case.id == "cfe-init-default" {
-        write_designer_project(
-            workspace,
-            &[
-                ("main", "CONFIGURATION", "src"),
-                ("extension", "EXTENSION", "ext"),
-            ],
-        )?;
-        return Ok(cfe_init_args(workspace));
-    }
-
-    if case.id.starts_with("cfe-borrow-") {
-        seed_catalog(workspace)?;
-        if case.id.ends_with("managed-form") {
-            call_public_tool(CANONICAL_APPLY_TOOL, &form_add_args(workspace))?;
-        }
-        seed_extension(workspace)?;
-        let mut args = common_args(workspace);
-        args.insert(
-            "ExtensionPath".to_string(),
-            Value::String("ext/Configuration.xml".to_string()),
-        );
-        args.insert(
-            "ConfigPath".to_string(),
-            Value::String("src/Configuration.xml".to_string()),
-        );
-        let object = if case.id.ends_with("managed-form") {
-            "Catalog.CorpusCatalog.Form.CorpusForm"
-        } else {
-            "Catalog.CorpusCatalog"
-        };
-        args.insert("Object".to_string(), Value::String(object.to_string()));
-        return Ok(args);
-    }
-
-    if case.id.starts_with("cfe-patch-method-") {
-        let (object, module_path, base_module_path) = match case.branch {
-            "CommonModule" => {
-                seed_metadata(
-                    workspace,
-                    "seed-cfe-patch-common-module",
-                    json!({
-                        "type": "CommonModule",
-                        "name": "CorpusModule",
-                        "context": "server"
-                    }),
-                )?;
-                (
-                    "CommonModule.CorpusModule",
-                    "CommonModule.CorpusModule",
-                    "src/CommonModules/CorpusModule/Ext/Module.bsl",
-                )
-            }
-            "Catalog.ObjectModule" => {
-                seed_catalog(workspace)?;
-                (
-                    "Catalog.CorpusCatalog",
-                    "Catalog.CorpusCatalog.ObjectModule",
-                    "src/Catalogs/CorpusCatalog/Ext/ObjectModule.bsl",
-                )
-            }
-            "Catalog.ManagerModule" => {
-                seed_catalog(workspace)?;
-                (
-                    "Catalog.CorpusCatalog",
-                    "Catalog.CorpusCatalog.ManagerModule",
-                    "src/Catalogs/CorpusCatalog/Ext/ManagerModule.bsl",
-                )
-            }
-            "InformationRegister.RecordSetModule" => {
-                seed_metadata(
-                    workspace,
-                    "seed-cfe-patch-information-register",
-                    meta_definition("InformationRegister")
-                        .expect("InformationRegister seed definition"),
-                )?;
-                (
-                    "InformationRegister.CorpusInformationRegister",
-                    "InformationRegister.CorpusInformationRegister.RecordSetModule",
-                    "src/InformationRegisters/CorpusInformationRegister/Ext/RecordSetModule.bsl",
-                )
-            }
-            "Catalog.Form" => {
-                seed_catalog_form(workspace)?;
-                (
-                    "Catalog.CorpusCatalog.Form.CorpusForm",
-                    "Catalog.CorpusCatalog.Form.CorpusForm",
-                    "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
-                )
-            }
-            "Constant.ValueManagerModule" => {
-                seed_metadata(
-                    workspace,
-                    "seed-cfe-patch-constant",
-                    meta_definition("Constant").expect("Constant seed definition"),
-                )?;
-                (
-                    "Constant.CorpusConstant",
-                    "Constant.CorpusConstant.ValueManagerModule",
-                    "src/Constants/CorpusConstant/Ext/ValueManagerModule.bsl",
-                )
-            }
-            other => {
-                return Err(format!(
-                    "unsupported cfe.patch_method corpus branch: {other}"
-                ))
-            }
-        };
-        fs::write(
-            workspace.join(base_module_path),
-            b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n",
-        )
-        .map_err(|error| format!("cannot seed base cfe.patch_method BSL: {error}"))?;
-        seed_extension(workspace)?;
-        let mut borrow_args = common_args(workspace);
-        borrow_args.insert(
-            "ExtensionPath".to_string(),
-            Value::String("ext/Configuration.xml".to_string()),
-        );
-        borrow_args.insert(
-            "ConfigPath".to_string(),
-            Value::String("src/Configuration.xml".to_string()),
-        );
-        borrow_args.insert("Object".to_string(), Value::String(object.to_string()));
-        call_public_tool("unica.cfe.borrow", &borrow_args)?;
-        let mut args = common_args(workspace);
-        args.insert(
-            "ExtensionPath".to_string(),
-            Value::String("ext".to_string()),
-        );
-        args.insert(
-            "ModulePath".to_string(),
-            Value::String(module_path.to_string()),
-        );
-        args.insert("MethodName".to_string(), Value::String("Run".to_string()));
-        args.insert(
-            "InterceptorType".to_string(),
-            Value::String("Before".to_string()),
-        );
-        return Ok(args);
-    }
-
-    if case.id == "code-patch-bsl-only" {
-        seed_metadata(
-            workspace,
-            "code-module",
-            json!({"type": "CommonModule", "name": "CorpusModule", "context": "server"}),
-        )?;
-        fs::write(
-            workspace.join("src/CommonModules/CorpusModule/Ext/Module.bsl"),
-            b"\xef\xbb\xbfProcedure Run()\r\n    Message(\"ok\");\r\nEndProcedure\r\n",
-        )
-        .map_err(|error| format!("cannot seed BSL module: {error}"))?;
-        let mut args = common_args(workspace);
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        args.insert(
-            "metadataPath".to_string(),
-            Value::String("CommonModule.CorpusModule.Module".to_string()),
-        );
-        args.insert("operation".to_string(), Value::String("insert".to_string()));
-        args.insert("selector".to_string(), json!({"method": "Run"}));
-        args.insert(
-            "content".to_string(),
-            Value::String("Procedure Added()\nEndProcedure".to_string()),
-        );
-        args.insert("position".to_string(), Value::String("after".to_string()));
-        return Ok(args);
-    }
-
-    if case.id.starts_with("meta-compile-") {
-        match case.branch {
-            "Catalog" => seed_metadata(
-                workspace,
-                "seed-defined-type",
-                json!({
-                    "type": "DefinedType",
-                    "name": "CorpusDefinedType",
-                    "valueTypes": ["String(100)"]
-                }),
-            )?,
-            "AccumulationRegister" => seed_document_recorder(
-                workspace,
-                "AccumulationRegister.CorpusAccumulationRegister",
-            )?,
-            "AccountingRegister" => {
-                seed_metadata(
-                    workspace,
-                    "seed-chart-of-accounts",
-                    json!({"type": "ChartOfAccounts", "name": "CorpusAccounts"}),
-                )?;
-                seed_document_recorder(workspace, "AccountingRegister.CorpusAccountingRegister")?;
-            }
-            "CalculationRegister" => {
-                seed_metadata(
-                    workspace,
-                    "seed-chart-of-calculation-types",
-                    json!({
-                        "type": "ChartOfCalculationTypes",
-                        "name": "CorpusCalculationTypes"
-                    }),
-                )?;
-                seed_document_recorder(workspace, "CalculationRegister.CorpusCalculationRegister")?;
-            }
-            "BusinessProcess" => seed_metadata(
-                workspace,
-                "seed-task",
-                json!({"type": "Task", "name": "CorpusTask"}),
-            )?,
-            "DocumentJournal" => seed_metadata(
-                workspace,
-                "seed-document",
-                meta_definition("Document").expect("Document seed definition"),
-            )?,
-            "ScheduledJob" => seed_event_handlers(workspace)?,
-            "EventSubscription" => {
-                seed_metadata(
-                    workspace,
-                    "seed-document",
-                    meta_definition("Document").expect("Document seed definition"),
-                )?;
-                seed_catalog(workspace)?;
-                seed_event_handlers(workspace)?;
-            }
-            _ => {}
-        }
-        let definition = meta_definition(case.branch)
-            .ok_or_else(|| format!("missing metadata definition for {}", case.branch))?;
-        let mut args = common_args(workspace);
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        args.insert("kind".to_string(), Value::String(case.branch.to_string()));
-        args.insert(
-            "name".to_string(),
-            Value::String(
-                definition["name"]
-                    .as_str()
-                    .ok_or_else(|| format!("metadata case {} has no name", case.id))?
-                    .to_string(),
-            ),
-        );
-        if let Some(operations) = meta_operations(case.branch) {
-            args.insert("operations".to_string(), operations);
-        }
-        return Ok(args);
-    }
-
-    if case.id == "meta-edit-event-source" {
-        seed_event_handlers(workspace)?;
-        fs::write(
-            workspace.join("src/CommonModules/EventHandlers/Ext/Module.bsl"),
-            event_handlers_module(true),
-        )
-        .map_err(|error| format!("cannot extend EventHandlers module: {error}"))?;
-        seed_catalog(workspace)?;
-        seed_metadata(
-            workspace,
-            "seed-event-source-information-register",
-            json!({
-                "type": "InformationRegister",
-                "name": "CorpusInformationRegister"
-            }),
-        )?;
-        seed_metadata(
-            workspace,
-            "seed-event-subscription",
-            json!({
-                "type": "EventSubscription",
-                "name": "CorpusEventSubscription"
-            }),
-        )?;
-        let mut args = common_args(workspace);
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        args.insert(
-            "metadataPath".to_string(),
-            Value::String("EventSubscription.CorpusEventSubscription".to_string()),
-        );
-        args.insert(
-            "operations".to_string(),
-            json!([
-                {
-                    "op": "setProperties",
-                    "values": {
-                        "Handler": "CommonModule.EventHandlers.OnBeforeWriteRecordSet"
-                    }
-                },
-                {
-                    "op": "editRelations",
-                    "relation": "source",
-                    "mode": "replace",
-                    "targets": [{
-                        "kind": "recordSet",
-                        "metadataPath": "InformationRegister.CorpusInformationRegister"
-                    }]
-                }
-            ]),
-        );
-        return Ok(args);
-    }
-
-    if matches!(
-        case.id,
-        "meta-edit-resource-append" | "meta-edit-resource-position-after"
-    ) {
-        let number_type = json!({
-            "variants": [{
-                "kind": "number",
-                "digits": 15,
-                "fraction": 2,
-                "sign": "any"
-            }]
-        });
-        let mut create_args = common_args(workspace);
-        create_args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        create_args.insert(
-            "kind".to_string(),
-            Value::String("InformationRegister".to_string()),
-        );
-        create_args.insert(
-            "name".to_string(),
-            Value::String("CorpusInformationRegister".to_string()),
-        );
-        create_args.insert(
-            "operations".to_string(),
-            json!([{
-                "op": "add",
-                "collection": "resources",
-                "elements": [{"name": "Price", "type": number_type.clone()}]
-            }]),
-        );
-        call_public_tool("unica.meta.add", &create_args)?;
-        if case.id == "meta-edit-resource-position-after" {
-            let mut seed_args = common_args(workspace);
-            seed_args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-            seed_args.insert(
-                "metadataPath".to_string(),
-                Value::String("InformationRegister.CorpusInformationRegister".to_string()),
-            );
-            seed_args.insert(
-                "operations".to_string(),
-                json!([{
-                    "op": "add",
-                    "collection": "resources",
-                    "elements": [{"name": "Total", "type": number_type.clone()}]
-                }]),
-            );
-            call_public_tool("unica.meta.edit", &seed_args)?;
-        }
-
-        let element = if case.id == "meta-edit-resource-append" {
-            json!({"name": "Amount", "type": number_type})
-        } else {
-            json!({
-                "name": "Quantity",
-                "type": number_type,
-                "position": {"after": "Price"}
-            })
-        };
-        let mut args = common_args(workspace);
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        args.insert(
-            "metadataPath".to_string(),
-            Value::String("InformationRegister.CorpusInformationRegister".to_string()),
-        );
-        args.insert(
-            "operations".to_string(),
-            json!([{"op": "add", "collection": "resources", "elements": [element]}]),
-        );
-        return Ok(args);
-    }
-
-    if case.id == "meta-remove-object" {
-        seed_catalog(workspace)?;
-        let mut args = common_args(workspace);
-        args.insert(
-            "at".to_string(),
-            Value::String("main:Catalog.CorpusCatalog".to_string()),
-        );
-        args.insert(
-            "ops".to_string(),
-            json!([{"op": "object.remove", "args": {"force": true}}]),
-        );
-        return Ok(args);
-    }
-
-    if matches!(case.id, "meta-edit-predefined-items" | "meta-edit-property") {
-        seed_catalog(workspace)?;
-        let mut args = common_args(workspace);
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        args.insert(
-            "metadataPath".to_string(),
-            Value::String("Catalog.CorpusCatalog".to_string()),
-        );
-        if case.id == "meta-edit-predefined-items" {
-            args.insert(
-                "operations".to_string(),
-                json!([
-                    {
-                        "op": "setProperties",
-                        "values": {"CodeType": "Number"}
-                    },
-                    {
-                        "op": "add",
-                        "collection": "predefinedItems",
-                        "elements": [{
-                            "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
-                            "name": "CorpusMain",
-                            "code": "643",
-                            "description": "Corpus predefined item",
-                            "isFolder": false
-                        }]
-                    }
-                ]),
-            );
-        } else if case.id == "meta-edit-property" {
-            args.insert(
-                "operations".to_string(),
-                json!([{"op": "setProperties", "values": {"Comment": "Corpus edited"}}]),
-            );
-        }
-        return Ok(args);
-    }
-
-    if case.id == "help-add-object" {
-        seed_catalog(workspace)?;
-        let mut args = common_args(workspace);
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        args.insert(
-            "metadataPath".to_string(),
-            Value::String("Catalog.CorpusCatalog".to_string()),
-        );
-        args.insert(
-            "operations".to_string(),
-            json!([{"op": "addHelp", "lang": "ru"}]),
-        );
-        return Ok(args);
-    }
-
-    if case.id == "form-add-managed" {
-        seed_catalog(workspace)?;
-        return Ok(form_add_args(workspace));
-    }
-
-    if case.id == "form-compile-managed" {
-        seed_report_form(workspace)?;
-        let mut args = common_args(workspace);
-        let path = write_json_input(
-            workspace,
-            "form-compile",
-            &json!({
-                "title": "Corpus form",
-                "properties": {
-                    "autoTitle": false,
-                    "width": 4_294_967_295_u64,
-                    "height": 4_294_967_294_u64,
-                    "scale": 98
-                },
-                "attributes": [{
-                    "name": "Object",
-                    "type": "ReportObject.CorpusReport",
-                    "main": true
-                }, {
-                    "name": "Value",
-                    "type": "String"
-                }, {
-                    "name": "Enabled",
-                    "type": "Boolean"
-                }, {
-                    "name": "Picture",
-                    "type": "Number"
-                }, {
-                    "name": "Rows",
-                    "type": "ValueTable",
-                    "columns": [{
-                        "name": "Value",
-                        "type": "String"
-                    }, {
-                        "name": "Presentation",
-                        "type": "String"
-                    }, {
-                        "name": "Picture",
-                        "type": "Number"
-                    }]
-                }],
-                "commands": [{
-                    "name": "CorpusAction",
-                    "title": "Corpus action"
-                }],
-                "elements": [{
-                    "name": "Header",
-                    "group": "AlwaysHorizontal",
-                    "behavior": "PopUp",
-                    "currentRowUse": "DontUse",
-                    "titleDataPath": "Value"
-                }, {
-                    "input": "Description",
-                    "path": "Rows",
-                    "titleLocation": "Top",
-                    "footerDataPath": "Value",
-                    "multipleValueDataPath": "Rows.Value",
-                    "multipleValuePresentDataPath": "Rows.Presentation",
-                    "multipleValuePictureDataPath": "Rows.Picture",
-                    "width": 4_294_967_295_u64,
-                    "height": 4_294_967_294_u64
-                }, {
-                    "check": "Enabled",
-                    "path": "Enabled",
-                    "checkBoxType": "Tumbler",
-                    "titleLocation": "Bottom"
-                }, {
-                    "button": "CorpusActionButton",
-                    "type": "CommandBarButton",
-                    "command": "CorpusAction",
-                    "representation": "Text",
-                    "locationInCommandBar": "InCommandBar"
-                }, {
-                    "table": "Rows",
-                    "path": "Rows",
-                    "rowPictureDataPath": "Rows.Picture"
-                }, {
-                    "html": "HtmlDescription",
-                    "path": "Value",
-                    "titleLocation": "None",
-                    "skipOnInput": true,
-                    "width": 40,
-                    "height": 1,
-                    "autoMaxWidth": false,
-                    "autoMaxHeight": false
-                }]
-            }),
-        )?;
-        args.insert("JsonPath".to_string(), Value::String(path));
-        args.insert(
-            "OutputPath".to_string(),
-            Value::String("src/Reports/CorpusReport/Forms/CorpusForm/Ext/Form.xml".to_string()),
-        );
-        return Ok(args);
-    }
-
-    if matches!(case.id, "form-edit-managed" | "form-remove-managed") {
-        seed_catalog_form(workspace)?;
-        let mut args = common_args(workspace);
-        if case.id == "form-edit-managed" {
-            args.insert(
-                "FormPath".to_string(),
-                Value::String(
-                    "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml".to_string(),
-                ),
-            );
-            args.insert(
-                "definition".to_string(),
-                json!({"attributes": [{"name": "CorpusAdded", "type": "string"}]}),
-            );
-        } else {
-            args.insert(
-                "at".to_string(),
-                Value::String("main:Catalog.CorpusCatalog.Form.CorpusForm".to_string()),
-            );
-            args.insert(
-                "ops".to_string(),
-                json!([{"op": "form.remove", "args": {}}]),
-            );
-        }
-        return Ok(args);
-    }
-
-    if case.id == "interface-edit-subsystem" {
-        seed_parent_subsystem(workspace)?;
-        seed_catalog(workspace)?;
-        let mut args = common_args(workspace);
-        args.insert(
-            "CIPath".to_string(),
-            Value::String("src/Subsystems/CorpusParent/Ext/CommandInterface.xml".to_string()),
-        );
-        args.insert("Operation".to_string(), Value::String("hide".to_string()));
-        args.insert(
-            "Value".to_string(),
-            Value::String("Catalog.CorpusCatalog.StandardCommand.OpenList".to_string()),
-        );
-        args.insert("CreateIfMissing".to_string(), Value::Bool(true));
-        return Ok(args);
-    }
-
-    if case.id == "subsystem-edit-add-child" {
-        seed_parent_subsystem(workspace)?;
-        let mut args = common_args(workspace);
-        args.insert(
-            "SubsystemPath".to_string(),
-            Value::String("src/Subsystems/CorpusParent.xml".to_string()),
-        );
-        args.insert(
-            "Operation".to_string(),
-            Value::String("add-child".to_string()),
-        );
-        args.insert(
-            "Value".to_string(),
-            Value::String("CorpusEditedChild".to_string()),
-        );
-        return Ok(args);
-    }
-
-    if case.id.starts_with("template-add-") {
-        seed_report(workspace)?;
-        let template_type = match case.branch {
-            "SpreadsheetDocument"
-            | "DataCompositionSchema"
-            | "TextDocument"
-            | "HTMLDocument"
-            | "BinaryData" => case.branch,
-            other => return Err(format!("unknown template branch: {other}")),
-        };
-        return Ok(template_args(workspace, "CorpusTemplate", template_type));
-    }
-
-    if case.id == "template-remove-object-template" {
-        seed_report(workspace)?;
-        call_public_tool(
-            "unica.meta.edit",
-            &template_args(workspace, "CorpusTemplate", "SpreadsheetDocument"),
-        )?;
-        let mut args = common_args(workspace);
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        args.insert(
-            "metadataPath".to_string(),
-            Value::String("Report.CorpusReport".to_string()),
-        );
-        args.insert(
-            "operations".to_string(),
-            json!([{
-                "op": "remove",
-                "collection": "templates",
-                "names": ["CorpusTemplate"]
-            }]),
-        );
-        return Ok(args);
-    }
-
-    if matches!(
-        case.id,
-        "dcs-edit-owned-template"
-            | "dcs-edit-add-parameter-after-settings"
-            | "dcs-edit-set-structure-after-settings"
-            | "dcs-edit-modify-field-role-restriction"
-    ) {
-        seed_report(workspace)?;
-        seed_catalog(workspace)?;
-        seed_metadata(
-            workspace,
-            "seed-unicode-defined-type",
-            json!({
-                "type": "DefinedType",
-                "name": "ТипКорпуса",
-                "valueTypes": ["String(16)"]
-            }),
-        )?;
-        seed_dcs_template(workspace)?;
-        let mut args = common_args(workspace);
-        args.insert(
-            "at".to_string(),
-            json!("main:Report.CorpusReport.Template.CorpusDcs"),
-        );
-        args.insert("ops".to_string(), Value::Array(dcs_mutation_ops(case.id)));
-        return Ok(args);
-    }
-
-    if case.id == "role-edit-set-right" {
-        seed_catalog(workspace)?;
-        // Роль с правами просмотра справочника заводят канонические
-        // `role.create` и `right.add` одной публикацией.
-        let mut seed = common_args(workspace);
-        seed.insert("at".to_string(), json!("main:Configuration"));
-        seed.insert(
-            "ops".to_string(),
-            json!([{
                 "op": "role.create",
                 "args": {"at": "main:Configuration", "values": {"name": "CorpusReader"}}
-            }, {
+            }),
+            json!({
                 "op": "right.add",
                 "args": {
                     "at": "main:Role.CorpusReader",
@@ -2998,38 +1940,363 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                         "rights": {"Read": true, "View": true, "InputByString": true}
                     }]
                 }
-            }]),
-        );
-        call_canonical_apply(&seed)?;
+            }),
+        ],
+    )
+}
 
-        let mut args = common_args(workspace);
-        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-        args.insert(
-            "metadataPath".to_string(),
-            Value::String("Role.CorpusReader".to_string()),
-        );
+fn seed_information_register_with_price(workspace: &Path) -> Result<(), String> {
+    seed_apply(
+        workspace,
+        "main:Configuration",
+        vec![
+            json!({
+                "op": "object.create",
+                "args": {"values": {"kind": "InformationRegister", "name": "CorpusInformationRegister"}}
+            }),
+            json!({
+                "op": "resource.add",
+                "args": {
+                    "at": "main:InformationRegister.CorpusInformationRegister",
+                    "items": [{"name": "Price", "type": number_type(15, 2)}]
+                }
+            }),
+        ],
+    )
+}
+
+fn spreadsheet_template_add_ops() -> Vec<Value> {
+    vec![json!({
+        "op": "template.add",
+        "args": {"items": [{"name": "CorpusTemplate", "templateType": "SpreadsheetDocument"}]}
+    })]
+}
+
+/// Семя кейса: всё, что лежит в рабочем пространстве до целевого вызова.
+fn seed_case(case: &ExecutableCase, workspace: &Path) -> Result<(), String> {
+    match case.id {
+        "support-edit-bin-only" => return seed_platform_support_fixture(workspace),
+        "xdto-add-nested-property" => {
+            copy_fixture_tree(
+                &repository_fixture("xdto/enterprise-data-minimal"),
+                &workspace.join("src"),
+            )?;
+            return write_designer_project(workspace, &[("main", "CONFIGURATION", "src")]);
+        }
+        _ => {}
+    }
+    seed_configuration(workspace)?;
+    match case.id {
+        "dcs-compile-owned-template" => {
+            seed_report(workspace)?;
+            seed_catalog(workspace)?;
+            seed_unicode_defined_type(workspace)
+        }
+        "dcs-edit-owned-template"
+        | "dcs-edit-add-parameter-after-settings"
+        | "dcs-edit-set-structure-after-settings"
+        | "dcs-edit-modify-field-role-restriction" => {
+            seed_report(workspace)?;
+            seed_catalog(workspace)?;
+            seed_unicode_defined_type(workspace)?;
+            seed_dcs_template(workspace)
+        }
+        "cfe-borrow-object" => {
+            seed_catalog(workspace)?;
+            seed_extension(workspace)
+        }
+        "code-patch-bsl-only" => {
+            seed_metadata(workspace, "CommonModule", "CorpusModule")?;
+            write_seed_bytes(
+                workspace,
+                "src/CommonModules/CorpusModule/Ext/Module.bsl",
+                b"\xef\xbb\xbfProcedure Run()\r\n    Message(\"ok\");\r\nEndProcedure\r\n",
+            )
+        }
+        "meta-edit-event-source" => {
+            seed_event_handlers(workspace, true)?;
+            seed_catalog(workspace)?;
+            seed_metadata(
+                workspace,
+                "InformationRegister",
+                "CorpusInformationRegister",
+            )?;
+            seed_metadata(workspace, "EventSubscription", "CorpusEventSubscription")
+        }
+        "meta-edit-resource-append" => seed_information_register_with_price(workspace),
+        "meta-edit-resource-position-after" => {
+            seed_information_register_with_price(workspace)?;
+            seed_apply(
+                workspace,
+                "main:InformationRegister.CorpusInformationRegister",
+                vec![json!({
+                    "op": "resource.add",
+                    "args": {"items": [{"name": "Total", "type": number_type(15, 2)}]}
+                })],
+            )
+        }
+        "meta-remove-object"
+        | "meta-edit-predefined-items"
+        | "meta-edit-property"
+        | "help-add-object"
+        | "form-add-managed" => seed_catalog(workspace),
+        "form-compile-managed" => seed_report_form(workspace),
+        "form-edit-managed" | "form-remove-managed" => seed_catalog_form(workspace),
+        "interface-edit-subsystem" => {
+            seed_parent_subsystem(workspace)?;
+            seed_parent_subsystem_command_interface(workspace)?;
+            seed_catalog(workspace)
+        }
+        "subsystem-edit-add-child" => seed_parent_subsystem(workspace),
+        "template-add-spreadsheet-document" => seed_report(workspace),
+        "template-remove-object-template" => {
+            seed_report(workspace)?;
+            seed_apply(
+                workspace,
+                "main:Report.CorpusReport",
+                spreadsheet_template_add_ops(),
+            )
+        }
+        "role-edit-set-right" => seed_role_reader(workspace),
+        _ if case.id.starts_with("meta-compile-") => match case.branch {
+            "Catalog" => seed_metadata(workspace, "DefinedType", "CorpusDefinedType"),
+            "AccumulationRegister" => seed_metadata(workspace, "Document", "CorpusRecorder"),
+            "AccountingRegister" => {
+                seed_metadata(workspace, "ChartOfAccounts", "CorpusAccounts")?;
+                seed_metadata(workspace, "Document", "CorpusRecorder")
+            }
+            "CalculationRegister" => {
+                seed_metadata(
+                    workspace,
+                    "ChartOfCalculationTypes",
+                    "CorpusCalculationTypes",
+                )?;
+                seed_metadata(workspace, "Document", "CorpusRecorder")
+            }
+            "BusinessProcess" => seed_metadata(workspace, "Task", "CorpusTask"),
+            "DocumentJournal" => seed_metadata(workspace, "Document", "CorpusDocument"),
+            "ScheduledJob" => seed_event_handlers(workspace, false),
+            "EventSubscription" => {
+                seed_metadata(workspace, "Document", "CorpusDocument")?;
+                seed_catalog(workspace)?;
+                seed_event_handlers(workspace, false)
+            }
+            _ => Ok(()),
+        },
+        other => Err(format!("no executable seed for case {other}")),
+    }
+}
+
+/// Аргументы целевого `unica.apply` кейса. Чистая функция: страж реестра
+/// сверяет операции каждого кейса, не исполняя семя.
+fn target_args(case: &ExecutableCase, workspace: &Path) -> Result<Map<String, Value>, String> {
+    let args = |at: &str, ops: Vec<Value>| Ok(apply_args(workspace, at, ops));
+    match case.id {
+        "support-edit-bin-only" => args(
+            // Возможность изменения — свойство корня конфигурации на поддержке.
+            "main:Configuration",
+            vec![json!({"op": "supportCapability.set", "args": {"values": {"enabled": false}}})],
+        ),
+        "xdto-add-nested-property" => args(
+            "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект",
+            vec![json!({
+                "op": "property.add",
+                "args": {"values": {
+                    "property": {
+                        "name": "Документ_Корпус",
+                        "type": "tns:Документ_ЗаказКлиента",
+                        "minOccurs": 0
+                    }
+                }}
+            })],
+        ),
+        "dcs-compile-owned-template" => {
+            Ok(canonical_dcs_template_add_args(workspace, "CorpusTemplate"))
+        }
+        "dcs-edit-owned-template"
+        | "dcs-edit-add-parameter-after-settings"
+        | "dcs-edit-set-structure-after-settings"
+        | "dcs-edit-modify-field-role-restriction" => args(
+            "main:Report.CorpusReport.Template.CorpusDcs",
+            dcs_mutation_ops(case.id),
+        ),
+        "cfe-borrow-object" => args(
+            "extension:Configuration",
+            vec![json!({"op": "object.borrow", "args": {"from": "main:Catalog.CorpusCatalog"}})],
+        ),
+        "code-patch-bsl-only" => args(
+            "main:CommonModule.CorpusModule.Method.Run",
+            vec![json!({
+                "op": "code.insert",
+                "args": {"text": "Procedure Added()\nEndProcedure", "position": "after"}
+            })],
+        ),
+        "meta-edit-predefined-items" => args(
+            "main:Catalog.CorpusCatalog",
+            vec![
+                json!({"op": "props.set", "args": {"values": {"CodeType": "Number"}}}),
+                json!({
+                    "op": "predefinedItem.add",
+                    "args": {"items": [{
+                        "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+                        "name": "CorpusMain",
+                        "code": "643",
+                        "description": "Corpus predefined item",
+                        "isFolder": false
+                    }]}
+                }),
+            ],
+        ),
+        "meta-edit-property" => args(
+            "main:Catalog.CorpusCatalog",
+            vec![json!({"op": "props.set", "args": {"values": {"Comment": "Corpus edited"}}})],
+        ),
+        "meta-edit-event-source" => args(
+            "main:EventSubscription.CorpusEventSubscription",
+            vec![
+                json!({
+                    "op": "props.set",
+                    "args": {"values": {"Handler": "CommonModule.EventHandlers.OnBeforeWriteRecordSet"}}
+                }),
+                json!({
+                    "op": "relation.replace",
+                    "args": {"values": {
+                        "relation": "source",
+                        "targets": [{
+                            "kind": "recordSet",
+                            "metadataPath": "InformationRegister.CorpusInformationRegister"
+                        }]
+                    }}
+                }),
+            ],
+        ),
+        "meta-edit-resource-append" | "meta-edit-resource-position-after" => {
+            let item = if case.id == "meta-edit-resource-append" {
+                json!({"name": "Amount", "type": number_type(15, 2)})
+            } else {
+                json!({"name": "Quantity", "type": number_type(15, 2), "position": {"after": "Price"}})
+            };
+            args(
+                "main:InformationRegister.CorpusInformationRegister",
+                vec![json!({"op": "resource.add", "args": {"items": [item]}})],
+            )
+        }
+        "meta-remove-object" => args(
+            "main:Catalog.CorpusCatalog",
+            vec![json!({"op": "object.remove", "args": {"force": true}})],
+        ),
+        "help-add-object" => args(
+            "main:Catalog.CorpusCatalog",
+            vec![json!({"op": "help.create", "args": {"values": {"lang": "ru"}}})],
+        ),
+        "form-add-managed" => Ok(form_add_args(workspace)),
+        "form-compile-managed" => args(
+            "main:Report.CorpusReport.Form.CorpusForm",
+            form_compose_ops(),
+        ),
+        "form-edit-managed" => args(
+            "main:Catalog.CorpusCatalog.Form.CorpusForm",
+            vec![json!({
+                "op": "attribute.add",
+                "args": {"items": [{"name": "CorpusAdded", "type": "string"}]}
+            })],
+        ),
+        "form-remove-managed" => args(
+            "main:Catalog.CorpusCatalog.Form.CorpusForm",
+            vec![json!({"op": "form.remove", "args": {}})],
+        ),
+        "interface-edit-subsystem" => args(
+            "main:Subsystem.CorpusParent.Interface",
+            vec![json!({
+                "op": "commandVisibility.set",
+                "args": {"items": [{
+                    "command": "Catalog.CorpusCatalog.StandardCommand.OpenList",
+                    "visible": false
+                }]}
+            })],
+        ),
+        "subsystem-edit-add-child" => args(
+            "main:Subsystem.CorpusParent",
+            vec![json!({
+                "op": "childSubsystem.add",
+                "args": {"items": [{"name": "CorpusEditedChild"}]}
+            })],
+        ),
+        "template-add-spreadsheet-document" => {
+            args("main:Report.CorpusReport", spreadsheet_template_add_ops())
+        }
+        "template-remove-object-template" => args(
+            "main:Report.CorpusReport.Template.CorpusTemplate",
+            vec![json!({"op": "template.remove", "args": {}})],
+        ),
         // Снятие обоих интерактивных прав держит каждую промежуточную и
         // итоговую комбинацию внутри платформенной матрицы зависимостей
         // (ввод по строке требует просмотра); каноническая форма итога —
         // блок с одним хранимым Read, который 8.3.27 экспортирует как есть.
-        args.insert(
-            "operations".to_string(),
-            json!([{
-                "op": "setRight",
-                "objectName": "Catalog.CorpusCatalog",
-                "right": "InputByString",
-                "value": false
-            }, {
-                "op": "setRight",
-                "objectName": "Catalog.CorpusCatalog",
-                "right": "View",
-                "value": false
-            }]),
-        );
-        return Ok(args);
+        "role-edit-set-right" => args(
+            "main:Role.CorpusReader.Right.Catalog_CorpusCatalog",
+            vec![
+                json!({"op": "right.set", "args": {"values": {"right": "InputByString", "value": false}}}),
+                json!({"op": "right.set", "args": {"values": {"right": "View", "value": false}}}),
+            ],
+        ),
+        _ if case.id.starts_with("meta-compile-") => {
+            let name = meta_object_name(case.branch)
+                .ok_or_else(|| format!("missing metadata object name for {}", case.branch))?;
+            args("main:Configuration", object_create_ops(case.branch, name))
+        }
+        other => Err(format!("no executable target for case {other}")),
     }
+}
 
-    Err(format!("no executable preparation for case {}", case.id))
+/// Состав управляемой формы отчёта каноническими операциями формы. Заголовок
+/// и свойства самой формы (autoTitle, предельные width/height, scale) канон
+/// не пишет, и кейс их больше не проверяет (#1984).
+fn form_compose_ops() -> Vec<Value> {
+    let form = "main:Report.CorpusReport.Form.CorpusForm";
+    vec![
+        json!({"op": "attribute.add", "args": {"items": [
+            {"name": "Value", "type": "String"},
+            {"name": "Enabled", "type": "Boolean"},
+            {"name": "Picture", "type": "Number"},
+            {"name": "Rows", "type": "ValueTable", "columns": [
+                {"name": "Value", "type": "String"},
+                {"name": "Presentation", "type": "String"},
+                {"name": "Picture", "type": "Number"}
+            ]}
+        ]}}),
+        json!({"op": "command.add", "args": {"items": [
+            {"name": "CorpusAction", "title": "Corpus action"}
+        ]}}),
+        json!({"op": "item.add", "args": {"items": [
+            {"name": "Header", "type": "Group", "orientation": "AlwaysHorizontal",
+             "behavior": "PopUp", "currentRowUse": "DontUse", "titleDataPath": "Value"},
+            {"name": "Description", "type": "InputField", "path": "Rows", "titleLocation": "Top",
+             "footerDataPath": "Value", "multipleValueDataPath": "Rows.Value",
+             "multipleValuePresentDataPath": "Rows.Presentation",
+             "multipleValuePictureDataPath": "Rows.Picture",
+             "width": 4_294_967_295_u64, "height": 4_294_967_294_u64},
+            {"name": "Enabled", "type": "CheckBox", "path": "Enabled",
+             "checkBoxType": "Tumbler", "titleLocation": "Bottom"},
+            {"name": "Rows", "type": "Table", "path": "Rows", "rowPictureDataPath": "Rows.Picture"},
+            {"name": "HtmlDescription", "type": "HTMLDocumentField", "path": "Value",
+             "titleLocation": "None", "skipOnInput": true, "width": 40, "height": 1,
+             "autoMaxWidth": false, "autoMaxHeight": false}
+        ]}}),
+        // Кнопка командной панели формы — элемент самой панели.
+        json!({"op": "item.add", "args": {
+            "at": format!("{form}.Item.ФормаКоманднаяПанель"),
+            "items": [{"name": "CorpusActionButton", "type": "Button", "command": "CorpusAction",
+                       "representation": "Text", "locationInCommandBar": "InCommandBar"}]
+        }}),
+    ]
+}
+
+fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String, Value>, String> {
+    fs::create_dir_all(workspace)
+        .map_err(|error| format!("cannot create {}: {error}", workspace.display()))?;
+    seed_case(case, workspace)?;
+    target_args(case, workspace)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3356,10 +2623,6 @@ fn platform_checkpoint_for_case(case: &ExecutableCase) -> PlatformCheckpoint {
             Some(format!("{prefix}/ext")),
             Some(format!("{prefix}/src")),
         )
-    } else if case.id.starts_with("epf-") {
-        ("epf", Some(format!("{prefix}/epf")), None)
-    } else if case.id.starts_with("erf-") {
-        ("erf", Some(format!("{prefix}/erf")), None)
     } else {
         ("configuration", Some(format!("{prefix}/src")), None)
     };
@@ -3378,8 +2641,6 @@ fn platform_source_root_relatives(
     match checkpoint.kind.as_str() {
         "configuration" => Ok(&["src"]),
         "extension" => Ok(&["src", "ext"]),
-        "epf" => Ok(&["epf"]),
-        "erf" => Ok(&["erf"]),
         other => Err(format!(
             "unknown platform checkpoint kind for {}: {other}",
             case.id
@@ -4048,44 +3309,15 @@ fn assert_case_postconditions(
         let expected =
             "<v8:Type>cfg:InformationRegisterRecordSet.CorpusInformationRegister</v8:Type>";
         if !xml.contains(expected) || xml.contains("<v8:Type>xs:string</v8:Type>") {
-            return Err(
-                "meta.edit source relation did not replace the complete Source list".to_string(),
-            );
+            return Err("relation.replace did not replace the complete Source list".to_string());
         }
     }
-    if matches!(
-        case.branch,
-        "SpreadsheetDocument" | "DataCompositionSchema" | "HTMLDocument"
-    ) && case.id.starts_with("template-add-")
+    if case.id == "template-add-spreadsheet-document"
         && !after
             .keys()
             .any(|path| path.ends_with("/Templates/CorpusTemplate/Ext/Template.xml"))
     {
         return Err(format!("{} template content is not XML", case.branch));
-    }
-    if case.id.starts_with("template-add-") && matches!(case.branch, "TextDocument" | "BinaryData")
-    {
-        let extension = match case.branch {
-            "TextDocument" => "txt",
-            "BinaryData" => "bin",
-            _ => unreachable!(),
-        };
-        let relative =
-            format!("src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.{extension}");
-        if !workspace.join(&relative).is_file() || after.contains_key(&relative) {
-            return Err(format!(
-                "{} non-XML template content was missing or classified as XML",
-                case.branch
-            ));
-        }
-    }
-    if case.id == "template-add-html-document" {
-        let relative = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template/ru.html";
-        if !workspace.join(relative).is_file() || after.contains_key(relative) {
-            return Err(
-                "HTMLDocument page-set content was missing or classified as XML".to_string(),
-            );
-        }
     }
     if matches!(
         effective_xml_impact(case.id),
@@ -4464,53 +3696,35 @@ pub(crate) fn configured_output_directory() -> Result<PathBuf, String> {
     configured_output_directory_from(raw.as_deref(), repo_root, &home)
 }
 
-fn live_public_mutators() -> BTreeMap<&'static str, &'static str> {
-    UnicaApplication::new()
-        .tools()
-        .into_iter()
-        .filter_map(|tool| {
-            if !tool.execution.is_mutating() {
-                return None;
-            }
-            let operation = match tool.handler {
-                ToolHandler::NativeOperation { operation, .. } => operation,
-                ToolHandler::Metadata { .. } => match tool.name {
-                    "unica.meta.add" => "meta-add",
-                    "unica.meta.edit" => "meta-edit",
-                    _ => return None,
-                },
-                _ => return None,
-            };
-            Some((tool.name, operation))
+/// Канонические операции `unica.apply` с доказанным планировщиком и
+/// публикацией: список `IMPLEMENTED_APPLY_OPERATIONS` продукта. Цель
+/// интеграционная и видит только публичный API, поэтому список читается из
+/// исходника, где он объявлен.
+fn implemented_apply_operations() -> BTreeSet<String> {
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/domain/apply.rs"))
+            .expect("domain/apply.rs");
+    let start = source
+        .find("pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[")
+        .expect("IMPLEMENTED_APPLY_OPERATIONS declaration");
+    let body = &source[start..];
+    let body = &body[body.find("= &[").unwrap() + 4..body.find("];").unwrap()];
+    body.split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            item.strip_prefix('"')
+                .and_then(|item| item.strip_suffix('"'))
+                .unwrap_or_else(|| panic!("unexpected operation literal: {item}"))
+                .to_string()
         })
         .collect()
 }
 
 #[test]
-fn every_public_native_mutator_has_xml_impact_and_case_coverage() {
-    let live = live_public_mutators();
-    let mut registry = BTreeMap::new();
-    let mut seen_operations = BTreeSet::new();
-    for entry in MUTATOR_REGISTRY {
-        assert!(
-            seen_operations.insert(entry.operation),
-            "duplicate registry operation: {}",
-            entry.operation
-        );
-        if entry.tool == CANONICAL_APPLY_TOOL {
-            // A writer that already left the v0.12 registry is driven through
-            // the canonical `unica.apply` surface; its row keys by operation.
-            continue;
-        }
-        assert!(
-            registry.insert(entry.tool, entry.operation).is_none(),
-            "duplicate registry tool: {}",
-            entry.tool
-        );
-    }
-
-    assert_eq!(registry, live);
-
+fn every_corpus_case_publishes_registered_canonical_operations() {
+    let implemented = implemented_apply_operations();
+    assert!(implemented.contains("object.create"), "{implemented:?}");
     let mut executable = BTreeMap::new();
     for case in EXECUTABLE_CASES {
         assert!(
@@ -4518,14 +3732,34 @@ fn every_public_native_mutator_has_xml_impact_and_case_coverage() {
             "duplicate executable case: {}",
             case.id
         );
+        assert_eq!(case.tool, CANONICAL_APPLY_TOOL, "{}", case.id);
     }
 
+    let mut seen_operations = BTreeSet::new();
     let mut referenced_cases = BTreeSet::new();
+    let workspace = Path::new("/corpus-registry-probe");
     for entry in MUTATOR_REGISTRY {
+        assert!(
+            seen_operations.insert(entry.operation),
+            "duplicate registry operation: {}",
+            entry.operation
+        );
+        assert!(
+            !entry.ops.is_empty(),
+            "{} names no operation",
+            entry.operation
+        );
+        for op in entry.ops {
+            assert!(
+                implemented.contains(*op),
+                "{}: `{op}` is not an implemented unica.apply operation",
+                entry.operation
+            );
+        }
         assert!(
             !entry.case_ids.is_empty(),
             "registry row has no case: {}",
-            entry.tool
+            entry.operation
         );
         let mut actual_branches = BTreeSet::new();
         for case_id in entry.case_ids {
@@ -4536,8 +3770,24 @@ fn every_public_native_mutator_has_xml_impact_and_case_coverage() {
             let case = executable
                 .get(case_id)
                 .unwrap_or_else(|| panic!("missing executable case: {case_id}"));
-            assert_eq!(case.tool, entry.tool, "case tool mismatch: {case_id}");
             actual_branches.insert(case.branch);
+            let args = target_args(case, workspace).unwrap_or_else(|error| panic!("{error}"));
+            assert!(
+                args.get("at").and_then(Value::as_str).is_some(),
+                "{case_id} has no target address"
+            );
+            let ops = args["ops"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{case_id} has no ops"));
+            assert!(!ops.is_empty(), "{case_id} publishes nothing");
+            for op in ops {
+                let name = op["op"].as_str().unwrap_or_default();
+                assert!(
+                    entry.ops.contains(&name),
+                    "{case_id} publishes `{name}` outside its row {}",
+                    entry.operation
+                );
+            }
         }
         let required_branches = entry
             .required_branches
@@ -4547,13 +3797,12 @@ fn every_public_native_mutator_has_xml_impact_and_case_coverage() {
         assert!(
             !required_branches.is_empty(),
             "registry row has no branch contract: {}",
-            entry.tool
+            entry.operation
         );
         assert_eq!(
             actual_branches, required_branches,
             "branch coverage mismatch"
         );
-        let _ = entry.impact;
     }
     assert_eq!(
         referenced_cases,
@@ -4825,25 +4074,6 @@ fn every_executable_case_has_an_exact_platform_checkpoint() {
             );
         }
     }
-}
-
-#[test]
-fn cf_init_public_case_creates_real_xml() {
-    let root = unique_temp_dir("cf-init-public-case");
-    let workspace = root.join("workspace");
-    fs::create_dir_all(&workspace).unwrap();
-    let before = snapshot_xml(&workspace).unwrap();
-    let args = cf_init_args(&workspace, "CorpusConfiguration", "src");
-    let mut gate = SequentialCallGate::default();
-
-    call_target_tool(&mut gate, "unica.cf.init", &args).unwrap();
-
-    let after = snapshot_xml(&workspace).unwrap();
-    let entry = registry_entry_for_case("cf-init-default");
-    let delta = enforce_xml_impact(entry.impact, &before, &after).unwrap();
-    assert!(delta.created.contains(&"src/Configuration.xml".to_string()));
-    assert_eq!(gate.completed_target_calls, 1);
-    remove_temp_tree(&root);
 }
 
 #[test]
@@ -5152,73 +4382,6 @@ fn code_patch_case_seeds_and_preserves_platform_canonical_bsl_bytes() {
 }
 
 #[test]
-fn cfe_patch_method_case_seeds_a_registered_adopted_common_module() {
-    let root = unique_temp_dir("cfe-patch-registered-common-module");
-    let workspace = root.join("workspace");
-    fs::create_dir_all(&workspace).unwrap();
-    let case = EXECUTABLE_CASES
-        .iter()
-        .find(|case| case.id == "cfe-patch-method-bsl-only")
-        .unwrap();
-
-    prepare_target(case, &workspace).unwrap();
-
-    let extension = fs::read_to_string(workspace.join("ext/Configuration.xml")).unwrap();
-    let extension_document = Document::parse(extension.trim_start_matches('\u{feff}')).unwrap();
-    let registered = extension_document
-        .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "CommonModule")
-        .filter_map(|node| node.text())
-        .collect::<Vec<_>>();
-    assert_eq!(registered, ["CorpusModule"]);
-
-    let descriptor_path = workspace.join("ext/CommonModules/CorpusModule.xml");
-    let descriptor = fs::read_to_string(&descriptor_path).unwrap();
-    let descriptor_document = Document::parse(descriptor.trim_start_matches('\u{feff}')).unwrap();
-    assert_eq!(
-        descriptor_document.root_element().attribute("version"),
-        Some("2.20")
-    );
-    let direct_objects = descriptor_document
-        .root_element()
-        .children()
-        .filter(|node| node.is_element())
-        .collect::<Vec<_>>();
-    assert_eq!(direct_objects.len(), 1);
-    assert_eq!(direct_objects[0].tag_name().name(), "CommonModule");
-    let property = |name| {
-        direct_objects[0]
-            .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == name)
-            .and_then(|node| node.text())
-    };
-    assert_eq!(property("Name"), Some("CorpusModule"));
-    assert_eq!(property("ObjectBelonging"), Some("Adopted"));
-    let extended = property("ExtendedConfigurationObject").unwrap();
-    assert!(
-        uuid::Uuid::parse_str(extended).is_ok(),
-        "borrowed descriptor must identify its base object with a GUID: {extended}"
-    );
-    assert!(
-        !workspace
-            .join("ext/CommonModules/CorpusModule/Ext/Module.bsl")
-            .exists(),
-        "borrow must leave Module.bsl creation to cfe.patch_method"
-    );
-    let base_module =
-        fs::read(workspace.join("src/CommonModules/CorpusModule/Ext/Module.bsl")).unwrap();
-    assert_platform_canonical_bsl(&base_module);
-    assert!(
-        std::str::from_utf8(&base_module[3..])
-            .unwrap()
-            .contains("Procedure Run()\r\n"),
-        "the borrowed interceptor target must exist in the base CommonModule"
-    );
-
-    remove_temp_tree(&root);
-}
-
-#[test]
 fn non_xml_inventory_covers_every_xml_none_impact_case() {
     let expectations = [
         (
@@ -5329,183 +4492,6 @@ fn managed_form_cases_address_logform_content_and_spare_the_descriptor() {
     }
 }
 
-fn assert_exact_extended_property_state(path: &Path, expected_property: &str) {
-    let xml = fs::read_to_string(path).unwrap();
-    let document = Document::parse(xml.trim_start_matches('\u{feff}'))
-        .unwrap_or_else(|error| panic!("{}: {error}: {xml}", path.display()));
-    let states = document
-        .descendants()
-        .filter(|node| node.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "PropertyState")))
-        .filter_map(|state| {
-            let property = state
-                .children()
-                .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "Property")))
-                .and_then(|node| node.text())?;
-            let value = state
-                .children()
-                .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "State")))
-                .and_then(|node| node.text())?;
-            Some((property, value))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        states,
-        [(expected_property, "Extended")],
-        "{}: {xml}",
-        path.display()
-    );
-}
-
-#[test]
-fn cfe_patch_method_inventory_covers_atomic_xml_and_bsl_change() {
-    let expectations = [
-        (
-            "cfe-patch-method-bsl-only",
-            "ext/CommonModules/CorpusModule/Ext/Module.bsl",
-            "src/CommonModules/CorpusModule/Ext/Module.bsl",
-            "ext/CommonModules/CorpusModule.xml",
-            "Module",
-            XmlImpactClass::CreateOrModify,
-            "modified",
-        ),
-        (
-            "cfe-patch-method-catalog-object-module",
-            "ext/Catalogs/CorpusCatalog/Ext/ObjectModule.bsl",
-            "src/Catalogs/CorpusCatalog/Ext/ObjectModule.bsl",
-            "ext/Catalogs/CorpusCatalog.xml",
-            "ObjectModule",
-            XmlImpactClass::CreateOrModify,
-            "modified",
-        ),
-        (
-            "cfe-patch-method-catalog-manager-module",
-            "ext/Catalogs/CorpusCatalog/Ext/ManagerModule.bsl",
-            "src/Catalogs/CorpusCatalog/Ext/ManagerModule.bsl",
-            "ext/Catalogs/CorpusCatalog.xml",
-            "ManagerModule",
-            XmlImpactClass::CreateOrModify,
-            "modified",
-        ),
-        (
-            "cfe-patch-method-information-register-record-set-module",
-            "ext/InformationRegisters/CorpusInformationRegister/Ext/RecordSetModule.bsl",
-            "src/InformationRegisters/CorpusInformationRegister/Ext/RecordSetModule.bsl",
-            "ext/InformationRegisters/CorpusInformationRegister.xml",
-            "RecordSetModule",
-            XmlImpactClass::CreateOrModify,
-            "modified",
-        ),
-        (
-            "cfe-patch-method-catalog-form-module",
-            "ext/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
-            "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
-            "ext/Catalogs/CorpusCatalog/Forms/CorpusForm.xml",
-            "Form",
-            XmlImpactClass::None,
-            "unchanged",
-        ),
-        (
-            "cfe-patch-method-constant-value-manager-module",
-            "ext/Constants/CorpusConstant/Ext/ValueManagerModule.bsl",
-            "src/Constants/CorpusConstant/Ext/ValueManagerModule.bsl",
-            "ext/Constants/CorpusConstant.xml",
-            "ValueManagerModule",
-            XmlImpactClass::CreateOrModify,
-            "modified",
-        ),
-    ];
-
-    for (
-        case_id,
-        extension_module,
-        base_module,
-        descriptor,
-        property,
-        expected_impact,
-        expected_descriptor_delta,
-    ) in expectations
-    {
-        assert_eq!(
-            registry_entry_for_case(case_id).impact,
-            XmlImpactClass::CreateOrModify,
-            "{case_id} must advertise its XML mutation capability"
-        );
-        assert_eq!(effective_xml_impact(case_id), expected_impact, "{case_id}");
-        let root = unique_temp_dir(case_id);
-        let case = EXECUTABLE_CASES
-            .iter()
-            .find(|case| case.id == case_id)
-            .unwrap();
-        let mut gate = SequentialCallGate::default();
-
-        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
-        let manifest_case = serde_json::to_value(generated).unwrap();
-        assert_eq!(
-            manifest_case["impactClass"],
-            impact_class_name(expected_impact),
-            "{case_id}"
-        );
-
-        let extension_post = manifest_case["nonXmlFiles"]
-            .as_array()
-            .and_then(|files| {
-                files.iter().find(|file| {
-                    file["path"]
-                        .as_str()
-                        .is_some_and(|path| path.ends_with(extension_module))
-                })
-            })
-            .unwrap_or_else(|| panic!("{case_id} did not inventory {extension_module}"));
-        assert_eq!(extension_post["seed"], false, "{case_id}");
-        assert_eq!(extension_post["delta"], "created", "{case_id}");
-
-        let pre_base = manifest_case["preNonXmlFiles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|file| {
-                file["path"]
-                    .as_str()
-                    .is_some_and(|path| path.ends_with(base_module))
-            })
-            .expect("base target module must be captured before cfe.patch_method");
-        let post_base = manifest_case["nonXmlFiles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|file| {
-                file["path"]
-                    .as_str()
-                    .is_some_and(|path| path.ends_with(base_module))
-            })
-            .expect("base target module must remain in the extension checkpoint");
-        assert_eq!(post_base["seed"], true, "{case_id}");
-        assert_eq!(post_base["delta"], "unchanged", "{case_id}");
-        assert_eq!(post_base["sha256"], pre_base["sha256"], "{case_id}");
-
-        let descriptor_post = manifest_case["files"]
-            .as_array()
-            .and_then(|files| {
-                files.iter().find(|file| {
-                    file["path"]
-                        .as_str()
-                        .is_some_and(|path| path.ends_with(descriptor))
-                })
-            })
-            .unwrap_or_else(|| panic!("{case_id} did not inventory {descriptor}"));
-        assert_eq!(
-            descriptor_post["delta"], expected_descriptor_delta,
-            "{case_id}"
-        );
-
-        let workspace = root.join("cases").join(case_id).join("workspace");
-        assert_platform_canonical_bsl(&fs::read(workspace.join(extension_module)).unwrap());
-        assert_platform_canonical_bsl(&fs::read(workspace.join(base_module)).unwrap());
-        assert_exact_extended_property_state(&workspace.join(descriptor), property);
-        remove_temp_tree(&root);
-    }
-}
-
 #[test]
 fn meta_edit_event_source_case_executes_public_writer_and_binds_exact_delta() {
     let root = unique_temp_dir("meta-edit-event-source-case");
@@ -5523,27 +4509,27 @@ fn meta_edit_event_source_case_executes_public_writer_and_binds_exact_delta() {
 
     let mut preview_args = args.clone();
     preview_args.insert("dryRun".to_string(), Value::Bool(true));
-    let preview = call_public_tool_result(case.tool, &preview_args).unwrap();
-    assert!(preview.ok, "{preview:?}");
-    assert_eq!(preview.data.as_ref().unwrap()["changed"], true);
+    let preview = call_canonical_tool_response(case.tool, &preview_args).unwrap();
+    let previewed_effects = preview["data"]["effects"].as_u64().unwrap_or_default();
+    assert!(previewed_effects >= 1, "{preview}");
     assert_eq!(fs::read(&descriptor).unwrap(), preimage);
     assert_eq!(
         capture_xml_payloads(&lifecycle_workspace).unwrap(),
         before_preview,
-        "typed Source preview must leave every platform XML byte unchanged"
+        "Source relation preview must leave every platform XML byte unchanged"
     );
 
-    let applied = call_public_tool_result(case.tool, &args).unwrap();
-    assert!(applied.ok, "{applied:?}");
-    assert_eq!(applied.data.as_ref().unwrap()["changed"], true);
-    assert_eq!(applied.cache.events, ["MetadataChanged"]);
+    let applied = call_canonical_tool_response(case.tool, &args).unwrap();
+    assert_eq!(
+        applied["data"]["effects"].as_u64(),
+        Some(previewed_effects),
+        "{applied}"
+    );
     let postimage = fs::read(&descriptor).unwrap();
     assert_ne!(postimage, preimage);
 
-    let noop = call_public_tool_result(case.tool, &args).unwrap();
-    assert!(noop.ok, "{noop:?}");
-    assert_eq!(noop.data.as_ref().unwrap()["changed"], false);
-    assert!(noop.cache.events.is_empty());
+    let noop = call_canonical_tool_response(case.tool, &args).unwrap();
+    assert_eq!(noop["data"]["effects"].as_u64(), Some(0), "{noop}");
     assert_eq!(fs::read(&descriptor).unwrap(), postimage);
 
     let generation_a = root.join("generation-a");
@@ -5569,22 +4555,21 @@ fn meta_edit_event_source_case_executes_public_writer_and_binds_exact_delta() {
     )
     .unwrap();
     assert_eq!(
-        report["publicArguments"]["operations"],
+        report["publicArguments"]["ops"],
         json!([
             {
-                "op": "setProperties",
-                "values": {
-                    "Handler": "CommonModule.EventHandlers.OnBeforeWriteRecordSet"
-                }
+                "op": "props.set",
+                "args": {"values": {"Handler": "CommonModule.EventHandlers.OnBeforeWriteRecordSet"}}
             },
             {
-                "op": "editRelations",
-                "relation": "source",
-                "mode": "replace",
-                "targets": [{
-                    "kind": "recordSet",
-                    "metadataPath": "InformationRegister.CorpusInformationRegister"
-                }]
+                "op": "relation.replace",
+                "args": {"values": {
+                    "relation": "source",
+                    "targets": [{
+                        "kind": "recordSet",
+                        "metadataPath": "InformationRegister.CorpusInformationRegister"
+                    }]
+                }}
             }
         ])
     );
@@ -5624,54 +4609,6 @@ fn meta_edit_event_source_case_executes_public_writer_and_binds_exact_delta() {
 }
 
 #[test]
-fn html_template_case_inventories_the_platform_page_set_layout() {
-    let root = unique_temp_dir("html-template-page-set");
-    let case = EXECUTABLE_CASES
-        .iter()
-        .find(|case| case.id == "template-add-html-document")
-        .unwrap();
-    let mut gate = SequentialCallGate::default();
-
-    let generated = run_corpus_case(&root, case, &mut gate).unwrap();
-    let manifest_case = serde_json::to_value(generated).unwrap();
-    let descriptor_suffix = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml";
-    let page_suffix = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template/ru.html";
-
-    assert!(manifest_case["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|file| file["path"]
-            .as_str()
-            .is_some_and(|path| path.ends_with(descriptor_suffix))));
-    let page = manifest_case["nonXmlFiles"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|file| {
-            file["path"]
-                .as_str()
-                .is_some_and(|path| path.ends_with(page_suffix))
-        })
-        .expect("HTML page must be captured as exact non-XML evidence");
-    assert_eq!(page["seed"], false);
-    assert_eq!(page["delta"], "created");
-    let published_page = root
-        .join("cases/template-add-html-document/workspace")
-        .join(page_suffix);
-    assert_eq!(
-        fs::read(published_page).unwrap(),
-        include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/html-template/native-ru.html"
-        )),
-        "published HTML must match the retained native 8.3.27.2074 page bytes",
-    );
-
-    remove_temp_tree(&root);
-}
-
-#[test]
 fn corpus_case_inventories_stable_files_outside_platform_boundaries() {
     let root = unique_temp_dir("auxiliary-files");
     let case = EXECUTABLE_CASES
@@ -5694,7 +4631,7 @@ fn corpus_case_inventories_stable_files_outside_platform_boundaries() {
         paths
             .iter()
             .all(|path| !path.contains("/workspace/inputs/")),
-        "typed meta.add must not recreate the retired JSON-DSL input channel"
+        "object.create must not recreate the retired JSON-DSL input channel"
     );
     assert!(paths.iter().all(|path| !path.contains("/workspace/src/")));
 
@@ -5987,9 +4924,9 @@ fn manifest_sorting_and_task_7a_shape_round_trip() {
             covered_case_ids: vec![id.to_string()],
         },
         checkpoint: format!("cases/{id}/case-report.json"),
-        tool_id: "unica.cf.init".to_string(),
-        operation: "cf-init".to_string(),
-        branch: "default".to_string(),
+        tool_id: CANONICAL_APPLY_TOOL.to_string(),
+        operation: "object-create".to_string(),
+        branch: "Catalog".to_string(),
         impact_class: "CreateOrModify".to_string(),
         xml_impact: "created".to_string(),
         pre_files: Vec::new(),
@@ -6233,7 +5170,7 @@ fn dcs_edit_corpus_covers_order_sensitive_mutations() {
 }
 
 #[test]
-fn meta_info_manifest_platform_cases_are_exact_executable_meta_add_branches() {
+fn meta_info_manifest_platform_cases_are_exact_executable_object_create_branches() {
     #[derive(Deserialize)]
     struct MetaInfoManifest {
         kinds: Vec<MetaInfoManifestKind>,
@@ -6257,8 +5194,9 @@ fn meta_info_manifest_platform_cases_are_exact_executable_meta_add_branches() {
             .find(|case| case.id == entry.platform_case)
             .unwrap_or_else(|| panic!("missing executable case {}", entry.platform_case));
         assert_eq!(
-            executable.tool, "unica.meta.add",
-            "{} points at the wrong tool",
+            registry_entry_for_case(executable.id).operation,
+            "object-create",
+            "{} points at a case outside object.create",
             entry.kind
         );
         assert_eq!(
@@ -6267,36 +5205,6 @@ fn meta_info_manifest_platform_cases_are_exact_executable_meta_add_branches() {
             entry.platform_case
         );
     }
-}
-
-#[test]
-fn cfe_patch_method_corpus_covers_every_supported_module_layout_family() {
-    let entry = MUTATOR_REGISTRY
-        .iter()
-        .find(|entry| entry.tool == "unica.cfe.patch_method")
-        .unwrap();
-    assert_eq!(
-        entry.case_ids,
-        [
-            "cfe-patch-method-bsl-only",
-            "cfe-patch-method-catalog-object-module",
-            "cfe-patch-method-catalog-manager-module",
-            "cfe-patch-method-information-register-record-set-module",
-            "cfe-patch-method-catalog-form-module",
-            "cfe-patch-method-constant-value-manager-module",
-        ]
-    );
-    assert_eq!(
-        entry.required_branches,
-        [
-            "CommonModule",
-            "Catalog.ObjectModule",
-            "Catalog.ManagerModule",
-            "InformationRegister.RecordSetModule",
-            "Catalog.Form",
-            "Constant.ValueManagerModule",
-        ]
-    );
 }
 
 #[test]

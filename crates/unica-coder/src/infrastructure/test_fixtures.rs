@@ -18,6 +18,22 @@ pub(crate) fn copy_empty_configuration(workspace: &Path) {
     copy_tree(&empty_configuration_fixture(), workspace);
 }
 
+/// Пустое расширение `CorpusExtension` поверх этой конфигурации: корень
+/// `ext/` и заимствованный язык, записанные по скиллу `cfe-init` (BOM, CRLF,
+/// без роли). Набор в `v8project.yaml` не объявлен: это делает тест.
+pub(crate) fn empty_extension_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/platform_8_3_27/empty_extension")
+}
+
+/// Копирует корень пустого расширения в `workspace/ext`.
+pub(crate) fn copy_empty_extension(workspace: &Path) {
+    copy_tree(
+        &empty_extension_fixture().join("ext"),
+        &workspace.join("ext"),
+    );
+}
+
 /// Копирует дерево каталога побайтно, создавая недостающие каталоги.
 pub(crate) fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();

@@ -2,7 +2,7 @@ use serde_json::{Map, Value};
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_source_contract::workspace::WorkspaceContext;
 
-use super::{cf, cfe, dcs, external, mxl_composition, role, xdto};
+use super::{cf, cfe, dcs, mxl_composition, role, xdto};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypedMutationHandler {
@@ -64,8 +64,7 @@ pub(crate) fn native_mutation_file_input_contract(
             secondary_at_query_files: false,
             secondary_from_object_platform_xml: false,
         },
-        "code-patch" | "xdto-edit" | "cf-init" | "support-edit" | "cfe-borrow" | "cfe-init"
-        | "epf-init" | "erf-init" | "cfe-patch-method" | "form-add" | "form-remove"
+        "code-patch" | "xdto-edit" | "support-edit" | "cfe-borrow" | "form-add" | "form-remove"
         | "role-edit" => NO_FILE_INPUT,
         _ => return None,
     };
@@ -136,7 +135,6 @@ pub(crate) fn invoke_mutation(
 ) -> Option<AdapterOutcome> {
     cf::invoke_mutation(operation, tool_name, args, context)
         .or_else(|| cfe::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| external::apply(operation, tool_name, args, context))
         .or_else(|| {
             crate::infrastructure::form_composition::invoke_mutation(
                 operation, tool_name, args, context,

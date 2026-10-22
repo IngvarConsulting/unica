@@ -115,19 +115,11 @@ pub enum PreviewStrategy {
 /// предпросмотр ещё отвечает общим успехом без предметных данных. Список
 /// только сокращается; новый мутатор обязан родиться с честным предпросмотром.
 /// Судьбы: `subsystem-edit` — #380, `interface-edit` —
-/// #382, `cf-edit`/`cfe-*`/`form-*`/`support-edit` и внешние скаффолды
-/// `epf-init`/`erf-init` — последующие срезы волны и вехи. Снятые срезом #375
-/// `template-*` и `help-add` список уже покинули.
-pub const PREVIEW_GATED_OPERATIONS: &[&str] = &[
-    "cf-edit",
-    "cfe-borrow",
-    "cfe-init",
-    "cfe-patch-method",
-    "epf-init",
-    "erf-init",
-    "interface-edit",
-    "subsystem-edit",
-];
+/// #382, `cf-edit`/`cfe-borrow`/`form-*`/`support-edit` — последующие срезы
+/// волны и вехи. Снятые срезом #375 `template-*` и `help-add` список уже
+/// покинули; инициализаторы и `cfe-patch-method` ушли вместе с инструментами.
+pub const PREVIEW_GATED_OPERATIONS: &[&str] =
+    &["cf-edit", "cfe-borrow", "interface-edit", "subsystem-edit"];
 
 /// The preview class of a mutating tool, or `None` for a reader.
 ///
@@ -2530,17 +2522,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.cf.init",
-            description: "Create empty 1C configuration XML scaffold.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("cf-init", Some(DomainEventKind::ConfigXmlChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "cf-init",
-                event: Some(DomainEventKind::ConfigXmlChanged),
-            },
-        },
-        ToolSpec {
             name: "unica.cfe.borrow",
             description: "Borrow configuration objects/forms into an extension.",
             execution: ToolExecution::Mutation,
@@ -2549,62 +2530,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             handler: ToolHandler::NativeOperation {
                 operation: "cfe-borrow",
                 event: Some(DomainEventKind::CfeChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.cfe.init",
-            description: "Create extension XML scaffold.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("cfe-init", Some(DomainEventKind::CfeChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "cfe-init",
-                event: Some(DomainEventKind::CfeChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.epf.init",
-            description:
-                "Create a make-ready external data processor scaffold in a Designer/platform-XML external source-set, optionally with a managed form.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for(
-                "epf-init",
-                Some(DomainEventKind::SourceSetChanged),
-            ),
-            handler: ToolHandler::NativeOperation {
-                operation: "epf-init",
-                event: Some(DomainEventKind::SourceSetChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.erf.init",
-            description:
-                "Create a make-ready external report scaffold in a Designer/platform-XML external source-set, optionally with a managed form.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for(
-                "erf-init",
-                Some(DomainEventKind::SourceSetChanged),
-            ),
-            handler: ToolHandler::NativeOperation {
-                operation: "erf-init",
-                event: Some(DomainEventKind::SourceSetChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.cfe.patch_method",
-            description:
-                "Generate a CFE Before/After interceptor for a caller-verified existing parameterless procedure on a registered adopted object.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for(
-                "cfe-patch-method",
-                Some(DomainEventKind::ModuleChanged),
-            ),
-            handler: ToolHandler::NativeOperation {
-                operation: "cfe-patch-method",
-                event: Some(DomainEventKind::ModuleChanged),
             },
         },
         // `meta.info` остаётся до отдельного среза: 61 тест его набора
@@ -4219,11 +4144,8 @@ pub(crate) mod tests {
             "unica.meta.add",
             "unica.meta.edit",
             "unica.interface.edit",
-            "unica.cfe.init",
             "unica.cf.edit",
-            "unica.cf.init",
             "unica.cfe.borrow",
-            "unica.cfe.patch_method",
             "unica.subsystem.edit",
             "unica.form.edit",
             "unica.meta.info",
@@ -4391,19 +4313,6 @@ pub(crate) mod tests {
                 } if actual == operation
             ));
         }
-    }
-
-    #[test]
-    fn cfe_patch_method_public_description_states_the_v1_procedure_boundary() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.cfe.patch_method")
-            .expect("cfe.patch_method is public");
-
-        assert!(tool.description.contains("Before/After"));
-        assert!(tool.description.contains("caller-verified"));
-        assert!(tool.description.contains("parameterless procedure"));
-        assert!(!tool.description.contains("method interceptor"));
     }
 
     #[test]
@@ -4946,38 +4855,6 @@ pub(crate) mod tests {
             results.push(result);
         }
         assert_support_guard_block_parity(&results[0], &results[1]);
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    pub(crate) fn cf_init_support_exemption_reaches_preview_and_apply_handlers() {
-        let root = test_workspace_root("unica-cf-init-support-exemption");
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let mut args = json!({
-            "cwd": workspace,
-            "Name": "GuardExemption",
-            "OutputDir": "src"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-
-        let preview = UnicaApplication::new()
-            .call_tool("unica.cf.init", &args)
-            .unwrap();
-        assert!(preview.ok, "{preview:?}");
-        assert!(preview.data.is_some(), "{preview:?}");
-        assert!(!workspace.join("src/Configuration.xml").exists());
-
-        args.insert("dryRun".to_string(), json!(false));
-        let applied = UnicaApplication::new()
-            .call_tool("unica.cf.init", &args)
-            .unwrap();
-        assert!(applied.ok, "{applied:?}");
-        assert!(applied.data.is_some(), "{applied:?}");
-        assert!(workspace.join("src/Configuration.xml").exists());
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -7508,14 +7385,7 @@ pub(crate) mod tests {
             ],
             "guarded platform-XML mutations changed without updating the support contract"
         );
-        let expected_exemptions = [
-            ("cf-init", "creates a new configuration tree"),
-            ("cfe-borrow", "writes only into an extension"),
-            ("cfe-init", "creates a new extension tree"),
-            ("cfe-patch-method", "writes only into an extension"),
-            ("epf-init", "creates a new external processor tree"),
-            ("erf-init", "creates a new external report tree"),
-        ];
+        let expected_exemptions = [("cfe-borrow", "writes only into an extension")];
         assert!(expected_exemptions
             .iter()
             .all(|(_, reason)| !reason.is_empty()));
@@ -7576,22 +7446,9 @@ pub(crate) mod tests {
                 &["ConfigPath", "configPath", "Path", "path"][..],
                 "HandlerResolved",
             ),
-            ("cf-init", &["OutputDir", "outputDir"][..], "DeclaredArgs"),
             (
                 "cfe-borrow",
                 &["ExtensionPath", "ConfigPath", "extensionPath", "configPath"][..],
-                "DeclaredArgs",
-            ),
-            (
-                "cfe-init",
-                &["ConfigPath", "configPath"][..],
-                "DeclaredArgs",
-            ),
-            ("epf-init", &["OutputDir", "outputDir"][..], "DeclaredArgs"),
-            ("erf-init", &["OutputDir", "outputDir"][..], "DeclaredArgs"),
-            (
-                "cfe-patch-method",
-                &["ExtensionPath", "extensionPath"][..],
                 "DeclaredArgs",
             ),
             (
@@ -7869,499 +7726,6 @@ pub(crate) mod tests {
             assert!(result.cache.events.is_empty(), "{file_name}: {result:?}");
             std::fs::remove_dir_all(root).unwrap();
         }
-    }
-
-    #[test]
-    fn cfe_patch_method_public_boundary_rejects_module_path_outside_extension() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-cfe-patch-public-containment-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let workspace = root.join("workspace");
-        let extension = workspace.join("ext");
-        let outside = root.join("outside");
-        let outside_module = outside.join("Ext/ObjectModule.bsl");
-        std::fs::create_dir_all(&extension).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: extension\n    type: EXTENSION\n    path: ext\n",
-        )
-        .unwrap();
-        std::fs::write(
-            extension.join("Configuration.xml"),
-            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert(
-            "ExtensionPath".to_string(),
-            Value::String("ext".to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "ModulePath".to_string(),
-            Value::String(format!("Catalog.{}.ObjectModule", outside.display())),
-        );
-        args.insert("MethodName".to_string(), Value::String("Run".to_string()));
-        args.insert(
-            "InterceptorType".to_string(),
-            Value::String("Before".to_string()),
-        );
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.cfe.patch_method", &args)
-            .unwrap();
-        let escaped = outside_module.exists();
-        let debug = format!("{result:?}");
-        let errors = result.errors.join("\n");
-        let ok = result.ok;
-        let changes = result.changes.clone();
-        let artifacts = result.artifacts.clone();
-        let events = result.cache.events.clone();
-        std::fs::remove_dir_all(root).unwrap();
-
-        assert!(!ok, "{debug}");
-        assert!(
-            errors.contains("valid Unicode XML NCName and a single path component"),
-            "{debug}"
-        );
-        assert!(!escaped, "{debug}");
-        assert!(changes.is_empty(), "{debug}");
-        assert!(artifacts.is_empty(), "{debug}");
-        assert!(events.is_empty(), "{debug}");
-    }
-
-    #[test]
-    fn cfe_patch_method_public_boundary_rejects_unborrowed_object_atomically() {
-        let root = test_workspace_root("unica-cfe-patch-public-unborrowed");
-        let workspace = root.join("workspace");
-        let extension = workspace.join("ext");
-        std::fs::create_dir_all(&extension).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: extension\n    type: EXTENSION\n    path: ext\n",
-        )
-        .unwrap();
-        std::fs::write(
-            extension.join("Configuration.xml"),
-            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-        )
-        .unwrap();
-        let module = extension.join("CommonModules/Orphan/Ext/Module.bsl");
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert(
-            "ExtensionPath".to_string(),
-            Value::String("ext".to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "ModulePath".to_string(),
-            Value::String("CommonModule.Orphan".to_string()),
-        );
-        args.insert("MethodName".to_string(), Value::String("Run".to_string()));
-        args.insert(
-            "InterceptorType".to_string(),
-            Value::String("Before".to_string()),
-        );
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.cfe.patch_method", &args)
-            .unwrap();
-        let debug = format!("{result:?}");
-
-        assert!(!result.ok, "{debug}");
-        assert!(
-            result
-                .errors
-                .join("\n")
-                .contains("is not a borrowed extension object"),
-            "{debug}"
-        );
-        assert!(!module.exists(), "{debug}");
-        assert!(result.changes.is_empty(), "{debug}");
-        assert!(result.artifacts.is_empty(), "{debug}");
-        assert!(result.cache.events.is_empty(), "{debug}");
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn create_only_initializers_prioritize_exact_newer_planned_xml_targets() {
-        let root = test_workspace_root("unica-init-exact-newer-targets");
-        let base = root.join("base/Configuration.xml");
-        std::fs::create_dir_all(base.parent().unwrap()).unwrap();
-        std::fs::write(
-            &base,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration><Properties><CompatibilityMode>Version8_3_24</CompatibilityMode><InterfaceCompatibilityMode>Taxi</InterfaceCompatibilityMode></Properties></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-
-        let mut cases = Vec::new();
-        let cf_workspace = root.join("cf-default");
-        let cf_target = cf_workspace.join("src/Languages/Русский.xml");
-        cases.push((
-            "unica.cf.init",
-            cf_workspace,
-            cf_target,
-            Map::from_iter([("Name".to_string(), json!("ExactCf"))]),
-            "src/Configuration.xml",
-        ));
-
-        let cfe_default_workspace = root.join("cfe-default");
-        let cfe_default_target = cfe_default_workspace.join("src/Languages/Русский.xml");
-        cases.push((
-            "unica.cfe.init",
-            cfe_default_workspace,
-            cfe_default_target,
-            Map::from_iter([
-                ("Name".to_string(), json!("ExactCfeDefault")),
-                ("ConfigPath".to_string(), json!(base.display().to_string())),
-                ("NoRole".to_string(), json!(true)),
-            ]),
-            "src/Configuration.xml",
-        ));
-
-        let cfe_alias_workspace = root.join("cfe-alias");
-        let cfe_alias_target = cfe_alias_workspace.join("extension/Languages/Русский.xml");
-        cases.push((
-            "unica.cfe.init",
-            cfe_alias_workspace,
-            cfe_alias_target,
-            Map::from_iter([
-                ("Name".to_string(), json!("ExactCfeAlias")),
-                ("ConfigPath".to_string(), json!(base.display().to_string())),
-                ("ExtensionPath".to_string(), json!("extension")),
-                ("NoRole".to_string(), json!(true)),
-            ]),
-            "extension/Configuration.xml",
-        ));
-
-        for (tool, dir, artifact, output_dir) in [
-            (
-                "unica.epf.init",
-                "epf",
-                "ExactProcessor",
-                "external/ExactProcessor.xml",
-            ),
-            (
-                "unica.erf.init",
-                "erf",
-                "ExactReport",
-                "external/ExactReport.xml",
-            ),
-        ] {
-            let workspace = root.join(dir);
-            let target = workspace
-                .join("external")
-                .join(artifact)
-                .join("Forms/Main/Ext/Form.xml");
-            cases.push((
-                tool,
-                workspace,
-                target,
-                Map::from_iter([
-                    ("Name".to_string(), json!(artifact)),
-                    ("OutputDir".to_string(), json!("external")),
-                    ("FormName".to_string(), json!("Main")),
-                ]),
-                output_dir,
-            ));
-        }
-
-        for (tool, workspace, target, mut args, missing_owner) in cases {
-            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-            let newer = if target.ends_with("Form.xml") {
-                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#.to_vec()
-            } else {
-                br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Language/></MetaDataObject>"#.to_vec()
-            };
-            std::fs::write(&target, &newer).unwrap();
-            args.insert(
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            );
-            args.insert("dryRun".to_string(), Value::Bool(false));
-
-            let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
-
-            assert!(!result.ok, "{tool}: {result:?}");
-            let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
-            assert_eq!(
-                diagnostic["code"], "platformVersionUnsupported",
-                "{tool}: {result:?}"
-            );
-            assert_eq!(diagnostic["actualFormat"], "2.21", "{tool}: {result:?}");
-            assert_eq!(
-                diagnostic["root"],
-                normalized_path(&target).display().to_string(),
-                "{tool}: {result:?}"
-            );
-            assert_eq!(std::fs::read(&target).unwrap(), newer, "{tool}");
-            assert!(
-                !workspace.join(missing_owner).exists(),
-                "{tool}: {result:?}"
-            );
-            assert!(result.changes.is_empty(), "{tool}: {result:?}");
-            assert!(result.artifacts.is_empty(), "{tool}: {result:?}");
-        }
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn create_only_initializers_ignore_unrelated_neighbor_xml() {
-        let root = test_workspace_root("unica-init-unrelated-newer-neighbors");
-        let cases = [
-            (
-                "unica.cf.init",
-                "cf",
-                Map::from_iter([("Name".to_string(), json!("NeighborCf"))]),
-                "src/Catalogs/Unrelated.xml",
-                "src/Configuration.xml",
-            ),
-            (
-                "unica.cfe.init",
-                "cfe",
-                Map::from_iter([
-                    ("Name".to_string(), json!("NeighborCfe")),
-                    ("NoRole".to_string(), json!(true)),
-                ]),
-                "src/Catalogs/Unrelated.xml",
-                "src/Configuration.xml",
-            ),
-        ];
-
-        for (tool, label, mut args, neighbor_relative, expected_relative) in cases {
-            let workspace = root.join(label);
-            let neighbor = workspace.join(neighbor_relative);
-            std::fs::create_dir_all(neighbor.parent().unwrap()).unwrap();
-            let neighbor_bytes = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Catalog/></MetaDataObject>"#.to_vec();
-            std::fs::write(&neighbor, &neighbor_bytes).unwrap();
-            args.insert(
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            );
-            args.insert("dryRun".to_string(), Value::Bool(false));
-
-            let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
-
-            assert!(result.ok, "{tool}: {result:?}");
-            assert!(workspace.join(expected_relative).is_file(), "{tool}");
-            assert_eq!(std::fs::read(&neighbor).unwrap(), neighbor_bytes, "{tool}");
-        }
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn configuration_initializers_reject_external_source_set_roots_before_writes() {
-        let root = test_workspace_root("unica-config-init-external-source-root");
-        let cases = [
-            (
-                "unica.cf.init",
-                "cf",
-                Map::from_iter([
-                    ("Name".to_string(), json!("WrongKindConfiguration")),
-                    ("OutputDir".to_string(), json!("external")),
-                ]),
-                "Configuration",
-            ),
-            (
-                "unica.cfe.init",
-                "cfe",
-                Map::from_iter([
-                    ("Name".to_string(), json!("WrongKindExtension")),
-                    ("OutputDir".to_string(), json!("external")),
-                    ("NoRole".to_string(), json!(true)),
-                ]),
-                "Extension",
-            ),
-        ];
-
-        for (tool, label, base_args, expected_kind) in cases {
-            for nested in [false, true] {
-                let workspace = root.join(format!(
-                    "{label}-{}",
-                    if nested { "nested" } else { "exact" }
-                ));
-                let external = workspace.join("external");
-                std::fs::create_dir_all(&external).unwrap();
-                std::fs::write(
-                    workspace.join("v8project.yaml"),
-                    "format: DESIGNER\nsource-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external\n",
-                )
-                .unwrap();
-                let mut args = base_args.clone();
-                args.insert(
-                    "cwd".to_string(),
-                    Value::String(workspace.display().to_string()),
-                );
-                args.insert("dryRun".to_string(), Value::Bool(false));
-                args.insert(
-                    "OutputDir".to_string(),
-                    json!(if nested {
-                        "external/nested"
-                    } else {
-                        "external"
-                    }),
-                );
-
-                let error = UnicaApplication::new().call_tool(tool, &args).expect_err(
-                    "configuration initializer must reject an external source-set root",
-                );
-
-                assert!(error.contains("source-set `external`"), "{tool}: {error}");
-                assert!(error.contains("ExternalProcessor"), "{tool}: {error}");
-                assert!(error.contains(expected_kind), "{tool}: {error}");
-                assert!(
-                    std::fs::read_dir(&external).unwrap().next().is_none(),
-                    "{tool}: wrong-kind validation must happen before writes"
-                );
-            }
-        }
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn cfe_initializer_allows_nested_output_inside_configuration_source_set() {
-        let root = test_workspace_root("unica-cfe-init-nested-configuration-source");
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Configuration.xml"),
-            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
-        )
-        .unwrap();
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            ("dryRun".to_string(), Value::Bool(false)),
-            ("Name".to_string(), json!("NestedExtension")),
-            ("OutputDir".to_string(), json!("src/extensions/MyExtension")),
-            ("NoRole".to_string(), json!(true)),
-        ]);
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.cfe.init", &args)
-            .unwrap();
-
-        assert!(result.ok, "{result:?}");
-        assert!(
-            src.join("extensions/MyExtension/Configuration.xml")
-                .is_file(),
-            "{result:?}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn external_initializers_validate_every_existing_root_artifact_owner() {
-        let root = test_workspace_root("unica-external-init-all-root-owners");
-        let tool_cases = [
-            (
-                "unica.epf.init",
-                "EXTERNAL_DATA_PROCESSORS",
-                "ExternalDataProcessor",
-            ),
-            ("unica.erf.init", "EXTERNAL_REPORTS", "ExternalReport"),
-        ];
-
-        for (tool, source_type, artifact_tag) in tool_cases {
-            for newer_config_dump_info in [false, true] {
-                let label = format!(
-                    "{}-{}",
-                    tool.replace('.', "-"),
-                    if newer_config_dump_info {
-                        "mixed"
-                    } else {
-                        "compatible"
-                    }
-                );
-                let workspace = root.join(label);
-                let external = workspace.join("external");
-                std::fs::create_dir_all(&external).unwrap();
-                std::fs::write(
-                    workspace.join("v8project.yaml"),
-                    format!(
-                        "format: DESIGNER\nsource-set:\n  - name: external\n    type: {source_type}\n    path: external\n"
-                    ),
-                )
-                .unwrap();
-                let first = external.join("First.xml");
-                let second = external.join(if newer_config_dump_info {
-                    "ConfigDumpInfo.xml"
-                } else {
-                    "Second.xml"
-                });
-                let owner_xml = |version: &str| {
-                    format!(
-                        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><{artifact_tag}/></MetaDataObject>"#
-                    )
-                };
-                std::fs::write(&first, owner_xml("2.20")).unwrap();
-                std::fs::write(
-                    &second,
-                    owner_xml(if newer_config_dump_info {
-                        "2.21"
-                    } else {
-                        "2.20"
-                    }),
-                )
-                .unwrap();
-                let first_before = std::fs::read(&first).unwrap();
-                let second_before = std::fs::read(&second).unwrap();
-                let args = Map::from_iter([
-                    (
-                        "cwd".to_string(),
-                        Value::String(workspace.display().to_string()),
-                    ),
-                    ("dryRun".to_string(), Value::Bool(false)),
-                    ("Name".to_string(), json!("Created")),
-                    ("OutputDir".to_string(), json!("external")),
-                ]);
-
-                let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
-
-                if newer_config_dump_info {
-                    assert!(!result.ok, "{tool}: {result:?}");
-                    let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
-                    assert_eq!(
-                        diagnostic["code"], "platformVersionUnsupported",
-                        "{tool}: {result:?}"
-                    );
-                    assert_eq!(diagnostic["actualFormat"], "2.21", "{tool}: {result:?}");
-                    assert_eq!(
-                        diagnostic["root"],
-                        normalized_path(&second).display().to_string(),
-                        "{tool}: {result:?}"
-                    );
-                    assert!(!external.join("Created.xml").exists(), "{tool}");
-                    assert!(result.changes.is_empty(), "{tool}: {result:?}");
-                    assert!(result.artifacts.is_empty(), "{tool}: {result:?}");
-                    assert!(result.cache.events.is_empty(), "{tool}: {result:?}");
-                } else {
-                    assert!(result.ok, "{tool}: {result:?}");
-                    assert!(external.join("Created.xml").is_file(), "{tool}");
-                }
-                assert_eq!(std::fs::read(&first).unwrap(), first_before, "{tool}");
-                assert_eq!(std::fs::read(&second).unwrap(), second_before, "{tool}");
-            }
-        }
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -9760,13 +9124,12 @@ pub(crate) mod tests {
             Value::String(workspace.display().to_string()),
         );
         args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert("Name".to_string(), Value::String("PathPolicy".to_string()));
         args.insert(
-            "OutputDir".to_string(),
-            Value::String("../outside".to_string()),
+            "OutputPath".to_string(),
+            Value::String("../outside/Form.xml".to_string()),
         );
 
-        let error = match UnicaApplication::new().call_tool("unica.cf.init", &args) {
+        let error = match UnicaApplication::new().call_tool("unica.form.compile", &args) {
             Ok(result) => panic!("expected path policy error, got {}", result.summary),
             Err(error) => error,
         };
@@ -9848,199 +9211,6 @@ pub(crate) mod tests {
         assert!(error.contains("sourceFormat=edt"), "{error}");
         assert!(error.contains("platform_xml"), "{error}");
         assert!(!workspace.join("src/Form.xml").exists());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn external_init_preview_is_path_guarded_and_source_set_typed() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-external-init-contract-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: processors\n",
-                "    type: EXTERNAL_DATA_PROCESSORS\n",
-                "    path: epf\n",
-                "  - name: reports\n",
-                "    type: EXTERNAL_REPORTS\n",
-                "    path: erf\n",
-                "  - name: russian-processors\n",
-                "    type: EXTERNAL_DATA_PROCESSORS\n",
-                "    path: епф\n",
-            ),
-        )
-        .unwrap();
-
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(true));
-        args.insert("Name".to_string(), Value::String("Preview".to_string()));
-        args.insert("OutputDir".to_string(), Value::String("epf".to_string()));
-
-        let preview = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap();
-        assert!(preview.ok, "{:?}", preview.errors);
-        assert_eq!(preview.artifacts.len(), 2);
-        assert!(!workspace.join("epf").exists());
-
-        args.insert("OutputDir".to_string(), Value::String("EPF".to_string()));
-        let error = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap_err();
-        assert!(error.contains("exact source-set root"), "{error}");
-        assert!(!workspace.join("EPF").exists());
-
-        args.insert("OutputDir".to_string(), Value::String("ЕПФ".to_string()));
-        let error = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap_err();
-        assert!(error.contains("exact source-set root"), "{error}");
-        assert!(!workspace.join("ЕПФ").exists());
-
-        args.insert(
-            "OutputDir".to_string(),
-            Value::String("epf/nested".to_string()),
-        );
-        let error = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap_err();
-        assert!(error.contains("source-set root"), "{error}");
-        assert!(!workspace.join("epf").exists());
-
-        args.insert("OutputDir".to_string(), Value::String("erf".to_string()));
-        let error = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap_err();
-        assert!(error.contains("source-set `reports`"), "{error}");
-        assert!(error.contains("ExternalReport"), "{error}");
-        assert!(!workspace.join("erf").exists());
-
-        args.insert(
-            "OutputDir".to_string(),
-            Value::String("../outside".to_string()),
-        );
-        let error = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap_err();
-        assert!(error.contains("outside workspace root"), "{error}");
-        assert!(!root.join("outside").exists());
-
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: configuration\n",
-                "    type: CONFIGURATION\n",
-                "    path: .\n",
-            ),
-        )
-        .unwrap();
-        args.insert(
-            "OutputDir".to_string(),
-            Value::String("external/epf".to_string()),
-        );
-        let preview = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap();
-        assert!(preview.ok, "{:?}", preview.errors);
-        assert_eq!(preview.artifacts.len(), 2);
-        assert!(!workspace.join("external").exists());
-
-        args.insert("OutputDir".to_string(), Value::String(".".to_string()));
-        let error = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap_err();
-        assert!(error.contains("source-set `configuration`"), "{error}");
-        assert!(error.contains("Configuration"), "{error}");
-
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: configuration\n",
-                "    type: CONFIGURATION\n",
-                "    path: src\n",
-            ),
-        )
-        .unwrap();
-        args.insert("OutputDir".to_string(), Value::String("SRC".to_string()));
-        let error = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap_err();
-        assert!(error.contains("exact source-set root"), "{error}");
-        assert!(!workspace.join("SRC").exists());
-
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            concat!(
-                "format: EDT\n",
-                "source-set:\n",
-                "  - name: processors\n",
-                "    type: EXTERNAL_DATA_PROCESSORS\n",
-                "    path: epf\n",
-            ),
-        )
-        .unwrap();
-        std::fs::create_dir_all(workspace.join("epf")).unwrap();
-        std::fs::write(
-            workspace.join("epf/Existing.xml"),
-            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
-        )
-        .unwrap();
-        args.insert("OutputDir".to_string(), Value::String("epf".to_string()));
-        let error = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap_err();
-        assert!(error.contains("format=DESIGNER"), "{error}");
-        assert!(!workspace.join("epf/Preview.xml").exists());
-
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            concat!(
-                "format: designer\n",
-                "source-set:\n",
-                "  - name: processors\n",
-                "    type: EXTERNAL_DATA_PROCESSORS\n",
-                "    path: epf\n",
-            ),
-        )
-        .unwrap();
-        let error = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap_err();
-        assert!(error.contains("exact `DESIGNER`"), "{error}");
-        assert!(!workspace.join("epf/Preview.xml").exists());
-
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            concat!(
-                "format: true\n",
-                "source-set:\n",
-                "  - name: processors\n",
-                "    type: EXTERNAL_DATA_PROCESSORS\n",
-                "    path: epf\n",
-            ),
-        )
-        .unwrap();
-        let error = UnicaApplication::new()
-            .call_tool("unica.epf.init", &args)
-            .unwrap_err();
-        assert!(error.contains("field `format` must be a string"), "{error}");
-        assert!(!workspace.join("epf/Preview.xml").exists());
-
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -296,7 +296,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs",
             "crates/unica-bootstrap/src/platform/mod.rs",
             "crates/unica-coder/tests/platform/new_contract.rs",
-            "crates/unica-coder/tests/platform_external_init.rs",
+            "crates/unica-coder/tests/platform_project_health.rs",
             "crates/unica-coder/src/infrastructure/platform/unknown.future",
         ):
             with self.subTest(path=path):

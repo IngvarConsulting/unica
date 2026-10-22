@@ -13,7 +13,6 @@ pub(crate) struct OperationDescriptor {
     pub write_path_args: &'static [&'static str],
     pub source_path_args: &'static [&'static str],
     pub format_path_policy: FormatPathPolicy,
-    pub format_guard: FormatGuardPolicy,
     pub support_guard: Option<SupportGuardPolicy>,
 }
 
@@ -23,13 +22,6 @@ pub(crate) enum FormatPathPolicy {
     HandlerResolved,
     DefaultSrcObject,
     FormCompile,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FormatGuardPolicy {
-    ExistingDump,
-    OptionalExistingBase,
-    NewDump,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -113,12 +105,9 @@ pub(crate) fn diagnostic_action_descriptor(
 
 const EMPTY: &[&str] = &[];
 pub(crate) const CF_PATH: &[&str] = &["ConfigPath", "configPath", "Path", "path"];
-const OUTPUT_DIR: &[&str] = &["OutputDir", "outputDir"];
 const EXTENSION_PATH: &[&str] = &["ExtensionPath", "extensionPath"];
 pub(crate) const CFE_VALIDATE_PATH: &[&str] = &["ExtensionPath", "extensionPath", "Path", "path"];
 const CFE_BORROW_SOURCE: &[&str] = &["ExtensionPath", "ConfigPath", "extensionPath", "configPath"];
-const CFE_INIT_BASE: &[&str] = &["ConfigPath", "configPath"];
-const CFE_INIT_OUTPUT: &[&str] = &["OutputDir", "outputDir", "ExtensionPath", "extensionPath"];
 pub(crate) const OBJECT_PATH: &[&str] = &["ObjectPath", "objectPath", "Path", "path"];
 const SRC_DIR: &[&str] = &["SrcDir", "srcDir"];
 pub(crate) const FORM_PATH: &[&str] = &["FormPath", "formPath", "Path", "path"];
@@ -132,17 +121,10 @@ pub(crate) const RIGHTS_PATH: &[&str] = &["RightsPath", "rightsPath", "Path", "p
 const SUPPORT_PATH: &[&str] = &["Path", "path", "TargetPath", "targetPath"];
 const CFE_DIFF_REQUIRED: &[&str] = &["ExtensionPath", "ConfigPath"];
 const CFE_BORROW_REQUIRED: &[&str] = &["ExtensionPath", "ConfigPath", "Object"];
-const CFE_PATCH_METHOD_REQUIRED: &[&str] = &[
-    "ExtensionPath",
-    "ModulePath",
-    "MethodName",
-    "InterceptorType",
-];
 const CFE_VALIDATE_REQUIRED: &[&str] = &["ExtensionPath"];
 const FORM_COMPILE_REQUIRED: &[&str] = &["OutputPath"];
 const FORM_EDIT_REQUIRED: &[&str] = &["FormPath"];
 const ROLE_EDIT_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operations"];
-const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
 // `selector` and `position` are required only by selector-based operations, so
 // the descriptor cannot demand them for every call; `initialize` deliberately
 // has neither and `validate_code_patch_arguments` enforces each operation.
@@ -152,14 +134,11 @@ const XDTO_EDIT_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operations"]
 
 const JSON_PATH: &[&str] = &["JsonPath", "jsonPath"];
 const DEFINITION_FILE: &[&str] = &["DefinitionFile", "definitionFile"];
-const MODULE_PATH: &[&str] = &["ModulePath", "modulePath"];
 
 const CF_PATH_GROUP: PathAliasGroup = path_alias_group("ConfigPath", CF_PATH);
-const OUTPUT_DIR_GROUP: PathAliasGroup = path_alias_group("OutputDir", OUTPUT_DIR);
 const EXTENSION_PATH_GROUP: PathAliasGroup = path_alias_group("ExtensionPath", EXTENSION_PATH);
 const CFE_VALIDATE_PATH_GROUP: PathAliasGroup =
     path_alias_group("ExtensionPath", CFE_VALIDATE_PATH);
-const CFE_INIT_OUTPUT_GROUP: PathAliasGroup = path_alias_group("OutputDir", CFE_INIT_OUTPUT);
 const OBJECT_PATH_GROUP: PathAliasGroup = path_alias_group("ObjectPath", OBJECT_PATH);
 const SRC_DIR_GROUP: PathAliasGroup = path_alias_group("SrcDir", SRC_DIR);
 const FORM_PATH_GROUP: PathAliasGroup = path_alias_group("FormPath", FORM_PATH);
@@ -171,15 +150,11 @@ const RIGHTS_PATH_GROUP: PathAliasGroup = path_alias_group("RightsPath", RIGHTS_
 const SUPPORT_PATH_GROUP: PathAliasGroup = path_alias_group("Path", SUPPORT_PATH);
 const JSON_PATH_GROUP: PathAliasGroup = path_alias_group("JsonPath", JSON_PATH);
 const DEFINITION_FILE_GROUP: PathAliasGroup = path_alias_group("DefinitionFile", DEFINITION_FILE);
-const MODULE_PATH_GROUP: PathAliasGroup = path_alias_group("ModulePath", MODULE_PATH);
 
 const CF_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP, DEFINITION_FILE_GROUP];
 const CF_READ_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP];
-const CF_INIT_PATH_GROUPS: &[PathAliasGroup] = &[OUTPUT_DIR_GROUP];
 const SUPPORT_PATH_GROUPS: &[PathAliasGroup] = &[SUPPORT_PATH_GROUP];
 const CFE_TWO_ROOT_PATH_GROUPS: &[PathAliasGroup] = &[EXTENSION_PATH_GROUP, CF_PATH_GROUP];
-const CFE_INIT_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP, CFE_INIT_OUTPUT_GROUP];
-const CFE_PATCH_METHOD_PATH_GROUPS: &[PathAliasGroup] = &[EXTENSION_PATH_GROUP, MODULE_PATH_GROUP];
 const CFE_VALIDATE_PATH_GROUPS: &[PathAliasGroup] = &[CFE_VALIDATE_PATH_GROUP];
 const SRC_DIR_PATH_GROUPS: &[PathAliasGroup] = &[SRC_DIR_GROUP];
 const OBJECT_PATH_GROUPS: &[PathAliasGroup] = &[OBJECT_PATH_GROUP];
@@ -203,11 +178,8 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
     match operation {
         "cf-edit" => CF_EDIT_PATH_GROUPS,
         "cf-info" | "cf-validate" => CF_READ_PATH_GROUPS,
-        "cf-init" => CF_INIT_PATH_GROUPS,
         "support-edit" => SUPPORT_PATH_GROUPS,
         "cfe-borrow" | "cfe-diff" => CFE_TWO_ROOT_PATH_GROUPS,
-        "cfe-init" => CFE_INIT_PATH_GROUPS,
-        "cfe-patch-method" => CFE_PATCH_METHOD_PATH_GROUPS,
         "cfe-validate" => CFE_VALIDATE_PATH_GROUPS,
         "form-remove" => SRC_DIR_PATH_GROUPS,
         "form-add" => OBJECT_PATH_GROUPS,
@@ -238,7 +210,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         XDTO_INFO_REQUIRED,
         EMPTY,
         EMPTY,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -247,7 +218,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         XDTO_EDIT_REQUIRED,
         EMPTY,
         EMPTY,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         Some(handler_resolved_guard(SupportGuardRequirement::Editable)),
     ),
@@ -256,7 +226,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         CODE_PATCH_REQUIRED,
         EMPTY,
         EMPTY,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         Some(handler_resolved_guard(SupportGuardRequirement::Editable)),
     ),
@@ -265,7 +234,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         CF_PATH,
         CF_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         Some(path_guard(CF_PATH, SupportGuardRequirement::Editable)),
     ),
@@ -274,16 +242,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         EMPTY,
         CF_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
-        None,
-    ),
-    descriptor_with_format(
-        "cf-init",
-        EMPTY,
-        OUTPUT_DIR,
-        OUTPUT_DIR,
-        FormatGuardPolicy::NewDump,
         None,
     ),
     descriptor_with_paths(
@@ -291,7 +250,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         EMPTY,
         CF_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -310,43 +268,11 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         &["ExtensionPath", "ConfigPath", "extensionPath", "configPath"],
         None,
     ),
-    descriptor_with_format(
-        "cfe-init",
-        EMPTY,
-        CFE_INIT_OUTPUT,
-        CFE_INIT_BASE,
-        FormatGuardPolicy::OptionalExistingBase,
-        None,
-    ),
-    descriptor_with_format(
-        "epf-init",
-        EXTERNAL_INIT_REQUIRED,
-        OUTPUT_DIR,
-        OUTPUT_DIR,
-        FormatGuardPolicy::NewDump,
-        None,
-    ),
-    descriptor_with_format(
-        "erf-init",
-        EXTERNAL_INIT_REQUIRED,
-        OUTPUT_DIR,
-        OUTPUT_DIR,
-        FormatGuardPolicy::NewDump,
-        None,
-    ),
-    descriptor(
-        "cfe-patch-method",
-        CFE_PATCH_METHOD_REQUIRED,
-        EXTENSION_PATH,
-        EXTENSION_PATH,
-        None,
-    ),
     descriptor_with_paths(
         "cfe-validate",
         CFE_VALIDATE_REQUIRED,
         EMPTY,
         CFE_VALIDATE_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -355,7 +281,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         OBJECT_PATH,
         OBJECT_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         Some(path_guard(OBJECT_PATH, SupportGuardRequirement::Editable)),
     ),
@@ -364,7 +289,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         FORM_COMPILE_REQUIRED,
         OUTPUT_PATH,
         OUTPUT_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::FormCompile,
         Some(path_guard(OUTPUT_PATH, SupportGuardRequirement::Editable)),
     ),
@@ -380,7 +304,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         EMPTY,
         FORM_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -389,7 +312,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         SRC_DIR,
         SRC_DIR,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::DefaultSrcObject,
         Some(object_name_guard(SupportGuardRequirement::Editable)),
     ),
@@ -398,7 +320,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         EMPTY,
         FORM_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -414,7 +335,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         CI_PATH_REQUIRED,
         EMPTY,
         CI_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -423,7 +343,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         SUBSYSTEM_PATH_REQUIRED,
         SUBSYSTEM_PATH,
         SUBSYSTEM_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         Some(path_guard(
             SUBSYSTEM_PATH,
@@ -438,7 +357,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         EMPTY,
         TEMPLATE_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -449,7 +367,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         EMPTY,
         TEMPLATE_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -458,7 +375,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         EMPTY,
         TEMPLATE_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -467,7 +383,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         ROLE_EDIT_REQUIRED,
         EMPTY,
         EMPTY,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         Some(handler_resolved_guard(SupportGuardRequirement::Editable)),
     ),
@@ -476,7 +391,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         EMPTY,
         RIGHTS_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -485,7 +399,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         EMPTY,
         EMPTY,
         RIGHTS_PATH,
-        FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
     ),
@@ -504,26 +417,6 @@ const fn descriptor(
         write_path_args,
         source_path_args,
         format_path_policy: FormatPathPolicy::DeclaredArgs,
-        format_guard: FormatGuardPolicy::ExistingDump,
-        support_guard,
-    }
-}
-
-const fn descriptor_with_format(
-    operation: &'static str,
-    required_args: &'static [&'static str],
-    write_path_args: &'static [&'static str],
-    source_path_args: &'static [&'static str],
-    format_guard: FormatGuardPolicy,
-    support_guard: Option<SupportGuardPolicy>,
-) -> OperationDescriptor {
-    OperationDescriptor {
-        operation,
-        required_args,
-        write_path_args,
-        source_path_args,
-        format_path_policy: FormatPathPolicy::DeclaredArgs,
-        format_guard,
         support_guard,
     }
 }
@@ -533,7 +426,6 @@ const fn descriptor_with_paths(
     required_args: &'static [&'static str],
     write_path_args: &'static [&'static str],
     source_path_args: &'static [&'static str],
-    format_guard: FormatGuardPolicy,
     format_path_policy: FormatPathPolicy,
     support_guard: Option<SupportGuardPolicy>,
 ) -> OperationDescriptor {
@@ -543,7 +435,6 @@ const fn descriptor_with_paths(
         write_path_args,
         source_path_args,
         format_path_policy,
-        format_guard,
         support_guard,
     }
 }

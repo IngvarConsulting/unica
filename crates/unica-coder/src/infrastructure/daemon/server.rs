@@ -17789,9 +17789,15 @@ fn main() {
                 format!("{PROPERTIES_START}{comment_shadow}<MainDataCompositionSchema/>");
             let prepared_owner =
                 original_owner.replacen(PROPERTIES_START, prepared_properties.as_str(), 1);
+            // The only registration leaves the collection in the native empty
+            // spelling, as the 8.3.27 export writes it.
             let expected_owner = original_owner
                 .replacen(PROPERTIES_START, expected_properties.as_str(), 1)
-                .replacen(REGISTRATION, "", 1)
+                .replacen(
+                    &format!("<ChildObjects>{REGISTRATION}</ChildObjects>"),
+                    "<ChildObjects/>",
+                    1,
+                )
                 .into_bytes();
             std::fs::write(&owner_path, prepared_owner.as_bytes()).unwrap();
 

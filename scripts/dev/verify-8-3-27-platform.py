@@ -110,9 +110,15 @@ EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
     "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb"
 )
-EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb"
-)
+# The corpus moved off the v0.12 surface (#1813): the 48 remaining cases
+# publish through canonical unica.apply, so every case contract changed. With
+# None the full set is refused before ibcmd runs; the refusal names the
+# candidate digest. To run the gate, pin that candidate here, run it on
+# 8.3.27.2074, and keep the pin only if every case passes; then record it in
+# LAST_VERIFIED_CASE_CONTRACT_SHA256 too. A run on 2026-10-22 gave 45 pass and
+# 3 accepted-normalized (form-edit-managed and form-compile-managed: #1996;
+# template-remove-object-template: #1997), so the contract stays unpinned.
+EXPECTED_CASE_CONTRACT_SHA256: str | None = None
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
@@ -142,24 +148,12 @@ XML_FAMILY_BY_ROOT_QNAME = {
 }
 MANDATORY_CASE_IDS = frozenset(
     {
-        "cf-edit-root-property",
-        "cf-edit-set-home-page",
-        "cf-edit-set-panels",
-        "cf-init-default",
-        "cfe-patch-method-bsl-only",
-        "cfe-patch-method-catalog-object-module",
-        "cfe-patch-method-catalog-manager-module",
-        "cfe-patch-method-information-register-record-set-module",
-        "cfe-patch-method-catalog-form-module",
-        "cfe-patch-method-constant-value-manager-module",
         "code-patch-bsl-only",
         "dcs-compile-owned-template",
         "dcs-edit-add-parameter-after-settings",
         "dcs-edit-modify-field-role-restriction",
         "dcs-edit-owned-template",
         "dcs-edit-set-structure-after-settings",
-        "epf-init-managed-form",
-        "erf-init-managed-form",
         "form-add-managed",
         "form-compile-managed",
         "form-edit-managed",
@@ -198,16 +192,10 @@ MANDATORY_CASE_IDS = frozenset(
         "role-edit-set-right",
         "subsystem-edit-add-child",
         "support-edit-bin-only",
-        "template-add-binary-data",
-        "template-add-data-composition-schema",
-        "template-add-html-document",
         "template-add-spreadsheet-document",
-        "template-add-text-document",
         "template-remove-object-template",
         "xdto-add-nested-property",
-        "cfe-init-default",
         "cfe-borrow-object",
-        "cfe-borrow-managed-form",
     }
 )
 FORBIDDEN_CREDENTIAL_OPTIONS = {
@@ -742,11 +730,13 @@ def uuid_normalized_semantic_sha256(
     """Digest XML semantics while alpha-renaming declared object identities only."""
     uuid_tokens: dict[str, str] = {}
 
-    def is_random_v4_identity(value: str) -> bool:
+    def is_generated_identity(value: str) -> bool:
+        # Version 4 is random; version 8 is derived from the source-set root
+        # (borrowing). Both differ between independent corpus generations.
         parts = value.lower().split("-")
         return (
             len(parts) == 5
-            and parts[2].startswith("4")
+            and parts[2][:1] in {"4", "8"}
             and parts[3][:1] in {"8", "9", "a", "b"}
         )
 
@@ -767,7 +757,7 @@ def uuid_normalized_semantic_sha256(
                 if (
                     attribute_local_name in {"uuid", "id"}
                     and UUID_TEXT_RE.fullmatch(attribute_value) is not None
-                    and is_random_v4_identity(attribute_value)
+                    and is_generated_identity(attribute_value)
                     and not (
                         element_local_name == "panelDef"
                         and attribute_local_name == "id"
@@ -782,7 +772,7 @@ def uuid_normalized_semantic_sha256(
             if (
                 local_name in {"TypeId", "ValueId", "ObjectId", "ThisNode"}
                 and UUID_TEXT_RE.fullmatch(text_value) is not None
-                and is_random_v4_identity(text_value)
+                and is_generated_identity(text_value)
             ):
                 lexical = text_value.lower()
                 uuid_tokens.setdefault(

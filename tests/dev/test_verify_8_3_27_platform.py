@@ -422,6 +422,38 @@ class SemanticXmlTests(unittest.TestCase):
                     verifier.semantic_xml(payload, f"{label}.xml"),
                 )
 
+    def test_derived_version_8_identities_are_normalized_like_random_ones(self) -> None:
+        # Borrowing derives v8 identities from the source-set root, so two
+        # independent corpus generations differ only by them.
+        verifier = load_verifier()
+        first = {
+            "a.xml": b'<r><Catalog uuid="d1455153-f6ed-824b-8506-bd8963306e15"/><TypeId>d1455153-f6ed-824b-8506-bd8963306e15</TypeId></r>'
+        }
+        regenerated = {
+            "a.xml": b'<r><Catalog uuid="0b7c2e11-5a33-8c01-9a77-1f2e3d4c5b6a"/><TypeId>0b7c2e11-5a33-8c01-9a77-1f2e3d4c5b6a</TypeId></r>'
+        }
+        split = {
+            "a.xml": b'<r><Catalog uuid="d1455153-f6ed-824b-8506-bd8963306e15"/><TypeId>0b7c2e11-5a33-8c01-9a77-1f2e3d4c5b6a</TypeId></r>'
+        }
+        fixed_version_1 = {
+            "a.xml": b'<r><Catalog uuid="d1455153-f6ed-124b-8506-bd8963306e15"/></r>'
+        }
+        other_version_1 = {
+            "a.xml": b'<r><Catalog uuid="0b7c2e11-5a33-1c01-9a77-1f2e3d4c5b6a"/></r>'
+        }
+        self.assertEqual(
+            verifier.uuid_normalized_semantic_sha256(first, "first"),
+            verifier.uuid_normalized_semantic_sha256(regenerated, "regenerated"),
+        )
+        self.assertNotEqual(
+            verifier.uuid_normalized_semantic_sha256(first, "first"),
+            verifier.uuid_normalized_semantic_sha256(split, "split"),
+        )
+        self.assertNotEqual(
+            verifier.uuid_normalized_semantic_sha256(fixed_version_1, "fixed"),
+            verifier.uuid_normalized_semantic_sha256(other_version_1, "other"),
+        )
+
     def test_semantic_digest_alpha_renames_uuids_but_keeps_content(self):
         verifier = load_verifier()
         first = {
@@ -1010,22 +1042,34 @@ class CorpusAdapterTests(unittest.TestCase):
         self.assertTrue(generated, "generator root registry could not be read")
         self.assertEqual(generated, verifier.XML_FAMILY_BY_ROOT_QNAME)
 
-    def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
+    def test_mandatory_corpus_is_the_canonical_apply_inventory(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 66)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 48)
         self.assertTrue(
             {
-                "cfe-patch-method-bsl-only",
-                "cfe-patch-method-catalog-object-module",
-                "cfe-patch-method-catalog-manager-module",
-                "cfe-patch-method-information-register-record-set-module",
-                "cfe-patch-method-catalog-form-module",
-                "cfe-patch-method-constant-value-manager-module",
+                "cfe-borrow-object",
+                "form-compile-managed",
+                "interface-edit-subsystem",
                 "meta-edit-predefined-items",
                 "role-edit-set-right",
                 "xdto-add-nested-property",
             }.issubset(verifier.MANDATORY_CASE_IDS)
+        )
+        self.assertTrue(
+            verifier.MANDATORY_CASE_IDS.isdisjoint(
+                {
+                    "cf-init-default",
+                    "cfe-init-default",
+                    "epf-init-managed-form",
+                    "erf-init-managed-form",
+                    "cfe-patch-method-bsl-only",
+                    "cf-edit-root-property",
+                    "cfe-borrow-managed-form",
+                    "template-add-text-document",
+                    "template-add-data-composition-schema",
+                }
+            )
         )
 
     def test_next_mandatory_corpus_includes_event_source_case(self):
@@ -1033,12 +1077,9 @@ class CorpusAdapterTests(unittest.TestCase):
 
         self.assertIn("meta-edit-event-source", verifier.MANDATORY_CASE_IDS)
 
-    def test_current_default_inventory_is_pinned_to_reproducible_candidate(self):
+    def test_current_default_inventory_is_not_pinned_until_the_platform_gate(self):
         verifier = load_verifier()
-        self.assertEqual(
-            verifier.EXPECTED_CASE_CONTRACT_SHA256,
-            "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb",
-        )
+        self.assertIsNone(verifier.EXPECTED_CASE_CONTRACT_SHA256)
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
             "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb",
@@ -1053,6 +1094,33 @@ class CorpusAdapterTests(unittest.TestCase):
             manifest = write_manifest(root, cases)
 
             with self.assertRaisesRegex(
+                verifier.CorpusError,
+                r"required corpus case contract is not pinned for the current "
+                r"48-case public-writer inventory; last verified digest for the "
+                r"previous inventory was "
+                + verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256
+                + r", candidate digest is [0-9a-f]{64}; exact platform gate is pending",
+            ):
+                verifier.load_corpus(
+                    manifest,
+                    repo_root=ROOT,
+                    home_root=Path.home(),
+                )
+
+    def test_pinned_inventory_refuses_a_different_case_contract(self):
+        verifier = load_verifier()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = [
+                write_platform_case(root, case_id)
+                for case_id in sorted(verifier.MANDATORY_CASE_IDS)
+            ]
+            manifest = write_manifest(root, cases)
+
+            with mock.patch.object(
+                verifier, "EXPECTED_CASE_CONTRACT_SHA256", "0" * 64
+            ), self.assertRaisesRegex(
                 verifier.CorpusError,
                 r"case contract fields do not match the pinned public-writer inventory",
             ):
