@@ -2,6 +2,7 @@
 id: INV.SOURCE.WRITE-TARGET-KIND
 check:
   - crates/unica-coder/src/infrastructure/daemon/code_target_tests.rs::canonical_code_edits_write_only_at_a_module_address
+  - crates/unica-coder/src/infrastructure/daemon/code_target_tests.rs::canonical_code_execution_refuses_a_module_owner_changed_after_preview
   - crates/unica-coder/tests/platform/code_patch_composition.rs::staged_code_preserves_module_owner_support_format_and_preimage_guards
   - crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs::platform_xml_target_kind_policy_table_is_closed
   - crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs::platform_xml_source_root_handle_revalidates_without_widening
@@ -22,7 +23,8 @@ check:
 Если у узла есть модули, `next` ведёт к его ветке `Module` с их адресами.
 Прежний `code.patch` отклоняет такие адреса с кодом `TargetKindMismatch`.
 
-Описание владельца модуля, изменённое после плана, отклоняет его исполнение.
+Описание владельца модуля, изменённое после плана, отклоняет его исполнение
+с `stale_revision`; модуль остаётся прежним.
 Резолвер целей сохраняет ограничение по виду: повторная проверка выполняется
 под тем же ограничением и отклоняет цель, если описание объекта уже указывает
 на другую сущность. Расширение возможностей поиска само по себе не расширяет

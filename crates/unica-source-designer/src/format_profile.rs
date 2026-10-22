@@ -161,32 +161,31 @@ pub fn writable_profile_refusal(
         platform_line,
         export_format,
     } = ACTIVE_FORMAT_PROFILE;
+    // The version as the owner file records it; a root without one is 1.0.
+    let recorded = raw.unwrap_or("1.0");
     let (code, actual, message) = match classify_root_version(raw) {
         Ok(FormatCompatibility::Supported { .. }) => return None,
-        Ok(FormatCompatibility::Older { actual }) => (
+        Ok(FormatCompatibility::Older { .. }) => (
             "formatMigrationAvailable",
-            actual.to_string(),
+            recorded.to_string(),
             format!(
-                "{relative}: export format {actual} is older than the writable profile {export_format} for 1C {platform_line}; re-export the sources with the platform before editing them"
+                "{relative}: export format {recorded} is older than the writable profile {export_format} for 1C {platform_line}; re-export the sources with the platform before editing them"
             ),
         ),
-        Ok(FormatCompatibility::Newer { actual }) => (
+        Ok(FormatCompatibility::Newer { .. }) => (
             "platformVersionUnsupported",
-            actual.to_string(),
+            recorded.to_string(),
             format!(
-                "{relative}: export format {actual} is newer than the writable profile {export_format} for 1C {platform_line}; Unica does not edit this export yet"
+                "{relative}: export format {recorded} is newer than the writable profile {export_format} for 1C {platform_line}; Unica does not edit this export yet"
             ),
         ),
-        Err(error) => {
-            let raw = raw.unwrap_or_default();
-            (
-                error.code(),
-                raw.to_string(),
-                format!(
-                    "{relative}: export format version {raw} is not the exact writable profile {export_format} for 1C {platform_line}; re-export the sources with the platform before editing them"
-                ),
-            )
-        }
+        Err(error) => (
+            error.code(),
+            recorded.to_string(),
+            format!(
+                "{relative}: export format version {recorded} is not the exact writable profile {export_format} for 1C {platform_line}; re-export the sources with the platform before editing them"
+            ),
+        ),
     };
     Some(WritableProfileRefusal {
         code,

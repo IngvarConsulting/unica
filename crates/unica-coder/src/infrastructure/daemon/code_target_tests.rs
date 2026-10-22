@@ -12,6 +12,7 @@ use unica_execution_contract::invocation::DomainResult;
 struct Fixture {
     _root: tempfile::TempDir,
     workspace: PathBuf,
+    runtime: V5CanonicalInvocationRuntime,
 }
 
 impl Fixture {
@@ -29,18 +30,18 @@ impl Fixture {
         Self {
             _root: root,
             workspace,
+            runtime: V5CanonicalInvocationRuntime::new(
+                Arc::new(
+                    crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+                ),
+                Arc::new(TokioClock),
+            ),
         }
     }
 
     fn call(&self, tool: ToolIdentity, args: Value) -> DomainResult {
-        let runtime = V5CanonicalInvocationRuntime::new(
-            Arc::new(
-                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
-            ),
-            Arc::new(TokioClock),
-        );
         direct_v5(
-            &runtime,
+            &self.runtime,
             InvocationRequest::new(tool, args, self.workspace.to_string_lossy(), 7_000).unwrap(),
         )
         .unwrap()
@@ -172,4 +173,38 @@ fn canonical_code_edits_write_only_at_a_module_address() {
         before,
         "previews and refusals write nothing"
     );
+}
+
+/// The saved plan keeps the owner descriptors it was planned against: an
+/// owner changed after the preview refuses execution by token, and the
+/// module stays as it was.
+#[test]
+fn canonical_code_execution_refuses_a_module_owner_changed_after_preview() {
+    for owner in ["CommonModules/Пример.xml", "Configuration.xml"] {
+        let fixture = Fixture::code();
+        let module = fixture
+            .workspace
+            .join("src/cf/CommonModules/Пример/Ext/Module.bsl");
+        let original = std::fs::read(&module).unwrap();
+        let planned = fixture.preview("code.insert", "main:CommonModule.Пример", json!({}));
+        assert!(planned.ok, "{owner}: {planned:?}");
+        let token = planned.data.as_ref().unwrap()["executionToken"].clone();
+        let path = fixture.workspace.join("src/cf").join(owner);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            text.replace("</MetaDataObject>", "<!-- changed --></MetaDataObject>"),
+        )
+        .unwrap();
+
+        let executed = fixture.call(ToolIdentity::Apply, json!({"executionToken": token}));
+        assert!(!executed.ok, "{owner}: {executed:?}");
+        assert_eq!(
+            executed.diagnostics[0]["code"], "stale_revision",
+            "{owner}: {executed:?}"
+        );
+        let message = executed.diagnostics[0]["message"].as_str().unwrap();
+        assert!(message.contains(owner), "{owner}: {message}");
+        assert_eq!(std::fs::read(&module).unwrap(), original, "{owner}");
+    }
 }

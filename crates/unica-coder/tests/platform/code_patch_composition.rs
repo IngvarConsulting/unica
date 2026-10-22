@@ -668,7 +668,8 @@ fn mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol() {
 #[test]
 fn canonical_code_insert_inside_older_source_set_is_refused_without_writes() {
     for relative in ["Configuration.xml", "CommonModules/Sample.xml"] {
-        for version in ["2.19", "2.20.0"] {
+        // `02.19` is reported as written, not as its parsed `2.19`.
+        for version in ["2.19", "02.19", "2.20.0"] {
             let fixture = staged_code_fixture(
                 &format!("older-owner-{}-{version}", relative.replace('/', "-")),
                 b"Procedure Base()\nEndProcedure\n",
