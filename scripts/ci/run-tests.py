@@ -316,12 +316,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shadow", type=Path, help="shadow decision; mandatory selection remains full")
     parser.add_argument("--baseline", type=Path, help="previous Rust inventory of the same configuration")
     parser.add_argument("--rust-matrix", choices=("build", "run"), help="print a lane matrix without compiling")
+    parser.add_argument("--rust-lint-runners", action="store_true", help="print the Clippy runner matrix without compiling")
     args = parser.parse_args(argv)
     args.docs_only = args.docs_only == "true"
     only_size = args.only_size or None
 
-    if args.phase or args.rust_matrix:
+    if args.phase or args.rust_matrix or args.rust_lint_runners:
         import ci_rust_lanes
+        if args.rust_lint_runners:
+            print(json.dumps(ci_rust_lanes.lint_runners(args.profile, json.loads(args.runners)), separators=(",", ":")))
+            return 0
         if args.rust_matrix:
             if args.rust_lane is None:
                 parser.error("--rust-matrix requires --rust-lane")
