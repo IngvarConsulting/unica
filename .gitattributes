@@ -46,6 +46,7 @@ tests/fixtures/acceptance/workspace-metadata-commands/** -text whitespace=cr-at-
 tests/fixtures/acceptance/workspace-borrowed/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/metadata-declaration-diagnostics/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-event-defined-type/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-event-source-order/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-command-interface/** -text whitespace=cr-at-eol
 
 tests/fixtures/acceptance/workspace/** -text whitespace=cr-at-eol
