@@ -2582,6 +2582,9 @@ fn code_contract_context_matrix_matches_staged_parser_and_previews_without_write
     let module = "main:CommonModule.Пример";
     for (suffix, op, args, accepted) in [
         ("", "code.insert", json!({"text":"// sample\n"}), true),
+        ("", "code.insert", json!({"text":"\n"}), true),
+        ("", "code.insert", json!({"text":" "}), true),
+        ("", "code.insert", json!({"text":""}), false),
         (
             "",
             "code.insert",

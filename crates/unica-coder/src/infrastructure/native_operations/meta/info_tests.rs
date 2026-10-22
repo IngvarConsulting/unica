@@ -933,3 +933,53 @@ fn typed_tabular_section_preserves_the_declared_standard_attributes() {
         25
     );
 }
+
+#[test]
+fn typed_member_comments_keep_empty_absent_and_damaged_observations() {
+    for (owner, tag, field) in [
+        ("Catalog", "Attribute", "attributes"),
+        ("Catalog", "Command", "commands"),
+        ("InformationRegister", "Dimension", "dimensions"),
+        ("InformationRegister", "Resource", "resources"),
+        ("DocumentJournal", "Column", "columns"),
+        ("Enum", "EnumValue", "enumValues"),
+    ] {
+        for (comment, expected, damaged) in [
+            ("<Comment/>", Some(""), false),
+            ("", None, false),
+            ("<Comment>Text</Comment>", Some("Text"), false),
+            ("<Comment><Nested/></Comment>", None, true),
+        ] {
+            let xml = format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{owner} uuid="f1584000-0000-4000-8000-000000000001"><Properties><Name>Owner</Name></Properties><ChildObjects><{tag}><Properties><Name>Value</Name>{comment}</Properties></{tag}></ChildObjects></{owner}></MetaDataObject>"#
+            );
+            let target = unica_address::source_target::MetadataAddress::parse(
+                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("{owner}.Owner"),
+            )
+            .unwrap();
+            let info = unica_metadata_designer::info::parse_typed_meta_local_info(
+                xml.as_bytes(),
+                &target,
+                MetaSupportStatus::Supported,
+            )
+            .unwrap();
+            let data = serde_json::to_value(&info.collections).unwrap();
+            let item = &data[field][0];
+            assert_eq!(item["name"], "Value");
+            assert_eq!(
+                item.get("comment").and_then(serde_json::Value::as_str),
+                expected,
+                "{tag}: {comment}"
+            );
+            assert_eq!(item["incomplete"].as_bool().unwrap_or(false), damaged);
+            assert_eq!(
+                info.diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.field.as_deref()
+                        == Some(&format!("collections.{field}[0].comment"))),
+                damaged
+            );
+        }
+    }
+}

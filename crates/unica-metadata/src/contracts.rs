@@ -431,8 +431,8 @@ pub fn metadata_object_borrow() -> OperationContract {
     OperationContract {
         schema: metadata_borrow_input_schema().clone(),
         target: "The extension Configuration root: <extension-source-set>:Configuration.",
-        effect: "Borrow or refresh the named parent object, preserving the extension's identity and local data.",
-        notes: "exampleArgs is a template: replace parent and Sample with an existing object in a distinct admitted parent source set. from is a qualified address of a named top-level object or Enum.EnumValue; read that source first. overrides names supported transferred properties; an empty array is allowed for a top-level object but any overrides field is refused for EnumValue. Refresh preserves the established override set.",
+        effect: "Borrow or refresh the named parent object, or borrow a parent form, preserving the extension's identity and local data.",
+        notes: "exampleArgs is a template: replace parent and Sample with an existing object in a distinct admitted parent source set. from is a qualified address of a named top-level object, Enum.EnumValue or object managed Form; read that source first. A Form is borrowed with its own minimal Form.xml equal to its BaseForm, and its owner is borrowed first when the extension lacks it. overrides names supported transferred properties; an empty array is allowed for a top-level object but any overrides field is refused for EnumValue and Form. Refresh preserves the established override set.",
         example_args: json!({"from":"parent:Catalog.Sample"}),
         help: "skills/cfe-borrow/SKILL.md",
         format_validators: &[],

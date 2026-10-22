@@ -1449,3 +1449,37 @@ fn create_only_collision_is_rejected_before_publication() {
     assert_eq!(fs::read(&target).unwrap(), b"original");
     fs::remove_dir_all(root).expect("temporary root must be removed");
 }
+
+#[test]
+fn prepublication_gate_failure_rolls_back_earlier_files() {
+    let root = temp_root("prepublication-refusal");
+    let first = root.join("first.bin");
+    let second = root.join("second.bin");
+    let mut transaction = CompileTransaction::new();
+    transaction.create_bytes(&first, b"first".to_vec()).unwrap();
+    transaction
+        .create_bytes(&second, b"second".to_vec())
+        .unwrap();
+    let mut gates = 0;
+    let result = transaction.commit_with_classified_pre_and_post_validation(
+        || {
+            gates += 1;
+            if gates == 2 {
+                Err(CommitFailure::provider("caller refused publication"))
+            } else {
+                Ok(())
+            }
+        },
+        || Ok(()),
+    );
+    assert!(result.is_err());
+    assert_eq!(gates, 2);
+    assert!(!first.exists());
+    assert!(!second.exists());
+    assert_eq!(
+        fs::read_dir(&root).unwrap().count(),
+        0,
+        "staging and recovery must be cleaned up"
+    );
+    fs::remove_dir_all(root).unwrap();
+}

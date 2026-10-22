@@ -10185,8 +10185,8 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(examples, parse_examples(&windows_skill));
         assert_eq!(
             examples.len(),
-            2,
-            "the skill must keep both public examples"
+            3,
+            "the skill must keep its three public examples"
         );
         let preview_args = examples[0]["params"]["arguments"].clone();
         let preview = submit_canonical(
@@ -10255,6 +10255,57 @@ struct ActorLogicalReadLease {"#,
         assert!(
             repeat.changed.is_empty(),
             "unchanged repeat is not an update"
+        );
+
+        // The form example borrows a managed form into the borrowed owner.
+        let forms = workspace.path().join("src/Catalogs/Items/Forms");
+        std::fs::create_dir_all(&forms).unwrap();
+        std::fs::write(
+            forms.join("ItemForm.xml"),
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                    "../../tests/fixtures/platform_8_3_27/cfe_borrow/parent-catalog-form.xml",
+                ),
+            )
+            .unwrap()
+            .replace("<Name>CorpusForm</Name>", "<Name>ItemForm</Name>"),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&parent).unwrap();
+        std::fs::write(
+            &parent,
+            text.replace(
+                "<ChildObjects/>",
+                "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
+            ),
+        )
+        .unwrap();
+        let form_args = examples[2]["params"]["arguments"].clone();
+        let form_preview =
+            submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, form_args);
+        assert!(form_preview.ok, "{form_preview:?}");
+        let borrowed = workspace.path().join("ext/Catalogs/Items/Forms/ItemForm");
+        assert!(!borrowed.exists(), "form preview must not write");
+        let form_applied = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": form_preview.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(form_applied.ok, "{form_applied:?}");
+        assert!(borrowed.join("Ext/Form.xml").exists());
+        let form = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            serde_json::json!({"at":"ext:Catalog.Items.Form.ItemForm"}),
+        );
+        assert!(form.ok, "{form:?}");
+        assert!(
+            form.data.as_ref().unwrap()["props"]
+                .get("content")
+                .is_none(),
+            "{form:?}"
         );
     }
 
@@ -15279,12 +15330,19 @@ struct ActorLogicalReadLease {"#,
             "dryRun": true,
         }))) {
             Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("an .epf output was accepted"),
+            Ok(_) => panic!("an .epf output without its external source set was accepted"),
             Err(other) => {
                 panic!(".epf on make returned infrastructure failure: {other:?}")
             }
         };
-        assert_eq!(external.diagnostics[0]["code"], "unsupported_operation");
+        // EPF/ERF build only from a named external source set (#1866).
+        assert_eq!(external.diagnostics[0]["code"], "bad_value");
+        assert!(
+            external.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("sourceSet")),
+            "{external:?}"
+        );
         assert_eq!(
             preparations.load(Ordering::SeqCst),
             0,

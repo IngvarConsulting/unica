@@ -29,7 +29,7 @@ impl CodeOperation {
         let method = terminal == Some(NodeKind::Method);
         let addressed = method || terminal == Some(NodeKind::Body);
         // The code parser accepts whitespace as source text and as an exact anchor.
-        let source = json!({"type":"string","pattern":r"(?s).+"});
+        let source = json!({"type":"string","pattern":r"[\s\S]"});
         let mut fields = vec![("at", text(true)), ("text", source.clone())];
         let mut required = vec!["text"];
         if !addressed {

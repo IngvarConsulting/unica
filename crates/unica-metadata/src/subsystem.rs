@@ -122,15 +122,16 @@ use crate::support_state::ObjectSupportData as DomainObjectSupportData;
 pub struct SubsystemInfoData {
     pub name: String,
     pub synonym: String,
-    pub comment: String,
+    pub comment: Option<String>,
     pub include_ci: String,
     pub use_one_command: String,
-    pub explanation: String,
+    pub explanation: Option<String>,
     pub picture: String,
     pub content_items: Vec<String>,
     pub groups: Vec<(String, Vec<String>)>,
     pub child_names: Vec<String>,
     pub has_ci: bool,
+    pub property_limits: Vec<String>,
 }
 
 pub struct SubsystemEditModel {
@@ -192,6 +193,8 @@ pub struct SubsystemEditOperationData {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubsystemInfoResult {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub property_limits: Vec<String>,
     pub name: String,
     pub synonym: Option<String>,
     pub comment: Option<String>,

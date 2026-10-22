@@ -333,8 +333,18 @@ pub fn typed_element(
     let synonym = crate::info_projection::direct_md_child(properties, "Synonym")
         .map(crate::xml_model::meta_info_ml_text)
         .filter(|value| !value.is_empty());
-    let comment = crate::info_projection::direct_md_child_text(properties, "Comment")
-        .filter(|value| !value.is_empty());
+    let comment = match crate::info_projection::observe_collection_item_comment(properties) {
+        Ok(comment) => comment,
+        Err(error) => {
+            incomplete = true;
+            diagnostics.push(
+                MetaDiagnostic::error(error.code, error.message)
+                    .with_metadata_path(target.clone())
+                    .with_field(format!("{field}.comment")),
+            );
+            None
+        }
+    };
     let r#type = if crate::info_projection::direct_md_child(properties, "Type").is_some() {
         match crate::info_projection::parse_observed_metadata_type_node(properties) {
             Ok(value) => Some(value),
