@@ -1,6 +1,8 @@
 """Lane/shard inventory is a fail-closed partition of the original full suite."""
 from __future__ import annotations
 import copy
+from contextlib import redirect_stdout
+import io
 import hashlib
 import json
 from pathlib import Path
@@ -17,17 +19,30 @@ import ci_rust_lanes as lanes
 
 
 def manifest(lane="ordinary", host="ubuntu-latest", profile="queue"):
-    parts = [[{"binary": f"package-{lane}", "name": f"case_{i}", "ignored": False}] for i in range(lanes.shards(profile, lane))]
+    parts = [[{"binary": f"package-{lane}", "name": f"case_{i}", "ignored": False}] for i in range(lanes.shards(profile, lane, host))]
     document = {"schemaVersion": 1, "identity": {"sha": "a" * 40, "target": "x86_64-unknown-linux-gnu", "os": "Linux"}, "profile": profile, "runner": host,
-            "lane": lane, "selection": list(lanes.selection(lane)), "nextestProfile": lanes.runner.nextest_profile(profile, lanes.selection(lane)),
+            "lane": lane, "selection": list(lanes.selection(lane)), "nextestProfile": lanes.nextest_profile(profile, lane, host),
             "archiveSha256": "archive-" + lane, "inventory": sum(parts, []), "ignoredInventory": [], "shards": parts,
             # Archive binaries independent of the profile filter; later fixtures
             # narrow the inventory to the product packages listed here.
             "binaries": sorted({f"package-{lane}", "unica-coder", "ureq"})}
     if lane == "ordinary":
         document["fixtureBinary"] = {"path": "x86_64-unknown-linux-gnu/debug/unica", "sha256": "0" * 64, "bytes": 1}
-        document["doctests"] = {"command": ["cargo", "test", "--doc"], "exitCode": 0, "seconds": 0.01, "output": "ok"}
+        if not lanes.platform_only(profile, host):
+            document["doctests"] = {"command": ["cargo", "test", "--doc"], "exitCode": 0, "seconds": 0.01, "output": "ok"}
     return document
+
+
+def write_configurations(root, profile="queue", host="ubuntu-latest", *, mutate=None, skip=()):
+    """Plans and results of every lane one runner executes for a profile."""
+    for lane in lanes.lanes(profile, host):
+        plan = manifest(lane, host, profile)
+        if mutate:
+            mutate(plan)
+        lanes.write(root / host / lane / "lane.json", plan)
+        for index in range(1, len(plan["shards"]) + 1):
+            if (lane, index) not in skip:
+                lanes.write(root / host / lane / str(index) / "shard.json", result(plan, index))
 
 
 def result(plan, index):
@@ -68,9 +83,17 @@ class RustLaneTests(unittest.TestCase):
                 self.assertFalse((destination / "lane.json").exists())
 
     def test_production_receipt_vendor_configs_are_separate_and_all_admitted(self):
-        self.assertEqual(lanes.lanes("pr"), ("ordinary",))
-        for profile in ("queue", "main", "release", "large", "all"):
-            self.assertEqual(lanes.lanes(profile), ("ordinary", "receipt", "vendor"))
+        for host in lanes.HOSTS:
+            self.assertEqual(lanes.lanes("pr", host), ("ordinary",))
+            for profile in ("release", "large", "all"):
+                self.assertEqual(lanes.lanes(profile, host), ("ordinary", "receipt", "vendor"))
+        for profile in ("queue", "main"):
+            # Vendor moved to the nightly and the tag.
+            self.assertEqual(lanes.lanes(profile, "ubuntu-latest"), ("ordinary", "receipt"))
+        # The queue's macOS runs the platform directories as its ordinary lane.
+        self.assertEqual(lanes.lanes("queue", "macos-14"), ("ordinary",))
+        self.assertEqual(lanes.lanes("main", "macos-14"), ("ordinary", "receipt"))
+        self.assertTrue(all(lanes.shards(profile, lane) == 1 for profile in lanes.ADMITTED for lane in lanes.LANES))
         self.assertNotIn("--features", lanes.archive_command("ordinary", Path("tests.tar.zst")))
         receipt = lanes.archive_command("receipt", Path("tests.tar.zst"))
         self.assertIn("receipt-ledger-test-support", receipt)
@@ -110,20 +133,26 @@ class RustLaneTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 lanes.validate_result(plan, {**valid, **mutation}, 1)
 
+    def test_profile_hosts_follow_the_gate_profile(self):
+        self.assertEqual(lanes.profile_hosts("pr", full_matrix=False), ["ubuntu-latest"])
+        for profile in ("pr", "queue", "main", "release"):
+            self.assertEqual(lanes.profile_hosts(profile), ["ubuntu-latest", "macos-14"])
+        self.assertEqual(lanes.profile_hosts("large"), ["ubuntu-latest", "macos-14", "windows-latest"])
+
     def test_inventory_verifier_requires_each_lane_and_result_for_the_same_revision(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
             root = Path(temporary)
-            plans = []
-            for lane in lanes.LANES:
-                plan = manifest(lane)
-                plans.append(plan)
-                lanes.write(root / lane / "lane.json", plan)
-                for index in range(1, len(plan["shards"]) + 1):
-                    lanes.write(root / lane / str(index) / "shard.json", result(plan, index))
+            write_configurations(root)
             report = lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
             self.assertTrue(report["fullMatrixPassed"])
             self.assertFalse(report["affectedAdmission"])
-            (root / "receipt/1/shard.json").unlink()
+            # A lane of another runner is not part of this one's inventory.
+            write_configurations(root / "foreign", host="macos-14")
+            with self.assertRaisesRegex(ValueError, "unexpected runner or lane"):
+                lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
+            import shutil
+            shutil.rmtree(root / "foreign")
+            (root / "ubuntu-latest/receipt/1/shard.json").unlink()
             with self.assertRaises(ValueError):
                 lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
             self.assertFalse(json.loads((root / "verification.json").read_text())["mandatoryComplete"])
@@ -131,13 +160,8 @@ class RustLaneTests(unittest.TestCase):
     def test_large_windows_doctest_failure_is_advisory(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
             root = Path(temporary)
-            for lane in lanes.LANES:
-                plan = manifest(lane, host="windows-latest", profile="large")
-                if lane == "ordinary":
-                    plan["doctests"].update(exitCode=101)
-                lanes.write(root / lane / "lane.json", plan)
-                for index in range(1, len(plan["shards"]) + 1):
-                    lanes.write(root / lane / str(index) / "shard.json", result(plan, index))
+            write_configurations(root, "large", "windows-latest",
+                                 mutate=lambda plan: plan["doctests"].update(exitCode=101) if plan["lane"] == "ordinary" else None)
             report = lanes.verify_union(root, "large", ["windows-latest"], "a" * 40)
             self.assertTrue(report["mandatoryComplete"])
             self.assertFalse(report["fullMatrixPassed"])
@@ -152,6 +176,72 @@ class RustLaneTests(unittest.TestCase):
             self.assertEqual(len(report["advisoryFailures"]), 3)
             with self.assertRaises(ValueError):
                 lanes.verify_union(Path(temporary), "large", [], "a" * 40)
+
+
+class HostLaneTests(unittest.TestCase):
+    """One job builds and runs every lane of its runner; a red lane never hides the others."""
+
+    def test_build_host_keeps_the_signed_configuration_of_a_failed_lane_and_builds_the_rest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            built = []
+
+            def build(_root, destination, lane, profile, host, line):
+                built.append((lane, profile, host))
+                destination.mkdir(parents=True)
+                lanes.write(destination / "run.json", {"lane": lane})
+                if lane == "ordinary":
+                    raise subprocess.CalledProcessError(101, ["cargo", "nextest", "archive"])
+                lanes.write(destination / "lane.json", manifest(lane, host, profile))
+                (destination / "tests.tar.zst").write_bytes(b"archive stays in the job")
+
+            with patch.object(lanes, "build", side_effect=build):
+                with redirect_stdout(io.StringIO()):  # the ::error:: lines would annotate the CI log
+                    status = lanes.build_host(root, root / "work", root / "report", "queue", "ubuntu-latest", "main")
+            self.assertEqual(status, 1)
+            self.assertEqual(built, [("ordinary", "queue", "ubuntu-latest"), ("receipt", "queue", "ubuntu-latest")])
+            failed = root / "report" / "plan-rust-ubuntu-latest-ordinary"
+            self.assertEqual(sorted(path.name for path in failed.iterdir()), ["run.json"])
+            self.assertTrue((root / "report" / "plan-rust-ubuntu-latest-receipt" / "lane.json").is_file())
+            # Plans travel; archives stay in the job that runs them.
+            self.assertEqual(list((root / "report").rglob("*.tar.zst")), [])
+
+    def test_run_host_runs_every_built_lane_after_a_red_one(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for lane in ("ordinary", "receipt", "vendor"):
+                if lane != "vendor":
+                    lanes.write(root / "work" / lane / "lane.json", manifest(lane, profile="large"))
+            calls = []
+
+            def run(_root, prepared, destination, lane, profile, host, index, line, shadow):
+                calls.append((lane, destination.name, index, shadow))
+                if lane == "ordinary":
+                    raise ValueError("a required shard test failed")
+                return 0
+
+            # Any failure inside a lane — a truncated JUnit, a missing archive —
+            # is that lane's red result, never the end of the runner's lanes.
+            for error in (ET.ParseError("no element found"), FileNotFoundError("tests.tar.zst")):
+                order = []
+                def broken(_root, prepared, destination, lane, *rest, error=error):
+                    order.append(lane)
+                    if lane == "ordinary":
+                        raise error
+                    return 0
+                with self.subTest(error=type(error).__name__), patch.object(lanes, "run_archive", side_effect=broken), \
+                     redirect_stdout(io.StringIO()):
+                    self.assertEqual(lanes.run_host(root, root / "work", root / f"report-{type(error).__name__}", "large", "ubuntu-latest", None, None), 1)
+                    self.assertEqual(order, ["ordinary", "receipt"])
+
+            with patch.object(lanes, "run_archive", side_effect=run):
+                with redirect_stdout(io.StringIO()):  # the ::error:: lines would annotate the CI log
+                    status = lanes.run_host(root, root / "work", root / "report", "large", "ubuntu-latest", None, root / "absent.json")
+            self.assertEqual(status, 1)
+            self.assertEqual(calls, [("ordinary", "results-rust-ubuntu-latest-ordinary-1", 1, None),
+                                     ("receipt", "results-rust-ubuntu-latest-receipt-1", 1, None)])
+            with patch.object(lanes, "run_archive", return_value=0):
+                self.assertEqual(lanes.run_host(root, root / "work", root / "report2", "queue", "ubuntu-latest", None, None), 0)
 
 
 class ArchiveFixtureBinaryTests(unittest.TestCase):
@@ -264,15 +354,8 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary, \
                  patch.dict(lanes.os.environ, {}, clear=True):
                 root = Path(temporary)
-                for lane in lanes.LANES:
-                    plan = manifest(lane)
-                    if lane == "ordinary":
-                        mutate(plan)
-                    lanes.write(root / lane / "lane.json", plan)
-                    for index in range(1, len(plan["shards"]) + 1):
-                        if lane == "ordinary" and index == 2:
-                            continue
-                        lanes.write(root / lane / str(index) / "shard.json", result(plan, index))
+                write_configurations(root, mutate=lambda plan: mutate(plan) if plan["lane"] == "ordinary" else None,
+                                     skip={("ordinary", 1)})
                 with self.assertRaises(ValueError):
                     lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
                 errors = json.loads((root / "verification.json").read_text())["errors"]
@@ -427,8 +510,6 @@ class IgnoredJUnitArchiveTests(unittest.TestCase):
             plan.update(workspace=str(root.resolve()), nextestVersion="fixture nextest", inventory=[selected],
                         ignoredInventory=ignored, shards=[[selected]],
                         archiveSha256=lanes.prepared_binary.digest(archive), archiveBytes=archive.stat().st_size)
-            if lane == "ordinary":
-                plan.update(inventory=[selected, *ignored], shards=[[selected], ignored])
             raw_cases = [(selected["name"], "passed"), *[(case["name"], "skipped") for case in ignored]]
             if change is not None:
                 change(plan, raw_cases)
@@ -473,7 +554,7 @@ class IgnoredJUnitArchiveTests(unittest.TestCase):
         self.assertTrue(all(row["status"] == "skipped" for row in record["frameworkAnnotations"]))
         self.assertEqual([entry["fullName"] for entry in allure], ["unica-coder::selected"])
 
-    def test_other_partition_ignored_cases_are_annotations_not_duplicate_results(self):
+    def test_ordinary_ignored_cases_outside_the_plan_are_annotations_not_duplicate_results(self):
         _, record, original, copied, allure = self.run_archive_with_ignored("ordinary")
         self.assertEqual(original, copied)
         self.assertEqual(len(record["frameworkAnnotations"]), 3)
@@ -511,20 +592,15 @@ class IgnoredJUnitArchiveTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 self.run_archive_with_ignored(change=change)
 
+        # A required case outside the plan is never an annotation, whatever its outcome.
         for status in ("skipped", "passed", "failed"):
-            def other_required(plan, cases):
-                case = {"binary": "unica-coder", "name": "other_partition_required", "ignored": False}
-                plan["inventory"].append(case)
-                plan["shards"][1].append(case)
-                cases.append((case["name"], status))
-            with self.subTest(other_partition_status=status), self.assertRaises(ValueError):
-                self.run_archive_with_ignored("ordinary", change=other_required)
+            with self.subTest(outside_plan_status=status), self.assertRaises(ValueError):
+                self.run_archive_with_ignored("ordinary", change=lambda _p, c, status=status: c.append(("outside_plan_required", status)))
 
     def test_union_validator_rechecks_catalogue_annotations_and_duplicates(self):
         plan = manifest()
         ignored = {"binary": "package-ordinary", "name": "ignored", "ignored": True}
-        plan["inventory"].append(ignored)
-        plan["shards"][1].append(ignored)
+        # Archive-known ignored case outside the selected plan (expression mismatch).
         plan["ignoredInventory"] = [ignored]
         good = result(plan, 1)
         annotation = {"id": lanes.case_id(ignored), "status": "skipped", "reason": "native run-ignored annotation"}
@@ -683,23 +759,18 @@ class PreviousInventoryTests(unittest.TestCase):
 
     HOSTS = ["ubuntu-latest", "macos-14"]
 
-    def jobs(self, profile="queue", drop=()):
-        names = {f"{phase}-rust-{lane}": {"result": "success" if lane in lanes.lanes(profile) else "skipped"}
-                 for lane in lanes.LANES for phase in ("build", "run")}
-        names["shadow-component-selection"] = {"result": "success"}
-        names["classify-changes"] = {"result": "success"}
-        names["run-rust-ordinary-medium"] = {"result": "success" if profile == "pr" else "skipped"}
+    def jobs(self, profile="queue", drop=(), hosts=None):
+        """Conclusions of the other runners' jobs, as `await_os_jobs.py` reports them."""
+        names = {lanes.os_job(host): "success" for host in hosts or self.HOSTS if host != "ubuntu-latest"}
         return {name: value for name, value in names.items() if name not in drop}
 
     def collect(self, root, profile="queue", hosts=None, mutate=None):
         for host in hosts or self.HOSTS:
-            for lane in lanes.lanes(profile):
+            write_configurations(root, profile, host, mutate=mutate)
+            for lane in lanes.lanes(profile, host):
                 plan = manifest(lane, host, profile)
                 if mutate:
                     mutate(plan)
-                lanes.write(root / host / lane / "lane.json", plan)
-                for index in range(1, len(plan["shards"]) + 1):
-                    lanes.write(root / host / lane / str(index) / "shard.json", result(plan, index))
                 if profile == "pr" and (host, lane) == ("ubuntu-latest", "ordinary"):
                     medium = {**result({**plan, "shards": [plan["inventory"]]}, 1), "nextestProfile": "queue",
                               "reason": "shadow selection is full; all medium tests", "expression": None, "packages": []}
@@ -707,7 +778,7 @@ class PreviousInventoryTests(unittest.TestCase):
 
     def previous(self, profile="queue", *, reset=False, removed=(), tests=(), jobs=None, mutate=None, hosts=None):
         with tempfile.TemporaryDirectory() as temporary, \
-             patch.dict(lanes.os.environ, {"CI_LANE_JOB_RESULTS": json.dumps(jobs or self.jobs(profile))}, clear=True):
+             patch.dict(lanes.os.environ, {"CI_JOB_RESULTS": json.dumps(self.jobs(profile, hosts=hosts) if jobs is None else jobs)}, clear=True):
             root = Path(temporary)
             self.collect(root, profile, hosts, mutate)
             lanes.verify_union(root, profile, hosts or self.HOSTS, "a" * 40, self.baseline(None, reset=True))
@@ -721,7 +792,7 @@ class PreviousInventoryTests(unittest.TestCase):
 
     def verify(self, baseline, profile="queue", *, jobs=None, mutate=None, hosts=None):
         with tempfile.TemporaryDirectory() as temporary, \
-             patch.dict(lanes.os.environ, {"CI_LANE_JOB_RESULTS": json.dumps(jobs or self.jobs(profile))}, clear=True):
+             patch.dict(lanes.os.environ, {"CI_JOB_RESULTS": json.dumps(self.jobs(profile, hosts=hosts) if jobs is None else jobs)}, clear=True):
             root = Path(temporary)
             self.collect(root, profile, hosts, mutate)
             try:
@@ -751,24 +822,89 @@ class PreviousInventoryTests(unittest.TestCase):
 
     def test_target_loss_is_found_across_profiles_but_selection_only_within_one(self):
         # A pull request runs ordinary small tests only; its archive still has every target.
+        # Its single runner is not compared with the queue's macOS job or configurations.
         with self.assertRaisesRegex(ValueError, "ubuntu-latest/ordinary: test target ureq disappeared"):
-            self.verify(self.previous("queue"), "pr", jobs=self.jobs("pr"), hosts=["ubuntu-latest"],
-                        mutate=self.without_target("ureq"))
-        self.assertTrue(self.verify(self.previous("queue"), "pr", jobs=self.jobs("pr"), hosts=["ubuntu-latest"])["mandatoryComplete"])
+            self.verify(self.previous("queue"), "pr", hosts=["ubuntu-latest"], mutate=self.without_target("ureq"))
+        self.assertTrue(self.verify(self.previous("queue"), "pr", hosts=["ubuntu-latest"])["mandatoryComplete"])
 
     def test_vanished_job_fails(self):
-        with self.assertRaisesRegex(ValueError, "job shadow-component-selection disappeared"):
-            # The in-run check names the missing shadow too; the comparison names the vanished job.
-            self.verify(self.previous(), jobs=self.jobs(drop=("shadow-component-selection",)))
-        with self.assertRaisesRegex(ValueError, "job classify-changes disappeared"):
-            self.verify(self.previous(), jobs=self.jobs(drop=("classify-changes",)))
+        with self.assertRaisesRegex(ValueError, r"job Rust \(macos-14\) disappeared"):
+            # The in-run check names the missing macOS job too; the comparison names the vanished job.
+            self.verify(self.previous(), jobs=self.jobs(drop=(lanes.os_job("macos-14"),)))
+
+    def test_other_runner_job_must_succeed(self):
+        for outcome in ("failure", "timed_out", "missing", "cancelled"):
+            jobs = {} if outcome == "missing" else {lanes.os_job("macos-14"): outcome}
+            with self.subTest(outcome=outcome), \
+                 self.assertRaisesRegex(ValueError, rf"Rust \(macos-14\) did not finish as success: {outcome}"):
+                self.verify(self.previous(), jobs=jobs)
+        # Windows stays advisory in the nightly (#1523), macOS does not.
+        hosts = ["ubuntu-latest", "macos-14", "windows-latest"]
+        previous = self.previous("large", hosts=hosts)
+        report = self.verify(previous, "large", hosts=hosts,
+                             jobs={**self.jobs("large", hosts=hosts), lanes.os_job("windows-latest"): "failure"})
+        self.assertTrue(report["mandatoryComplete"])
+        self.assertFalse(report["fullMatrixPassed"])
+        with self.assertRaisesRegex(ValueError, r"Rust \(macos-14\) did not finish"):
+            self.verify(previous, "large", hosts=hosts,
+                        jobs={**self.jobs("large", hosts=hosts), lanes.os_job("macos-14"): "failure"})
+
+    def test_a_runner_github_never_acquired_is_named_once_not_as_lost_lanes(self):
+        # GitHub had no macOS runner: the job was cancelled before start and
+        # left no plan. The gate stays red with that reason, not with the
+        # lane/shard losses that follow from it.
+        previous = self.previous()
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.dict(lanes.os.environ, {"CI_JOB_RESULTS": json.dumps({lanes.os_job("macos-14"): "not_acquired"})}, clear=True):
+            root = Path(temporary)
+            write_configurations(root / "ubuntu-latest", "queue", "ubuntu-latest")
+            with self.assertRaises(ValueError) as caught:
+                lanes.verify_union(root, "queue", self.HOSTS, "a" * 40, previous)
+        message = str(caught.exception)
+        self.assertIn("Rust (macos-14) got no macos-14 runner from GitHub", message)
+        self.assertNotIn("missing or duplicate", message)
+        self.assertNotIn("macos-14/ordinary", message)
+
+    def test_queue_requires_macos_platform_configuration_and_both_runners(self):
+        previous = self.previous()
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.dict(lanes.os.environ, {"CI_JOB_RESULTS": json.dumps(self.jobs())}, clear=True):
+            root = Path(temporary)
+            self.collect(root)
+            import shutil
+            shutil.rmtree(root / "macos-14" / "ordinary")
+            with self.assertRaisesRegex(ValueError, "macos-14/ordinary: missing or duplicate lane plan"):
+                lanes.verify_union(root, "queue", self.HOSTS, "a" * 40, previous)
+        with self.assertRaisesRegex(ValueError, "runner matrix omits an expected operating system"):
+            self.verify(self.previous(), hosts=["ubuntu-latest"])
+
+    def test_previous_queue_layout_vanishes_without_reset_and_passes_with_it(self):
+        # Inventory of the queue before the two-runner layout: macOS ran every lane,
+        # Linux ran vendor too, and the jobs were the separate build/run jobs.
+        old = {"schemaVersion": 1, "sha": "b" * 40, "profile": "queue", "runId": "1", "attempt": "1",
+               "jobs": ["build-rust-ordinary", "run-rust-ordinary", "test-rust-platforms"],
+               "configurations": [
+                   {"runner": host, "lane": lane, "shards": 2 if lane == "ordinary" else 1,
+                    "binaries": sorted({f"package-{lane}", "unica-coder", "ureq"}),
+                    "selected": {f"package-{lane}": 1}, "cases": [f"package-{lane}::case_0"]}
+                   for host in self.HOSTS for lane in ("ordinary", "receipt", "vendor")]}
+        with self.assertRaises(ValueError) as caught:
+            self.verify(self.baseline(old))
+        for loss in ("macos-14/receipt: configuration and its results disappeared",
+                     "ubuntu-latest/vendor: configuration and its results disappeared",
+                     "job build-rust-ordinary disappeared"):
+            self.assertIn(loss, str(caught.exception))
+        report = self.verify(self.baseline(old, reset=True))
+        self.assertTrue(report["mandatoryComplete"])
+        self.assertTrue(report["previousInventory"]["resetSuppressed"])
 
     def test_vanished_configuration_and_its_results_fail_within_one_profile(self):
         previous = self.previous()
-        with self.assertRaisesRegex(ValueError, "macos-14/receipt: configuration and its results disappeared"):
-            with patch.object(lanes, "lanes", side_effect=lambda profile: ("ordinary",) if profile == "queue" else lanes.LANES):
-                self.verify(previous, jobs={**self.jobs(), **{f"{phase}-rust-{lane}": {"result": "skipped"}
-                                                   for lane in ("receipt", "vendor") for phase in ("build", "run")}})
+        real = lanes.lanes
+        narrowed = lambda profile, host="ubuntu-latest": ("ordinary",) if (profile, host) == ("queue", "ubuntu-latest") else real(profile, host)
+        with self.assertRaisesRegex(ValueError, "ubuntu-latest/receipt: configuration and its results disappeared"):
+            with patch.object(lanes, "lanes", side_effect=narrowed):
+                self.verify(previous)
 
     def test_unexpectedly_empty_selection_fails(self):
         def empty(plan):
@@ -787,7 +923,7 @@ class PreviousInventoryTests(unittest.TestCase):
                 for case in part:
                     case["name"] += "_renamed"
             plan["inventory"] = sum(plan["shards"], [])
-        with self.assertRaisesRegex(ValueError, r"ubuntu-latest/ordinary: 2 test result\(s\) disappeared: package-ordinary::case_0"):
+        with self.assertRaisesRegex(ValueError, r"ubuntu-latest/ordinary: 1 test result\(s\) disappeared: package-ordinary::case_0"):
             self.verify(self.previous(), mutate=rename)
         exact = [f"package-{lane}::case_{index}" for lane in lanes.LANES for index in range(2)]
         for tests in (exact, [f"package-{lane}::case_*" for lane in lanes.LANES], [f"package-{lane}::*" for lane in lanes.LANES]):
@@ -825,7 +961,7 @@ class PreviousInventoryTests(unittest.TestCase):
         self.assertTrue(self.verify(self.baseline(None, reset=True))["mandatoryComplete"])
         # Release lines, tags and manual runs are not exempt either.
         with self.assertRaisesRegex(ValueError, "Rust-inventory-baseline: reset"):
-            self.verify(self.baseline(None), "main", jobs=self.jobs("main"))
+            self.verify(self.baseline(None), "main")
         report = self.verify(self.previous(reset=True), mutate=self.without_target("unica-coder"))
         self.assertTrue(report["previousInventory"]["resetSuppressed"])
         with self.assertRaisesRegex(ValueError, "not compared with the previous inventory"):
@@ -836,20 +972,43 @@ class PreviousInventoryTests(unittest.TestCase):
             self.verify({**self.baseline(None), "explanations": {"reset": False, "removedTargets": []}})
 
     def test_equivalent_profiles_compare_selection_and_configurations(self):
-        self.assertTrue(lanes.same_selection("queue", "main"))
-        self.assertFalse(lanes.same_selection("queue", "pr"))
-        self.assertFalse(lanes.same_selection("queue", "large"))
+        # The queue narrows macOS to the platform facades; on Linux it still
+        # selects what `main` selects.
+        self.assertTrue(lanes.same_selection("queue", "main", "ubuntu-latest"))
+        self.assertFalse(lanes.same_selection("queue", "main", "macos-14"))
+        self.assertTrue(lanes.same_selection("queue", "queue", "macos-14"))
+        self.assertFalse(lanes.same_selection("queue", "pr", "ubuntu-latest"))
+        self.assertFalse(lanes.same_selection("queue", "large", "ubuntu-latest"))
         def drop_receipt_case(plan):
-            if plan["lane"] == "receipt":
+            if plan["lane"] == "receipt" and plan["runner"] == "ubuntu-latest":
                 plan["inventory"] = [{"binary": "unica-coder", "name": "other", "ignored": False}]
                 plan["shards"] = [plan["inventory"]]
-        with self.assertRaisesRegex(ValueError, "selection of test target package-receipt became empty"):
-            self.verify(self.previous("queue"), "main", jobs=self.jobs("main"), mutate=drop_receipt_case)
+        with self.assertRaisesRegex(ValueError, "ubuntu-latest/receipt: selection of test target package-receipt became empty"):
+            self.verify(self.previous("queue"), "main", mutate=drop_receipt_case)
+        # A full macOS `main` against the narrowed queue baseline compares
+        # targets only, never the platform selection's cases.
+        report = self.verify(self.previous("queue"), "main")
+        self.assertTrue(report["mandatoryComplete"])
+
+    def test_queue_macos_runs_only_the_platform_profile_and_its_inventory_stays_comparable(self):
+        for profile in ("pr", "main", "release", "large", "all"):
+            with self.subTest(profile=profile):
+                self.assertFalse(lanes.platform_only(profile, "macos-14"))
+        self.assertTrue(lanes.platform_only("queue", "macos-14"))
+        self.assertEqual(lanes.nextest_profile("queue", "ordinary", "macos-14"), "queue-platform")
+        self.assertEqual(lanes.nextest_profile("queue", "ordinary", "ubuntu-latest"), "queue")
+        # The queue's own baseline compares cleanly, while a platform-only
+        # macOS ordinary plan never carries or demands a doctest outcome.
+        report = self.verify(self.previous("queue"), "queue")
+        self.assertTrue(report["mandatoryComplete"])
+        self.assertIsNone(lanes.doctest_problem(manifest("ordinary", "macos-14", "queue")))
+        self.assertEqual(lanes.doctest_problem({**manifest("ordinary", "ubuntu-latest", "queue"), "doctests": None}),
+                         "missing doctest outcome")
 
     def test_windows_losses_in_large_stay_advisory(self):
         hosts = ["ubuntu-latest", "macos-14", "windows-latest"]
-        previous = self.previous("large", jobs=self.jobs("large"), hosts=hosts)
-        report = self.verify(previous, "large", jobs=self.jobs("large"), hosts=hosts,
+        previous = self.previous("large", hosts=hosts)
+        report = self.verify(previous, "large", hosts=hosts,
                              mutate=lambda plan: self.without_target("ureq")(plan) if plan["runner"] == "windows-latest" else None)
         self.assertTrue(report["mandatoryComplete"])
         self.assertFalse(report["fullMatrixPassed"])
@@ -975,12 +1134,10 @@ class PullRequestMediumTests(unittest.TestCase):
         medium_plan = plan["inventory"] + [{"binary": "package-ordinary", "name": "medium_case", "ignored": False}]
         medium = {**result({**plan, "shards": [medium_plan]}, 1), "nextestProfile": "queue", "reason": "x",
                   "expression": None, "packages": []}
-        jobs = {f"{phase}-rust-{lane}": {"result": "success" if lane == "ordinary" else "skipped"}
-                for lane in lanes.LANES for phase in ("build", "run")}
-        jobs.update({"shadow-component-selection": {"result": "success"}, "run-rust-ordinary-medium": {"result": "success"}})
+        # A pull request without `ci:full` has no other runner's job to report.
+        jobs = {}
         cases = {"complete": (medium, jobs, None), "missing": (None, jobs, "missing or duplicate medium result"),
                  "failed": ({**medium, "exitCode": 1}, jobs, "required shard test failed"),
-                 "skipped job": (medium, {**jobs, "run-rust-ordinary-medium": {"result": "skipped"}}, "did not finish as success"),
                  "empty": ({**medium, "plan": [], "records": []}, jobs, "unexpectedly empty"),
                  "truncated": ({**medium, "plan": medium_plan[1:], "records": medium["records"][1:]}, jobs, "omits 1 planned case"),
                  "foreign expression": ({**medium, "expression": "package(=other)"}, jobs, "differs from"),
@@ -990,7 +1147,7 @@ class PullRequestMediumTests(unittest.TestCase):
                                        jobs, "differs from the shadow decision")}
         for name, (document, needs, error) in cases.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as temporary, \
-                 patch.dict(lanes.os.environ, {"CI_LANE_JOB_RESULTS": json.dumps(needs)}, clear=True):
+                 patch.dict(lanes.os.environ, {"CI_JOB_RESULTS": json.dumps(needs)}, clear=True):
                 root = Path(temporary)
                 lanes.write(root / "ordinary/lane.json", plan)
                 lanes.write(root / "ordinary/1/shard.json", {**result(plan, 1), "exitCode": 1} if name == "small shard failed" else result(plan, 1))
@@ -1116,6 +1273,20 @@ class HostCapabilitySkipTests(unittest.TestCase):
             entries = lanes.allure_results.junit_records(Path(temporary) / "out/junit.assigned.xml", runner="windows-latest",
                                                          profile="queue", reasons={})
             self.assertEqual([entry["status"] for entry in entries if entry["name"] == "u"], ["broken", "skipped"])
+
+    def test_tests_get_an_absolute_record_directory_from_any_working_directory(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
+            previous = Path.cwd()
+            lanes.os.chdir(temporary)
+            try:
+                environment = lanes.capability_environment(Path(".build/results"))
+            finally:
+                lanes.os.chdir(previous)
+            directory = Path(environment[lanes.HOST_CAPABILITY_SKIPS_ENV])
+            # nextest starts a test in its package directory, not the runner's checkout.
+            self.assertTrue(directory.is_absolute())
+            self.assertEqual(directory, (Path(temporary) / ".build/results/capability-skips").resolve())
+            self.assertTrue(directory.is_dir())
 
     def test_only_a_capability_reason_excuses_a_required_case(self):
         record = {"id": "package::case", "status": "skipped"}

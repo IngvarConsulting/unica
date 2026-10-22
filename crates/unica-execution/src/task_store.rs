@@ -1413,12 +1413,11 @@ mod tests {
         fs::remove_file(root_path.join(name)).unwrap();
         let outside = root.path().join("outside");
         fs::write(&outside, b"external").unwrap();
-        let Some(created) = unica_workspace::state_fs::test_support::create_file_symlink_for_test(
+        let created = unica_workspace::state_fs::test_support::create_file_symlink_for_test(
             &outside,
             root_path.join(name),
-        ) else {
-            return;
-        };
+        )
+        .expect("symlink fixtures exist on Unix and Windows");
         created.expect("create a file symlink on the supported test host");
         assert!(store
             .remove_verified_staging(name, identity, deadline())

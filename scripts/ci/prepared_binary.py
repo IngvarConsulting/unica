@@ -22,7 +22,9 @@ import tempfile
 from pathlib import Path
 
 MANIFEST_ENV = "UNICA_PREPARED_BINARY_MANIFEST"
-# Cargo target directory of the CI product build; the workflow caches this path.
+# Default Cargo target directory of a standalone product build. The CI job
+# passes its own `target`: the product shares dependency artifacts with the
+# test archives, and its bytes are copied out before any later build.
 PRODUCT_TARGET = Path(".build/ci-product-target")
 SCHEMA = 1
 ORDINARY_FEATURES = ["default"]
@@ -119,7 +121,7 @@ def binary_path(root: Path) -> Path:
 def ensure_binary(root: Path) -> Path:
     if MANIFEST_ENV in os.environ:
         return binary_path(root)
-    # CI Python suites consume the verified build-python-product bytes. A job
+    # CI Python suites consume the verified bytes of the `product` step. A job
     # without the manifest is a wiring defect, not a reason to compile again.
     if os.environ.get("GITHUB_ACTIONS") == "true":
         raise ValueError(f"{MANIFEST_ENV} is unset in CI; Python suites never build the product")
@@ -139,12 +141,13 @@ def ensure_binary(root: Path) -> Path:
     return _LOCAL_BUILDS[key]
 
 
-def build(root: Path, destination: Path) -> Path:
+def build(root: Path, destination: Path, target_dir: Path = PRODUCT_TARGET) -> Path:
     if destination.exists():
         raise ValueError(f"prepared destination already exists: {destination}")
     before = identity(root)
-    # This target directory belongs exclusively to the ordinary producer.
-    target = root / PRODUCT_TARGET
+    # A shared target may later be rebuilt with other features (Receipt):
+    # the copy below, outside the target, is what Python executes.
+    target = root / target_dir
     command = ["cargo", "build", "--locked", "-p", "unica-coder", "--bin", "unica",
                "--target", before["target"], "--target-dir", str(target), "--message-format", "json"]
     completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE, check=True)
@@ -231,12 +234,15 @@ def main() -> None:
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--archive", type=Path)
+    parser.add_argument("--target-dir", type=Path, default=PRODUCT_TARGET, help="Cargo target directory of the build")
     args = parser.parse_args()
     if args.action == "build":
-        if args.destination is None or args.archive is None:
-            parser.error("build requires --destination and --archive")
-        manifest = build(args.repo_root, args.destination)
-        pack(manifest, args.archive, args.repo_root)
+        if args.destination is None:
+            parser.error("build requires --destination")
+        manifest = build(args.repo_root, args.destination, args.target_dir)
+        if args.archive is not None:
+            pack(manifest, args.archive, args.repo_root)
+        print(manifest.resolve())
     elif args.action == "unpack":
         if args.destination is None or args.archive is None:
             parser.error("unpack requires --destination and --archive")

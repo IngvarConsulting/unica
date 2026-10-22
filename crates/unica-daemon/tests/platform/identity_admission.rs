@@ -17,6 +17,10 @@ fn world_readable_identity_directory_is_rejected() {
     let path = DaemonStateDirectory::path_for(&physical, &identity);
     std::fs::create_dir_all(&path).unwrap();
     if !set_unix_mode_for_test(&path, 0o755).unwrap() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::UnixPermissionBits,
+            "owner-only state checks Unix permission bits",
+        );
         return;
     }
 
@@ -34,7 +38,13 @@ fn symlinked_provider_state_root_is_rejected_before_creating_identity_state() {
     match create_directory_link_fixture_for_test(&target, &routed_parent).unwrap() {
         FileLinkFixtureOutcome::Created => {}
         FileLinkFixtureOutcome::Unsupported
-        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a directory link needs the symlink privilege",
+            );
+            return;
+        }
     }
     let routed = routed_parent.join("provider-state-created-through-link");
     let identity = CoreIdentity::production();

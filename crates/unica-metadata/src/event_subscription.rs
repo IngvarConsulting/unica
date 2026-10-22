@@ -700,10 +700,11 @@ pub fn shared_event_names(source_classes: &[EventSourceClass]) -> Vec<&'static s
         .collect()
 }
 
-pub fn validate_event_subscription_binding(
+/// Every source class has the event, all with one signature. The handler is
+/// not consulted: a plan can check a changed source before its handler exists.
+pub fn validate_event_subscription_sources(
     source_classes: &[EventSourceClass],
     event: &str,
-    handler: EventHandlerFacts,
 ) -> Result<&'static EventDefinition, EventBindingError> {
     let Some(first_class) = source_classes.first().copied() else {
         return Err(EventBindingError::EmptySource);
@@ -731,6 +732,15 @@ pub fn validate_event_subscription_binding(
             });
         }
     }
+    Ok(expected)
+}
+
+pub fn validate_event_subscription_binding(
+    source_classes: &[EventSourceClass],
+    event: &str,
+    handler: EventHandlerFacts,
+) -> Result<&'static EventDefinition, EventBindingError> {
+    let expected = validate_event_subscription_sources(source_classes, event)?;
     if handler.module_global != Some(false) {
         return Err(EventBindingError::HandlerModuleIsGlobal);
     }

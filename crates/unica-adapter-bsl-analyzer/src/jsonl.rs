@@ -1104,6 +1104,10 @@ mod tests {
         if create_directory_link_fixture_for_test(&outside, source_root.join("escape")).unwrap()
             != FileLinkFixtureOutcome::Created
         {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a directory link needs the symlink privilege",
+            );
             return;
         }
 
