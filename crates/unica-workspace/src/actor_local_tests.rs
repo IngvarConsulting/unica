@@ -123,6 +123,10 @@ fn retained_binding_rejects_a_root_replaced_by_another_source_set_link() {
         | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
             let _ = std::fs::rename(&displaced, &fixture.roots[0]);
             fixture.cleanup();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
     }
@@ -172,6 +176,10 @@ fn descriptor_relative_read_never_follows_a_nested_directory_link() {
         FileLinkFixtureOutcome::Unsupported
         | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
             fixture.cleanup();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
     }
@@ -301,10 +309,9 @@ fn actor_state_scope_digest_is_fallible_and_bounded() {
 
 #[test]
 fn actor_state_scope_distinguishes_native_non_unicode_paths() {
-    let Some((first, second)) = crate::platform::filesystem::distinct_non_unicode_paths_for_test()
-    else {
-        return;
-    };
+    // Unix and Windows both have non-Unicode native paths.
+    let (first, second) = crate::platform::filesystem::distinct_non_unicode_paths_for_test()
+        .expect("non-Unicode paths exist on Unix and Windows");
     let identity = |root| WorkspaceIdentity {
         workspace_root: PathBuf::from("/workspace"),
         source_sets: vec![super::WorkspaceSourceSetIdentity {

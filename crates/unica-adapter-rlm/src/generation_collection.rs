@@ -264,7 +264,9 @@ mod tests {
     use super::*;
     use fs2::FileExt;
     use std::fs::{File, OpenOptions};
-    use unica_workspace::test_support::create_dir_symlink_for_test;
+    use unica_workspace::test_support::{
+        create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
 
     const CURRENT: &str = "index-v17";
 
@@ -396,11 +398,15 @@ mod tests {
         std::fs::write(outside.path().join("keep"), b"data").unwrap();
         let data = pair_root.join(PRODUCT_DIR).join("index-v15");
         std::fs::remove_dir_all(&data).unwrap();
-        if !matches!(
-            create_dir_symlink_for_test(outside.path(), &data),
-            Some(Ok(()))
-        ) {
-            return; // The host forbids creating links; nothing to prove here.
+        // Only an explicit privilege refusal skips; any other link error fails.
+        if create_directory_link_fixture_for_test(outside.path(), &data).unwrap()
+            != FileLinkFixtureOutcome::Created
+        {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a directory link needs the symlink privilege",
+            );
+            return;
         }
 
         assert!(collect(&pair_root, Duration::ZERO).is_empty());
@@ -437,11 +443,15 @@ mod tests {
             } else {
                 target.as_path()
             };
-            if !matches!(
-                create_dir_symlink_for_test(link_target, &link),
-                Some(Ok(()))
-            ) {
-                return; // The host forbids creating links; nothing to prove here.
+            // Only an explicit privilege refusal skips; any other link error fails.
+            if create_directory_link_fixture_for_test(link_target, &link).unwrap()
+                != FileLinkFixtureOutcome::Created
+            {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a directory link needs the symlink privilege",
+                );
+                return;
             }
             seed_generation_data_only(&pair_root, "index-v15");
 
@@ -471,6 +481,10 @@ mod tests {
         if age_tree(&pair_root, old).is_err() {
             // Windows cannot open a directory this way to set its time: the
             // idle check is proven on Unix only.
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::DirectoryMtime,
+                "this host cannot set a directory's modification time",
+            );
             return;
         }
         let db = pair_root
@@ -505,6 +519,10 @@ mod tests {
         let day = Duration::from_secs(24 * 60 * 60);
         if age_tree(&pair_root, SystemTime::now() - 2 * day).is_err() {
             // Windows cannot open a directory this way to set its time.
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::DirectoryMtime,
+                "this host cannot set a directory's modification time",
+            );
             return;
         }
 
@@ -517,16 +535,19 @@ mod tests {
     }
 
     /// Sets the modification time of every entry under `root`, deepest first.
+    /// Backdates the tree. Only setting a directory's time may fail as a
+    /// host capability; walking the tree and aging files must succeed.
     fn age_tree(root: &Path, time: SystemTime) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(root)? {
-            let path = entry?.path();
+        for entry in std::fs::read_dir(root).expect("read the fixture tree") {
+            let path = entry.expect("read a fixture entry").path();
             if path.is_dir() {
                 age_tree(&path, time)?;
             } else {
                 File::options()
                     .write(true)
-                    .open(&path)?
-                    .set_modified(time)?;
+                    .open(&path)
+                    .and_then(|file| file.set_modified(time))
+                    .expect("backdate a fixture file");
             }
         }
         File::open(root)?.set_modified(time)

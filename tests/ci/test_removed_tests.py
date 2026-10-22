@@ -106,6 +106,26 @@ class RemovedTestsTests(unittest.TestCase):
         self.assertEqual(len(self.check(self.VENDOR + "Removes-test-target: demo::contract\nRemoves-test: demo::model::*\n")), 1)
         self.assertEqual(len(self.check(target + "Removes-test: demo*\n")), 2)
 
+    def test_patterns_the_queue_reads_literally_are_refused(self):
+        # The queue gate has no braces or wildcards inside a name (#1955 used `{a,b}`).
+        target = "Removes-test-target: demo::contract_tests\n" + self.VENDOR
+        for pattern in ("demo::model::{codec,other}::*", "demo::model::codec::tests::goes_?way",
+                        "demo::model::*::goes_away", "demo::model::codec::tests::[ag]*"):
+            with self.subTest(pattern=pattern):
+                problems = self.check(target + f"Removes-test: {pattern}\n")
+                self.assertTrue(any("does not understand" in problem for problem in problems), problems)
+                self.assertTrue(any("goes_away" in problem for problem in problems), problems)
+
+    def test_an_unknown_module_path_needs_the_name_or_a_prefix_below_the_package(self):
+        def declared(*patterns):
+            return removed_tests.declarations_in("".join(f"Removes-test: {item}\n" for item in patterns))
+        explained = removed_tests.explained
+        self.assertTrue(explained("demo", "case", None, declared("demo::x::tests::case")))
+        self.assertTrue(explained("demo", "case", None, declared("demo::x::*")))
+        self.assertFalse(explained("demo", "case", None, declared("demo::*")))
+        self.assertFalse(explained("demo", "case", None, declared("demo::x::other")))
+        self.assertFalse(explained("demo", "case", None, declared("demo::x::{case,other}")))
+
     def test_pull_request_runs_check_removed_tests_against_their_base(self):
         workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-plugin-release.yml").read_text())
         steps = workflow["jobs"]["unica-ci"]["steps"]

@@ -822,6 +822,10 @@ fn project_health_git_ignore_rejects_host_identity_collisions() {
     let repository = TempDir::new().unwrap();
     let repository_identity = normalize_path_identity(repository.path()).unwrap();
     if unica_workspace::paths::host_filesystem_case_sensitive(&repository_identity).unwrap() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::CaseInsensitiveFilesystem,
+            "identity collisions exist only on a case-insensitive volume",
+        );
         return;
     }
     let runner = SequenceRunner::outputs(Vec::new());
@@ -1464,10 +1468,11 @@ fn project_health_git_parent_repository_uses_tracked_portable_ignore() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "host capability: Windows file names cannot contain a newline"
+)]
 fn project_health_git_discovers_repository_root_containing_newline() {
-    if std::path::MAIN_SEPARATOR == '\\' {
-        return;
-    }
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("repo\nname");
     fs::create_dir_all(root.join("src")).unwrap();

@@ -330,7 +330,9 @@ CAPABILITY_SKIP_REASON = re.compile(r"host capability (?P<capability>[a-z0-9-]+)
 
 
 def capability_environment(destination: Path, base: dict[str, str] | None = None) -> dict[str, str]:
-    directory = destination / "capability-skips"
+    # Absolute: nextest runs each test in its own package directory, where a
+    # path relative to the runner's checkout names nothing.
+    directory = (destination / "capability-skips").resolve()
     directory.mkdir(parents=True, exist_ok=True)
     return {**(base if base is not None else os.environ), HOST_CAPABILITY_SKIPS_ENV: str(directory)}
 
