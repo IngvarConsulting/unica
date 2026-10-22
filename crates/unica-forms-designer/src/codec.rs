@@ -1461,6 +1461,7 @@ pub fn parse_form_info_xml(
         base_form_version: base_form
             .map(|node| node.attribute("version").unwrap_or("").to_string()),
         support,
+        support_details: None,
         properties,
         events: event_evidence.events,
         auto_command_bar,
