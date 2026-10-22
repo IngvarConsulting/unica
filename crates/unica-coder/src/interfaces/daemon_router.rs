@@ -12,7 +12,8 @@ use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use unica_daemon::client_v5::{
-    V5DaemonClient, V5DaemonProcessOwner, V5TaskExchangeError, V5TransportError,
+    TaskObservationStage, TaskObservationTimer, V5DaemonClient, V5DaemonProcessOwner,
+    V5TaskExchangeError, V5TransportError,
 };
 use unica_daemon::protocol_v5::{V5DaemonErrorCode, V5InvocationRequest, V5ServerResponse};
 use unica_execution::invocation::{
@@ -224,16 +225,27 @@ fn build_router(
             let mut peer = task_peer(&wait_client, cutoff)?;
             // The daemon wait shrinks by what connect and handshake already spent
             // and by the response margin; the cutoff itself never moves.
-            let interrupt = peer
-                .observation_interrupt_handle()
-                .map_err(|_| V5TaskExchangeError::Transport)?;
+            let control_timer = TaskObservationTimer::start(cutoff);
+            let interrupt = peer.observation_interrupt_handle().map_err(|_| {
+                V5TaskExchangeError::ObservedTransport(control_timer.failed(
+                    TaskObservationStage::BindControl,
+                    Instant::now(),
+                    Some(&peer.control_endpoint()),
+                ))
+            })?;
             cancellation
                 .bind_control(Arc::new(move || {
                     interrupt
                         .interrupt()
                         .map_err(|error| ControlFailure::BeforeSend(error.to_string()))
                 }))
-                .map_err(|_| V5TaskExchangeError::Transport)?;
+                .map_err(|_| {
+                    V5TaskExchangeError::ObservedTransport(control_timer.failed(
+                        TaskObservationStage::BindControl,
+                        Instant::now(),
+                        Some(&peer.control_endpoint()),
+                    ))
+                })?;
             let bounded_wait_ms = bounded_wait_ms(wait_ms, cutoff, Instant::now());
             peer.wait_task_before(task_id, bounded_wait_ms, cutoff)
         });
@@ -254,12 +266,21 @@ fn task_peer(
     client: &V5DaemonClient,
     cutoff: Instant,
 ) -> Result<V5DaemonProcessOwner, V5TaskExchangeError> {
+    let timer = TaskObservationTimer::start(cutoff);
     if Instant::now() >= cutoff {
-        return Err(V5TaskExchangeError::Transport);
+        return Err(V5TaskExchangeError::ObservedTransport(timer.failed(
+            TaskObservationStage::AcquirePeer,
+            Instant::now(),
+            None,
+        )));
     }
-    client
-        .connect_peer_before(cutoff)
-        .map_err(V5TaskExchangeError::from)
+    client.connect_peer_before(cutoff).map_err(|_| {
+        V5TaskExchangeError::ObservedTransport(timer.failed(
+            TaskObservationStage::AcquirePeer,
+            Instant::now(),
+            None,
+        ))
+    })
 }
 
 /// `unica.task.result` gets its own cutoff, derived once from the moment the
@@ -279,7 +300,7 @@ pub(super) fn wait_transport_cutoff(
     requested_cutoff.min(deadline.transport_cutoff())
 }
 
-fn bounded_wait_ms(requested_wait_ms: u64, cutoff: Instant, now: Instant) -> u64 {
+pub(super) fn bounded_wait_ms(requested_wait_ms: u64, cutoff: Instant, now: Instant) -> u64 {
     let remaining = cutoff
         .saturating_duration_since(now)
         .saturating_sub(RESPONSE_SERIALIZATION_MARGIN);
@@ -2025,8 +2046,23 @@ mod tests {
             ))
         );
         assert_eq!(unexpected, Err(V5TaskExchangeError::UnexpectedResponse));
-        assert_eq!(closed, Err(V5TaskExchangeError::Transport));
-        assert_eq!(past, Err(V5TaskExchangeError::Transport));
+        let Err(V5TaskExchangeError::ObservedTransport(closed)) = closed else {
+            panic!("a closed response must retain its transport stage");
+        };
+        assert_eq!(
+            closed.stage,
+            unica_daemon::client_v5::TaskObservationStage::ReadResponse
+        );
+        assert!(closed.endpoint_generation_hash.is_some());
+        let Err(V5TaskExchangeError::ObservedTransport(past)) = past else {
+            panic!("an expired admission must retain its transport stage");
+        };
+        assert_eq!(
+            past.stage,
+            unica_daemon::client_v5::TaskObservationStage::AcquirePeer
+        );
+        assert!(past.cutoff_expired);
+        assert!(past.endpoint_generation_hash.is_none());
     }
 
     #[test]

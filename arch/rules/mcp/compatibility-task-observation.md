@@ -11,6 +11,12 @@ check:
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_get_and_cancel_do_not_replace_open_frontend_cutoff_with_125ms
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_get_and_cancel_share_one_absolute_cutoff_across_connect_and_exchange
   - crates/unica-daemon/src/client_v5.rs::task_exchange_post_parse_expiry_wins_for_valid_and_malformed_frames
+  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_result_keeps_original_cutoff_after_frontend_admission_delay
+  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_final_projection_obeys_cutoff_and_same_result_remains_recoverable
+  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_final_projection_preserves_exchange_failure_stage_and_generation
+  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_long_producer_survives_7000_and_100_ms_observations_once
+  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_recovers_same_task_after_partial_malformed_and_late_frames
+  - crates/unica-daemon/src/task_observation.rs::observation_exposes_only_bounded_timing_and_generation_digest
 ---
 
 # Compatibility Task возвращает сохранённое состояние без нового исполнения
@@ -36,8 +42,17 @@ check:
 он дополнительно ограничен `waitMs + 125 мс`; более ранний срок хоста
 сильнее. Прошедшее время уменьшает ожидание демона. Поздний ответ
 не публикуется, а его соединение закрывается для повторного использования.
-Срок проверяется и после разбора ответа: если он истёк при разборе,
-корректность полученных данных уже не меняет причину отказа.
+Срок проверяется после разбора ответа и построения `CallToolResult`:
+поздний snapshot не становится своевременным результатом. Уже установленный
+отказ обмена сохраняет исходную причину. Последующее оформление JSON-RPC и
+запись SDK при противодавлении хоста не входят в этот checkpoint.
+
+Новый транспортный отказ чтения содержит безопасные сведения об этапе,
+времени начала, прошедшем времени и истечении cutoff. Если конкретный endpoint
+известен, его поколение обозначается хешем идентификатора экземпляра.
+Подключение и handshake могут обозначаться общей стадией получения peer;
+это не доказательство причины внутри одной из них. Отчёт не содержит
+токен endpoint, argv, приватные пути или сырой текст IO/parse-ошибки.
 
 Проверка сочетает MCP-вызовы с управляемыми обработчиками и сокетами
 с настоящим перезапуском runtime v5 поверх сохранённого состояния.
