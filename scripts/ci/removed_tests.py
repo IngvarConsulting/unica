@@ -131,6 +131,8 @@ class Packages:
     def source(self, path: str) -> str | None:
         """A file's text at the revision; one `git cat-file` reads a package."""
         directory = package_root(path)
+        if directory is None:
+            return None  # `include!("table.inc")` or a path out of the packages
         if directory not in self.sources:
             listing = git(self.root, "ls-tree", "-r", self.revision, "--", directory).splitlines()
             entries = [line.split("\t", 1) for line in listing]

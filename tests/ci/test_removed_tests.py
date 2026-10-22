@@ -45,7 +45,9 @@ class RemovedTestsTests(unittest.TestCase):
         (root / "crates/demo/src/model").mkdir(parents=True)
         (root / "crates/demo/tests").mkdir(parents=True)
         (root / "crates/demo/src/lib.rs").write_text("mod model;\nmod moved;\n#[path = \"../tests/shared.rs\"]\nmod shared;\n")
-        (root / "crates/demo/src/model.rs").write_text("pub mod codec;\n")
+        # Includes that are no Rust file of a package are not read.
+        (root / "crates/demo/src/model.rs").write_text(
+            'pub mod codec;\ninclude!("table.inc");\n#[path = "../../../outside.rs"]\nmod outside;\n')
         (root / "crates/demo/src/model/codec.rs").write_text(LIB)
         (root / "crates/demo/src/moved.rs").write_text("#[test]\nfn travels() {}\n")
         # A file outside `src/` reached through `#[path]`, and one no target reaches.
