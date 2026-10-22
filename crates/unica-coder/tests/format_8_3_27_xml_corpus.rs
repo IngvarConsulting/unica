@@ -14,8 +14,6 @@ use unica_coder::application::{ToolHandler, UnicaApplication};
 mod daemon_teardown;
 #[path = "format_8_3_27_xml_corpus/empty_child_objects.rs"]
 mod empty_child_objects;
-#[path = "format_8_3_27_xml_corpus/new_xml.rs"]
-mod new_xml;
 #[path = "platform/format_8_3_27_xml_corpus.rs"]
 mod platform_support;
 #[path = "format_8_3_27_xml_corpus/template_new_xml.rs"]

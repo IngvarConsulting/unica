@@ -71,6 +71,17 @@ class JunitTranslationTests(unittest.TestCase):
         records = self.module.junit_records(self.junit, runner=runner, profile="all", reasons=reasons)
         return {entry["name"]: entry for entry in records}
 
+    def test_os_conditional_ignore_keeps_its_reason(self) -> None:
+        """Тест, которому нужна возможность ОС, пропущен с причиной на остальных (#1893)."""
+        source = (
+            '#[test]\n#[cfg_attr(not(unix), ignore = "host capability: unix process groups")]\nfn unix_only() {}\n'
+            '#[cfg_attr(any(windows, all(target_os = "macos", not(unix))), ignore = "nested")]\n#[test]\nfn nested() {}\n'
+            '#[cfg_attr(unix, allow(dead_code))]\n#[test]\nfn not_ignored() {}\n'
+        )
+        (self.root / "crates" / "unica-coder" / "src" / "lib.rs").write_text(source, encoding="utf-8")
+        self.assertEqual(self.module.ignore_reasons(self.root),
+                         {"unix_only": "host capability: unix process groups", "nested": "nested"})
+
     def test_statuses_distinguish_product_defect_from_broken_test(self) -> None:
         """JUnit от nextest пишет `<failure>` на любую панику; различаем по тексту."""
         entries = self.entries()

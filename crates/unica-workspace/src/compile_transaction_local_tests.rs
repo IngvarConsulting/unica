@@ -128,16 +128,24 @@ fn replacement_rejects_parent_symlink_swap_after_planning_before_locking() {
         .expect("safe replacement must plan");
 
     fs::rename(&role_dir, &saved_role_dir).unwrap();
-    let Some(link_result) = testing::create_dir_symlink_for_test(&outside_role_dir, &role_dir)
-    else {
-        fs::rename(&saved_role_dir, &role_dir).unwrap();
-        fs::remove_dir_all(root).unwrap();
-        return;
-    };
-    if link_result.is_err() {
-        fs::rename(&saved_role_dir, &role_dir).unwrap();
-        fs::remove_dir_all(root).unwrap();
-        return;
+    // Only an explicit privilege refusal skips; any other link error fails.
+    match crate::platform::testing::create_directory_link_fixture_for_test(
+        &outside_role_dir,
+        &role_dir,
+    )
+    .expect("create a directory link fixture")
+    {
+        crate::platform::testing::FileLinkFixtureOutcome::Created => {}
+        crate::platform::testing::FileLinkFixtureOutcome::Unsupported
+        | crate::platform::testing::FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            fs::rename(&saved_role_dir, &role_dir).unwrap();
+            fs::remove_dir_all(root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a directory link needs the symlink privilege",
+            );
+            return;
+        }
     }
 
     let error = transaction
@@ -180,16 +188,24 @@ fn transaction_rejects_cache_create_parent_symlink_swap_before_touching_either_t
         .expect("cache creation must plan");
 
     fs::rename(&build_dir, &saved_build_dir).unwrap();
-    let Some(link_result) = testing::create_dir_symlink_for_test(&outside_build_dir, &build_dir)
-    else {
-        fs::rename(&saved_build_dir, &build_dir).unwrap();
-        fs::remove_dir_all(root).unwrap();
-        return;
-    };
-    if link_result.is_err() {
-        fs::rename(&saved_build_dir, &build_dir).unwrap();
-        fs::remove_dir_all(root).unwrap();
-        return;
+    // Only an explicit privilege refusal skips; any other link error fails.
+    match crate::platform::testing::create_directory_link_fixture_for_test(
+        &outside_build_dir,
+        &build_dir,
+    )
+    .expect("create a directory link fixture")
+    {
+        crate::platform::testing::FileLinkFixtureOutcome::Created => {}
+        crate::platform::testing::FileLinkFixtureOutcome::Unsupported
+        | crate::platform::testing::FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            fs::rename(&saved_build_dir, &build_dir).unwrap();
+            fs::remove_dir_all(root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a directory link needs the symlink privilege",
+            );
+            return;
+        }
     }
 
     let error = transaction
@@ -682,6 +698,10 @@ fn publication_cleanup_retry_preserves_a_same_name_file_replacement() {
 #[test]
 fn publication_cleanup_retry_does_not_treat_a_missing_route_as_cleaned() {
     if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
     use super::super::single_file_publisher::{

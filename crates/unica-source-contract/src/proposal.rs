@@ -164,6 +164,22 @@ pub struct BorrowPlanDetail {
     pub protected_overrides: Vec<String>,
 }
 
+/// Key of one family's section of plan details in the apply answer. A family
+/// declares its key as a constant; the product composition registers every
+/// key and publishes each non-empty section under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlanDetailKey(&'static str);
+
+impl PlanDetailKey {
+    pub const fn new(key: &'static str) -> Self {
+        Self(key)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PlannedApplyEffects {
     events: Vec<DomainEvent>,
@@ -176,9 +192,38 @@ pub struct PlannedApplyEffects {
     /// forced removal names the files that keep referring to the object.
     warnings: Vec<serde_json::Value>,
     borrowing: Vec<BorrowPlanDetail>,
+    /// Facts a family reports about the final plan, by the family's key. The
+    /// contract carries the section without knowing its rows.
+    details: std::collections::BTreeMap<PlanDetailKey, Vec<serde_json::Value>>,
 }
 
 impl PlannedApplyEffects {
+    /// Replaces the family's section with its typed rows; an empty section is
+    /// not published. Rows are serialized here and nowhere else.
+    pub fn set_details<T: serde::Serialize>(
+        &mut self,
+        key: PlanDetailKey,
+        rows: &[T],
+    ) -> Result<(), serde_json::Error> {
+        let rows = rows
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        if rows.is_empty() {
+            self.details.remove(&key);
+        } else {
+            self.details.insert(key, rows);
+        }
+        Ok(())
+    }
+
+    /// Non-empty sections in key order.
+    pub fn details(&self) -> impl Iterator<Item = (PlanDetailKey, &[serde_json::Value])> {
+        self.details
+            .iter()
+            .map(|(key, rows)| (*key, rows.as_slice()))
+    }
+
     pub fn borrowing(&self) -> &[BorrowPlanDetail] {
         &self.borrowing
     }
@@ -480,5 +525,28 @@ mod event_effect_tests {
         assert_eq!(effects.events().len(), 2);
         assert_eq!(effects.events()[0].kind, DomainEventKind::ModuleChanged);
         assert_eq!(effects.events()[1].kind, DomainEventKind::FormChanged);
+    }
+
+    #[test]
+    fn plan_details_keep_key_order_replace_a_section_and_drop_an_empty_one() {
+        const LATER: PlanDetailKey = PlanDetailKey::new("zSection");
+        const EARLIER: PlanDetailKey = PlanDetailKey::new("aSection");
+        let mut effects = PlannedApplyEffects::default();
+        effects.set_details(LATER, &[1, 2]).unwrap();
+        effects.set_details(EARLIER, &["first"]).unwrap();
+        effects.set_details(EARLIER, &["replaced"]).unwrap();
+        let sections = effects
+            .details()
+            .map(|(key, rows)| (key.as_str(), rows.to_vec()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sections,
+            vec![
+                ("aSection", vec![serde_json::json!("replaced")]),
+                ("zSection", vec![serde_json::json!(1), serde_json::json!(2)]),
+            ]
+        );
+        effects.set_details::<u8>(LATER, &[]).unwrap();
+        assert_eq!(effects.details().count(), 1);
     }
 }

@@ -88,11 +88,14 @@ class FileIoMethodsTests(unittest.TestCase):
         self.assertEqual(packages["unica-address"], "crates/unica-address")
         self.assertNotIn("unica-workspace", packages)
 
-    def test_lint_job_runs_the_pass(self):
+    def test_gate_clippy_runs_the_pass(self):
+        # Gate and pull request lint both run `clippy.sh all`.
         workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-plugin-release.yml").read_text())
-        steps = workflow["jobs"]["lint-rust-platforms"]["steps"]
-        runs = [step.get("run", "") for step in steps]
-        self.assertTrue(any("scripts/ci/check-file-io-methods.py" in run for run in runs))
+        runs = [step.get("run", "") for job in ("unica-ci", "pr-checks") for step in workflow["jobs"][job]["steps"]]
+        self.assertTrue(any("scripts/ci/clippy.sh all" in run for run in runs))
+        script = (REPO_ROOT / "scripts/ci/clippy.sh").read_text(encoding="utf-8")
+        self.assertIn('"$0" file-io || status=$?', script)
+        self.assertIn("python3 scripts/ci/check-file-io-methods.py", script)
 
 
 if __name__ == "__main__":

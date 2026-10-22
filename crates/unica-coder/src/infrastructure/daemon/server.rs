@@ -4232,6 +4232,138 @@ pub(crate) mod actor_capacity_tests {
         assert!(output.status.success(), "{stdout}\n{stderr}");
     }
 
+    /// #406: канонический `run` создания базы в рабочей области без
+    /// поставляемого раннера отвечает одним типизированным отказом и не
+    /// раскрывает ни путь рабочей области, ни строку подключения из
+    /// `v8project.yaml`, ни значения, переданные в аргументах.
+    #[test]
+    fn canonical_infobase_create_refusal_discloses_no_private_input() {
+        const CHILD: &str = "UNICA_ISSUE_406_RUN_CHILD";
+        const ROOT: &str = "UNICA_ISSUE_406_RUN_ROOT";
+        const WORKSPACE_SENTINEL: &str = "unica-issue-406-private-workspace";
+        const CWD_SENTINEL: &str = "/missing/unica-issue-406-private-cwd";
+        const CONNECTION_SENTINEL: &str = "File=/private/issue-406-sensitive.ib";
+        if std::env::var_os(CHILD).is_some() {
+            let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let workspace = std::fs::canonicalize(root.join(WORKSPACE_SENTINEL)).unwrap();
+            let runtime = bootstrap_runtime();
+            let call = |arguments: serde_json::Value| -> DomainResult {
+                let request = InvocationRequest::new(
+                    ToolIdentity::Run,
+                    arguments,
+                    workspace.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                match runtime.bind(request) {
+                    Ok(bound) => match bound.prepare() {
+                        Ok(prepared) => prepared.execute(CancellationToken::new()).unwrap(),
+                        Err(result) => *result,
+                    },
+                    Err(V5CanonicalPrepareError::Direct(result))
+                    | Err(V5CanonicalPrepareError::Rejected(result)) => *result,
+                    Err(error) => panic!("{error:?}"),
+                }
+            };
+            // Файлы и каталоги: пустой каталог, созданный отказом, тоже изменение.
+            let image = |root: &std::path::Path| {
+                fn directories(
+                    root: &std::path::Path,
+                    current: &std::path::Path,
+                    found: &mut std::collections::BTreeSet<std::path::PathBuf>,
+                ) {
+                    for entry in std::fs::read_dir(current).unwrap() {
+                        let entry = entry.unwrap();
+                        if entry.file_type().unwrap().is_dir() {
+                            found.insert(entry.path().strip_prefix(root).unwrap().to_path_buf());
+                            directories(root, &entry.path(), found);
+                        }
+                    }
+                }
+                let mut found = std::collections::BTreeSet::new();
+                directories(root, root, &mut found);
+                (unica_workspace::test_support::tree_snapshot(root), found)
+            };
+            let before = image(&workspace);
+            for (case, arguments, code) in [
+                (
+                    "configured connection",
+                    serde_json::json!({"op":"infobase.create","args":{},"dryRun":false}),
+                    "provider_unavailable",
+                ),
+                (
+                    "private arguments",
+                    serde_json::json!({"op":"infobase.create","args":{
+                        "cwd": CWD_SENTINEL,
+                        "connection": CONNECTION_SENTINEL
+                    },"dryRun":false}),
+                    "bad_value",
+                ),
+            ] {
+                let refused = call(arguments);
+                assert!(!refused.ok, "{case}: {refused:?}");
+                assert_eq!(refused.diagnostics.len(), 1, "{case}: {refused:?}");
+                assert_eq!(refused.diagnostics[0]["code"], code, "{case}: {refused:?}");
+                if code == "provider_unavailable" {
+                    assert_eq!(
+                        refused.diagnostics[0]["detailCode"], "provider_absent",
+                        "{case}: {refused:?}"
+                    );
+                }
+                let serialized = serde_json::to_string(&refused).unwrap();
+                for private in [
+                    WORKSPACE_SENTINEL,
+                    CWD_SENTINEL,
+                    CONNECTION_SENTINEL,
+                    "issue-406-sensitive",
+                ] {
+                    assert!(
+                        !serialized.contains(private),
+                        "{case} discloses {private}: {serialized}"
+                    );
+                }
+            }
+            assert_eq!(image(&workspace), before);
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join(WORKSPACE_SENTINEL);
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            format!(
+                "format: DESIGNER\ninfobase:\n  connection: '{CONNECTION_SENTINEL}'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n"
+            ),
+        )
+        .unwrap();
+        // Поставка без раннера: манифест есть, инструментов в нём нет.
+        let plugin = root.path().join("plugin");
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        std::fs::write(
+            plugin.join("third-party/manifest.json"),
+            serde_json::json!({"schemaVersion": 2, "tools": []}).to_string(),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infrastructure::daemon::server::actor_capacity_tests::canonical_infobase_create_refusal_discloses_no_private_input",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(ROOT, root.path())
+            .env("UNICA_PLUGIN_ROOT", &plugin)
+            .env_remove("UNICA_ARTIFACT_CACHE")
+            .env_remove("UNICA_RUNTIME_MANIFEST")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("running 1 test"), "{stdout}\n{stderr}");
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+    }
+
     fn canonical_delivery_fixture_binary() -> (std::path::PathBuf, String) {
         use sha2::{Digest, Sha256};
 
@@ -6722,40 +6854,52 @@ fn main() {
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
         audit_ordered_search_names(include_str!("ordered_search_names.rs"))
             .unwrap_or_else(|error| panic!("{error}"));
-        actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration();
-        ordered_search_names_audit_rejects_ambient_or_foreign_listing();
-        actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc();
-        actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator();
-        actor_read_source_capability_ast_audit_rejects_split_sibling_visibility();
-        actor_read_source_capability_ast_audit_rejects_multiline_derive_clone();
-        actor_read_source_capability_ast_audit_rejects_multiline_manual_clone();
-        actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl();
-        actor_read_source_capability_ast_audit_rejects_macro_generated_api();
-        actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation();
-        actor_read_source_capability_ast_audit_rejects_opaque_const_expression_macro();
-        actor_read_source_capability_ast_audit_rejects_no_arg_opaque_const_expression_macro();
-        actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros();
-        actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist();
-        actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow();
-        review_audit_rejects_opaque_attribute_macro_invocation();
-        actor_read_source_capability_ast_audit_rejects_custom_derive_macro();
-        actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes();
-        actor_read_source_capability_procedural_macros_can_reopen_sibling_api();
-        actor_read_source_capability_ast_audit_rejects_type_alias_impl();
-        actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl();
-        actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory();
-        actor_read_source_capability_ast_audit_rejects_nested_production_factory();
-        actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape();
-        actor_read_source_capability_ast_audit_rejects_associated_type_escape();
-        actor_read_source_capability_ast_audit_rejects_item_field_escape();
-        actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile();
-        actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind();
-        actor_read_source_capability_ast_audit_rejects_replenished_deadline();
-        actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure();
-        actor_read_source_capability_ast_audit_rejects_substituted_construction_fields();
-        actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution();
-        actor_read_source_capability_issuer_privacy_is_enforced_by_rustc();
-        actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope();
+        // Проверки независимы и в сумме идут секунды: каждая разбирает
+        // исходник заново, часть зовёт rustc. Параллельно, с той же паникой (#1920).
+        let checks: [fn(); 34] = [
+            actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration,
+            ordered_search_names_audit_rejects_ambient_or_foreign_listing,
+            actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc,
+            actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator,
+            actor_read_source_capability_ast_audit_rejects_split_sibling_visibility,
+            actor_read_source_capability_ast_audit_rejects_multiline_derive_clone,
+            actor_read_source_capability_ast_audit_rejects_multiline_manual_clone,
+            actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl,
+            actor_read_source_capability_ast_audit_rejects_macro_generated_api,
+            actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation,
+            actor_read_source_capability_ast_audit_rejects_opaque_const_expression_macro,
+            actor_read_source_capability_ast_audit_rejects_no_arg_opaque_const_expression_macro,
+            actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros,
+            actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist,
+            actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow,
+            review_audit_rejects_opaque_attribute_macro_invocation,
+            actor_read_source_capability_ast_audit_rejects_custom_derive_macro,
+            actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes,
+            actor_read_source_capability_procedural_macros_can_reopen_sibling_api,
+            actor_read_source_capability_ast_audit_rejects_type_alias_impl,
+            actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl,
+            actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory,
+            actor_read_source_capability_ast_audit_rejects_nested_production_factory,
+            actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape,
+            actor_read_source_capability_ast_audit_rejects_associated_type_escape,
+            actor_read_source_capability_ast_audit_rejects_item_field_escape,
+            actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile,
+            actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind,
+            actor_read_source_capability_ast_audit_rejects_replenished_deadline,
+            actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure,
+            actor_read_source_capability_ast_audit_rejects_substituted_construction_fields,
+            actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution,
+            actor_read_source_capability_issuer_privacy_is_enforced_by_rustc,
+            actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope,
+        ];
+        std::thread::scope(|scope| {
+            let running: Vec<_> = checks.iter().map(|check| scope.spawn(check)).collect();
+            for check in running {
+                if let Err(panic) = check.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        });
     }
 
     #[test]
@@ -17885,7 +18029,14 @@ mod finite_deadline_guard {
                 if is_test_source(&relative) {
                     continue;
                 }
-                let calls = finite_deadline_calls(&std::fs::read_to_string(&path).unwrap());
+                let source = std::fs::read_to_string(&path).unwrap();
+                // Вызов возможен только через `ProviderDeadline` или его
+                // псевдоним из `use` того же файла: без этого имени разбирать
+                // файл нечего, а разбор всего workspace стоил секунды (#1920).
+                if !source.contains("ProviderDeadline") {
+                    continue;
+                }
+                let calls = finite_deadline_calls(&source);
                 if calls > 0 {
                     found.insert(relative, calls);
                 }

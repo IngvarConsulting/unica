@@ -1,0 +1,173 @@
+{
+  "id": "S-1586-type-size-limit",
+  "issue": 1586,
+  "area": "Метаданные",
+  "task": "Получить явную причину ограничения длинного типа из 20 ссылок в коллекции и детали, затем прочитать полный меньший тип по выданному адресу",
+  "workspace": "tests/fixtures/acceptance/workspace-type-size",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "long_at": {
+          "pointer": "/data/items/0/at"
+        },
+        "type_limit": {
+          "pointer": "/data/items/0/limits/0"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/limits/0",
+          "contains": "2048"
+        },
+        {
+          "pointer": "/data/items/0/limits/0",
+          "contains": "type"
+        },
+        {
+          "pointer": "/data/items/0/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "81de851c3c01b8b1d360a6c0fcd9df12c1ffbf4a1e3d75247b81057b219ee81a"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер01",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер02",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер03",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер04",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер05",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер06",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер07",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер08",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер09",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер10",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер11",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер12",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер13",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер14",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер15",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер16",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер17",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер18",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер19",
+            "cfg:DocumentRef.ДокументОснованиеДвиженияНомер20"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.long_at"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "eq": "$capture.type_limit"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Long"
+        },
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "81de851c3c01b8b1d360a6c0fcd9df12c1ffbf4a1e3d75247b81057b219ee81a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Dimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "small_at": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/type",
+          "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер01\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер02\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер03\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер04\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер05\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер06\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер07\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер08\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер09\"}],\"mutationCapability\":\"editable\"}"
+        },
+        {
+          "pointer": "/data/items/0/limits",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "81de851c3c01b8b1d360a6c0fcd9df12c1ffbf4a1e3d75247b81057b219ee81a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.small_at"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер01\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер02\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер03\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер04\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер05\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер06\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер07\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер08\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер09\"}],\"mutationCapability\":\"editable\"}"
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "81de851c3c01b8b1d360a6c0fcd9df12c1ffbf4a1e3d75247b81057b219ee81a"
+        }
+      ]
+    }
+  ]
+}

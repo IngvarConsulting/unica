@@ -2,7 +2,7 @@
   "id": "S-1721-xdto-agent",
   "issue": 1721,
   "area": "XDTO",
-  "task": "Агент Codex обнаруживает пакет, читает contextual Can и публикует все пять существующих XDTO операций, включая два site property.add и escaped leaf. Saved tokens, independent readbacks, readability check и full literal XML/source maps доказывают результат и сохранность descriptor/Configuration/соседнего пакета. Проверка платформой и отдельный XDTO validator не заявляются. Агент отдельно повторяет unica.view обоих удалённых адресов и получает структурированный not_found.",
+  "task": "Агент Codex обнаруживает пакет, читает contextual Can и публикует все пять существующих XDTO операций, включая два site property.add и escaped leaf. Saved tokens, independent readbacks, check пакета валидатором xdto и full literal XML/source maps доказывают результат и сохранность descriptor/Configuration/соседнего пакета. Проверка платформой не заявляется: находки xdto — ограничения профиля Unica. Агент отдельно повторяет unica.view обоих удалённых адресов и получает структурированный not_found.",
   "workspace": "tests/fixtures/acceptance/workspace-xdto-contract",
   "profile": "agent-evaluation",
   "driver": "codex",
@@ -415,8 +415,10 @@
       "expect": [
         "ok"
       ],
-      "status": "readable",
-      "validators": [],
+      "status": "passed",
+      "validators": [
+        "xdto"
+      ],
       "fileAssertions": [
         {
           "path": "src/Configuration.xml",

@@ -2723,6 +2723,10 @@ pub(crate) mod tests {
     #[test]
     fn retained_create_stage_source_swap_leaves_no_destination_mutation_and_loses_neither_file() {
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let root = temp_root("stage-source-swap");
@@ -2766,6 +2770,10 @@ pub(crate) mod tests {
     #[test]
     fn retained_rollback_restore_recovery_swap_never_reports_a_different_inode_restored() {
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let root = temp_root("restore-recovery-swap");
@@ -2812,6 +2820,10 @@ pub(crate) mod tests {
     #[test]
     fn retained_rollback_published_cleanup_never_unlinks_a_concurrent_child() {
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let root = temp_root("published-cleanup-swap");
@@ -2849,6 +2861,10 @@ pub(crate) mod tests {
     #[test]
     fn retained_success_recovery_cleanup_never_unlinks_a_concurrent_child() {
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let root = temp_root("recovery-cleanup-swap");
@@ -3634,6 +3650,10 @@ pub(crate) mod tests {
     #[test]
     fn retained_private_directory_source_swap_never_publishes_or_deletes_the_foreign_directory() {
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let root = temp_root("missing-parent-private-source-swap");
@@ -3773,6 +3793,10 @@ pub(crate) mod tests {
     #[test]
     fn retained_directory_rollback_never_unlinks_a_public_name_swapped_after_validation() {
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let root = temp_root("missing-parent-public-cleanup-swap");

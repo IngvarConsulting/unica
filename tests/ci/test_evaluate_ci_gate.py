@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import os
+import sys
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "evaluate-ci-gate.py"
@@ -51,6 +57,9 @@ def source_results() -> dict[str, str]:
     return {
         **ALWAYS_SUCCESS,
         "build-python-product": "fixture-default",
+        # Заполняются по событию и раннерам в `evaluate`, если тест не задал их сам.
+        "rust-medium": "fixture-default",
+        "os-jobs": "fixture-default",
         "test-rust-platforms": "skipped",
         "lint-rust-platforms": "skipped",
         "warm-rust-cache": "skipped",
@@ -88,9 +97,19 @@ def evaluate(module, event, ref, outputs, results, **kwargs):
     else:
         matrix = CODE_MATRIX
     kwargs.setdefault("python_matrix", json.dumps(matrix))
+    main_push = event == "push" and ref == "refs/heads/main"
+    if "runners" not in kwargs:
+        runners = ["ubuntu-latest"] if kwargs["gate_profile"] == "pr" else module.PROFILE_RUNNERS.get(kwargs["gate_profile"])
+        kwargs["runners"] = json.dumps(runners)
     if results.get("build-python-product") == "fixture-default":
-        product_needed = event != "pull_request" and not (event == "push" and ref == "refs/heads/main") and outputs.get("docs_only") != "true"
+        product_needed = event != "pull_request" and not main_push and outputs.get("docs_only") != "true"
         results = {**results, "build-python-product": "success" if product_needed else "skipped"}
+    if results.get("os-jobs") == "fixture-default":
+        other_runners = kwargs["runners"] is not None and json.loads(kwargs["runners"]) not in (None, ["ubuntu-latest"])
+        results = {**results, "os-jobs": "success" if other_runners and not main_push else "skipped"}
+    if results.get("rust-medium") == "fixture-default":
+        rust_ran = event == "pull_request" and results.get("test-rust-platforms") not in (None, "skipped")
+        results = {**results, "rust-medium": "success" if rust_ran else "skipped"}
     return module.evaluate_gate(event, ref, outputs, results, **kwargs)
 
 
@@ -360,10 +379,12 @@ class EvaluateCiGateTests(unittest.TestCase):
             "lint-rust-platforms": "success",
         }
 
-        evaluation = evaluate(module, "pull_request", "refs/pull/155/merge", outputs, results)
+        evaluation = evaluate(module, "pull_request", "refs/pull/155/merge", outputs, results,
+                              runners=json.dumps(["ubuntu-latest", "macos-14"]))
 
-        self.assertTrue(evaluation.ok)
+        self.assertTrue(evaluation.ok, evaluation.unexpected)
         self.assertEqual("full", evaluation.contour)
+        self.assertEqual("success", evaluation.expected["os-jobs"])
         self.assertEqual(
             {
                 "build-python-product",
@@ -588,6 +609,295 @@ class BranchPushGateTests(unittest.TestCase):
         evaluation = evaluate(module, "push", "refs/heads/release-v0.12", outputs, source_results())
 
         self.assertFalse(evaluation.ok)
+
+
+ALL_ENABLED = {name: True for name in OUTPUT_NAMES}
+QUEUE_RUNNERS = json.dumps(["ubuntu-latest", "macos-14"])
+LINUX_ONLY = json.dumps(["ubuntu-latest"])
+
+
+def code_results(**overrides: str) -> dict[str, str]:
+    return {**source_results(), "test-rust-platforms": "success", "lint-rust-platforms": "success", **overrides}
+
+
+def load_lanes_module():
+    sys.path.insert(0, str(MODULE_PATH.parent))
+    try:
+        import ci_rust_lanes
+    finally:
+        sys.path.remove(str(MODULE_PATH.parent))
+    return ci_rust_lanes
+
+
+def steps(outcomes: dict[str, str], outputs: dict[str, str] | None = None) -> dict:
+    document = {step: {"outcome": outcome, "conclusion": outcome, "outputs": {}} for step, outcome in outcomes.items()}
+    if outputs is not None:
+        document.setdefault("classify", {"outcome": "success", "conclusion": "success", "outputs": {}})["outputs"] = outputs
+    return document
+
+
+def queue_steps() -> dict[str, str]:
+    """Шаги `Unica CI` кодовой очереди: всё обязательное прошло, medium PR и прогрев пропущены."""
+    load = load_gate_module()
+    outcomes = {step: "success" for ids in load.STEP_GROUPS.values() for step in ids}
+    outcomes.update({"rust-medium": "skipped", "removed-tests": "skipped", "warm": "skipped", "lint-job": "skipped",
+                     "pr-python": "skipped"})
+    return outcomes
+
+
+class RunnerTopologyGateTests(unittest.TestCase):
+    """Запись очереди — Linux `Unica CI` и джоба macOS; PR — одна Linux-джоба."""
+
+    def test_queue_requires_the_macos_job_and_rejects_a_linux_only_runner_list(self) -> None:
+        gate = load_gate_module()
+        outputs = classification(**ALL_ENABLED)
+        ok = evaluate(gate, "merge_group", "refs/heads/queue", outputs, code_results(), runners=QUEUE_RUNNERS)
+        self.assertTrue(ok.ok, ok.unexpected)
+        self.assertEqual("success", ok.expected["os-jobs"])
+        for outcome in ("skipped", "failure", "cancelled", "missing", "partial"):
+            with self.subTest(outcome=outcome):
+                failed = evaluate(gate, "merge_group", "refs/heads/queue", outputs, code_results(**{"os-jobs": outcome}),
+                                  runners=QUEUE_RUNNERS)
+                self.assertEqual((outcome, "success"), failed.unexpected["os-jobs"])
+        for runners in (LINUX_ONLY, json.dumps(["ubuntu-latest", "macos-14", "windows-latest"]), "[]", "not json", None):
+            with self.subTest(runners=runners):
+                narrowed = evaluate(gate, "merge_group", "refs/heads/queue", outputs,
+                                    code_results(**{"os-jobs": "success"}), runners=runners)
+                self.assertFalse(narrowed.ok)
+                self.assertIn("runners", narrowed.unexpected)
+
+    def test_pull_request_waits_for_macos_only_with_ci_full(self) -> None:
+        gate = load_gate_module()
+        outputs = classification(rust_changed=True, release_required=True)
+        plain = evaluate(gate, "pull_request", "refs/pull/1/merge", outputs, code_results(**{"os-jobs": "skipped"}),
+                         runners=LINUX_ONLY)
+        self.assertTrue(plain.ok, plain.unexpected)
+        self.assertEqual("skipped", plain.expected["os-jobs"])
+        full = evaluate(gate, "pull_request", "refs/pull/1/merge", outputs, code_results(**{"os-jobs": "success"}),
+                        runners=QUEUE_RUNNERS)
+        self.assertTrue(full.ok, full.unexpected)
+        self.assertEqual("success", full.expected["os-jobs"])
+        # Метка `ci:full` без исполненной джобы macOS — не зелёный гейт.
+        lost = evaluate(gate, "pull_request", "refs/pull/1/merge", outputs, code_results(**{"os-jobs": "skipped"}),
+                        runners=QUEUE_RUNNERS)
+        self.assertEqual(("skipped", "success"), lost.unexpected["os-jobs"])
+
+    def test_main_push_never_waits_for_another_runner(self) -> None:
+        gate = load_gate_module()
+        outputs = classification(rust_changed=True, release_required=True)
+        for runners in (QUEUE_RUNNERS, LINUX_ONLY, None):
+            with self.subTest(runners=runners):
+                evaluation = evaluate(gate, "push", "refs/heads/main", outputs,
+                                      {**source_results(), "test-python": "skipped", "os-jobs": "skipped"}, runners=runners)
+                self.assertTrue(evaluation.ok, evaluation.unexpected)
+                self.assertEqual("skipped", evaluation.expected["os-jobs"])
+        ran = evaluate(gate, "push", "refs/heads/main", outputs,
+                       {**source_results(), "test-python": "skipped", "os-jobs": "success"}, runners=QUEUE_RUNNERS)
+        self.assertEqual(("success", "skipped"), ran.unexpected["os-jobs"])
+
+    def test_affected_medium_is_required_only_in_a_pull_request_with_rust(self) -> None:
+        gate = load_gate_module()
+        rust = classification(rust_changed=True, release_required=True)
+        request = evaluate(gate, "pull_request", "refs/pull/1/merge", rust, code_results(**{"rust-medium": "skipped"}))
+        self.assertEqual(("skipped", "success"), request.unexpected["rust-medium"])
+        source = evaluate(gate, "pull_request", "refs/pull/1/merge", classification(plugin_content_changed=True),
+                          {**source_results(), "rust-medium": "success"})
+        self.assertEqual(("success", "skipped"), source.unexpected["rust-medium"])
+        queue = evaluate(gate, "merge_group", "refs/heads/queue", classification(**ALL_ENABLED),
+                         code_results(**{"rust-medium": "success"}), runners=QUEUE_RUNNERS)
+        self.assertEqual(("success", "skipped"), queue.unexpected["rust-medium"])
+
+    def test_validation_scope_leaves_the_delivery_tail_to_delivery_ci(self) -> None:
+        gate = load_gate_module()
+        outputs = classification(**ALL_ENABLED)
+        validation_only = {job: result for job, result in code_results().items() if job not in gate.DELIVERY_ONLY}
+        for event, ref in (("workflow_dispatch", "refs/heads/main"), ("push", "refs/tags/v1.0.0")):
+            with self.subTest(event=event):
+                validation = evaluate(gate, event, ref, outputs, validation_only, scope="validation")
+                self.assertTrue(validation.ok, validation.unexpected)
+                self.assertFalse(set(gate.DELIVERY_ONLY) & set(validation.expected))
+                delivery = evaluate(gate, event, ref, outputs, validation_only, scope="delivery")
+                self.assertFalse(delivery.ok)
+                self.assertEqual(("missing", "success"), delivery.unexpected["build-tools"])
+        # A delivery job reported into the validation gate is still an unknown entry.
+        stray = evaluate(gate, "merge_group", "refs/heads/queue", outputs,
+                         {**validation_only, "build-tools": "skipped"}, scope="validation")
+        self.assertIn("build-tools", stray.unexpected)
+
+    def test_profile_runners_match_the_lane_verifier(self) -> None:
+        gate = load_gate_module()
+        lanes = load_lanes_module()
+        for profile, runners in gate.PROFILE_RUNNERS.items():
+            with self.subTest(profile=profile):
+                self.assertEqual(runners, lanes.profile_hosts(profile))
+        self.assertEqual([gate.LINUX], lanes.profile_hosts("pr", full_matrix=False))
+        self.assertEqual(set(gate.PROFILE_RUNNERS), {"pr", "queue", "main", "release", "large"})
+
+
+class StepResultTests(unittest.TestCase):
+    """Записи гейта из исходов шагов `Unica CI` и джоб других ОС."""
+
+    def test_green_steps_give_green_entries(self) -> None:
+        gate = load_gate_module()
+        results = gate.validation_results(steps(queue_steps()), {"Rust (macos-14)": "success"}, "queue")
+        self.assertEqual("success", results["test-rust-platforms"])
+        self.assertEqual("skipped", results["rust-medium"])
+        self.assertEqual("skipped", results["warm-rust-cache"])
+        self.assertEqual("success", results["os-jobs"])
+        self.assertEqual(set(gate.STEP_GROUPS) | {"os-jobs"}, set(results))
+
+    def test_a_step_skipped_inside_a_required_group_is_partial_and_fails_the_gate(self) -> None:
+        gate = load_gate_module()
+        for group, ids in gate.STEP_GROUPS.items():
+            if len(ids) < 2 or group in gate.ALTERNATIVE_GROUPS:
+                continue
+            with self.subTest(group=group):
+                # One step of the group differs from the rest: skipped among
+                # successes, or ran among skips (a PR-only step in the queue).
+                base = queue_steps()
+                outcomes = {**base, ids[-1]: "success" if base[ids[0]] == "skipped" else "skipped"}
+                results = gate.validation_results(steps(outcomes), {"Rust (macos-14)": "success"}, "queue")
+                self.assertEqual("partial", results[group])
+                evaluation = evaluate(gate, "merge_group", "refs/heads/queue", classification(**ALL_ENABLED),
+                                      results, runners=QUEUE_RUNNERS, scope="validation")
+                self.assertFalse(evaluation.ok)
+                self.assertEqual("partial", evaluation.unexpected[group][0])
+
+    def test_clippy_is_the_background_step_or_the_pull_request_lint_job_never_both(self) -> None:
+        gate = load_gate_module()
+        def lint(**outcomes):
+            return gate.validation_results(steps({**queue_steps(), **outcomes}), {"Rust (macos-14)": "success"}, "queue")["lint-rust-platforms"]
+        self.assertEqual("success", lint(clippy="success", **{"lint-job": "skipped"}))
+        self.assertEqual("failure", lint(clippy="skipped", **{"lint-job": "failure"}))
+        self.assertEqual("success", lint(clippy="skipped", **{"lint-job": "success"}))
+        self.assertEqual("skipped", lint(clippy="skipped", **{"lint-job": "skipped"}))
+        self.assertEqual("partial", lint(clippy="success", **{"lint-job": "success"}))
+        self.assertEqual("missing", gate.validation_results(steps({k: v for k, v in queue_steps().items() if k != "lint-job"}),
+                                                            {"Rust (macos-14)": "success"}, "queue")["lint-rust-platforms"])
+
+    def test_python_runs_in_unica_ci_or_in_the_pull_request_job_never_partly_both(self) -> None:
+        gate = load_gate_module()
+        def python(**outcomes):
+            return gate.validation_results(steps({**queue_steps(), **outcomes}), {"Rust (macos-14)": "success"}, "queue")["test-python"]
+        self.assertEqual("success", python())
+        self.assertEqual("success", python(**{"python-plan": "skipped", "python": "skipped", "pr-python": "success"}))
+        self.assertEqual("failure", python(**{"python-plan": "skipped", "python": "skipped", "pr-python": "failure"}))
+        self.assertEqual("partial", python(**{"python-plan": "skipped", "python": "success", "pr-python": "skipped"}))
+        self.assertEqual("partial", python(**{"pr-python": "success"}))
+        self.assertEqual("skipped", python(**{"python-plan": "skipped", "python": "skipped"}))
+
+    def test_a_missing_step_is_missing_not_skipped(self) -> None:
+        gate = load_gate_module()
+        outcomes = queue_steps()
+        del outcomes["verify"]
+        results = gate.validation_results(steps(outcomes), {"Rust (macos-14)": "success"}, "queue")
+        self.assertEqual("missing", results["test-rust-platforms"])
+        absent = gate.validation_results({}, None, "queue")
+        self.assertTrue(all(value == "missing" for key, value in absent.items() if key != "os-jobs"))
+        self.assertEqual("skipped", absent["os-jobs"])
+
+    def test_failure_and_cancellation_win_over_success(self) -> None:
+        gate = load_gate_module()
+        self.assertEqual("failure", gate.combined(["success", "failure", "cancelled"]))
+        self.assertEqual("cancelled", gate.combined(["success", "cancelled"]))
+        self.assertEqual("missing", gate.combined([]))
+        self.assertEqual("missing", gate.combined(["failure", "missing"]))
+
+    def test_windows_failure_is_advisory_only_in_the_large_profile(self) -> None:
+        gate = load_gate_module()
+        jobs = {"Rust (macos-14)": "success", "Rust (windows-latest)": "failure"}
+        self.assertEqual("success", gate.validation_results({}, jobs, "large")["os-jobs"])
+        for profile in ("queue", "main", "release"):
+            with self.subTest(profile=profile):
+                self.assertEqual("failure", gate.validation_results({}, jobs, profile)["os-jobs"])
+        self.assertEqual("failure", gate.validation_results({}, {"Rust (macos-14)": "failure"}, "large")["os-jobs"])
+        # Advisory Windows is accepted whatever it ended with, as long as it ran:
+        # a timeout or cancellation there must not turn the nightly red.
+        for outcome in ("timed_out", "cancelled", "failure"):
+            with self.subTest(outcome=outcome):
+                self.assertEqual("success", gate.validation_results(
+                    {}, {"Rust (macos-14)": "success", "Rust (windows-latest)": outcome}, "large")["os-jobs"])
+        self.assertEqual("missing", gate.validation_results(
+            {}, {"Rust (macos-14)": "success", "Rust (windows-latest)": "missing"}, "large")["os-jobs"])
+        # macOS is never advisory: its timeout fails the nightly too.
+        self.assertNotEqual("success", gate.validation_results(
+            {}, {"Rust (macos-14)": "timed_out", "Rust (windows-latest)": "success"}, "large")["os-jobs"])
+        self.assertEqual("missing", gate.validation_results({}, {}, "queue")["os-jobs"])
+
+
+class GateMainTests(unittest.TestCase):
+    """Точка входа читает окружение workflow в обоих scope."""
+
+    def run_main(self, environment: dict[str, str]) -> tuple[int, str]:
+        gate = load_gate_module()
+        stdout = io.StringIO()
+        with patch.dict(os.environ, environment, clear=True), redirect_stdout(stdout):
+            code = gate.main()
+        return code, stdout.getvalue()
+
+    def test_validation_reads_steps_and_os_jobs_and_publishes_gate_results(self) -> None:
+        outputs = classification(**ALL_ENABLED)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "os-jobs.json").write_text(json.dumps({"Rust (macos-14)": "success"}))
+            output = root / "output"
+            base = {
+                "GATE_SCOPE": "validation", "GITHUB_EVENT_NAME": "merge_group", "GITHUB_REF": "refs/heads/queue",
+                "GATE_PROFILE": "queue", "PYTHON_MATRIX": json.dumps(CODE_MATRIX), "RUNNERS": QUEUE_RUNNERS,
+                "OS_JOBS_FILE": str(root / "os-jobs.json"), "GITHUB_OUTPUT": str(output),
+            }
+            code, summary = self.run_main({**base, "STEPS_JSON": json.dumps(steps(queue_steps(), outputs))})
+            self.assertEqual(0, code, summary)
+            published = output.read_text().splitlines()
+            self.assertEqual(1, len(published))
+            name, _, value = published[0].partition("=")
+            self.assertEqual("gate_results", name)
+            self.assertEqual("success", json.loads(value)["os-jobs"])
+
+            (root / "os-jobs.json").write_text(json.dumps({"Rust (macos-14)": "timed_out"}))
+            code, summary = self.run_main({**base, "STEPS_JSON": json.dumps(steps(queue_steps(), outputs))})
+            self.assertEqual(1, code)
+            self.assertIn("`os-jobs`", summary)
+            # Without the awaited file the macOS job is reported skipped, which a queue refuses.
+            code, _ = self.run_main({**base, "OS_JOBS_FILE": str(root / "absent.json"),
+                                     "STEPS_JSON": json.dumps(steps(queue_steps(), outputs))})
+            self.assertEqual(1, code)
+            # Classification comes from the classify step: without it the gate fails closed.
+            code, summary = self.run_main({**base, "STEPS_JSON": json.dumps(steps({**queue_steps(), "classify": "success"}))})
+            self.assertEqual(1, code)
+            self.assertIn("classification", summary)
+
+    def test_delivery_combines_unica_ci_results_with_the_tail(self) -> None:
+        outputs = classification(**ALL_ENABLED)
+        gate = load_gate_module()
+        validation = {job: result for job, result in code_results(**{"os-jobs": "success", "rust-medium": "skipped",
+                                                                      "build-python-product": "success"}).items()
+                      if job not in gate.DELIVERY_ONLY}
+        tail = {**PACKAGE_SUCCESS, **ASSESSMENT_SUCCESS, **P0_SUCCESS, "probe-thin-bootstrap": "success", **PUBLISH_SKIPPED}
+        needs = {
+            "unica-ci": {"result": "success", "outputs": {**outputs, "gate_results": json.dumps(validation)}},
+            "rust-os": {"result": "success", "outputs": {}},
+            **{job: {"result": result, "outputs": {}} for job, result in tail.items()},
+        }
+        base = {
+            "GATE_SCOPE": "delivery", "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
+            "GATE_PROFILE": "main", "PYTHON_MATRIX": json.dumps(CODE_MATRIX), "RUNNERS": QUEUE_RUNNERS,
+        }
+        code, summary = self.run_main({**base, "NEEDS_JSON": json.dumps(needs)})
+        self.assertEqual(0, code, summary)
+        broken = {**needs, "package-thin": {"result": "failure", "outputs": {}}}
+        code, summary = self.run_main({**base, "NEEDS_JSON": json.dumps(broken)})
+        self.assertEqual(1, code)
+        self.assertIn("`package-thin`", summary)
+        # A lost validation output is not a pass: every validation entry becomes missing.
+        lost = {**needs, "unica-ci": {"result": "success", "outputs": {**outputs, "gate_results": "not json"}}}
+        code, summary = self.run_main({**base, "NEEDS_JSON": json.dumps(lost)})
+        self.assertEqual(1, code)
+        self.assertIn("`guards`: got `missing`", summary)
+
+    def test_unknown_scope_is_refused(self) -> None:
+        with self.assertRaises(SystemExit):
+            self.run_main({"GATE_SCOPE": "everything"})
 
 
 if __name__ == "__main__":

@@ -1365,11 +1365,11 @@ mod tests {
             "[providers.v8std]\nendpoint = \"http://from.config/mcp\"\n",
         )
         .expect("файл политики");
-        let configured =
-            DocumentationPolicy::load(dir.path(), &["v8std", "kb-1ci"]).expect("политика");
+        let configured = DocumentationPolicy::load(dir.path(), &["v8std", "configuration-help"])
+            .expect("политика");
         let empty = DocumentationPolicy::load(
             tempfile::tempdir().expect("каталог").path(),
-            &["v8std", "kb-1ci"],
+            &["v8std", "configuration-help"],
         )
         .expect("умолчания");
 
@@ -1417,7 +1417,15 @@ mod tests {
 
         match &sections[0].status {
             DocumentationSectionStatus::Failed { diagnostic } => {
-                for expected in ["intercepted", "trust store", "HTTPS_PROXY"] {
+                // Совет при перехвате: исключение для узла, корень в
+                // хранилище ОС, прокси — и как отключить сам поставщик.
+                for expected in [
+                    "intercepted",
+                    "trust store",
+                    "HTTPS_PROXY",
+                    "[providers.v8std]",
+                    "network = \"deny\"",
+                ] {
                     assert!(diagnostic.contains(expected), "{expected}: {diagnostic}");
                 }
             }

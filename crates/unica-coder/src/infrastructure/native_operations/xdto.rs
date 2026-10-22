@@ -117,6 +117,39 @@ pub(crate) struct XdtoExecution<T> {
     pub(crate) data: Option<T>,
 }
 
+/// Writer findings retain their original severity. Only the read-only check
+/// distinguishes the limits of Unica's profile from schema defects.
+pub(crate) fn xdto_check_outcome(
+    data: unica_xdto::results::XdtoInfoData,
+) -> crate::application::v13::check::NativeCheckOutcome {
+    use unica_xdto::results::XdtoLocation;
+    crate::application::v13::check::NativeCheckOutcome::from_source_findings(
+        data.findings.into_iter().map(|finding| {
+            let limitation = finding.code == "unsupported_node";
+            let position = match finding.location {
+                XdtoLocation::Unaddressable {
+                    body_byte_range, ..
+                } => format!(
+                    "byte offset {} (0-based, BOM excluded)",
+                    body_byte_range.start
+                ),
+                XdtoLocation::Addressed { metadata_path, .. } => metadata_path,
+            };
+            let message = format!(
+                "{}{}: {}",
+                if limitation {
+                    "Unica profile limitation; "
+                } else {
+                    ""
+                },
+                position,
+                finding.message
+            );
+            (!limitation, finding.code, message)
+        }),
+    )
+}
+
 pub(crate) fn invoke_read(
     operation: &str,
     _tool: &str,
@@ -1808,6 +1841,9 @@ pub(crate) mod tests {
         XdtoPlanOperation::AddObjectType(XdtoAddObjectTypeArgs {
             at: qaddr(at),
             name: ncname(name),
+            base: None,
+            before: None,
+            after: None,
         })
     }
 
@@ -1871,6 +1907,80 @@ pub(crate) mod tests {
             }
         }
         observed
+    }
+
+    #[test]
+    fn staged_xdto_position_distinguishes_missing_and_wrong_kind_neighbors() {
+        let before = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:test">
+    <valueType name="Value" base="xs:string"/>
+</package>"#;
+        for field in ["before", "after"] {
+            for (anchor, expected) in [
+                ("Missing", ApplyPlanErrorKind::NotFound),
+                ("Value", ApplyPlanErrorKind::BadValue),
+            ] {
+                let fixture =
+                    staged_xdto_fixture(&format!("position-{field}-{anchor}"), before.as_bytes());
+                let mut values = json!({"name":"Added"});
+                values[field] = json!(anchor);
+                let operation = parse_xdto_plan_operation(
+                    "objectType.add",
+                    &json!({"at":"main:XDTOPackage.Sample", "values":values}),
+                    0,
+                    &fixture.binding,
+                )
+                .unwrap();
+                let admission = staged_xdto_admission(&fixture, None, true);
+                let error = plan_admitted_xdto(&admission, &fixture.binding, &[operation])
+                    .expect_err("invalid position accepted");
+                assert_eq!(error.kind(), expected, "{field}={anchor}");
+                assert_eq!(
+                    error.path(),
+                    Some(format!("ops[0].args.values.{field}").as_str())
+                );
+                assert_eq!(fs::read(&fixture.package).unwrap(), before.as_bytes());
+                fixture.cleanup();
+            }
+        }
+    }
+
+    #[test]
+    fn staged_xdto_object_base_and_position_preserve_existing_bytes() {
+        let before = concat!(
+            "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n",
+            "\t<objectType name=\"Основа\"><property name=\"Код\" type=\"xs:string\"/></objectType>\r\n",
+            "\t<objectType name=\"ПримерА\"/>\r\n",
+            "\t<!-- сохранить комментарий -->\r\n",
+            "\t<objectType name=\"ПримерВ\"/>\r\n",
+            "</package>\r\n",
+        );
+        let fixture = staged_xdto_fixture("object-base-order", before.as_bytes());
+        let operation = parse_xdto_plan_operation(
+            "objectType.add",
+            &json!({"at":"main:XDTOPackage.Sample", "values": {
+                "name":"ПримерБ", "base":"tns:Основа", "before":"ПримерВ"
+            }}),
+            0,
+            &fixture.binding,
+        )
+        .expect("objectType.add must accept a base and relative position");
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let (mut staged, effects) =
+            plan_admitted_xdto(&admission, &fixture.binding, &[operation]).unwrap();
+        let expected = before.replace(
+            "\t<objectType name=\"ПримерВ\"/>",
+            "\t<objectType name=\"ПримерБ\" base=\"tns:Основа\"/>\r\n\t<objectType name=\"ПримерВ\"/>",
+        );
+        assert_eq!(
+            staged
+                .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+                .unwrap()
+                .unwrap(),
+            expected.as_bytes(),
+        );
+        assert_eq!(effects.events().len(), 1);
+        assert_eq!(fs::read(&fixture.package).unwrap(), before.as_bytes());
+        fixture.cleanup();
     }
 
     #[test]
