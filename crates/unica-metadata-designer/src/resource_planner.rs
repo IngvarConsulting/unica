@@ -413,6 +413,33 @@ pub fn parse_subsystem_operation(
 ) -> Result<MetadataResourcePlan, ApplyPlanError> {
     let target =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
+    let contract = unica_metadata::subsystem_operations::SubsystemOperation::from_name(operation)
+        .map(|operation| operation.contract())
+        .or_else(|| {
+            unica_metadata::interface_operations::InterfaceOperation::from_name(operation)
+                .map(|operation| operation.contract())
+        })
+        .ok_or_else(|| hidden_apply_family_unimplemented(op_index))?;
+    // The contract excludes this pair too; the refusal names the key.
+    if args.contains_key("items") && args.contains_key("values") {
+        return Err(bad(
+            op_index,
+            "values",
+            "pass either `items` or `values`, not both",
+        ));
+    }
+    contract
+        .normalize(
+            &Value::Object(args.clone()),
+            &format!("ops[{op_index}].args"),
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("{}: {}", error.path, error.message),
+            )
+            .at_path(error.path)
+        })?;
     if let Some(section) = operation.strip_suffix(".set").filter(|section| {
         matches!(
             *section,

@@ -1,0 +1,105 @@
+{
+  "id": "S-1468-remaining-code-can",
+  "issue": 1468,
+  "area": "Контракты операций",
+  "task": "Прочитать контракты и построить предпросмотр по exampleArgs без записи исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace-code",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Пример.Can.code.insert"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "args0": {
+          "pointer": "/data/props/contract/exampleArgs"
+        },
+        "before": {
+          "file": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": "$capture.args0"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Пример.Body.Can.code.replace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "args1": {
+          "pointer": "/data/props/contract/exampleArgs"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": "$capture.args1"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    }
+  ]
+}

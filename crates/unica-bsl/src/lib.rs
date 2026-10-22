@@ -14,3 +14,5 @@ pub mod input;
 pub mod text;
 
 pub mod event_text;
+
+mod contracts;

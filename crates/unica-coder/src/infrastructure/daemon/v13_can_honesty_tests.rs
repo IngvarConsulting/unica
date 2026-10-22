@@ -118,6 +118,14 @@ const INTENTIONAL_NARROWINGS: &[Narrowing] = &[
                  адресу области макета не разрешается",
     },
     Narrowing {
+        op: "code.replace",
+        route: None,
+        kind: "*",
+        witnessed_in: "workspace",
+        reason: "разбор замены с якорем проверяет аргументы; существование BSL-модуля \
+                 по адресу проверяется при стадировании, а реестр отсекает чужой маршрут раньше",
+    },
+    Narrowing {
         op: "family:Metadata",
         route: None,
         kind: "*",
@@ -575,6 +583,14 @@ fn node_args(descriptor: OperationDescriptor, at: &QualifiedAddress) -> Value {
         "code.insert" if method_address => {
             json!({"at": "", "text": "// sample\n", "position": "after"})
         }
+        "code.replace"
+            if at
+                .segments()
+                .last()
+                .is_some_and(|s| matches!(s.kind(), NodeKind::Method | NodeKind::Body)) =>
+        {
+            json!({"text":"// sample\n"})
+        }
         _ => sample_args(descriptor),
     }
 }
@@ -607,6 +623,7 @@ fn family_verdict(request: &ApplyRequest, binding: &ProviderRootBinding) -> Resu
 }
 
 struct Checked<'a> {
+    runtime: V5CanonicalInvocationRuntime,
     workspace: &'a Path,
     actor: &'a WorkspaceActor,
     binding: &'a ProviderRootBinding,
@@ -626,6 +643,10 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
     WRITES_CHECKED.with(|done| done.borrow_mut().clear());
     for (set, kind, binding) in &fixture.sets {
         let checked = Checked {
+            runtime: V5CanonicalInvocationRuntime::new(
+                Arc::new(CanonicalV13ReadService::default()),
+                Arc::new(TokioClock),
+            ),
             workspace: &fixture.workspace,
             actor: &fixture.actor,
             binding,
@@ -950,9 +971,35 @@ thread_local! {
 }
 
 fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &mut Vec<String>) {
-    let viewed = invoke(checked.workspace, ToolIdentity::View, json!({"at": at}));
+    let viewed = invoke_on(
+        &checked.runtime,
+        checked.workspace,
+        ToolIdentity::View,
+        json!({"at": at}),
+    );
     assert!(viewed.ok, "{at}: {viewed:?}");
     let data = viewed.data.unwrap();
+    for entry in data["can"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry["implemented"] == true)
+    {
+        let op = entry["op"].as_str().unwrap();
+        let detailed = invoke_on(
+            &checked.runtime,
+            checked.workspace,
+            ToolIdentity::View,
+            json!({"at":format!("{at}.Can.{op}")}),
+        );
+        assert!(
+            detailed.ok,
+            "implemented {op} at {at} has no contract: {detailed:?}"
+        );
+        let schema = &detailed.data.as_ref().unwrap()["props"]["contract"]["argsSchema"];
+        assert!(schema.is_object(), "{at}.{op}: {schema}");
+        assert_eq!(schema["additionalProperties"], false, "{at}.{op}: {schema}");
+    }
     let can = data["can"]
         .as_array()
         .unwrap_or_else(|| panic!("{at}: no can in {data}"))
@@ -1875,7 +1922,7 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
             "childSubsystem.remove",
             json!({"items": [{"name": "Orders"}]}),
             "ops[0].args.items[0].name",
-            "cf:Subsystem.Sales.Subsystem.Orders".to_string(),
+            "cf:Subsystem.Sales.Subsystem.Orders.Can.childSubsystem.remove".to_string(),
             "cf:Subsystem.Sales.Subsystem".to_string(),
             false,
         ),
@@ -1884,7 +1931,7 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
             "code.replace",
             json!({"selector": {"method": "Run"}, "text": "Procedure Run()\nEndProcedure"}),
             "ops[0].args.selector.method",
-            "cf:CommonModule.Shared.Method.Run".to_string(),
+            "cf:CommonModule.Shared.Method.Run.Can.code.replace".to_string(),
             "cf:CommonModule.Shared.Method".to_string(),
             false,
         ),
@@ -1981,7 +2028,7 @@ fn retired_subnode_arguments_route_next_to_the_subnode_address() {
             "code.insert",
             json!({"selector": {"method": "Run"}, "position": "after", "text": "x"}),
             "ops[0].args.selector.method",
-            "cf:CommonModule.Shared.Method.Run".to_string(),
+            "cf:CommonModule.Shared.Method.Run.Can.code.insert".to_string(),
             "cf:CommonModule.Shared.Method".to_string(),
             None,
         ),
@@ -2504,4 +2551,276 @@ fn support_can_contract_examples_preview_without_source_changes() {
             "reading Can and preview never publish Support changes"
         );
     }
+}
+
+#[test]
+fn code_contract_context_matrix_matches_staged_parser_and_previews_without_writes() {
+    use unica_bsl::input::parse_code_plan_operation;
+    let fixture = fixture("workspace-code");
+    let binding = &fixture
+        .sets
+        .iter()
+        .find(|(name, _, _)| name == "main")
+        .unwrap()
+        .2;
+    let before = tree_digest(&fixture.workspace.join("src"));
+    let module = "main:CommonModule.Пример";
+    for (suffix, op, args, accepted) in [
+        ("", "code.insert", json!({"text":"// sample\n"}), true),
+        (
+            "",
+            "code.insert",
+            json!({"text":"// sample\n","selector":{"anchor":"    // insertion point"},"position":"after"}),
+            true,
+        ),
+        (".Body", "code.insert", json!({"text":"// sample\n"}), true),
+        (
+            ".Method.ОбработатьПример",
+            "code.insert",
+            json!({"text":"// sample\n","position":"before"}),
+            true,
+        ),
+        (
+            ".Method.ОбработатьПример",
+            "code.insert",
+            json!({"text":"// sample\n","position":"after"}),
+            true,
+        ),
+        (
+            "",
+            "code.replace",
+            json!({"text":"// replacement","selector":{"anchor":"    // insertion point"}}),
+            true,
+        ),
+        (
+            ".Body",
+            "code.replace",
+            json!({"text":"// replacement\n"}),
+            true,
+        ),
+        (
+            ".Method.ОбработатьПример",
+            "code.replace",
+            json!({"text":"Функция ОбработатьПример() Экспорт\nВозврат Ложь;\nКонецФункции\n"}),
+            true,
+        ),
+        (
+            ".Method.ОбработатьПример.Body",
+            "code.replace",
+            json!({"text":"Возврат Ложь;\n"}),
+            true,
+        ),
+        (
+            "",
+            "code.insert",
+            json!({"text":"x","position":"after"}),
+            false,
+        ),
+        (
+            "",
+            "code.insert",
+            json!({"text":"x","selector":{"anchor":"x"}}),
+            false,
+        ),
+        ("", "code.replace", json!({"text":"x"}), false),
+        (
+            "",
+            "code.replace",
+            json!({"text":"x","selector":{"method":"ОбработатьПример"}}),
+            false,
+        ),
+        (
+            ".Body",
+            "code.insert",
+            json!({"text":"x","selector":{"anchor":"x"},"position":"after"}),
+            false,
+        ),
+        (
+            ".Method.ОбработатьПример",
+            "code.insert",
+            json!({"text":"x"}),
+            false,
+        ),
+        (
+            ".Method.ОбработатьПример.Body",
+            "code.replace",
+            json!({"text":"x","selector":{"anchor":"x"}}),
+            false,
+        ),
+    ] {
+        let at = format!("{module}{suffix}");
+        let detailed = invoke(
+            &fixture.workspace,
+            ToolIdentity::View,
+            json!({"at":format!("{at}.Can.{op}")}),
+        );
+        assert!(detailed.ok, "{at}: {detailed:?}");
+        let address = QualifiedAddress::parse(&at).unwrap();
+        let site = crate::domain::apply::operation_site(
+            &address,
+            crate::domain::apply::source_set_traits_for_read(
+                SourceSetKind::Configuration,
+                PlatformProfile::v8_3_27(),
+            ),
+        )
+        .unwrap();
+        let contract = crate::domain::apply::operation_registry()
+            .lookup_at(op, &site)
+            .unwrap()
+            .argument_contract_at(&site)
+            .unwrap();
+        assert_eq!(
+            contract.normalize(&args, "args").is_ok(),
+            accepted,
+            "schema {at} {op} {args}"
+        );
+        let mut parsed_args = args.clone();
+        parsed_args["at"] = json!(at);
+        assert_eq!(
+            parse_code_plan_operation(op, &parsed_args, 0, binding.source_set_name()).is_ok(),
+            accepted,
+            "parser {at} {op} {args}"
+        );
+        let preview = invoke(
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":op,"args":args}]}),
+        );
+        assert_eq!(preview.ok, accepted, "preview {at} {op}: {preview:?}");
+        assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+    }
+    let unavailable = invoke(
+        &fixture.workspace,
+        ToolIdentity::View,
+        json!({"at":format!("{module}.Method.ОбработатьПример.Body.Can.code.insert")}),
+    );
+    assert!(!unavailable.ok);
+    // A batch override selects the contextual contract of its actual target.
+    let preview = invoke(
+        &fixture.workspace,
+        ToolIdentity::Apply,
+        json!({"at":module,"ops":[{"op":"code.replace","args":{"at":format!("{module}.Method.ОбработатьПример.Body"),"text":"Возврат Ложь;\n"}}]}),
+    );
+    assert!(preview.ok, "{preview:?}");
+    let stale_module_args = invoke(
+        &fixture.workspace,
+        ToolIdentity::Apply,
+        json!({"at":module,"ops":[{"op":"code.replace","args":{"at":format!("{module}.Method.ОбработатьПример.Body"),"text":"Возврат Ложь;\n","selector":{"anchor":"    // insertion point"}}}]}),
+    );
+    assert!(
+        !stale_module_args.ok,
+        "an override must use the actual target's argument shape"
+    );
+    assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+}
+
+#[test]
+fn subsystem_interface_contracts_preview_all_operations_without_source_writes() {
+    let fixture = fixture("workspace");
+    let src = fixture.workspace.join("src");
+    let command = "Catalog.Валюты.StandardCommand.OpenList";
+    let group = "NavigationPanelImportant";
+    std::fs::write(src.join("Subsystems/Администрирование/Ext/CommandInterface.xml"), format!(r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><CommandsVisibility><Command name="{command}"><Visibility><xr:Common>true</xr:Common></Visibility></Command></CommandsVisibility><CommandsPlacement><Command name="{command}"><CommandGroup>{group}</CommandGroup></Command></CommandsPlacement><CommandsOrder><Command name="{command}"><CommandGroup>{group}</CommandGroup></Command></CommandsOrder><GroupsOrder><Group>{group}</Group></GroupsOrder></CommandInterface>"#)).unwrap();
+    std::fs::create_dir_all(src.join("Ext")).unwrap();
+    std::fs::write(src.join("Ext/CommandInterface.xml"), r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><SubsystemsOrder><Subsystem>Subsystem.Администрирование</Subsystem></SubsystemsOrder></CommandInterface>"#).unwrap();
+    let before = tree_digest(&src);
+    let subsystem = "main:Subsystem.Администрирование";
+    for (at, op, args) in [
+        (
+            "main:Configuration".to_string(),
+            "subsystem.create",
+            json!({"values":{"name":"NewSubsystem"}}),
+        ),
+        (
+            subsystem.to_string(),
+            "content.add",
+            json!({"items":["Catalog.Валюты"]}),
+        ),
+        (
+            subsystem.to_string(),
+            "content.remove",
+            json!({"items":["Catalog.Валюты"]}),
+        ),
+        (
+            subsystem.to_string(),
+            "childSubsystem.add",
+            json!({"values":{"name":"NewChild"}}),
+        ),
+        (
+            format!("{subsystem}.Subsystem.КонтрольРаботыПользователей"),
+            "childSubsystem.remove",
+            json!({}),
+        ),
+        (
+            format!("{subsystem}.Interface"),
+            "commandVisibility.set",
+            json!({"items":[{"command":command,"visible":false}]}),
+        ),
+        (
+            format!("{subsystem}.Interface"),
+            "commandPlacement.set",
+            json!({"items":[{"command":command,"group":group}]}),
+        ),
+        (
+            format!("{subsystem}.Interface.Group.{group}"),
+            "commandOrder.set",
+            json!({"values":{"commands":[command]}}),
+        ),
+        (
+            format!("{subsystem}.Interface"),
+            "groupOrder.set",
+            json!({"values":{"groups":[group]}}),
+        ),
+        (
+            "main:Configuration".to_string(),
+            "subsystemOrder.set",
+            json!({"values":{"subsystems":["Subsystem.Администрирование"]}}),
+        ),
+    ] {
+        let detailed = invoke(
+            &fixture.workspace,
+            ToolIdentity::View,
+            json!({"at":format!("{at}.Can.{op}")}),
+        );
+        assert!(detailed.ok, "{at}.{op}: {detailed:?}");
+        let preview = invoke(
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":op,"args":args}]}),
+        );
+        assert!(preview.ok, "{at}.{op}: {preview:?}");
+        assert_eq!(tree_digest(&src), before, "{op}");
+    }
+}
+
+#[test]
+fn object_remove_skeleton_previews_with_only_the_outer_target() {
+    let fixture = fixture("workspace-code");
+    let at = "main:Catalog.Пример";
+    let before = tree_digest(&fixture.workspace.join("src"));
+    let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at":at}));
+    assert!(viewed.ok, "{viewed:?}");
+    let data = viewed.data.unwrap();
+    let entry = data["can"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["op"] == "object.remove")
+        .unwrap();
+    assert_eq!(entry["implemented"], true);
+    let skeleton = serde_json::to_value(
+        crate::domain::apply::operation_registry()
+            .lookup("object.remove")
+            .unwrap()
+            .copyable_skeleton(),
+    )
+    .unwrap();
+    assert!(skeleton["args"].get("at").is_none(), "{skeleton}");
+    let preview = invoke(
+        &fixture.workspace,
+        ToolIdentity::Apply,
+        json!({"at":at,"ops":[skeleton]}),
+    );
+    assert!(preview.ok, "{preview:?}");
+    assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
 }
