@@ -1530,6 +1530,259 @@ fn canonical_apply_refuses_inexact_export_format_and_offers_platform_reexport() 
     }
 }
 
+// --- #1933: канонические `check` и `view` сообщают диагностики читателя
+// метаданных — немоделируемый тип, битый квалификатор и голый `FillValue`.
+// Прежде их доказывал только путь v0.12.
+
+/// Справочник `Products` с реквизитом `Article` и константа `Rate`, оба
+/// строкового типа длиной 10.
+fn catalog_and_constant(runtime: &V5CanonicalInvocationRuntime) -> Fixture {
+    let fixture = Fixture::blank();
+    for kind in ["Catalog", "Constant"] {
+        let name = if kind == "Catalog" {
+            "Products"
+        } else {
+            "Rate"
+        };
+        publish(
+            runtime,
+            &fixture,
+            json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":kind,"name":name}}}]}),
+        );
+    }
+    publish(
+        runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Products","ops":[{"op":"attribute.add","args":{"items":[
+            {"name":"Article","type":{"variants":[{"kind":"string","length":10,"allowedLength":"variable"}]}}
+        ]}}]}),
+    );
+    publish(
+        runtime,
+        &fixture,
+        json!({"at":"main:Constant.Rate","ops":[{"op":"props.set","args":{"values":{
+            "Type":{"variants":[{"kind":"string","length":10,"allowedLength":"variable"}]}
+        }}}]}),
+    );
+    fixture
+}
+
+/// Делает строковый тип немоделируемым, но синтаксически допустимым: имя
+/// платформенного типа без квалификаторов строки.
+fn make_type_unmodelled(path: &Path) {
+    rewrite(
+        path,
+        "<v8:Type>xs:string</v8:Type>",
+        "<v8:Type>v8:FutureOpaque</v8:Type>",
+    );
+    let text = std::fs::read_to_string(path).unwrap();
+    let start = text
+        .find("<v8:StringQualifiers>")
+        .expect("string qualifiers");
+    let end = text[start..].find("</v8:StringQualifiers>").unwrap()
+        + start
+        + "</v8:StringQualifiers>".len();
+    let mut text = text;
+    text.replace_range(start..end, "");
+    std::fs::write(path, text).unwrap();
+}
+
+fn view(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture, at: &str) -> Value {
+    let viewed = call(runtime, fixture, ToolIdentity::View, json!({"at": at}));
+    assert!(viewed.ok, "{at}: {viewed:?}");
+    viewed.data.unwrap()
+}
+
+fn check(
+    runtime: &V5CanonicalInvocationRuntime,
+    fixture: &Fixture,
+    at: &str,
+) -> (String, Vec<Value>) {
+    let checked = call(runtime, fixture, ToolIdentity::Check, json!({"at": at}));
+    assert!(checked.ok, "{at}: {checked:?}");
+    let data = checked.data.unwrap();
+    (
+        data["status"].as_str().unwrap().to_owned(),
+        data["diagnostics"].as_array().unwrap().clone(),
+    )
+}
+
+fn limits(node: &Value) -> Vec<String> {
+    node["limits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Единственная находка с кодом у поля: читатель и валидатор не называют
+/// одну поломку дважды.
+fn finding<'a>(diagnostics: &'a [Value], code: &str, field: &str) -> &'a Value {
+    let found = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic["field"] == field)
+        .collect::<Vec<_>>();
+    assert_eq!(found.len(), 1, "{field}: {diagnostics:?}");
+    assert_eq!(found[0]["code"], code, "{field}: {diagnostics:?}");
+    found[0]
+}
+
+/// INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT, INV.SOURCE.OBSERVED-TYPE-CAPABILITY:
+/// синтаксически допустимый, но немоделируемый тип реквизита и константы —
+/// предупреждение `validation_warning` у своего поля при итоге `passed`;
+/// `view` называет его в пределах узла, остальные сведения сохраняются.
+#[test]
+fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    make_type_unmodelled(&fixture.source.join("Catalogs/Products.xml"));
+    make_type_unmodelled(&fixture.source.join("Constants/Rate.xml"));
+
+    for (at, path, field) in [
+        (
+            "main:Catalog.Products",
+            "Catalog.Products",
+            "collections.attributes[0].type",
+        ),
+        ("main:Constant.Rate", "Constant.Rate", "details.type"),
+    ] {
+        let (status, diagnostics) = check(&runtime, &fixture, at);
+        assert_eq!(status, "passed", "{at}: {diagnostics:?}");
+        let warning = finding(&diagnostics, "validation_warning", field);
+        assert_eq!(warning["severity"], "warning");
+        assert_eq!(warning["metadataPath"], path);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic["severity"] == "warning"),
+            "{at}: {diagnostics:?}"
+        );
+    }
+
+    let attribute = view(
+        &runtime,
+        &fixture,
+        "main:Catalog.Products.Attribute.Article",
+    );
+    assert_eq!(attribute["props"]["synonym"], "Article");
+    assert_eq!(attribute["props"]["incomplete"], true);
+    assert!(attribute["props"].get("type").is_none(), "{attribute}");
+    assert!(
+        limits(&attribute)
+            .iter()
+            .any(|limit| limit.starts_with("collections.attributes[0].type: validation_warning: ")),
+        "{attribute}"
+    );
+    let constant = view(&runtime, &fixture, "main:Constant.Rate");
+    assert_eq!(constant["props"]["synonym"], "Rate");
+    // Тип не прочитан: значения нет, причина — в пределах узла.
+    assert!(constant["props"]["type"].is_null(), "{constant}");
+    assert!(
+        limits(&constant).iter().any(
+            |limit| limit.starts_with("details.type") && limit.contains("validation_warning: ")
+        ),
+        "{constant}"
+    );
+}
+
+/// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: повреждённый квалификатор остаётся
+/// ошибкой, а не превращается в предупреждение о неподдержанном типе.
+#[test]
+fn canonical_broken_qualifier_stays_an_error_in_check_and_view() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    for file in ["Catalogs/Products.xml", "Constants/Rate.xml"] {
+        rewrite(
+            &fixture.source.join(file),
+            "<v8:Length>10</v8:Length>",
+            "<v8:Length>abc</v8:Length>",
+        );
+    }
+
+    for (at, field) in [
+        ("main:Catalog.Products", "collections.attributes[0].type"),
+        ("main:Constant.Rate", "details.type"),
+    ] {
+        let (status, diagnostics) = check(&runtime, &fixture, at);
+        assert_eq!(status, "failed", "{at}: {diagnostics:?}");
+        assert_eq!(
+            finding(&diagnostics, "validation_failed", field)["severity"],
+            "error"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic["code"] != "validation_warning"),
+            "{at}: {diagnostics:?}"
+        );
+    }
+    let constant = view(&runtime, &fixture, "main:Constant.Rate");
+    assert!(constant["props"]["type"].is_null(), "{constant}");
+    assert!(
+        limits(&constant)
+            .iter()
+            .any(|limit| limit.starts_with("details.type") && !limit.contains("validation_warning")),
+        "{constant}"
+    );
+
+    let attribute = view(
+        &runtime,
+        &fixture,
+        "main:Catalog.Products.Attribute.Article",
+    );
+    assert_eq!(attribute["props"]["incomplete"], true);
+    assert!(attribute["props"].get("type").is_none(), "{attribute}");
+    assert!(
+        limits(&attribute)
+            .iter()
+            .any(|limit| limit.starts_with("collections.attributes[0].type: validation_failed: ")),
+        "{attribute}"
+    );
+}
+
+/// INV.SOURCE.METADATA-OBJECT-FACTS: пустой нетипизированный `FillValue` —
+/// диагностика, а не молчаливое «значение не задано»; тип реквизита
+/// по-прежнему читается.
+#[test]
+fn canonical_bare_fill_value_is_a_diagnostic_not_an_absent_value() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    rewrite(
+        &fixture.source.join("Catalogs/Products.xml"),
+        "<FillValue xsi:nil=\"true\"/>",
+        "<FillValue/>",
+    );
+
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "failed", "{diagnostics:?}");
+    assert_eq!(
+        finding(
+            &diagnostics,
+            "validation_failed",
+            "collections.attributes[0].fillValue"
+        )["severity"],
+        "error"
+    );
+
+    let attribute = view(
+        &runtime,
+        &fixture,
+        "main:Catalog.Products.Attribute.Article",
+    );
+    assert_eq!(attribute["props"]["incomplete"], true);
+    assert!(attribute["props"].get("fillValue").is_none(), "{attribute}");
+    assert!(attribute["props"]["type"].is_string(), "{attribute}");
+    assert!(
+        limits(&attribute)
+            .iter()
+            .any(|limit| limit
+                .starts_with("collections.attributes[0].fillValue: validation_failed: ")),
+        "{attribute}"
+    );
+}
+
 /// INV.SOURCE.EVENT-DEFINED-TYPE: канонический план раскрывает определяемый
 /// тип источника вместе с вложенным до классов событий. Цикл, неподходящий
 /// член и класс, несовместимый с событием, отклоняют план без записи;

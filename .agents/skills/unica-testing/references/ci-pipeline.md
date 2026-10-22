@@ -152,11 +152,13 @@ ignored-кейсом, а не потерей. Вне этих путей OS-cfg 
 | `non-utf8-file-names` | ubuntu | очередь Linux |
 | `rename-under-open-handle`, `unix-process-groups`, `unix-permission-bits` | ubuntu, macOS | очередь Linux |
 | `windows-job-object`, `windows-path-syntax` | — | nightly Windows (advisory) |
+| `archive-fixture-binary` | ubuntu, macOS, Windows | очередь Linux; PR — medium-фаза на Linux; macOS и Windows — nightly; вне раннера архива — `skipped` |
 
-Для `windows-latest` набор обязательных возможностей пуст. Это решение,
+Для `windows-latest` из возможностей хоста не обязательна ни одна. Это решение,
 а не свойство раннера: Windows остаётся advisory (#1523), поэтому пропуск
-там виден, но не отвергается. Причины пропусков собраны в отчёте
-в категорию «Нет возможности хоста».
+там виден, но не отвергается. `archive-fixture-binary` — свойство самого
+раннера архива, а не хоста, поэтому она обязательна везде. Причины
+пропусков собраны в отчёте в категорию «Нет возможности хоста».
 
 Сценарий доставки сервисных движков получает путь и SHA256 уже включённого
 в ordinary archive non-test binary `unica`. Producer выбирает его по metadata

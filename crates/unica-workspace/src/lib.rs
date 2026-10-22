@@ -24,6 +24,16 @@ pub mod state_scope;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    /// A contract test that cannot run on this host (#1893). Workspace may use
+    /// `unica-process` only in tests, so the contract names the capability and
+    /// its `#[test]` wrapper reports the skip through
+    /// `unica_process::test_support::skip_named_host_capability`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct CapabilitySkip {
+        pub capability: &'static str,
+        pub reason: &'static str,
+    }
+
     pub use crate::platform::filesystem_contract_tests::{
         saved_source_diff_keeps_literal_backslash_and_nested_paths_distinct,
         saved_source_diff_keeps_native_names_and_replacement_character_distinct,

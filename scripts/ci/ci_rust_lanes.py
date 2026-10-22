@@ -314,17 +314,24 @@ HOST_CAPABILITIES = frozenset({
     "normalization-insensitive-filesystem", "enforced-permission-bits",
     "directory-mtime", "non-utf8-file-names", "rename-under-open-handle",
     "unix-process-groups", "unix-permission-bits", "windows-job-object", "windows-path-syntax",
+    "archive-fixture-binary",
 })
 UNIX_RUNNER_CAPABILITIES = frozenset({
     "symlink", "enforced-permission-bits", "directory-mtime", "rename-under-open-handle",
     "unix-process-groups", "unix-permission-bits",
 })
+# The lane runner itself binds the ordinary archive's fixture binary
+# (`fixture_binary_environment`), so its absence in CI is a runner defect on
+# every runner; only a plain local nextest run may skip for it.
+ARCHIVE_RUNNER_CAPABILITIES = frozenset({"archive-fixture-binary"})
 REQUIRED_HOST_CAPABILITIES = {
-    "ubuntu-latest": UNIX_RUNNER_CAPABILITIES | {"case-sensitive-filesystem", "non-utf8-file-names"},
-    "macos-14": UNIX_RUNNER_CAPABILITIES | {"case-insensitive-filesystem", "normalization-insensitive-filesystem"},
-    # A decision, not a fact about the runner: Windows stays advisory (#1523),
-    # so every skip there is visible but none is refused yet.
-    "windows-latest": frozenset(),
+    "ubuntu-latest": UNIX_RUNNER_CAPABILITIES | ARCHIVE_RUNNER_CAPABILITIES
+    | {"case-sensitive-filesystem", "non-utf8-file-names"},
+    "macos-14": UNIX_RUNNER_CAPABILITIES | ARCHIVE_RUNNER_CAPABILITIES
+    | {"case-insensitive-filesystem", "normalization-insensitive-filesystem"},
+    # A decision, not a fact about the runner: Windows stays advisory (#1523)
+    # for host capabilities, so those skips are visible but none is refused yet.
+    "windows-latest": ARCHIVE_RUNNER_CAPABILITIES,
 }
 CAPABILITY_SKIP_REASON = re.compile(r"host capability (?P<capability>[a-z0-9-]+): ")
 

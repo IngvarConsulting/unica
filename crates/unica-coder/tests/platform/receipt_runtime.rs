@@ -5409,7 +5409,13 @@ fn displaced_runtime_retains_stable_authority_until_the_old_owner_drops() {
     match attempt_retained_directory_replacement_for_test(&receipts, &displaced)
         .expect("attempt receipt authority replacement")
     {
-        RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => return,
+        RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open directory from being replaced",
+            );
+            return;
+        }
         RetainedDirectoryReplacementOutcome::Replaced => {}
     }
 
@@ -5460,7 +5466,13 @@ fn replacement_receipt_authority_directory_alone_cannot_create_a_successor_runti
     match attempt_retained_directory_replacement_for_test(&authority, &displaced)
         .expect("attempt stable receipt-authority replacement")
     {
-        RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => return,
+        RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open directory from being replaced",
+            );
+            return;
+        }
         RetainedDirectoryReplacementOutcome::Replaced => {}
     }
 
@@ -5516,7 +5528,13 @@ fn displaced_runtime_cannot_write_a_response_after_the_final_authority_check() {
     match attempt_retained_directory_replacement_for_test(&receipts, &displaced)
         .expect("attempt receipt authority replacement")
     {
-        RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => return,
+        RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open directory from being replaced",
+            );
+            return;
+        }
         RetainedDirectoryReplacementOutcome::Replaced => {}
     }
 

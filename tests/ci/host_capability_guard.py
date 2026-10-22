@@ -35,11 +35,14 @@ CAPABILITY_PROBES = (
     "short_private_runtime_dir", "unix_runtime_authority_tests_supported", "JobAttachGateForTest",
     "age_tree", "set_modified", "ERROR_PRIVILEGE_NOT_HELD", "WindowsPrivilegeUnavailable",
     "PreventedByRetainedHandle", "MAIN_SEPARATOR", "symlink_file", "symlink_dir", "PermissionDenied",
+    "canonical_delivery_fixture_binary",
 )
 PROBE = re.compile(r"\b(?:" + "|".join(CAPABILITY_PROBES) + r")\b|\bsymlink\s*\(|\b1314\b")
 EXIT = re.compile(r"\b(?:return|continue)\b")
 WINDOW_LINES = 15
-SKIP = re.compile(r"\bskip_without_host_capability\s*\(")
+# A contract in a crate without the helper returns a typed skip instead;
+# its `#[test]` wrapper reports it (`CapabilitySkip`, unica-workspace).
+SKIP = re.compile(r"\bskip_without_host_capability\s*\(|\bCapabilitySkip\s*\{")
 
 
 def in_test_file(path: str) -> bool:
@@ -77,7 +80,10 @@ def offenses(text: str, path: str) -> list[str]:
             probes = list(PROBE.finditer(body, window_start, exit_match.start()))
             # The helper may come before clean-up, but after the probe that decided
             # and after the previous exit: one skip excuses one exit.
-            if probes and not SKIP.search(body, max(probes[-1].end(), previous_exit), exit_match.start()):
+            # `return Err(CapabilitySkip { .. })` carries the skip in the exit itself.
+            exit_line_end = body.find("\n", exit_match.end())
+            exit_line_end = len(body) if exit_line_end < 0 else exit_line_end
+            if probes and not SKIP.search(body, max(probes[-1].end(), previous_exit), exit_line_end):
                 found.append(f"{path}::{item['name']}")
                 break
             previous_exit = exit_match.end()

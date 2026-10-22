@@ -44,14 +44,25 @@ class RemovedTestsTests(unittest.TestCase):
         git("config", "user.name", "CI")
         (root / "crates/demo/src/model").mkdir(parents=True)
         (root / "crates/demo/tests").mkdir(parents=True)
+        (root / "crates/demo/src/lib.rs").write_text("mod model;\nmod moved;\n#[path = \"../tests/shared.rs\"]\nmod shared;\n")
+        # Includes that are no Rust file of a package are not read.
+        (root / "crates/demo/src/model.rs").write_text(
+            'pub mod codec;\ninclude!("table.inc");\n#[path = "../../../outside.rs"]\nmod outside;\n')
         (root / "crates/demo/src/model/codec.rs").write_text(LIB)
         (root / "crates/demo/src/moved.rs").write_text("#[test]\nfn travels() {}\n")
+        # A file outside `src/` reached through `#[path]`, and one no target reaches.
+        (root / "crates/demo/tests/shared.rs").write_text("#[test]\nfn shared_case() {}\n")
+        (root / "crates/demo/src/orphan.rs").write_text("#[test]\nfn compiled_nowhere() {}\n")
         (root / "crates/demo/tests/contract.rs").write_text(INTEGRATION)
         # A `[[test]]` target names its binary independently of the file.
         (root / "crates/demo/Cargo.toml").write_text(
-            '[package]\nname = "demo"\n[[test]]\nname = "contract_tests"\npath = "tests/contract.rs"\n')
+            '[package]\nname = "demo"\n[[test]]\nname = "contract_tests"\npath = "tests/contract.rs"\n'
+            # No queue lane enables `research`: its binary is never built there.
+            '[[test]]\nname = "research_tests"\npath = "tests/research.rs"\nrequired-features = ["research"]\n')
+        (root / "crates/demo/tests/research.rs").write_text("#[test]\nfn outside_the_queue() {}\n")
         (root / "vendor/ureq/src").mkdir(parents=True)
         (root / "vendor/ureq/Cargo.toml").write_text('[package]\nname = "ureq"\n')
+        (root / "vendor/ureq/src/lib.rs").write_text("mod pool;\n")
         (root / "vendor/ureq/src/pool.rs").write_text("/* #[test] fn commented() {} */\n#[test]\nfn vendored() {}\n")
         git("add", ".")
         git("commit", "-q", "-m", "base")
@@ -59,8 +70,11 @@ class RemovedTestsTests(unittest.TestCase):
         (root / "crates/demo/src/model/codec.rs").write_text(LIB.replace(
             '    #[test]\n    #[ignore = "slow"]\n    fn goes_away() {}\n', "").replace(
             "    #[tokio::test]\n    async fn async_goes_away() {}\n", ""))
-        (root / "crates/demo/src/moved.rs").unlink()
-        (root / "crates/demo/src/landed.rs").write_text("#[test]\nfn travels() {}\n")
+        (root / "crates/demo/src/moved.rs").write_text("")
+        (root / "crates/demo/src/model.rs").write_text("pub mod codec;\n#[test]\nfn travels() {}\n")
+        (root / "crates/demo/tests/shared.rs").write_text("")
+        (root / "crates/demo/src/orphan.rs").write_text("")
+        (root / "crates/demo/tests/research.rs").write_text("")
         (root / "crates/demo/tests/contract.rs").unlink()
         (root / "vendor/ureq/src/pool.rs").write_text("// gone\n")
         git("add", "-A")
@@ -71,60 +85,96 @@ class RemovedTestsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             return removed_tests.check(self.repository(temporary), "main", description, "change")
 
-    def test_finds_removed_test_functions_but_not_moved_ones(self):
+    def test_finds_the_case_ids_the_queue_inventory_loses(self):
         with tempfile.TemporaryDirectory() as temporary:
             found = removed_tests.removed_tests(self.repository(temporary), "main", "change")
-        self.assertEqual(found, [
-            ("demo", "async_goes_away", ("demo", "model::codec")),
-            ("demo", "goes_away", ("demo", "model::codec")),
-            ("demo", "whole_binary", ("demo::contract_tests", "")),
-            ("ureq", "vendored", ("ureq", "pool")),
+        gone = ["demo::contract_tests"]  # the package's binaries that no longer build
+        self.assertEqual([(package, case, gone) for package, case, _, gone in found], [
+            ("demo", "demo::contract_tests::whole_binary", gone),
+            ("demo", "demo::model::codec::tests::async_goes_away", gone),
+            ("demo", "demo::model::codec::tests::goes_away", gone),
+            # Moved to another module: a new case ID, the old one is gone.
+            ("demo", "demo::moved::travels", gone),
+            ("demo", "demo::shared::shared_case", gone),
+            ("ureq", "ureq::pool::vendored", []),
         ])
 
-    VENDOR = "Removes-test: ureq::pool::vendored\n"
+    DECLARED = ("Removes-test: demo::model::codec::tests::goes_away\r\n"
+                "- Removes-test: `demo::model::codec::tests::async_goes_away`\n"
+                "Removes-test: demo::moved::travels\n"
+                "Removes-test: demo::shared::shared_case\n"
+                "Removes-test-target: demo::contract_tests\n"
+                "Removes-test: ureq::pool::vendored\n")
 
     def test_each_removal_needs_its_own_declaration(self):
-        self.assertEqual(len(self.check("")), 4)
-        declared = ("Removes-test: demo::model::codec::tests::goes_away\r\n"
-                    "- Removes-test: `demo::model::codec::tests::async_goes_away`\n"
-                    "Removes-test-target: demo::contract_tests\n" + self.VENDOR)
-        self.assertEqual(self.check(declared), [])
+        self.assertEqual(len(self.check("")), 6)
+        self.assertEqual(self.check(self.DECLARED), [])
         # An exact name in another module of the package is a typo, not a declaration.
-        wrong = declared.replace("demo::model::codec::tests::goes_away", "demo::model::other::goes_away")
+        wrong = self.DECLARED.replace("demo::model::codec::tests::goes_away", "demo::model::other::goes_away")
         self.assertEqual(len(self.check(wrong)), 1)
 
-    def test_a_prefix_must_agree_with_the_module_of_the_file(self):
-        target = "Removes-test-target: demo::contract_tests\n" + self.VENDOR
-        self.assertEqual(self.check(target + "Removes-test: demo::model::codec::tests::*\n"), [])
-        self.assertEqual(self.check(target + "Removes-test: demo::model::*\n"), [])
-        foreign = self.check(target + "Removes-test: demo::other::*\nRemoves-test: demolition::model::codec::*\n")
-        self.assertEqual(len(foreign), 2)
-        self.assertTrue(all("goes_away" in problem for problem in foreign))
-        # A target name of the library or a file-derived name does not explain the binary,
-        # and `demo*` is no declaration in the queue either.
-        self.assertEqual(len(self.check(self.VENDOR + "Removes-test-target: demo\nRemoves-test: demo::model::*\n")), 1)
-        self.assertEqual(len(self.check(self.VENDOR + "Removes-test-target: demo::contract\nRemoves-test: demo::model::*\n")), 1)
-        self.assertEqual(len(self.check(target + "Removes-test: demo*\n")), 2)
+    def test_a_prefix_is_literal_as_in_the_queue(self):
+        rest = self.DECLARED.replace("Removes-test: demo::model::codec::tests::goes_away\r\n", "").replace(
+            "- Removes-test: `demo::model::codec::tests::async_goes_away`\n", "")
+        for prefix in ("demo::model::codec::tests::*", "demo::model::*", "demo::*", "demo::model::codec::tests::a*"):
+            with self.subTest(prefix=prefix):
+                problems = self.check(rest + f"Removes-test: {prefix}\n")
+                expected = ["goes_away"] if prefix.endswith("a*") else []
+                self.assertEqual([p for p in expected if not any(p in problem for problem in problems)], [])
+                self.assertEqual(len(problems), len(expected), problems)
+        # A prefix of another module, or a name the queue reads as a whole, is no declaration.
+        for foreign in ("demo::other::*", "demolition::model::codec::*", "demo*", "demo::model::codec"):
+            with self.subTest(foreign=foreign):
+                self.assertEqual(len(self.check(rest + f"Removes-test: {foreign}\n")), 2)
+
+    def test_a_target_declaration_counts_only_for_a_binary_that_is_gone(self):
+        rest = self.DECLARED.replace("Removes-test-target: demo::contract_tests\n", "")
+        self.assertEqual(len(self.check(rest)), 1)
+        # The library still builds: declaring it gone explains none of its cases.
+        library = rest.replace("Removes-test: demo::moved::travels\n", "") + "Removes-test-target: demo\n"
+        self.assertEqual(len(self.check(library)), 2)
+        self.assertEqual(len(self.check(rest + "Removes-test-target: demo::contract\n")), 1)
 
     def test_patterns_the_queue_reads_literally_are_refused(self):
         # The queue gate has no braces or wildcards inside a name (#1955 used `{a,b}`).
-        target = "Removes-test-target: demo::contract_tests\n" + self.VENDOR
+        rest = self.DECLARED.replace("Removes-test: demo::model::codec::tests::goes_away\r\n", "")
         for pattern in ("demo::model::{codec,other}::*", "demo::model::codec::tests::goes_?way",
                         "demo::model::*::goes_away", "demo::model::codec::tests::[ag]*"):
             with self.subTest(pattern=pattern):
-                problems = self.check(target + f"Removes-test: {pattern}\n")
+                problems = self.check(rest + f"Removes-test: {pattern}\n")
                 self.assertTrue(any("does not understand" in problem for problem in problems), problems)
                 self.assertTrue(any("goes_away" in problem for problem in problems), problems)
 
-    def test_an_unknown_module_path_needs_the_name_or_a_prefix_below_the_package(self):
-        def declared(*patterns):
-            return removed_tests.declarations_in("".join(f"Removes-test: {item}\n" for item in patterns))
-        explained = removed_tests.explained
-        self.assertTrue(explained("demo", "case", None, declared("demo::x::tests::case")))
-        self.assertTrue(explained("demo", "case", None, declared("demo::x::*")))
-        self.assertFalse(explained("demo", "case", None, declared("demo::*")))
-        self.assertFalse(explained("demo", "case", None, declared("demo::x::other")))
-        self.assertFalse(explained("demo", "case", None, declared("demo::x::{case,other}")))
+    def test_agrees_with_the_queue_gate_on_every_declaration(self):
+        # Mutation guard: the local rule is the queue's `explained_case`, not an approximation of it.
+        import ci_rust_lanes
+        binaries = ["demo", "demo::contract_tests"]
+        cases = ["demo::model::codec::tests::goes_away", "demo::contract_tests::whole_binary"]
+        patterns = ["demo::model::codec::tests::goes_away", "demo::model::*", "demo::*", "demo::x::*",
+                    "demo::model::codec::tests::goes", "demo::contract_tests::*", "demo::contract_tests::whole_binary",
+                    "demo::model::codec::tests::goes_away::*", "demolition::*"]
+        for case in cases:
+            for pattern in patterns:
+                for gone in ([], ["demo::contract_tests"]):
+                    for targets in ([], ["demo::contract_tests"], ["demo"]):
+                        with self.subTest(case=case, pattern=pattern, gone=gone, targets=targets):
+                            local = removed_tests.explained(case, binaries, gone, {
+                                "removedTests": [pattern], "removedTargets": targets})
+                            queue = ci_rust_lanes.explained_case(case, binaries, set(gone) & set(targets), [pattern])
+                            self.assertEqual(local, queue)
+
+    def test_resolves_modules_through_path_include_and_inline_blocks(self):
+        source = ('#[cfg(test)]\n#[path = "../tests/x.rs"]\nmod x;\n'
+                  'mod outer {\n    mod inner { #[test] fn deep() {} }\n    #[test]\n    fn shallow() {}\n}\n'
+                  'include!("generated.rs");\nmod plain;\n')
+        self.assertEqual(removed_tests.tests_in(source), [("outer::inner", "deep"), ("outer", "shallow")])
+        children = list(removed_tests.Packages.children("crates/demo/src/a.rs", source, "demo", "a", False))
+        self.assertEqual(children, [
+            ("crates/demo/tests/x.rs", "demo", "a::x", True),
+            ("crates/demo/src/generated.rs", "demo", "a", False),
+            ("crates/demo/src/a/plain.rs", "demo", "a::plain", False),
+            ("crates/demo/src/a/plain/mod.rs", "demo", "a::plain", True),
+        ])
 
     def test_pull_request_runs_check_removed_tests_against_their_base(self):
         workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-plugin-release.yml").read_text())

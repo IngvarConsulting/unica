@@ -1059,6 +1059,10 @@ pub(crate) mod tests {
         fs::write(&real, original).unwrap();
         if !create_file_link_or_skip(&real, &owner) {
             let _ = fs::remove_dir_all(&context.cwd);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 
@@ -1083,6 +1087,10 @@ pub(crate) mod tests {
         fs::write(&real, original).unwrap();
         if !create_file_link_or_skip(&real, &owner) {
             let _ = fs::remove_dir_all(&context.cwd);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 
@@ -1117,6 +1125,10 @@ pub(crate) mod tests {
         .unwrap();
         if !create_file_link_or_skip(&real, &owner) {
             let _ = fs::remove_dir_all(&context.cwd);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 
@@ -1163,6 +1175,10 @@ pub(crate) mod tests {
         .unwrap();
         if !create_file_link_or_skip(&real_wrapper, &wrapper) {
             let _ = fs::remove_dir_all(&context.cwd);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 

@@ -2791,6 +2791,10 @@ fn find_walks_every_real_addressable_reader_family_without_parallel_xml_semantic
 #[test]
 fn read_authority_rejects_named_root_replacement_before_node_read() {
     if !supports_retained_root_replacement_test() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
     let fixture = RealReaderFixture::new();
@@ -4149,6 +4153,10 @@ fn diagnostic_module_scope_keeps_admitted_source_after_project_remap() {
 #[test]
 fn diagnostic_module_scope_refuses_replaced_retained_root() {
     if !supports_retained_root_replacement_test() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
     let fixture = RealReaderFixture::new();
@@ -4185,7 +4193,10 @@ fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
     let outcome = create_file_link_fixture_for_test(&foreign, &module)
         .expect("unexpected file-link creation error must fail the fixture test");
     if outcome != FileLinkFixtureOutcome::Created {
-        eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
     assert!(authority
@@ -4492,6 +4503,10 @@ mod canonical_module_diagnostics {
     #[test]
     fn diagnostic_mapping_refuses_replacement_of_its_retained_source_root() {
         if !supports_retained_root_replacement_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let fixture = RealReaderFixture::new();
@@ -4695,7 +4710,10 @@ fn canonical_dcs_validation_does_not_follow_links_after_input_capture() {
         let outcome = create_file_link_fixture_for_test(&outside, &path)
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
     }
@@ -4733,7 +4751,10 @@ fn canonical_dcs_validation_refuses_linked_format_owners_before_capture() {
         let outcome = create_file_link_fixture_for_test(&outside, &owner)
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let address =
@@ -5120,6 +5141,10 @@ fn external_inventory_preserves_explicit_cancellation_during_a_large_owner_read(
 #[test]
 fn named_external_view_rejects_replaced_retained_root_without_reading_ambient_owner() {
     if !supports_retained_root_replacement_test() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
     let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
@@ -6284,7 +6309,10 @@ fn canonical_subsystem_check_refuses_linked_dependencies() {
         fs::write(&foreign, "<CommandInterface version=\"2.20\"/>").unwrap();
         let outcome = create_file_link_fixture_for_test(&foreign, &path).unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let address = QualifiedAddress::parse("main:Subsystem.Sales.Subsystem.Orders").unwrap();
@@ -6303,6 +6331,10 @@ fn canonical_subsystem_check_refuses_linked_dependencies() {
 #[test]
 fn canonical_subsystem_check_refuses_replaced_root() {
     if !supports_retained_root_replacement_test() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
     let fixture = nested_check_fixture();

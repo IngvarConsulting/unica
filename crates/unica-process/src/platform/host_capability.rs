@@ -45,10 +45,14 @@ pub enum HostCapability {
     WindowsJobObject,
     /// Windows verbatim, drive and UNC path syntax.
     WindowsPathSyntax,
+    /// The prepared `unica` binary of the ordinary CI test archive. Only the
+    /// lane runner binds it (`run-tests.py --rust-lane ordinary`), so a plain
+    /// local nextest run lacks it; every CI runner requires it.
+    ArchiveFixtureBinary,
 }
 
 impl HostCapability {
-    pub const ALL: [HostCapability; 12] = [
+    pub const ALL: [HostCapability; 13] = [
         HostCapability::Symlink,
         HostCapability::CaseSensitiveFilesystem,
         HostCapability::CaseInsensitiveFilesystem,
@@ -61,6 +65,7 @@ impl HostCapability {
         HostCapability::UnixPermissionBits,
         HostCapability::WindowsJobObject,
         HostCapability::WindowsPathSyntax,
+        HostCapability::ArchiveFixtureBinary,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -79,8 +84,24 @@ impl HostCapability {
             HostCapability::UnixPermissionBits => "unix-permission-bits",
             HostCapability::WindowsJobObject => "windows-job-object",
             HostCapability::WindowsPathSyntax => "windows-path-syntax",
+            HostCapability::ArchiveFixtureBinary => "archive-fixture-binary",
         }
     }
+}
+
+/// Report a skip a contract test returned with its capability name: a
+/// contract in a crate without this helper (for example `unica-workspace`,
+/// which may use processes only in tests) names the capability, and its
+/// `#[test]` wrapper reports it here. An unknown name is a defect.
+pub fn skip_named_host_capability(name: &str, reason: &str) {
+    skip_without_host_capability(named_host_capability(name), reason);
+}
+
+fn named_host_capability(name: &str) -> HostCapability {
+    HostCapability::ALL
+        .into_iter()
+        .find(|capability| capability.name() == name)
+        .unwrap_or_else(|| panic!("unknown host capability `{name}`"))
 }
 
 /// Record that this test skips because the host lacks `capability`.
@@ -137,6 +158,17 @@ fn write_skip_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_contract_skip_names_a_known_capability() {
+        // The lookup alone: recording would turn this passing test into a skip.
+        assert_eq!(
+            named_host_capability("windows-job-object"),
+            HostCapability::WindowsJobObject
+        );
+        let unknown = std::panic::catch_unwind(|| named_host_capability("teleport"));
+        assert!(unknown.is_err(), "an unknown capability name is a defect");
+    }
 
     #[test]
     fn a_skip_under_the_runner_leaves_one_record_naming_the_case() {
