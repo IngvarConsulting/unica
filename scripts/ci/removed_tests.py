@@ -11,14 +11,15 @@ from each crate and requires a declaration for each, before the queue:
 
     python scripts/ci/removed_tests.py --base origin/main --description-file pr.md
 
-Without a build the full case ID is unknown, so the match is approximate:
-the binary comes from `[[test]]`/`[[bin]]` of the package manifest or the
-file name (`tests/x.rs` → `<package>::x`), the module path from the file
-(`src/a/b.rs` → `<package>::a::b`); inline modules are not known. A
-declaration of the test's name or a prefix ending in `*` counts when it agrees
-with that path; `Removes-test-target:` counts for the file's binary. Packages
-under `crates/` and `vendor/ureq` are checked. The queue still checks the exact
-IDs.
+The case ID is rebuilt without a build, as nextest names it: the binary from
+the crate targets (`[[test]]`/`[[bin]]` of the manifest, `src/lib.rs`,
+`tests/x.rs` → `<package>::x`), the module path from the module tree (`mod`,
+`#[path]`, `include!` and inline modules) and the function name. A declaration
+counts by the queue gate's own rule: the exact ID or a literal prefix ending
+in `*` of the same binary, or `Removes-test-target:` for a binary that is
+gone. Packages under `crates/` and `vendor/ureq` are checked. `cfg` is not
+evaluated; tests a macro generates and files reached only through a computed
+`include!` are not seen. The queue still checks what this misses.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from collections import Counter
 import importlib.util
 import json
 import os
+import posixpath
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -64,16 +66,62 @@ def package_root(path: str) -> str | None:
     return None
 
 
-def tests_in(source: str) -> list[str]:
+def tests_in(source: str) -> list[tuple[str, str]]:
+    """(inline module path, name) of each test function in a file."""
     # Comments and literals are not code: a `#[test]` in them is no test.
-    return TEST_FUNCTION.findall(_boundary._mask_non_code(source))
+    masked = _boundary._mask_non_code(source)
+    events = sorted([(item.start(), "test", item[1]) for item in TEST_FUNCTION.finditer(masked)]
+                    + [(item.start(), "item", item) for item in MODULE_ITEM.finditer(masked)],
+                    key=lambda event: event[0])
+    found, inline, depth = [], [], 0
+    for _, kind, item in events:
+        if kind == "test":
+            found.append(("::".join(name for _, name in inline), item))
+        elif item["brace"] == "{" or item["end"] == "{":
+            depth += 1
+            if item["end"] == "{":
+                inline.append((depth, item["name"]))
+        elif item["brace"] == "}":
+            if inline and inline[-1][0] == depth:
+                inline.pop()
+            depth -= 1
+    return found
+
+
+# A module item as it reads with comments and literals masked: attributes
+# (one of them `#[path = ...]`), visibility and `mod name;` or `mod name {`;
+# an `include!(...)`; or a brace that opens or closes some other block.
+MODULE_ITEM = re.compile(
+    r"(?:(?:(?P<path>#\[path\s*=[^\]]*\])|#\[[^\]]*\])\s*)*"
+    r"(?:pub(?:\([^)]*\))?\s+)?\bmod\s+(?P<name>\w+)\s*(?P<end>[;{])"
+    r"|\binclude!\s*\((?P<include>[^)]*)\)|(?P<brace>[{}])")
+STRING = re.compile(r'^\s*"([^"\\]*)"\s*$')
 
 
 class Packages:
-    """Package names and binary IDs from `Cargo.toml` at one revision."""
+    """Package names and case ID prefixes of files from `Cargo.toml` and the
+    module tree at one revision."""
 
     def __init__(self, root: Path, revision: str):
-        self.root, self.revision, self.cache = root, revision, {}
+        self.root, self.revision, self.cache, self.trees, self.sources = root, revision, {}, {}, {}
+
+    def source(self, path: str) -> str | None:
+        """A file's text at the revision; one `git cat-file` reads a package."""
+        directory = package_root(path)
+        if directory not in self.sources:
+            listing = git(self.root, "ls-tree", "-r", self.revision, "--", directory).splitlines()
+            entries = [line.split("\t", 1) for line in listing]
+            blobs = [(name, meta.split()[2]) for meta, name in entries if meta.split()[1] == "blob" and name.endswith(".rs")]
+            output = subprocess.run(["git", "cat-file", "--batch"], cwd=self.root, check=True, capture_output=True,
+                                    input="".join(f"{blob}\n" for _, blob in blobs).encode()).stdout
+            texts, offset = {}, 0
+            for name, _ in blobs:
+                header_end = output.index(b"\n", offset)
+                size = int(output[offset:header_end].split()[2])
+                texts[name] = output[header_end + 1:header_end + 1 + size].decode("utf-8", "replace")
+                offset = header_end + 2 + size
+            self.sources[directory] = texts
+        return self.sources[directory].get(path)
 
     def manifest(self, directory: str) -> dict:
         if directory not in self.cache:
@@ -86,54 +134,126 @@ class Packages:
     def name(self, directory: str) -> str:
         return self.manifest(directory).get("package", {}).get("name") or PurePosixPath(directory).name
 
-    def case_prefix(self, path: str) -> tuple[str, str] | None:
-        """(binary ID, module path) a file contributes to a case ID, when knowable."""
-        directory = package_root(path)
+    def targets(self, directory: str) -> list[tuple[str, str]]:
+        """(binary ID, root file) of each crate target, as Cargo discovers them."""
         package, manifest = self.name(directory), self.manifest(directory)
-        relative = PurePosixPath(path).relative_to(directory).as_posix()
+        self.source(f"{directory}/src/lib.rs")
+        files = set(self.sources[directory])
+        roots = {}
         for kind, prefix in (("test", ""), ("bin", "bin/")):
             for target in manifest.get(kind, []):
-                if target.get("path") == relative:
-                    return f"{package}::{prefix}{target['name']}", ""
-        parts = list(PurePosixPath(relative).parts)
-        if parts[0] == "tests":
-            # `tests/x.rs` is binary `crate::x`; files below `tests/` belong to a
-            # binary that names them through `#[path]`, which is not known here.
-            return (f"{package}::{PurePosixPath(parts[1]).stem}", "") if len(parts) == 2 else None
-        if parts[0] != "src":
-            return None
-        if relative == "src/main.rs":
-            return f"{package}::bin/{package}", ""
-        if len(parts) == 3 and parts[1] == "bin":
-            return f"{package}::bin/{PurePosixPath(parts[2]).stem}", ""
-        modules = parts[1:]
-        modules[-1] = PurePosixPath(modules[-1]).stem
-        if modules[-1] in ("lib", "mod"):
-            modules.pop()
-        return package, "::".join(modules)
+                # A target whose file is gone builds nothing: Cargo fails, and
+                # the declaration of its removal is what the queue needs.
+                if target.get("path") and f"{directory}/{target['path']}" in files:
+                    roots[f"{directory}/{target['path']}"] = f"{package}::{prefix}{target['name']}"
+        def discover(path, binary):
+            if path in files:
+                roots.setdefault(path, binary)
+        discover(f"{directory}/src/lib.rs", package)
+        discover(f"{directory}/src/main.rs", f"{package}::bin/{package}")
+        for path in sorted(files):
+            parts = PurePosixPath(path).relative_to(directory).parts
+            if len(parts) == 3 and parts[:2] == ("src", "bin") and path.endswith(".rs"):
+                discover(path, f"{package}::bin/{PurePosixPath(parts[2]).stem}")
+            elif len(parts) == 4 and parts[:2] == ("src", "bin") and parts[3] == "main.rs":
+                discover(path, f"{package}::bin/{parts[2]}")
+            elif len(parts) == 2 and parts[0] == "tests" and path.endswith(".rs"):
+                discover(path, f"{package}::{PurePosixPath(parts[1]).stem}")
+            elif len(parts) == 3 and parts[0] == "tests" and parts[2] == "main.rs":
+                discover(path, f"{package}::{parts[1]}")
+        return sorted((binary, path) for path, binary in roots.items())
+
+    def tree(self, directory: str) -> dict[str, set[tuple[str, str]]]:
+        """Each file reached from a target by `mod`, `#[path]` or `include!`,
+        with every (binary ID, module path) it is compiled as."""
+        if directory in self.trees:
+            return self.trees[directory]
+        reached: dict[str, set[tuple[str, str]]] = {}
+        pending = [(path, binary, "", True) for binary, path in self.targets(directory)]
+        while pending:
+            path, binary, module, mod_rs = pending.pop()
+            if (binary, module) in reached.get(path, set()):
+                continue
+            source = self.source(path)
+            if source is None:
+                continue
+            reached.setdefault(path, set()).add((binary, module))
+            pending.extend(self.children(path, source, binary, module, mod_rs))
+        self.trees[directory] = reached
+        return reached
+
+    @staticmethod
+    def children(path: str, source: str, binary: str, module: str, mod_rs: bool):
+        """Files a source declares, with the module each is compiled as."""
+        masked = _boundary._mask_non_code(source)
+        here = PurePosixPath(path).parent
+        own = here if mod_rs else here / PurePosixPath(path).stem
+        inline: list[tuple[int, str]] = []
+        depth = 0
+        def joined(*names):
+            return "::".join(name for name in (module, *names) if name)
+        for item in MODULE_ITEM.finditer(masked):
+            if item["brace"] == "{":
+                depth += 1
+            elif item["brace"] == "}":
+                if inline and inline[-1][0] == depth:
+                    inline.pop()
+                depth -= 1
+            elif item["include"] is not None:
+                literal = STRING.match(source[item.start("include"):item.end("include")])
+                if literal:
+                    yield (posixpath.normpath(str(here / literal[1])), binary,
+                           joined(*(name for _, name in inline)), mod_rs)
+            elif item["end"] == "{":
+                depth += 1
+                inline.append((depth, item["name"]))
+            else:
+                names = [name for _, name in inline]
+                if item["path"]:
+                    literal = STRING.match(source[item.start("path"):item.end("path")].split("=", 1)[1][:-1])
+                    if literal:
+                        base = (here if mod_rs or not names else own).joinpath(*names)
+                        yield posixpath.normpath(str(base / literal[1])), binary, joined(*names, item["name"]), True
+                    continue
+                base = own.joinpath(*names)
+                yield str(base / f"{item['name']}.rs"), binary, joined(*names, item["name"]), False
+                yield str(base / item["name"] / "mod.rs"), binary, joined(*names, item["name"]), True
+
+    def case_prefixes(self, path: str) -> list[tuple[str, str]]:
+        """Every (binary ID, module path) a file contributes to case IDs; none
+        when no crate target reaches it."""
+        return sorted(self.tree(package_root(path)).get(path, ()))
 
 
-def removed_tests(root: Path, base: str, head: str = "HEAD") -> list[tuple[str, str, tuple[str, str] | None]]:
-    """(package, test function, (binary, module) of its file) present at the merge base and gone at head."""
+def cases(packages: Packages, directories: list[str]) -> dict[str, tuple[str, list[str]]]:
+    """Case ID of every test the packages compile, with its package and the
+    binary IDs of the package, as the queue inventory names them."""
+    found = {}
+    for directory in directories:
+        package = packages.name(directory)
+        binaries = [binary for binary, _ in packages.targets(directory)]
+        for path, prefixes in packages.tree(directory).items():
+            source = packages.source(path)
+            for inline, name in tests_in(source):
+                for binary, module in prefixes:
+                    found["::".join(part for part in (binary, module, inline, name) if part)] = (package, binaries)
+    return found
+
+
+def removed_tests(root: Path, base: str, head: str = "HEAD") -> list[tuple[str, str, list[str], list[str]]]:
+    """(package, case ID, binary IDs of the package at the base and those gone
+    at head) of each test compiled at the merge base and not at head, for the
+    packages the change touches."""
     merge_base = git(root, "merge-base", base, head).strip()
     changed = [line.split("\t") for line in git(root, "diff", "--name-status", "--no-renames", merge_base, head).splitlines()]
-    paths = sorted({path for _, *names in changed for path in names if package_root(path)})
-    packages = Packages(root, merge_base)
-    before, after, files = Counter(), Counter(), {}
-    for path in paths:
-        package = packages.name(package_root(path))
-        for revision, counter in ((merge_base, before), (head, after)):
-            try:
-                source = git(root, "show", f"{revision}:{path}")
-            except subprocess.CalledProcessError:
-                continue  # added or deleted on this side
-            for name in tests_in(source):
-                counter[(package, name)] += 1
-                if counter is before:
-                    files.setdefault((package, name), packages.case_prefix(path))
-    # A test moved to another file of the package is not a removal.
-    return sorted(((package, name, files[(package, name)]) for package, name in (before - after).elements()),
-                  key=lambda item: item[:2])
+    directories = sorted({package_root(path) for _, *names in changed for path in names if package_root(path)})
+    before = cases(Packages(root, merge_base), directories)
+    after = cases(Packages(root, head), directories)
+    remaining = {binary for _, binaries in after.values() for binary in binaries}
+    remaining |= {binary for directory in directories for binary, _ in Packages(root, head).targets(directory)}
+    # A test moved to another module changes its case ID: the queue sees it go.
+    return sorted((package, case, binaries, sorted(set(binaries) - remaining))
+                  for case, (package, binaries) in before.items() if case not in after)
 
 
 # The queue gate (`ci_rust_lanes.explained_case`) matches a declaration
@@ -149,29 +269,21 @@ def unsupported_declarations(declarations: dict) -> list[str]:
             for item in declarations[key] if UNSUPPORTED_PATTERN.search(item)]
 
 
-def explained(package: str, name: str, known: tuple[str, str] | None, declarations: dict) -> bool:
-    """A declaration names the test or a prefix that agrees with its file, or its binary."""
-    case = None if known is None else (f"{known[0]}::{known[1]}::" if known[1] else f"{known[0]}::")
-    for pattern in declarations["removedTests"]:
-        if not pattern.startswith(package + "::"):
-            continue
-        prefix = pattern[:-1] if pattern.endswith("*") else pattern
-        if not pattern.endswith("*") and not pattern.endswith("::" + name):
-            continue
-        if UNSUPPORTED_PATTERN.search(pattern):
-            continue
-        if case is None:
-            # Unknown module path: the name itself, or a prefix below the
-            # package root; `<package>::*` would cover anything.
-            if pattern.endswith("::" + name) or prefix.count("::") >= 2:
-                return True
-            continue
-        # The file's module path is a prefix of the case ID; inline modules
-        # may extend either side.
-        if case.startswith(prefix) or prefix.startswith(case):
-            return True
-    return any(target == known[0] if known else target == package or target.startswith(package + "::")
-               for target in declarations["removedTargets"])
+def binary_of(case: str, binaries: list[str]) -> str | None:
+    # As `ci_rust_lanes.binary_of`: a case belongs to the longest binary ID it starts with.
+    return max((binary for binary in binaries if case.startswith(binary + "::")), key=len, default=None)
+
+
+def explained(case: str, binaries: list[str], gone: list[str], declarations: dict) -> bool:
+    """The queue gate's rule (`ci_rust_lanes.explained_case`): the case's binary
+    is gone and declared removed, or a declaration of the same binary names the
+    case exactly or, ending in `*`, is a literal prefix of it."""
+    binary = binary_of(case, binaries)
+    if binary in gone and binary in declarations["removedTargets"]:
+        return True
+    return any(binary_of(pattern, binaries) == binary
+               and (case.startswith(pattern[:-1]) if pattern.endswith("*") else case == pattern)
+               for pattern in declarations["removedTests"])
 
 
 def declarations_in(description: str) -> dict:
@@ -183,9 +295,10 @@ def declarations_in(description: str) -> dict:
 def check(root: Path, base: str, description: str, head: str = "HEAD") -> list[str]:
     declarations = declarations_in(description)
     return unsupported_declarations(declarations) + [
-        f"{crate}: test {name} disappeared; declare 'Removes-test: <binary-id>::<path>::{name}' "
-        "(or a prefix ending in *) in the pull request description"
-        for crate, name, known in removed_tests(root, base, head) if not explained(crate, name, known, declarations)]
+        f"{package}: test {case} disappeared; declare 'Removes-test: {case}' "
+        "(or a literal prefix ending in *) in the pull request description"
+        for package, case, binaries, gone in removed_tests(root, base, head)
+        if not explained(case, binaries, gone, declarations)]
 
 
 def event_description() -> str | None:
