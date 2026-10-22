@@ -17,16 +17,17 @@ import ci_rust_lanes as lanes
 
 
 def manifest(lane="ordinary", host="ubuntu-latest", profile="queue"):
-    parts = [[{"binary": f"package-{lane}", "name": f"case_{i}", "ignored": False}] for i in range(lanes.shards(profile, lane))]
+    parts = [[{"binary": f"package-{lane}", "name": f"case_{i}", "ignored": False}] for i in range(lanes.shards(profile, lane, host))]
     document = {"schemaVersion": 1, "identity": {"sha": "a" * 40, "target": "x86_64-unknown-linux-gnu", "os": "Linux"}, "profile": profile, "runner": host,
-            "lane": lane, "selection": list(lanes.selection(lane)), "nextestProfile": lanes.runner.nextest_profile(profile, lanes.selection(lane)),
+            "lane": lane, "selection": list(lanes.selection(lane)), "nextestProfile": lanes.nextest_profile(profile, lane, host),
             "archiveSha256": "archive-" + lane, "inventory": sum(parts, []), "ignoredInventory": [], "shards": parts,
             # Archive binaries independent of the profile filter; later fixtures
             # narrow the inventory to the product packages listed here.
             "binaries": sorted({f"package-{lane}", "unica-coder", "ureq"})}
     if lane == "ordinary":
         document["fixtureBinary"] = {"path": "x86_64-unknown-linux-gnu/debug/unica", "sha256": "0" * 64, "bytes": 1}
-        document["doctests"] = {"command": ["cargo", "test", "--doc"], "exitCode": 0, "seconds": 0.01, "output": "ok"}
+        if not lanes.platform_only(profile, host):
+            document["doctests"] = {"command": ["cargo", "test", "--doc"], "exitCode": 0, "seconds": 0.01, "output": "ok"}
     return document
 
 
@@ -693,7 +694,7 @@ class PreviousInventoryTests(unittest.TestCase):
 
     def collect(self, root, profile="queue", hosts=None, mutate=None):
         for host in hosts or self.HOSTS:
-            for lane in lanes.lanes(profile):
+            for lane in lanes.lanes(profile, host):
                 plan = manifest(lane, host, profile)
                 if mutate:
                     mutate(plan)
@@ -765,8 +766,8 @@ class PreviousInventoryTests(unittest.TestCase):
 
     def test_vanished_configuration_and_its_results_fail_within_one_profile(self):
         previous = self.previous()
-        with self.assertRaisesRegex(ValueError, "macos-14/receipt: configuration and its results disappeared"):
-            with patch.object(lanes, "lanes", side_effect=lambda profile: ("ordinary",) if profile == "queue" else lanes.LANES):
+        with self.assertRaisesRegex(ValueError, "ubuntu-latest/receipt: configuration and its results disappeared"):
+            with patch.object(lanes, "lanes", side_effect=lambda profile, host=None: ("ordinary",) if profile == "queue" else lanes.LANES):
                 self.verify(previous, jobs={**self.jobs(), **{f"{phase}-rust-{lane}": {"result": "skipped"}
                                                    for lane in ("receipt", "vendor") for phase in ("build", "run")}})
 
@@ -836,15 +837,67 @@ class PreviousInventoryTests(unittest.TestCase):
             self.verify({**self.baseline(None), "explanations": {"reset": False, "removedTargets": []}})
 
     def test_equivalent_profiles_compare_selection_and_configurations(self):
-        self.assertTrue(lanes.same_selection("queue", "main"))
-        self.assertFalse(lanes.same_selection("queue", "pr"))
-        self.assertFalse(lanes.same_selection("queue", "large"))
+        # The queue narrows macOS to the platform facades; on Linux it still
+        # selects what `main` selects.
+        self.assertTrue(lanes.same_selection("queue", "main", "ubuntu-latest"))
+        self.assertFalse(lanes.same_selection("queue", "main", "macos-14"))
+        self.assertTrue(lanes.same_selection("queue", "queue", "macos-14"))
+        self.assertFalse(lanes.same_selection("queue", "pr", "ubuntu-latest"))
+        self.assertFalse(lanes.same_selection("queue", "large", "ubuntu-latest"))
         def drop_receipt_case(plan):
-            if plan["lane"] == "receipt":
+            if plan["lane"] == "receipt" and plan["runner"] == "ubuntu-latest":
                 plan["inventory"] = [{"binary": "unica-coder", "name": "other", "ignored": False}]
                 plan["shards"] = [plan["inventory"]]
-        with self.assertRaisesRegex(ValueError, "selection of test target package-receipt became empty"):
+        with self.assertRaisesRegex(ValueError, "ubuntu-latest/receipt: selection of test target package-receipt became empty"):
             self.verify(self.previous("queue"), "main", jobs=self.jobs("main"), mutate=drop_receipt_case)
+        # A full macOS `main` against the narrowed queue baseline compares
+        # targets only, never the platform selection's cases.
+        report = self.verify(self.previous("queue"), "main", jobs=self.jobs("main"))
+        self.assertTrue(report["mandatoryComplete"])
+
+    def test_queue_macos_runs_only_the_platform_profile_and_its_inventory_stays_comparable(self):
+        self.assertEqual(lanes.lanes("queue", "macos-14"), ("ordinary",))
+        self.assertEqual(lanes.lanes("queue", "ubuntu-latest"), lanes.LANES)
+        for profile in ("pr", "main", "release", "large", "all"):
+            with self.subTest(profile=profile):
+                self.assertFalse(lanes.platform_only(profile, "macos-14"))
+        self.assertEqual(lanes.nextest_profile("queue", "ordinary", "macos-14"), "queue-platform")
+        self.assertEqual(lanes.nextest_profile("queue", "ordinary", "ubuntu-latest"), "queue")
+        self.assertEqual(lanes.shards("queue", "ordinary", "macos-14"), 1)
+        hosts = ["ubuntu-latest", "macos-14"]
+        self.assertEqual([(row["runner"], row["shard"]) for row in lanes.matrix("queue", hosts, lane="ordinary", run=True)],
+                         [("ubuntu-latest", 1), ("ubuntu-latest", 2), ("macos-14", 1)])
+        for lane in ("receipt", "vendor"):
+            self.assertEqual([row["runner"] for row in lanes.matrix("queue", hosts, lane=lane, run=True)], ["ubuntu-latest"])
+            self.assertEqual([row["runner"] for row in lanes.matrix("large", hosts, lane=lane, run=True)], hosts)
+        self.assertEqual(lanes.lint_runners("queue", hosts), ["ubuntu-latest"])
+        self.assertEqual(lanes.lint_runners("large", [*hosts, "windows-latest"]), [*hosts, "windows-latest"])
+        self.assertEqual(lanes.lint_runners("pr", hosts), hosts)
+        # The queue's own baseline compares cleanly, while a platform-only
+        # macOS ordinary plan never carries or demands a doctest outcome.
+        report = self.verify(self.previous("queue"), "queue")
+        self.assertTrue(report["mandatoryComplete"])
+        self.assertIsNone(lanes.doctest_problem(manifest("ordinary", "macos-14", "queue")))
+        self.assertEqual(lanes.doctest_problem({**manifest("ordinary", "ubuntu-latest", "queue"), "doctests": None}),
+                         "missing doctest outcome")
+        # A missing macOS receipt in the queue is the policy, not a loss; the
+        # same loss in a complete profile still fails.
+        with self.assertRaisesRegex(ValueError, "macos-14/receipt: missing or duplicate lane plan"):
+            lanes.verify_union(self.collect_without(("macos-14", "receipt")), "release", hosts, "a" * 40)
+
+    def collect_without(self, missing):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        for host in self.HOSTS:
+            for lane in lanes.lanes("release", host):
+                if (host, lane) == missing:
+                    continue
+                plan = manifest(lane, host, "release")
+                lanes.write(root / host / lane / "lane.json", plan)
+                for index in range(1, len(plan["shards"]) + 1):
+                    lanes.write(root / host / lane / str(index) / "shard.json", result(plan, index))
+        return root
 
     def test_windows_losses_in_large_stay_advisory(self):
         hosts = ["ubuntu-latest", "macos-14", "windows-latest"]

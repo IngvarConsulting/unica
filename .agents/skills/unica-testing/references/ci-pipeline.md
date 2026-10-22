@@ -19,8 +19,16 @@ Guards и Python `small` обоих наборов (`tests/ci`, `tests/dev`) о�
 Матрица и допущенные размеры вычисляются общей политикой; итоговый gate
 сверяет весь ожидаемый состав, поэтому неполная кодовая очередь не проходит.
 
-Guards, Clippy и тесты работают на отдельных раннерах. Rust lint использует
-ту же матрицу ОС, что Rust tests; Windows остаётся advisory только ночью.
+Guards, Clippy и тесты работают на отдельных раннерах. Состав ОС задаёт
+профиль. Очередь проверяет Linux полностью, а macOS — только платформенные
+фасады: тесты модулей, чьи файлы лежат в каталогах правила
+INV.PLATFORM.OS-BEHIND-FACADE. Это nextest-профиль `queue-platform`, его
+выражение пишет `size-filters.py --write`, ручного списка нет. Receipt, vendor
+и Clippy на macOS в очереди не идут. Ночной `large` и релиз исполняют полный
+набор и Clippy на каждой ОС своей матрицы; Windows остаётся advisory только
+ночью. Rust lint следует составу тестов (`lint_runners`). Цена решения:
+ветки `cfg` под macOS вне платформенных каталогов и Clippy на macOS
+впервые проверяет ночь, когда изменение уже в `main`.
 Ошибка линта или загрузки SARIF не должна лишать отчёт тестовых результатов.
 Итоговый `Unica CI` проверяет обязательные результаты, включая lint; сборка
 поставки также ждёт успешные guards, lint и тесты. Линтеры публикуют SARIF
@@ -30,8 +38,9 @@ Guards, Clippy и тесты работают на отдельных ранне
 создают nextest archive, полный план и разбиение на shards для каждой ОС.
 `run-rust-*` зависят только от своего producer и теневого selector, получают
 архив и выполняют его через `run-tests.py --phase run`. Cargo cache им
-не передаётся. Ordinary в очереди имеет две части; остальные конфигурации —
-по одной. `test-rust-platforms` сверяет точное непустое объединение планов,
+не передаётся. Ordinary в очереди имеет две части на Linux и одну
+платформенную на macOS; остальные конфигурации — по одной.
+`test-rust-platforms` сверяет точное непустое объединение планов,
 результаты каждой части, SHA, archive hash, ОС/features/profile и попытку
 workflow. Повторы nextest остаются в Allure, а не считаются новыми случаями.
 Неожиданно пустой план, потерянная часть и обязательный skip блокируют gate.
@@ -79,8 +88,9 @@ medium. План и результаты лежат в `medium.json`. `test-rust
 результаты тем же правилом, что и части. План обязан содержать все
 кейсы выбранных пакетов из плана PR. Пустой план допустим, только если
 в затронутых пакетах нет тестов вне large. С прежним инвентарём эта
-добавка не сравнивается. Очередь по-прежнему исполняет полный набор.
-Lanes receipt и vendor и medium на macOS остаются за очередью.
+добавка не сравнивается. Очередь по-прежнему исполняет полный набор
+на Linux. Receipt, vendor и medium вне платформенных каталогов на macOS
+идут только ночью и в релизе.
 
 ### Возможности хоста
 
@@ -105,9 +115,9 @@ ignored-кейсом, а не потерей. Вне этих путей OS-cfg 
 
 | Возможность | Обязательна на | Где исполняется |
 | --- | --- | --- |
-| `symlink` | ubuntu, macOS | очередь Linux; macOS — очередь для `tests/platform/`, остальное nightly; Windows без привилегии — `skipped` |
+| `symlink` | ubuntu, macOS | очередь Linux; macOS — очередь для выбора `queue-platform` (`src/platform/` фасадов и `tests/platform/`), остальное nightly; Windows без привилегии — `skipped` |
 | `case-sensitive-filesystem` | ubuntu | очередь Linux |
-| `case-insensitive-filesystem` | macOS | macOS: очередь для `tests/platform/`, остальное nightly |
+| `case-insensitive-filesystem` | macOS | macOS: очередь для выбора `queue-platform`, остальное nightly |
 | `normalization-insensitive-filesystem` | macOS | как предыдущая |
 | `enforced-permission-bits` | ubuntu, macOS | очередь Linux |
 | `directory-mtime` | ubuntu, macOS | очередь Linux |

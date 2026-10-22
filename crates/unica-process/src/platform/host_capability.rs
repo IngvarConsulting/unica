@@ -110,6 +110,25 @@ pub fn skip_without_host_capability(capability: HostCapability, reason: &str) {
     let name = std::env::var("NEXTEST_TEST_NAME")
         .expect("host capability skips are recorded only under nextest");
     let attempt = std::env::var("NEXTEST_ATTEMPT").unwrap_or_else(|_| "1".to_owned());
+    write_skip_record(
+        Path::new(&directory),
+        &binary,
+        &name,
+        &attempt,
+        capability,
+        reason,
+    );
+}
+
+/// One file per case and attempt; the runner reads the case from the record.
+fn write_skip_record(
+    directory: &Path,
+    binary: &str,
+    name: &str,
+    attempt: &str,
+    capability: HostCapability,
+    reason: &str,
+) {
     let record = serde_json::json!({
         "binary": binary,
         "name": name,
@@ -117,14 +136,13 @@ pub fn skip_without_host_capability(capability: HostCapability, reason: &str) {
         "capability": capability.name(),
         "reason": reason,
     });
-    // One file per case and attempt; the runner reads the case from the record.
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(&(binary.as_str(), name.as_str()), &mut hasher);
+    std::hash::Hash::hash(&(binary, name), &mut hasher);
     let file = format!(
         "{:016x}__{attempt}.json",
         std::hash::Hasher::finish(&hasher)
     );
-    std::fs::write(Path::new(&directory).join(file), record.to_string())
+    std::fs::write(directory.join(file), record.to_string())
         .expect("write the host capability skip record");
 }
 
@@ -141,6 +159,39 @@ mod tests {
             skip_named_host_capability("teleport", "no such capability")
         });
         assert!(unknown.is_err(), "an unknown capability name is a defect");
+    }
+
+    #[test]
+    fn a_skip_under_the_runner_leaves_one_record_naming_the_case() {
+        let directory = tempfile::tempdir().unwrap();
+        // The record is written from explicit inputs: no process environment
+        // is changed, so concurrent `cargo test` threads cannot interfere.
+        write_skip_record(
+            directory.path(),
+            "unica-demo::links",
+            "tests::needs_a_link",
+            "2",
+            HostCapability::Symlink,
+            "needs the symlink privilege",
+        );
+        let records: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].to_string_lossy().ends_with("__2.json"));
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&records[0]).unwrap()).unwrap();
+        assert_eq!(
+            record,
+            serde_json::json!({
+                "binary": "unica-demo::links",
+                "name": "tests::needs_a_link",
+                "attempt": "2",
+                "capability": "symlink",
+                "reason": "needs the symlink privilege",
+            })
+        );
     }
 
     #[test]
