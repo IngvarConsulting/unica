@@ -1088,7 +1088,8 @@ pub(crate) fn plan_hidden_v13_apply(
         &xdto_operations,
     )?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
-    if let Some(warning) = support_warning {
+    // A plan whose operations cancel out edits nothing protected.
+    if let Some(warning) = support_warning.filter(|_| !staged.planned_changes().is_empty()) {
         effects.push_warning(warning);
     }
     effects
@@ -1761,6 +1762,59 @@ mod tests {
                 .is_none());
             assert_eq!(tree_snapshot(&fixture.source_dir()), before);
         }
+    }
+
+    #[test]
+    fn warn_policy_reports_support_locked_only_for_a_plan_that_changes_the_object() {
+        let fixture = ApplySeamFixture::new();
+        std::fs::write(
+            fixture
+                .source_dir()
+                .parent()
+                .unwrap()
+                .join(".v8-project.json"),
+            serde_json::json!({"editingAllowedCheck": "warn"}).to_string(),
+        )
+        .unwrap();
+        let marker = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(marker, vendor_removal_support_marker(0, true)).unwrap();
+
+        let edit = seam_request(
+            "main:Document.First",
+            "props.set",
+            serde_json::json!({"values": {"Comment": "vendor edit"}}),
+        );
+        let (staged, effects) =
+            plan_hidden_v13_apply(&edit, &fixture.binding, &fixture.admission())
+                .expect("warn permits editing a locked vendor object");
+        assert!(!staged.planned_changes().is_empty());
+        let codes = effects
+            .warnings()
+            .iter()
+            .map(|warning| warning["code"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, vec![serde_json::json!("support_locked")]);
+        assert_eq!(effects.warnings()[0]["at"], "main:Document.First");
+
+        // Restating the stored comment changes nothing.
+        let descriptor = fixture.source_dir().join("Documents/First.xml");
+        let text = std::fs::read_to_string(&descriptor).unwrap();
+        std::fs::write(
+            &descriptor,
+            text.replacen("<Comment></Comment>", "<Comment>kept</Comment>", 1),
+        )
+        .unwrap();
+        let unchanged = seam_request(
+            "main:Document.First",
+            "props.set",
+            serde_json::json!({"values": {"Comment": "kept"}}),
+        );
+        let (staged, effects) =
+            plan_hidden_v13_apply(&unchanged, &fixture.binding, &fixture.admission())
+                .expect("a no-op plan is still planned");
+        assert!(staged.planned_changes().is_empty());
+        assert!(effects.warnings().is_empty(), "{:?}", effects.warnings());
     }
 
     #[test]
