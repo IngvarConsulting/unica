@@ -25,6 +25,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::proposal::{
     DirectoryMembershipSelector, DirectoryMembershipSnapshot, DirectoryTopologyEntry,
     DirectoryTopologyEntryKind,
@@ -254,7 +255,7 @@ impl ApplyInputContext {
         } else {
             &self.relative_path
         };
-        write!(formatter, "; input `{}`: {reason}", path.display())
+        write!(formatter, "; input `{}`: {reason}", path.portable())
     }
 }
 
@@ -843,7 +844,7 @@ impl CompileTransaction {
         }) {
             return Err(format!(
                 "duplicate retained apply target: {}",
-                relative_path.display()
+                relative_path.portable()
             ));
         }
         if self
@@ -2611,7 +2612,7 @@ fn validate_strict_relative_file_path(relative: &Path) -> Result<(), String> {
     {
         return Err(format!(
             "retained apply target must contain only normal relative components: {}",
-            relative.display()
+            relative.portable()
         ));
     }
     Ok(())
@@ -2713,7 +2714,7 @@ fn retain_retained_apply_execution_binding(
                     RetainedApplyValidationErrorKind::ContainmentIdentity,
                     format!(
                         "retained apply target parent became a link/reparse point: {}",
-                        entry.relative_path.display()
+                        entry.relative_path.portable()
                     ),
                 ))
             }
@@ -2722,7 +2723,7 @@ fn retain_retained_apply_execution_binding(
                     RetainedApplyValidationErrorKind::ContainmentIdentity,
                     format!(
                         "retained apply target parent link/reparse route or physical identity changed: {}",
-                        entry.relative_path.display()
+                        entry.relative_path.portable()
                     ),
                 ))
             }
@@ -2747,21 +2748,21 @@ fn retain_retained_apply_execution_binding(
                 RetainedApplyValidationErrorKind::ContainmentIdentity,
                 format!(
                     "retained apply absent parent chain became a link/reparse point: {}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             )),
             Ok(_) => Err(RetainedApplyValidationError::new(
                 RetainedApplyValidationErrorKind::AbsentChainOccupied,
                 format!(
                     "retained apply absent parent chain is occupied: {}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             )),
             Err(error) => Err(RetainedApplyValidationError::new(
                 RetainedApplyValidationErrorKind::UnsupportedProvider,
                 format!(
                     "retained apply absent parent chain cannot be inspected {}: {error}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             )),
         };
@@ -2775,7 +2776,7 @@ fn retain_retained_apply_execution_binding(
                 RetainedApplyValidationErrorKind::ContainmentIdentity,
                 format!(
                     "retained apply target became a link/reparse point: {}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             ))
         }
@@ -2788,7 +2789,7 @@ fn retain_retained_apply_execution_binding(
                 },
                 format!(
                     "retained apply preimage changed: {}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             ))
         }
@@ -2797,7 +2798,7 @@ fn retain_retained_apply_execution_binding(
                 RetainedApplyValidationErrorKind::UnsupportedProvider,
                 format!(
                     "retained apply target cannot be inspected {}: {error}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             ))
         }
@@ -2813,7 +2814,7 @@ fn retain_retained_apply_execution_binding(
             RetainedApplyValidationErrorKind::ContainmentIdentity,
             format!(
                 "retained apply preimage changed: {}",
-                entry.relative_path.display()
+                entry.relative_path.portable()
             ),
         ));
     };
@@ -2826,7 +2827,7 @@ fn retain_retained_apply_execution_binding(
             RetainedApplyValidationErrorKind::AbsentChainOccupied,
             format!(
                 "retained apply preimage changed: {}",
-                entry.relative_path.display()
+                entry.relative_path.portable()
             ),
         ));
     };
@@ -2841,7 +2842,7 @@ fn retain_retained_apply_execution_binding(
             RetainedApplyValidationErrorKind::ContainmentIdentity,
             format!(
                 "retained apply target has a hard-link alias: {}",
-                entry.relative_path.display()
+                entry.relative_path.portable()
             ),
         ));
     }
@@ -2850,7 +2851,7 @@ fn retain_retained_apply_execution_binding(
             RetainedApplyValidationErrorKind::ConcurrentRevision,
             format!(
                 "retained apply preimage changed: {}",
-                entry.relative_path.display()
+                entry.relative_path.portable()
             ),
         ));
     }
@@ -2888,7 +2889,7 @@ fn retain_retained_apply_execution_binding(
                 RetainedApplyValidationErrorKind::ConcurrentRevision,
                 format!(
                     "retained apply preimage changed: {}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             ));
         }
@@ -2902,7 +2903,7 @@ fn retain_retained_apply_execution_binding(
             RetainedApplyValidationErrorKind::ConcurrentRevision,
             format!(
                 "retained apply preimage changed: {}",
-                entry.relative_path.display()
+                entry.relative_path.portable()
             ),
         ));
     }
@@ -2912,7 +2913,7 @@ fn retain_retained_apply_execution_binding(
             RetainedApplyValidationErrorKind::ConcurrentRevision,
             format!(
                 "retained apply preimage changed: {}",
-                entry.relative_path.display()
+                entry.relative_path.portable()
             ),
         )
     })?;
@@ -2979,7 +2980,7 @@ impl RetainedApplyReadGuardBinding {
                         RetainedApplyValidationErrorKind::ContainmentIdentity,
                         format!(
                             "reference input parent changed: {}",
-                            self.relative_path.display()
+                            self.relative_path.portable()
                         ),
                     ));
                 }
@@ -2991,7 +2992,7 @@ impl RetainedApplyReadGuardBinding {
                 RetainedApplyValidationErrorKind::ContainmentIdentity,
                 format!(
                     "reference input is no longer a regular file: {}",
-                    self.relative_path.display()
+                    self.relative_path.portable()
                 ),
             )),
         }
@@ -3035,7 +3036,7 @@ fn validate_retained_apply_read_guard(
             RetainedApplyValidationErrorKind::ContainmentIdentity,
             format!(
                 "reference input has a hard-link alias: {}",
-                guard.relative_path.display()
+                guard.relative_path.portable()
             ),
         ));
     }
@@ -3044,7 +3045,7 @@ fn validate_retained_apply_read_guard(
             RetainedApplyValidationErrorKind::ConcurrentRevision,
             format!(
                 "reference input identity changed: {}",
-                guard.relative_path.display()
+                guard.relative_path.portable()
             ),
         ));
     }
@@ -3080,7 +3081,7 @@ fn validate_retained_apply_read_guard(
         if length > guard.expected_len {
             return Err(RetainedApplyValidationError::new(
                 RetainedApplyValidationErrorKind::ConcurrentRevision,
-                format!("reference input grew: {}", guard.relative_path.display()),
+                format!("reference input grew: {}", guard.relative_path.portable()),
             ));
         }
         hash.update(&buffer[..count]);
@@ -3091,7 +3092,7 @@ fn validate_retained_apply_read_guard(
             RetainedApplyValidationErrorKind::ConcurrentRevision,
             format!(
                 "reference input bytes changed: {}",
-                guard.relative_path.display()
+                guard.relative_path.portable()
             ),
         ));
     }
@@ -3127,7 +3128,7 @@ fn validate_retained_apply_state_typed(
                 RetainedApplyValidationErrorKind::ContainmentIdentity,
                 format!(
                     "retained apply nearest ancestor link/reparse route or physical identity changed {}: {error}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             )
         })?;
@@ -3136,7 +3137,7 @@ fn validate_retained_apply_state_typed(
                 RetainedApplyValidationErrorKind::Invariant,
                 format!(
                     "retained apply staging invariant requires an absent file below an absent parent: {}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             ));
         }
@@ -3149,21 +3150,21 @@ fn validate_retained_apply_state_typed(
                 RetainedApplyValidationErrorKind::ContainmentIdentity,
                 format!(
                     "retained apply absent parent chain became a link/reparse point: {}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             )),
             Ok(_) => Err(RetainedApplyValidationError::new(
                 RetainedApplyValidationErrorKind::AbsentChainOccupied,
                 format!(
                     "retained apply absent parent chain is occupied: {}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             )),
             Err(error) => Err(RetainedApplyValidationError::new(
                 RetainedApplyValidationErrorKind::UnsupportedProvider,
                 format!(
                     "retained apply absent parent chain cannot be inspected {}: {error}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             )),
         };
@@ -3181,7 +3182,7 @@ fn validate_retained_apply_state_at_parent_typed(
             RetainedApplyValidationErrorKind::ContainmentIdentity,
             format!(
                 "retained apply target parent link/reparse route or physical identity changed {}: {error}",
-                entry.relative_path.display()
+                entry.relative_path.portable()
             ),
         )
     })?;
@@ -3198,7 +3199,7 @@ fn validate_retained_apply_state_at_parent_typed(
                     RetainedApplyValidationErrorKind::ContainmentIdentity,
                     format!(
                         "retained apply target has a hard-link alias: {}",
-                        entry.relative_path.display()
+                        entry.relative_path.portable()
                     ),
                 ));
             }
@@ -3214,7 +3215,7 @@ fn validate_retained_apply_state_at_parent_typed(
                 RetainedApplyValidationErrorKind::ContainmentIdentity,
                 format!(
                     "retained apply target is a link/reparse point: {}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             ))
         }
@@ -3228,7 +3229,7 @@ fn validate_retained_apply_state_at_parent_typed(
                 kind,
                 format!(
                     "retained apply target is not a regular file: {}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             ));
         }
@@ -3238,7 +3239,7 @@ fn validate_retained_apply_state_at_parent_typed(
                 RetainedApplyValidationErrorKind::UnsupportedProvider,
                 format!(
                     "retained apply target cannot be inspected {}: {error}",
-                    entry.relative_path.display()
+                    entry.relative_path.portable()
                 ),
             ))
         }
@@ -3255,7 +3256,7 @@ fn validate_retained_apply_state_at_parent_typed(
             kind,
             format!(
                 "retained apply preimage changed: {}",
-                entry.relative_path.display()
+                entry.relative_path.portable()
             ),
         ));
     }
@@ -3370,7 +3371,7 @@ fn create_retained_apply_parent_chain(
         .map_err(|error| {
             RetainedApplyPublishError::containment(format!(
                 "retained apply nearest ancestor physical identity changed {}: {error}",
-                entry.relative_path.display()
+                entry.relative_path.portable()
             ))
         })?;
     let parent_path = entry
@@ -3408,13 +3409,13 @@ fn create_retained_apply_parent_chain(
             Ok(_) => {
                 return Err(RetainedApplyPublishError::containment(format!(
                     "retained apply absent parent chain is occupied: {}",
-                    logical_path.display()
+                    logical_path.portable()
                 )))
             }
             Err(error) => {
                 return Err(RetainedApplyPublishError::provider(format!(
                     "retained apply absent parent chain cannot be inspected {}: {error}",
-                    logical_path.display()
+                    logical_path.portable()
                 )))
             }
         }
@@ -3444,7 +3445,7 @@ fn create_retained_apply_parent_chain(
                     kind,
                     format!(
                         "retained apply absent parent publication failed {}: {error}",
-                        logical_path.display()
+                        logical_path.portable()
                     ),
                 ));
             }
@@ -3484,7 +3485,7 @@ fn owned_retained_apply_directory_child(
         owned.directory.validate_named_identity().map_err(|error| {
             RetainedApplyPublishError::containment(format!(
                 "batch-created retained directory identity changed {}: {error}",
-                owned.logical_path.display()
+                owned.logical_path.portable()
             ))
         })?;
         return Ok(Some(owned.directory.clone()));
@@ -3533,7 +3534,7 @@ fn validate_retained_apply_postimage(
                     RetainedApplyPublishErrorKind::Invariant,
                     format!(
                         "retained apply postimage parent is not transaction-owned: {}",
-                        entry.relative_path.display()
+                        entry.relative_path.portable()
                     ),
                 )
             })?;
@@ -3809,7 +3810,7 @@ fn rollback_retained_apply(
         {
             errors.push(format!(
                 "batch-created directory was preserved {}: {error}",
-                created.logical_path.display()
+                created.logical_path.portable()
             ));
         }
     }

@@ -3,6 +3,7 @@ use crate::layout::metadata_kind_index;
 use roxmltree::Document;
 use std::path::PathBuf;
 use unica_address::source_target::MetadataAddress;
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::proposal::input::bad;
 use unica_source_contract::proposal::ApplySourceAuthority;
 use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind, ApplyProposal};
@@ -529,7 +530,7 @@ pub fn stage_new_file(
     if existing.is_some() {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
-            format!("`{}` already exists", relative.display()),
+            format!("`{}` already exists", relative.portable()),
         )
         .at_path(at_path.to_string()));
     }
