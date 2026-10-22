@@ -355,6 +355,7 @@ default-filter = '''(
     | (binary_id(unica-coder::v13_search_integration) & test(/^command_lifecycle::/))
     | (binary_id(unica-coder::v13_search_integration) & test(/^metadata_members::/))
     | (binary_id(unica-coder::v13_search_integration) & test(/^resolve_resources::/))
+    | (binary_id(unica-coder::v13_search_integration) & test(/^support_policy_warning::/))
     | (binary_id(unica-coder::v13_search_integration) & test(/^target_isolation::/))
     | (binary_id(unica-coder::v13_search_integration) & test(/^unreadable::/))
     | (binary_id(unica-coder::v13_workspace_bootstrap) & test(/^canonical_stdio_views_a_module_through_a_symlinked_workspace$/))

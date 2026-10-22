@@ -73,12 +73,13 @@ fn changes_support_state(
         .is_some_and(|operation| operation.changes_support_state())
 }
 
-/// Vendor-support gate of the canonical mutation path. When the actor's
-/// support policy is `deny`, a request whose owner is a vendor object with
-/// the rule `locked`, or whose configuration is on support with changes
-/// disabled, refuses `invalid_state` before any family stages a byte.
-/// Removing a vendor object also requires its own rule to be `off-support`:
-/// permission to edit it does not permit its removal.
+/// Vendor-support gate of the canonical mutation path. A request whose owner
+/// is a vendor object with the rule `locked`, or whose configuration is on
+/// support with changes disabled, refuses `invalid_state` before any family
+/// stages a byte when the actor's support policy is `deny`; under `warn` it
+/// proceeds and returns the `support_locked` warning the plan carries; `off`
+/// is silent. Under `deny`, removing a vendor object also requires its own
+/// rule to be `off-support`: permission to edit it does not permit removal.
 /// The owner is the top-level metadata object of the addressed node, or the
 /// configuration root for root-level targets; nested forms, templates and
 /// attributes inherit the rule of their owner, as they do in the platform.
@@ -87,34 +88,52 @@ fn refuse_targets_on_locked_vendor_objects(
     binding: &ProviderRootBinding,
     admission: &ApplyAdmission,
     staged: &mut ApplyStagedState,
-) -> Result<(), ApplyPlanError> {
+) -> Result<Option<serde_json::Value>, ApplyPlanError> {
     use unica_metadata_designer::support::{
         parse_support_state_compat_bytes, support_root_uuid_from_bytes,
     };
     use unica_source_contract::proposal::SupportPolicyMode;
 
-    if admission.support_policy_mode() != SupportPolicyMode::Deny {
-        return Ok(());
-    }
+    let deny = match admission.support_policy_mode() {
+        SupportPolicyMode::Deny => true,
+        SupportPolicyMode::Warn => false,
+        SupportPolicyMode::Off => return Ok(None),
+    };
     if request
         .ops()
         .iter()
         .all(|operation| changes_support_state(operation.name(), Some(operation.at()), binding))
     {
-        return Ok(());
+        return Ok(None);
     }
+    let support_locked = |owner: &str, message: String| {
+        serde_json::json!({
+            "code": "support_locked",
+            "severity": "warning",
+            "at": format!("{}:{owner}", request.at().source_set()),
+            "message": message,
+        })
+    };
     let at = request.at().to_string();
     let marker_path = std::path::Path::new("Ext/ParentConfigurations.bin");
     let marker = staged
         .read(marker_path)
         .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
     let Some(state) = parse_support_state_compat_bytes(marker.as_deref()) else {
-        return Ok(());
+        return Ok(None);
     };
     if state.removed() {
-        return Ok(());
+        return Ok(None);
     }
     if !state.global_editing_enabled() {
+        if !deny {
+            let owner = support_owner_relative(request, binding.source_kind())
+                .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
+            return Ok(Some(support_locked(
+                &owner,
+                "the configuration is on vendor support with changes disabled; the project support policy `warn` permits this edit".to_string(),
+            )));
+        }
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits",
@@ -123,17 +142,18 @@ fn refuse_targets_on_locked_vendor_objects(
     }
     let Some((owner, owner_relative)) = support_owner_relative(request, binding.source_kind())
     else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(bytes) = staged
         .read(&owner_relative)
         .map_err(|error| ApplyPlanError::staging(error, at.clone()))?
     else {
-        return Ok(());
+        return Ok(None);
     };
     let support_rule =
         support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
-    if matches!(support_rule, Some(0 | 1))
+    if deny
+        && matches!(support_rule, Some(0 | 1))
         && request.ops().iter().any(|operation| {
             unica_metadata::apply_operations::MetadataOperation::named(operation.name())
                 == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove)
@@ -153,6 +173,12 @@ fn refuse_targets_on_locked_vendor_objects(
         .at_path(at));
     }
     if support_rule == Some(0) {
+        if !deny {
+            return Ok(Some(support_locked(
+                &owner,
+                format!("`{owner}` is a vendor object with the support rule `locked`; the project support policy `warn` permits this edit"),
+            )));
+        }
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             format!(
@@ -161,7 +187,7 @@ fn refuse_targets_on_locked_vendor_objects(
         )
         .at_path(at));
     }
-    Ok(())
+    Ok(None)
 }
 
 /// The descriptor that carries the support rule of the addressed node: the
@@ -858,7 +884,8 @@ pub(crate) fn plan_hidden_v13_apply(
         .staged_state()
         .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
-    refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
+    let support_warning =
+        refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
     let support_operations = request
         .ops()
         .iter()
@@ -1061,6 +1088,9 @@ pub(crate) fn plan_hidden_v13_apply(
         &xdto_operations,
     )?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
+    if let Some(warning) = support_warning {
+        effects.push_warning(warning);
+    }
     effects
         .set_details(unica_xdto::results::XDTO_OBJECTS, &xdto_objects)
         .map_err(|error| {
