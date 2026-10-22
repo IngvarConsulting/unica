@@ -1,6 +1,5 @@
 use super::{
-    cf, cfe, code_patch_composition, external, mxl_composition, registry, role, xdto,
-    NativeOperationAdapter,
+    cf, cfe, code_patch_composition, mxl_composition, registry, role, xdto, NativeOperationAdapter,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -109,21 +108,8 @@ impl NativeOperationAdapter {
                 }
                 None => {}
             }
-            // cf-init previews with the same typed data the apply
-            // returns; the shared planner just skips the commit.
-            if dry_run && operation == "cf-init" {
-                let execution = cf::preview_configuration_scaffold_with_data(args, context);
-                return typed_operation_result(execution.outcome, execution.data, "cf init");
-            }
             if !dry_run {
                 match operation {
-                    "epf-init" | "erf-init" => {
-                        if let Some((outcome, data)) =
-                            external::apply_with_data(operation, tool_name, args, context)
-                        {
-                            return typed_operation_result(outcome, data, "external init");
-                        }
-                    }
                     "interface-edit" => {
                         let execution =
                             crate::infrastructure::interface_composition::edit_interface_with_data(
@@ -167,14 +153,6 @@ impl NativeOperationAdapter {
                             "subsystem edit",
                         );
                     }
-                    "cfe-patch-method" => {
-                        let execution = cfe::patch_extension_method_with_data(args, context);
-                        return typed_operation_result(
-                            execution.outcome,
-                            execution.data,
-                            "cfe patch method",
-                        );
-                    }
                     "cfe-borrow" => {
                         let execution = cfe::borrow_cfe_with_data(args, context);
                         return typed_operation_result(
@@ -183,28 +161,12 @@ impl NativeOperationAdapter {
                             "cfe borrow",
                         );
                     }
-                    "cf-init" => {
-                        let execution = cf::create_configuration_scaffold_with_data(args, context);
-                        return typed_operation_result(
-                            execution.outcome,
-                            execution.data,
-                            "cf init",
-                        );
-                    }
                     "cf-edit" => {
                         let execution = cf::edit_cf_with_data(args, context);
                         return typed_operation_result(
                             execution.outcome,
                             execution.data,
                             "cf edit",
-                        );
-                    }
-                    "cfe-init" => {
-                        let execution = cfe::create_extension_scaffold_with_data(args, context);
-                        return typed_operation_result(
-                            execution.outcome,
-                            execution.data,
-                            "cfe init",
                         );
                     }
                     "form-remove" => {

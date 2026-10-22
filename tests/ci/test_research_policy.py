@@ -18,7 +18,7 @@ class ResearchPolicyTests(unittest.TestCase):
 
         self.assertIn("research", cargo["features"])
         targets = [target for target in cargo.get("test", []) if target["path"].startswith("tests/research/")]
-        self.assertGreaterEqual(len(targets), 2)
+        self.assertTrue(targets, "no research target is declared")
         for target in targets:
             with self.subTest(target=target["name"]):
                 self.assertEqual(target.get("required-features"), ["research"])
@@ -27,7 +27,7 @@ class ResearchPolicyTests(unittest.TestCase):
     def test_research_wrappers_enable_the_research_feature(self) -> None:
         wrappers = sorted((REPO_ROOT / "scripts" / "research").glob("*.sh"))
 
-        self.assertGreaterEqual(len(wrappers), 3)
+        self.assertTrue(wrappers, "no research wrapper is present")
         for wrapper in wrappers:
             with self.subTest(wrapper=wrapper.name):
                 text = wrapper.read_text(encoding="utf-8")

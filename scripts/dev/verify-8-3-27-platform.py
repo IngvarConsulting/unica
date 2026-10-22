@@ -110,9 +110,11 @@ EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
     "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb"
 )
-EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb"
-)
+# The corpus moved off the v0.12 surface (#1813): the 48 remaining cases
+# publish through canonical unica.apply, so every case contract changed. The
+# exact platform gate on 8.3.27.2074 has not run on them yet; pin its digest
+# here and in LAST_VERIFIED_CASE_CONTRACT_SHA256 after that run.
+EXPECTED_CASE_CONTRACT_SHA256: str | None = None
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
@@ -142,24 +144,12 @@ XML_FAMILY_BY_ROOT_QNAME = {
 }
 MANDATORY_CASE_IDS = frozenset(
     {
-        "cf-edit-root-property",
-        "cf-edit-set-home-page",
-        "cf-edit-set-panels",
-        "cf-init-default",
-        "cfe-patch-method-bsl-only",
-        "cfe-patch-method-catalog-object-module",
-        "cfe-patch-method-catalog-manager-module",
-        "cfe-patch-method-information-register-record-set-module",
-        "cfe-patch-method-catalog-form-module",
-        "cfe-patch-method-constant-value-manager-module",
         "code-patch-bsl-only",
         "dcs-compile-owned-template",
         "dcs-edit-add-parameter-after-settings",
         "dcs-edit-modify-field-role-restriction",
         "dcs-edit-owned-template",
         "dcs-edit-set-structure-after-settings",
-        "epf-init-managed-form",
-        "erf-init-managed-form",
         "form-add-managed",
         "form-compile-managed",
         "form-edit-managed",
@@ -198,16 +188,10 @@ MANDATORY_CASE_IDS = frozenset(
         "role-edit-set-right",
         "subsystem-edit-add-child",
         "support-edit-bin-only",
-        "template-add-binary-data",
-        "template-add-data-composition-schema",
-        "template-add-html-document",
         "template-add-spreadsheet-document",
-        "template-add-text-document",
         "template-remove-object-template",
         "xdto-add-nested-property",
-        "cfe-init-default",
         "cfe-borrow-object",
-        "cfe-borrow-managed-form",
     }
 )
 FORBIDDEN_CREDENTIAL_OPTIONS = {

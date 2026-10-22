@@ -1,6 +1,6 @@
 use crate::application::operation_descriptors::native_operation_descriptor;
 use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
-use unica_source_contract::{ProjectSourceMap, SourceFormat, SourceSetKind};
+use unica_source_contract::SourceFormat;
 
 use crate::infrastructure::project_sources::discover_project_source_map;
 use serde_json::{Map, Value};
@@ -8,7 +8,6 @@ use std::path::{Component, Path, PathBuf};
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_designer::selection::deepest_source_set_matches;
 use unica_workspace::path_policy::WorkspacePathPolicy;
-use unica_workspace::paths::metadata_is_link_or_reparse_point;
 
 pub(crate) fn validate_tool_context(
     tool: ToolSpec,
@@ -26,7 +25,7 @@ fn validate_workspace_paths(
     dry_run: bool,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    if dry_run && !validates_compile_preview_like_apply(tool) && !is_initializer_tool(tool) {
+    if dry_run && !validates_compile_preview_like_apply(tool) {
         return Ok(());
     }
     if !is_native_xml_tool(tool)
@@ -61,38 +60,19 @@ fn validate_native_source_set_format(
     dry_run: bool,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    if (dry_run && !validates_compile_preview_like_apply(tool) && !is_initializer_tool(tool))
-        || !is_native_xml_tool(tool)
-    {
+    if (dry_run && !validates_compile_preview_like_apply(tool)) || !is_native_xml_tool(tool) {
         return Ok(());
     }
 
     let source_map = discover_project_source_map(&context.workspace_root)?;
-    if source_map.source_sets.is_empty() && !is_external_init_tool(tool) {
+    if source_map.source_sets.is_empty() {
         return Ok(());
-    }
-
-    if is_external_init_tool(tool) {
-        validate_external_project_format(tool, &source_map)?;
-    }
-
-    if let Some(expected_kind) = initializer_source_set_kind(tool) {
-        for key in write_path_args(tool) {
-            let Some(Value::String(raw_path)) = args.get(*key) else {
-                continue;
-            };
-            let target = resolve_read_path(&context.cwd, raw_path);
-            validate_initializer_destination(tool, &target, context, &source_map, expected_kind)?;
-        }
     }
 
     for key in native_source_path_args(tool) {
         let Some(Value::String(raw_path)) = args.get(*key) else {
             continue;
         };
-        if initializer_source_set_kind(tool).is_some() && write_path_args(tool).contains(key) {
-            continue;
-        }
         let target = resolve_read_path(&context.cwd, raw_path);
         let matches = source_map
             .source_sets
@@ -122,83 +102,6 @@ fn validates_compile_preview_like_apply(tool: ToolSpec) -> bool {
     )
 }
 
-fn validate_external_project_format(
-    tool: ToolSpec,
-    source_map: &ProjectSourceMap,
-) -> Result<(), String> {
-    match source_map.configured_format_raw.as_deref() {
-        None | Some("DESIGNER") => Ok(()),
-        Some("EDT") => Err(format!(
-            "{} requires v8project.yaml format=DESIGNER; format=EDT uses a different external-project layout",
-            tool.name
-        )),
-        Some(other) => Err(format!(
-            "{} requires v8project.yaml format to be exact `DESIGNER` (or omitted for the Designer default); got {other:?}",
-            tool.name
-        )),
-    }
-}
-
-fn validate_initializer_destination(
-    tool: ToolSpec,
-    target: &Path,
-    context: &WorkspaceContext,
-    source_map: &ProjectSourceMap,
-    expected_kind: SourceSetKind,
-) -> Result<(), String> {
-    reject_symlink_components(target, &context.workspace_root)?;
-    let matching_source_sets = source_map
-        .source_sets
-        .iter()
-        .filter_map(|source_set| {
-            let source_root = normalize_lexical(&context.workspace_root.join(&source_set.path));
-            path_starts_with_case_insensitive(target, &source_root)
-                .then_some((source_set, source_root))
-        })
-        .collect::<Vec<_>>();
-    let matching_source_sets = deepest_source_set_matches(matching_source_sets);
-    if matching_source_sets.is_empty() {
-        return Ok(());
-    }
-
-    for (source_set, source_root) in &matching_source_sets {
-        validate_platform_xml_source_format(tool, source_set)?;
-        let aliases_source_root = target.components().count() == source_root.components().count();
-        let targets_source_root = target == source_root || aliases_source_root;
-        if is_external_init_tool(tool) && aliases_source_root && target != source_root {
-            return Err(format!(
-                "{} must target the exact source-set root {} so v8-runner can discover top-level external descriptors; got {}",
-                tool.name,
-                source_root.display(),
-                target.display()
-            ));
-        }
-        let nested_in_external_artifact_set = !targets_source_root
-            && matches!(
-                source_set.kind,
-                SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-            );
-        if source_set.kind != expected_kind
-            && (targets_source_root || nested_in_external_artifact_set)
-        {
-            return Err(format!(
-                "{} targets source-set `{}` of kind {:?}; expected {:?}",
-                tool.name, source_set.name, source_set.kind, expected_kind
-            ));
-        }
-        if source_set.kind == expected_kind && is_external_init_tool(tool) && target != source_root
-        {
-            return Err(format!(
-                "{} must target the exact source-set root {} so v8-runner can discover top-level external descriptors; got {}",
-                tool.name,
-                source_root.display(),
-                target.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn validate_platform_xml_source_format(
     tool: ToolSpec,
     source_set: &unica_source_contract::ProjectSourceSet,
@@ -214,47 +117,6 @@ fn validate_platform_xml_source_format(
             tool.name, source_set.name
         )),
     }
-}
-
-fn reject_symlink_components(target: &Path, workspace_root: &Path) -> Result<(), String> {
-    let workspace_root = normalize_lexical(workspace_root);
-    let relative = target.strip_prefix(&workspace_root).map_err(|_| {
-        format!(
-            "external scaffold target is outside workspace root: {}",
-            target.display()
-        )
-    })?;
-    let mut current = workspace_root;
-    for component in relative.components() {
-        current.push(component.as_os_str());
-        match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata_is_link_or_reparse_point(&metadata) => {
-                return Err(format!(
-                    "external scaffold OutputDir must not traverse symlink: {}",
-                    current.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => {
-                return Err(format!("failed to inspect {}: {error}", current.display()));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn path_starts_with_case_insensitive(path: &Path, base: &Path) -> bool {
-    let path_components = path.components().collect::<Vec<_>>();
-    let base_components = base.components().collect::<Vec<_>>();
-    path_components.len() >= base_components.len()
-        && path_components
-            .iter()
-            .zip(base_components.iter())
-            .all(|(left, right)| {
-                left.as_os_str().to_string_lossy().to_lowercase()
-                    == right.as_os_str().to_string_lossy().to_lowercase()
-            })
 }
 
 fn write_path_args(tool: ToolSpec) -> &'static [&'static str] {
@@ -318,36 +180,6 @@ fn normalize_lexical(path: &Path) -> PathBuf {
         }
     }
     normalized
-}
-
-fn is_external_init_tool(tool: ToolSpec) -> bool {
-    matches!(tool.name, "unica.epf.init" | "unica.erf.init")
-}
-
-fn is_initializer_tool(tool: ToolSpec) -> bool {
-    initializer_source_set_kind(tool).is_some()
-}
-
-fn initializer_source_set_kind(tool: ToolSpec) -> Option<SourceSetKind> {
-    match tool.handler {
-        ToolHandler::NativeOperation {
-            operation: "cf-init",
-            ..
-        } => Some(SourceSetKind::Configuration),
-        ToolHandler::NativeOperation {
-            operation: "cfe-init",
-            ..
-        } => Some(SourceSetKind::Extension),
-        ToolHandler::NativeOperation {
-            operation: "epf-init",
-            ..
-        } => Some(SourceSetKind::ExternalProcessor),
-        ToolHandler::NativeOperation {
-            operation: "erf-init",
-            ..
-        } => Some(SourceSetKind::ExternalReport),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -446,7 +278,7 @@ mod tests {
 
     #[test]
     fn native_platform_xml_source_format_public_gate_is_closed_over_public_operations() {
-        use unica_source_contract::{SourceFormat, SourceSetKind};
+        use unica_source_contract::SourceFormat;
 
         let native_tools = tools()
             .into_iter()
@@ -460,9 +292,7 @@ mod tests {
                     unreachable!()
                 };
                 let descriptor = native_operation_descriptor(operation).unwrap();
-                (descriptor.source_path_args.is_empty()
-                    && initializer_source_set_kind(*tool).is_none())
-                .then_some(tool.name)
+                descriptor.source_path_args.is_empty().then_some(tool.name)
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -488,14 +318,7 @@ mod tests {
                 (SourceFormat::Invalid, false, "invalid/ambiguous format"),
             ] {
                 let (root, context) = fixture(&format!("native-format-{}-{format:?}", tool.name));
-                let kind =
-                    initializer_source_set_kind(tool).unwrap_or(SourceSetKind::Configuration);
-                let kind_yaml = match kind {
-                    SourceSetKind::Configuration => "CONFIGURATION",
-                    SourceSetKind::Extension => "EXTENSION",
-                    SourceSetKind::ExternalProcessor => "EXTERNAL_DATA_PROCESSORS",
-                    SourceSetKind::ExternalReport => "EXTERNAL_REPORTS",
-                };
+                let kind_yaml = "CONFIGURATION";
                 let format_yaml = match format {
                     SourceFormat::PlatformXml => "format: DESIGNER\n",
                     SourceFormat::Edt => "format: EDT\n",
@@ -531,24 +354,14 @@ mod tests {
                 for key in descriptor.source_path_args {
                     args.insert((*key).to_string(), json!("src/subject.xml"));
                 }
-                if initializer_source_set_kind(tool).is_some() {
-                    for key in descriptor.write_path_args {
-                        args.insert((*key).to_string(), json!("src"));
-                    }
-                }
-                let gate_applies = !descriptor.source_path_args.is_empty()
-                    || initializer_source_set_kind(tool).is_some();
+                let gate_applies = !descriptor.source_path_args.is_empty();
                 let result = validate_tool_context(tool, &args, false, &context);
                 if accepted || !gate_applies {
                     result.unwrap_or_else(|error| panic!("{}: {error}", tool.name));
                 } else {
                     let error = result.expect_err("non-platform format must fail closed");
-                    if is_external_init_tool(tool) && format == SourceFormat::Edt {
-                        assert!(error.contains("format=DESIGNER"), "{}: {error}", tool.name);
-                    } else {
-                        assert!(error.contains(diagnostic), "{}: {error}", tool.name);
-                        assert!(error.contains("platform_xml"), "{}: {error}", tool.name);
-                    }
+                    assert!(error.contains(diagnostic), "{}: {error}", tool.name);
+                    assert!(error.contains("platform_xml"), "{}: {error}", tool.name);
                 }
                 let _ = std::fs::remove_dir_all(root);
             }

@@ -224,7 +224,6 @@ pub(crate) mod tests {
     };
     use crate::application::{InvocationMode, ToolSpec, UnicaApplication};
     use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
-    use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
     use serde_json::{json, Map};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -362,12 +361,7 @@ pub(crate) mod tests {
             cache_root: root.join(".build/unica"),
             workspace_epoch: 0,
         };
-        let args = Map::from_iter([
-            ("Name".to_string(), json!("MetaTyped")),
-            ("OutputDir".to_string(), json!("src")),
-        ]);
-        let outcome = create_configuration_scaffold(&args, &context);
-        assert!(outcome.ok, "{:?}", outcome.errors);
+        crate::infrastructure::test_fixtures::copy_empty_configuration(&root);
         fs::write(
             root.join("v8project.yaml"),
             concat!(
@@ -492,12 +486,7 @@ pub(crate) mod tests {
                 cache_root: root.join(".build/unica"),
                 workspace_epoch: 0,
             };
-            let args = Map::from_iter([
-                ("Name".to_string(), json!("MetaEditTyped")),
-                ("OutputDir".to_string(), json!("src")),
-            ]);
-            let outcome = create_configuration_scaffold(&args, &context);
-            assert!(outcome.ok, "{:?}", outcome.errors);
+            crate::infrastructure::test_fixtures::copy_empty_configuration(&root);
             fs::write(
                 root.join("v8project.yaml"),
                 concat!(

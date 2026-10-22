@@ -106,10 +106,6 @@ const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
 
-const CFE_PATCH_METHOD_CONTEXTS: &[&str] = &["НаСервере", "НаКлиенте", "НаСервереБезКонтекста"];
-const CFE_PATCH_METHOD_INTERCEPTOR_TYPES: &[&str] = &["Before", "After"];
-const CFE_PATCH_METHOD_IDENTIFIER_PATTERN: &str = r"^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё]*$";
-
 const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "BodyLimit",
     "BorrowMainAttribute",
@@ -240,8 +236,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "version",
     "withText",
 ];
-
-const EXTERNAL_INIT_ARGS: &[&str] = &["FormName", "Name", "OutputDir", "Synonym"];
 
 const BUILD_ARGS: &[&str] = &[
     "config",
@@ -1020,12 +1014,10 @@ pub fn validate_tool_argument_semantics(
     validate_code_arguments(tool, args, dry_run)?;
     validate_code_patch_arguments(tool, args)?;
     validate_form_edit_arguments(tool, args, dry_run)?;
-    validate_external_init_arguments(tool, args)?;
-    validate_cfe_patch_method_arguments(tool, args)?;
     validate_xdto_arguments(tool, args)?;
     validate_role_edit_arguments(tool, args)?;
 
-    if !dry_run || is_external_init_tool(tool) {
+    if !dry_run {
         for required in required_args(&tool) {
             if !args.contains_key(required) {
                 return Err(format!("{} requires `{required}` argument", tool.name));
@@ -1443,120 +1435,6 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
             "{} selector value must be a non-empty string",
             tool.name
         ));
-    }
-    Ok(())
-}
-
-fn validate_cfe_patch_method_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    if tool.name != "unica.cfe.patch_method" {
-        return Ok(());
-    }
-    for aliases in [
-        &["MethodName", "methodName"][..],
-        &["Context", "context"][..],
-        &["InterceptorType", "interceptorType"][..],
-        &["IsFunction", "isFunction"][..],
-    ] {
-        validate_unique_alias_group(tool.name, args, aliases)?;
-    }
-    for name in ["MethodName", "methodName"] {
-        let Some(value) = args.get(name) else {
-            continue;
-        };
-        let value = value
-            .as_str()
-            .ok_or_else(|| format!("{} argument `{name}` must be string", tool.name))?;
-        if !is_cfe_patch_method_identifier(value) {
-            return Err(format!(
-                "{} argument `MethodName` must be a valid 1C identifier",
-                tool.name
-            ));
-        }
-    }
-    for name in ["Context", "context"] {
-        let Some(value) = args.get(name) else {
-            continue;
-        };
-        let value = value
-            .as_str()
-            .ok_or_else(|| format!("{} argument `{name}` must be string", tool.name))?;
-        if !CFE_PATCH_METHOD_CONTEXTS.contains(&value) {
-            return Err(format!(
-                "{} argument `Context` must be one of: {}",
-                tool.name,
-                CFE_PATCH_METHOD_CONTEXTS.join(", ")
-            ));
-        }
-    }
-    for name in ["InterceptorType", "interceptorType"] {
-        let Some(value) = args.get(name) else {
-            continue;
-        };
-        let value = value
-            .as_str()
-            .ok_or_else(|| format!("{} argument `{name}` must be string", tool.name))?;
-        if !CFE_PATCH_METHOD_INTERCEPTOR_TYPES.contains(&value) {
-            return Err(format!(
-                "{} argument `InterceptorType` must be one of: {}",
-                tool.name,
-                CFE_PATCH_METHOD_INTERCEPTOR_TYPES.join(", ")
-            ));
-        }
-    }
-    for name in ["IsFunction", "isFunction"] {
-        let Some(value) = args.get(name) else {
-            continue;
-        };
-        let value = value
-            .as_bool()
-            .ok_or_else(|| format!("{} argument `{name}` must be boolean", tool.name))?;
-        if value {
-            return Err(format!(
-                "{} v1 requires a parameterless procedure; a base method signature resolver for functions and parameterized methods is not implemented",
-                tool.name
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn is_cfe_patch_method_identifier(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    let valid_start = |ch: char| {
-        ch == '_'
-            || ch.is_ascii_alphabetic()
-            || ('А'..='я').contains(&ch)
-            || matches!(ch, 'Ё' | 'ё')
-    };
-    valid_start(first) && chars.all(|ch| valid_start(ch) || ch.is_ascii_digit())
-}
-
-fn validate_external_init_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    if !is_external_init_tool(tool) {
-        return Ok(());
-    }
-    for key in ["Name", "Synonym", "OutputDir", "FormName"] {
-        let Some(value) = args.get(key) else {
-            continue;
-        };
-        let Some(value) = value.as_str() else {
-            return Err(format!("{} argument `{key}` must be string", tool.name));
-        };
-        if value.trim().is_empty() {
-            return Err(format!(
-                "{} argument `{key}` must be a non-empty string",
-                tool.name
-            ));
-        }
     }
     Ok(())
 }
@@ -2297,16 +2175,11 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
 
 fn native_args_for(operation: &str) -> &'static [&'static str] {
     match operation {
-        "epf-init" | "erf-init" => EXTERNAL_INIT_ARGS,
         "xdto-info" => XDTO_INFO_ARGS,
         "xdto-edit" => XDTO_EDIT_ARGS,
         "role-edit" => ROLE_EDIT_ARGS,
         _ => NATIVE_XML_DSL_ARGS,
     }
-}
-
-fn is_external_init_tool(tool: ToolSpec) -> bool {
-    matches!(tool.name, "unica.epf.init" | "unica.erf.init")
 }
 
 fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
@@ -3292,27 +3165,6 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             _ => property_schema(name),
         };
     }
-    if tool.name == "unica.cfe.patch_method" {
-        return match name {
-            "Context" | "context" => {
-                json!({ "type": "string", "enum": CFE_PATCH_METHOD_CONTEXTS })
-            }
-            "InterceptorType" | "interceptorType" => {
-                json!({ "type": "string", "enum": CFE_PATCH_METHOD_INTERCEPTOR_TYPES })
-            }
-            "MethodName" | "methodName" => json!({
-                "type": "string",
-                "minLength": 1,
-                "pattern": CFE_PATCH_METHOD_IDENTIFIER_PATTERN
-            }),
-            "IsFunction" | "isFunction" => json!({
-                "type": "boolean",
-                "const": false,
-                "description": "cfe.patch_method v1 supports parameterless procedures only; base method signature resolution is not implemented"
-            }),
-            _ => property_schema(name),
-        };
-    }
     if matches!(
         tool.handler,
         ToolHandler::RuntimeAdapter
@@ -3939,8 +3791,7 @@ pub(crate) mod tests {
     /// выживших закреплён их собственными тестами: meta.edit —
     /// `typed_edit_preview_bytes_equal_the_applied_post_image` и квитанции,
     /// form.edit — `form_edit_preview_apply_and_no_op_validate_the_projected_form`,
-    /// code.patch — `code_patch_*_preview_apply_*`, cf.init —
-    /// `cf_init_preview_shares_the_apply_data_shape_and_writes_nothing`.
+    /// code.patch — `code_patch_*_preview_apply_*`.
     #[test]
     fn preview_gated_operations_stay_a_closed_shrinking_list() {
         use crate::application::PREVIEW_GATED_OPERATIONS;
@@ -3950,16 +3801,7 @@ pub(crate) mod tests {
         // «список отсортирован и все имена настоящие».
         assert_eq!(
             PREVIEW_GATED_OPERATIONS,
-            [
-                "cf-edit",
-                "cfe-borrow",
-                "cfe-init",
-                "cfe-patch-method",
-                "epf-init",
-                "erf-init",
-                "interface-edit",
-                "subsystem-edit",
-            ],
+            ["cf-edit", "cfe-borrow", "interface-edit", "subsystem-edit",],
             "the transitional list is approved item by item"
         );
         let mut sorted = PREVIEW_GATED_OPERATIONS.to_vec();
@@ -3968,10 +3810,6 @@ pub(crate) mod tests {
         assert_eq!(
             sorted, PREVIEW_GATED_OPERATIONS,
             "the transitional list stays sorted and unique"
-        );
-        assert!(
-            !PREVIEW_GATED_OPERATIONS.contains(&"cf-init"),
-            "cf.init previews honestly"
         );
         let mutating_operations = tools()
             .into_iter()
@@ -4568,22 +4406,14 @@ pub(crate) mod tests {
         }
         let expected = BTreeMap::from([
             ("unica.cf.edit", entry("cf-edit", "3882:a5dd0d041f4db130")),
-            ("unica.cf.init", entry("cf-init", "3968:a8503a4a76d2cb11")),
             (
                 "unica.cfe.borrow",
                 entry("cfe-borrow", "3920:57db4508b59e7b97"),
-            ),
-            ("unica.cfe.init", entry("cfe-init", "3819:b860582d3f0f0555")),
-            (
-                "unica.cfe.patch_method",
-                entry("cfe-patch-method", "4422:63881e3b29b5bdd9"),
             ),
             (
                 "unica.code.patch",
                 entry("code-patch", "1042:989b04365351871e"),
             ),
-            ("unica.epf.init", entry("epf-init", "301:609ff516112efe75")),
-            ("unica.erf.init", entry("erf-init", "301:609ff516112efe75")),
             (
                 "unica.form.compile",
                 entry("form-compile", "3869:2e8369c6b61d7d10"),
@@ -4658,55 +4488,6 @@ pub(crate) mod tests {
         let mut invalid = base;
         invalid["selector"] = json!({"method": "A", "anchor": "B"});
         assert!(!validator.is_valid(&invalid));
-    }
-
-    #[test]
-    fn cfe_patch_method_contract_exposes_closed_bsl_argument_domains() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.cfe.patch_method")
-            .unwrap();
-        let schema = input_schema_for_tool(&tool);
-        assert_eq!(
-            schema["properties"]["Context"]["enum"],
-            json!(["НаСервере", "НаКлиенте", "НаСервереБезКонтекста"])
-        );
-        assert_eq!(
-            schema["properties"]["InterceptorType"]["enum"],
-            json!(["Before", "After"])
-        );
-        assert_eq!(
-            schema["properties"]["IsFunction"]["const"],
-            json!(false),
-            "v1 exposes procedure-only interception"
-        );
-        assert!(schema["properties"]["MethodName"]["pattern"].is_string());
-
-        let mut args = Map::from_iter([
-            ("ExtensionPath".to_string(), json!("ext")),
-            ("ModulePath".to_string(), json!("CommonModule.Server")),
-            ("MethodName".to_string(), json!("Run")),
-            ("InterceptorType".to_string(), json!("Before")),
-            ("Context".to_string(), json!("AtServer")),
-        ]);
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("Context"), "{error}");
-        args.insert("Context".to_string(), json!("НаСервере"));
-        args.insert("MethodName".to_string(), json!("Bad-Name"));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("MethodName"), "{error}");
-        args.insert("MethodName".to_string(), json!("Run"));
-        args.insert(
-            "InterceptorType".to_string(),
-            json!("ModificationAndControl"),
-        );
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("InterceptorType"), "{error}");
-        args.insert("InterceptorType".to_string(), json!("Before"));
-        args.insert("IsFunction".to_string(), json!(true));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("parameterless procedure"), "{error}");
-        assert!(error.contains("not implemented"), "{error}");
     }
 
     #[test]
@@ -5035,65 +4816,6 @@ pub(crate) mod tests {
         args.insert("operation".to_string(), json!("shell"));
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
         assert!(error.contains("must be one of"));
-    }
-
-    #[test]
-    fn external_artifact_init_contracts_are_typed_and_require_destination() {
-        for tool_name in ["unica.epf.init", "unica.erf.init"] {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == tool_name)
-                .unwrap_or_else(|| panic!("missing tool {tool_name}"));
-            let schema = input_schema_for_tool(&tool);
-
-            assert_eq!(schema["additionalProperties"], false);
-            assert!(schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("Name")));
-            assert!(schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("OutputDir")));
-            for argument in ["Name", "Synonym", "OutputDir", "FormName", "dryRun"] {
-                assert!(
-                    schema["properties"].get(argument).is_some(),
-                    "{tool_name} must expose {argument}"
-                );
-            }
-            assert!(schema["properties"].get("script").is_none());
-            assert!(schema["properties"].get("args").is_none());
-            let actual = schema["properties"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect::<BTreeSet<_>>();
-            assert_eq!(
-                actual,
-                BTreeSet::from([
-                    "FormName",
-                    "Name",
-                    "OutputDir",
-                    "Synonym",
-                    "confirm",
-                    "cwd",
-                    "dryRun",
-                ])
-            );
-
-            let invalid = json!({"Name": "Sample", "OutputDir": 42})
-                .as_object()
-                .unwrap()
-                .clone();
-            let error = validate_tool_arguments(tool, &invalid, false).unwrap_err();
-            assert!(error.contains("OutputDir"), "{error}");
-            assert!(error.contains("must be string"), "{error}");
-
-            let missing_output = json!({"Name": "Sample"}).as_object().unwrap().clone();
-            let error = validate_tool_arguments(tool, &missing_output, true).unwrap_err();
-            assert!(error.contains("requires `OutputDir`"), "{error}");
-        }
     }
 
     #[test]
