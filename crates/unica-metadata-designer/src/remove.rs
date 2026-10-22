@@ -661,15 +661,17 @@ pub fn meta_remove_references(
     };
     // A reference is a text or an attribute value: `<v8:Type>cfg:CatalogRef.X</v8:Type>`,
     // `<xr:Value name="Role.X">` or `<Command name="Catalog.X.StandardCommand.OpenList">`.
+    let file_name = relative.file_name().and_then(|name| name.to_str());
     for node in document.descendants() {
-        if node.is_text()
+        let holds_query = node.is_text()
             && node
                 .parent_element()
-                .is_some_and(|parent| matches!(parent.tag_name().name(), "QueryText" | "query"))
-        {
+                .is_some_and(|parent| query_text_element(file_name, parent.tag_name().name()));
+        if holds_query {
+            let at = query_text_address(source_set, &owner, node);
             for (index, line) in node.text().unwrap_or_default().lines().enumerate() {
                 let reference = MetaRemoveReference::Code {
-                    at: format!("{source_set}:{owner}"),
+                    at: at.clone(),
                     line: index + 1,
                 };
                 if query_patterns.iter().any(|pattern| mentions(line, pattern))
@@ -709,6 +711,67 @@ pub fn meta_remove_references(
         }
     }
     found
+}
+
+/// Whether an element of an XML source holds query-language text, which is
+/// searched like code: a dynamic list's `QueryText` and a data composition
+/// `query` anywhere, the expressions of a data composition schema in
+/// `Template.xml`, the access restriction `condition` of role rights.
+fn query_text_element(file_name: Option<&str>, element: &str) -> bool {
+    match element {
+        "QueryText" | "query" => true,
+        "expression" | "presentationExpression" | "sourceExpression" | "detailExpression" => {
+            file_name == Some("Template.xml")
+        }
+        "condition" => file_name == Some("Rights.xml"),
+        _ => false,
+    }
+}
+
+/// The address of the query text holding a reference: the form attribute of
+/// a dynamic list, the data set, field, calculated field, total or parameter
+/// of a data composition schema, the right entry of a role, as far as the
+/// address grammar names it; otherwise the form, template or role that owns
+/// the file.
+fn query_text_address(source_set: &str, owner: &str, node: roxmltree::Node<'_, '_>) -> String {
+    let child_text = |element: roxmltree::Node<'_, '_>, name: &str| {
+        element
+            .children()
+            .find(|child| child.is_element() && child.tag_name().name() == name)
+            .and_then(|child| child.text())
+            .map(|text| text.trim().to_string())
+    };
+    let mut segments = Vec::new();
+    for ancestor in node.ancestors().filter(|ancestor| ancestor.is_element()) {
+        let member = |kind: &str, name: Option<String>| {
+            name.map(|name| unica_address::address::member_address(&format!(".{kind}"), &name))
+        };
+        let segment = match ancestor.tag_name().name() {
+            "Attribute" => member("Attribute", ancestor.attribute("name").map(str::to_string)),
+            "dataSet" => member("DataSet", child_text(ancestor, "name")),
+            "field" => member("Field", child_text(ancestor, "dataPath")),
+            "calculatedField" => member("CalculatedField", child_text(ancestor, "dataPath")),
+            "totalField" => member("Total", child_text(ancestor, "dataPath")),
+            "parameter" => member("Parameter", child_text(ancestor, "name")),
+            // A role's right entry is addressed `Right.<Kind>_<Name…>`, as
+            // `right.set` addresses it.
+            "object" => member(
+                "Right",
+                child_text(ancestor, "name").map(|object| object.replacen('.', "_", 1)),
+            ),
+            _ => None,
+        };
+        segments.extend(segment);
+    }
+    segments.reverse();
+    while !segments.is_empty() {
+        let candidate = format!("{source_set}:{owner}{}", segments.concat());
+        if unica_address::address::QualifiedAddress::parse(&candidate).is_ok() {
+            return candidate;
+        }
+        segments.pop();
+    }
+    format!("{source_set}:{owner}")
 }
 
 /// The metadata object a source file belongs to and whether the file is its

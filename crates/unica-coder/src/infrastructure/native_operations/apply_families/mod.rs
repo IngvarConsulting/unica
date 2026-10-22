@@ -2618,9 +2618,9 @@ mod tests {
         );
     }
 
-    /// References only in module code do not block the removal: the plan
-    /// lists each place by module address and line, and planning stays exact
-    /// about whole names.
+    /// References in module code — a manager call, a query text in a
+    /// string, a Russian type name — do not block the removal: the plan lists
+    /// each place by module address and line, and stays exact about whole names.
     #[test]
     fn object_removal_lists_code_only_references_as_a_plan_warning() {
         let fixture = ApplySeamFixture::new();
@@ -2633,7 +2633,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             source.join("CommonModules/Tools/Ext/Module.bsl"),
-            "Процедура Сделать() Экспорт\n\tДокументы.FirstArchive.СоздатьДокумент();\n\tДокумент = Документы.First.СоздатьДокумент();\nКонецПроцедуры\n",
+            "Процедура Сделать() Экспорт\n\tДокументы.FirstArchive.СоздатьДокумент();\n\tДокумент = Документы.First.СоздатьДокумент();\n\tЗапрос.Текст = \"ВЫБРАТЬ * ИЗ Документ.First\";\n\tТипы = Новый ОписаниеТипов(\"ДокументСсылка.First, ДокументСсылка.FirstArchive\");\n\tДругой = Тип(\"ДокументСсылка.FirstArchive\");\nКонецПроцедуры\n",
         )
         .unwrap();
         let (staged, effects) = plan_hidden_v13_apply(
@@ -2645,22 +2645,26 @@ mod tests {
             &fixture.binding,
             &fixture.admission(),
         )
-        .expect("references only in module code do not block the removal");
+        .expect("references in module code do not block the removal");
         assert!(!staged.planned_changes().is_empty());
         assert_eq!(effects.warnings().len(), 1, "{:?}", effects.warnings());
         let warning = &effects.warnings()[0];
         assert_eq!(warning["code"], "code_references");
-        assert_eq!(warning["count"], 1);
+        assert_eq!(warning["count"], 3);
+        // The manager, a query text in a string and a Russian type name are
+        // all code references; `FirstArchive` is another object.
         assert_eq!(
             warning["references"],
-            serde_json::json!([{"at": "main:CommonModule.Tools", "line": 3}])
+            serde_json::json!([
+                {"at": "main:CommonModule.Tools", "line": 3},
+                {"at": "main:CommonModule.Tools", "line": 4},
+                {"at": "main:CommonModule.Tools", "line": 5}
+            ])
         );
-        let message = warning["message"].as_str().unwrap();
-        assert!(
-            message.contains("`main:CommonModule.Tools` line 3"),
-            "{message}"
+        assert_eq!(
+            warning["message"],
+            "module code or query text still refers to `main:Document.First`: `main:CommonModule.Tools` line 3, `main:CommonModule.Tools` line 4, `main:CommonModule.Tools` line 5; the removal leaves this text as it is"
         );
-        assert!(!message.contains(".bsl"), "{message}");
     }
 
     /// Lays out two list forms and a data composition template of
@@ -2724,14 +2728,14 @@ mod tests {
         assert_eq!(
             warning["references"],
             serde_json::json!([
-                {"at": "main:Document.Second.Form.List", "line": 4},
-                {"at": "main:Document.Second.Form.ListEn", "line": 2},
-                {"at": "main:Document.Second.Template.Data", "line": 4}
+                {"at": "main:Document.Second.Form.List.Attribute.List", "line": 4},
+                {"at": "main:Document.Second.Form.ListEn.Attribute.List", "line": 2},
+                {"at": "main:Document.Second.Template.Data.DataSet.Set", "line": 4}
             ])
         );
         let message = warning["message"].as_str().unwrap();
         assert!(
-            message.contains("`main:Document.Second.Template.Data` line 4"),
+            message.contains("`main:Document.Second.Template.Data.DataSet.Set` line 4"),
             "{message}"
         );
         assert!(!message.contains(".xml"), "{message}");
@@ -2748,6 +2752,141 @@ mod tests {
                 "{relative} stays as it is"
             );
         }
+    }
+
+    /// Access restriction conditions of another role are query text: they
+    /// name the removed object in either language without blocking it and
+    /// stay as they are, while the role's rights to the object itself go.
+    #[test]
+    fn object_removal_lists_rights_conditions_as_code() {
+        let fixture = ApplySeamFixture::new();
+        let rights = "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" version=\"2.20\">\n\t<object>\n\t\t<name>Document.First</name>\n\t\t<right><name>Read</name><value>true</value></right>\n\t</object>\n\t<object>\n\t\t<name>Document.Second</name>\n\t\t<right>\n\t\t\t<name>Read</name>\n\t\t\t<value>true</value>\n\t\t\t<restrictionByCondition>\n\t\t\t\t<condition>ГДЕ Т.Основание ССЫЛКА Документ.First</condition>\n\t\t\t</restrictionByCondition>\n\t\t</right>\n\t</object>\n\t<object>\n\t\t<name>Document.Second.Attribute.Total</name>\n\t\t<right>\n\t\t\t<name>View</name>\n\t\t\t<value>true</value>\n\t\t\t<restrictionByCondition>\n\t\t\t\t<condition>WHERE T.Base REFS Document.First</condition>\n\t\t\t</restrictionByCondition>\n\t\t</right>\n\t</object>\n\t<restrictionTemplate>\n\t\t<name>ByBase</name>\n\t\t<condition>ГДЕ\n\t#Параметр(1) = Документ.First</condition>\n\t</restrictionTemplate>\n</Rights>\n";
+        let path = fixture.source_dir().join("Roles/Other/Ext/Rights.xml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, rights).unwrap();
+        let (mut staged, effects) = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("a restriction condition does not block the removal");
+        let code = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .unwrap_or_else(|| panic!("{:?}", effects.warnings()));
+        // Two conditions of different rights on the same line are two places.
+        assert_eq!(
+            code["references"],
+            serde_json::json!([
+                {"at": "main:Role.Other.Right.Document_Second", "line": 1},
+                {"at": r"main:Role.Other.Right.Document_Second\.Attribute\.Total", "line": 1},
+                {"at": "main:Role.Other", "line": 2}
+            ])
+        );
+        assert_eq!(code["count"], 3);
+        assert!(effects
+            .warnings()
+            .iter()
+            .any(|warning| warning["code"] == "composition_cleaned"));
+        let after = String::from_utf8(
+            staged
+                .read(std::path::Path::new("Roles/Other/Ext/Rights.xml"))
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            after,
+            rights.replace(
+                "\t<object>\n\t\t<name>Document.First</name>\n\t\t<right><name>Read</name><value>true</value></right>\n\t</object>\n",
+                ""
+            )
+        );
+    }
+
+    /// The expressions of a data composition schema are query text too:
+    /// `ЗНАЧЕНИЕ(Перечисление.Kinds.Main)` in a calculated field names the
+    /// enumeration without blocking its removal.
+    #[test]
+    fn object_removal_lists_data_composition_expressions_as_code() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        let configuration = source.join("Configuration.xml");
+        let text = std::fs::read_to_string(&configuration).unwrap().replace(
+            "<Document>First</Document>",
+            "<Document>First</Document><Enum>Kinds</Enum>",
+        );
+        std::fs::write(&configuration, text).unwrap();
+        std::fs::create_dir_all(source.join("Enums")).unwrap();
+        std::fs::write(
+            source.join("Enums/Kinds.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Enum uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Kinds</Name></Properties></Enum></MetaDataObject>"#,
+        )
+        .unwrap();
+        let directory = source.join("Documents/Second/Templates/Data/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Template.xml"),
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\"><dataSet><name>Set</name><field><dataPath>Контрагент.ИНН</dataPath><field>Контрагент.ИНН</field><presentationExpression>ВЫБОР КОГДА Вид = ЗНАЧЕНИЕ(Перечисление.Kinds.Main) ТОГДА 1 КОНЕЦ</presentationExpression></field></dataSet><calculatedField><dataPath>Main</dataPath><expression>ВЫБОР КОГДА Вид = ЗНАЧЕНИЕ(Перечисление.Kinds.Main) ТОГДА 1 КОНЕЦ</expression></calculatedField><totalField><dataPath>Main</dataPath><expression>Сумма(Main)</expression></totalField><parameter><name>Kind</name><expression>ЗНАЧЕНИЕ(Enum.Kinds.Main)</expression></parameter></DataCompositionSchema>",
+        )
+        .unwrap();
+        let (_, effects) = plan_hidden_v13_apply(
+            &seam_request("main:Enum.Kinds", "object.remove", serde_json::json!({})),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("an expression does not block the removal");
+        let code = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .unwrap_or_else(|| panic!("{:?}", effects.warnings()));
+        assert_eq!(
+            code["references"],
+            serde_json::json!([
+                {"at": r"main:Document.Second.Template.Data.DataSet.Set.Field.Контрагент\.ИНН", "line": 1},
+                {"at": "main:Document.Second.Template.Data.CalculatedField.Main", "line": 1},
+                {"at": "main:Document.Second.Template.Data.Parameter.Kind", "line": 1}
+            ])
+        );
+    }
+
+    /// Next to an expression, a reference held in a property of the schema —
+    /// the value type of a parameter — still refuses the removal.
+    #[test]
+    fn object_removal_refuses_a_parameter_type_next_to_an_expression() {
+        let fixture = ApplySeamFixture::new();
+        let directory = fixture
+            .source_dir()
+            .join("Documents/Second/Templates/Data/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Template.xml"),
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"><parameter><name>Base</name><valueType><v8:Type>cfg:DocumentRef.First</v8:Type></valueType><expression>ЗНАЧЕНИЕ(Документ.First.ПустаяСсылка)</expression></parameter></DataCompositionSchema>",
+        )
+        .unwrap();
+        let error = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("`main:Document.Second.Template.Data` → Template"),
+            "{error}"
+        );
     }
 
     /// Next to a query text a reference held in a property still refuses:

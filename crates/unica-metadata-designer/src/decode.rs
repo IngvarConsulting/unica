@@ -791,7 +791,7 @@ pub fn parse_object_remove(
     if args.contains_key("force") {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            "`object.remove` does not accept `force`: remove the references from other metadata first; references only in module code are listed as a warning in the plan",
+            "`object.remove` does not accept `force`: remove the references from other metadata first; references only in module code or query text are listed as a warning in the plan",
         )
         .at_path(format!("ops[{op_index}].args.force")));
     }

@@ -69,7 +69,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `object.remove` does not accept `force`: remove the references from other metadata first; references only in module code are listed as a warning in the plan",
+      "refusal": "bad_value: `object.remove` does not accept `force`: remove the references from other metadata first; references only in module code or query text are listed as a warning i",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",

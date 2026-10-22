@@ -934,13 +934,33 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     metadata_patterns.push(format!("{}.{name}", kind.as_str()));
     // A query names a table by the kind in either language: `Catalog.X`,
     // `Справочник.X`.
+    let spellings = unica_address::source_target::metadata_address_kind_spellings(kind.as_str())
+        .unwrap_or_default();
     let mut query_patterns = metadata_patterns.clone();
     query_patterns.extend(
-        unica_address::source_target::metadata_address_kind_spellings(kind.as_str())
-            .unwrap_or_default()
-            .into_iter()
+        spellings
+            .iter()
             .map(|spelling| format!("{spelling}.{name}")),
     );
+    // Module code names the object the same way and also by its Russian
+    // type names, the kind spelling followed by `Ссылка` or `Объект`.
+    let mut code_patterns = code_patterns;
+    code_patterns.extend(query_patterns.iter().cloned());
+    for reference in crate::remove::meta_remove_type_ref_names(kind.as_str()).unwrap_or_default() {
+        let suffix = match reference.strip_prefix(kind.as_str()) {
+            Some("Ref") => "Ссылка",
+            Some("Object") => "Объект",
+            _ => continue,
+        };
+        code_patterns.extend(
+            spellings
+                .iter()
+                .skip(1)
+                .map(|spelling| format!("{spelling}{suffix}.{name}")),
+        );
+    }
+    code_patterns.sort();
+    code_patterns.dedup();
     let source_set = authority.source_set_name();
     let removed = format!("{source_set}:{}", target.as_str());
     let qualified = format!("{}.{name}", kind.as_str());
@@ -1041,8 +1061,8 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         )
         .at_path(at_path));
     }
-    // References only in module code do not block the removal: the plan
-    // names them, and executing its token confirms the removal.
+    // References only in module code or query-language text do not block
+    // the removal: the plan names them, and executing its token confirms it.
     let code_warning = (!code_references.is_empty()).then(|| {
         let places = code_references
             .iter()
