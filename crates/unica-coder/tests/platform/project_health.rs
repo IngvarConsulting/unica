@@ -1460,10 +1460,10 @@ fn project_health_handles_a_real_index_past_the_generic_capture_limit() {
     assert_ne!(
         data["checks"]
             .as_array()
-            .unwrap()
+            .unwrap_or_else(|| panic!("no checks: {data}"))
             .iter()
             .find(|check| check["id"] == "repository.index")
-            .unwrap()["status"],
+            .unwrap_or_else(|| panic!("no repository.index: {data}"))["status"],
         "notRun",
         "{data}"
     );
@@ -1689,6 +1689,16 @@ fn root_answer(workspace: &Path, tool: &str) -> StatusResult {
         STATE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     fs::create_dir_all(&state).unwrap();
+    // The daemon outlives the frontend for its idle grace and, on Windows,
+    // holds the handles it inherited through the frontend until it exits;
+    // the guard stops it on every way out of this call.
+    struct StopDaemons(std::path::PathBuf);
+    impl Drop for StopDaemons {
+        fn drop(&mut self) {
+            daemon_teardown::stop_daemons_under(&self.0);
+        }
+    }
+    let _daemons = StopDaemons(fs::canonicalize(&state).unwrap());
     let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
         .arg("mcp")
         .current_dir(workspace)
@@ -1722,7 +1732,24 @@ fn root_answer(workspace: &Path, tool: &str) -> StatusResult {
         "params": {"name": tool, "arguments": {}}
     });
     send(&mut stdin, &view);
-    let response = receive(&mut child, &lines, &view["id"]);
+    let mut response = receive(&mut child, &lines, &view["id"]);
+    // A call that outlives the response budget answers with its task; a slow
+    // host (a large Git index on Windows) gets there before the answer, so
+    // the test follows the task to the same structured result.
+    for id in 3..=12 {
+        let task = &response["result"]["structuredContent"]["data"]["task"];
+        if !matches!(task["status"].as_str(), Some("queued" | "working")) {
+            break;
+        }
+        let task_id = task["taskId"].as_str().expect("running task id").to_owned();
+        assert!(id < 12, "{tool} did not finish: {response:#}");
+        let follow = serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "unica.task.result", "arguments": {"taskId": task_id, "waitMs": 7000}}
+        });
+        send(&mut stdin, &follow);
+        response = receive(&mut child, &lines, &follow["id"]);
+    }
 
     drop(stdin);
     let deadline = Instant::now() + RESPONSE_DEADLINE;
