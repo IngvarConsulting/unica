@@ -1016,7 +1016,7 @@ pub(crate) fn plan_hidden_v13_apply(
     }
 
     unica_metadata_designer::planner::validate_final_object_integrity(
-        &staged.proposal(),
+        &mut staged.proposal(),
         binding.source_set_name(),
         binding.source_kind(),
     )?;

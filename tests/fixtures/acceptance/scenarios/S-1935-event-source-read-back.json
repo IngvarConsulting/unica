@@ -1,0 +1,198 @@
+{
+  "id": "S-1935-event-source-read-back",
+  "issue": 1935,
+  "area": "Метаданные",
+  "task": "Заменить источник подписки семейством объектов справочников, затем менеджером значения константы вместе с подходящим событием: чтение отношения возвращает каждый записанный выбор той же целью",
+  "workspace": "tests/fixtures/acceptance/workspace-event-source-order",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.replace",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "family",
+                    "sourceClass": "catalogObject"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}EventSubscription/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Source/*",
+          "eq": [
+            "cfg:CatalogObject"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "source",
+              "kind": "family",
+              "target": {
+                "kind": "family",
+                "sourceClass": "catalogObject"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Constant",
+                "name": "Sample"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Sample.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.replace",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "manager",
+                    "metadataPath": "Constant.Sample",
+                    "sourceClass": "constantValueManager"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Event": "OnWrite"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}EventSubscription/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Source/*",
+          "eq": [
+            "cfg:ConstantValueManager.Sample"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "source",
+              "at": "main:Constant.Sample",
+              "kind": "Constant",
+              "target": {
+                "kind": "manager",
+                "metadataPath": "Constant.Sample",
+                "sourceClass": "constantValueManager"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

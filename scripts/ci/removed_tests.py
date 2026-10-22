@@ -136,6 +136,19 @@ def removed_tests(root: Path, base: str, head: str = "HEAD") -> list[tuple[str, 
                   key=lambda item: item[:2])
 
 
+# The queue gate (`ci_rust_lanes.explained_case`) matches a declaration
+# literally; only a trailing `*` makes it a prefix. Braces, `?`, brackets or an
+# inner `*` would read as a pattern here and as a literal in the queue.
+UNSUPPORTED_PATTERN = re.compile(r"[{}?\[\]]|\*.")
+
+
+def unsupported_declarations(declarations: dict) -> list[str]:
+    return [f"declaration '{kind}: {item}' uses a pattern the queue does not understand; "
+            "only a trailing * is a prefix, list each name otherwise"
+            for kind, key in (("Removes-test", "removedTests"), ("Removes-test-target", "removedTargets"))
+            for item in declarations[key] if UNSUPPORTED_PATTERN.search(item)]
+
+
 def explained(package: str, name: str, known: tuple[str, str] | None, declarations: dict) -> bool:
     """A declaration names the test or a prefix that agrees with its file, or its binary."""
     case = None if known is None else (f"{known[0]}::{known[1]}::" if known[1] else f"{known[0]}::")
@@ -145,9 +158,17 @@ def explained(package: str, name: str, known: tuple[str, str] | None, declaratio
         prefix = pattern[:-1] if pattern.endswith("*") else pattern
         if not pattern.endswith("*") and not pattern.endswith("::" + name):
             continue
+        if UNSUPPORTED_PATTERN.search(pattern):
+            continue
+        if case is None:
+            # Unknown module path: the name itself, or a prefix below the
+            # package root; `<package>::*` would cover anything.
+            if pattern.endswith("::" + name) or prefix.count("::") >= 2:
+                return True
+            continue
         # The file's module path is a prefix of the case ID; inline modules
-        # may extend either side. Unknown paths are left to the queue.
-        if case is None or case.startswith(prefix) or prefix.startswith(case):
+        # may extend either side.
+        if case.startswith(prefix) or prefix.startswith(case):
             return True
     return any(target == known[0] if known else target == package or target.startswith(package + "::")
                for target in declarations["removedTargets"])
@@ -161,9 +182,10 @@ def declarations_in(description: str) -> dict:
 
 def check(root: Path, base: str, description: str, head: str = "HEAD") -> list[str]:
     declarations = declarations_in(description)
-    return [f"{crate}: test {name} disappeared; declare 'Removes-test: <binary-id>::<path>::{name}' "
-            "(or a prefix ending in *) in the pull request description"
-            for crate, name, known in removed_tests(root, base, head) if not explained(crate, name, known, declarations)]
+    return unsupported_declarations(declarations) + [
+        f"{crate}: test {name} disappeared; declare 'Removes-test: <binary-id>::<path>::{name}' "
+        "(or a prefix ending in *) in the pull request description"
+        for crate, name, known in removed_tests(root, base, head) if not explained(crate, name, known, declarations)]
 
 
 def event_description() -> str | None:

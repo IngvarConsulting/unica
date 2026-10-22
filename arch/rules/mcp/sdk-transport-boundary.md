@@ -23,6 +23,6 @@ check:
 Производственная library-сборка подтверждает, что `UnicaServer` реализует
 `rmcp::ServerHandler`: соответствие SDK не должно существовать только
 в тестовой сборке. Эту сборку выполняет конвейер Rust, а не Python-набор:
-ordinary-архив в каждом профиле и точный production-набор фич
-`build-python-product` во всех кодовых прогонах, кроме pull request
+ordinary-архив в каждом профиле и точный production-набор фич шага
+`product` джобы `Unica CI` во всех кодовых прогонах, кроме pull request
 и push в `main`.

@@ -837,7 +837,13 @@ mod tests {
         match create_directory_link_fixture_for_test(&external, root.join("epf")).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
         let mut checkpoint = || Ok(());
 
@@ -878,7 +884,13 @@ mod tests {
         {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
         let mut checkpoint = || Ok(());
 
@@ -1007,7 +1019,13 @@ mod tests {
         {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
         let mut checkpoint = || Ok(());
 
@@ -1161,12 +1179,20 @@ mod tests {
         );
         let container = root.join("src/cfe");
         if !set_unix_mode_for_test(&container, 0o000).unwrap() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::UnixPermissionBits,
+                "the test sets Unix permission bits",
+            );
             fs::remove_dir_all(&root).unwrap();
             return;
         }
         if std::fs::read_dir(&container).is_ok() {
             // Running with a privilege that ignores the mode; the case does not exist.
             set_unix_mode_for_test(&container, 0o755).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::EnforcedPermissionBits,
+                "the test process ignores permission bits",
+            );
             fs::remove_dir_all(&root).unwrap();
             return;
         }
@@ -1292,6 +1318,10 @@ mod tests {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
             | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
                 fs::remove_dir_all(&root).unwrap();
                 fs::remove_dir_all(&external).unwrap();
                 return;
@@ -1331,6 +1361,10 @@ mod tests {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
             | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
                 fs::remove_dir_all(&root).unwrap();
                 fs::remove_dir_all(&external).unwrap();
                 return;
@@ -1482,6 +1516,10 @@ mod tests {
         let Some(invalid_component) =
             unica_workspace::test_support::non_utf8_relative_path_for_test()
         else {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::NonUtf8FileNames,
+                "this host has no file names outside UTF-8",
+            );
             return;
         };
 
@@ -1498,6 +1536,10 @@ mod tests {
         // APFS and NTFS refuse to store the name at all; the case only exists on a
         // filesystem that accepts arbitrary bytes, so skip where it cannot be built.
         if fs::create_dir_all(&invalid).is_err() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::NonUtf8FileNames,
+                "this volume refuses a file name outside UTF-8",
+            );
             fs::remove_dir_all(&root).unwrap();
             return;
         }
@@ -1678,6 +1720,10 @@ mod tests {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
             | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
                 fs::remove_dir_all(&root).unwrap();
                 fs::remove_dir_all(&external).unwrap();
                 return;
@@ -1730,6 +1776,10 @@ mod tests {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
             | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
                 fs::remove_dir_all(&root).unwrap();
                 fs::remove_dir_all(&external).unwrap();
                 return;
@@ -2184,12 +2234,11 @@ source-set:
             "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
         );
         fs::create_dir_all(root.join("epf")).unwrap();
-        let Some(symlink_result) = unica_workspace::test_support::create_file_symlink_for_test(
+        let symlink_result = unica_workspace::test_support::create_file_symlink_for_test(
             root.join("outside.xml"),
             root.join("epf/ConfigDumpInfo.xml"),
-        ) else {
-            return;
-        };
+        )
+        .expect("symlink fixtures exist on Unix and Windows");
         symlink_result.unwrap();
 
         let map = discover_project_source_map(&root).unwrap();

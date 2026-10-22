@@ -898,8 +898,9 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn retained_support_policy_candidate_parent_replacement_is_rejected() {
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
-            eprintln!(
-                "[SKIPPED FIXTURE] retained support-policy parent replacement is unsupported while a directory handle is open"
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
             );
             return;
         }
@@ -938,8 +939,9 @@ pub(crate) mod tests {
     ) {
         let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
-            eprintln!(
-                "[SKIPPED FIXTURE] support-policy mid-validation name replacement is unsupported while a retained file handle is open"
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
             );
             return;
         }
@@ -991,8 +993,9 @@ pub(crate) mod tests {
     ) {
         let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
-            eprintln!(
-                "[SKIPPED FIXTURE] support-policy post-read name replacement is unsupported while a retained file handle is open"
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
             );
             return;
         }

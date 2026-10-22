@@ -2859,6 +2859,7 @@ dependencies = [
  "unica-address",
  "unica-metadata",
  "unica-metadata-designer",
+ "unica-process",
  "unica-source-contract",
  "unica-workspace",
  "uuid",
@@ -3020,6 +3021,7 @@ version = "0.14.0-rc.1"
 dependencies = [
  "tempfile",
  "unica-metadata-designer",
+ "unica-process",
  "unica-source-contract",
  "unica-source-designer",
  "unica-work-control",

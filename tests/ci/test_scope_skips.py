@@ -80,10 +80,7 @@ class PythonScopeSkipTests(unittest.TestCase):
 
     def collect(self, conclusion="success"):
         jobs = self.root / "jobs.json"
-        jobs.write_text(json.dumps({"jobs": [
-            {"name": "Python tests (ci-small)", "conclusion": conclusion},
-            {"name": "Python tests (dev-small)", "conclusion": conclusion},
-        ]}))
+        jobs.write_text(json.dumps({"jobs": [{"name": "Unica CI", "conclusion": conclusion}]}))
         self.collector.collect(self.root / "artifacts", self.root / "fresh", jobs, "", "")
         return self.root / "fresh" / "main"
 
@@ -169,7 +166,7 @@ class PythonScopeSkipTests(unittest.TestCase):
         self.assertTrue(records["test_scope_fixture.Medium.test_medium"]["statusDetails"]["message"].startswith("docs-only:"))
         self.assertEqual(self.collector.label(records["test_scope_fixture.Medium.test_medium"], "scope_skip"), "docs_only")
         small = records["test_scope_fixture.Small.test_small"]
-        self.assertIn("раннер не дошёл: Python tests (ci-small) · cancelled", small["statusDetails"]["message"])
+        self.assertIn("раннер не дошёл: Unica CI · cancelled", small["statusDetails"]["message"])
         self.assertIsNone(self.collector.label(small, "scope_skip"))
 
     def test_collector_rejects_actual_execution_or_ordinary_skip_of_a_scope_skipped_case(self):

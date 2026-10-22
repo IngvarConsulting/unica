@@ -386,7 +386,7 @@ fn canonical_check_has_no_aggregate_size_refusal_above_256_mib() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
+#[ignore = "stale expectation: data.checks is no longer an empty array (#1899)"]
 fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     let root = tempfile::tempdir().expect("bootstrap integration root");
     let workspace = root.path().join("workspace");

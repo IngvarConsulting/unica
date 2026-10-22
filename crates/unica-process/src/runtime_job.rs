@@ -595,6 +595,10 @@ mod tests {
     #[test]
     fn system_process_drop_uses_no_second_window_after_cleanup_deadline_is_consumed() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {
+            crate::test_support::skip_without_host_capability(
+                crate::test_support::HostCapability::UnixProcessGroups,
+                "waitid, reap and process-group signal faults exist only on Unix",
+            );
             return;
         }
         let released = Arc::new(AtomicBool::new(false));
@@ -645,6 +649,10 @@ mod tests {
     #[test]
     fn external_cancel_error_binds_system_drop_to_the_same_cleanup_deadline() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {
+            crate::test_support::skip_without_host_capability(
+                crate::test_support::HostCapability::UnixProcessGroups,
+                "waitid, reap and process-group signal faults exist only on Unix",
+            );
             return;
         }
         let (mut process, id) = system_process_for_authority_failure("exec sleep 30");
@@ -673,6 +681,10 @@ mod tests {
     #[test]
     fn waitid_authority_loss_makes_cancel_and_drop_send_zero_group_signals() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {
+            crate::test_support::skip_without_host_capability(
+                crate::test_support::HostCapability::UnixProcessGroups,
+                "waitid, reap and process-group signal faults exist only on Unix",
+            );
             return;
         }
         let (mut process, id) = system_process_for_authority_failure("exec sleep 30");
@@ -695,6 +707,10 @@ mod tests {
     #[test]
     fn reap_authority_loss_makes_cancel_and_drop_send_zero_group_signals() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {
+            crate::test_support::skip_without_host_capability(
+                crate::test_support::HostCapability::UnixProcessGroups,
+                "waitid, reap and process-group signal faults exist only on Unix",
+            );
             return;
         }
         let gate = std::env::temp_dir().join(format!("unica-reap-gate-{}", uuid::Uuid::new_v4()));

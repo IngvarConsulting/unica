@@ -88,17 +88,29 @@
             {
               "relation": "source",
               "at": "main:Catalog.ПримерВ",
-              "kind": "Catalog"
+              "kind": "Catalog",
+              "target": {
+                "kind": "object",
+                "metadataPath": "Catalog.ПримерВ"
+              }
             },
             {
               "relation": "source",
               "at": "main:Catalog.ПримерА",
-              "kind": "Catalog"
+              "kind": "Catalog",
+              "target": {
+                "kind": "object",
+                "metadataPath": "Catalog.ПримерА"
+              }
             },
             {
               "relation": "source",
               "at": "main:Catalog.ПримерБ",
-              "kind": "Catalog"
+              "kind": "Catalog",
+              "target": {
+                "kind": "object",
+                "metadataPath": "Catalog.ПримерБ"
+              }
             }
           ]
         }
@@ -241,12 +253,20 @@
             {
               "relation": "source",
               "at": "main:Catalog.ПримерВ",
-              "kind": "Catalog"
+              "kind": "Catalog",
+              "target": {
+                "kind": "object",
+                "metadataPath": "Catalog.ПримерВ"
+              }
             },
             {
               "relation": "source",
               "at": "main:Catalog.ПримерБ",
-              "kind": "Catalog"
+              "kind": "Catalog",
+              "target": {
+                "kind": "object",
+                "metadataPath": "Catalog.ПримерБ"
+              }
             }
           ]
         }
@@ -377,7 +397,11 @@
             {
               "relation": "source",
               "at": "main:Catalog.ПримерБ",
-              "kind": "Catalog"
+              "kind": "Catalog",
+              "target": {
+                "kind": "object",
+                "metadataPath": "Catalog.ПримерБ"
+              }
             }
           ]
         }

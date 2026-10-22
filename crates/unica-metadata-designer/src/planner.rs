@@ -43,7 +43,7 @@ pub trait MetadataPlanningRead {
 /// family has contributed its image. A borrowed descriptor contains only the
 /// extension's contribution and cannot establish the parent's composition.
 pub fn validate_final_object_integrity(
-    staged: &ApplyProposal<'_>,
+    staged: &mut ApplyProposal<'_>,
     source_set_name: &str,
     source_kind: SourceSetKind,
 ) -> Result<(), ApplyPlanError> {
@@ -63,6 +63,17 @@ pub fn validate_final_object_integrity(
         let Ok(kind) = MetadataKind::parse(directory.tag) else {
             continue;
         };
+        if kind == MetadataKind::EventSubscription
+            && relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("xml")
+        {
+            if let Some(name) = relative.file_stem().and_then(|name| name.to_str()) {
+                let at = format!("{source_set_name}:EventSubscription.{name}");
+                validate_final_event_subscription(staged, relative, bytes, &at, source_kind)?;
+            }
+        }
         if unica_metadata::meta_object_integrity_rules(kind)
             .next()
             .is_none()
@@ -88,6 +99,104 @@ pub fn validate_final_object_integrity(
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message).at_path(at)
         })?;
     }
+    Ok(())
+}
+
+/// The source classes and the event a subscription descriptor binds.
+fn event_subscription_binding(
+    bytes: &[u8],
+) -> Result<(Vec<unica_metadata::MetaEventSource>, String), (&'static str, String)> {
+    let (_, document) = unica_xml_format::read::parse_metadata_image(bytes)
+        .map_err(|message| ("resources", message))?;
+    let source = crate::xml_model::meta_event_subscription_source_node(&document)
+        .map_err(|message| ("relations.source", message))?;
+    let sources = crate::xml_model::parse_meta_event_subscription_source(source)
+        .map_err(|message| ("relations.source", message))?
+        .sources;
+    let event = source
+        .parent_element()
+        .and_then(|properties| unica_xml_format::read::child_direct_text(properties, "Event"))
+        .unwrap_or_default();
+    Ok((sources, event))
+}
+
+/// INV.SOURCE.EVENT-DEFINED-TYPE: a changed source or event is checked against
+/// the classes it names, with every defined type expanded down to its event
+/// classes, nested ones included. A cycle or an unfit member refuses the plan.
+/// Defined types are read through the proposal: their descriptors become
+/// inputs of the plan, so changing one after planning makes the token stale.
+/// The handler contract stays with `check` (#931).
+fn validate_final_event_subscription(
+    staged: &mut ApplyProposal<'_>,
+    relative: &Path,
+    bytes: &[u8],
+    at: &str,
+    source_kind: SourceSetKind,
+) -> Result<(), ApplyPlanError> {
+    let refuse = |field: &str, message: String| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, format!("{field}: {message}")).at_path(at)
+    };
+    // A borrowed subscription carries no source of its own: the parent's
+    // applies, and the extension only adds to it.
+    if final_object_inherits_composition(MetadataKind::EventSubscription, bytes) {
+        return Ok(());
+    }
+    let binding = event_subscription_binding(bytes);
+    // Only a changed source or event is checked; an edit of another property
+    // keeps whatever the descriptor held, including a source this reader
+    // cannot parse.
+    if staged
+        .original_image(relative)
+        .is_some_and(|original| event_subscription_binding(original) == binding)
+    {
+        return Ok(());
+    }
+    let (sources, event) = binding.map_err(|(field, message)| refuse(field, message))?;
+    if sources.is_empty() || event.is_empty() {
+        return Ok(());
+    }
+    let mut classes = Vec::new();
+    let mut visiting = std::collections::HashSet::new();
+    for (index, source) in sources.iter().enumerate() {
+        expand_staged_event_source(staged, source_kind, source, &mut classes, &mut visiting)
+            .map_err(|message| refuse(&format!("relations.source[{index}]"), message))?;
+    }
+    unica_metadata::validate_event_subscription_sources(&classes, &event).map_err(|error| {
+        let (field, message) = crate::validation::event_binding_error_message(error);
+        refuse(field, message)
+    })?;
+    Ok(())
+}
+
+fn expand_staged_event_source(
+    staged: &mut ApplyProposal<'_>,
+    source_kind: SourceSetKind,
+    source: &unica_metadata::MetaEventSource,
+    classes: &mut Vec<unica_metadata::EventSourceClass>,
+    visiting: &mut std::collections::HashSet<MetadataAddress>,
+) -> Result<(), String> {
+    if let Some(class) = source.event_source_class()? {
+        classes.push(class);
+        return Ok(());
+    }
+    let target = source
+        .metadata_path()
+        .cloned()
+        .ok_or_else(|| "event source class is unavailable".to_string())?;
+    if !visiting.insert(target.clone()) {
+        return Err(format!(
+            "DefinedType event source cycle contains `{target}`"
+        ));
+    }
+    let relative = metadata_descriptor_relative(&target, source_kind)?;
+    let descriptor = staged
+        .read(&relative)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("DefinedType event source `{target}` was not found"))?;
+    for member in crate::xml_model::parse_defined_type_event_sources(&descriptor)? {
+        expand_staged_event_source(staged, source_kind, &member, classes, visiting)?;
+    }
+    visiting.remove(&target);
     Ok(())
 }
 
