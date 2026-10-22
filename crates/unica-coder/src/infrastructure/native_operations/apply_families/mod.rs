@@ -1814,7 +1814,7 @@ mod tests {
             plan_hidden_v13_apply(&unchanged, &fixture.binding, &fixture.admission())
                 .expect("a no-op plan is still planned");
         assert!(staged.planned_changes().is_empty());
-        assert!(effects.warnings().is_empty(), "{:?}", effects.warnings());
+        assert_eq!(effects.warnings().len(), 0);
     }
 
     #[test]
