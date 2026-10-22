@@ -932,6 +932,15 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         .cloned()
         .collect::<Vec<_>>();
     metadata_patterns.push(format!("{}.{name}", kind.as_str()));
+    // A query names a table by the kind in either language: `Catalog.X`,
+    // `Справочник.X`.
+    let mut query_patterns = metadata_patterns.clone();
+    query_patterns.extend(
+        unica_address::source_target::metadata_address_kind_spellings(kind.as_str())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|spelling| format!("{spelling}.{name}")),
+    );
     let source_set = authority.source_set_name();
     let removed = format!("{source_set}:{}", target.as_str());
     let qualified = format!("{}.{name}", kind.as_str());
@@ -1003,7 +1012,9 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         if skipped {
             continue;
         }
-        for reference in meta_remove_references(source_set, relative, &text, patterns) {
+        for reference in
+            meta_remove_references(source_set, relative, &text, patterns, &query_patterns)
+        {
             match reference {
                 MetaRemoveReference::Metadata { at, property } => {
                     metadata_references.push(format!("`{at}` → {property}"));
@@ -1053,7 +1064,7 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             "count": code_references.len(),
             "references": places,
             "message": format!(
-                "module code still refers to `{removed}`: {shown}; the removal leaves this code as it is"
+                "module code or query text still refers to `{removed}`: {shown}; the removal leaves this text as it is"
             ),
         })
     });

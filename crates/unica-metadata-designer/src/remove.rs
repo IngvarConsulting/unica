@@ -614,11 +614,15 @@ pub enum MetaRemoveReference {
 
 /// The references to the removed object found in one source file, addressed
 /// logically: XML is metadata and refuses the removal, BSL is module code.
+/// The text of a query held in XML — a dynamic list's `QueryText`, a data
+/// composition `query` — is code too: it is searched with `query_patterns`
+/// and reported by the line inside the query.
 pub fn meta_remove_references(
     source_set: &str,
     relative: &Path,
     text: &str,
     patterns: &[String],
+    query_patterns: &[String],
 ) -> Vec<MetaRemoveReference> {
     let is_bsl = relative
         .extension()
@@ -658,6 +662,24 @@ pub fn meta_remove_references(
     // A reference is a text or an attribute value: `<v8:Type>cfg:CatalogRef.X</v8:Type>`,
     // `<xr:Value name="Role.X">` or `<Command name="Catalog.X.StandardCommand.OpenList">`.
     for node in document.descendants() {
+        if node.is_text()
+            && node
+                .parent_element()
+                .is_some_and(|parent| matches!(parent.tag_name().name(), "QueryText" | "query"))
+        {
+            for (index, line) in node.text().unwrap_or_default().lines().enumerate() {
+                let reference = MetaRemoveReference::Code {
+                    at: format!("{source_set}:{owner}"),
+                    line: index + 1,
+                };
+                if query_patterns.iter().any(|pattern| mentions(line, pattern))
+                    && !found.contains(&reference)
+                {
+                    found.push(reference);
+                }
+            }
+            continue;
+        }
         let named = if node.is_text() {
             node.text()
                 .is_some_and(|value| patterns.iter().any(|pattern| mentions(value, pattern)))

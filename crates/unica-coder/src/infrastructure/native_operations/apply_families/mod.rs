@@ -136,9 +136,10 @@ fn refuse_targets_on_locked_vendor_objects(
         if !deny {
             let owner = support_owner_relative(request, binding.source_kind())
                 .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
+            let permits = if removes { "its removal" } else { "this edit" };
             return Ok(Some(support_locked(
                 &owner,
-                "the configuration is on vendor support with changes disabled; the project support policy `warn` permits this edit".to_string(),
+                format!("the configuration is on vendor support with changes disabled; the project support policy `warn` permits {permits}"),
             )));
         }
         let before = if removes { "removal" } else { "ordinary edits" };
@@ -1870,6 +1871,27 @@ mod tests {
         assert!(unchanged);
     }
 
+    /// With changes disabled for the whole configuration a removal is told
+    /// so in its own words: `deny` refuses before removal, `warn` permits it.
+    #[test]
+    fn vendor_object_removal_with_changes_disabled_names_the_removal() {
+        let marker = vendor_removal_support_marker(1, false);
+        let (outcome, unchanged, _) = plan_vendor_removal("deny", &marker, |_| {});
+        assert_eq!(
+            outcome.unwrap_err().to_string(),
+            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before removal"
+        );
+        assert!(unchanged);
+        let (outcome, _, _) = plan_vendor_removal("warn", &marker, |_| {});
+        let warnings = outcome.expect("warn removes with changes disabled");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            warnings[0]["message"],
+            "the configuration is on vendor support with changes disabled; the project support policy `warn` permits its removal"
+        );
+        assert_eq!(warnings[0]["code"], "support_locked");
+    }
+
     /// An editable vendor object with a locked child of its own — an
     /// attribute in its descriptor or a form described next to it — follows
     /// the policy of a locked object and names that child.
@@ -2639,6 +2661,119 @@ mod tests {
             "{message}"
         );
         assert!(!message.contains(".bsl"), "{message}");
+    }
+
+    /// Lays out two list forms and a data composition template of
+    /// `Document.Second` whose query texts name `Document.First` in Russian
+    /// and in English; `main_table` adds the dynamic list's main table.
+    fn write_query_texts(source: &std::path::Path, main_table: bool) {
+        let form = |query: &str| {
+            let table = if main_table {
+                "<MainTable>Document.First</MainTable>"
+            } else {
+                ""
+            };
+            format!(
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\"><Attributes><Attribute name=\"List\"><Settings xsi:type=\"DynamicList\"><ManualQuery>true</ManualQuery>{table}<QueryText>{query}</QueryText></Settings></Attribute></Attributes></Form>"
+            )
+        };
+        for (name, query) in [
+            (
+                "List",
+                "ВЫБРАТЬ\n\tТ.Ссылка\nИЗ\n\tДокумент.First КАК Т\n\tЛЕВОЕ СОЕДИНЕНИЕ Документ.FirstArchive КАК А",
+            ),
+            ("ListEn", "SELECT\n\tT.Ref FROM Document.First AS T"),
+        ] {
+            let directory = source.join(format!("Documents/Second/Forms/{name}/Ext"));
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("Form.xml"), form(query)).unwrap();
+        }
+        let directory = source.join("Documents/Second/Templates/Data/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Template.xml"),
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\"><dataSet><name>Set</name><query>ВЫБРАТЬ\n\t*\nИЗ\n\tДокумент.First</query></dataSet></DataCompositionSchema>",
+        )
+        .unwrap();
+    }
+
+    /// A query text names a table like code does: a list form or a data
+    /// composition template that selects from the removed object lets the
+    /// removal plan and names the form or template and the line inside the
+    /// query, in either language, leaving the text as it is.
+    #[test]
+    fn object_removal_lists_query_text_references_as_code() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        write_query_texts(&source, false);
+        let (mut staged, effects) = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("a query text does not block the removal");
+        let warning = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .unwrap_or_else(|| panic!("{:?}", effects.warnings()));
+        assert_eq!(
+            warning["references"],
+            serde_json::json!([
+                {"at": "main:Document.Second.Form.List", "line": 4},
+                {"at": "main:Document.Second.Form.ListEn", "line": 2},
+                {"at": "main:Document.Second.Template.Data", "line": 4}
+            ])
+        );
+        let message = warning["message"].as_str().unwrap();
+        assert!(
+            message.contains("`main:Document.Second.Template.Data` line 4"),
+            "{message}"
+        );
+        assert!(!message.contains(".xml"), "{message}");
+        for relative in [
+            "Documents/Second/Forms/List/Ext/Form.xml",
+            "Documents/Second/Templates/Data/Ext/Template.xml",
+        ] {
+            assert_eq!(
+                staged
+                    .read(std::path::Path::new(relative))
+                    .unwrap()
+                    .unwrap(),
+                std::fs::read(source.join(relative)).unwrap(),
+                "{relative} stays as it is"
+            );
+        }
+    }
+
+    /// Next to a query text a reference held in a property still refuses:
+    /// the dynamic list's main table is metadata, not code.
+    #[test]
+    fn object_removal_refuses_a_main_table_next_to_a_query_text() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        write_query_texts(&source, true);
+        let error = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("`main:Document.Second.Form.List` → Form"),
+            "{message}"
+        );
+        assert!(!message.contains("Template.Data"), "{message}");
     }
 
     /// `force` is no longer part of the `object.remove` contract: passing it
