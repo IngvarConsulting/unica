@@ -3409,13 +3409,13 @@ fn create_retained_apply_parent_chain(
             Ok(_) => {
                 return Err(RetainedApplyPublishError::containment(format!(
                     "retained apply absent parent chain is occupied: {}",
-                    logical_path.display()
+                    logical_path.portable()
                 )))
             }
             Err(error) => {
                 return Err(RetainedApplyPublishError::provider(format!(
                     "retained apply absent parent chain cannot be inspected {}: {error}",
-                    logical_path.display()
+                    logical_path.portable()
                 )))
             }
         }
@@ -3445,7 +3445,7 @@ fn create_retained_apply_parent_chain(
                     kind,
                     format!(
                         "retained apply absent parent publication failed {}: {error}",
-                        logical_path.display()
+                        logical_path.portable()
                     ),
                 ));
             }
@@ -3485,7 +3485,7 @@ fn owned_retained_apply_directory_child(
         owned.directory.validate_named_identity().map_err(|error| {
             RetainedApplyPublishError::containment(format!(
                 "batch-created retained directory identity changed {}: {error}",
-                owned.logical_path.display()
+                owned.logical_path.portable()
             ))
         })?;
         return Ok(Some(owned.directory.clone()));
@@ -3810,7 +3810,7 @@ fn rollback_retained_apply(
         {
             errors.push(format!(
                 "batch-created directory was preserved {}: {error}",
-                created.logical_path.display()
+                created.logical_path.portable()
             ));
         }
     }
