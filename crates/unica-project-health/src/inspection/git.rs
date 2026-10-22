@@ -14,6 +14,7 @@ use tempfile::TempDir;
 #[cfg(test)]
 use unica_process::runner::system_process_runner;
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::{SourceFormat, SourceSetKind};
 use unica_source_designer::probe::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
@@ -2495,7 +2496,7 @@ fn materialize_exact_git_directories(
         let Component::Normal(component) = component else {
             return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                 "staged Git ignore path is not repository-relative: {}",
-                relative.display()
+                relative.portable()
             )));
         };
         logical.push(component);
