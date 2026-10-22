@@ -15279,12 +15279,19 @@ struct ActorLogicalReadLease {"#,
             "dryRun": true,
         }))) {
             Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("an .epf output was accepted"),
+            Ok(_) => panic!("an .epf output without its external source set was accepted"),
             Err(other) => {
                 panic!(".epf on make returned infrastructure failure: {other:?}")
             }
         };
-        assert_eq!(external.diagnostics[0]["code"], "unsupported_operation");
+        // EPF/ERF build only from a named external source set (#1866).
+        assert_eq!(external.diagnostics[0]["code"], "bad_value");
+        assert!(
+            external.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("sourceSet")),
+            "{external:?}"
+        );
         assert_eq!(
             preparations.load(Ordering::SeqCst),
             0,
