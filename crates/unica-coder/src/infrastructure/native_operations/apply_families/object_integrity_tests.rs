@@ -641,6 +641,17 @@ fn create_ops(kind: &str, name: &str) -> Value {
 
 #[test]
 fn canonical_preview_of_every_creatable_kind_stages_descriptor_and_registration_without_writes() {
+    // Список видов совпадает с перечнем модели: новый вид не выпадет молча.
+    assert_eq!(
+        CREATABLE_KINDS
+            .iter()
+            .map(|(kind, _)| *kind)
+            .collect::<std::collections::BTreeSet<_>>(),
+        unica_metadata::MetadataKind::ALL
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+    );
     let mut failures = Vec::new();
     for (kind, directory) in CREATABLE_KINDS {
         let fixture =
@@ -754,6 +765,11 @@ fn canonical_publish_of_every_creatable_kind_writes_its_descriptor_and_refuses_a
             error.kind(),
             ApplyPlanErrorKind::InvalidState,
             "{kind}: {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains(&name),
+            "{kind}: the duplicate refusal names the existing object: {message}"
         );
         assert_eq!(
             tree_snapshot(&fixture.source),
