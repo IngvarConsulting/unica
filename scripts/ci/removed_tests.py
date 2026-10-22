@@ -12,8 +12,9 @@ from each crate and requires a declaration for each, before the queue:
     python scripts/ci/removed_tests.py --base origin/main --description-file pr.md
 
 The case ID is rebuilt without a build, as nextest names it: the binary from
-the crate targets (`[[test]]`/`[[bin]]` of the manifest, `src/lib.rs`,
-`tests/x.rs` → `<package>::x`), the module path from the module tree (`mod`,
+the crate targets the queue lanes build (`[[test]]`/`[[bin]]` of the manifest
+whose `required-features` a lane enables, `src/lib.rs`, `tests/x.rs` →
+`<package>::x`), the module path from the module tree (`mod`,
 `#[path]`, `include!` and inline modules) and the function name. A declaration
 counts by the queue gate's own rule: the exact ID or a literal prefix ending
 in `*` of the same binary, or `Removes-test-target:` for a binary that is
@@ -36,6 +37,7 @@ import sys
 import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ci_rust_lanes
 import rust_inventory_baseline as baseline
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +54,25 @@ def git(root: Path, *args: str) -> str:
 _spec = importlib.util.spec_from_file_location("rust_platform_boundary", Path(__file__).with_name("check-rust-platform-boundary.py"))
 _boundary = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_boundary)
+
+
+def lane_features() -> dict[str, set[str]]:
+    """Features a queue lane enables, by package name (`-p`) or manifest
+    directory (`--manifest-path`): a target whose `required-features` they
+    lack is never built, so its tests are no case of the inventory."""
+    enabled: dict[str, set[str]] = {}
+    for lane in ci_rust_lanes.LANES:
+        selected = list(ci_rust_lanes.selection(lane))
+        owners = [selected[i + 1] for i, flag in enumerate(selected) if flag == "-p"]
+        owners += [str(PurePosixPath(selected[i + 1]).parent) for i, flag in enumerate(selected) if flag == "--manifest-path"]
+        features = {feature for i, flag in enumerate(selected) if flag == "--features"
+                    for feature in selected[i + 1].split(",")}
+        for owner in owners:
+            enabled.setdefault(owner, set()).update(features)
+    return enabled
+
+
+LANE_FEATURES = lane_features()
 
 
 def package_root(path: str) -> str | None:
@@ -144,10 +165,15 @@ class Packages:
             for target in manifest.get(kind, []):
                 # A target whose file is gone builds nothing: Cargo fails, and
                 # the declaration of its removal is what the queue needs.
-                if target.get("path") and f"{directory}/{target['path']}" in files:
+                features = LANE_FEATURES.get(package, set()) | LANE_FEATURES.get(directory, set())
+                if (target.get("path") and f"{directory}/{target['path']}" in files
+                        and set(target.get("required-features", [])) <= features):
                     roots[f"{directory}/{target['path']}"] = f"{package}::{prefix}{target['name']}"
+        # A manifest target owns its file: Cargo discovers it no second time.
+        declared = {f"{directory}/{target['path']}" for kind in ("test", "bin")
+                    for target in manifest.get(kind, []) if target.get("path")}
         def discover(path, binary):
-            if path in files:
+            if path in files and path not in declared:
                 roots.setdefault(path, binary)
         discover(f"{directory}/src/lib.rs", package)
         discover(f"{directory}/src/main.rs", f"{package}::bin/{package}")

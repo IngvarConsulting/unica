@@ -54,7 +54,10 @@ class RemovedTestsTests(unittest.TestCase):
         (root / "crates/demo/tests/contract.rs").write_text(INTEGRATION)
         # A `[[test]]` target names its binary independently of the file.
         (root / "crates/demo/Cargo.toml").write_text(
-            '[package]\nname = "demo"\n[[test]]\nname = "contract_tests"\npath = "tests/contract.rs"\n')
+            '[package]\nname = "demo"\n[[test]]\nname = "contract_tests"\npath = "tests/contract.rs"\n'
+            # No queue lane enables `research`: its binary is never built there.
+            '[[test]]\nname = "research_tests"\npath = "tests/research.rs"\nrequired-features = ["research"]\n')
+        (root / "crates/demo/tests/research.rs").write_text("#[test]\nfn outside_the_queue() {}\n")
         (root / "vendor/ureq/src").mkdir(parents=True)
         (root / "vendor/ureq/Cargo.toml").write_text('[package]\nname = "ureq"\n')
         (root / "vendor/ureq/src/lib.rs").write_text("mod pool;\n")
@@ -69,6 +72,7 @@ class RemovedTestsTests(unittest.TestCase):
         (root / "crates/demo/src/model.rs").write_text("pub mod codec;\n#[test]\nfn travels() {}\n")
         (root / "crates/demo/tests/shared.rs").write_text("")
         (root / "crates/demo/src/orphan.rs").write_text("")
+        (root / "crates/demo/tests/research.rs").write_text("")
         (root / "crates/demo/tests/contract.rs").unlink()
         (root / "vendor/ureq/src/pool.rs").write_text("// gone\n")
         git("add", "-A")
