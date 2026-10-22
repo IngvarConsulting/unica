@@ -612,8 +612,9 @@ fn canonical_template_remove_deletes_its_payload_directories_and_only_its_collec
         }
         let owner_module = source.join("Documents/Order/Ext/ObjectModule.bsl");
         let owner_bytes = std::fs::read(&owner_module).unwrap();
-        let mut remaining = vec!["Sheet", "Schema", "Data"];
-        while let Some(name) = (!remaining.is_empty()).then(|| remaining.remove(0)) {
+        let order = ["Sheet", "Schema", "Data"];
+        for (index, name) in order.iter().copied().enumerate() {
+            let remaining = &order[index + 1..];
             let payload = templates.join(name);
             assert!(payload.join("Ext").is_dir(), "{name}");
             let neighbors = remaining
