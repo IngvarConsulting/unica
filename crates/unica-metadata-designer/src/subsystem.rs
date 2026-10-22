@@ -905,9 +905,10 @@ pub fn build_subsystem_info_result(
 ) -> SubsystemInfoResult {
     SubsystemInfoResult {
         name: data.name,
+        property_limits: data.property_limits,
         synonym: subsystem_optional(data.synonym),
-        comment: subsystem_optional(data.comment),
-        explanation: subsystem_optional(data.explanation),
+        comment: data.comment,
+        explanation: data.explanation,
         picture: subsystem_optional(data.picture),
         include_in_command_interface: subsystem_optional(data.include_ci),
         use_one_command: subsystem_optional(data.use_one_command),
@@ -2127,8 +2128,8 @@ pub fn parse_subsystem_info_xml(
         })
         .map(unica_xml_format::read::multilang_text)
         .unwrap_or_default();
-    let comment =
-        unica_xml_format::read::child_text(props, "Comment", Some("http://v8.1c.ru/8.3/MDClasses"));
+    let mut property_limits = Vec::new();
+    let comment = subsystem_text_property(props, "Comment", false, &mut property_limits);
     let include_ci = unica_xml_format::read::child_text(
         props,
         "IncludeInCommandInterface",
@@ -2139,17 +2140,7 @@ pub fn parse_subsystem_info_xml(
         "UseOneCommand",
         Some("http://v8.1c.ru/8.3/MDClasses"),
     );
-    let explanation = props
-        .children()
-        .find(|node| {
-            unica_xml_format::names::element_has_name(
-                *node,
-                "Explanation",
-                Some("http://v8.1c.ru/8.3/MDClasses"),
-            )
-        })
-        .map(unica_xml_format::read::multilang_text)
-        .unwrap_or_default();
+    let explanation = subsystem_text_property(props, "Explanation", true, &mut property_limits);
     let picture = props
         .children()
         .find(|node| {
@@ -2182,22 +2173,86 @@ pub fn parse_subsystem_info_xml(
             groups,
             child_names,
             has_ci,
+            property_limits,
         },
         Vec::new(),
     ))
 }
+
+fn subsystem_text_property(
+    properties: roxmltree::Node<'_, '_>,
+    name: &str,
+    localized: bool,
+    limits: &mut Vec<String>,
+) -> Option<String> {
+    use crate::info_projection::{direct_text_content, localized_string_is_valid};
+    let nodes = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == name)
+        .collect::<Vec<_>>();
+    if nodes.is_empty() {
+        return None;
+    }
+    if let [node] = nodes.as_slice() {
+        let direct_text = direct_text_content(*node);
+        let valid = node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
+            && node.attributes().len() == 0
+            && if localized {
+                direct_text.trim().is_empty() && localized_string_is_valid(*node)
+            } else {
+                !node.children().any(|child| child.is_element())
+            };
+        if valid {
+            return Some(if localized {
+                subsystem_localized_text(*node)
+            } else {
+                direct_text
+            });
+        }
+    }
+    limits.push(format!("source_unreadable: Subsystem properties.{name} is malformed, duplicated or has a foreign namespace"));
+    None
+}
+
+fn subsystem_localized_text(node: roxmltree::Node<'_, '_>) -> String {
+    use crate::info_projection::direct_text_content;
+    let values = node
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .map(|item| {
+            let text = |name| {
+                item.children()
+                    .find(|child| child.is_element() && child.tag_name().name() == name)
+                    .map(direct_text_content)
+                    .unwrap_or_default()
+            };
+            (text("lang"), text("content"))
+        })
+        .collect::<Vec<_>>();
+    values
+        .iter()
+        .find(|(language, content)| language == "ru" && !content.is_empty())
+        .or_else(|| values.iter().find(|(_, content)| !content.is_empty()))
+        .map(|(_, content)| content.clone())
+        .unwrap_or_default()
+}
+
 pub fn append_subsystem_overview(lines: &mut Vec<String>, data: &SubsystemInfoData) {
     lines.push(format!("Подсистема: {}", data.name));
     if !data.synonym.is_empty() && data.synonym != data.name {
         lines.push(format!("Синоним: {}", data.synonym));
     }
-    if !data.comment.is_empty() {
-        lines.push(format!("Комментарий: {}", data.comment));
+    if let Some(comment) = data.comment.as_deref().filter(|value| !value.is_empty()) {
+        lines.push(format!("Комментарий: {comment}"));
     }
     lines.push(format!("ВключатьВКомандныйИнтерфейс: {}", data.include_ci));
     lines.push(format!("ИспользоватьОднуКоманду: {}", data.use_one_command));
-    if !data.explanation.is_empty() {
-        lines.push(format!("Пояснение: {}", data.explanation));
+    if let Some(explanation) = data
+        .explanation
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("Пояснение: {explanation}"));
     }
     if !data.picture.is_empty() {
         lines.push(format!("Картинка: {}", data.picture));

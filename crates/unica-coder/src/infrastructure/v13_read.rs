@@ -1096,6 +1096,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     });
                 }
                 ((field.starts_with("collections.") && field.ends_with(".type"))
+                    || (field.starts_with("collections.") && field.ends_with(".comment"))
                     || field.starts_with("details.")
                     || field.starts_with("properties.")
                     || field.starts_with("relations.")
