@@ -1703,20 +1703,18 @@ mod tests {
                         .expect("the editable rule still permits ordinary property edits");
                 assert!(!staged.planned_changes().is_empty());
             }
-            for force in [false, true] {
-                let request = seam_request(
-                    "main:Document.First",
-                    "object.remove",
-                    serde_json::json!({"force": force}),
-                );
-                let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
-                    .expect_err("a vendor object must be off support before removal");
-                assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
-                assert!(error.to_string().contains("off-support"), "{error}");
-                assert!(error.to_string().contains("supportRule.set"), "{error}");
-                assert!(error.to_string().contains("separate apply"), "{error}");
-                assert_eq!(tree_snapshot(&fixture.source_dir()), before);
-            }
+            let request = seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            );
+            let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                .expect_err("a vendor object must be off support before removal");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            assert!(error.to_string().contains("off-support"), "{error}");
+            assert!(error.to_string().contains("supportRule.set"), "{error}");
+            assert!(error.to_string().contains("separate apply"), "{error}");
+            assert_eq!(tree_snapshot(&fixture.source_dir()), before);
         }
     }
 
@@ -2096,19 +2094,41 @@ mod tests {
             .expect("a source without the support marker is editable");
     }
 
-    /// `object.remove` refuses an object other files still refer to; with
-    /// `force` the plan executes and carries a typed warning naming them.
+    /// `object.remove` refuses an object other metadata still refers to
+    /// before staging a byte, and names each referrer by its logical address
+    /// and the property holding the reference, not by its file.
     #[test]
-    fn forced_object_removal_keeps_the_referrers_and_says_so() {
+    fn object_removal_refuses_metadata_references_by_address_and_property() {
+        use unica_workspace::test_support::tree_snapshot;
+
         let fixture = ApplySeamFixture::new();
-        let rights_dir = fixture.source_dir().join("Roles/Reader/Ext");
-        std::fs::create_dir_all(&rights_dir).unwrap();
+        let source = fixture.source_dir();
+        std::fs::create_dir_all(source.join("Roles/Reader/Ext")).unwrap();
         std::fs::write(
-            rights_dir.join("Rights.xml"),
+            source.join("Roles/Reader/Ext/Rights.xml"),
             r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Document.First</name></object></Rights>"#,
         )
         .unwrap();
-        let admission = fixture.admission();
+        std::fs::create_dir_all(source.join("EventSubscriptions")).unwrap();
+        std::fs::write(
+            source.join("EventSubscriptions/OnWrite.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><EventSubscription uuid="44444444-4444-4444-8444-444444444444"><Properties><Name>OnWrite</Name><Source><v8:Type>cfg:DocumentObject.First</v8:Type></Source><Event>OnWrite</Event></Properties></EventSubscription></MetaDataObject>"#,
+        )
+        .unwrap();
+        let second = source.join("Documents/Second.xml");
+        let text = std::fs::read_to_string(&second).unwrap().replace(
+            "<Name>Total</Name>",
+            "<Name>Total</Name><Type><v8:Type>cfg:DocumentRef.First</v8:Type></Type>",
+        );
+        std::fs::write(&second, text).unwrap();
+        // A longer name that merely starts with the removed one is not a reference.
+        std::fs::create_dir_all(source.join("Constants")).unwrap();
+        std::fs::write(
+            source.join("Constants/Other.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Constant uuid="55555555-5555-4555-8555-555555555555"><Properties><Name>Other</Name><Type><v8:Type>cfg:DocumentRef.FirstArchive</v8:Type></Type></Properties></Constant></MetaDataObject>"#,
+        )
+        .unwrap();
+        let before = tree_snapshot(&source);
         let refused = plan_hidden_v13_apply(
             &seam_request(
                 "main:Document.First",
@@ -2116,48 +2136,95 @@ mod tests {
                 serde_json::json!({}),
             ),
             &fixture.binding,
-            &admission,
+            &fixture.admission(),
         )
         .unwrap_err();
         assert_eq!(refused.kind(), ApplyPlanErrorKind::InvalidState);
-        assert!(
-            refused.to_string().contains("still referenced"),
-            "{refused}"
-        );
+        let message = refused.to_string();
+        for referrer in [
+            "`main:Document.Second.Attribute.Total` → Type",
+            "`main:EventSubscription.OnWrite` → Source",
+            "`main:Role.Reader` → Rights",
+        ] {
+            assert!(message.contains(referrer), "{referrer}: {message}");
+        }
+        assert!(!message.contains("Constant.Other"), "{message}");
+        assert!(!message.contains(".xml"), "{message}");
+        assert_eq!(tree_snapshot(&source), before);
+    }
 
-        let admission = fixture.admission();
+    /// References only in module code do not block the removal: the plan
+    /// lists each place by module address and line, and planning stays exact
+    /// about whole names.
+    #[test]
+    fn object_removal_lists_code_only_references_as_a_plan_warning() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        std::fs::create_dir_all(source.join("CommonModules/Tools/Ext")).unwrap();
+        std::fs::write(
+            source.join("CommonModules/Tools.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="66666666-6666-4666-8666-666666666666"><Properties><Name>Tools</Name><Server>true</Server></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("CommonModules/Tools/Ext/Module.bsl"),
+            "Процедура Сделать() Экспорт\n\tДокументы.FirstArchive.СоздатьДокумент();\n\tДокумент = Документы.First.СоздатьДокумент();\nКонецПроцедуры\n",
+        )
+        .unwrap();
         let (staged, effects) = plan_hidden_v13_apply(
             &seam_request(
                 "main:Document.First",
                 "object.remove",
-                serde_json::json!({"force": true}),
+                serde_json::json!({}),
             ),
             &fixture.binding,
-            &admission,
+            &fixture.admission(),
         )
-        .expect("a forced removal plans");
+        .expect("references only in module code do not block the removal");
         assert!(!staged.planned_changes().is_empty());
-        assert_eq!(effects.warnings().len(), 1);
+        assert_eq!(effects.warnings().len(), 1, "{:?}", effects.warnings());
         let warning = &effects.warnings()[0];
-        assert_eq!(warning["code"], "references_kept");
+        assert_eq!(warning["code"], "code_references");
         assert_eq!(warning["count"], 1);
-        assert!(warning["files"][0]
-            .as_str()
-            .unwrap()
-            .ends_with("Roles/Reader/Ext/Rights.xml"));
+        assert_eq!(
+            warning["references"],
+            serde_json::json!([{"at": "main:CommonModule.Tools", "line": 3}])
+        );
+        let message = warning["message"].as_str().unwrap();
+        assert!(
+            message.contains("`main:CommonModule.Tools` line 3"),
+            "{message}"
+        );
+        assert!(!message.contains(".bsl"), "{message}");
+    }
 
-        let admission = fixture.admission();
-        let error = plan_hidden_v13_apply(
-            &seam_request(
-                "main:Document.First",
-                "object.remove",
-                serde_json::json!({"force": "yes"}),
-            ),
-            &fixture.binding,
-            &admission,
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+    /// `force` is no longer part of the `object.remove` contract: passing it
+    /// refuses `bad_value` and explains that the references go first.
+    #[test]
+    fn object_removal_refuses_force_as_bad_value() {
+        let fixture = ApplySeamFixture::new();
+        for force in [
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!("yes"),
+        ] {
+            let error = plan_hidden_v13_apply(
+                &seam_request(
+                    "main:Document.First",
+                    "object.remove",
+                    serde_json::json!({"force": force}),
+                ),
+                &fixture.binding,
+                &fixture.admission(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{force}");
+            assert_eq!(error.path(), Some("ops[0].args.force"));
+            assert!(
+                error.to_string().contains("remove the references"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

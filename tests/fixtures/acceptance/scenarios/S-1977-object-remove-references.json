@@ -1,0 +1,193 @@
+{
+  "id": "S-1977-object-remove-references",
+  "name": "remove-object-refuses-metadata-references-and-warns-about-code",
+  "issue": 1977,
+  "area": "Создание и удаление объектов",
+  "task": "Удалить справочник, который подписка на событие берёт источником, — отказ называет подписку адресом и свойством; удалить справочник, упомянутый только в коде модуля, — план и результат предупреждают адресом модуля и строкой; force больше не принимается",
+  "workspace": "tests/fixtures/acceptance/workspace-object-remove-references",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.ПримерА",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:Catalog.ПримерА` is referenced by other metadata: `main:EventSubscription.CorpusEventSubscription` → Source; remove these references first",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_state"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерА.xml",
+          "eq": "f26e51844876d2c3de70bd83d5acc6569137f55247a6abc3d83647592e4f6a16"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "4ad9dca1591f8bb55dec6bcb2422b95dc449d9dbb3e34807322d8bce852e980b"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "eq": "b59e1fb71734340a2896c5001ecd3a2e3780abf0f6e5c2f46c5fc893814f1182"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "bbb99d8473d791b06f943687d6231011b55b8d1834c7296a3c4e5ce7bcced3e6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.ПримерВ",
+        "ops": [
+          {
+            "op": "object.remove",
+            "args": {
+              "force": true
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `object.remove` does not accept `force`: remove the references from other metadata first; references only in module code are listed as a warning in the plan",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/ПримерВ.xml",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.ПримерВ",
+        "ops": [
+          {
+            "op": "object.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "code_references"
+        },
+        {
+          "pointer": "/warnings/0/count",
+          "eq": 1
+        },
+        {
+          "pointer": "/warnings/0/references/0/at",
+          "eq": "main:CommonModule.EventHandlers"
+        },
+        {
+          "pointer": "/warnings/0/references/0/line",
+          "eq": 5
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/ПримерВ.xml",
+          "eq": true
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "bbb99d8473d791b06f943687d6231011b55b8d1834c7296a3c4e5ce7bcced3e6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "code_references"
+        },
+        {
+          "pointer": "/warnings/0/count",
+          "eq": 1
+        },
+        {
+          "pointer": "/warnings/0/references/0/at",
+          "eq": "main:CommonModule.EventHandlers"
+        },
+        {
+          "pointer": "/warnings/0/references/0/line",
+          "eq": 5
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/ПримерВ.xml",
+          "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "bbb99d8473d791b06f943687d6231011b55b8d1834c7296a3c4e5ce7bcced3e6"
+        },
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Catalog",
+          "eq": [
+            "ПримерА",
+            "ПримерБ"
+          ]
+        }
+      ]
+    }
+  ]
+}

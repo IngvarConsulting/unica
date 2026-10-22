@@ -430,7 +430,7 @@ fn seven_metadata_can_contracts_publish_and_real_arguments_preview_without_write
         (
             "main:Report.АнализВерсийОбъектов",
             "object.remove",
-            json!({"force":true}),
+            json!({}),
         ),
         (
             "ext:Configuration",
@@ -528,8 +528,8 @@ fn scalar_and_nested_can_fields_agree_with_productive_readers() {
             &main,
             vec![
                 (json!({}), true),
-                (json!({"force":false}), true),
-                (json!({"force":true}), true),
+                (json!({"force":false}), false),
+                (json!({"force":true}), false),
                 (json!({"force":"true"}), false),
                 (json!({"unknown":true}), false),
             ],

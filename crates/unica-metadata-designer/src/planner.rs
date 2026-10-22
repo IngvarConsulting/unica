@@ -295,12 +295,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 )?;
                 continue;
             }
-            MetadataPlanKind::Remove {
-                target,
-                kind,
-                name,
-                force,
-            } => {
+            MetadataPlanKind::Remove { target, kind, name } => {
                 stage_object_remove(
                     reader,
                     staged,
@@ -308,7 +303,6 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                     target,
                     *kind,
                     name,
-                    *force,
                     op_index,
                     &mut provisional,
                 )?;
@@ -895,13 +889,13 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     target: &MetadataAddress,
     kind: MetadataKind,
     name: &str,
-    force: bool,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     use crate::remove::{
-        meta_remove_search_patterns, meta_remove_should_skip_file,
-        plan_meta_remove_subsystem_replacements, META_REMOVE_REFERENCE_FILE_MAX_BYTES,
+        meta_remove_references, meta_remove_search_patterns, meta_remove_should_skip_file,
+        plan_meta_remove_subsystem_replacements, MetaRemoveReference,
+        META_REMOVE_REFERENCE_FILE_MAX_BYTES,
     };
     let at_path = format!("ops[{op_index}].args.at");
     unica_source_designer::registration::require_untouched_staged_state(
@@ -927,17 +921,25 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     let files = staged
         .enumerate_tree(Path::new(""))
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-    let patterns = meta_remove_search_patterns(kind.as_str(), name, layout.directory);
-    let type_name_ref = format!("{}.{name}", kind.as_str());
-    let mut references = Vec::new();
+    let code_patterns = meta_remove_search_patterns(kind.as_str(), name, layout.directory);
+    let mut metadata_patterns = code_patterns.clone();
+    metadata_patterns.push(format!("{}.{name}", kind.as_str()));
+    let source_set = authority.source_set_name();
+    let removed = format!("{source_set}:{}", target.as_str());
+    let mut metadata_references = Vec::new();
+    let mut code_references = Vec::new();
     for relative in &files {
         let extension = relative
             .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("");
-        if !extension.eq_ignore_ascii_case("xml") && !extension.eq_ignore_ascii_case("bsl") {
+        let patterns = if extension.eq_ignore_ascii_case("xml") {
+            &metadata_patterns
+        } else if extension.eq_ignore_ascii_case("bsl") {
+            &code_patterns
+        } else {
             continue;
-        }
+        };
         let absolute = root.join(relative);
         if meta_remove_should_skip_file(
             &absolute,
@@ -964,46 +966,60 @@ fn stage_object_remove<R: MetadataPlanningRead>(
                 format!("reference input is not UTF-8: {error}"),
             )
         })?;
-        if patterns.iter().any(|pattern| text.contains(pattern))
-            || (extension.eq_ignore_ascii_case("xml") && text.contains(&type_name_ref))
-        {
-            references.push(relative.to_string_lossy().replace('\\', "/"));
+        for reference in meta_remove_references(source_set, relative, text, patterns) {
+            match reference {
+                MetaRemoveReference::Metadata { at, property } => {
+                    metadata_references.push(format!("`{at}` → {property}"));
+                }
+                MetaRemoveReference::Code { at, line } => code_references.push((at, line)),
+            }
         }
     }
-    let mut kept_references = None;
-    if !references.is_empty() {
-        let shown = references
+    if !metadata_references.is_empty() {
+        let mut shown = metadata_references
             .iter()
-            .take(5)
+            .take(10)
             .cloned()
             .collect::<Vec<_>>()
             .join(", ");
-        if !force {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidState,
-                format!(
-                    "`{}` is still referenced by {} source file(s): {shown}; remove the references first",
-                    target.as_str(),
-                    references.len()
-                ),
-            )
-            .at_path(at_path));
+        if metadata_references.len() > 10 {
+            shown.push_str(&format!(" and {} more", metadata_references.len() - 10));
         }
-        // A forced removal leaves the referrers as they are and says so:
-        // the caller asked for the object to go, the dangling references
-        // are the caller's next task.
-        kept_references = Some(serde_json::json!({
-            "code": "references_kept",
-            "at": at_path,
-            "count": references.len(),
-            "files": references.iter().take(5).cloned().collect::<Vec<_>>(),
-            "message": format!(
-                "`{}` was removed with force; {} source file(s) still refer to it: {shown}",
-                target.as_str(),
-                references.len()
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            format!(
+                "`{removed}` is referenced by other metadata: {shown}; remove these references first"
             ),
-        }));
+        )
+        .at_path(at_path));
     }
+    // References only in module code do not block the removal: the plan
+    // names them, and executing its token confirms the removal.
+    let code_warning = (!code_references.is_empty()).then(|| {
+        let places = code_references
+            .iter()
+            .take(20)
+            .map(|(at, line)| serde_json::json!({"at": at, "line": line}))
+            .collect::<Vec<_>>();
+        let mut shown = code_references
+            .iter()
+            .take(5)
+            .map(|(at, line)| format!("`{at}` line {line}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if code_references.len() > 5 {
+            shown.push_str(&format!(" and {} more", code_references.len() - 5));
+        }
+        serde_json::json!({
+            "code": "code_references",
+            "at": at_path,
+            "count": code_references.len(),
+            "references": places,
+            "message": format!(
+                "module code still refers to `{removed}`: {shown}; the removal leaves this code as it is"
+            ),
+        })
+    });
     let mut touched = Vec::new();
     for relative in files
         .iter()
@@ -1107,7 +1123,7 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         ),
         op_index,
     );
-    provisional.push(match kept_references {
+    provisional.push(match code_warning {
         Some(warning) => effect.with_warning(warning),
         None => effect,
     });

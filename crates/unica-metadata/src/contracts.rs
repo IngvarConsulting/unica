@@ -26,15 +26,7 @@ pub fn metadata_object_create_input_schema() -> &'static Value {
 
 pub fn metadata_object_remove_input_schema() -> &'static Value {
     static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        object(
-            &[
-                ("at", text(true)),
-                ("force", json!({"type":"boolean","default":false})),
-            ],
-            &[],
-        )
-    })
+    SCHEMA.get_or_init(|| object(&[("at", text(true))], &[]))
 }
 
 pub fn metadata_borrow_input_schema() -> &'static Value {
@@ -420,7 +412,7 @@ pub fn metadata_object_remove() -> OperationContract {
         schema: metadata_object_remove_input_schema().clone(),
         target: "The existing metadata object: <source-set>:<Kind>.<Name>.",
         effect: "Remove the object descriptor, its resource directory and its registration; update subsystem membership.",
-        notes: "References from other objects are checked. force=true keeps those references and reports references_kept; it does not repair them. Under the deny support policy, a vendor object must be taken off support in a separate apply call first.",
+        notes: "References from other metadata refuse the removal and are listed by the referring address and property; remove them first. References only in module code are listed by module address and line in the code_references warning of the plan, and executing its token confirms the removal. Subsystem membership is removed with the object. Under the deny support policy, a vendor object must be taken off support in a separate apply call first.",
         example_args: json!({}),
         help: METADATA_HELP,
         format_validators: &[],

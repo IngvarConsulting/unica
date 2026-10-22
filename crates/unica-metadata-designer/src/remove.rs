@@ -486,3 +486,173 @@ pub fn meta_remove_ru_manager(obj_type: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// One place outside the removed object that names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetaRemoveReference {
+    /// Another metadata object names it in a property of its XML source.
+    Metadata { at: String, property: String },
+    /// Module code names it on a line.
+    Code { at: String, line: usize },
+}
+
+/// The references to the removed object found in one source file, addressed
+/// logically: XML is metadata and refuses the removal, BSL is module code.
+pub fn meta_remove_references(
+    source_set: &str,
+    relative: &Path,
+    text: &str,
+    patterns: &[String],
+) -> Vec<MetaRemoveReference> {
+    let is_bsl = relative
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("bsl"));
+    let (owner, descriptor) = meta_remove_referrer(relative);
+    let mut found = Vec::new();
+    if is_bsl {
+        let module = unica_source_designer::module_layout::platform_xml_module_identity(relative)
+            .ok()
+            .and_then(|identity| {
+                unica_source_designer::module_layout::logical_module_from_metadata(
+                    identity.address.as_str(),
+                )
+            })
+            .unwrap_or(owner);
+        for (index, line) in text.lines().enumerate() {
+            if patterns.iter().any(|pattern| mentions(line, pattern)) {
+                found.push(MetaRemoveReference::Code {
+                    at: format!("{source_set}:{module}"),
+                    line: index + 1,
+                });
+            }
+        }
+        return found;
+    }
+    let property_of_file = file_stem_string(relative);
+    let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
+        if patterns.iter().any(|pattern| mentions(text, pattern)) {
+            found.push(MetaRemoveReference::Metadata {
+                at: format!("{source_set}:{owner}"),
+                property: property_of_file,
+            });
+        }
+        return found;
+    };
+    for node in document.descendants().filter(|node| node.is_text()) {
+        let value = node.text().unwrap_or_default();
+        if !patterns.iter().any(|pattern| mentions(value, pattern)) {
+            continue;
+        }
+        let reference = if descriptor {
+            MetaRemoveReference::Metadata {
+                at: nested_referrer(source_set, &owner, node),
+                property: descriptor_property(node),
+            }
+        } else {
+            MetaRemoveReference::Metadata {
+                at: format!("{source_set}:{owner}"),
+                property: property_of_file.clone(),
+            }
+        };
+        if !found.contains(&reference) {
+            found.push(reference);
+        }
+    }
+    found
+}
+
+/// The metadata object a source file belongs to and whether the file is its
+/// own descriptor: `Catalogs/X.xml` and `Catalogs/X/Forms/F.xml` are
+/// descriptors, `Catalogs/X/Forms/F/Ext/Form.xml` belongs to `Catalog.X.Form.F`.
+/// Files outside a metadata collection belong to the configuration.
+fn meta_remove_referrer(relative: &Path) -> (String, bool) {
+    let parts = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    let layout = parts
+        .first()
+        .and_then(|directory| unica_source_designer::layout::metadata_kind_by_directory(directory));
+    let (Some(layout), Some(owner)) = (layout, parts.get(1)) else {
+        return ("Configuration".to_string(), false);
+    };
+    let strip = |part: &str| part.strip_suffix(".xml").unwrap_or(part).to_string();
+    let mut address = format!("{}.{}", layout.tag, strip(owner));
+    let mut rest = &parts[2..];
+    if let [directory, child, tail @ ..] = rest {
+        let kind = match *directory {
+            "Forms" => Some("Form"),
+            "Templates" => Some("Template"),
+            "Commands" => Some("Command"),
+            "Recalculations" => Some("Recalculation"),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            address.push_str(&format!(".{kind}.{}", strip(child)));
+            rest = tail;
+        }
+    }
+    (address, rest.is_empty())
+}
+
+/// The descriptor node holding the reference: the owner, or the attribute,
+/// tabular section, dimension and so on it is declared in, as long as the
+/// address grammar names that node.
+fn nested_referrer(source_set: &str, owner: &str, node: roxmltree::Node<'_, '_>) -> String {
+    let mut chain = node
+        .ancestors()
+        .filter(|ancestor| ancestor.is_element())
+        .filter_map(|ancestor| {
+            let name = ancestor
+                .children()
+                .find(|child| child.has_tag_name("Properties"))?
+                .children()
+                .find(|child| child.has_tag_name("Name"))?
+                .text()?
+                .trim()
+                .to_string();
+            Some(format!(".{}.{name}", ancestor.tag_name().name()))
+        })
+        .collect::<Vec<_>>();
+    // The outermost named node is the owner itself.
+    chain.pop();
+    chain.reverse();
+    while !chain.is_empty() {
+        let candidate = format!("{source_set}:{owner}{}", chain.concat());
+        if unica_address::address::QualifiedAddress::parse(&candidate).is_ok() {
+            return candidate;
+        }
+        chain.pop();
+    }
+    format!("{source_set}:{owner}")
+}
+
+/// The property of the descriptor node that holds the reference: the element
+/// right under `<Properties>`, or the enclosing element when there is none.
+fn descriptor_property(node: roxmltree::Node<'_, '_>) -> String {
+    node.ancestors()
+        .filter(|ancestor| ancestor.is_element())
+        .find(|ancestor| {
+            ancestor
+                .parent_element()
+                .is_some_and(|parent| parent.has_tag_name("Properties"))
+        })
+        .or_else(|| node.parent_element())
+        .map(|element| element.tag_name().name().to_string())
+        .unwrap_or_default()
+}
+
+/// Whether `text` names the object by `pattern` as a whole name: `Catalog.X`
+/// does not match `Catalog.XY` or `MyCatalog.X`. The bare common-module
+/// pattern `X.` must not follow a dot, where it names a member of another object.
+fn mentions(text: &str, pattern: &str) -> bool {
+    let identifier = |ch: char| ch.is_alphanumeric() || ch == '_';
+    let bare = pattern.ends_with('.') && !pattern[..pattern.len() - 1].contains('.');
+    text.match_indices(pattern).any(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + pattern.len()..].chars().next();
+        !before.is_some_and(|ch| identifier(ch) || (bare && ch == '.'))
+            && (pattern.ends_with('.') || !after.is_some_and(identifier))
+    })
+}

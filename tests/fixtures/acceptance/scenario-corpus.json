@@ -3429,7 +3429,7 @@
   },
   {
    "area": "Создание и удаление объектов",
-   "task": "Удалить справочник, на который ссылаются права роли — поверхность отказывает и называет ссылающийся файл",
+   "task": "Удалить справочник, на который ссылаются права роли, — поверхность отказывает и называет роль адресом и свойством",
    "wire": [
     {
      "tool": "unica.apply",
@@ -3472,7 +3472,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Catalog.Валюты` is still referenced by 1 source file(s): Roles/SalesReader/Ext/Rights.xml; remove the references first"
+     "refusal": "invalid_state: `main:Catalog.Валюты` is referenced by other metadata: `main:Role.SalesReader` → Rights; remove these references first"
     },
     {
      "tool": "unica.view",
@@ -7990,7 +7990,7 @@
   {
    "id": "S293",
    "area": "Объекты метаданных",
-   "task": "Удалить объект, на который ещё ссылаются права роли, с force — план исполним и несёт предупреждение о сохранённых ссылках",
+   "task": "Удалить объект, на который ещё ссылаются права роли, с force — аргумент снят из контракта, поверхность отказывает bad_value до записи",
    "wire": [
     {
      "tool": "unica.apply",
@@ -8034,8 +8034,9 @@
       ]
      },
      "expect": [
-      "ok"
-     ]
+      "refused"
+     ],
+     "refusal": "bad_value: `object.remove` does not accept `force`: remove the references from other metadata first; references only in module code are listed as a warning in the plan"
     }
    ]
   },
