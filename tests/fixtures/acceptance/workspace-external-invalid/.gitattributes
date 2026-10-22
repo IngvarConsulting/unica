@@ -1,3 +1,6 @@
+# Text policy of the Git repository the scenario creates from a copy of
+# this fixture (acceptance_diagnostics.initialize_vendor_source); the source
+# repository pins these bytes with its root acceptance rule.
 *.xml text eol=lf
 *.bsl text eol=lf
 *.bin binary
