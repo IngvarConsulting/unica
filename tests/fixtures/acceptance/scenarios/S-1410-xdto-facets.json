@@ -1,0 +1,466 @@
+{
+  "id": "S-1410-xdto-facets",
+  "area": "XDTO и обмены",
+  "task": "Создать ограниченные именованные и анонимный типы значений XDTO и прочитать фасеты",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-facets",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Can.valueType.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример.Can.property.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата",
+        "ops": [
+          {
+            "op": "valueType.add",
+            "args": {
+              "values": {
+                "name": "КодПримера",
+                "base": "xs:string",
+                "facets": {
+                  "maxLength": 10
+                }
+              }
+            }
+          },
+          {
+            "op": "valueType.add",
+            "args": {
+              "values": {
+                "name": "СуммаПримера",
+                "base": "xs:decimal",
+                "facets": {
+                  "totalDigits": 5,
+                  "fractionDigits": 2,
+                  "minInclusive": "0",
+                  "maxInclusive": "999.99"
+                }
+              }
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Код",
+                  "type": "tns:КодПримера"
+                }
+              },
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример"
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Сумма",
+                  "type": "tns:СуммаПримера"
+                }
+              },
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример"
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "АнонимныйКод",
+                  "valueType": {
+                    "base": "xs:string",
+                    "facets": {
+                      "maxLength": 10
+                    }
+                  }
+                }
+              },
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример"
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+              "values": {
+                "property": {
+                  "name": "Строки",
+                  "maxOccurs": -1,
+                  "objectType": {
+                    "properties": [
+                      {
+                        "name": "Код",
+                        "valueType": {
+                          "base": "xs:string",
+                          "facets": {
+                            "maxLength": 10
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "after": {
+          "file": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.КодПримера"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/facets",
+          "eq": "{\"maxLength\":10}"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.СуммаПримера"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/facets",
+          "eq": "{\"totalDigits\":5,\"fractionDigits\":2,\"minInclusive\":\"0\",\"maxInclusive\":\"999.99\"}"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.АнонимныйКод"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/facets",
+          "eq": "{\"maxLength\":10}"
+        },
+        {
+          "pointer": "/data/props/anonymousType",
+          "eq": "ValueType"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.Строки.Property.Код"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/anonymousType",
+          "eq": "ValueType"
+        },
+        {
+          "pointer": "/data/props/facets",
+          "eq": "{\"maxLength\":10}"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата",
+        "ops": [
+          {
+            "op": "valueType.add",
+            "args": {
+              "values": {
+                "name": "КодПримера",
+                "base": "xs:string",
+                "facets": {
+                  "maxLength": 10
+                }
+              }
+            }
+          },
+          {
+            "op": "valueType.add",
+            "args": {
+              "values": {
+                "name": "СуммаПримера",
+                "base": "xs:decimal",
+                "facets": {
+                  "totalDigits": 5,
+                  "fractionDigits": 2,
+                  "minInclusive": "0",
+                  "maxInclusive": "999.99"
+                }
+              }
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Код",
+                  "type": "tns:КодПримера"
+                }
+              },
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример"
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Сумма",
+                  "type": "tns:СуммаПримера"
+                }
+              },
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример"
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "АнонимныйКод",
+                  "valueType": {
+                    "base": "xs:string",
+                    "facets": {
+                      "maxLength": 10
+                    }
+                  }
+                }
+              },
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример"
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+              "values": {
+                "property": {
+                  "name": "Строки",
+                  "maxOccurs": -1,
+                  "objectType": {
+                    "properties": [
+                      {
+                        "name": "Код",
+                        "valueType": {
+                          "base": "xs:string",
+                          "facets": {
+                            "maxLength": 10
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата",
+        "ops": [
+          {
+            "op": "valueType.add",
+            "args": {
+              "values": {
+                "name": "Ранний",
+                "base": "xs:string"
+              }
+            }
+          },
+          {
+            "op": "valueType.add",
+            "args": {
+              "values": {
+                "name": "Ошибка",
+                "base": "xs:string",
+                "facets": {
+                  "fractionDigits": 2
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ],
+      "refusal": "invalid_source: XDTO writer rejected the typed operation"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "НевернаяОснова",
+                  "valueType": {
+                    "base": "tns:Пример",
+                    "facets": {}
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ],
+      "refusal": "invalid_source: XDTO writer rejected the typed operation"
+    }
+  ],
+  "issue": 1410
+}

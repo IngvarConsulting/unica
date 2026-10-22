@@ -491,6 +491,7 @@ pub fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWr
         XdtoPlanOperation::AddValueType(args) => writer::TypedWriterOperation::AddValueType {
             name: args.name.as_str(),
             base: args.base.as_str(),
+            facets: Some(&args.facets),
         },
         XdtoPlanOperation::AddObjectType(args) => writer::TypedWriterOperation::AddObjectType {
             name: args.name.as_str(),
@@ -583,6 +584,9 @@ fn xdto_validation_error_path(operation: &XdtoPlanOperation, op_index: usize) ->
             }
             unica_xdto::operations::XdtoPropertyDefinition::Object(_) => {
                 format!("{base}.values.property.objectType")
+            }
+            unica_xdto::operations::XdtoPropertyDefinition::Value { .. } => {
+                format!("{base}.values.property.valueType")
             }
         },
         XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {

@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::ops::Range;
+use unica_xdto::facets::ValueFacets;
 use unica_xdto::operations::{XdtoPropertyDefinition, XdtoPropertySpec};
 use unica_xml_format::text::{resolve_line_ending, EolPolicy, LineEnding, SourceTextSnapshot};
 
@@ -137,6 +138,7 @@ pub enum TypedWriterOperation<'a> {
     AddValueType {
         name: &'a str,
         base: &'a str,
+        facets: Option<&'a ValueFacets>,
     },
     AddObjectType {
         name: &'a str,
@@ -180,12 +182,20 @@ pub fn plan_typed(
     let root = document.root_element();
     let mut finding = None;
     let edit = match operation {
-        TypedWriterOperation::AddValueType { name, base } => {
+        TypedWriterOperation::AddValueType { name, base, facets } => {
             let desired_base = desired_qname(root, root, base);
+            let empty_facets = ValueFacets::default();
+            let facets = facets.unwrap_or(&empty_facets);
+            facets
+                .validate_base(
+                    desired_base.semantic.namespace.as_deref(),
+                    &desired_base.semantic.local,
+                )
+                .map_err(|message| writer_invalid_source(message.to_owned()))?;
             let existing = named_types(root, name);
             if !existing.is_empty() {
                 let exact = existing.len() == 1
-                    && compatible_value_type(existing[0], &desired_base.semantic);
+                    && compatible_value_type(existing[0], &desired_base.semantic, facets);
                 finding = Some(duplicate_finding(
                     "duplicate_type",
                     existing[0],
@@ -197,10 +207,11 @@ pub fn plan_typed(
                 let element_name = lexical_xdto_child_name(before, root, "valueType")
                     .map_err(writer_invalid_source)?;
                 let fragment = format!(
-                    "<{element_name}{} name=\"{}\" base=\"{}\"/>",
+                    "<{element_name}{} name=\"{}\" base=\"{}\"{}/>",
                     desired_base.namespace_declaration(),
                     escape_attribute(name),
-                    escape_attribute(&desired_base.raw)
+                    escape_attribute(&desired_base.raw),
+                    facet_attributes(facets)
                 );
                 Some(
                     insert_top_level(before, root, TopLevelInsert::ValueType, &fragment)
@@ -310,6 +321,7 @@ pub fn plan_typed(
             property_path,
         } => {
             let target = property_target(root, type_name, property_path)?;
+            validate_property_tree_bases(root, target, property)?;
             let existing = direct_named_properties(target, property.name.as_str());
             if !existing.is_empty() {
                 let exact = existing.len() == 1
@@ -324,10 +336,26 @@ pub fn plan_typed(
             } else {
                 let property_name = lexical_xdto_child_name(before, target, "property")
                     .map_err(writer_invalid_source)?;
-                let fragment = if matches!(property.definition, XdtoPropertyDefinition::Named(_)) {
+                let fragment = if matches!(
+                    property.definition,
+                    XdtoPropertyDefinition::Named(_) | XdtoPropertyDefinition::Value { .. }
+                ) {
                     // A leaf property needs only the existing insertion layout.
                     // Requiring a multiline ObjectType layout here rejects legacy inputs.
-                    render_property_tree(root, target, property, &property_name, "", "", "", "")
+                    {
+                        let definition_name = lexical_xdto_child_name(before, target, "typeDef")
+                            .map_err(writer_invalid_source)?;
+                        render_property_tree(
+                            root,
+                            target,
+                            property,
+                            &property_name,
+                            &definition_name,
+                            "",
+                            "",
+                            "",
+                        )
+                    }
                 } else {
                     let indent =
                         infer_child_indent(before, target).map_err(writer_invalid_source)?;
@@ -400,7 +428,7 @@ pub fn plan(
         "add-value-type" => {
             let name = super::required(args, "name")?;
             let base = super::required(args, "base")?;
-            TypedWriterOperation::AddValueType { name, base }
+            TypedWriterOperation::AddValueType { name, base, facets: None }
         }
         "add-object-type" => {
             let name = super::required(args, "name")?;
@@ -562,9 +590,29 @@ fn semantic_qname(node: Node<'_, '_>, raw: &str) -> SemanticQName {
     }
 }
 
-fn compatible_value_type(node: Node<'_, '_>, base: &SemanticQName) -> bool {
+fn facet_attributes(facets: &ValueFacets) -> String {
+    facets
+        .attributes()
+        .into_iter()
+        .map(|(name, value)| format!(" {name}=\"{}\"", escape_attribute(&value)))
+        .collect()
+}
+
+fn compatible_value_type(node: Node<'_, '_>, base: &SemanticQName, facets: &ValueFacets) -> bool {
     node.has_tag_name((XDTO_NS, "valueType"))
-        && has_only_plain_attributes(node, &["name", "base"])
+        && has_only_plain_attributes(
+            node,
+            &[
+                "name",
+                "base",
+                "maxLength",
+                "totalDigits",
+                "fractionDigits",
+                "minInclusive",
+                "maxInclusive",
+            ],
+        )
+        && crate::facets::from_node(node).is_ok_and(|existing| existing.equivalent(facets))
         && has_exact_compatible_content(node)
         && node.attribute("base").is_some_and(|existing| {
             let existing = semantic_qname(node, existing);
@@ -737,6 +785,30 @@ fn compatible_property_tree(
                     .attribute("type")
                     .is_some_and(|raw| semantic_qname(node, raw) == desired.semantic)
         }
+        XdtoPropertyDefinition::Value { base, facets } => {
+            if node.attribute("type").is_some() {
+                return false;
+            }
+            let definitions = node.children().filter(Node::is_element).collect::<Vec<_>>();
+            let [definition] = definitions.as_slice() else {
+                return false;
+            };
+            let desired = desired_qname(root, context, base.as_str());
+            definition.has_tag_name((XDTO_NS, "typeDef"))
+                && definition.attribute((XSI_NS, "type")) == Some("ValueType")
+                && definition.attributes().all(|attribute| {
+                    (attribute.namespace() == Some(XSI_NS) && attribute.name() == "type")
+                        || (attribute.namespace().is_none()
+                            && (attribute.name() == "base"
+                                || crate::facets::NAMES.contains(&attribute.name())))
+                })
+                && has_exact_compatible_content(*definition)
+                && definition
+                    .attribute("base")
+                    .is_some_and(|raw| semantic_qname(*definition, raw) == desired.semantic)
+                && crate::facets::from_node(*definition)
+                    .is_ok_and(|actual| actual.equivalent(facets))
+        }
         XdtoPropertyDefinition::Object(properties) => {
             if node.attribute("type").is_some() {
                 return false;
@@ -767,6 +839,28 @@ fn compatible_property_tree(
     }
 }
 
+fn validate_property_tree_bases(
+    root: Node<'_, '_>,
+    context: Node<'_, '_>,
+    spec: &XdtoPropertySpec,
+) -> Result<(), WriterError> {
+    match &spec.definition {
+        XdtoPropertyDefinition::Named(_) => Ok(()),
+        XdtoPropertyDefinition::Object(children) => children
+            .iter()
+            .try_for_each(|child| validate_property_tree_bases(root, context, child)),
+        XdtoPropertyDefinition::Value { base, facets } => {
+            let desired = desired_qname(root, context, base.as_str());
+            facets
+                .validate_anonymous_base(
+                    desired.semantic.namespace.as_deref(),
+                    &desired.semantic.local,
+                )
+                .map_err(|message| writer_invalid_source(message.to_string()))
+        }
+    }
+}
+
 fn whitespace_character_data(node: Node<'_, '_>) -> bool {
     node.children()
         .filter(Node::is_text)
@@ -776,6 +870,10 @@ fn whitespace_character_data(node: Node<'_, '_>) -> bool {
 fn property_requests_prefix(spec: &XdtoPropertySpec, prefix: &str) -> bool {
     match &spec.definition {
         XdtoPropertyDefinition::Named(name) => name
+            .as_str()
+            .split_once(':')
+            .is_some_and(|(used, _)| used == prefix),
+        XdtoPropertyDefinition::Value { base, .. } => base
             .as_str()
             .split_once(':')
             .is_some_and(|(used, _)| used == prefix),
@@ -838,6 +936,16 @@ fn render_property_tree(
                 escape_attribute(spec.name.as_str()),
                 escape_attribute(&desired.raw)
             )
+        }
+        XdtoPropertyDefinition::Value { base, facets } => {
+            let desired = desired_qname(root, context, base.as_str());
+            let (prefix, declaration) = xsi_binding(root, context, spec);
+            let default_namespace = if context.lookup_namespace_uri(None) == Some(XDTO_NS) {
+                String::new()
+            } else {
+                format!(" xmlns=\"{XDTO_NS}\"")
+            };
+            format!("<{property_name} name=\"{}\"{bounds}><{definition_name}{declaration}{default_namespace} {prefix}:type=\"ValueType\"{} base=\"{}\"{}/></{property_name}>", escape_attribute(spec.name.as_str()), desired.namespace_declaration(), escape_attribute(&desired.raw), facet_attributes(facets))
         }
         XdtoPropertyDefinition::Object(properties) => {
             let (prefix, declaration) = xsi_binding(root, context, spec);

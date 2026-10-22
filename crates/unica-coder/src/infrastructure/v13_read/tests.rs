@@ -6964,3 +6964,93 @@ fn subsystem_text_properties_preserve_presence_and_damage_at_every_depth() {
         }
     }
 }
+
+#[test]
+fn xdto_restricted_value_view_returns_named_and_anonymous_facets() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let document = roxmltree::Document::parse(original.trim_start_matches('\u{feff}')).unwrap();
+    let namespace = document
+        .root_element()
+        .attribute("targetNamespace")
+        .unwrap();
+    let source = include_str!("../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
+        .replace("urn:unica:anonymous", namespace);
+    fs::write(&package, source.as_bytes()).unwrap();
+    let service = fixture.view_service();
+    for (suffix, facets, anonymous, base) in [
+        ("Type.КодПримера", json!({"maxLength":10}), false, "string"),
+        (
+            "Type.СуммаПримера",
+            json!({"totalDigits":5,"fractionDigits":2,"minInclusive":"0","maxInclusive":"999.99"}),
+            false,
+            "decimal",
+        ),
+        (
+            "Type.Пример.Property.АнонимныйКод",
+            json!({"maxLength":10}),
+            true,
+            "string",
+        ),
+    ] {
+        let result = service.view(
+            ViewRequest::new(&format!("main:XDTOPackage.EnterpriseData_1_17_3.{suffix}")).unwrap(),
+        );
+        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        let data = result.data.unwrap();
+        let props = &data["props"];
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(props["facets"].as_str().unwrap()).unwrap(),
+            facets
+        );
+        let actual_base: serde_json::Value =
+            serde_json::from_str(props["base"].as_str().unwrap()).unwrap();
+        assert_eq!(actual_base["local"], base);
+        assert_eq!(actual_base["namespace"], "http://www.w3.org/2001/XMLSchema");
+        if anonymous {
+            assert_eq!(props["anonymousType"], "ValueType");
+        }
+    }
+    assert_eq!(fs::read(&package).unwrap(), source.as_bytes());
+}
+
+#[test]
+fn xdto_restricted_value_view_reports_oversized_facets() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let document = roxmltree::Document::parse(original.trim_start_matches('\u{feff}')).unwrap();
+    let namespace = document
+        .root_element()
+        .attribute("targetNamespace")
+        .unwrap();
+    let source = include_str!("../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
+        .replace("urn:unica:anonymous", namespace)
+        .replace("999.99", &"9".repeat(3000))
+        .replace(
+            "base=\"xs:string\" maxLength=\"10\"",
+            &format!("base=\"xs:decimal\" maxInclusive=\"{}\"", "9".repeat(3000)),
+        );
+    fs::write(&package, source.as_bytes()).unwrap();
+    let service = fixture.view_service();
+    for suffix in ["Type.СуммаПримера", "Type.Пример.Property.АнонимныйКод"]
+    {
+        let result = service.view(
+            ViewRequest::new(&format!("main:XDTOPackage.EnterpriseData_1_17_3.{suffix}")).unwrap(),
+        );
+        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        let data = result.data.unwrap();
+        assert!(data["props"].get("facets").is_none());
+        assert!(data["limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().is_some_and(|s| s.contains("facets"))));
+    }
+    assert_eq!(fs::read(&package).unwrap(), source.as_bytes());
+}
