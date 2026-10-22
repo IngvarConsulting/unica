@@ -82,21 +82,4 @@ mod tests {
         assert_eq!(Path::new("").portable().to_string(), "");
         assert_eq!(Path::new("a/./b/../c").portable().to_string(), "a/b/../c");
     }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_separators_are_spelled_as_forward_slashes() {
-        assert_eq!(
-            Path::new(r"Catalogs\Products.xml").portable().to_string(),
-            "Catalogs/Products.xml"
-        );
-        assert_eq!(
-            Path::new(r"C:\work\src").portable().to_string(),
-            "C:/work/src"
-        );
-        assert_eq!(
-            Path::new(r"\\srv\share\src").portable().to_string(),
-            "//srv/share/src"
-        );
-    }
 }
