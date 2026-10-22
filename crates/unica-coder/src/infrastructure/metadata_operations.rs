@@ -697,6 +697,7 @@ pub(crate) mod tests {
                 declarations: unica_metadata::MetaInfoDeclarations::default(),
                 predefined_code_type: Some("String".to_string()),
                 relations: unica_metadata::MetaRelationsData {
+                    content: None,
                     owners: Some(Some(Vec::new())),
                     register_records: Some(Some(Vec::new())),
                     based_on: Some(Some(Vec::new())),
@@ -1699,15 +1700,17 @@ pub(crate) mod tests {
         let dependency_directory = fixture.root.join("src/Catalogs");
         let outside_directory = fixture.root.join("outside-catalogs");
         fs::rename(&dependency_directory, &outside_directory).unwrap();
-        let Some(link_result) = unica_workspace::test_support::create_dir_symlink_for_test(
+        let link_result = unica_workspace::test_support::create_dir_symlink_for_test(
             &outside_directory,
             &dependency_directory,
-        ) else {
-            fs::rename(&outside_directory, &dependency_directory).unwrap();
-            return;
-        };
+        )
+        .expect("symlink fixtures exist on Unix and Windows");
         if link_result.is_err() {
             fs::rename(&outside_directory, &dependency_directory).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 
@@ -1769,15 +1772,17 @@ pub(crate) mod tests {
         let extension_directory = fixture.root.join("src/CommonModules/EventHandlers/Ext");
         let outside_directory = fixture.root.join("outside-handler-ext");
         fs::rename(&extension_directory, &outside_directory).unwrap();
-        let Some(link_result) = unica_workspace::test_support::create_dir_symlink_for_test(
+        let link_result = unica_workspace::test_support::create_dir_symlink_for_test(
             &outside_directory,
             &extension_directory,
-        ) else {
-            fs::rename(&outside_directory, &extension_directory).unwrap();
-            return;
-        };
+        )
+        .expect("symlink fixtures exist on Unix and Windows");
         if link_result.is_err() {
             fs::rename(&outside_directory, &extension_directory).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 
@@ -4866,13 +4871,16 @@ pub(crate) mod tests {
         let ext = fixture.root.join("src/Catalogs/Editable/Forms/Main/Ext");
         let external = fixture.root.join("provider-secret.txt");
         fs::write(&external, b"secret").unwrap();
-        let Some(link_result) = unica_workspace::test_support::create_file_symlink_for_test(
+        let link_result = unica_workspace::test_support::create_file_symlink_for_test(
             &external,
             ext.join("LinkedResource"),
-        ) else {
-            return;
-        };
+        )
+        .expect("symlink fixtures exist on Unix and Windows");
         if link_result.is_err() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let request = fixture.typed_edit(vec![MetaEditOperation::update(
@@ -4984,12 +4992,14 @@ pub(crate) mod tests {
         let external = fixture.root.join("provider-private-forms");
         fs::create_dir_all(&external).unwrap();
         let collection = fixture.root.join("src/Catalogs/Editable/Forms");
-        let Some(link_result) =
+        let link_result =
             unica_workspace::test_support::create_dir_symlink_for_test(&external, &collection)
-        else {
-            return;
-        };
+                .expect("symlink fixtures exist on Unix and Windows");
         if link_result.is_err() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let request = fixture.typed_edit(vec![MetaEditOperation::add(

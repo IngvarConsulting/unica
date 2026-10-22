@@ -443,6 +443,10 @@ fn parent_component_before_subsystems_is_rejected_before_any_registered_read() {
     .unwrap();
     if !create_directory_symlink_or_skip(&outside.join("nested"), &source_root.join("tmp")) {
         let _ = fs::remove_dir_all(root);
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
     let args = Map::from_iter([(
@@ -484,6 +488,10 @@ fn bak_symlink_alias_is_not_a_subsystem_info_xml_target() {
     let alias = source_root.join("Subsystems/Sales.bak");
     if !create_file_symlink_or_skip(&registered, &alias) {
         let _ = fs::remove_dir_all(root);
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
     let args = Map::from_iter([(
@@ -514,6 +522,10 @@ fn xml_symlink_alias_is_not_a_subsystem_info_target() {
     let alias = root.join("src/Subsystems/Alias.xml");
     if !create_file_symlink_or_skip(&registered, &alias) {
         let _ = fs::remove_dir_all(root);
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
     let args = Map::from_iter([(
@@ -554,6 +566,10 @@ fn xml_beneath_an_intermediate_directory_symlink_is_not_a_local_target() {
     let alias = root.join("src/Alias");
     if !create_directory_symlink_or_skip(&external, &alias) {
         let _ = fs::remove_dir_all(root);
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
     let args = Map::from_iter([("SubsystemPath".to_string(), json!("src/Alias/Local.xml"))]);
@@ -709,6 +725,10 @@ fn root_subsystems_symlink_is_not_followed_for_a_tree_answer() {
         &source_root.join("Subsystems"),
     ) {
         let _ = fs::remove_dir_all(root);
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
     let args = Map::from_iter([("SubsystemPath".to_string(), json!("src/Subsystems"))]);
@@ -756,6 +776,10 @@ fn nested_subsystems_symlink_is_not_followed_for_a_tree_answer() {
     fs::create_dir_all(nested.parent().unwrap()).unwrap();
     if !create_directory_symlink_or_skip(&external.join("Subsystems"), &nested) {
         let _ = fs::remove_dir_all(root);
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
     let args = Map::from_iter([(

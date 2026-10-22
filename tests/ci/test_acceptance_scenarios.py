@@ -778,6 +778,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("ObjectBorrow", "object.borrow", "ExtensionRoot", "From"),
         ("ObjectCreate", "object.create", "Configuration", "Values"),
         ("ObjectRemove", "object.remove", "Metadata", "Target"),
+        ("ContentSet", "content.set", "ExchangePlan", "Items"),
         ("RelationAdd", "relation.add", "Metadata", "Values"),
         ("RelationRemove", "relation.remove", "Metadata", "Values"),
         ("RelationReplace", "relation.replace", "Metadata", "Values"),
@@ -992,9 +993,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         for family, rows in expected.items():
             with self.subTest(family=family):
                 self.assertEqual([row for row in registry if row[1] == family], rows)
-        self.assertEqual(registry[107:112], expected["Subsystem"])
-        self.assertEqual(registry[114:119], expected["Interface"])
-        self.assertEqual(registry[119:121], expected["Code"])
+        self.assertEqual(registry[108:113], expected["Subsystem"])
+        self.assertEqual(registry[115:120], expected["Interface"])
+        self.assertEqual(registry[120:122], expected["Code"])
 
     def test_every_registered_apply_operation_has_a_published_integration_case(self) -> None:
         # The inventory is the closed `apply` registry of all typed families
@@ -1095,8 +1096,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 [row for row in registry if row[1] == "Metadata"],
                 [row for row in self.CONTEXT_ROWS if row[1] == "Metadata"],
             )
-            self.assertEqual(len(registry), 122)
-            self.assertEqual(len({row[0] for row in registry}), 120)
+            self.assertEqual(len(registry), 123)
+            self.assertEqual(len({row[0] for row in registry}), 121)
             registration = f"({operation}::ObjectBorrow),"
             self.assertEqual(original.count(registration), 1)
             replacements = {
@@ -1157,7 +1158,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         table = roles + self.XDTO_REGISTRATIONS
         registry, implemented = self.renderer().load_apply_registry()
         self.assertEqual([entry for entry in registry if entry[1] == "Xdto"], self.XDTO_ROWS)
-        self.assertEqual(registry[102:107], self.XDTO_ROWS)
+        self.assertEqual(registry[103:108], self.XDTO_ROWS)
         self.assertLessEqual({entry[0] for entry in self.XDTO_ROWS}, implemented)
         row = 'AddValueType => ("valueType.add", XdtoPackage, Values)'
         self.assertIn(row, metadata)
@@ -1319,8 +1320,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             )
             self.assertEqual(sum(entry[1] == family and entry[0] not in migrated_names for entry in registry), remaining)
             self.assertLessEqual(migrated_names, implemented)
-        self.assertEqual(len(registry), 122)
-        self.assertEqual(len({entry[0] for entry in registry}), 120)
+        self.assertIn(("content.set", "Metadata", "ExchangePlan", "Items"), registry)
+        self.assertIn("content.set", implemented)
+        self.assertEqual(len(registry), 123)
+        self.assertEqual(len({entry[0] for entry in registry}), 121)
 
     def test_dcs_rows_keep_all_53_metadata_and_original_registry_positions(self) -> None:
         module = self.renderer()
@@ -1383,10 +1386,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 ("dataSetLink.remove", "DcsSchema", "Values"),
             ]
         ]
-        self.assertEqual(registry[47:100], expected)
+        self.assertEqual(registry[48:101], expected)
         self.assertEqual([row for row in registry if row[1] == "Dcs"], expected)
-        self.assertEqual(registry[46][0], "right.set")
-        self.assertEqual(registry[100][0], "mxl.set")
+        self.assertEqual(registry[47][0], "right.set")
+        self.assertEqual(registry[101][0], "mxl.set")
         self.assertLessEqual({row[0] for row in expected}, implemented)
 
     def test_typed_dcs_rows_keep_payload_metadata_and_raw_registry_neighbors(self) -> None:
@@ -1575,11 +1578,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                     with self.subTest(family=family, variant=variant, case=case), self.assertRaises(RuntimeError):
                         self.registration_fixture(source, role_source, {filename: changed_metadata}, complete_mxl_event=False)
         registry, _ = self.renderer().load_apply_registry()
-        self.assertEqual(registry[100:102], self.MXL_EVENT_ROWS[:2])
-        self.assertEqual(registry[121], self.MXL_EVENT_ROWS[2])
-        self.assertEqual(registry[99][0], "dataSetLink.remove")
-        self.assertEqual(registry[102][0], "valueType.add")
-        self.assertEqual(registry[120][0], "code.replace")
+        self.assertEqual(registry[101:103], self.MXL_EVENT_ROWS[:2])
+        self.assertEqual(registry[122], self.MXL_EVENT_ROWS[2])
+        self.assertEqual(registry[100][0], "dataSetLink.remove")
+        self.assertEqual(registry[103][0], "valueType.add")
+        self.assertEqual(registry[121][0], "code.replace")
 
     def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")

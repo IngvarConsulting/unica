@@ -166,9 +166,25 @@ pub struct MetaRelationTargetData {
     pub value: String,
 }
 
+/// The XML `AutoRecord` value of an ExchangePlan content entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum MetaExchangeAutoRecord {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaExchangeContentItem {
+    pub target: MetadataAddress,
+    pub auto_record: MetaExchangeAutoRecord,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaRelationsData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Option<Vec<MetaExchangeContentItem>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owners: Option<Option<Vec<MetaRelationTargetData>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -285,4 +301,22 @@ pub struct MetaMutationEffect {
     pub target: String,
     pub before: Option<Value>,
     pub after: Option<Value>,
+}
+
+/// Plan-detail section of `content.set`: the final composition of every
+/// ExchangePlan the batch names, as published in `data.exchangeContent`.
+pub const EXCHANGE_CONTENT: unica_source_contract::proposal::PlanDetailKey =
+    unica_source_contract::proposal::PlanDetailKey::new("exchangeContent");
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExchangeContentPlanItem {
+    pub at: String,
+    pub auto_record: MetaExchangeAutoRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExchangeContentPlanDetail {
+    pub at: String,
+    pub items: Vec<ExchangeContentPlanItem>,
 }

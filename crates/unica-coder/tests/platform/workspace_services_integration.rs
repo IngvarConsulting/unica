@@ -1136,6 +1136,10 @@ mod tests {
         };
 
         if !unica_process::test_support::unix_runtime_authority_tests_supported() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::UnixProcessGroups,
+                "the exit-observation fault exists only on Unix",
+            );
             return;
         }
 
@@ -1638,6 +1642,10 @@ mod tests {
         let mut context = test_context("rlm-reader-native-generation-environment");
         let Some(invalid_component) = testing::non_utf8_relative_path_for_test() else {
             cleanup(&context);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::NonUtf8FileNames,
+                "this host has no file names outside UTF-8",
+            );
             return;
         };
         context.cache_root = context.workspace_root.join(invalid_component);
@@ -1707,6 +1715,10 @@ mod tests {
         cleanup(&context);
     }
 
+    #[cfg_attr(
+        not(unix),
+        ignore = "host capability: a private runtime directory and Unix socket exist only on Unix"
+    )]
     #[test]
     fn bsl_analyzer_runtime_directory_is_passed_to_the_child_and_fits_socket_budget() {
         use std::ffi::OsStr;
@@ -1720,9 +1732,7 @@ mod tests {
             .and_then(|(_, value)| value.map(PathBuf::from));
 
         assert_eq!(actual, expected);
-        let Some(runtime_dir) = actual else {
-            return;
-        };
+        let runtime_dir = actual.expect("a Unix host passes a private runtime directory");
 
         let socket = runtime_dir
             .join("bsl-mcp")
@@ -2494,14 +2504,20 @@ mod tests {
         let mut identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let first = context.workspace_root.join("provider-state-cycle-a");
         let second = context.workspace_root.join("provider-state-cycle-b");
-        let Some(first_link) = testing::create_dir_symlink_for_test(&second, &first) else {
-            cleanup(&context);
-            return;
-        };
-        first_link.unwrap();
-        testing::create_dir_symlink_for_test(&first, &second)
-            .expect("the platform that created the first link must expose the second fixture")
-            .unwrap();
+        for (source, target) in [(&second, &first), (&first, &second)] {
+            match testing::create_directory_link_fixture_for_test(source, target).unwrap() {
+                testing::FileLinkFixtureOutcome::Created => {}
+                testing::FileLinkFixtureOutcome::Unsupported
+                | testing::FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                    cleanup(&context);
+                    unica_process::test_support::skip_without_host_capability(
+                        unica_process::test_support::HostCapability::Symlink,
+                        "the provider-state link cycle needs directory links",
+                    );
+                    return;
+                }
+            }
+        }
         identity.service_dir = first.join("services").join(&identity.key);
         let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let runtime = new_runtime(identity, &record);
@@ -6437,6 +6453,10 @@ fn main() {
     #[test]
     fn rlm_execute_rejects_replaced_root_and_retires_its_session() {
         if !supports_retained_root_replacement_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let observation = run_blocking_rlm_execute(
@@ -6586,11 +6606,8 @@ fn main() {
 
     #[test]
     fn provider_state_key_keeps_distinct_non_utf8_path_identities_separate() {
-        let Some((first, second)) =
-            unica_workspace::test_support::distinct_non_unicode_paths_for_test()
-        else {
-            return;
-        };
+        let (first, second) = unica_workspace::test_support::distinct_non_unicode_paths_for_test()
+            .expect("non-Unicode paths exist on Unix and Windows");
         let workspace = Path::new("/workspace");
 
         assert_ne!(first, second);

@@ -498,13 +498,11 @@ pub fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWr
             before: args.before.as_ref().map(|before| before.as_str()),
             after: args.after.as_ref().map(|after| after.as_str()),
         },
-        XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddProperty {
+        XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddPropertyTree {
             type_name: args.at.segments()[1]
                 .name()
                 .expect("closed XDTO type target has a name"),
-            name: args.property.name.as_str(),
-            type_ref: args.property.type_ref.as_str(),
-            min_occurs: args.property.min_occurs.map(u64::from),
+            property: &args.property,
             property_path: args.property_path.as_ref().map(XdtoPropertyPath::as_str),
         },
         XdtoPlanOperation::RemoveType(args) => writer::TypedWriterOperation::RemoveType {
@@ -577,7 +575,16 @@ fn xdto_validation_error_path(operation: &XdtoPlanOperation, op_index: usize) ->
     match operation {
         XdtoPlanOperation::AddValueType(_) => format!("{base}.values.base"),
         XdtoPlanOperation::AddObjectType(_) => format!("{base}.at"),
-        XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.type"),
+        // The final package names no child, so an anonymous type answers
+        // at the field that declares its children.
+        XdtoPlanOperation::AddProperty(args) => match args.property.definition {
+            unica_xdto::operations::XdtoPropertyDefinition::Named(_) => {
+                format!("{base}.values.property.type")
+            }
+            unica_xdto::operations::XdtoPropertyDefinition::Object(_) => {
+                format!("{base}.values.property.objectType")
+            }
+        },
         XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
             format!("{base}.at")
         }

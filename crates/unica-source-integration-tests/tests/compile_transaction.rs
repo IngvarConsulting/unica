@@ -57,7 +57,9 @@ fn post_write_validation_failure_restores_exact_registration_bytes() {
 
 #[test]
 fn post_validation_rollback_restores_bytes_and_unix_mode_0600() {
-    unica_workspace::compile_transaction::contract_tests::post_validation_rollback_restores_bytes_and_unix_mode_0600(unica_source_designer::registration::cf_edit_add_child_object_text);
+    if let Err(skip) = unica_workspace::compile_transaction::contract_tests::post_validation_rollback_restores_bytes_and_unix_mode_0600(unica_source_designer::registration::cf_edit_add_child_object_text) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }
 
 #[test]
@@ -67,7 +69,9 @@ fn registration_target_remains_present_after_backup_preparation() {
 
 #[test]
 fn pending_registration_cleanup_preserves_same_name_decoys_after_parent_swap() {
-    unica_workspace::compile_transaction::contract_tests::pending_registration_cleanup_preserves_same_name_decoys_after_parent_swap(unica_source_designer::registration::cf_edit_add_child_object_text);
+    if let Err(skip) = unica_workspace::compile_transaction::contract_tests::pending_registration_cleanup_preserves_same_name_decoys_after_parent_swap(unica_source_designer::registration::cf_edit_add_child_object_text) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }
 
 #[test]
@@ -77,7 +81,9 @@ fn precommit_retry_finishes_the_recovery_directory_after_file_cleanup_recovers()
 
 #[test]
 fn successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap() {
-    unica_workspace::compile_transaction::contract_tests::successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap(unica_source_designer::registration::cf_edit_add_child_object_text);
+    if let Err(skip) = unica_workspace::compile_transaction::contract_tests::successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap(unica_source_designer::registration::cf_edit_add_child_object_text) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }
 
 #[test]
@@ -107,7 +113,9 @@ fn rollback_preserves_concurrent_registration_replacement_and_original_recovery(
 
 #[test]
 fn registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap() {
-    unica_workspace::compile_transaction::contract_tests::registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap(unica_source_designer::registration::cf_edit_add_child_object_text);
+    if let Err(skip) = unica_workspace::compile_transaction::contract_tests::registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap(unica_source_designer::registration::cf_edit_add_child_object_text) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }
 
 #[test]
@@ -127,7 +135,9 @@ fn registration_rollback_validation_reports_preserved_quarantine() {
 
 #[test]
 fn registration_rollback_restore_uses_retained_parent_handles_after_route_swap() {
-    unica_workspace::compile_transaction::contract_tests::registration_rollback_restore_uses_retained_parent_handles_after_route_swap(unica_source_designer::registration::cf_edit_add_child_object_text);
+    if let Err(skip) = unica_workspace::compile_transaction::contract_tests::registration_rollback_restore_uses_retained_parent_handles_after_route_swap(unica_source_designer::registration::cf_edit_add_child_object_text) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }
 
 #[test]

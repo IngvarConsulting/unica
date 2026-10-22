@@ -3664,8 +3664,10 @@ fn owning_metadata_address(address: &QualifiedAddress) -> String {
 }
 
 /// Every family section of plan details that an apply answer may carry.
-const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] =
-    &[unica_xdto::results::XDTO_OBJECTS];
+const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
+    unica_xdto::results::XDTO_OBJECTS,
+    unica_metadata::EXCHANGE_CONTENT,
+];
 
 /// Fields the apply answer writes itself; a family section cannot take them.
 const APPLY_DATA_FIELDS: &[&str] = &[
@@ -4596,6 +4598,22 @@ fn run_native_validator(
     }
 }
 
+/// Находка читателя, которую валидатор описания не повторяет. Корневые
+/// свойства объекта и его дочерние ресурсы валидатор проверяет сам, и вторая
+/// формулировка той же находки ответ не дополняет; тип, значения и свойства
+/// элементов коллекций видит только читатель.
+fn reader_only_finding(diagnostic: &unica_metadata::MetaDiagnostic) -> bool {
+    let validator_owned = diagnostic.code
+        == unica_metadata::MetaDiagnosticCode::ProviderUnavailable
+        || diagnostic.field.as_deref().is_some_and(|field| {
+            field == "properties"
+                || field.starts_with("properties.")
+                || field == "resources"
+                || field.starts_with("resources.")
+        });
+    !validator_owned
+}
+
 /// The typed metadata validator of one object descriptor: the same read and
 /// validation the metadata family runs, folded into the check envelope.
 fn run_meta_validator(
@@ -4646,13 +4664,28 @@ fn run_meta_validator(
                     context,
                     cancellation,
                 );
-            let diagnostics = validated
+            // Читатель описания находит то, чего валидатор не видит:
+            // немоделируемый тип, битый квалификатор, голый `FillValue`,
+            // повреждённые свойства элементов (#1933). Его ошибка решает
+            // вердикт так же, как ошибка валидатора.
+            let reader_findings = read
+                .local
                 .diagnostics
                 .iter()
-                .map(|diagnostic| serde_json::to_value(diagnostic).unwrap_or(Value::Null))
+                .filter(|diagnostic| reader_only_finding(diagnostic))
                 .collect::<Vec<_>>();
+            let reader_failed = reader_findings.iter().any(|diagnostic| {
+                diagnostic.severity == unica_metadata::MetaDiagnosticSeverity::Error
+            });
+            let mut diagnostics = Vec::<Value>::new();
+            for diagnostic in validated.diagnostics.iter().chain(reader_findings) {
+                let value = serde_json::to_value(diagnostic).unwrap_or(Value::Null);
+                if !diagnostics.contains(&value) {
+                    diagnostics.push(value);
+                }
+            }
             Ok((
-                validated.status == unica_metadata::MetaValidationStatus::Passed,
+                validated.status == unica_metadata::MetaValidationStatus::Passed && !reader_failed,
                 diagnostics,
             ))
         }

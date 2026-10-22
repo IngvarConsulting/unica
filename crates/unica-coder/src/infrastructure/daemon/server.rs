@@ -2991,7 +2991,10 @@ pub(crate) mod actor_capacity_tests {
         let outcome = create_file_link_fixture_for_test(&external_body, &body)
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let before = std::fs::read(&external_body).unwrap();
@@ -5326,6 +5329,10 @@ fn main() {
         )
         .unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let runtime = bootstrap_runtime();

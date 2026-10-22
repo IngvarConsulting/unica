@@ -64,6 +64,10 @@ fn dangling_policy_config_links_fail_closed_as_present_files() {
         )
         .expect("create dangling policy config link fixture");
         if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 

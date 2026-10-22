@@ -708,7 +708,7 @@ pub fn workspace_root_source_allows_exact_generated_cache_descendant(
 
 pub fn source_role_rejects_platform_equivalent_generated_components(
     policies: crate::policies::WorkspacePolicies,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
 
     let root = temp_root("platform-equivalent-generated-source");
@@ -726,7 +726,10 @@ pub fn source_role_rejects_platform_equivalent_generated_components(
     let canonical_root = std::fs::canonicalize(&root).unwrap();
     if crate::platform::filesystem::host_filesystem_case_sensitive(&canonical_root).unwrap() {
         let _ = std::fs::remove_dir_all(root);
-        return;
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "case-insensitive-filesystem",
+            reason: "platform-equivalent names need a case-insensitive volume",
+        });
     }
     let actor_context = context(&root);
     let identity = WorkspaceIdentity::new(
@@ -757,6 +760,7 @@ pub fn source_role_rejects_platform_equivalent_generated_components(
         assert_eq!(error.kind(), ApplyStagingErrorKind::ContainmentIdentity);
     }
     let _ = std::fs::remove_dir_all(root);
+    Ok(())
 }
 
 pub fn workspace_root_source_and_missing_cache_publish_through_disjoint_shared_anchor(
@@ -2473,7 +2477,7 @@ pub fn cache_preimage_races_fail_closed_and_preserve_foreign_names(
 
 pub fn cache_preimage_link_race_and_absent_chain_occupation_preserve_foreign_namespace(
     policies: crate::policies::WorkspacePolicies,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
 
     let (fixture, binding) = publish_cache_fixture("preimage-cache-link");
@@ -2487,7 +2491,10 @@ pub fn cache_preimage_link_race_and_absent_chain_occupation_preserve_foreign_nam
         FileLinkFixtureOutcome::Unsupported
         | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
             fixture.cleanup();
-            return;
+            return Err(crate::test_support::CapabilitySkip {
+                capability: "symlink",
+                reason: "creating a file link needs the symlink privilege",
+            });
         }
     }
 
@@ -2546,6 +2553,7 @@ pub fn cache_preimage_link_race_and_absent_chain_occupation_preserve_foreign_nam
         b"baseline"
     );
     fixture.cleanup();
+    Ok(())
 }
 
 pub fn malformed_state_fallback_restores_exact_bytes_when_later_gate_fails(
@@ -3637,11 +3645,14 @@ pub fn apply_preparation_classifies_an_occupied_absent_final_file_by_cause(
 
 pub fn prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic(
     policies: crate::policies::WorkspacePolicies,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
 
     if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
-        return;
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "rename-under-open-handle",
+            reason: "the platform keeps an open handle from being renamed or replaced",
+        });
     }
     let fixture = actor_fixture("prepared-cleanup-diagnostic", &["src"]);
     let parent = fixture.roots[0].join("Nested");
@@ -3708,6 +3719,7 @@ pub fn prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic(
     assert_eq!(Path::new(artifact_name).components().count(), 1);
     assert!(!format!("{diagnostic:?}").contains(&fixture.root.display().to_string()));
     fixture.cleanup();
+    Ok(())
 }
 
 pub fn prepared_apply_rejects_stale_revision_source_change_cancellation_and_deadline_before_publication(

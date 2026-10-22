@@ -517,6 +517,7 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "predefinedItem.add",
     "predefinedItem.set",
     "predefinedItem.remove",
+    "content.set",
     "relation.add",
     "relation.replace",
     "relation.remove",
@@ -633,6 +634,7 @@ operation_descriptors!(
     (unica_metadata::apply_operations::MetadataOperation::ObjectCreate),
     (unica_metadata::apply_operations::MetadataOperation::ObjectRemove),
     (PropertiesOperation::Set),
+    (unica_metadata::apply_operations::MetadataOperation::ContentSet),
     (unica_metadata::apply_operations::MetadataOperation::RelationAdd),
     (unica_metadata::apply_operations::MetadataOperation::RelationRemove),
     (unica_metadata::apply_operations::MetadataOperation::RelationReplace),
@@ -1466,6 +1468,7 @@ mod tests {
             "object.create",
             "object.remove",
             "props.set",
+            "content.set",
             "relation.add",
             "relation.remove",
             "relation.replace",
@@ -1586,7 +1589,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 122);
+        assert_eq!(expected.len(), 123);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465): имя одно, семейство выбирает адрес. Других
@@ -1604,7 +1607,7 @@ mod tests {
         }
         assert_eq!(
             unica_metadata::apply_operations::MetadataOperation::ALL.len(),
-            34
+            35
         );
         assert_eq!(
             registry

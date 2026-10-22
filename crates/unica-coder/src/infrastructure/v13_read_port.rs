@@ -832,7 +832,7 @@ impl ProviderReadAuthority {
         } else {
             None
         };
-        let info = unica_metadata_designer::info::parse_typed_meta_local_info_for_source(
+        let mut info = unica_metadata_designer::info::parse_typed_meta_local_info_for_source(
             &descriptor,
             target,
             support,
@@ -843,6 +843,48 @@ impl ProviderReadAuthority {
                 .unwrap_or_else(|_| "metadata reader failed".to_string());
             ViewError::detailed(RefusalDetail::SourceUnreadable, message)
         })?;
+        if info.kind == MetadataKind::ExchangePlan {
+            let relative = Path::new("ExchangePlans")
+                .join(&info.name)
+                .join("Ext/Content.xml");
+            let observation = match self.read_optional_relative_with_checkpoint(
+                &relative,
+                Some(MAX_CONFIGURATION_BYTES),
+                checkpoint,
+            ) {
+                Ok(Some(bytes)) => std::str::from_utf8(&bytes)
+                    .map_err(|e| e.to_string())
+                    .and_then(unica_metadata_designer::exchange_content::read_content)
+                    .map(Some),
+                Ok(None) => Ok(None),
+                Err(error) if matches!(error.detail(), Some(RefusalDetail::SourceUnreadable)) => {
+                    Err(error.to_string())
+                }
+                Err(error) => return Err(error),
+            };
+            let errors = match observation {
+                Ok(Some(observation)) => {
+                    info.relations.content = Some(Some(observation.items));
+                    observation.errors
+                }
+                // The platform omits Content.xml for an empty composition.
+                Ok(None) => {
+                    info.relations.content = Some(Some(Vec::new()));
+                    Vec::new()
+                }
+                Err(error) => vec![error],
+            };
+            for error in errors {
+                info.diagnostics.push(
+                    unica_metadata::MetaDiagnostic::error(
+                        unica_metadata::MetaDiagnosticCode::ValidationFailed,
+                        error,
+                    )
+                    .with_metadata_path(target.clone())
+                    .with_field("relations.content"),
+                );
+            }
+        }
         Ok(MetadataLocalRead { info, borrowing })
     }
 

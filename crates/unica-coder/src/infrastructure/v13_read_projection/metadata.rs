@@ -557,6 +557,23 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
             }
         }
     }
+    for item in relations
+        .and_then(|r| r.get("content"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(target) = item.get("target").and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok(at) = QualifiedAddress::parse(&format!("{}:{target}", address.source_set())) else {
+            continue;
+        };
+        let Some(kind) = at.segments().last().map(AddressSegment::kind) else {
+            continue;
+        };
+        items.push(json!({ "relation": "content", "at": at.to_string(), "kind": kind.as_str(), "autoRecord": item.get("autoRecord") }));
+    }
     // Источник подписки расширения из основной конфигурации платформа пишет
     // идентификатором типа (`v8:TypeId`, #1361): адреса у него нет, но
     // скрыть его нельзя — замена источников сохраняет его как есть.
@@ -776,6 +793,9 @@ fn metadata_item_node(
                 (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             }),
     );
+    // Пределы элемента приходят от читателя: профиль свойств переносит их
+    // вместе со своими, а без профиля они переносятся как есть, иначе узел
+    // отвечал бы `incomplete` без причины (#1933).
     let (member_props, member_limits) = member_profile
         .and_then(|profile| {
             profile
@@ -783,7 +803,17 @@ fn metadata_item_node(
                 .map(|context| (profile, context))
         })
         .map_or_else(
-            || (Map::new(), Vec::new()),
+            || {
+                let limits = item
+                    .get("propertyLimits")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+                (Map::new(), limits)
+            },
             |(profile, context)| member_properties::project(profile, context, item),
         );
     props.extend(member_props);

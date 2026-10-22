@@ -209,6 +209,7 @@ pub fn typed_relations(
         Err(_) => Default::default(),
     };
     MetaRelationsData {
+        content: (owner_kind == MetadataKind::ExchangePlan).then_some(None),
         owners,
         register_records,
         based_on,
@@ -321,6 +322,10 @@ pub fn typed_element(
             attributes: Vec::new(),
         });
     };
+    // Диагностики самого элемента (тип, значение заполнения, флаг
+    // обязательности, измерение адресации) — с этого места; канонический
+    // `view` узнаёт о них из пределов элемента, а не из общего списка (#1933).
+    let own_diagnostics = diagnostics.len();
     let raw_name =
         crate::info_projection::direct_md_child_text(properties, "Name").unwrap_or_default();
     let mut incomplete = raw_name.trim().is_empty();
@@ -411,6 +416,10 @@ pub fn typed_element(
     } else {
         None
     };
+    let own_limits = diagnostics[own_diagnostics..]
+        .iter()
+        .map(element_diagnostic_limit)
+        .collect::<Vec<_>>();
     let standard_attributes = if node.tag_name().name() == "TabularSection" {
         match crate::info_projection::observe_tabular_standard_attributes(
             properties,
@@ -451,6 +460,7 @@ pub fn typed_element(
         |profile| super::member_properties::observe(node, profile, field, target, diagnostics),
     );
     incomplete |= !property_limits.is_empty();
+    let property_limits = own_limits.into_iter().chain(property_limits).collect();
     let properties_readback = properties_readback
         .into_iter()
         .chain(profile_properties)
@@ -470,6 +480,19 @@ pub fn typed_element(
         attributes,
     })
 }
+/// Предел элемента по его диагностике: поле, код и сообщение. Код отличает
+/// предупреждение о немоделируемом типе от повреждённой записи.
+fn element_diagnostic_limit(diagnostic: &MetaDiagnostic) -> String {
+    let code = serde_json::to_value(diagnostic.code)
+        .ok()
+        .and_then(|code| code.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    match diagnostic.field.as_deref() {
+        Some(field) => format!("{field}: {code}: {}", diagnostic.message),
+        None => format!("{code}: {}", diagnostic.message),
+    }
+}
+
 pub fn addressing_dimension_is_valid(value: &str) -> bool {
     let parts = value.split('.').collect::<Vec<_>>();
     parts.len() == 4

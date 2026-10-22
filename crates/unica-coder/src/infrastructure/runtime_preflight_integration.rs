@@ -145,7 +145,13 @@ mod tests {
         match outcome {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
         let args = Map::from_iter([("operation".to_string(), json!("build"))]);
 

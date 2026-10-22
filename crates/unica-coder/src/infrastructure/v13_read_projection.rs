@@ -1619,12 +1619,21 @@ fn xdto_property_branch(
 }
 
 fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
-    let props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
+    let mut props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
     let limits = ["type", "reference", "bounds"]
         .into_iter()
         .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
         .map(|key| format!("XDTO property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"))
         .collect();
+    if let Some([definition]) = property
+        .get("typeDefs")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    {
+        if definition.get("discriminator").and_then(Value::as_str) == Some("ObjectType") {
+            props.insert("anonymousType".to_string(), json!("ObjectType"));
+        }
+    }
     NodeView::new(address.to_string(), "Property", name, props).with_limits(limits)
 }
 
