@@ -3148,6 +3148,12 @@ pub fn form_add_content_xml(
     };
     let root_defaults = match object_type {
         "Catalog" => "\t<UseForFoldersAndItems>Items</UseForFoldersAndItems>\r\n",
+        // 1C 8.3.27 always exports the posting properties of a document form.
+        "Document" => concat!(
+            "\t<AutoTime>CurrentOrLast</AutoTime>\r\n",
+            "\t<UsePostingMode>Auto</UsePostingMode>\r\n",
+            "\t<RepostOnWrite>true</RepostOnWrite>\r\n"
+        ),
         "Report" | "ExternalReport" => concat!(
             "\t<ReportFormType>Main</ReportFormType>\r\n",
             "\t<AutoShowState>Auto</AutoShowState>\r\n",

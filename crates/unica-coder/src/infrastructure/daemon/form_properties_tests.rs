@@ -285,3 +285,25 @@ fn canonical_props_set_refuses_what_the_form_does_not_take() {
         json!({"Comment": "Справочник"}),
     ));
 }
+
+/// The document form `form.add` makes is the form 1C 8.3.27 exports after
+/// loading it: the platform always writes the posting properties (#1994).
+#[test]
+fn canonical_form_add_writes_a_document_form_as_1c_exports_it() {
+    let fixture = catalog_form();
+    let native = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../tests/fixtures/platform_8_3_27/form-root-properties/native-document-form.xml",
+    ))
+    .unwrap();
+    let written = std::fs::read(
+        fixture
+            .workspace
+            .join("src/Documents/Заказ/Forms/ФормаДокумента/Ext/Form.xml"),
+    )
+    .unwrap();
+    assert!(
+        written == native,
+        "Form.xml differs from the 8.3.27 export:\n{}",
+        String::from_utf8_lossy(&written)
+    );
+}
