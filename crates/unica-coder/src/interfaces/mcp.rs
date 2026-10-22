@@ -9,7 +9,7 @@
 
 use super::canonical_cancellation::CanonicalCancellation;
 use super::daemon_router::{
-    canonical_daemon_router, CanonicalCallOutcome, CanonicalDaemonRouter,
+    canonical_daemon_router, wait_transport_cutoff, CanonicalCallOutcome, CanonicalDaemonRouter,
     FrontendInvocationDeadline, TOOL_EXECUTION_ERROR,
 };
 mod manual_calls;
@@ -48,7 +48,9 @@ use unica_work_control::progress::{NoopProgressSink, ProgressEvent, ProgressSink
 
 #[cfg(test)]
 use unica_daemon::client_v5::V5DaemonProcessOwner;
-use unica_daemon::client_v5::{V5DaemonClient, V5TaskExchangeError};
+use unica_daemon::client_v5::{
+    TaskObservationStage, TaskObservationTimer, V5DaemonClient, V5TaskExchangeError,
+};
 use unica_daemon::protocol_v5::V5DaemonErrorCode;
 use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
 
@@ -77,6 +79,10 @@ enum SurfaceToolOutcome {
     Legacy(Box<OperationResult>),
     /// A compatibility Task tool answered with a canonical result to project.
     Canonical(unica_execution_contract::invocation::DomainResult),
+    CompatibilityTask {
+        result: CompatibilityTaskResult,
+        timing: TaskObservationTimer,
+    },
     /// An acknowledged Direct terminal, already the final `CallToolResult`.
     Direct(CallToolResult),
     Task(V5DaemonTaskSnapshot),
@@ -476,9 +482,19 @@ fn execute_surface_tool(
                         None,
                     ));
                 }
-                return Ok(SurfaceToolOutcome::Canonical(
-                    execute_compatibility_task_tool(router, request, deadline, cancellation),
-                ));
+                let cutoff = request.as_ref().ok().map(|request| match request.action {
+                    TaskToolAction::Result { wait_ms } => wait_transport_cutoff(wait_ms, deadline),
+                    TaskToolAction::Get | TaskToolAction::Cancel => deadline.transport_cutoff(),
+                });
+                let result =
+                    execute_compatibility_task_tool(router, request, deadline, cancellation);
+                return Ok(match cutoff {
+                    Some(cutoff) => SurfaceToolOutcome::CompatibilityTask {
+                        result,
+                        timing: TaskObservationTimer::since(deadline.received_at(), cutoff),
+                    },
+                    None => SurfaceToolOutcome::Canonical(result.into_result()),
+                });
             }
             let tool = V5ToolIdentity::from_wire_name(name).ok_or_else(|| {
                 ErrorData::invalid_params("tool is not in the canonical v0.13 profile", None)
@@ -507,54 +523,98 @@ use crate::application::v13::task_tools::{
     CompatibilityProjection, CompatibilityTaskSnapshot, TaskToolAction, TaskToolError,
 };
 
+enum CompatibilityTaskResult {
+    Snapshot(unica_execution_contract::invocation::DomainResult),
+    Refusal(unica_execution_contract::invocation::DomainResult),
+}
+impl CompatibilityTaskResult {
+    fn result(&self) -> &unica_execution_contract::invocation::DomainResult {
+        match self {
+            Self::Snapshot(result) | Self::Refusal(result) => result,
+        }
+    }
+    fn into_result(self) -> unica_execution_contract::invocation::DomainResult {
+        match self {
+            Self::Snapshot(result) | Self::Refusal(result) => result,
+        }
+    }
+}
+
 fn execute_compatibility_task_tool(
     router: &CanonicalDaemonRouter,
     request: Result<crate::application::v13::task_tools::TaskToolRequest, TaskToolError>,
     deadline: FrontendInvocationDeadline,
     cancellation: CanonicalCancellation,
-) -> unica_execution_contract::invocation::DomainResult {
+) -> CompatibilityTaskResult {
     let request = match request {
         Ok(request) => request,
-        Err(error) => return crate::application::v13::task_tools::task_tool_error_result(error),
+        Err(error) => {
+            return CompatibilityTaskResult::Refusal(
+                crate::application::v13::task_tools::task_tool_error_result(error),
+            )
+        }
     };
     let exchange = match request.action {
         TaskToolAction::Get => (router.get)(request.task_id, deadline),
         TaskToolAction::Result { wait_ms } => {
-            let bounded = bounded_compatibility_wait_ms(wait_ms, deadline, Instant::now());
-            (router.wait)(request.task_id, bounded, deadline, cancellation)
+            (router.wait)(request.task_id, wait_ms, deadline, cancellation)
         }
         TaskToolAction::Cancel => (router.cancel)(request.task_id, deadline),
     };
     let snapshot = match exchange {
         Ok(snapshot) if snapshot.task_id() == request.task_id => snapshot,
         Ok(_) => {
-            return crate::application::v13::task_tools::task_tool_error_result(
-                TaskToolError::TaskProtocolFailed,
+            return CompatibilityTaskResult::Refusal(
+                crate::application::v13::task_tools::task_tool_error_result(
+                    TaskToolError::TaskProtocolFailed,
+                ),
             )
         }
         Err(error) => {
-            return crate::application::v13::task_tools::task_tool_error_result(
+            let mut result = crate::application::v13::task_tools::task_tool_error_result(
                 compatibility_task_exchange_error(error),
-            )
+            );
+            if let V5TaskExchangeError::ObservedTransport(observation) = error {
+                result.data = Some(serde_json::json!({"taskObservation":observation}));
+            }
+            return CompatibilityTaskResult::Refusal(result);
         }
     };
     let projection = match request.action {
         TaskToolAction::Result { .. } => CompatibilityProjection::TerminalResult,
         TaskToolAction::Get | TaskToolAction::Cancel => CompatibilityProjection::State,
     };
-    project_compatibility_snapshot(&snapshot, projection)
+    CompatibilityTaskResult::Snapshot(project_compatibility_snapshot(&snapshot, projection))
 }
 
-fn bounded_compatibility_wait_ms(
-    requested_wait_ms: u64,
-    deadline: FrontendInvocationDeadline,
-    now: Instant,
-) -> u64 {
-    let remaining_ms = deadline
-        .remaining_at(now)
-        .as_millis()
-        .min(u128::from(u64::MAX)) as u64;
-    requested_wait_ms.min(remaining_ms)
+/// The host-facing CallToolResult is built before the last cutoff check.
+/// The SDK owns subsequent JSON-RPC framing and writes; this checkpoint makes
+/// no claim about delivery of the last stdout byte under host backpressure.
+fn compatibility_result_before(
+    result: &CompatibilityTaskResult,
+    budget: unica_bootstrap::ResponseBudget,
+    timing: TaskObservationTimer,
+    after_projection: impl FnOnce() -> Instant,
+) -> Result<CallToolResult, crate::interfaces::task_projection::TaskProjectionError> {
+    let projected = crate::interfaces::task_projection::call_tool_result(result.result(), budget);
+    // Preserve an already established exchange failure, including the phase
+    // and generation that localized it. Only a snapshot can become late here.
+    if matches!(result, CompatibilityTaskResult::Refusal(_)) {
+        return projected;
+    }
+    let observation = timing.failed(
+        TaskObservationStage::ProjectResult,
+        after_projection(),
+        None,
+    );
+    if observation.cutoff_expired {
+        let mut refusal = crate::application::v13::task_tools::task_tool_error_result(
+            TaskToolError::TaskTransportFailed,
+        );
+        refusal.data = Some(serde_json::json!({"taskObservation":observation}));
+        return crate::interfaces::task_projection::call_tool_result(&refusal, budget);
+    }
+    projected
 }
 
 fn compatibility_task_exchange_error(error: V5TaskExchangeError) -> TaskToolError {
@@ -566,7 +626,9 @@ fn compatibility_task_exchange_error(error: V5TaskExchangeError) -> TaskToolErro
         V5TaskExchangeError::Protocol(code) => {
             TaskToolError::TaskBackendFailed(backend_detail(code))
         }
-        V5TaskExchangeError::Transport => TaskToolError::TaskTransportFailed,
+        V5TaskExchangeError::Transport | V5TaskExchangeError::ObservedTransport(_) => {
+            TaskToolError::TaskTransportFailed
+        }
         V5TaskExchangeError::SessionPoisoned => TaskToolError::TaskSessionClosed,
         V5TaskExchangeError::UnexpectedResponse | V5TaskExchangeError::MalformedResponse => {
             TaskToolError::TaskProtocolFailed
@@ -1115,6 +1177,11 @@ impl ServerHandler for UnicaServer {
                 render_tool_result(self.structured_tools.contains(name.as_str()), *result)
                     .map(CallToolResponse::from)
             }
+            Ok(Ok(SurfaceToolOutcome::CompatibilityTask { result, timing })) => {
+                compatibility_result_before(&result, response_budget, timing, Instant::now)
+                    .map(CallToolResponse::from)
+                    .map_err(crate::interfaces::task_projection::projection_error)
+            }
             Ok(Ok(SurfaceToolOutcome::Canonical(result))) => {
                 crate::interfaces::task_projection::call_tool_result(&result, response_budget)
                     .map(CallToolResponse::from)
@@ -1332,6 +1399,11 @@ fn project_task_exchange_error(error: V5TaskExchangeError) -> ErrorData {
         ),
         V5TaskExchangeError::Protocol(code) => task_internal_error_detailed(backend_detail(code)),
         V5TaskExchangeError::Transport => task_internal_error("task_transport_failed"),
+        V5TaskExchangeError::ObservedTransport(observation) => ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "task_transport_failed",
+            Some(serde_json::json!({"code":"task_transport_failed","taskObservation":observation})),
+        ),
         V5TaskExchangeError::SessionPoisoned => task_internal_error("task_session_closed"),
         V5TaskExchangeError::UnexpectedResponse | V5TaskExchangeError::MalformedResponse => {
             task_internal_error("task_protocol_failed")
@@ -1594,10 +1666,10 @@ impl Drop for InFlightGuard {
 mod tests {
     use super::*;
     use crate::application::{ResultContract, ToolExecution};
+    use crate::interfaces::daemon_router::remaining_invocation_budget;
     use crate::interfaces::daemon_router::test_support::{
         FakeDaemon, LiveDaemon, ScriptedService, Step,
     };
-    use crate::interfaces::daemon_router::{remaining_invocation_budget, wait_transport_cutoff};
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
@@ -3214,25 +3286,41 @@ mod tests {
         client.shutdown().await;
     }
 
+    fn compatibility_wait_budget_for_test(
+        requested: u64,
+        deadline: FrontendInvocationDeadline,
+        now: Instant,
+    ) -> u64 {
+        crate::interfaces::daemon_router::bounded_wait_ms(
+            requested,
+            wait_transport_cutoff(requested, deadline),
+            now,
+        )
+    }
+
     fn compatibility_wait_budget_case() {
         let received = Instant::now();
         let deadline = FrontendInvocationDeadline::new(received, None);
         assert_eq!(
-            bounded_compatibility_wait_ms(0, deadline, received),
+            compatibility_wait_budget_for_test(0, deadline, received),
             0,
             "zero is an immediate probe"
         );
         assert_eq!(
-            bounded_compatibility_wait_ms(7_000, deadline, received),
+            compatibility_wait_budget_for_test(7_000, deadline, received),
             7_000
         );
         assert_eq!(
-            bounded_compatibility_wait_ms(7_000, deadline, received + Duration::from_millis(6_999),),
+            compatibility_wait_budget_for_test(
+                7_000,
+                deadline,
+                received + Duration::from_millis(6_999),
+            ),
             1,
             "elapsed frontend time is never replenished"
         );
         assert_eq!(
-            bounded_compatibility_wait_ms(7_000, deadline, received + Duration::from_secs(7),),
+            compatibility_wait_budget_for_test(7_000, deadline, received + Duration::from_secs(7),),
             0
         );
         assert_eq!(
@@ -3776,11 +3864,15 @@ mod tests {
             CanonicalCancellation::default(),
         );
 
+        let Err(V5TaskExchangeError::ObservedTransport(observation)) = outcome else {
+            panic!("the operation must not rebase its cutoff after the injected pause");
+        };
         assert_eq!(
-            outcome,
-            Err(V5TaskExchangeError::Transport),
-            "the operation must not rebase its cutoff after the injected pause"
+            observation.stage,
+            unica_daemon::client_v5::TaskObservationStage::AcquirePeer
         );
+        assert!(observation.cutoff_expired);
+        assert!(observation.endpoint_generation_hash.is_none());
         assert!(
             observations.try_recv().is_err(),
             "an expired absolute cutoff must stop before operation admission"
@@ -3823,8 +3915,10 @@ mod tests {
             false,
         )
         .unwrap();
-        let SurfaceToolOutcome::Canonical(result) = outcome else {
-            panic!("compatibility task tools must return canonical results");
+        let result = match outcome {
+            SurfaceToolOutcome::Canonical(result) => result,
+            SurfaceToolOutcome::CompatibilityTask { result, .. } => result.into_result(),
+            _ => panic!("compatibility task tools must return canonical results"),
         };
         if let Ok(request) = observations.recv_timeout(Duration::from_millis(500)) {
             let expected = match tool_name {
@@ -3926,8 +4020,11 @@ mod tests {
             .is_ok();
 
         assert_eq!(
-            first,
-            Err(V5TaskExchangeError::Transport),
+            first.as_ref().err().map(|error| match error {
+                V5TaskExchangeError::ObservedTransport(observation) => observation.cutoff_expired,
+                _ => false,
+            }),
+            Some(true),
             "a payload that crossed the cutoff must not publish its snapshot"
         );
         assert_eq!(
@@ -3979,7 +4076,8 @@ mod tests {
             Ok(snapshot) => assert_eq!(snapshot.task_id(), task_id),
             // A host cutoff shorter than handshake plus margin may expire before
             // the answer arrives; the request the daemon saw is still bounded.
-            Err(V5TaskExchangeError::Transport) if !must_answer => {}
+            Err(V5TaskExchangeError::Transport | V5TaskExchangeError::ObservedTransport(_))
+                if !must_answer => {}
             Err(error) => panic!("wait failed: {error:?}"),
         }
         let observed = observations.recv_timeout(Duration::from_secs(2));
@@ -8987,5 +9085,297 @@ fn main() {
         assert!(failed.get("stdout").is_none());
         assert_eq!(std::fs::read(&module).unwrap(), before_invalid);
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn compatibility_result_keeps_original_cutoff_after_frontend_admission_delay() {
+        let task_id = unica_execution_contract::invocation::TaskId::new();
+        let observed = Arc::new(Mutex::new(None));
+        let captured = Arc::clone(&observed);
+        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, wait_ms, deadline, _| {
+            *captured.lock().unwrap() = Some(wait_transport_cutoff(wait_ms, deadline));
+            Ok(canonical_snapshot(
+                task_id,
+                unica_execution_contract::invocation::InvocationStatus::Working,
+                None,
+            ))
+        });
+        let router = CanonicalDaemonRouter {
+            call: Arc::new(|_, _, _, _, _| panic!("observation must not submit")),
+            get: Arc::new(|_, _| panic!("result must use wait")),
+            wait,
+            cancel: Arc::new(|_, _| panic!("observation must not cancel")),
+        };
+        let received = Instant::now() - Duration::from_millis(100);
+        let deadline = FrontendInvocationDeadline::new(received, None);
+        let arguments = json!({"taskId":task_id.to_string(),"waitMs":7000});
+        let request = crate::application::v13::task_tools::parse_task_tool_call(
+            "unica.task.result",
+            arguments.as_object().unwrap(),
+        )
+        .unwrap();
+        let result = execute_compatibility_task_tool(
+            &router,
+            request,
+            deadline,
+            CanonicalCancellation::default(),
+        );
+        assert!(result.result().ok, "{:?}", result.result());
+        assert_eq!(*observed.lock().unwrap(), Some(received + Duration::from_millis(7125)), "admission time must shrink daemon wait without shortening the original transport cutoff twice");
+    }
+    #[test]
+    fn compatibility_final_projection_obeys_cutoff_and_same_result_remains_recoverable() {
+        let result = CompatibilityTaskResult::Snapshot(canonical_result(
+            "saved terminal; password=private-observation-marker",
+        ));
+        let received = Instant::now();
+        let timing = TaskObservationTimer::since(received, received + Duration::from_millis(225));
+        let budget = unica_bootstrap::ResponseBudget::default();
+        let direct =
+            crate::interfaces::task_projection::call_tool_result(result.result(), budget).unwrap();
+        let before = compatibility_result_before(&result, budget, timing, || {
+            received + Duration::from_millis(224)
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(before).unwrap(),
+            serde_json::to_value(&direct).unwrap()
+        );
+        let late = compatibility_result_before(&result, budget, timing, || {
+            received + Duration::from_millis(226)
+        })
+        .unwrap();
+        let value = serde_json::to_value(late).unwrap();
+        assert_eq!(
+            value["structuredContent"]["diagnostics"][0]["code"],
+            "task_transport_failed"
+        );
+        assert_eq!(
+            value["structuredContent"]["data"]["taskObservation"]["stage"],
+            "projectResult"
+        );
+        assert_eq!(
+            value["structuredContent"]["data"]["taskObservation"]["elapsedMs"],
+            226
+        );
+        assert_eq!(
+            value["structuredContent"]["data"]["taskObservation"]["cutoffExpired"],
+            true
+        );
+        assert!(!value.to_string().contains("private-observation-marker"));
+        let recovered = compatibility_result_before(
+            &result,
+            budget,
+            TaskObservationTimer::start(Instant::now() + Duration::from_secs(1)),
+            Instant::now,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(recovered).unwrap(),
+            serde_json::to_value(direct).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn compatibility_long_producer_survives_7000_and_100_ms_observations_once() {
+        for wait_ms in [7000_u64, 100] {
+            let service = Arc::new(ScriptedService {
+                delay: Duration::from_millis(8200),
+                known_long: true,
+                outcome: Mutex::new(Some(Ok(
+                    unica_execution_contract::invocation::DomainResult::success(
+                        "one durable terminal",
+                    ),
+                ))),
+                executions: AtomicUsize::new(0),
+            });
+            let daemon = LiveDaemon::start(service.clone());
+            let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+                daemon.owner(),
+                daemon.workspace_hint.clone(),
+            ));
+            client.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{}},"_meta":modern_meta()}})).await;
+            let initial = client.receive().await;
+            let id = initial["result"]["structuredContent"]["data"]["task"]["taskId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":id,"waitMs":wait_ms},"_meta":modern_meta()}})).await;
+            let working = client.receive().await;
+            assert_eq!(
+                working["result"]["structuredContent"]["data"]["task"]["taskId"], id,
+                "{working}"
+            );
+            assert_eq!(
+                working["result"]["structuredContent"]["data"]["task"]["status"], "working",
+                "{working}"
+            );
+            let mut recovered = false;
+            for observation_id in 3..=5 {
+                client.send(json!({"jsonrpc":"2.0","id":observation_id,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":id,"waitMs":7000},"_meta":modern_meta()}})).await;
+                let terminal = client.receive().await;
+                let value = &terminal["result"]["structuredContent"];
+                assert_eq!(value["ok"], true, "{terminal}");
+                if value["data"]["task"]["status"] == "working" {
+                    continue;
+                }
+                assert_eq!(value["summary"], "one durable terminal", "{terminal}");
+                recovered = true;
+                break;
+            }
+            assert!(
+                recovered,
+                "the same Task must finish within three observations"
+            );
+            assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+            client.shutdown().await;
+        }
+    }
+    #[test]
+    fn compatibility_final_projection_preserves_exchange_failure_stage_and_generation() {
+        let task_id = unica_execution_contract::invocation::TaskId::new();
+        let start = Instant::now();
+        let timing = TaskObservationTimer::since(start, start + Duration::from_millis(225));
+        let record = unica_daemon::protocol_v5::V5EndpointRecord::new(
+            unica_daemon::identity::CoreIdentity::production_v5(),
+            41001,
+        )
+        .unwrap();
+        let observation = timing.failed(
+            TaskObservationStage::ReadResponse,
+            start + Duration::from_millis(226),
+            Some(&record),
+        );
+        let router = CanonicalDaemonRouter {
+            call: Arc::new(|_, _, _, _, _| panic!("observation must not submit")),
+            get: Arc::new(|_, _| panic!("result uses wait")),
+            wait: Arc::new(move |_, _, _, _| {
+                Err(V5TaskExchangeError::ObservedTransport(observation))
+            }),
+            cancel: Arc::new(|_, _| panic!("observation must not cancel")),
+        };
+        let args = json!({"taskId":task_id.to_string(),"waitMs":100});
+        let request = crate::application::v13::task_tools::parse_task_tool_call(
+            "unica.task.result",
+            args.as_object().unwrap(),
+        )
+        .unwrap();
+        let result = execute_compatibility_task_tool(
+            &router,
+            request,
+            FrontendInvocationDeadline::new(start, None),
+            CanonicalCancellation::default(),
+        );
+        let projected = compatibility_result_before(
+            &result,
+            unica_bootstrap::ResponseBudget::default(),
+            timing,
+            || start + Duration::from_millis(230),
+        )
+        .unwrap();
+        let public = serde_json::to_value(projected).unwrap();
+        assert_eq!(
+            public["structuredContent"]["data"]["taskObservation"],
+            serde_json::to_value(observation).unwrap()
+        );
+        assert_eq!(
+            public["structuredContent"]["diagnostics"][0]["code"],
+            "task_transport_failed"
+        );
+        assert!(!public.to_string().contains(record.token()));
+        assert!(!public.to_string().contains(record.instance_id()));
+    }
+    #[tokio::test]
+    async fn compatibility_recovers_same_task_after_partial_malformed_and_late_frames() {
+        use std::io::Write as _;
+        for defect in ["partial", "malformed", "late"] {
+            let task_id = unica_execution_contract::invocation::TaskId::new();
+            let complete = daemon_frame_bytes(&daemon_task_frame_value(task_id));
+            let malformed = malformed_daemon_task_frames(task_id)
+                .into_iter()
+                .next()
+                .unwrap()
+                .1;
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&calls);
+            let fake = FakeDaemon::start_with_raw_script(Box::new(move |_, request, writer| {
+                assert!(
+                    matches!(request,V5ClientRequest::WaitTask { task_id: id, .. } if *id == task_id)
+                );
+                if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let frame = match defect {
+                        "partial" => &complete[..complete.len() / 2],
+                        "malformed" => malformed.as_slice(),
+                        "late" => {
+                            std::thread::sleep(Duration::from_millis(300));
+                            complete.as_slice()
+                        }
+                        _ => unreachable!(),
+                    };
+                    let _ = writer.write_all(frame);
+                    let _ = writer.flush();
+                    false
+                } else {
+                    writer.write_all(&complete).unwrap();
+                    writer.flush().unwrap();
+                    true
+                }
+            }));
+            let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+                fake.owner(),
+                "/workspace".into(),
+            ));
+            for id in [1, 2] {
+                client.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":task_id.to_string(),"waitMs":100},"_meta":modern_meta()}})).await;
+                let response = client.receive().await;
+                let value = &response["result"]["structuredContent"];
+                if id == 1 {
+                    assert_eq!(
+                        value["diagnostics"][0]["code"],
+                        if defect == "malformed" {
+                            "task_protocol_failed"
+                        } else {
+                            "task_transport_failed"
+                        },
+                        "{defect}: {response}"
+                    );
+                    assert!(
+                        !response.to_string().contains(RESULT_MARKER),
+                        "rejected frame leaked"
+                    );
+                    if defect != "malformed" {
+                        assert_eq!(
+                            value["data"]["taskObservation"]["stage"], "readResponse",
+                            "{response}"
+                        );
+                        assert!(
+                            value["data"]["taskObservation"]["endpointGenerationHash"].is_string()
+                        );
+                        assert_eq!(
+                            value["data"]["taskObservation"]["cutoffExpired"],
+                            defect == "late",
+                            "{response}"
+                        );
+                    }
+                    // A scripted listener finishes the late frame before accepting
+                    // another peer; the second call receives its own original budget.
+                    if defect == "late" {
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                    }
+                } else {
+                    assert_eq!(value["ok"], true, "{defect}: {response}");
+                    assert!(
+                        response.to_string().contains(RESULT_MARKER),
+                        "same durable result was not recovered"
+                    );
+                }
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                fake.submissions(),
+                0,
+                "reads of a pre-existing Task never submit the subject"
+            );
+            client.shutdown().await;
+        }
     }
 }
