@@ -4656,7 +4656,6 @@ mod tests {
         use unica_process::test_support::JobAttachGateForTest;
 
         if !JobAttachGateForTest::supported() {
-            eprintln!("Windows Job attachment is unavailable on this host");
             unica_process::test_support::skip_without_host_capability(
                 unica_process::test_support::HostCapability::WindowsJobObject,
                 "Windows Job attachment exists only on Windows",

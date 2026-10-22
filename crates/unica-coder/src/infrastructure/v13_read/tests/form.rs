@@ -1055,7 +1055,6 @@ fn form_metadata_rejects_orphans_and_does_not_follow_descriptor_links() {
         fs::rename(&descriptor, &outside).unwrap();
         let outcome = create_file_link_fixture_for_test(&outside, &descriptor).unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file link unavailable: {outcome:?}");
             unica_process::test_support::skip_without_host_capability(
                 unica_process::test_support::HostCapability::Symlink,
                 "creating a link fixture needs the symlink privilege",

@@ -4193,7 +4193,6 @@ fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
     let outcome = create_file_link_fixture_for_test(&foreign, &module)
         .expect("unexpected file-link creation error must fail the fixture test");
     if outcome != FileLinkFixtureOutcome::Created {
-        eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
         unica_process::test_support::skip_without_host_capability(
             unica_process::test_support::HostCapability::Symlink,
             "creating a link fixture needs the symlink privilege",
@@ -4711,7 +4710,6 @@ fn canonical_dcs_validation_does_not_follow_links_after_input_capture() {
         let outcome = create_file_link_fixture_for_test(&outside, &path)
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
             unica_process::test_support::skip_without_host_capability(
                 unica_process::test_support::HostCapability::Symlink,
                 "creating a link fixture needs the symlink privilege",
@@ -4753,7 +4751,6 @@ fn canonical_dcs_validation_refuses_linked_format_owners_before_capture() {
         let outcome = create_file_link_fixture_for_test(&outside, &owner)
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
             unica_process::test_support::skip_without_host_capability(
                 unica_process::test_support::HostCapability::Symlink,
                 "creating a link fixture needs the symlink privilege",
@@ -6312,7 +6309,6 @@ fn canonical_subsystem_check_refuses_linked_dependencies() {
         fs::write(&foreign, "<CommandInterface version=\"2.20\"/>").unwrap();
         let outcome = create_file_link_fixture_for_test(&foreign, &path).unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
             unica_process::test_support::skip_without_host_capability(
                 unica_process::test_support::HostCapability::Symlink,
                 "creating a link fixture needs the symlink privilege",
