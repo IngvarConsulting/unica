@@ -13,6 +13,7 @@ use unica_metadata::interface::InterfaceEditCounters;
 use unica_metadata::support::SupportOperation;
 use unica_metadata::support_edit::{SupportCapability, SupportObjectRule};
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::proposal::input::{bad, creation_name, required_values};
 use unica_source_contract::proposal::{
     hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind, ApplyProposal,
@@ -966,7 +967,7 @@ pub fn stage_metadata_resource_plan(
             })?;
             let mut model = crate::subsystem::parse_subsystem_edit_model(
                 &text,
-                &relative.display().to_string(),
+                &relative.portable().to_string(),
             )
             .map_err(|message| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)

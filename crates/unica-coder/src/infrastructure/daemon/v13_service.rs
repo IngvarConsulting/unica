@@ -5065,11 +5065,26 @@ pub(super) fn preflight_apply_operations_with(
                     .collect::<Vec<_>>()
                     .join(" or ");
                 let message = format!("{refused}; it addresses {shapes}");
-                let refusal = error_result(
+                let mut refusal = error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,
                     message,
                 );
+                // Код пишется в модуль, а не в его владельца: узел с модулями
+                // ведёт к их адресам (#1964).
+                if descriptor.family() == unica_operations::OperationFamily::Code {
+                    if let Some(branch) = crate::infrastructure::v13_read::module_branch_for_parent(
+                        operation.at(),
+                        crate::domain::apply::source_classification_profile(source),
+                        source.kind(),
+                    ) {
+                        refusal.next.push(json!({
+                            "tool": "unica.view",
+                            "args": {"at": branch.at()},
+                            "reason": "адреса модулей этого узла: код пишется по адресу модуля",
+                        }));
+                    }
+                }
                 // Узел, который читается, показывает свой словарь; адрес,
                 // которого нет ни в одном дереве, ведёт к корню набора.
                 let readable = crate::infrastructure::logical_tree::route_logical_address(

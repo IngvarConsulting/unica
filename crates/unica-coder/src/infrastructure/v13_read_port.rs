@@ -5,6 +5,7 @@ use unica_metadata_designer::configuration::{
     cf_home_page_item_data, parse_cf_command_interface_xml, parse_cf_home_page_xml_strict,
     parse_cf_info_xml,
 };
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_designer::module_layout::module_relative as shared_module_relative;
 
 use crate::infrastructure::v13_large_configuration::{
@@ -238,7 +239,7 @@ impl ProviderReadAuthority {
             .ok_or_else(|| {
                 ViewError::detailed(
                     RefusalDetail::SourceUnreadable,
-                    format!("relative source `{}` is absent", relative.display()),
+                    format!("relative source `{}` is absent", relative.portable()),
                 )
             })
     }
@@ -517,7 +518,7 @@ impl ProviderReadAuthority {
                     RefusalDetail::SourceUnreadable,
                     format!(
                         "external descriptor `{}` has kind `{}`, expected `{expected_kind}`",
-                        relative.display(),
+                        relative.portable(),
                         evidence.artifact_kind()
                     ),
                 ));
@@ -527,7 +528,7 @@ impl ProviderReadAuthority {
                     RefusalDetail::SourceUnreadable,
                     format!(
                         "external descriptor `{}` has no non-empty Properties/Name",
-                        relative.display()
+                        relative.portable()
                     ),
                 )
             })?;
@@ -540,7 +541,7 @@ impl ProviderReadAuthority {
             if path.file_stem().and_then(|value| value.to_str()) != Some(artifact_name) {
                 owner_path_mismatches.push(format!(
                     "external descriptor `{}` belongs to `{artifact_name}`",
-                    relative.display()
+                    relative.portable()
                 ));
             }
         }
@@ -1197,7 +1198,7 @@ impl ProviderReadAuthority {
                     RefusalDetail::SourceUnreadable,
                     format!(
                         "subsystem descriptor `{}` names `{}` instead of `{expected}`",
-                        descriptor_relative.display(),
+                        descriptor_relative.portable(),
                         data.name
                     ),
                 ));
@@ -1244,7 +1245,7 @@ impl ProviderReadAuthority {
                         RefusalDetail::SourceUnreadable,
                         format!(
                             "subsystem descriptor `{}` names `{}` instead of `{expected}`",
-                            relative.display(),
+                            relative.portable(),
                             parent.name
                         ),
                     ));
@@ -1255,7 +1256,7 @@ impl ProviderReadAuthority {
                     RefusalCode::NotFound,
                     format!(
                         "subsystem `{name}` is not registered in `{}`",
-                        relative.display()
+                        relative.portable()
                     ),
                 ));
             }
@@ -1265,7 +1266,7 @@ impl ProviderReadAuthority {
                 .ok_or_else(|| {
                     ViewError::new(
                         RefusalCode::NotFound,
-                        format!("subsystem descriptor `{}` is absent", relative.display()),
+                        format!("subsystem descriptor `{}` is absent", relative.portable()),
                     )
                 })?;
         }
@@ -1413,7 +1414,7 @@ impl ProviderReadAuthority {
             .ok_or_else(|| {
                 ViewError::new(
                     RefusalCode::NotFound,
-                    format!("metadata descriptor `{}` is absent", relative.display()),
+                    format!("metadata descriptor `{}` is absent", relative.portable()),
                 )
             })
     }
