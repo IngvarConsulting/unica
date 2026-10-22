@@ -142,7 +142,9 @@ fn retire(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use unica_workspace::test_support::create_dir_symlink_for_test;
+    use unica_workspace::test_support::{
+        create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
 
     fn identity(digit: char) -> CoreIdentity {
         CoreIdentity::from_str(&digit.to_string().repeat(64)).unwrap()
@@ -223,11 +225,15 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("keep"), b"data").unwrap();
         let link = root.join(state_name(&identity('e')));
-        if !matches!(
-            create_dir_symlink_for_test(outside.path(), &link),
-            Some(Ok(()))
-        ) {
-            return; // The host forbids creating links; nothing to prove here.
+        // Only an explicit privilege refusal skips; any other link error fails.
+        if create_directory_link_fixture_for_test(outside.path(), &link).unwrap()
+            != FileLinkFixtureOutcome::Created
+        {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a directory link needs the symlink privilege",
+            );
+            return;
         }
 
         assert!(collect(&root, &identity('0'), Duration::ZERO).is_empty());
