@@ -1292,11 +1292,16 @@ fn dynamic_list_no_context_rule_keeps_incompatible_bindings_invalid() {
 
 #[test]
 fn contextual_form_event_does_not_accept_server_no_context() {
-    for (directive, state) in [
-        ("&НаСервере", "implemented"),
-        ("&AtServer", "implemented"),
-        ("&НаСервереБезКонтекста", "invalid"),
-        ("&AtServerNoContext", "invalid"),
+    // The module is checked with both line endings: a Windows checkout used
+    // to hand it over with CRLF (#1970), and the directive reading must not
+    // depend on that.
+    for (directive, state, eol) in [
+        ("&НаСервере", "implemented", "\n"),
+        ("&AtServer", "implemented", "\n"),
+        ("&НаСервереБезКонтекста", "invalid", "\n"),
+        ("&AtServerNoContext", "invalid", "\n"),
+        ("&НаСервереБезКонтекста", "invalid", "\r\n"),
+        ("&AtServer", "implemented", "\r\n"),
     ] {
         let fixture = RealReaderFixture::new();
         install_dynamic_list_context_fixture(&fixture);
@@ -1307,12 +1312,12 @@ fn contextual_form_event_does_not_accept_server_no_context() {
             "&НаСервере\nПроцедура СоздатьФорму",
             &format!("{directive}\nПроцедура СоздатьФорму"),
         );
-        // A fixture checked out with CRLF made this replacement a silent no-op
-        // and the test then read the original directive (#1970).
+        // A silent no-op here once tested the original directive (#1970).
         assert!(
             source.contains(&format!("{directive}\nПроцедура СоздатьФорму")),
             "{directive}: the handler directive must be substituted"
         );
+        let source = source.replace('\n', eol);
         fs::write(&path, &source).unwrap();
         let service = fixture.view_service();
         let event_at = "main:Catalog.Items.Form.List.Event.OnCreateAtServer";
