@@ -7,7 +7,7 @@ pub(crate) mod testing;
 
 pub(crate) mod full_dump;
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod filesystem_contract_tests;
 
 pub(crate) mod state_stream;

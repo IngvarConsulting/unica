@@ -5,10 +5,10 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[test]
+#[ignore = "helper process: spawned by spawn_task_daemon with UNICA_TASK_RESTART_STATE; not a standalone test"]
 fn task_restart_daemon_process_fixture() {
-    let Some(state) = std::env::var_os("UNICA_TASK_RESTART_STATE") else {
-        return;
-    };
+    let state = std::env::var_os("UNICA_TASK_RESTART_STATE")
+        .expect("helper process: the parent test sets the daemon state");
     let control = std::env::var_os("UNICA_TASK_RESTART_CONTROL").unwrap();
     let identity = std::env::var("UNICA_TASK_RESTART_IDENTITY").unwrap();
     unica_coder::frontend_restart_test_support::run_daemon(
@@ -26,6 +26,7 @@ fn spawn_task_daemon(state: &Path, control: &Path) -> OwnedProcess {
             .args([
                 "--exact",
                 "frontend_restart::task_restart_daemon_process_fixture",
+                "--ignored",
                 "--nocapture",
             ])
             .env("UNICA_TASK_RESTART_STATE", state)

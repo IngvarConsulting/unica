@@ -62,17 +62,14 @@ def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Pat
 # только `small`, второго вызова не получают, потому что пустой отбор у
 # nextest — отказ, а не зелёный ноль.
 #
-# Тем же вызовом идут приватные сценарии библиотеки: они гоняют демона через
-# помощники, и классификатор исходников их сокетов не видит, поэтому признак
-# включается только этому модулю. Один вызов на обе цели — одна сборка
-# `unica-coder` с признаком: план собирает её, прогон берёт готовой. Фильтр
-# nextest пересекается с `default-filter` профиля, как и прежде у каждого
-# из двух вызовов.
-SCENARIO_TEST_PREFIX = "infrastructure::receipt_scenario::tests::"
+# Проверки обвязки сценариев идут в том же бинаре: их тела живут в библиотеке
+# под признаком, а `#[test]` им приставляет контракт. Поэтому вызову не нужен
+# `--lib` — тестовая сборка всего `unica-coder` ради них. Библиотека
+# собирается один раз, обычной, для контракта и бинаря `unica`.
 LEDGER_FEATURE_SELECTION = (
     "-p", "unica-coder", "--features", "receipt-ledger-test-support",
-    "--lib", "--test", "daemon_receipt_ledger",
-    "-E", f"binary(daemon_receipt_ledger) | test(/^{SCENARIO_TEST_PREFIX}/)",
+    "--test", "daemon_receipt_ledger",
+    "-E", "binary(daemon_receipt_ledger)",
 )
 
 # A dependency's cfg(test) is not compiled by workspace tests. Its pinned
@@ -120,8 +117,8 @@ def surviving_product_report(os_name: str = os.name):
 
 def rust_selections(profile: str) -> list[tuple[str, ...]]:
     """Что отбирает каждый вызов nextest: весь workspace и, если ворота
-    принимают `medium` или `large`, одним вызовом контракт и приватные
-    сценарии ReceiptLedger."""
+    принимают `medium` или `large`, одним вызовом контракт ReceiptLedger
+    вместе с проверками его обвязки."""
     selections = [("--workspace",)]
     if set(ADMITTED[profile]) & {"medium", "large"}:
         selections.append(LEDGER_FEATURE_SELECTION)
@@ -255,14 +252,8 @@ def write_python_plan(profile: str, results: Path, runner: str, suite: str | Non
     return sum(1 for entry in entries if entry.get("ecosystem") == "python")
 
 
-def scenario_library_medium(selection: tuple[str, ...] | None, binary: str, name: str) -> bool:
-    return selection == LEDGER_FEATURE_SELECTION and binary == "unica-coder" and name.startswith(SCENARIO_TEST_PREFIX)
-
-
 def rust_case_medium(selection: tuple[str, ...] | None, binary: str, name: str) -> bool:
-    return scenario_library_medium(selection, binary, name) or (
-        selection == UREQ_RECYCLING_SELECTION and binary == "ureq" and name.startswith(UREQ_RECYCLING_PREFIX)
-    )
+    return selection == UREQ_RECYCLING_SELECTION and binary == "ureq" and name.startswith(UREQ_RECYCLING_PREFIX)
 
 
 def emit_rust(
@@ -316,37 +307,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--python-matrix", action="store_true", help="напечатать матрицу джоб Python для ворот и выйти")
     parser.add_argument("--docs-only", nargs="?", const="true", default="false", choices=("true", "false"),
                         help="только Python small для подтверждённого изменения прозы")
-    parser.add_argument("--rust-lane", choices=("ordinary", "receipt", "vendor"))
-    parser.add_argument("--phase", choices=("build", "run", "verify"), help="archive producer, shard executor, or inventory verifier")
-    parser.add_argument("--prepared", type=Path, help="immutable lane archive and manifest directory")
-    parser.add_argument("--shard", type=int, default=1)
+    parser.add_argument("--phase", choices=("build", "run", "medium", "verify"),
+                        help="this runner's lane archives, their execution, PR medium, or inventory verifier")
+    parser.add_argument("--prepared", type=Path, help="job-local directory of the lane archives and manifests")
     parser.add_argument("--runners", default="[]", help="JSON runner matrix for complete inventory verification")
     parser.add_argument("--shadow", type=Path, help="shadow decision; mandatory selection remains full")
-    parser.add_argument("--rust-matrix", choices=("build", "run"), help="print a lane matrix without compiling")
+    parser.add_argument("--baseline", type=Path, help="previous Rust inventory of the same configuration")
     args = parser.parse_args(argv)
     args.docs_only = args.docs_only == "true"
     only_size = args.only_size or None
 
-    if args.phase or args.rust_matrix:
+    if args.phase:
         import ci_rust_lanes
-        if args.rust_matrix:
-            if args.rust_lane is None:
-                parser.error("--rust-matrix requires --rust-lane")
-            print(json.dumps(ci_rust_lanes.matrix(args.profile, json.loads(args.runners), lane=args.rust_lane, run=args.rust_matrix == "run"), separators=(",", ":")))
-            return 0
         if args.phase == "verify":
             if args.results is None or args.sha is None:
                 parser.error("--phase verify requires --results and --sha")
-            print(json.dumps(ci_rust_lanes.verify_union(args.results, args.profile, json.loads(args.runners), args.sha), indent=2))
+            print(json.dumps(ci_rust_lanes.verify_union(args.results, args.profile, json.loads(args.runners), args.sha,
+                                                         ci_rust_lanes.read_baseline(args.baseline)), indent=2))
             return 0
-        if args.rust_lane is None or args.prepared is None:
-            parser.error("--phase build/run requires --rust-lane and --prepared")
+        if args.prepared is None or args.results is None:
+            parser.error("--phase build/run/medium requires --prepared and --results")
+        # Every lane of this runner, in the job that runs it: archives stay in
+        # `--prepared`, plans and results go to the report directory.
         if args.phase == "build":
-            ci_rust_lanes.build(REPO_ROOT, args.prepared, args.rust_lane, args.profile, args.runner, args.line)
-            return 0
-        if args.results is None:
-            parser.error("--phase run requires --results")
-        return ci_rust_lanes.run_archive(REPO_ROOT, args.prepared, args.results, args.rust_lane, args.profile, args.runner, args.shard, args.line, args.shadow)
+            return ci_rust_lanes.build_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line)
+        if args.phase == "medium":
+            return ci_rust_lanes.run_medium(REPO_ROOT, args.prepared / "ordinary", args.results / "ci-rust-medium", args.runner, args.shadow)
+        return ci_rust_lanes.run_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line, args.shadow)
 
     if args.python_matrix:
         print(json.dumps(python_matrix(args.profile, docs_only=args.docs_only), ensure_ascii=False, separators=(",", ":")))

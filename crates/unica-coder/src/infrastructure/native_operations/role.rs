@@ -1202,12 +1202,14 @@ pub(crate) mod role_edit_contract_tests {
         let saved = rights.with_extension("saved");
         let outside = context.workspace_root.join("outside-rights.xml");
         fs::write(&outside, &original).unwrap();
-        let Some(probe) = create_file_symlink_for_test(&outside, &saved) else {
-            fs::remove_dir_all(context.workspace_root).unwrap();
-            return;
-        };
+        let probe = create_file_symlink_for_test(&outside, &saved)
+            .expect("symlink fixtures exist on Unix and Windows");
         if probe.is_err() {
             fs::remove_dir_all(context.workspace_root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         fs::remove_file(&saved).unwrap();
@@ -1533,12 +1535,14 @@ pub(crate) mod role_edit_contract_tests {
         let probe_source = context.workspace_root.join("link-probe-source");
         let probe_link = context.workspace_root.join("link-probe");
         fs::create_dir(&probe_source).unwrap();
-        let Some(probe_result) = create_dir_symlink_for_test(&probe_source, &probe_link) else {
-            fs::remove_dir_all(context.workspace_root).unwrap();
-            return;
-        };
+        let probe_result = create_dir_symlink_for_test(&probe_source, &probe_link)
+            .expect("symlink fixtures exist on Unix and Windows");
         if probe_result.is_err() {
             fs::remove_dir_all(context.workspace_root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         remove_dir_symlink_for_test(&probe_link).unwrap();
@@ -1572,12 +1576,14 @@ pub(crate) mod role_edit_contract_tests {
         let before = fs::read(&rights).unwrap();
         fs::write(&outside_rights, &before).unwrap();
         fs::remove_dir_all(&role_dir).unwrap();
-        let Some(link_result) = create_dir_symlink_for_test(&outside, &role_dir) else {
-            fs::remove_dir_all(context.workspace_root).unwrap();
-            return;
-        };
+        let link_result = create_dir_symlink_for_test(&outside, &role_dir)
+            .expect("symlink fixtures exist on Unix and Windows");
         if link_result.is_err() {
             fs::remove_dir_all(context.workspace_root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 

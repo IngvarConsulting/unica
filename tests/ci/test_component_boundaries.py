@@ -88,6 +88,58 @@ class ComponentBoundaryTests(unittest.TestCase):
             with self.subTest(owner=owner, target=target):
                 self.assertEqual(checker.edge_errors(owner, target, "dependencies"), [])
 
+    def test_dcs_family_and_its_codec_keep_their_own_boundary(self) -> None:
+        # Пилот семейного порта (#1826): семейство не видит свой кодек, раскладку,
+        # workspace, другие семейства и composition; кодек — только своё
+        # семейство и нейтральные порты. Workspace и кодек вместе видит лишь
+        # пакет межкомпонентных тестов семьи.
+        refused = (
+            ("unica-dcs", "unica-dcs-designer"),
+            ("unica-dcs", "unica-source-designer"),
+            ("unica-dcs", "unica-workspace"),
+            ("unica-dcs", "unica-coder"),
+            ("unica-dcs", "unica-forms"),
+            ("unica-templates", "unica-dcs"),
+            ("unica-dcs-designer", "unica-workspace"),
+            ("unica-dcs-designer", "unica-templates-designer"),
+            ("unica-dcs-designer", "unica-coder"),
+            ("unica-dcs-integration-tests", "unica-coder"),
+        )
+        for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
+            for owner, target in refused:
+                with self.subTest(kind=kind, owner=owner, target=target):
+                    self.assertTrue(checker.edge_errors(owner, target, kind))
+        for owner, target, kind in (
+            ("unica-dcs", "unica-templates", "dependencies"),
+            ("unica-dcs-designer", "unica-dcs", "dependencies"),
+            ("unica-dcs-designer", "unica-source-designer", "dependencies"),
+            ("unica-coder", "unica-dcs-designer", "dependencies"),
+            ("unica-dcs-integration-tests", "unica-workspace", "dev-dependencies"),
+            ("unica-dcs-integration-tests", "unica-dcs-designer", "dev-dependencies"),
+        ):
+            with self.subTest(owner=owner, target=target, kind=kind):
+                self.assertEqual(checker.edge_errors(owner, target, kind), [])
+
+    def test_composition_selects_the_dcs_codec_in_one_place(self) -> None:
+        call = "let data = unica_dcs_designer::schema::parse_dcs_info_xml(&text, support)?;\n"
+        for path in (
+            "crates/unica-coder/src/infrastructure/native_operations/dcs.rs",
+            "crates/unica-coder/tests/dcs.rs",
+            "crates/unica-workspace/src/apply.rs",
+            "crates/unica-dcs/src/codec.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(checker.codec_selection_errors(path, call))
+        for path in (
+            checker.CODEC_SELECTION,
+            "crates/unica-dcs-designer/src/codec.rs",
+            "crates/unica-dcs-integration-tests/tests/stand/mod.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(checker.codec_selection_errors(path, call), [])
+        self.assertEqual(checker.codec_selection_errors(
+            "crates/unica-coder/src/lib.rs", "use unica_dcs::codec::DcsCodec;\n"), [])
+
     def test_target_specific_alias_cannot_hide_a_composition_backedge(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -98,6 +150,48 @@ class ComponentBoundaryTests(unittest.TestCase):
             with (root / "family/Cargo.toml").open("a") as output:
                 output.write('\n[target.\'cfg(windows)\'.dev-dependencies]\nhelper={package="unica-coder",path="../coder"}\n')
             self.assertIn("dev-dependencies -> unica-coder", "\n".join(checker.check(root)))
+
+    def test_workspace_owner_depends_only_on_a_closed_list(self) -> None:
+        for target in sorted(checker.WORKSPACE_DEPENDENCIES):
+            for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
+                with self.subTest(target=target, kind=kind):
+                    self.assertEqual(checker.edge_errors("unica-workspace", f"unica-{target}", kind), [])
+        self.assertEqual(checker.edge_errors("unica-workspace", "unica-process", "dev-dependencies"), [])
+        for kind in ("dependencies", "build-dependencies"):
+            with self.subTest(kind=kind):
+                self.assertTrue(checker.edge_errors("unica-workspace", "unica-process", kind))
+        # Components that did not exist when the list was written are refused too.
+        for target in ("unica-runner", "unica-bootstrap", "unica-artifact-delivery", "unica-project-health",
+                       "unica-operations", "unica-adapter-rlm", "unica-execution", "unica-daemon",
+                       "unica-coder", "unica-future-index"):
+            for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
+                with self.subTest(target=target, kind=kind):
+                    self.assertTrue(checker.edge_errors("unica-workspace", target, kind))
+
+    def test_cycles_through_the_workspace_owner_are_rejected_for_every_edge_kind(self) -> None:
+        owner = "unica-workspace"
+        self.assertEqual(checker.cycle_errors({owner: {"b"}, "b": {"c"}, "c": set()}, owner), [])
+        # A cycle elsewhere is outside this guard.
+        self.assertEqual(checker.cycle_errors({owner: {"b"}, "b": {"c"}, "c": {"b"}}, owner), [])
+        self.assertEqual(checker.cycle_errors({owner: {owner}}, owner), [f"component cycle: {owner} -> {owner}"])
+        self.assertEqual(checker.cycle_errors({owner: {"b"}, "b": {"c"}, "c": {owner}}, owner),
+                         [f"component cycle: {owner} -> b -> c -> {owner}"])
+        for section, inherited in (("dependencies", False), ("build-dependencies", False), ("dev-dependencies", False),
+                                   ("target.'cfg(windows)'.dev-dependencies", False), ("dependencies", True)):
+            with self.subTest(section=section, inherited=inherited), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                shared = '[workspace.dependencies]\nowner={package="unica-workspace",path="workspace"}\n' if inherited else ""
+                (root / "Cargo.toml").write_text('[workspace]\nmembers=["workspace", "process"]\n' + shared)
+                for directory, name in (("workspace", "unica-workspace"), ("process", "unica-process")):
+                    (root / directory).mkdir()
+                    (root / directory / "Cargo.toml").write_text('[package]\nname="'+name+'"\n')
+                with (root / "workspace/Cargo.toml").open("a") as output:
+                    output.write('[dev-dependencies]\nunica-process={path="../process"}\n')
+                edge = "owner={workspace=true}" if inherited else 'owner={package="unica-workspace",path="../workspace"}'
+                with (root / "process/Cargo.toml").open("a") as output:
+                    output.write(f'[{section}]\n{edge}\n')
+                self.assertEqual(checker.check(root),
+                                 ["component cycle: unica-workspace -> unica-process -> unica-workspace"])
 
     def test_unknown_local_member_and_wrong_alias_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

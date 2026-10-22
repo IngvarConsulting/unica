@@ -1,6 +1,8 @@
-//! Проверка против реальной установки платформы. Пропускается, когда
-//! `UNICA_PLATFORM_HELP_DIR` не задан: материалы вендора в репозиторий не
-//! попадают и в CI не требуются.
+//! Проверка против реальной установки платформы. Материалы вендора в
+//! репозиторий не попадают и на раннерах CI не установлены, поэтому проверки
+//! помечены `#[ignore]` и в отчёте очереди видны пропущенными, а не
+//! пройденными. Запуск на стенде со справкой:
+//! `UNICA_PLATFORM_HELP_DIR=<каталог установки> cargo nextest run -p unica-documentation-sources --lib --run-ignored only -E 'test(/^platform_help::(real_installation|retrieval_gate)::/)'`.
 //!
 use std::path::PathBuf;
 
@@ -10,12 +12,18 @@ use unica_documentation::model::{
     DocumentationSectionStatus, SourceKind,
 };
 
+/// Каталог установки платформы со справкой. Без переменной проверка не может
+/// исполниться, поэтому явный запуск падает, а не проходит пустым.
+pub(super) fn platform_help_dir() -> PathBuf {
+    std::env::var_os("UNICA_PLATFORM_HELP_DIR")
+        .map(PathBuf::from)
+        .expect("задайте UNICA_PLATFORM_HELP_DIR — каталог установки платформы")
+}
+
 #[test]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run with --run-ignored only"]
 fn real_installation_answers_navigation_link_question() {
-    let Ok(root) = std::env::var("UNICA_PLATFORM_HELP_DIR") else {
-        eprintln!("UNICA_PLATFORM_HELP_DIR не задан — проверка пропущена");
-        return;
-    };
+    let root = platform_help_dir();
     // Слот индекса общий на процесс: настоящая установка не должна
     // вытеснять индекс синтетического теста посреди его двух вызовов.
     let _serial = index_test_lock();
@@ -28,7 +36,7 @@ fn real_installation_answers_navigation_link_question() {
     };
     let context = DocumentationContext {
         platform_version: None,
-        installation_root: Some(PathBuf::from(root)),
+        installation_root: Some(root),
     };
     let sections = provider.search(&request, &context);
     let section = sections
@@ -53,13 +61,11 @@ fn real_installation_answers_navigation_link_question() {
 /// ни один тест этого не видел. Здесь проверяется КАЖДЫЙ контейнер обоих
 /// корпусов установки.
 #[test]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run with --run-ignored only"]
 fn every_container_of_a_real_installation_parses() {
-    let Ok(root) = std::env::var("UNICA_PLATFORM_HELP_DIR") else {
-        eprintln!("UNICA_PLATFORM_HELP_DIR не задан — проверка пропущена");
-        return;
-    };
-    let corpora = crate::platform_help::installation::discover(&PathBuf::from(root), "ru")
-        .expect("корпуса установки");
+    let root = platform_help_dir();
+    let corpora =
+        crate::platform_help::installation::discover(&root, "ru").expect("корпуса установки");
     for (name, corpus) in [
         ("syntax-context", &corpora.syntax_context),
         ("platform-guides", &corpora.platform_guides),
@@ -97,11 +103,9 @@ fn every_container_of_a_real_installation_parses() {
 /// `Unavailable { VersionMissing }`, `any_usable` оставался ложным и весь
 /// `unica.documentation.search` заканчивался отказом.
 #[test]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run with --run-ignored only"]
 fn real_installation_answers_a_locale_it_does_not_ship() {
-    let Ok(root) = std::env::var("UNICA_PLATFORM_HELP_DIR") else {
-        eprintln!("UNICA_PLATFORM_HELP_DIR не задан — проверка пропущена");
-        return;
-    };
+    let root = platform_help_dir();
     // Слот индекса общий на процесс: настоящая установка не должна вытеснять
     // индекс синтетического теста посреди его двух вызовов.
     let _serial = index_test_lock();
@@ -114,7 +118,7 @@ fn real_installation_answers_a_locale_it_does_not_ship() {
     };
     let context = DocumentationContext {
         platform_version: None,
-        installation_root: Some(PathBuf::from(root)),
+        installation_root: Some(root),
     };
     let sections = provider.search(&request, &context);
     assert_eq!(

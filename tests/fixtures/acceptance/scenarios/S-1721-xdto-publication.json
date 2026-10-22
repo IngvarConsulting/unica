@@ -2,7 +2,7 @@
   "id": "S-1721-xdto-publication",
   "issue": 1721,
   "area": "XDTO",
-  "task": "Опубликовать все пять операций одного пакета и новое nested свойство с буквальной точкой, прочитать изменения и проверить full Package.bin/descriptor/Configuration/readonly neighbor. Повтор add — no-op; stale и поздний poisoned op ничего не пишут. Forward reference на тип, создаваемый позже того же batch, принимается по итоговому ресурсу. Удаление обоих forward типов восстанавливает prior postimage; создание/удаление transient в одном плане даёт нулевой эффект. Check подтверждает только readable.",
+  "task": "Опубликовать все пять операций одного пакета и новое nested свойство с буквальной точкой, прочитать изменения и проверить full Package.bin/descriptor/Configuration/readonly neighbor. Повтор add — no-op; stale и поздний poisoned op ничего не пишут. Forward reference на тип, создаваемый позже того же batch, принимается по итоговому ресурсу. Удаление обоих forward типов восстанавливает prior postimage; создание/удаление transient в одном плане даёт нулевой эффект. Check возвращает находки валидатора xdto (#1591).",
   "workspace": "tests/fixtures/acceptance/workspace-xdto-contract",
   "wire": [
     {
@@ -1180,8 +1180,10 @@
       "expect": [
         "ok"
       ],
-      "status": "readable",
-      "validators": [],
+      "status": "passed",
+      "validators": [
+        "xdto"
+      ],
       "fileAssertions": [
         {
           "path": "src/Configuration.xml",
@@ -2360,8 +2362,10 @@
       "expect": [
         "ok"
       ],
-      "status": "readable",
-      "validators": [],
+      "status": "passed",
+      "validators": [
+        "xdto"
+      ],
       "fileAssertions": [
         {
           "path": "src/Configuration.xml",

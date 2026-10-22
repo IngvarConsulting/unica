@@ -887,109 +887,6 @@ mod windows_anchor_tests {
     }
 
     #[test]
-    fn windows_pending_writer_scrub_failure_preserves_data_and_retries_without_unlink() {
-        for cleanup_via_drop in [false, true] {
-            let root = unique_temp_root("pending-writer-scrub-retry");
-            let workspace = root.join("workspace");
-            fs::create_dir_all(&workspace).unwrap();
-            let parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
-            let mut stage = PrivateDumpStage::create(&parent).unwrap();
-            stage.write_effective_config(b"secret\n").unwrap();
-            fs::create_dir(&stage.staged_tree).unwrap();
-            fs::write(
-                stage.staged_tree.join("writer-data.txt"),
-                b"unfinished writer data",
-            )
-            .unwrap();
-            let staged_before = super::capture_tree_target_nofollow(&stage.staged_tree).unwrap();
-            stage.remember_staged_tree(&staged_before);
-            stage.begin_execution();
-            let private_root = stage.root.clone();
-            let config_path = stage.effective_config.clone();
-            let stage_path = stage.staged_tree.clone();
-            let root_identity = stage.root_identity;
-            let execution_identity = stage.execution_identity;
-            let recovery_identity = stage.recovery_identity;
-            let config_identity =
-                file_identity(stage.effective_config_handle.as_ref().unwrap()).unwrap();
-            let before = super::capture_tree_target_nofollow(&private_root).unwrap();
-
-            let outcome = with_private_cleanup_failpoint(
-                PrivateCleanupCheckpoint::BeforeEffectiveConfigScrub,
-                || {
-                    super::finalize_private_outcome(
-                        &mut stage,
-                        super::dump_failure(
-                            "unica.build.dump",
-                            "runner completion was not confirmed".into(),
-                            None,
-                            None,
-                            None,
-                        ),
-                    )
-                },
-            );
-            assert!(!outcome.ok);
-            assert!(outcome
-                .errors
-                .iter()
-                .any(|error| error.contains("injected")));
-            assert!(outcome
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("Secret-bearing")));
-            assert_eq!(stage.retention, super::PrivateRetention::EntireStage);
-            assert!(stage.cleanup_on_drop, "failed scrub must remain retryable");
-            assert!(stage.effective_config_secret_present);
-            assert!(stage.effective_config_handle.is_some());
-            assert_eq!(
-                super::capture_tree_target_nofollow(&private_root).unwrap(),
-                before
-            );
-            assert!(fs::read(&config_path)
-                .unwrap()
-                .windows(6)
-                .any(|part| part == b"secret"));
-
-            if !cleanup_via_drop {
-                let retry =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| stage.cleanup_now()));
-                retry
-                    .expect("pending cleanup retry must not panic")
-                    .unwrap();
-                assert!(!stage.effective_config_secret_present);
-                assert!(!stage.cleanup_on_drop);
-            }
-            let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(stage)));
-            assert!(
-                dropped.is_ok(),
-                "Drop must retry the held scrub without panicking"
-            );
-            assert!(
-                fs::read(&config_path).unwrap().is_empty(),
-                "held configuration must be empty"
-            );
-            let config = fs::File::open(&config_path).unwrap();
-            assert_eq!(file_identity(&config).unwrap(), config_identity);
-            drop(config);
-            for (path, expected) in [
-                (&private_root, root_identity),
-                (&private_root.join("execution"), execution_identity),
-                (&private_root.join("recovery"), recovery_identity),
-            ] {
-                let retained = open_directory_nofollow(path).unwrap();
-                assert_eq!(file_identity(&retained).unwrap(), expected);
-            }
-            assert_eq!(
-                super::capture_tree_target_nofollow(&stage_path).unwrap(),
-                staged_before
-            );
-            drop(parent);
-            fs::remove_dir_all(root).unwrap();
-        }
-    }
-
-    #[test]
     fn windows_effective_config_scrub_failure_keeps_cleanup_retry_and_drop_safe() {
         let root = unique_temp_root("private-stage-scrub-cleanup-retry");
         let workspace = root.join("workspace");
@@ -8414,6 +8311,115 @@ pub mod retained_recovery_contract {
     }
 }
 
+/// A failed Windows scrub of a pending writer's effective configuration keeps
+/// the whole private stage, reports it through the caller's outcome mapping
+/// and stays retryable without unlinking writer data.
+#[cfg(all(any(test, feature = "test-support"), windows))]
+pub mod pending_writer_scrub_contract {
+    use super::{
+        capture_tree_target_nofollow, file_identity, open_directory_nofollow,
+        with_private_cleanup_failpoint, DirectoryAnchor, DumpCleanupObservation,
+        PrivateCleanupCheckpoint, PrivateDumpStage, PrivateRetention,
+    };
+    use std::fs;
+    use unica_execution_contract::adapter_outcome::AdapterOutcome;
+
+    /// `initial_outcome` describes a dump that failed before publication.
+    pub fn run(
+        initial_outcome: impl Fn() -> AdapterOutcome,
+        finalize: impl Fn(DumpCleanupObservation, AdapterOutcome) -> AdapterOutcome,
+    ) {
+        for cleanup_via_drop in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "unica-full-dump-pending-writer-scrub-retry-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let workspace = root.join("workspace");
+            fs::create_dir_all(&workspace).unwrap();
+            let parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+            let mut stage = PrivateDumpStage::create(&parent).unwrap();
+            stage.write_effective_config(b"secret\n").unwrap();
+            fs::create_dir(&stage.staged_tree).unwrap();
+            fs::write(
+                stage.staged_tree.join("writer-data.txt"),
+                b"unfinished writer data",
+            )
+            .unwrap();
+            let staged_before = capture_tree_target_nofollow(&stage.staged_tree).unwrap();
+            stage.remember_staged_tree(&staged_before);
+            stage.begin_execution();
+            let private_root = stage.root.clone();
+            let config_path = stage.effective_config.clone();
+            let stage_path = stage.staged_tree.clone();
+            let root_identity = stage.root_identity;
+            let execution_identity = stage.execution_identity;
+            let recovery_identity = stage.recovery_identity;
+            let config_identity =
+                file_identity(stage.effective_config_handle.as_ref().unwrap()).unwrap();
+            let before = capture_tree_target_nofollow(&private_root).unwrap();
+
+            let outcome = with_private_cleanup_failpoint(
+                PrivateCleanupCheckpoint::BeforeEffectiveConfigScrub,
+                || finalize(stage.cleanup_observation(), initial_outcome()),
+            );
+            assert!(!outcome.ok);
+            assert!(outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("injected")));
+            assert!(outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Secret-bearing")));
+            assert_eq!(stage.retention, PrivateRetention::EntireStage);
+            assert!(stage.cleanup_on_drop, "failed scrub must remain retryable");
+            assert!(stage.effective_config_secret_present);
+            assert!(stage.effective_config_handle.is_some());
+            assert_eq!(capture_tree_target_nofollow(&private_root).unwrap(), before);
+            assert!(fs::read(&config_path)
+                .unwrap()
+                .windows(6)
+                .any(|part| part == b"secret"));
+
+            if !cleanup_via_drop {
+                let retry =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| stage.cleanup_now()));
+                retry
+                    .expect("pending cleanup retry must not panic")
+                    .unwrap();
+                assert!(!stage.effective_config_secret_present);
+                assert!(!stage.cleanup_on_drop);
+            }
+            let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(stage)));
+            assert!(
+                dropped.is_ok(),
+                "Drop must retry the held scrub without panicking"
+            );
+            assert!(
+                fs::read(&config_path).unwrap().is_empty(),
+                "held configuration must be empty"
+            );
+            let config = fs::File::open(&config_path).unwrap();
+            assert_eq!(file_identity(&config).unwrap(), config_identity);
+            drop(config);
+            for (path, expected) in [
+                (&private_root, root_identity),
+                (&private_root.join("execution"), execution_identity),
+                (&private_root.join("recovery"), recovery_identity),
+            ] {
+                let retained = open_directory_nofollow(path).unwrap();
+                assert_eq!(file_identity(&retained).unwrap(), expected);
+            }
+            assert_eq!(
+                capture_tree_target_nofollow(&stage_path).unwrap(),
+                staged_before
+            );
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 impl RunnerProjectStore {
     pub fn test_write_config_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
@@ -8495,5 +8501,8 @@ pub mod test_support_os {
     #[cfg(unix)]
     pub use super::with_directory_rename_hook;
     #[cfg(windows)]
-    pub use super::with_effective_config_create_hook;
+    pub use super::{
+        pending_writer_scrub_contract::run as pending_writer_scrub_contract,
+        with_effective_config_create_hook,
+    };
 }

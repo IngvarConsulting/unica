@@ -11,6 +11,9 @@ pub enum RequiredEventDirective {
     None,
     Client,
     Server,
+    /// Reading accepts `&НаСервере` and `&НаСервереБезКонтекста`; a new
+    /// handler is emitted without form context.
+    ServerOrServerNoContext,
 }
 
 impl RequiredEventDirective {
@@ -19,6 +22,7 @@ impl RequiredEventDirective {
             Self::None => None,
             Self::Client => Some("&НаКлиенте"),
             Self::Server => Some("&НаСервере"),
+            Self::ServerOrServerNoContext => Some("&НаСервереБезКонтекста"),
         }
     }
 }

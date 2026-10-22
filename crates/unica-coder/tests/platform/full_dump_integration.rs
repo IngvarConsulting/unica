@@ -3363,6 +3363,23 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_pending_writer_scrub_failure_preserves_data_and_retries_without_unlink() {
+        unica_workspace::full_dump::test_support::pending_writer_scrub_contract(
+            || {
+                super::dump_failure(
+                    "unica.build.dump",
+                    "runner completion was not confirmed".into(),
+                    None,
+                    None,
+                    None,
+                )
+            },
+            super::finalize_private_outcome,
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn private_stage_cleanup_failures_are_reported() {

@@ -431,8 +431,8 @@ pub fn metadata_object_borrow() -> OperationContract {
     OperationContract {
         schema: metadata_borrow_input_schema().clone(),
         target: "The extension Configuration root: <extension-source-set>:Configuration.",
-        effect: "Borrow or refresh the named parent object, preserving the extension's identity and local data.",
-        notes: "exampleArgs is a template: replace parent and Sample with an existing object in a distinct admitted parent source set. from is a qualified address of a named top-level object or Enum.EnumValue; read that source first. overrides names supported transferred properties; an empty array is allowed for a top-level object but any overrides field is refused for EnumValue. Refresh preserves the established override set.",
+        effect: "Borrow or refresh the named parent object, or borrow a parent form, preserving the extension's identity and local data.",
+        notes: "exampleArgs is a template: replace parent and Sample with an existing object in a distinct admitted parent source set. from is a qualified address of a named top-level object, Enum.EnumValue or object managed Form; read that source first. A Form is borrowed with its own minimal Form.xml equal to its BaseForm, and its owner is borrowed first when the extension lacks it. overrides names supported transferred properties; an empty array is allowed for a top-level object but any overrides field is refused for EnumValue and Form. Refresh preserves the established override set.",
         example_args: json!({"from":"parent:Catalog.Sample"}),
         help: "skills/cfe-borrow/SKILL.md",
         format_validators: &[],
@@ -525,6 +525,20 @@ pub fn metadata_predefined_set(owner: Option<MetadataKind>) -> OperationContract
         effect: "Change the listed fields of the item; newName renames it. Unlisted fields stay.",
         notes: "Predefined items are named by their address; there is no id or name selector argument. Item names are unique within the owner at every depth; an add or rename onto a used name is refused. The fields beyond code and description depend on the owner kind.",
         example_args: json!({"values":{"description":"Sample item"}}),
+        help: METADATA_HELP,
+        format_validators: &[],
+    }
+}
+
+pub fn metadata_exchange_content_set() -> OperationContract {
+    OperationContract {
+        schema: object(&[("at", text(true)), ("items", json!({"type":"array", "minItems":1,
+            "items":{"type":"object", "additionalProperties":false, "required":["at","autoRecord"],
+            "properties":{"at":{"type":"string"},"autoRecord":{"type":"string","enum":["Allow","Deny"]}}}}))], &["items"]),
+        target: "An ExchangePlan: <source-set>:ExchangePlan.<Name>.",
+        effect: "Update the listed Content.xml entries, appending new targets and preserving unlisted entries and their AutoRecord values.",
+        notes: "Each item names an existing Catalog, Document, Constant, ChartOfCharacteristicTypes, ChartOfAccounts, ChartOfCalculationTypes, InformationRegister, AccumulationRegister, AccountingRegister, CalculationRegister, BusinessProcess or Task of the same source set. AutoRecord is the XML value Allow or Deny; this does not prove runtime change registration. A plan without Content.xml has an empty composition and the first item creates the file. Damaged Content.xml and repeated targets are refused. An equivalent repeat preserves all bytes.",
+        example_args: json!({"items":[{"at":"main:Catalog.Items","autoRecord":"Allow"}]}),
         help: METADATA_HELP,
         format_validators: &[],
     }

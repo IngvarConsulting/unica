@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="22673727-fc7d-41f4-b455-84f5649cc2b1">
+    <Properties><Name>StyleItemValues</Name></Properties>
+    <ChildObjects><StyleItem>AbsoluteFont</StyleItem><StyleItem>SingleBorder</StyleItem><StyleItem>StyleFont</StyleItem></ChildObjects>
+  </Configuration>
+</MetaDataObject>

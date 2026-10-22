@@ -10,12 +10,11 @@ pub(crate) mod diagnostics;
 #[cfg(feature = "receipt-ledger-test-support")]
 #[path = "../../tests/support/receipt_scenario.rs"]
 pub(crate) mod receipt_scenario;
-#[cfg(test)]
-mod receipt_wire_integration;
 
 pub(crate) mod engine_delivery;
 #[allow(dead_code)]
 pub(crate) mod event_views;
+pub(crate) mod family_codecs;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
 // Hidden v0.13 routing remains unreachable from the package-selected v0.12 surface.
@@ -49,6 +48,8 @@ pub(crate) mod support_guard;
 #[allow(dead_code)]
 // Hidden v0.13 typed read adapter remains unreachable from the v0.12 tool ledger.
 pub(crate) mod support_state;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub(crate) mod tool_context;
 mod v13_large_configuration;
 #[allow(dead_code)]
@@ -72,8 +73,6 @@ pub(crate) static V8TR_CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex
 
 #[cfg(test)]
 mod documentation_policy_integration;
-#[cfg(test)]
-mod platform_help_oracle;
 
 mod source_diff;
 
@@ -92,9 +91,6 @@ mod workspace_metadata_publication_tests;
 mod full_dump_integration;
 
 #[cfg(test)]
-mod workspace_transaction_contract_tests;
-
-#[cfg(test)]
 mod source_discovery_integration_tests;
 
 pub(crate) mod analysis_composition;
@@ -107,4 +103,8 @@ pub(crate) mod interface_composition;
 
 pub(crate) mod support_composition;
 
+#[cfg(test)]
+mod meta_add_surface_tests;
+#[cfg(test)]
+mod meta_info_surface_tests;
 mod source_ids;

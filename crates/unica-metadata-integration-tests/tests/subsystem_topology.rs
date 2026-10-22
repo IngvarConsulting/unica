@@ -16,7 +16,8 @@ mod tests {
     use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use unica_workspace::read::{with_secure_tree_test_hook, SecureTreePhase};
     use unica_workspace::test_support::{
-        create_dir_symlink_for_test, create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
+        FileLinkFixtureOutcome,
     };
     use uuid::Uuid;
 
@@ -294,6 +295,10 @@ mod tests {
         )
         .unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a file link needs the symlink privilege",
+            );
             return;
         }
 
@@ -312,14 +317,21 @@ mod tests {
         fs::write(external.path().join("Outside.xml"), b"outside").unwrap();
         let source_root = root.path().canonicalize().unwrap();
         let expected = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
-        match create_dir_symlink_for_test(
+        match create_directory_link_fixture_for_test(
             external.path(),
             root.path().join("Subsystems/Unregistered"),
-        ) {
-            Some(Ok(())) => {}
-            Some(Err(error)) if error.raw_os_error() == Some(1314) => return,
-            Some(Err(error)) => panic!("failed to create directory symlink fixture: {error}"),
-            None => return,
+        )
+        .unwrap()
+        {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a directory link needs the symlink privilege",
+                );
+                return;
+            }
         }
 
         let actual = capture_registered_subsystem_topology(&source_root, checkpoint)
@@ -672,6 +684,10 @@ mod tests {
         )
         .unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a file link needs the symlink privilege",
+            );
             return;
         }
         let source_root = root.path().canonicalize().unwrap();

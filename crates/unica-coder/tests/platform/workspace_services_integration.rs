@@ -751,6 +751,9 @@ mod tests {
                     source_set: Some("main".into()),
                     path: source_root.clone(),
                 },
+                std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                    &fixture.context.workspace_root,
+                )),
             );
             let symbol = || {
                 analysis_composition::bsl_provider().search(
@@ -1133,6 +1136,10 @@ mod tests {
         };
 
         if !unica_process::test_support::unix_runtime_authority_tests_supported() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::UnixProcessGroups,
+                "the exit-observation fault exists only on Unix",
+            );
             return;
         }
 
@@ -1228,6 +1235,9 @@ mod tests {
                 source_set: Some("main".into()),
                 path: source_root.clone(),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &fixture.context.workspace_root,
+            )),
         );
         let symbol = || {
             analysis_composition::bsl_provider().search(
@@ -1632,6 +1642,10 @@ mod tests {
         let mut context = test_context("rlm-reader-native-generation-environment");
         let Some(invalid_component) = testing::non_utf8_relative_path_for_test() else {
             cleanup(&context);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::NonUtf8FileNames,
+                "this host has no file names outside UTF-8",
+            );
             return;
         };
         context.cache_root = context.workspace_root.join(invalid_component);
@@ -1701,6 +1715,10 @@ mod tests {
         cleanup(&context);
     }
 
+    #[cfg_attr(
+        not(unix),
+        ignore = "host capability: a private runtime directory and Unix socket exist only on Unix"
+    )]
     #[test]
     fn bsl_analyzer_runtime_directory_is_passed_to_the_child_and_fits_socket_budget() {
         use std::ffi::OsStr;
@@ -1714,9 +1732,7 @@ mod tests {
             .and_then(|(_, value)| value.map(PathBuf::from));
 
         assert_eq!(actual, expected);
-        let Some(runtime_dir) = actual else {
-            return;
-        };
+        let runtime_dir = actual.expect("a Unix host passes a private runtime directory");
 
         let socket = runtime_dir
             .join("bsl-mcp")
@@ -2102,6 +2118,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: context.workspace_root.join("src"),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &context.workspace_root,
+            )),
         );
         let deadline = || ProviderDeadline::new(Instant::now() + Duration::from_secs(5));
         let nav = unica_adapter_rlm::navigation::RlmNavigationAdapter::new(client)
@@ -2293,6 +2312,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: workspace.workspace_root.join("src"),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &workspace.workspace_root,
+            )),
         );
         let section = unica_adapter_rlm::provider::RlmProvider::new(
             &client,
@@ -2482,14 +2504,20 @@ mod tests {
         let mut identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let first = context.workspace_root.join("provider-state-cycle-a");
         let second = context.workspace_root.join("provider-state-cycle-b");
-        let Some(first_link) = testing::create_dir_symlink_for_test(&second, &first) else {
-            cleanup(&context);
-            return;
-        };
-        first_link.unwrap();
-        testing::create_dir_symlink_for_test(&first, &second)
-            .expect("the platform that created the first link must expose the second fixture")
-            .unwrap();
+        for (source, target) in [(&second, &first), (&first, &second)] {
+            match testing::create_directory_link_fixture_for_test(source, target).unwrap() {
+                testing::FileLinkFixtureOutcome::Created => {}
+                testing::FileLinkFixtureOutcome::Unsupported
+                | testing::FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                    cleanup(&context);
+                    unica_process::test_support::skip_without_host_capability(
+                        unica_process::test_support::HostCapability::Symlink,
+                        "the provider-state link cycle needs directory links",
+                    );
+                    return;
+                }
+            }
+        }
         identity.service_dir = first.join("services").join(&identity.key);
         let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let runtime = new_runtime(identity, &record);
@@ -6425,6 +6453,10 @@ fn main() {
     #[test]
     fn rlm_execute_rejects_replaced_root_and_retires_its_session() {
         if !supports_retained_root_replacement_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let observation = run_blocking_rlm_execute(
@@ -6574,11 +6606,8 @@ fn main() {
 
     #[test]
     fn provider_state_key_keeps_distinct_non_utf8_path_identities_separate() {
-        let Some((first, second)) =
-            unica_workspace::test_support::distinct_non_unicode_paths_for_test()
-        else {
-            return;
-        };
+        let (first, second) = unica_workspace::test_support::distinct_non_unicode_paths_for_test()
+            .expect("non-Unicode paths exist on Unix and Windows");
         let workspace = Path::new("/workspace");
 
         assert_ne!(first, second);
@@ -6845,6 +6874,77 @@ fn main() {
         cleanup(&context);
     }
 
+    /// Проводка продуктового запуска: сервисом стартует этот тестовый бинарь,
+    /// libtest не понимает `--workspace-service` и сразу выходит. Запуск обязан
+    /// назвать выход до готовности, не досиживая срок готовности (#1920).
+    #[test]
+    fn spawned_service_that_exits_is_reported_before_the_readiness_timeout() {
+        assert!(
+            std::env::var_os("UNICA_TEST_WORKSPACE_SERVICE_EXE").is_none(),
+            "сервисом должен стартовать этот же тестовый бинарь"
+        );
+        let context = test_context("spawn-exits-before-readiness");
+        let manager = WorkspaceServiceManager::new(analysis_composition::service_environment());
+        let started = Instant::now();
+
+        let error = manager
+            .ensure_service(&context, &context.workspace_root.join("src"))
+            .unwrap_err();
+
+        assert!(error.contains("did not become ready"), "{error}");
+        assert!(error.contains("exited before readiness"), "{error}");
+        assert!(
+            started.elapsed() < SERVICE_CONNECT_TIMEOUT,
+            "запуск ждал срок готовности после выхода сервиса: {:?}",
+            started.elapsed()
+        );
+        cleanup(&context);
+    }
+
+    /// Сервис, умерший до готовности, записи не напишет: ожидание обязано
+    /// прекратиться по его выходу, а не досиживать весь срок (#1920).
+    #[test]
+    fn spawn_wait_stops_once_the_spawned_service_has_exited() {
+        let context = test_context("spawn-wait-exited");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("UNICA_STARTUP_FAILURE_CHILD_FIXTURE", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = ManagedStartupChild::spawn_configured(command).unwrap();
+        let pid = child.id();
+        let started = Instant::now();
+
+        let error = unica_analysis_services::test_support::wait_for_record_while(
+            &identity,
+            &RecordingConnector::default(),
+            CoreIdentity::production().as_str(),
+            pid,
+            "secret",
+            Duration::from_secs(30),
+            &CancellationToken::new(),
+            &mut || matches!(child.try_wait_status(), Ok(Some(_))),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("did not become ready"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "ожидание пережило выход сервиса: {:?}",
+            started.elapsed()
+        );
+        assert!(matches!(child.try_wait_status(), Ok(Some(_))));
+        cleanup(&context);
+    }
+
     #[test]
     fn spawn_wait_prioritizes_cancellation_over_its_timeout() {
         let context = test_context("spawn-wait-cancelled");
@@ -6880,6 +6980,7 @@ fn main() {
             .args([
                 "--exact",
                 "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "--ignored",
                 "--nocapture",
             ])
             .env("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE", "1")
@@ -6908,6 +7009,7 @@ fn main() {
             .args([
                 "--exact",
                 "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "--ignored",
                 "--nocapture",
             ])
             .env("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE", "1")
@@ -6944,6 +7046,7 @@ fn main() {
             .args([
                 "--exact",
                 "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "--ignored",
                 "--nocapture",
             ])
             .env("UNICA_STARTUP_FAILURE_CHILD_FIXTURE", "1")
@@ -7005,6 +7108,7 @@ fn main() {
             .args([
                 "--exact",
                 "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "--ignored",
                 "--nocapture",
             ])
             .env("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE", "1")
@@ -7030,23 +7134,25 @@ fn main() {
     }
 
     #[test]
+    #[ignore = "helper process: spawned by the startup failure tests with UNICA_STARTUP_FAILURE_CHILD_FIXTURE; not a standalone test"]
     fn startup_failure_child_fixture() {
-        if std::env::var_os("UNICA_STARTUP_FAILURE_CHILD_FIXTURE").is_some() {
-            eprintln!("issue-339-startup-head-marker");
-            eprintln!(
-                "{}",
-                "x".repeat(SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize + 1024)
-            );
-            eprintln!("issue-339-startup-tail-marker");
-            std::process::exit(23);
-        }
+        std::env::var_os("UNICA_STARTUP_FAILURE_CHILD_FIXTURE")
+            .expect("helper process: the parent test sets the fixture marker");
+        eprintln!("issue-339-startup-head-marker");
+        eprintln!(
+            "{}",
+            "x".repeat(SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize + 1024)
+        );
+        eprintln!("issue-339-startup-tail-marker");
+        std::process::exit(23);
     }
 
     #[test]
+    #[ignore = "helper process: spawned by the spawn cleanup tests with UNICA_SPAWN_CLEANUP_CHILD_FIXTURE; not a standalone test"]
     fn spawn_cleanup_child_fixture() {
-        if std::env::var_os("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE").is_some() {
-            thread::sleep(Duration::from_secs(30));
-        }
+        std::env::var_os("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE")
+            .expect("helper process: the parent test sets the fixture marker");
+        thread::sleep(Duration::from_secs(30));
     }
 
     #[test]

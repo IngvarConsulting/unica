@@ -20,7 +20,7 @@ use std::sync::Arc;
 use unica_address::address::NodeKind;
 use unica_address::address::QualifiedAddress;
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-use unica_forms::facts::FormInfoData;
+use unica_forms::facts::{FormInfoData, FormSupportDetails, FormSupportRuleReason};
 use unica_forms_designer::codec::parse_form_info_xml;
 use unica_metadata::support_state::{
     ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
@@ -607,7 +607,7 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<FormInfoData, ViewError> {
-        self.metadata_descriptor(target)?;
+        let descriptor = self.metadata_descriptor(target)?;
         let relative = self.attached_resource_relative(target, "Form.xml")?;
         let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
@@ -620,13 +620,49 @@ impl ProviderReadAuthority {
         } else {
             parts[..parts.len().saturating_sub(2)].join(".")
         };
-        parse_form_info_xml(
-            text,
-            form_name,
-            object_context,
-            self.object_support(target, checkpoint)?,
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+        // Keep one retained marker for the form and its top-level owner.
+        let state = self.support_state(checkpoint)?;
+        let own_rule = form_support_rule(state.as_deref(), &descriptor)?;
+        let support = object_support_from_state(state.as_deref(), own_rule);
+        let owner_support = if object_context.is_empty() {
+            None
+        } else {
+            let owner =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
+                    .map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+            let owner_descriptor = self.metadata_descriptor(&owner)?;
+            let owner_rule = form_support_rule(state.as_deref(), &owner_descriptor)?;
+            Some(object_support_from_state(state.as_deref(), owner_rule))
+        };
+        let direct_edit_safe = match (
+            support.direct_edit_safe,
+            owner_support
+                .as_ref()
+                .map_or(Some(true), |owner| owner.direct_edit_safe),
+        ) {
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        };
+        let support_rule_reason = if own_rule.is_some() {
+            None
+        } else {
+            Some(match state.as_deref() {
+                None => FormSupportRuleReason::MarkerAbsent,
+                Some(state) if state.removed() => FormSupportRuleReason::ConfigurationRemoved,
+                Some(_) => FormSupportRuleReason::RuleAbsent,
+            })
+        };
+        let mut data = parse_form_info_xml(text, form_name, object_context, support)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        data.support_details = Some(FormSupportDetails {
+            support_rule: own_rule,
+            support_rule_reason,
+            direct_edit_safe,
+        });
+        Ok(data)
     }
 
     pub(crate) fn dcs_payload(
@@ -635,11 +671,9 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
         let (_, text) = self.dcs_input(target)?;
-        let data = unica_dcs_designer::schema::parse_dcs_info_xml(
-            &text,
-            self.object_support(target, checkpoint)?,
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let data = crate::infrastructure::family_codecs::dcs_codec()
+            .read(&text, self.object_support(target, checkpoint)?)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
@@ -834,7 +868,7 @@ impl ProviderReadAuthority {
         } else {
             None
         };
-        let info = unica_metadata_designer::info::parse_typed_meta_local_info_for_source(
+        let mut info = unica_metadata_designer::info::parse_typed_meta_local_info_for_source(
             &descriptor,
             target,
             support,
@@ -845,6 +879,48 @@ impl ProviderReadAuthority {
                 .unwrap_or_else(|_| "metadata reader failed".to_string());
             ViewError::detailed(RefusalDetail::SourceUnreadable, message)
         })?;
+        if info.kind == MetadataKind::ExchangePlan {
+            let relative = Path::new("ExchangePlans")
+                .join(&info.name)
+                .join("Ext/Content.xml");
+            let observation = match self.read_optional_relative_with_checkpoint(
+                &relative,
+                Some(MAX_CONFIGURATION_BYTES),
+                checkpoint,
+            ) {
+                Ok(Some(bytes)) => std::str::from_utf8(&bytes)
+                    .map_err(|e| e.to_string())
+                    .and_then(unica_metadata_designer::exchange_content::read_content)
+                    .map(Some),
+                Ok(None) => Ok(None),
+                Err(error) if matches!(error.detail(), Some(RefusalDetail::SourceUnreadable)) => {
+                    Err(error.to_string())
+                }
+                Err(error) => return Err(error),
+            };
+            let errors = match observation {
+                Ok(Some(observation)) => {
+                    info.relations.content = Some(Some(observation.items));
+                    observation.errors
+                }
+                // The platform omits Content.xml for an empty composition.
+                Ok(None) => {
+                    info.relations.content = Some(Some(Vec::new()));
+                    Vec::new()
+                }
+                Err(error) => vec![error],
+            };
+            for error in errors {
+                info.diagnostics.push(
+                    unica_metadata::MetaDiagnostic::error(
+                        unica_metadata::MetaDiagnosticCode::ValidationFailed,
+                        error,
+                    )
+                    .with_metadata_path(target.clone())
+                    .with_field("relations.content"),
+                );
+            }
+        }
         Ok(MetadataLocalRead { info, borrowing })
     }
 
@@ -967,7 +1043,12 @@ impl ProviderReadAuthority {
         let relative = self.metadata_descriptor_relative(target)?;
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
-        identity_metadata_payload_from_evidence(target, &evidence)
+        let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
+        if evidence.artifact_kind() == "StyleItem" {
+            unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        }
+        Ok(payload)
     }
 
     pub(crate) fn metadata_owner_evidence(
@@ -1019,6 +1100,26 @@ impl ProviderReadAuthority {
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+    }
+
+    pub(crate) fn xdto_check_outcome(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
+        checkpoint()?;
+        let descriptor = self.metadata_descriptor(target)?;
+        let package = self.read_relative_with_checkpoint(
+            &self.attached_resource_relative(target, "Package.bin")?,
+            Some(MAX_CONFIGURATION_BYTES),
+            checkpoint,
+        )?;
+        let data = parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, None)
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        checkpoint()?;
+        Ok(crate::infrastructure::native_operations::xdto::xdto_check_outcome(data))
     }
 
     pub(crate) fn xdto_payload(
@@ -1617,15 +1718,11 @@ impl ProviderReadAuthority {
         let Some(state) = self.support_state(checkpoint)? else {
             return Ok(unsupported_object());
         };
-        let data = |state, direct_edit_safe| ObjectSupportData {
-            state,
-            direct_edit_safe,
-        };
-        if state.removed() {
-            return Ok(data(ObjectSupportState::RemovedFromSupport, Some(true)));
-        }
-        if !state.global_editing_enabled() {
-            return Ok(data(ObjectSupportState::ConfigurationReadOnly, Some(false)));
+        // Preserve the established early global answer for other readers:
+        // only the form-specific own-rule projection requires UUID evidence
+        // even when the global state already determines effective support.
+        if state.removed() || !state.global_editing_enabled() {
+            return Ok(object_support_from_state(Some(&state), None));
         }
         let owned;
         let descriptor = match descriptor {
@@ -1641,12 +1738,10 @@ impl ProviderReadAuthority {
                 "metadata descriptor has no support-state UUID evidence",
             )
         })?;
-        Ok(match state.object_rule(&uuid) {
-            Some(0) => data(ObjectSupportState::Locked, Some(false)),
-            Some(1) => data(ObjectSupportState::EditableWithSupport, Some(true)),
-            Some(2) => data(ObjectSupportState::RemovedFromSupport, Some(true)),
-            _ => unsupported_object(),
-        })
+        Ok(object_support_from_state(
+            Some(&state),
+            object_support_rule(state.object_rule(&uuid)),
+        ))
     }
 
     fn configuration_support(
@@ -1987,6 +2082,58 @@ fn encode_export_path_components<'a>(
         encoded.push_str(component);
     }
     Ok(encoded)
+}
+
+/// Missing marker is proven absence; with a marker the descriptor UUID is
+/// required even when a global restriction would hide the own rule.
+fn form_support_rule(
+    state: Option<&SupportState>,
+    descriptor: &[u8],
+) -> Result<Option<ObjectSupportState>, ViewError> {
+    let Some(state) = state else { return Ok(None) };
+    let uuid = support_root_uuid_from_bytes(descriptor).ok_or_else(|| {
+        ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "metadata descriptor has no support-state UUID evidence",
+        )
+    })?;
+    Ok(object_support_rule(state.object_rule(&uuid)))
+}
+
+fn object_support_rule(rule: Option<u8>) -> Option<ObjectSupportState> {
+    match rule {
+        Some(0) => Some(ObjectSupportState::Locked),
+        Some(1) => Some(ObjectSupportState::EditableWithSupport),
+        Some(2) => Some(ObjectSupportState::RemovedFromSupport),
+        _ => None,
+    }
+}
+
+fn object_support_from_state(
+    state: Option<&SupportState>,
+    own_rule: Option<ObjectSupportState>,
+) -> ObjectSupportData {
+    let Some(state) = state else {
+        return unsupported_object();
+    };
+    let state = if state.removed() {
+        ObjectSupportState::RemovedFromSupport
+    } else if !state.global_editing_enabled() {
+        ObjectSupportState::ConfigurationReadOnly
+    } else {
+        own_rule.unwrap_or(ObjectSupportState::NotSupported)
+    };
+    let direct_edit_safe = match state {
+        ObjectSupportState::Locked | ObjectSupportState::ConfigurationReadOnly => Some(false),
+        ObjectSupportState::EditableWithSupport | ObjectSupportState::RemovedFromSupport => {
+            Some(true)
+        }
+        ObjectSupportState::NotSupported => None,
+    };
+    ObjectSupportData {
+        state,
+        direct_edit_safe,
+    }
 }
 
 fn unsupported_object() -> ObjectSupportData {

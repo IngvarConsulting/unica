@@ -27,6 +27,7 @@ impl TemplateFormat {
     }
 }
 
+pub mod address;
 pub mod applicability;
 pub mod contracts;
 pub mod operations;

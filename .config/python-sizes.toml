@@ -1,7 +1,8 @@
 # Размер тестов Python — вне их кода, как выражение nextest для Rust.
 # Умолчание — размер набора (все наборы `small`); здесь перечислено то, что
 # крупнее. Запись — `модуль`, `модуль.Класс` или `модуль.Класс.тест`;
-# признак `medium` — тест зовёт `cargo` (тулчейн) или поднимает сокет
+# признак `medium` — тест зовёт `cargo` (тулчейн), берёт продукт через
+# `ensure_binary` (без манифеста он собирается) или поднимает сокет
 # (стандартная библиотека), то есть собирает или запускает продукт.
 # Страж `tests/ci/test_python_sizes.py` держит записи существующими, а
 # модули с такими конструкциями — объявленными.
@@ -12,14 +13,13 @@ entries = [
   "test_acceptance_scenarios.AcceptanceDeliveryCorpusRunTests",
   "test_acceptance_scenarios.AcceptanceFaultCorpusRunTests",
   "test_whole_template_plan_diff.WholeTemplatePlanDiffWireTests",
-  # два контракта продукта, которые собирают библиотеку и поднимают транспорт
-  "test_product_contracts.ProductContractTests.test_unica_coder_production_library_satisfies_rmcp_handler_bound",
+  # контракт продукта: модуль зовёт `cargo metadata`, страж требует записи
   "test_product_contracts.ProductContractTests.test_rmcp_transport_is_confined_to_mcp_interface",
   # дым MCP: сокет и процесс продукта
   "test_smoke_unica_mcp.SmokeUnicaMcpTests",
   # паритет скриптов: собирает и запускает исполняемый файл
   "test_unica_mcp_script_parity.UnicaMcpScriptParityTests",
-  # дым MCP через `cargo run` и реестр поверхности инструментов через `cargo build`
+  # дым MCP и реестр поверхности инструментов: продукт через `ensure_binary`
   "test_unica_mcp_smoke.UnicaMcpSmokeTests",
   "test_tool_surface_ledger.ToolSurfaceLedgerTests",
   # наблюдатель адресов: процесс продукта и страница на 127.0.0.1

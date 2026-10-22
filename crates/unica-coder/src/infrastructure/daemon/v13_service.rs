@@ -465,6 +465,10 @@ impl CanonicalV13ReadService {
             Ok(planned) => planned,
         };
         let borrowing = effects.borrowing().to_vec();
+        let plan_details = effects
+            .details()
+            .map(|(key, rows)| (key, rows.to_vec()))
+            .collect::<Vec<_>>();
         let has_changes = !staged.planned_changes().is_empty();
         if !has_changes {
             effects = Default::default();
@@ -527,6 +531,15 @@ impl CanonicalV13ReadService {
         if !borrowing.is_empty() {
             result.data.as_mut().expect("apply data exists")["borrowing"] =
                 serde_json::json!(borrowing);
+        }
+        for (key, rows) in plan_details {
+            debug_assert!(
+                PLAN_DETAIL_KEYS.contains(&key),
+                "plan detail section `{}` is not registered",
+                key.as_str()
+            );
+            result.data.as_mut().expect("apply data exists")[key.as_str()] =
+                serde_json::Value::Array(rows);
         }
         if has_changes {
             result.changed = changed;
@@ -2258,7 +2271,15 @@ impl CanonicalV13ReadService {
             }
             let view_arguments =
                 Map::from_iter([("at".to_string(), Value::String(at.to_string()))]);
-            let viewed = self.execute_view_arguments(invocation, &view_arguments, cancellation);
+            let (viewed, mut prepared_xdto) = match QualifiedAddress::parse(at) {
+                Ok(address) if matches!(address.segments(), [owner] if owner.kind() == NodeKind::XdtoPackage && owner.name().is_some()) => {
+                    prepare_xdto_check(invocation, &address, cancellation)
+                }
+                _ => (
+                    self.execute_view_arguments(invocation, &view_arguments, cancellation),
+                    None,
+                ),
+            };
             if !viewed.ok {
                 if let Some(refusal) = unreadable_target_format_refusal(invocation, at) {
                     return refusal;
@@ -2297,6 +2318,7 @@ impl CanonicalV13ReadService {
                 &kind,
                 viewed.data.as_ref(),
                 cancellation,
+                prepared_xdto.take(),
             );
             if result.ok {
                 if cancellation.is_cancelled() {
@@ -3641,6 +3663,46 @@ fn owning_metadata_address(address: &QualifiedAddress) -> String {
     owner
 }
 
+/// Every family section of plan details that an apply answer may carry.
+const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
+    unica_xdto::results::XDTO_OBJECTS,
+    unica_metadata::EXCHANGE_CONTENT,
+];
+
+/// Fields the apply answer writes itself; a family section cannot take them.
+const APPLY_DATA_FIELDS: &[&str] = &[
+    "validated",
+    "mode",
+    "executable",
+    "operations",
+    "planHash",
+    "effects",
+    "cache",
+    "borrowing",
+    "executionToken",
+];
+
+/// A section key two families share, or one that shadows the answer's own
+/// field, would overwrite data in the published answer.
+fn plan_detail_key_errors(keys: &[unica_source_contract::proposal::PlanDetailKey]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (index, key) in keys.iter().enumerate() {
+        if keys[..index].contains(key) {
+            errors.push(format!(
+                "plan detail section `{}` is registered twice",
+                key.as_str()
+            ));
+        }
+        if APPLY_DATA_FIELDS.contains(&key.as_str()) {
+            errors.push(format!(
+                "plan detail section `{}` shadows an apply answer field",
+                key.as_str()
+            ));
+        }
+    }
+    errors
+}
+
 fn apply_plan_hash(staged: &ApplyStagedState, effects: &PlannedApplyEffects) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"unica-v13-apply-plan-v1\0");
@@ -4300,6 +4362,49 @@ fn bsl_findings_passed(items: &[unica_diagnostics::model::DiagnosticItem]) -> bo
     })
 }
 
+/// Internal check evidence only: it never becomes a public `view` response.
+/// The complete native verdict is consumed by the common plan and pager.
+fn prepare_xdto_check(
+    invocation: &ActorBoundExecution,
+    address: &QualifiedAddress,
+    cancellation: &CancellationToken,
+) -> (
+    DomainResult,
+    Option<crate::application::v13::check::NativeCheckOutcome>,
+) {
+    let at = address.to_string();
+    let prepared = (|| {
+        let sources = invocation
+            .read_sources()
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let source = sources
+            .into_iter()
+            .find(|source| source.source_set_name() == address.source_set())
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "XDTO source was not admitted",
+                )
+            })?;
+        let authority = source
+            .logical_view_read_authority(cancellation)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        authority.check_xdto(address)
+    })();
+    match prepared {
+        Err(refusal) => (view_error_result(Some(at.clone()), refusal), None),
+        Ok((snapshot, outcome)) => {
+            let mut evidence = DomainResult::success("XDTO check source admitted");
+            evidence.at = Some(at);
+            evidence.rev = Some(snapshot.revision);
+            evidence.data = Some(
+                json!({"kind":"XDTOPackage", "props": if outcome.is_none() { json!({"content":"inherited"}) } else { json!({}) }}),
+            );
+            (evidence, outcome)
+        }
+    }
+}
+
 fn run_node_checks(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     invocation: &ActorBoundExecution,
@@ -4307,6 +4412,7 @@ fn run_node_checks(
     kind: &str,
     viewed: Option<&Value>,
     cancellation: &CancellationToken,
+    mut prepared_xdto: Option<crate::application::v13::check::NativeCheckOutcome>,
 ) -> DomainResult {
     use crate::application::v13::check::{plan_for_node, CheckStep};
     use crate::infrastructure::native_operations::v13_analysis::node_facts;
@@ -4341,10 +4447,15 @@ fn run_node_checks(
     let mut validators = Vec::new();
     for step in plan {
         let verdict = match step {
-            CheckStep::Native(validator) => {
-                run_native_validator(&address, kind, validator, invocation, cancellation)
-                    .map(CheckStepVerdict::from)
-            }
+            CheckStep::Native(validator) => run_native_validator(
+                &address,
+                kind,
+                validator,
+                invocation,
+                cancellation,
+                prepared_xdto.take(),
+            )
+            .map(CheckStepVerdict::from),
             CheckStep::Meta => {
                 run_meta_validator(&address, at, context, cancellation).map(CheckStepVerdict::from)
             }
@@ -4392,13 +4503,22 @@ fn run_native_validator(
     validator: crate::application::v13::check::CheckValidator,
     invocation: &ActorBoundExecution,
     cancellation: &CancellationToken,
+    prepared_xdto: Option<crate::application::v13::check::NativeCheckOutcome>,
 ) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
     use crate::application::v13::check::normalize_native_outcome;
     use crate::infrastructure::native_operations::v13_analysis::{validate, validator_selector};
 
     let context = invocation.workspace_context();
     let at = address.to_string();
-    let native = if matches!(
+    let native = if validator == crate::application::v13::check::CheckValidator::Xdto {
+        prepared_xdto.ok_or_else(|| {
+            Box::new(error_result(
+                Some(at.clone()),
+                RefusalCode::InvalidState,
+                "XDTO check has no retained source evidence",
+            ))
+        })?
+    } else if matches!(
         validator,
         crate::application::v13::check::CheckValidator::Subsystem
             | crate::application::v13::check::CheckValidator::Dcs
@@ -4478,6 +4598,22 @@ fn run_native_validator(
     }
 }
 
+/// Находка читателя, которую валидатор описания не повторяет. Корневые
+/// свойства объекта и его дочерние ресурсы валидатор проверяет сам, и вторая
+/// формулировка той же находки ответ не дополняет; тип, значения и свойства
+/// элементов коллекций видит только читатель.
+fn reader_only_finding(diagnostic: &unica_metadata::MetaDiagnostic) -> bool {
+    let validator_owned = diagnostic.code
+        == unica_metadata::MetaDiagnosticCode::ProviderUnavailable
+        || diagnostic.field.as_deref().is_some_and(|field| {
+            field == "properties"
+                || field.starts_with("properties.")
+                || field == "resources"
+                || field.starts_with("resources.")
+        });
+    !validator_owned
+}
+
 /// The typed metadata validator of one object descriptor: the same read and
 /// validation the metadata family runs, folded into the check envelope.
 fn run_meta_validator(
@@ -4528,13 +4664,28 @@ fn run_meta_validator(
                     context,
                     cancellation,
                 );
-            let diagnostics = validated
+            // Читатель описания находит то, чего валидатор не видит:
+            // немоделируемый тип, битый квалификатор, голый `FillValue`,
+            // повреждённые свойства элементов (#1933). Его ошибка решает
+            // вердикт так же, как ошибка валидатора.
+            let reader_findings = read
+                .local
                 .diagnostics
                 .iter()
-                .map(|diagnostic| serde_json::to_value(diagnostic).unwrap_or(Value::Null))
+                .filter(|diagnostic| reader_only_finding(diagnostic))
                 .collect::<Vec<_>>();
+            let reader_failed = reader_findings.iter().any(|diagnostic| {
+                diagnostic.severity == unica_metadata::MetaDiagnosticSeverity::Error
+            });
+            let mut diagnostics = Vec::<Value>::new();
+            for diagnostic in validated.diagnostics.iter().chain(reader_findings) {
+                let value = serde_json::to_value(diagnostic).unwrap_or(Value::Null);
+                if !diagnostics.contains(&value) {
+                    diagnostics.push(value);
+                }
+            }
             Ok((
-                validated.status == unica_metadata::MetaValidationStatus::Passed,
+                validated.status == unica_metadata::MetaValidationStatus::Passed && !reader_failed,
                 diagnostics,
             ))
         }
@@ -5267,6 +5418,34 @@ fn view_error_result(
     // из них он вышел.
     result.next.extend(error.next().iter().cloned());
     result
+}
+
+#[cfg(test)]
+mod plan_detail_key_tests {
+    use super::{plan_detail_key_errors, PLAN_DETAIL_KEYS};
+    use unica_source_contract::proposal::PlanDetailKey;
+
+    #[test]
+    fn registered_plan_detail_sections_are_unique_and_leave_answer_fields_alone() {
+        assert_eq!(
+            plan_detail_key_errors(PLAN_DETAIL_KEYS),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_shared_or_shadowing_plan_detail_section_is_refused() {
+        const FIRST: PlanDetailKey = PlanDetailKey::new("familyRows");
+        const SECOND: PlanDetailKey = PlanDetailKey::new("familyRows");
+        const SHADOW: PlanDetailKey = PlanDetailKey::new("planHash");
+        assert_eq!(
+            plan_detail_key_errors(&[FIRST, SECOND, SHADOW]),
+            vec![
+                "plan detail section `familyRows` is registered twice".to_string(),
+                "plan detail section `planHash` shadows an apply answer field".to_string(),
+            ]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -7210,6 +7389,31 @@ mod tests {
                 .unwrap()
         };
         for (scope, _, metadata_path) in modules {
+            if !scope.starts_with("main:CommonModule.") {
+                let request = InvocationRequest::new(
+                    ToolIdentity::Search,
+                    json!({"query":"Needle", "scope":scope}),
+                    std::fs::canonicalize(workspace.path())
+                        .unwrap()
+                        .to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                let refused = runtime
+                    .bind(request)
+                    .unwrap()
+                    .prepare()
+                    .unwrap()
+                    .execute(CancellationToken::new())
+                    .unwrap();
+                assert!(!refused.ok, "default must not change roles: {scope}");
+                let diagnostic = &refused.diagnostics[0];
+                assert_eq!(diagnostic["code"], "unsupported_scope");
+                let message = diagnostic["message"].as_str().unwrap();
+                assert!(message.contains("role: \"lexical\""), "{message}");
+                assert!(message.contains(scope), "{message}");
+            }
+            // Execute the suggested role with exactly the same scope and query.
             let result = search(scope);
             assert!(result.ok, "{scope}: {result:?}");
             assert!(result.diagnostics.is_empty(), "{scope}: {result:?}");
@@ -7790,6 +7994,9 @@ mod tests {
                 source_set: Some("main".into()),
                 path: PathBuf::from("/workspace"),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                std::path::Path::new("/workspace"),
+            )),
         )
         .with_search_scope(CodeSearchScope::all(
             "main".into(),

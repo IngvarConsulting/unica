@@ -1,0 +1,21 @@
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+  <Catalog uuid="e1560000-0000-4000-8000-000000000002">
+    <Properties>
+      <Name>Items</Name><CodeType>String</CodeType><CodeLength>3</CodeLength><DescriptionLength>100</DescriptionLength>
+      <StandardAttributes>
+        <xr:StandardAttribute name="Code">
+          <xr:Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Цифровой код</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Numeric code</v8:content></v8:item></xr:Synonym>
+          <xr:ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content>Цифровой код валюты</v8:content></v8:item></xr:ToolTip>
+          <xr:FillChecking>ShowError</xr:FillChecking>
+        </xr:StandardAttribute>
+        <xr:StandardAttribute name="Description">
+          <xr:Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Символьный код</v8:content></v8:item></xr:Synonym>
+          <xr:ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content>Символьный код валюты</v8:content></v8:item></xr:ToolTip>
+          <xr:FillChecking>DontCheck</xr:FillChecking>
+        </xr:StandardAttribute>
+        <xr:StandardAttribute name="Ref"/>
+      </StandardAttributes>
+    </Properties>
+    <ChildObjects/>
+  </Catalog>
+</MetaDataObject>

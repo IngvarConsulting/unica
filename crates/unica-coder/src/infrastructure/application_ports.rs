@@ -215,7 +215,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         workspace.workspace_root =
             unica_workspace::paths::normalize_path_identity(&workspace.workspace_root)?;
         workspace.cwd = unica_workspace::paths::normalize_path_identity(&workspace.cwd)?;
-        Ok(CodeIntelligenceContext::new(workspace, source_root))
+        Ok(code_intelligence_context(workspace, source_root))
     }
 
     fn resolve_code_search_context(
@@ -288,8 +288,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 legacy_selector: false,
             };
             return Ok((
-                CodeIntelligenceContext::new(workspace, source_root)
-                    .with_search_scope(scope.clone()),
+                code_intelligence_context(workspace, source_root).with_search_scope(scope.clone()),
                 scope,
             ));
         }
@@ -593,7 +592,8 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .and_then(Value::as_str)
                     .unwrap_or("ru")
                     .to_string();
-                let registry = documentation_registry(context, cancellation, false)?;
+                let (registry, policy_warnings) =
+                    documentation_registry(context, cancellation, false)?;
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = documentation_context(
                     &unica_adapter_v8_runner::full_dump::default_platform_roots(),
@@ -606,10 +606,22 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     &language,
                     &context,
                 )?;
-                Ok(HandlerOutcome::with_data(
+                let mut handler = HandlerOutcome::with_data(
                     AdapterOutcome::ok("unica.documentation.get completed"),
                     data,
-                ))
+                );
+                if !policy_warnings.is_empty() {
+                    handler.diagnostics = Some(Value::Array(
+                        documentation_policy_warnings(&policy_warnings)
+                            .into_iter()
+                            .map(|mut warning| {
+                                warning["severity"] = json!("warning");
+                                warning
+                            })
+                            .collect(),
+                    ));
+                }
+                Ok(handler)
             }
             ToolHandler::Documentation { operation } => {
                 Err(format!("unknown documentation operation: {operation}"))
@@ -875,30 +887,43 @@ fn prepared_subsystem_info_failure(
 
 /// Идентификаторы поставщиков документации — единственный перечень, против
 /// которого политика `unica.toml` проверяет свои секции `[providers.*]`.
-const DOCUMENTATION_PROVIDER_IDS: &[&str] = &[
-    "configuration-help",
-    "platform-syntax-help",
-    "kb-1ci",
-    "v8std",
-];
+const DOCUMENTATION_PROVIDER_IDS: &[&str] =
+    &["configuration-help", "platform-syntax-help", "v8std"];
+
+/// Предупреждения политики документации — в `warnings` ответа: секция
+/// удалённого поставщика принимается, но пользователь должен её увидеть.
+fn documentation_policy_warnings(warnings: &[String]) -> Vec<Value> {
+    warnings
+        .iter()
+        .map(|message| json!({"code": "retired_provider", "message": message}))
+        .collect()
+}
 
 /// Composition root: the registry of documentation providers. Declaration
 /// order here is the section order of the public result:
 /// локальная справка платформы раньше сетевых поставщиков, справка раньше
 /// стандартов. Собирается здесь, а не в домене, чтобы тесты внедряли
 /// подмены; политика читается на каждый вызов — она из файлов проекта.
+/// Вторым значением идут предупреждения политики для ответа вызова.
 fn documentation_registry(
     context: &WorkspaceContext,
     cancellation: &unica_work_control::cancellation::CancellationToken,
     revalidate_search: bool,
-) -> Result<unica_documentation::model::DocumentationRegistry, String> {
+) -> Result<
+    (
+        unica_documentation::model::DocumentationRegistry,
+        Vec<String>,
+    ),
+    String,
+> {
     use std::sync::Arc;
 
     #[cfg(test)]
     {
         let _ = cancellation;
         if let Some(stand_in) = documentation_registry_stand_in() {
-            return unica_documentation::model::DocumentationRegistry::new(vec![stand_in]);
+            return unica_documentation::model::DocumentationRegistry::new(vec![stand_in])
+                .map(|registry| (registry, Vec::new()));
         }
     }
     let policy = unica_documentation_sources::documentation_policy::DocumentationPolicy::load(
@@ -931,16 +956,6 @@ fn documentation_registry(
         Arc::new(
             unica_documentation_sources::platform_help::provider::PlatformSyntaxHelpProvider::new(),
         ),
-        Arc::new(unica_documentation_sources::kb_1ci::Kb1ciProvider {
-            base: unica_documentation_sources::kb_1ci::KB_BASE.to_string(),
-            network: policy.network("kb-1ci"),
-            transport: Arc::new(unica_documentation_sources::kb_1ci::NetworkKbTransport::default()),
-            // Токен вызова: сетевой обход обязан отменяться вместе с вызовом
-            // MCP, поэтому реестр собирается на вызов, а не на процесс.
-            cancellation: cancellation.clone(),
-            cache_ttl: unica_documentation_sources::kb_1ci::KB_CACHE_TTL,
-            lexicon: Arc::new(unica_documentation_sources::kb_1ci::InstallationLexiconSource),
-        }),
         Arc::new(
             unica_documentation_sources::standards_documentation::V8StdDocumentationProvider {
                 search_cache_ttl:
@@ -953,6 +968,7 @@ fn documentation_registry(
             },
         ),
     ])
+    .map(|registry| (registry, policy.warnings().to_vec()))
 }
 
 /// Canonical v0.13 documentation search adapter.
@@ -998,8 +1014,10 @@ fn open_documentation_page(
     document_id: &str,
     cancellation: &CancellationToken,
 ) -> unica_execution_contract::invocation::DomainResult {
+    let mut policy_warnings = Vec::new();
     let opened = (|| {
-        let registry = documentation_registry(workspace, cancellation, false)?;
+        let (registry, warnings) = documentation_registry(workspace, cancellation, false)?;
+        policy_warnings = warnings;
         let context = documentation_context(
             &unica_adapter_v8_runner::full_dump::default_platform_roots(),
             None,
@@ -1007,7 +1025,7 @@ fn open_documentation_page(
         );
         unica_documentation::projection::get(&registry, document_id, "ru", &context)
     })();
-    match opened {
+    let mut result = match opened {
         Ok(data) => {
             let mut result = unica_execution_contract::invocation::DomainResult::success(
                 "unica.docs opened the page",
@@ -1029,7 +1047,9 @@ fn open_documentation_page(
             }));
             refusal
         }
-    }
+    };
+    result.warnings = documentation_policy_warnings(&policy_warnings);
+    result
 }
 
 #[cfg(test)]
@@ -1095,8 +1115,11 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
         limit: fetch_limit,
         language: "ru".to_string(),
     };
+    let mut policy_warnings = Vec::new();
     let result = (|| {
-        let registry = documentation_registry(workspace, cancellation, revalidate_search)?;
+        let (registry, warnings) =
+            documentation_registry(workspace, cancellation, revalidate_search)?;
+        policy_warnings = warnings;
         let context = documentation_context(
             &unica_adapter_v8_runner::full_dump::default_platform_roots(),
             None,
@@ -1104,7 +1127,7 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
         );
         unica_documentation::projection::search(&registry, &request, &context)
     })();
-    match result {
+    let mut result = match result {
         Ok(data) => {
             let mut result =
                 unica_execution_contract::invocation::DomainResult::success("unica.docs completed");
@@ -1122,7 +1145,9 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
                 error,
             )
         }
-    }
+    };
+    result.warnings = documentation_policy_warnings(&policy_warnings);
+    result
 }
 
 /// Подмена реестра позволяет управлять поставщиками в тестах.
@@ -1417,6 +1442,18 @@ fn select_platform_version(
             .max_by_key(|path| numeric_version_key(path))
             .cloned(),
     }
+}
+
+/// The composition issues the workspace owner's read port with the context, so
+/// code intelligence reads current source without opening files itself.
+fn code_intelligence_context(
+    workspace: WorkspaceContext,
+    source_root: unica_source_contract::workspace::ResolvedSourceRoot,
+) -> CodeIntelligenceContext {
+    let reader = Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+        &workspace.workspace_root,
+    ));
+    CodeIntelligenceContext::new(workspace, source_root, reader)
 }
 
 #[cfg(test)]
@@ -2320,6 +2357,9 @@ mod tests {
                     source_set: Some("main".to_string()),
                     path: source_root,
                 },
+                Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                    &workspace,
+                )),
             ),
         )
     }
@@ -2450,7 +2490,7 @@ mod tests {
             cache_root: workspace.join(".build/unica"),
             workspace_epoch: 1,
         };
-        let registry = documentation_registry(
+        let (registry, _) = documentation_registry(
             &context,
             &unica_work_control::cancellation::CancellationToken::default(),
             false,
@@ -2465,7 +2505,6 @@ mod tests {
             vec![
                 "configuration-help".to_string(),
                 "platform-syntax-help".to_string(),
-                "kb-1ci".to_string(),
                 "v8std".to_string()
             ],
             "состав и порядок реестра"
@@ -2481,16 +2520,54 @@ mod tests {
             2,
             "syntax-context and platform-guides"
         );
+        assert_eq!(providers[2].corpora().len(), 1, "public-standards");
         assert_eq!(
-            providers[2].corpora().len(),
-            2,
-            "kb-developer-guide and kb-administrator-guide"
-        );
-        assert_eq!(providers[3].corpora().len(), 1, "public-standards");
-        assert_eq!(
-            providers[3].corpora()[0].source_kind,
+            providers[2].corpora()[0].source_kind,
             unica_documentation::model::SourceKind::DevelopmentStandard
         );
+    }
+
+    /// Секция удалённого поставщика `kb-1ci` в `unica.toml` не отключает
+    /// документацию: поиск и открытие страницы доходят до ответа, а в его
+    /// `warnings` пользователь видит, что ключ можно убрать.
+    #[test]
+    fn a_retired_provider_in_the_policy_reaches_the_docs_answer_as_a_warning() {
+        let _serial = documentation_registry_serial();
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        // Сеть запрещена общим умолчанием: проверке не нужен v8std.
+        std::fs::write(
+            workspace.join("unica.toml"),
+            "[network]\ndefault = \"deny\"\n\n[providers.kb-1ci]\nnetwork = \"allow\"\n",
+        )
+        .expect("unica.toml");
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let cancellation = CancellationToken::default();
+        for result in [
+            canonical_v13_docs_search(
+                &context,
+                "ссылка",
+                Some("development-standard"),
+                &cancellation,
+            ),
+            canonical_v13_docs_search(&context, "https://kb.1ci.com/x/", None, &cancellation),
+        ] {
+            // Предупреждение есть только у прочитанной политики: отказ разбора
+            // его бы не дал.
+            assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
+            assert_eq!(result.warnings[0]["code"], "retired_provider");
+            let message = result.warnings[0]["message"].as_str().expect("message");
+            assert!(
+                message.contains("unica.toml")
+                    && message.contains("поставщик kb-1ci удалён, ключ можно убрать"),
+                "{message}"
+            );
+        }
     }
 
     /// Источник поставщика справки конфигурации — source-set'ы рабочего
@@ -2520,7 +2597,7 @@ mod tests {
             cache_root: workspace.join(".build/unica"),
             workspace_epoch: 1,
         };
-        let registry = documentation_registry(
+        let (registry, _) = documentation_registry(
             &context,
             &unica_work_control::cancellation::CancellationToken::default(),
             false,

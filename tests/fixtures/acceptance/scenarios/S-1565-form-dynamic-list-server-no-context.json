@@ -1,0 +1,182 @@
+{
+  "id": "S-1565-form-dynamic-list-server-no-context",
+  "issue": 1565,
+  "area": "Метаданные",
+  "task": "Пройти форму и таблицу по выданным адресам, прочитать событие динамического списка с NoContext и его существующий метод без изменения исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace-dynamic-list-context",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.List"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ],
+      "captures": {
+        "dynamicItems": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dynamicItems"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "List"
+        }
+      ],
+      "captures": {
+        "dynamicTable": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dynamicTable"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/tag",
+          "eq": "[Table]"
+        }
+      ],
+      "captures": {
+        "dynamicEvents": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dynamicEvents",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/20/props/state",
+          "eq": "implemented"
+        }
+      ],
+      "captures": {
+        "dynamicEvent": {
+          "pointer": "/data/items/20/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dynamicEvent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/eventId",
+          "eq": "OnGetDataAtServer"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ПолучитьДанные"
+        },
+        {
+          "pointer": "/data/props/binding",
+          "eq": "property"
+        },
+        {
+          "pointer": "/data/props/callType",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/contexts",
+          "eq": [
+            "server"
+          ]
+        },
+        {
+          "pointer": "/data/props/signature",
+          "eq": "Процедура ПриПолученииДанныхНаСервере(ИмяЭлемента, Настройки, Строки)"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:Catalog.Items.Form.List.Module.Form.Method.ПолучитьДанные"
+        }
+      ],
+      "captures": {
+        "dynamicMethod": {
+          "pointer": "/data/props/implementationAt"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dynamicMethod"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "5c282279a4045d4e56323d57a81f1602b7f6a5e7ae5b081227722f2b1c507eb1"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "5d8d6500f9207fd80569ba5840c1417cece4547b63ca52dfff21d3a40637cbfd"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256",
+          "eq": "68792f24ad39ddef4e34d0c2be7223af90259bc40bf2a9dafd2290c8f9c8a558"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "4637726831209bacb3a1f5bee3bd128ac02acf967588a610134bc092f402b612"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "c08ef3aa0117ea5fe8ca9b611135af4f154f8cd7929cc070b94ef4f98008d3b2"
+        }
+      ]
+    }
+  ]
+}

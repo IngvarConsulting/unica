@@ -101,13 +101,7 @@ mod tests {
             cache_root: root.join(".build/unica"),
             workspace_epoch: 0,
         };
-        let init = super::super::super::cf::create_configuration_scaffold(
-            serde_json::json!({"Name": "Demo", "OutputDir": "src"})
-                .as_object()
-                .unwrap(),
-            &workspace,
-        );
-        assert!(init.ok, "{init:?}");
+        crate::infrastructure::test_fixtures::copy_empty_configuration(&root);
         let config_path = root.join("src/Configuration.xml");
         let original = fs::read_to_string(&config_path).unwrap();
         let mixed = original.replacen(
@@ -115,7 +109,7 @@ mod tests {
             "<DataLockControlMode>AutomaticAndManaged</DataLockControlMode>",
             1,
         );
-        assert_ne!(mixed, original, "the scaffold must declare a lock mode");
+        assert_ne!(mixed, original, "the fixture must declare a lock mode");
         fs::write(&config_path, &mixed).unwrap();
 
         let owner = validate_metadata_owner_shape_8_3_27(&config_path, &workspace, "test");

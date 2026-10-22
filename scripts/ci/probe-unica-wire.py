@@ -210,10 +210,17 @@ class ProcessOwnership:
             if job is None:
                 incomplete.append("Windows Job Object ownership is unavailable")
             else:
+                # ActiveProcesses drops before an exiting process is signaled,
+                # so member handles are held across termination and waited on.
+                # The second hold catches members spawned after the first one
+                # unless they already left the job's process list.
+                incomplete.extend(job.hold_members())
                 termination_error = job.terminate()
                 if termination_error is not None:
                     incomplete.append(termination_error)
+                incomplete.extend(job.hold_members())
                 incomplete.extend(job.wait_for_leader_and_release(cleanup_deadline))
+                incomplete.extend(job.wait_for_members_and_release(cleanup_deadline))
                 while True:
                     active_processes, query_error = job.active_process_count()
                     if query_error is not None:
@@ -823,6 +830,16 @@ class _WindowsApi:
             ),
             ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
             (
+                "OpenProcess",
+                [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD],
+                wintypes.HANDLE,
+            ),
+            (
+                "IsProcessInJob",
+                [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)],
+                wintypes.BOOL,
+            ),
+            (
                 "CreateToolhelp32Snapshot",
                 [wintypes.DWORD, wintypes.DWORD],
                 wintypes.HANDLE,
@@ -978,11 +995,67 @@ class _WindowsApi:
             raise self._failure("QueryInformationJobObject")
         return int(information.ActiveProcesses)
 
+    def job_process_ids(self, job: object) -> tuple[int, ...]:
+        capacity = 64
+        while True:
+
+            class ProcessIdList(self.ctypes.Structure):
+                _fields_ = [
+                    ("NumberOfAssignedProcesses", self.wintypes.DWORD),
+                    ("NumberOfProcessIdsInList", self.wintypes.DWORD),
+                    ("ProcessIdList", self.ctypes.c_size_t * capacity),
+                ]
+
+            information = ProcessIdList()
+            if self.kernel32.QueryInformationJobObject(
+                job,
+                3,
+                self.ctypes.byref(information),
+                self.ctypes.sizeof(information),
+                None,
+            ):
+                count = int(information.NumberOfProcessIdsInList)
+                return tuple(int(pid) for pid in information.ProcessIdList[:count])
+            error_more_data = 234
+            if self.ctypes.get_last_error() != error_more_data or capacity >= 65536:
+                raise self._failure("QueryInformationJobObject(ProcessIdList)")
+            capacity = max(
+                capacity * 2, int(information.NumberOfAssignedProcesses) + 16
+            )
+
+    def open_job_member(self, job: object, pid: int) -> object | None:
+        """Open a waitable handle to ``pid`` only while it belongs to ``job``."""
+
+        synchronize = 0x00100000
+        process_query_limited_information = 0x1000
+        handle = self.kernel32.OpenProcess(
+            synchronize | process_query_limited_information, False, pid
+        )
+        if not handle:
+            # Same "process is gone" codes as _windows_process_state; access
+            # denied is the PID reused by a privileged process after exit.
+            if self.ctypes.get_last_error() in {0, 5, 87, 1168}:
+                return None
+            raise self._failure(f"OpenProcess({pid})")
+        in_job = self.wintypes.BOOL()
+        try:
+            if not self.kernel32.IsProcessInJob(
+                handle, job, self.ctypes.byref(in_job)
+            ):
+                raise self._failure(f"IsProcessInJob({pid})")
+        except BaseException:
+            self.kernel32.CloseHandle(handle)
+            raise
+        if not in_job.value:
+            self.close_handle(handle)
+            return None
+        return handle
+
 
 class _WindowsProcessJob:
     """A handle-bound Windows process tree created before the leader runs."""
 
-    __slots__ = ("handle", "api", "process")
+    __slots__ = ("handle", "api", "process", "members")
 
     def __init__(
         self,
@@ -993,6 +1066,54 @@ class _WindowsProcessJob:
         self.handle = handle
         self.api = api
         self.process = process
+        self.members: dict[int, object] = {}
+
+    def hold_members(self) -> tuple[str, ...]:
+        """Retain a handle to every current member; a held PID is not reused."""
+
+        if not self.handle:
+            return ("Windows Job Object handle is closed",)
+        try:
+            pids = self.api.job_process_ids(self.handle)
+        except (OSError, RuntimeError) as error:
+            return (str(error),)
+        errors: list[str] = []
+        for pid in pids:
+            if pid in self.members:
+                continue
+            try:
+                member = self.api.open_job_member(self.handle, pid)
+            except (OSError, RuntimeError) as error:
+                errors.append(str(error))
+                continue
+            if member is not None:
+                self.members[pid] = member
+        return tuple(errors)
+
+    def wait_for_members_and_release(self, deadline: float) -> tuple[str, ...]:
+        errors: list[str] = []
+        for pid, member in sorted(self.members.items()):
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                if not self.api.wait_for_single_object(member, remaining):
+                    errors.append(
+                        f"Windows Job Object member {pid} was not signaled "
+                        "before the cleanup deadline"
+                    )
+            except (OSError, RuntimeError) as error:
+                errors.append(str(error))
+        errors.extend(self.release_members())
+        return tuple(errors)
+
+    def release_members(self) -> tuple[str, ...]:
+        errors: list[str] = []
+        for pid, member in sorted(self.members.items()):
+            try:
+                self.api.close_handle(member)
+            except (OSError, RuntimeError) as error:
+                errors.append(f"CloseHandle(member {pid}) failed: {error}")
+        self.members.clear()
+        return tuple(errors)
 
     def terminate(self) -> str | None:
         if not self.handle:
@@ -1033,14 +1154,15 @@ class _WindowsProcessJob:
             return None, str(error)
 
     def close(self) -> str | None:
-        if not self.handle:
-            return None
-        try:
-            self.api.close_handle(self.handle)
-        except (OSError, RuntimeError) as error:
-            return str(error)
-        self.handle = None
-        return None
+        errors = list(self.release_members())
+        if self.handle:
+            try:
+                self.api.close_handle(self.handle)
+            except (OSError, RuntimeError) as error:
+                errors.append(str(error))
+            else:
+                self.handle = None
+        return "; ".join(errors) or None
 
     def __del__(self) -> None:
         try:

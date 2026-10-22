@@ -42,9 +42,60 @@ class RustPlatformBoundaryTests(unittest.TestCase):
             # may obtain a temporary path without becoming a domain IO escape.
             application = f"crates/{owner}/src/coordinator.rs"
             self.assertEqual(checker.check_source(application, "let root = std::env::temp_dir();"), [])
-        # Source representation and retained-workspace implementations do IO.
-        for owner in ("unica-source-designer", "unica-workspace", "unica-process"):
+        # Retained-workspace and process implementations own their IO.
+        for owner in ("unica-workspace", "unica-process"):
             self.assertEqual(checker.check_source(f"crates/{owner}/src/lib.rs", "use std::fs;"), [])
+
+    def test_codecs_and_engines_reach_files_only_through_workspace(self) -> None:
+        checker = load_checker_module()
+        owners = (
+            "unica-dcs-designer", "unica-forms-designer", "unica-metadata-designer",
+            "unica-roles-designer", "unica-source-designer", "unica-templates-designer",
+            "unica-xdto-designer", "unica-future-designer",
+            "unica-operations", "unica-navigation", "unica-diagnostics",
+            "unica-code-intelligence", "unica-xml-format", "unica-work-control",
+        )
+        source = (
+            "use std::fs;\n"
+            "use std::{fs::File, io};\n"
+            "let text = ::std::fs::read_to_string(path)?;\n"
+            "use std as rust_std;\n"
+            "rust_std::fs::write(path, bytes)?;\n"
+            "Path::exists(path);\n"
+            "<std::path::PathBuf>::canonicalize(&path);\n"
+        )
+        for owner in owners:
+            with self.subTest(owner=owner):
+                path = f"crates/{owner}/src/codec/read.rs"
+                self.assertEqual(
+                    checker.check_source(path, source),
+                    [
+                        f"{path}:1: component must not access std::fs directly",
+                        f"{path}:2: component must not access std::fs directly",
+                        f"{path}:3: component must not access std::fs directly",
+                        f"{path}:5: component must not access std::fs directly",
+                        f"{path}:6: component must not call filesystem method .exists directly",
+                        f"{path}:7: component must not call filesystem method .canonicalize directly",
+                    ],
+                )
+                # Only file IO is withdrawn; clocks, process identity and
+                # workspace-reader methods stay with these components.
+                self.assertEqual(
+                    checker.check_source(
+                        path,
+                        "let id = std::process::id();\n"
+                        "let root = std::env::temp_dir();\n"
+                        "reader.canonicalize(&path)?;\n"
+                        "let joined = Path::new(root).join(name);\n"
+                        "// std::fs::read(path)\n"
+                        'const S: &str = "std::fs::write";\n',
+                    ),
+                    [],
+                )
+                # Integration targets outside src/ build fixtures on disk.
+                self.assertEqual(checker.check_source(f"crates/{owner}/tests/case.rs", "use std::fs;"), [])
+        for neighbour in ("unica-designer", "designer-unica-forms", "unica-designer-layout"):
+            self.assertEqual(checker.check_source(f"crates/{neighbour}/src/lib.rs", "use std::fs;"), [])
 
     def test_platform_implementation_module_is_private_even_for_an_authorized_owner(self) -> None:
         checker = load_checker_module()

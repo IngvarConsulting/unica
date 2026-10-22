@@ -1,23 +1,56 @@
 //! Fixtures and fault injection for integration tests of process consumers.
 
+#[cfg(unix)]
+pub use super::process::assert_released_unix_group_never_signals_reused_identity_for_test;
 #[cfg(windows)]
 pub use super::process::assert_windows_runtime_process_tree_semantics_for_test;
-#[cfg(unix)]
-pub use super::process::{
-    assert_released_unix_group_never_signals_reused_identity_for_test,
-    inject_unix_reap_error_for_test, inject_unix_waitid_error_for_test,
-    reap_runtime_authority_test_child, reset_unix_signal_count_for_test,
-    unix_signal_count_for_test,
-};
 pub use super::process::{
     inject_runtime_tree_cleanup_timeout_for_test, reset_runtime_tree_cleanup_calls_for_test,
     runtime_process_tree_test_scenario_for_test, runtime_tree_cleanup_calls_for_test,
     JobAttachGateForTest, RuntimeProcessTreeTestProbe, RuntimeProcessTreeTestScenario,
 };
 
+pub use super::host_capability::{
+    skip_named_host_capability, skip_without_host_capability, HostCapability,
+    HOST_CAPABILITY_SKIPS_ENV,
+};
+
 /// Availability of the existing Unix process-authority fixture.
 pub fn unix_runtime_authority_tests_supported() -> bool {
     cfg!(unix)
+}
+
+// Unix process-authority faults. Callers skip these scenarios through
+// `unix_runtime_authority_tests_supported`; other hosts keep them inert.
+pub fn inject_unix_waitid_error_for_test() {
+    #[cfg(unix)]
+    super::process::inject_unix_waitid_error_for_test();
+}
+
+pub fn inject_unix_reap_error_for_test() {
+    #[cfg(unix)]
+    super::process::inject_unix_reap_error_for_test();
+}
+
+pub fn reset_unix_signal_count_for_test() {
+    #[cfg(unix)]
+    super::process::reset_unix_signal_count_for_test();
+}
+
+pub fn unix_signal_count_for_test() -> u32 {
+    #[cfg(unix)]
+    {
+        super::process::unix_signal_count_for_test()
+    }
+    #[cfg(not(unix))]
+    0
+}
+
+pub fn reap_runtime_authority_test_child(process_id: u32) {
+    #[cfg(unix)]
+    super::process::reap_runtime_authority_test_child(process_id);
+    #[cfg(not(unix))]
+    let _ = process_id;
 }
 
 pub fn run_exact_test_in_owned_process_for_test(

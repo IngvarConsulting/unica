@@ -1461,6 +1461,7 @@ pub fn parse_form_info_xml(
         base_form_version: base_form
             .map(|node| node.attribute("version").unwrap_or("").to_string()),
         support,
+        support_details: None,
         properties,
         events: event_evidence.events,
         auto_command_bar,
@@ -3046,31 +3047,55 @@ pub fn form_add_metadata_xml(
     )
 }
 
+/// Namespace declarations of a `Form.xml` root as 8.3.27 exports them.
+const FORM_ROOT_NAMESPACES: &str = concat!(
+    "xmlns=\"http://v8.1c.ru/8.3/xcf/logform\"",
+    " xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\"",
+    " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
+    " xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\"",
+    " xmlns:dcssch=\"http://v8.1c.ru/8.1/data-composition-system/schema\"",
+    " xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"",
+    " xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\"",
+    " xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\"",
+    " xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\"",
+    " xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\"",
+    " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+    " xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"",
+    " xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\"",
+    " xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\"",
+    " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
+    " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
+    " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+);
+
+/// `Form.xml` of an object form borrowed into an extension, byte for byte
+/// as 8.3.27 exports it (#1982): the own part and `BaseForm` hold only the
+/// empty command bar and attributes, so the borrowed form changes nothing.
+/// Parent events and commands are not copied: the platform would turn them
+/// into `callType="Before"` interceptors of the extension.
+pub fn borrowed_form_content_xml(format_version: &str) -> String {
+    let version = unica_xml_format::text::escape_xml(format_version);
+    [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
+        format!("<Form {FORM_ROOT_NAMESPACES} version=\"{version}\">"),
+        "\t<AutoCommandBar name=\"\" id=\"-1\"/>".to_string(),
+        "\t<Attributes/>".to_string(),
+        format!("\t<BaseForm version=\"{version}\">"),
+        "\t\t<AutoCommandBar name=\"\" id=\"-1\"/>".to_string(),
+        "\t\t<Attributes/>".to_string(),
+        "\t</BaseForm>".to_string(),
+        "</Form>".to_string(),
+    ]
+    .join("\r\n")
+}
+
 pub fn form_add_content_xml(
     object_type: &str,
     object_name: &str,
     purpose: &str,
     format_version: &str,
 ) -> Result<String, String> {
-    let ns = concat!(
-        "xmlns=\"http://v8.1c.ru/8.3/xcf/logform\"",
-        " xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\"",
-        " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
-        " xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\"",
-        " xmlns:dcssch=\"http://v8.1c.ru/8.1/data-composition-system/schema\"",
-        " xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"",
-        " xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\"",
-        " xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\"",
-        " xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\"",
-        " xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\"",
-        " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
-        " xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"",
-        " xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\"",
-        " xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\"",
-        " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
-        " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
-        " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
-    );
+    let ns = FORM_ROOT_NAMESPACES;
     if matches!(purpose, "List" | "Choice") {
         let main_table = format!("{object_type}.{object_name}");
         return Ok(format!(

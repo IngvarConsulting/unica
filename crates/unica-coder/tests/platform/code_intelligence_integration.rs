@@ -245,6 +245,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: PathBuf::from("/workspace/src"),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                std::path::Path::new("/workspace"),
+            )),
         )
     }
 
@@ -325,6 +328,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: source_root,
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &workspace_root,
+            )),
         );
 
         let rlm = parse_rlm_search(
@@ -401,6 +407,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: source_root,
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &workspace_root,
+            )),
         );
         let cancellation = CancellationToken::new();
         let mut locations = super::SearchLocationProjector::with_resolver(
@@ -829,6 +838,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: source_root.clone(),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &root,
+            )),
         );
 
         // One result is the whole budget here: the generated file would take it
@@ -894,8 +906,11 @@ mod tests {
             },
             ResolvedSourceRoot {
                 source_set: Some("main".to_string()),
-                path: source_root,
+                path: source_root.clone(),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &source_root,
+            )),
         )
         .with_search_scope(scope);
         let section = crate::infrastructure::analysis_composition::lexical_provider().search(
@@ -1019,6 +1034,9 @@ mod tests {
                     source_set: Some("main".into()),
                     path: source_root.clone(),
                 },
+                std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                    &workspace_root,
+                )),
             )
             .with_search_scope(scope);
             let section = crate::infrastructure::analysis_composition::lexical_provider().search(
@@ -2938,6 +2956,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: source_root,
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &root,
+            )),
         );
         let request = CodeIntelligenceReadRequest::Outline {
             path: "CommonModules/X/Ext/Module.bsl".to_string(),
@@ -3022,6 +3043,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: source_root,
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &root,
+            )),
         );
         let cancellation = CancellationToken::new();
         let cases = [

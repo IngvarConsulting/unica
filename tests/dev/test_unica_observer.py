@@ -1,8 +1,8 @@
 """Наблюдатель адресов на приёмочной фикстуре: дерево, `can`, контракт, предпросмотр.
 
 Тест поднимает `scripts/dev/unica-observer.py` с `unica` и ходит только через
-HTTP-API наблюдателя — тем же путём, что страница. Бинарь собирается через
-`cargo build`, как в соседних тестах `medium`; готовый можно передать в
+HTTP-API наблюдателя — тем же путём, что страница. Бинарь берётся через
+`ensure_binary`, как в соседних тестах `medium`; готовый можно передать в
 `UNICA_OBSERVER_BINARY`. Без Cargo и без готового бинаря тест пропускается
 с названной причиной.
 """
@@ -34,29 +34,15 @@ SKELETON = {"from": "", "items": [], "values": {}, "text": "", "at": ""}
 
 
 def build_unica() -> Path:
-    """Бинарь `unica`: из `UNICA_OBSERVER_BINARY` или собранный Cargo."""
-    explicit = os.environ.get("UNICA_OBSERVER_BINARY")
+    """Бинарь `unica`: из манифеста CI, `UNICA_OBSERVER_BINARY` или `ensure_binary`."""
     if "UNICA_PREPARED_BINARY_MANIFEST" in os.environ:
         return ensure_binary(REPO_ROOT)
+    explicit = os.environ.get("UNICA_OBSERVER_BINARY")
     if explicit:
         return Path(explicit)
-    if shutil.which("cargo") is None:
+    if os.environ.get("GITHUB_ACTIONS") != "true" and shutil.which("cargo") is None:
         raise unittest.SkipTest("нет cargo и не задан UNICA_OBSERVER_BINARY: unica собрать нечем")
-    build = subprocess.run(
-        ["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica",
-         "--message-format=json-render-diagnostics"],
-        cwd=REPO_ROOT,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
-    return next(
-        Path(message["executable"])
-        for line in build.stdout.splitlines()
-        if (message := json.loads(line)).get("reason") == "compiler-artifact"
-        and message["target"]["name"] == "unica"
-        and message.get("executable")
-    )
+    return ensure_binary(REPO_ROOT)
 
 
 def tree_digest(root: Path) -> dict[str, str]:

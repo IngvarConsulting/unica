@@ -191,6 +191,7 @@ pub(crate) const NATIVE_VALIDATORS: &[CheckValidator] = &[
     CheckValidator::Role,
     CheckValidator::Subsystem,
     CheckValidator::Interface,
+    CheckValidator::Xdto,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +204,7 @@ pub(crate) enum CheckValidator {
     Role,
     Subsystem,
     Interface,
+    Xdto,
 }
 
 impl CheckValidator {
@@ -219,6 +221,7 @@ impl CheckValidator {
             Self::Role => "role-validate",
             Self::Subsystem => "subsystem-validate",
             Self::Interface => "interface-validate",
+            Self::Xdto => "xdto-validate",
         }
     }
 
@@ -232,6 +235,7 @@ impl CheckValidator {
             Self::Role => "role",
             Self::Subsystem => "subsystem",
             Self::Interface => "interface",
+            Self::Xdto => "xdto",
         }
     }
 
@@ -318,7 +322,7 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // Заимствованный узел без своего файла читается по дескриптору;
         // валидатор файла прав, формы или макета проверял бы содержимое
         // родителя, которого в этом наборе нет.
-        "Role" | "Form" | "Template" if facts.inherited => Vec::new(),
+        "Role" | "Form" | "Template" | "XDTOPackage" if facts.inherited => Vec::new(),
         // Срезы `Interface` модуля — проекция его методов, а не командный
         // интерфейс подсистемы; как и метод, они читаются без своего шага:
         // код модуля проверяет шаг `bsl` на самом модуле (#1467).
@@ -340,6 +344,7 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         },
         // The typed metadata validator reads object descriptors only; roles
         // and subsystems keep their own validators.
+        "XDTOPackage" if facts.named => vec![CheckStep::Native(CheckValidator::Xdto)],
         "Role" => vec![CheckStep::Native(CheckValidator::Role)],
         "Subsystem" if facts.named => vec![CheckStep::Native(CheckValidator::Subsystem)],
         "Interface" | "CommandInterface" => vec![CheckStep::Native(CheckValidator::Interface)],
@@ -434,6 +439,31 @@ pub(crate) struct NativeCheckOutcome {
 }
 
 impl NativeCheckOutcome {
+    /// Findings from a retained source model contain XML facts, not provider
+    /// paths. Keep expanded XML names and URIs intact; adapter stderr still
+    /// goes through the separate sanitized adapter constructor.
+    pub(crate) fn from_source_findings(
+        findings: impl IntoIterator<Item = (bool, String, String)>,
+    ) -> Self {
+        let mut ok = true;
+        let diagnostics = findings
+            .into_iter()
+            .map(|(error, code, message)| {
+                ok &= !error;
+                CheckDiagnostic {
+                    severity: if error { "error" } else { "warning" }.into(),
+                    code,
+                    message,
+                }
+            })
+            .collect();
+        Self {
+            ok,
+            diagnostics,
+            unavailable: false,
+        }
+    }
+
     pub(crate) fn passed() -> Self {
         Self {
             ok: true,

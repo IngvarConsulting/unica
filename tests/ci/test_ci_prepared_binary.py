@@ -48,6 +48,28 @@ class PreparedBinaryTests(unittest.TestCase):
                     product.ensure_binary(self.root)
                 build.assert_not_called()
 
+    def test_ci_without_manifest_refuses_instead_of_building(self):
+        environment = {key: value for key, value in os.environ.items() if key != product.MANIFEST_ENV}
+        with patch.dict(os.environ, {**environment, "GITHUB_ACTIONS": "true"}, clear=True), patch.object(product.subprocess, "run") as build:
+            with self.assertRaisesRegex(ValueError, product.MANIFEST_ENV):
+                product.ensure_binary(self.root)
+        build.assert_not_called()
+
+    def test_local_build_without_manifest_is_announced_and_uses_the_one_ordinary_command(self):
+        environment = {key: value for key, value in os.environ.items() if key not in (product.MANIFEST_ENV, "GITHUB_ACTIONS", "CARGO_TARGET_DIR")}
+        binary = self.root / "target" / "debug" / ("unica.exe" if os.name == "nt" else "unica")
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"local build")
+        stderr = io.StringIO()
+        with patch.dict(os.environ, environment, clear=True), patch.dict(product._LOCAL_BUILDS, clear=True), \
+             patch.object(product.subprocess, "run") as build, patch.object(sys, "stderr", stderr):
+            self.assertEqual(product.ensure_binary(self.root), binary.resolve())
+            self.assertEqual(product.ensure_binary(self.root), binary.resolve())
+        build.assert_called_once_with(product.LOCAL_BUILD, cwd=self.root, check=True)
+        self.assertEqual(product.LOCAL_BUILD, ["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"])
+        self.assertIn(" ".join(product.LOCAL_BUILD), stderr.getvalue())
+        self.assertIn(f"{product.MANIFEST_ENV}=DIR/manifest.json", stderr.getvalue())
+
     def test_wrong_source_target_toolchain_features_or_path_are_rejected(self):
         changes = [("features", ["default", "receipt-ledger-test-support"]), ("features", []),
                    ("profile", "release"), ("binary", "../unica"), ("mode", 0o755), ("schemaVersion", 999)]

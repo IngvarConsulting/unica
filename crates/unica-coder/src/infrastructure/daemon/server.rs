@@ -2991,7 +2991,10 @@ pub(crate) mod actor_capacity_tests {
         let outcome = create_file_link_fixture_for_test(&external_body, &body)
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let before = std::fs::read(&external_body).unwrap();
@@ -4232,13 +4235,149 @@ pub(crate) mod actor_capacity_tests {
         assert!(output.status.success(), "{stdout}\n{stderr}");
     }
 
-    fn canonical_delivery_fixture_binary() -> (std::path::PathBuf, String) {
+    /// #406: канонический `run` создания базы в рабочей области без
+    /// поставляемого раннера отвечает одним типизированным отказом и не
+    /// раскрывает ни путь рабочей области, ни строку подключения из
+    /// `v8project.yaml`, ни значения, переданные в аргументах.
+    #[test]
+    fn canonical_infobase_create_refusal_discloses_no_private_input() {
+        const CHILD: &str = "UNICA_ISSUE_406_RUN_CHILD";
+        const ROOT: &str = "UNICA_ISSUE_406_RUN_ROOT";
+        const WORKSPACE_SENTINEL: &str = "unica-issue-406-private-workspace";
+        const CWD_SENTINEL: &str = "/missing/unica-issue-406-private-cwd";
+        const CONNECTION_SENTINEL: &str = "File=/private/issue-406-sensitive.ib";
+        if std::env::var_os(CHILD).is_some() {
+            let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let workspace = std::fs::canonicalize(root.join(WORKSPACE_SENTINEL)).unwrap();
+            let runtime = bootstrap_runtime();
+            let call = |arguments: serde_json::Value| -> DomainResult {
+                let request = InvocationRequest::new(
+                    ToolIdentity::Run,
+                    arguments,
+                    workspace.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                match runtime.bind(request) {
+                    Ok(bound) => match bound.prepare() {
+                        Ok(prepared) => prepared.execute(CancellationToken::new()).unwrap(),
+                        Err(result) => *result,
+                    },
+                    Err(V5CanonicalPrepareError::Direct(result))
+                    | Err(V5CanonicalPrepareError::Rejected(result)) => *result,
+                    Err(error) => panic!("{error:?}"),
+                }
+            };
+            // Файлы и каталоги: пустой каталог, созданный отказом, тоже изменение.
+            let image = |root: &std::path::Path| {
+                fn directories(
+                    root: &std::path::Path,
+                    current: &std::path::Path,
+                    found: &mut std::collections::BTreeSet<std::path::PathBuf>,
+                ) {
+                    for entry in std::fs::read_dir(current).unwrap() {
+                        let entry = entry.unwrap();
+                        if entry.file_type().unwrap().is_dir() {
+                            found.insert(entry.path().strip_prefix(root).unwrap().to_path_buf());
+                            directories(root, &entry.path(), found);
+                        }
+                    }
+                }
+                let mut found = std::collections::BTreeSet::new();
+                directories(root, root, &mut found);
+                (unica_workspace::test_support::tree_snapshot(root), found)
+            };
+            let before = image(&workspace);
+            for (case, arguments, code) in [
+                (
+                    "configured connection",
+                    serde_json::json!({"op":"infobase.create","args":{},"dryRun":false}),
+                    "provider_unavailable",
+                ),
+                (
+                    "private arguments",
+                    serde_json::json!({"op":"infobase.create","args":{
+                        "cwd": CWD_SENTINEL,
+                        "connection": CONNECTION_SENTINEL
+                    },"dryRun":false}),
+                    "bad_value",
+                ),
+            ] {
+                let refused = call(arguments);
+                assert!(!refused.ok, "{case}: {refused:?}");
+                assert_eq!(refused.diagnostics.len(), 1, "{case}: {refused:?}");
+                assert_eq!(refused.diagnostics[0]["code"], code, "{case}: {refused:?}");
+                if code == "provider_unavailable" {
+                    assert_eq!(
+                        refused.diagnostics[0]["detailCode"], "provider_absent",
+                        "{case}: {refused:?}"
+                    );
+                }
+                let serialized = serde_json::to_string(&refused).unwrap();
+                for private in [
+                    WORKSPACE_SENTINEL,
+                    CWD_SENTINEL,
+                    CONNECTION_SENTINEL,
+                    "issue-406-sensitive",
+                ] {
+                    assert!(
+                        !serialized.contains(private),
+                        "{case} discloses {private}: {serialized}"
+                    );
+                }
+            }
+            assert_eq!(image(&workspace), before);
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join(WORKSPACE_SENTINEL);
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            format!(
+                "format: DESIGNER\ninfobase:\n  connection: '{CONNECTION_SENTINEL}'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n"
+            ),
+        )
+        .unwrap();
+        // Поставка без раннера: манифест есть, инструментов в нём нет.
+        let plugin = root.path().join("plugin");
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        std::fs::write(
+            plugin.join("third-party/manifest.json"),
+            serde_json::json!({"schemaVersion": 2, "tools": []}).to_string(),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infrastructure::daemon::server::actor_capacity_tests::canonical_infobase_create_refusal_discloses_no_private_input",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(ROOT, root.path())
+            .env("UNICA_PLUGIN_ROOT", &plugin)
+            .env_remove("UNICA_ARTIFACT_CACHE")
+            .env_remove("UNICA_RUNTIME_MANIFEST")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("running 1 test"), "{stdout}\n{stderr}");
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+    }
+
+    const ARCHIVE_FIXTURE_BINARY_SKIP: &str =
+        "the ordinary test archive binds its Unica fixture binary; run through run-tests.py --rust-lane ordinary (phase run or medium over the build archive)";
+
+    /// The ordinary archive's prepared `unica`, verified against its producer's
+    /// SHA256. `None` only when no lane runner bound it; a bound but damaged
+    /// fixture fails instead of skipping.
+    fn canonical_delivery_fixture_binary() -> Option<(std::path::PathBuf, String)> {
         use sha2::{Digest, Sha256};
 
-        let binary = std::path::PathBuf::from(
-            std::env::var_os("UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY")
-                .expect("prepare the ordinary test archive and bind its Unica fixture binary"),
-        );
+        let binary =
+            std::path::PathBuf::from(std::env::var_os("UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY")?);
         let expected = std::env::var("UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256")
             .expect("the archive fixture binary requires its producer's SHA256");
         assert!(binary.is_absolute(), "fixture binary path must be absolute");
@@ -4255,7 +4394,7 @@ pub(crate) mod actor_capacity_tests {
             expected,
             "archive fixture binary does not match its producer's SHA256"
         );
-        (binary, expected)
+        Some((binary, expected))
     }
 
     #[test]
@@ -4470,7 +4609,8 @@ fn main() {
             std::env::set_var("UNICA_RUNTIME_MANIFEST", &release_path);
             std::env::set_var("UNICA_TEST_PROVIDER_MARKER_DIR", &root);
             std::env::set_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "1");
-            let (server, _) = canonical_delivery_fixture_binary();
+            let (server, _) = canonical_delivery_fixture_binary()
+                .expect("the parent binds the archive fixture binary for its child");
             std::env::set_var("UNICA_TEST_WORKSPACE_SERVICE_EXE", server);
             let downloader = Arc::new(PublishedFixture(
                 assets,
@@ -4643,8 +4783,14 @@ fn main() {
             return;
         }
 
+        let Some((server, digest)) = canonical_delivery_fixture_binary() else {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::ArchiveFixtureBinary,
+                ARCHIVE_FIXTURE_BINARY_SKIP,
+            );
+            return;
+        };
         let root = tempfile::tempdir().unwrap();
-        let (server, digest) = canonical_delivery_fixture_binary();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -5183,6 +5329,10 @@ fn main() {
         )
         .unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let runtime = bootstrap_runtime();
@@ -5606,7 +5756,6 @@ fn main() {
             for required in [
                 "retained_root",
                 "validate_named_identity",
-                "read_immediate_names_bounded",
                 "retain_immediate_child_nofollow",
                 "open_named_identity_for_read",
                 "is_elapsed",
@@ -5642,7 +5791,6 @@ fn main() {
             }
             let body = tokens(&method.block);
             for bound in [
-                "CANONICAL_SEARCH_MAX_ENTRIES",
                 "CANONICAL_SEARCH_MAX_DEPTH",
                 "CANONICAL_SEARCH_MAX_LINE_BYTES",
                 "read_search_line_bounded",
@@ -5657,6 +5805,17 @@ fn main() {
             )) {
                 return Err(
                     "literal search root must come from the private retained binding".to_string(),
+                );
+            }
+            // Directory width is unbounded: names come only from the retained
+            // directory through the ordered spool audited separately.
+            if !body.contains(&tokens(
+                &syn::parse_str::<syn::Expr>("ordered_search_names::OrderedNames::collect")
+                    .expect("ordered names entry point parses"),
+            )) {
+                return Err(
+                    "literal search must enumerate retained directories through OrderedNames"
+                        .to_string(),
                 );
             }
             Ok(())
@@ -6628,6 +6787,77 @@ fn main() {
         Ok(())
     }
 
+    /// Audit the ordered spool: it may list names only through the retained
+    /// directory it receives and never opens or resolves source paths itself.
+    fn audit_ordered_search_names(source: &str) -> Result<(), String> {
+        #[derive(Default)]
+        struct SpoolCalls {
+            retained_visits: usize,
+            names: std::collections::BTreeSet<String>,
+        }
+
+        impl<'ast> syn::visit::Visit<'ast> for SpoolCalls {
+            fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+                if call.method == "visit_immediate_names"
+                    && matches!(&*call.receiver, syn::Expr::Path(receiver)
+                        if receiver.qself.is_none() && receiver.path.is_ident("directory"))
+                {
+                    self.retained_visits += 1;
+                }
+                self.names.insert(call.method.to_string());
+                syn::visit::visit_expr_method_call(self, call);
+            }
+
+            fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
+                self.names.insert(segment.ident.to_string());
+                syn::visit::visit_path_segment(self, segment);
+            }
+        }
+
+        let file = syn::parse_file(source)
+            .map_err(|error| format!("ordered search names must parse as Rust AST: {error}"))?;
+        let cfg_test = |attributes: &[syn::Attribute]| {
+            attributes.iter().any(|attribute| {
+                attribute.path().is_ident("cfg")
+                    && matches!(&attribute.meta, syn::Meta::List(list)
+                        if list.tokens.to_string() == "test")
+            })
+        };
+        let mut calls = SpoolCalls::default();
+        for item in &file.items {
+            let test_only = match item {
+                syn::Item::Mod(module) => cfg_test(&module.attrs),
+                syn::Item::Fn(function) => cfg_test(&function.attrs),
+                _ => false,
+            };
+            if !test_only {
+                syn::visit::Visit::visit_item(&mut calls, item);
+            }
+        }
+        if calls.retained_visits == 0 {
+            return Err(
+                "ordered search names must list only the retained `directory` it receives"
+                    .to_string(),
+            );
+        }
+        for ambient in [
+            "canonicalize",
+            "read_dir",
+            "read_immediate_names_bounded",
+            "read_to_string",
+            "retain_immediate_child_nofollow",
+            "retain_regular_child",
+            "symlink_metadata",
+        ] {
+            if calls.names.contains(ambient) {
+                return Err(format!(
+                    "ordered search names must not reach sources through `{ambient}`"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn audited_actor_read_source() -> &'static str {
         let source = include_str!("invocation_service.rs");
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| {
@@ -6640,38 +6870,54 @@ fn main() {
     pub(crate) fn actor_read_source_capability_is_sealed_after_binding() {
         let source = include_str!("invocation_service.rs");
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
-        actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc();
-        actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator();
-        actor_read_source_capability_ast_audit_rejects_split_sibling_visibility();
-        actor_read_source_capability_ast_audit_rejects_multiline_derive_clone();
-        actor_read_source_capability_ast_audit_rejects_multiline_manual_clone();
-        actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl();
-        actor_read_source_capability_ast_audit_rejects_macro_generated_api();
-        actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation();
-        actor_read_source_capability_ast_audit_rejects_opaque_const_expression_macro();
-        actor_read_source_capability_ast_audit_rejects_no_arg_opaque_const_expression_macro();
-        actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros();
-        actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist();
-        actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow();
-        review_audit_rejects_opaque_attribute_macro_invocation();
-        actor_read_source_capability_ast_audit_rejects_custom_derive_macro();
-        actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes();
-        actor_read_source_capability_procedural_macros_can_reopen_sibling_api();
-        actor_read_source_capability_ast_audit_rejects_type_alias_impl();
-        actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl();
-        actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory();
-        actor_read_source_capability_ast_audit_rejects_nested_production_factory();
-        actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape();
-        actor_read_source_capability_ast_audit_rejects_associated_type_escape();
-        actor_read_source_capability_ast_audit_rejects_item_field_escape();
-        actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile();
-        actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind();
-        actor_read_source_capability_ast_audit_rejects_replenished_deadline();
-        actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure();
-        actor_read_source_capability_ast_audit_rejects_substituted_construction_fields();
-        actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution();
-        actor_read_source_capability_issuer_privacy_is_enforced_by_rustc();
-        actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope();
+        audit_ordered_search_names(include_str!("ordered_search_names.rs"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        // Проверки независимы и в сумме идут секунды: каждая разбирает
+        // исходник заново, часть зовёт rustc. Параллельно, с той же паникой (#1920).
+        let checks: [fn(); 34] = [
+            actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration,
+            ordered_search_names_audit_rejects_ambient_or_foreign_listing,
+            actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc,
+            actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator,
+            actor_read_source_capability_ast_audit_rejects_split_sibling_visibility,
+            actor_read_source_capability_ast_audit_rejects_multiline_derive_clone,
+            actor_read_source_capability_ast_audit_rejects_multiline_manual_clone,
+            actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl,
+            actor_read_source_capability_ast_audit_rejects_macro_generated_api,
+            actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation,
+            actor_read_source_capability_ast_audit_rejects_opaque_const_expression_macro,
+            actor_read_source_capability_ast_audit_rejects_no_arg_opaque_const_expression_macro,
+            actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros,
+            actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist,
+            actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow,
+            review_audit_rejects_opaque_attribute_macro_invocation,
+            actor_read_source_capability_ast_audit_rejects_custom_derive_macro,
+            actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes,
+            actor_read_source_capability_procedural_macros_can_reopen_sibling_api,
+            actor_read_source_capability_ast_audit_rejects_type_alias_impl,
+            actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl,
+            actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory,
+            actor_read_source_capability_ast_audit_rejects_nested_production_factory,
+            actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape,
+            actor_read_source_capability_ast_audit_rejects_associated_type_escape,
+            actor_read_source_capability_ast_audit_rejects_item_field_escape,
+            actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile,
+            actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind,
+            actor_read_source_capability_ast_audit_rejects_replenished_deadline,
+            actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure,
+            actor_read_source_capability_ast_audit_rejects_substituted_construction_fields,
+            actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution,
+            actor_read_source_capability_issuer_privacy_is_enforced_by_rustc,
+            actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope,
+        ];
+        std::thread::scope(|scope| {
+            let running: Vec<_> = checks.iter().map(|check| scope.spawn(check)).collect();
+            for check in running {
+                if let Err(panic) = check.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        });
     }
 
     #[test]
@@ -7985,6 +8231,44 @@ struct ActorLogicalReadLease {"#,
             audit_actor_read_source_capability_api(&hardcoded_profile).is_err(),
             "hardcoded platform profile escaped the authority-construction dataflow audit"
         );
+    }
+
+    fn actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration() {
+        let source = audited_actor_read_source();
+        let unordered = source.replacen(
+            "ordered_search_names::OrderedNames::collect(directory, checkpoint)",
+            "ordered_search_names::OrderedNames::from_listing(directory, checkpoint)",
+            1,
+        );
+        assert_ne!(unordered, source, "hostile mutation must alter its source");
+        syn::parse_file(&unordered)
+            .expect("hostile capability source must remain valid Rust syntax");
+        assert!(
+            audit_actor_read_source_capability_api(&unordered).is_err(),
+            "literal search escaped the retained ordered enumeration audit"
+        );
+    }
+
+    fn ordered_search_names_audit_rejects_ambient_or_foreign_listing() {
+        let source = include_str!("ordered_search_names.rs");
+        let foreign = source.replacen(
+            "directory.visit_immediate_names(",
+            "foreign.visit_immediate_names(",
+            1,
+        );
+        let ambient = source.replacen(
+            "directory.visit_immediate_names(",
+            "std::fs::read_dir(\".\").map(drop)?;\n        directory.visit_immediate_names(",
+            1,
+        );
+        for hostile in [foreign, ambient] {
+            assert_ne!(hostile, source, "hostile mutation must alter its source");
+            syn::parse_file(&hostile).expect("hostile spool source must remain valid Rust syntax");
+            assert!(
+                audit_ordered_search_names(&hostile).is_err(),
+                "ordered search names escaped the retained listing audit"
+            );
+        }
     }
 
     #[test]
@@ -9901,8 +10185,8 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(examples, parse_examples(&windows_skill));
         assert_eq!(
             examples.len(),
-            2,
-            "the skill must keep both public examples"
+            3,
+            "the skill must keep its three public examples"
         );
         let preview_args = examples[0]["params"]["arguments"].clone();
         let preview = submit_canonical(
@@ -9971,6 +10255,57 @@ struct ActorLogicalReadLease {"#,
         assert!(
             repeat.changed.is_empty(),
             "unchanged repeat is not an update"
+        );
+
+        // The form example borrows a managed form into the borrowed owner.
+        let forms = workspace.path().join("src/Catalogs/Items/Forms");
+        std::fs::create_dir_all(&forms).unwrap();
+        std::fs::write(
+            forms.join("ItemForm.xml"),
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                    "../../tests/fixtures/platform_8_3_27/cfe_borrow/parent-catalog-form.xml",
+                ),
+            )
+            .unwrap()
+            .replace("<Name>CorpusForm</Name>", "<Name>ItemForm</Name>"),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&parent).unwrap();
+        std::fs::write(
+            &parent,
+            text.replace(
+                "<ChildObjects/>",
+                "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
+            ),
+        )
+        .unwrap();
+        let form_args = examples[2]["params"]["arguments"].clone();
+        let form_preview =
+            submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, form_args);
+        assert!(form_preview.ok, "{form_preview:?}");
+        let borrowed = workspace.path().join("ext/Catalogs/Items/Forms/ItemForm");
+        assert!(!borrowed.exists(), "form preview must not write");
+        let form_applied = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": form_preview.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(form_applied.ok, "{form_applied:?}");
+        assert!(borrowed.join("Ext/Form.xml").exists());
+        let form = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            serde_json::json!({"at":"ext:Catalog.Items.Form.ItemForm"}),
+        );
+        assert!(form.ok, "{form:?}");
+        assert!(
+            form.data.as_ref().unwrap()["props"]
+                .get("content")
+                .is_none(),
+            "{form:?}"
         );
     }
 
@@ -14995,12 +15330,19 @@ struct ActorLogicalReadLease {"#,
             "dryRun": true,
         }))) {
             Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("an .epf output was accepted"),
+            Ok(_) => panic!("an .epf output without its external source set was accepted"),
             Err(other) => {
                 panic!(".epf on make returned infrastructure failure: {other:?}")
             }
         };
-        assert_eq!(external.diagnostics[0]["code"], "unsupported_operation");
+        // EPF/ERF build only from a named external source set (#1866).
+        assert_eq!(external.diagnostics[0]["code"], "bad_value");
+        assert!(
+            external.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("sourceSet")),
+            "{external:?}"
+        );
         assert_eq!(
             preparations.load(Ordering::SeqCst),
             0,
@@ -17763,7 +18105,14 @@ mod finite_deadline_guard {
                 if is_test_source(&relative) {
                     continue;
                 }
-                let calls = finite_deadline_calls(&std::fs::read_to_string(&path).unwrap());
+                let source = std::fs::read_to_string(&path).unwrap();
+                // Вызов возможен только через `ProviderDeadline` или его
+                // псевдоним из `use` того же файла: без этого имени разбирать
+                // файл нечего, а разбор всего workspace стоил секунды (#1920).
+                if !source.contains("ProviderDeadline") {
+                    continue;
+                }
+                let calls = finite_deadline_calls(&source);
                 if calls > 0 {
                     found.insert(relative, calls);
                 }

@@ -1,5 +1,5 @@
 #![allow(clippy::result_large_err)]
-//! `make` — сборка файла конфигурации `.cf` или расширения `.cfe`
+//! `make` — сборка файла CF, CFE, EPF или ERF
 //! из исходников рабочего пространства силами `v8-runner make` (A-7 зонтика
 //! #871). В отличие от `download`, который выносит конфигурацию из базы, тут
 //! источник — исходники, а база служит раннеру временной площадкой.
@@ -7,9 +7,9 @@
 //! Аргументы закрыты: `output` — относительный путь к `.cf` или `.cfe` внутри
 //! рабочего пространства; `sourceSet` — имя объявленного набора, если их
 //! несколько; `extension` — имя расширения в базе, обязательное для `.cfe` и
-//! недопустимое для `.cf`. Внешние обработки и отчёты (`.epf`/`.erf`) за
-//! словарём: у них выход — каталог публикации, а не файл, и это другой
-//! контракт квитанции.
+//! недопустимое для других видов. EPF/ERF требуют singleton sourceSet и
+//! основной конфигурации. Их каталог раннера приватен; наружу публикуется
+//! только независимо проверенный файл.
 //!
 //! Превью зовёт `make --dry-run`: раннер называет вид артефакта, набор и
 //! выход, ничего не публикуя. Раннер принимает выход и вне проекта — Unica
@@ -26,6 +26,8 @@ use super::v13_infobase_exports::{
     LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
+use crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners;
+use crate::infrastructure::source_roots::resolve_named_source_set;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -38,7 +40,11 @@ use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
 use unica_redaction::redactor;
 use unica_refusal::RefusalCode;
 use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_contract::SourceSetKind;
+use unica_source_designer::owner::prove_already_read_source_set_owner;
 use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::compile_transaction::{CommitFailure, CommitFailureKind, CompileTransaction};
+use unica_workspace::discovery::inspect_declared_source_root_route;
 use unica_workspace::path_policy::WorkspacePathPolicy;
 use unica_workspace::paths::normalize_path_identity;
 
@@ -50,13 +56,21 @@ const RUNNER_COMMAND: &str = "make";
 enum ArtifactKind {
     Cf,
     Cfe,
+    Epf,
+    Erf,
 }
 
 impl ArtifactKind {
+    const fn is_external(self) -> bool {
+        matches!(self, Self::Epf | Self::Erf)
+    }
+
     const fn suffix(self) -> &'static str {
         match self {
             Self::Cf => "cf",
             Self::Cfe => "cfe",
+            Self::Epf => "epf",
+            Self::Erf => "erf",
         }
     }
 
@@ -65,6 +79,8 @@ impl ArtifactKind {
         match self {
             Self::Cf => "configuration_cf",
             Self::Cfe => "extension_cfe",
+            Self::Epf => "external_data_processor_epf",
+            Self::Erf => "external_report_erf",
         }
     }
 }
@@ -192,16 +208,12 @@ fn parse_build_arguments(
     {
         Some("cf") => ArtifactKind::Cf,
         Some("cfe") => ArtifactKind::Cfe,
-        Some("epf" | "erf") => {
-            return Err(reject(
-                RefusalCode::UnsupportedOperation,
-                "make builds .cf and .cfe files; external processors and reports publish into a directory and are not published in v0.13",
-            ))
-        }
+        Some("epf") => ArtifactKind::Epf,
+        Some("erf") => ArtifactKind::Erf,
         _ => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "make output must end in .cf for a configuration or .cfe for an extension",
+                "make output must end in .cf for a configuration or .cfe for an extension, .epf for a processor or .erf for a report",
             ))
         }
     };
@@ -212,13 +224,19 @@ fn parse_build_arguments(
                 "make output .cfe requires extension: the name the infobase knows it by",
             ))
         }
-        (ArtifactKind::Cf, true) => {
+        (_, true) if kind != ArtifactKind::Cfe => {
             return Err(reject(
                 RefusalCode::BadValue,
                 "make extension is only for a .cfe output; a .cf is the main configuration",
             ))
         }
         _ => {}
+    }
+    if kind.is_external() && source_set.is_none() {
+        return Err(reject(
+            RefusalCode::BadValue,
+            "make external output requires sourceSet naming one external object set",
+        ));
     }
     let root_context = WorkspaceContext {
         cwd: context.workspace_root.clone(),
@@ -250,6 +268,7 @@ struct StableInputs {
     local_config_sha256: Option<String>,
     declared: Vec<String>,
     output_sha256: Option<String>,
+    external: Option<ExternalPlan>,
 }
 
 fn capture_inputs(prepared: &PreparedArtifactBuild) -> Result<StableInputs, DomainResult> {
@@ -287,7 +306,204 @@ fn capture_inputs(prepared: &PreparedArtifactBuild) -> Result<StableInputs, Doma
         local_config_sha256,
         declared,
         output_sha256,
+        external: external_plan(prepared)?,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalPlan {
+    at: String,
+    configuration_set: String,
+    file_name: String,
+    descriptor_sha256: String,
+}
+
+fn external_plan(prepared: &PreparedArtifactBuild) -> Result<Option<ExternalPlan>, DomainResult> {
+    if !prepared.arguments.kind.is_external() {
+        return Ok(None);
+    }
+    let fail = |message| reject(RefusalCode::InvalidState, message);
+    let name = prepared
+        .arguments
+        .source_set
+        .as_deref()
+        .ok_or_else(|| fail("external sourceSet is required".to_string()))?;
+    let source =
+        resolve_named_source_set(&prepared.context, name).map_err(|e| fail(e.to_string()))?;
+    let expected_kind = if prepared.arguments.kind == ArtifactKind::Epf {
+        SourceSetKind::ExternalProcessor
+    } else {
+        SourceSetKind::ExternalReport
+    };
+    if source.source_set.kind != expected_kind {
+        return Err(reject(
+            RefusalCode::BadValue,
+            "make sourceSet kind does not match the external output",
+        ));
+    }
+    if !source.source_set.source_format.is_supported() {
+        return Err(reject(
+            RefusalCode::InvalidState,
+            "external make requires readable Designer platform XML sources",
+        ));
+    }
+    let configuration_set = configuration_source_set(&prepared.context.workspace_root)
+        .map_err(fail)?
+        .ok_or_else(|| {
+            fail("external make requires a declared main configuration source-set".to_string())
+        })?;
+    let map = crate::infrastructure::project_sources::discover_project_source_map(
+        &prepared.context.workspace_root,
+    )
+    .map_err(fail)?;
+    // Compare physical identities: on a case-insensitive volume a lexical
+    // `External/x.epf` names the `external` source root.
+    let output_identity = normalize_path_identity(&prepared.arguments.output).map_err(fail)?;
+    for set in map.source_sets {
+        let resolved =
+            inspect_declared_source_root_route(&prepared.context.workspace_root, &set.path)
+                .map_err(|e| fail(e.to_string()))?;
+        if output_identity.starts_with(&resolved.identity_path) {
+            return Err(reject(
+                RefusalCode::BadValue,
+                "make output must not overlap any source-set",
+            ));
+        }
+    }
+    let owners = resolve_platform_xml_owners(&source.path, &prepared.context)
+        .map_err(|e| fail(e.message))?;
+    if owners.len() != 1 {
+        return Err(reject(RefusalCode::BadValue, "make external sourceSet must contain exactly one object; multiple owners are ambiguous"));
+    }
+    let owner = &owners[0];
+    let evidence = prove_already_read_source_set_owner(&owner.path, &owner.raw, expected_kind)
+        .map_err(|e| fail(e.message))?;
+    let logical_name = evidence
+        .artifact_name()
+        .filter(|name| valid_1c_identifier(name))
+        .ok_or_else(|| fail("external descriptor must declare a valid 1C Name".to_string()))?;
+    Ok(Some(ExternalPlan {
+        at: format!("{name}:{}.{logical_name}", evidence.artifact_kind()),
+        configuration_set,
+        file_name: format!("{logical_name}.{}", prepared.arguments.kind.suffix()),
+        descriptor_sha256: format!("{:x}", Sha256::digest(&owner.raw)),
+    }))
+}
+
+/// The runner's private output root for an external artifact. Like the full
+/// export stage it is owner-only from creation (Unix mode 0700, a protected
+/// owner DACL on Windows), not tightened afterwards; dropping it removes it.
+struct PrivateStaging(std::path::PathBuf);
+
+impl PrivateStaging {
+    fn create() -> std::io::Result<Self> {
+        let parent =
+            normalize_path_identity(&std::env::temp_dir()).map_err(std::io::Error::other)?;
+        let name = format!("unica-make-{}", uuid::Uuid::new_v4());
+        let parent_handle = unica_workspace::state_fs::open_state_directory_nofollow(&parent)?;
+        let created = unica_workspace::state_fs::create_state_directory_child(
+            &parent_handle,
+            std::ffi::OsStr::new(&name),
+        )?;
+        let staging = Self(parent.join(name));
+        // Unconfirmed privacy refuses before dispatch; dropping cleans it up.
+        unica_workspace::state_fs::verify_state_owner_only(&created)?;
+        Ok(staging)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for PrivateStaging {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Runner replaces its whole output directory. It never sees the public
+/// destination; this adapter publishes one checked regular file atomically.
+fn publish_external(
+    prepared: &PreparedArtifactBuild,
+    staging: &Path,
+    before: &StableInputs,
+    cancellation: &CancellationToken,
+) -> Result<(), DomainResult> {
+    let plan = before.external.as_ref().expect("external plan");
+    let invalid = |message| reject(RefusalCode::InvalidResult, message);
+    let directory = unica_workspace::read::open_source_directory(staging)
+        .map_err(|_| invalid("external build output directory is missing or linked"))?;
+    let names = directory
+        .read_immediate_names_with_limit(None, || Ok(()))
+        .map_err(|_| invalid("cannot inspect external build output"))?;
+    if names.len() != 1 || names[0] != std::ffi::OsStr::new(&plan.file_name) {
+        return Err(invalid(
+            "external build must produce exactly the planned artifact and no other entries",
+        ));
+    }
+    let mut file = directory
+        .open_relative_regular_nofollow(Path::new(&plan.file_name))
+        .map_err(|_| invalid("external artifact is not a regular file or is linked"))?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes)
+        .map_err(|_| invalid("cannot read external artifact"))?;
+    if bytes.is_empty() {
+        return Err(invalid("external artifact is empty"));
+    }
+    let mut publication = CompileTransaction::new();
+    publication
+        .create_or_replace_bytes(&prepared.arguments.output, bytes)
+        .map_err(|_| invalid("cannot prepare external artifact publication"))?;
+    if capture_inputs(prepared)? != *before {
+        return Err(reject(
+            RefusalCode::ConcurrentChange,
+            "make inputs changed before publication; preview again",
+        ));
+    }
+    if cancellation.is_cancelled() {
+        return Err(reject(
+            RefusalCode::Cancelled,
+            "make cancelled before external artifact publication",
+        ));
+    }
+    let mut cancelled_before_publication = false;
+    publication
+        .commit_with_classified_pre_and_post_validation(
+            || {
+                if cancellation.is_cancelled() {
+                    cancelled_before_publication = true;
+                    Err(CommitFailure::provider(
+                        "external artifact publication cancelled",
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+            || Ok(()),
+        )
+        .map_err(|error| {
+            reject(
+                match error.kind() {
+                    kind if cancelled_before_publication
+                        && kind != CommitFailureKind::RollbackFailed =>
+                    {
+                        RefusalCode::Cancelled
+                    }
+                    CommitFailureKind::ConcurrentModification => RefusalCode::ConcurrentChange,
+                    CommitFailureKind::ProviderUnavailable => RefusalCode::InvalidState,
+                    CommitFailureKind::RollbackFailed => RefusalCode::InvalidResult,
+                },
+                if error.kind() == CommitFailureKind::ProviderUnavailable
+                    && !cancelled_before_publication
+                {
+                    "external artifact target is not writable or publication is unavailable"
+                } else {
+                    "external artifact publication failed"
+                },
+            )
+        })?;
+    Ok(())
 }
 
 fn declared_source_sets(config: &Path) -> Result<Vec<String>, DomainResult> {
@@ -360,8 +576,41 @@ fn execute_with_resolved_runner(
         Ok(planned) => planned,
         Err(result) => return result,
     };
+    let mut runner_prepared = prepared.clone();
+    let staging = if before.external.is_some() && !prepared.dry_run {
+        match PrivateStaging::create() {
+            Ok(directory) => Some(directory),
+            Err(_) => {
+                return reject(
+                    RefusalCode::InvalidState,
+                    "cannot create private artifact staging",
+                )
+            }
+        }
+    } else {
+        None
+    };
+    if before.external.is_some() {
+        let private_root = staging
+            .as_ref()
+            .map(|dir| dir.path().to_path_buf())
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("unica-make-preview-{}", uuid::Uuid::new_v4()))
+            });
+        // Normalize the trusted temp root before dispatch (macOS /var is an alias).
+        // Never canonicalize the runner-created artifact directory: links there must fail.
+        runner_prepared.arguments.output = match normalize_path_identity(&private_root) {
+            Ok(root) => root.join("artifacts"),
+            Err(_) => {
+                return reject(
+                    RefusalCode::InvalidState,
+                    "cannot resolve private artifact staging",
+                )
+            }
+        };
+    }
     let preview = match invoke_runner(
-        prepared,
+        &runner_prepared,
         planned.as_deref(),
         tool,
         runner,
@@ -371,8 +620,13 @@ fn execute_with_resolved_runner(
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    let source_set = match validate_envelope(prepared, planned.as_deref(), &before, &preview, false)
-    {
+    let source_set = match validate_envelope(
+        &runner_prepared,
+        planned.as_deref(),
+        &before,
+        &preview,
+        false,
+    ) {
         Ok(source_set) => source_set,
         Err(result) => return result,
     };
@@ -401,6 +655,8 @@ fn execute_with_resolved_runner(
                     "path": path_text(&prepared.arguments.output_relative),
                 },
                 "sourceSet": source_set,
+                "source": before.external.as_ref().map(|plan| &plan.at),
+                "configurationSourceSet": before.external.as_ref().map(|plan| &plan.configuration_set),
                 "extension": prepared.arguments.extension,
                 "outputExists": before.output_sha256.is_some(),
             },
@@ -426,7 +682,7 @@ fn execute_with_resolved_runner(
         );
     }
     let applied = match invoke_runner(
-        prepared,
+        &runner_prepared,
         planned.as_deref(),
         tool,
         runner,
@@ -436,8 +692,13 @@ fn execute_with_resolved_runner(
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    let built_from = match validate_envelope(prepared, planned.as_deref(), &before, &applied, true)
-    {
+    let built_from = match validate_envelope(
+        &runner_prepared,
+        planned.as_deref(),
+        &before,
+        &applied,
+        true,
+    ) {
         Ok(source_set) => source_set,
         Err(result) => return result,
     };
@@ -446,6 +707,16 @@ fn execute_with_resolved_runner(
             RefusalCode::InvalidResult,
             "v8-runner built the artifact from a different source set than previewed",
         );
+    }
+    if before.external.is_some() {
+        if let Err(result) = publish_external(
+            prepared,
+            &runner_prepared.arguments.output,
+            &before,
+            &cancellation,
+        ) {
+            return result;
+        }
     }
     // Квитанция не со слов провайдера: файл на выходе Unica читает сама.
     let (sha256, size) = match digest_optional_workspace_file(
@@ -598,6 +869,7 @@ fn planned_source_set(prepared: &PreparedArtifactBuild) -> Result<Option<String>
                 })?,
         ),
         (None, ArtifactKind::Cfe) => None,
+        (None, ArtifactKind::Epf | ArtifactKind::Erf) => return Err(reject(RefusalCode::BadValue, "external sourceSet is required")),
     })
 }
 
@@ -905,6 +1177,448 @@ mod tests {
         )
     }
 
+    fn external_workspace(kind: ArtifactKind) -> tempfile::TempDir {
+        let root = workspace();
+        let (source_type, tag) = if kind == ArtifactKind::Epf {
+            ("EXTERNAL_DATA_PROCESSORS", "ExternalDataProcessor")
+        } else {
+            ("EXTERNAL_REPORTS", "ExternalReport")
+        };
+        let config = fs::read_to_string(root.path().join(CONFIG_NAME)).unwrap();
+        fs::write(
+            root.path().join(CONFIG_NAME),
+            format!("{config}  - name: external\n    type: {source_type}\n    path: external\n"),
+        )
+        .unwrap();
+        fs::create_dir(root.path().join("external")).unwrap();
+        fs::write(root.path().join("external/Тест.xml"), format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{tag}><Properties><Name>Тест</Name></Properties></{tag}></MetaDataObject>"#)).unwrap();
+        root
+    }
+
+    struct ExternalRunner {
+        kind: ArtifactKind,
+        behavior: &'static str,
+        calls: Mutex<Vec<ProcessCommand>>,
+    }
+    impl ProcessRunner for ExternalRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            self.calls.lock().unwrap().push(command.clone());
+            let output = PathBuf::from(
+                &command.args[command
+                    .args
+                    .iter()
+                    .position(|arg| arg == "--output")
+                    .unwrap()
+                    + 1],
+            );
+            assert!(
+                !output.starts_with(&command.cwd),
+                "runner must never replace a workspace directory"
+            );
+            let applied = !command.args.iter().any(|arg| arg == "--dry-run");
+            if applied {
+                // The private root exists before dispatch and is owner-only
+                // from creation (mode 0700, a protected owner DACL on Windows).
+                let private_root = unica_workspace::state_fs::open_state_directory_nofollow(
+                    output
+                        .parent()
+                        .expect("artifact directory has a private root"),
+                )
+                .expect("private artifact staging exists before the runner");
+                unica_workspace::state_fs::verify_state_owner_only(&private_root)
+                    .expect("private artifact staging is owner-only");
+                fs::create_dir_all(&output).unwrap();
+                let target = output.join(format!("Тест.{}", self.kind.suffix()));
+                match self.behavior {
+                    "missing" => {}
+                    "empty" => fs::write(&target, b"").unwrap(),
+                    "wrong-kind" => fs::write(output.join("Тест.cf"), b"wrong").unwrap(),
+                    "directory" => fs::create_dir(&target).unwrap(),
+                    "linked" => {
+                        let outside = command.cwd.join("keep.bin");
+                        fs::write(&outside, b"outside").unwrap();
+                        if let Some(result) =
+                            unica_workspace::state_fs::test_support::create_file_symlink_for_test(
+                                &outside, &target,
+                            )
+                        {
+                            result.unwrap();
+                        } else {
+                            // A directory is still an invalid regular-file output on hosts without links.
+                            fs::create_dir(&target).unwrap();
+                        }
+                    }
+                    _ => fs::write(&target, b"external artifact").unwrap(),
+                }
+                if self.behavior == "multiple" {
+                    fs::write(output.join("other.epf"), b"other").unwrap();
+                }
+                if self.behavior == "cancel" {
+                    command.cancellation.cancel();
+                }
+                if self.behavior == "race" {
+                    fs::write(command.cwd.join("dist/renamed.epf"), b"concurrent").unwrap();
+                }
+            }
+            let mut result = envelope(&output, self.kind, "external", None, applied);
+            if applied && self.behavior == "forged" {
+                result["data"]["output_path"] = json!(command.cwd.join("dist"));
+            }
+            Ok(process(result, true))
+        }
+    }
+
+    #[test]
+    fn external_build_publishes_one_verified_file_and_preserves_neighbors() {
+        for (kind, replacing) in [
+            (ArtifactKind::Epf, false),
+            (ArtifactKind::Epf, true),
+            (ArtifactKind::Erf, false),
+            (ArtifactKind::Erf, true),
+        ] {
+            let root = external_workspace(kind);
+            let output = format!("dist/renamed.{}", kind.suffix());
+            fs::create_dir(root.path().join("dist")).unwrap();
+            fs::write(root.path().join("dist/neighbor.cf"), b"keep").unwrap();
+            if replacing {
+                fs::write(root.path().join(&output), b"previous").unwrap();
+            }
+            let original = fs::read(root.path().join("external/Тест.xml")).unwrap();
+            let prepared = build_of(root.path(), &output, Some("external"), None, false);
+            let runner = ExternalRunner {
+                kind,
+                behavior: "ok",
+                calls: Mutex::new(vec![]),
+            };
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool(root.path()),
+                "0.15.2",
+            );
+            assert!(result.ok, "{result:?}");
+            assert_eq!(
+                fs::read(root.path().join(&output)).unwrap(),
+                b"external artifact"
+            );
+            assert_eq!(
+                fs::read(root.path().join("dist/neighbor.cf")).unwrap(),
+                b"keep"
+            );
+            assert_eq!(
+                fs::read(root.path().join("external/Тест.xml")).unwrap(),
+                original
+            );
+            assert_eq!(
+                result.artifacts[0]["sha256"],
+                format!("{:x}", Sha256::digest(b"external artifact"))
+            );
+            assert_eq!(result.artifacts[0]["size"], 17);
+            assert_eq!(
+                result.changed[0]["kind"],
+                if replacing { "replaced" } else { "created" }
+            );
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls.len(), 2);
+            let staging = Path::new(
+                &calls[1].args[calls[1]
+                    .args
+                    .iter()
+                    .position(|arg| arg == "--output")
+                    .unwrap()
+                    + 1],
+            );
+            assert!(!staging.exists(), "private staging must be cleaned up");
+        }
+    }
+
+    #[test]
+    fn external_preview_names_owner_and_configuration_without_creating_output() {
+        let root = external_workspace(ArtifactKind::Epf);
+        let prepared = build_of(
+            root.path(),
+            "dist/renamed.epf",
+            Some("external"),
+            None,
+            true,
+        );
+        let runner = ExternalRunner {
+            kind: ArtifactKind::Epf,
+            behavior: "ok",
+            calls: Mutex::new(vec![]),
+        };
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool(root.path()),
+            "0.15.2",
+        );
+        assert!(result.ok, "{result:?}");
+        let data = result.data.unwrap();
+        assert_eq!(
+            data["plan"]["source"],
+            "external:ExternalDataProcessor.Тест"
+        );
+        assert_eq!(data["plan"]["configurationSourceSet"], "main");
+        assert_eq!(data["plan"]["artifact"]["path"], "dist/renamed.epf");
+        assert!(!root.path().join("dist").exists());
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn external_invalid_builds_and_cancellation_preserve_previous_output() {
+        for behavior in [
+            "missing",
+            "empty",
+            "wrong-kind",
+            "directory",
+            "linked",
+            "multiple",
+            "forged",
+            "cancel",
+            "race",
+        ] {
+            let root = external_workspace(ArtifactKind::Epf);
+            fs::create_dir(root.path().join("dist")).unwrap();
+            fs::write(root.path().join("dist/renamed.epf"), b"previous").unwrap();
+            let prepared = build_of(
+                root.path(),
+                "dist/renamed.epf",
+                Some("external"),
+                None,
+                false,
+            );
+            let runner = ExternalRunner {
+                kind: ArtifactKind::Epf,
+                behavior,
+                calls: Mutex::new(vec![]),
+            };
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool(root.path()),
+                "0.15.2",
+            );
+            assert!(!result.ok, "{behavior}: {result:?}");
+            let expected_code = match behavior {
+                "race" => "concurrent_change",
+                "cancel" => "cancelled",
+                _ => "invalid_result",
+            };
+            assert_eq!(
+                result.diagnostics[0]["code"], expected_code,
+                "{behavior}: {result:?}"
+            );
+            assert_eq!(
+                fs::read(root.path().join("dist/renamed.epf")).unwrap(),
+                if behavior == "race" {
+                    &b"concurrent"[..]
+                } else {
+                    &b"previous"[..]
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn external_publication_io_failure_preserves_output_and_requires_environment_repair() {
+        use unica_workspace::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
+        let root = external_workspace(ArtifactKind::Epf);
+        fs::create_dir(root.path().join("dist")).unwrap();
+        let output = root.path().join("dist/renamed.epf");
+        fs::write(&output, b"previous").unwrap();
+        fs::write(root.path().join("dist/neighbor.cf"), b"keep").unwrap();
+        let source = fs::read(root.path().join("external/Тест.xml")).unwrap();
+        let prepared = build_of(
+            root.path(),
+            "dist/renamed.epf",
+            Some("external"),
+            None,
+            false,
+        );
+        let runner = ExternalRunner {
+            kind: ArtifactKind::Epf,
+            behavior: "ok",
+            calls: Mutex::new(vec![]),
+        };
+        let result = with_publish_failpoints(&[PublishCheckpoint::Write], || {
+            execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool(root.path()),
+                "0.15.2",
+            )
+        });
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
+        assert_eq!(result.diagnostics[0]["outcome"], "needsHuman", "{result:?}");
+        assert_eq!(fs::read(&output).unwrap(), b"previous");
+        assert_eq!(
+            fs::read(root.path().join("dist/neighbor.cf")).unwrap(),
+            b"keep"
+        );
+        assert_eq!(
+            fs::read(root.path().join("external/Тест.xml")).unwrap(),
+            source
+        );
+        assert_eq!(fs::read_dir(root.path().join("dist")).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn external_cancellation_after_publication_lock_never_commits() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Barrier,
+        };
+        use unica_workspace::single_file_publisher::{
+            with_before_commit_hook, with_publication_lock_pause,
+        };
+        for replacing in [false, true] {
+            let root = external_workspace(ArtifactKind::Epf);
+            fs::create_dir(root.path().join("dist")).unwrap();
+            let output = root.path().join("dist/renamed.epf");
+            if replacing {
+                fs::write(&output, b"previous").unwrap();
+            }
+            let prepared = build_of(
+                root.path(),
+                "dist/renamed.epf",
+                Some("external"),
+                None,
+                false,
+            );
+            let cancellation = CancellationToken::new();
+            let worker_cancellation = cancellation.clone();
+            let acquired = Arc::new(Barrier::new(2));
+            let release = Arc::new(Barrier::new(2));
+            let worker_acquired = acquired.clone();
+            let worker_release = release.clone();
+            let commits = Arc::new(AtomicUsize::new(0));
+            let worker_commits = commits.clone();
+            let runner_tool = tool(root.path());
+            let worker = std::thread::spawn(move || {
+                let runner = ExternalRunner {
+                    kind: ArtifactKind::Epf,
+                    behavior: "ok",
+                    calls: Mutex::new(vec![]),
+                };
+                with_publication_lock_pause(worker_acquired, worker_release, || {
+                    with_before_commit_hook(
+                        move |_| {
+                            worker_commits.fetch_add(1, Ordering::SeqCst);
+                        },
+                        || {
+                            execute_with_resolved_runner(
+                                &prepared,
+                                &runner,
+                                worker_cancellation,
+                                &runner_tool,
+                                "0.15.2",
+                            )
+                        },
+                    )
+                })
+            });
+            acquired.wait();
+            cancellation.cancel();
+            release.wait();
+            let result = worker.join().unwrap();
+            assert_eq!(result.diagnostics[0]["code"], "cancelled", "{result:?}");
+            assert_eq!(
+                commits.load(Ordering::SeqCst),
+                0,
+                "cancellation must prevent publication, not roll it back later"
+            );
+            if replacing {
+                assert_eq!(fs::read(&output).unwrap(), b"previous");
+            } else {
+                assert!(!output.exists());
+            }
+            assert_eq!(
+                fs::read_dir(root.path().join("dist")).unwrap().count(),
+                usize::from(replacing),
+                "no staged or recovery files may remain"
+            );
+        }
+    }
+
+    #[test]
+    fn external_prerequisites_and_ambiguity_are_refused_before_dispatch() {
+        for case in ["missing-config", "multiple", "wrong-kind", "overlap"] {
+            let root = external_workspace(ArtifactKind::Epf);
+            match case {
+                "missing-config" => {
+                    let config = fs::read_to_string(root.path().join(CONFIG_NAME)).unwrap();
+                    fs::write(
+                        root.path().join(CONFIG_NAME),
+                        config.replace("type: CONFIGURATION", "type: EXTENSION"),
+                    )
+                    .unwrap();
+                }
+                "multiple" => {
+                    fs::copy(
+                        root.path().join("external/Тест.xml"),
+                        root.path().join("external/Other.xml"),
+                    )
+                    .unwrap();
+                }
+                _ => {}
+            }
+            let output = match case {
+                "wrong-kind" => "dist/renamed.erf",
+                "overlap" => "external/renamed.epf",
+                _ => "dist/renamed.epf",
+            };
+            let prepared = build_of(root.path(), output, Some("external"), None, true);
+            let runner = SequenceRunner::new(vec![]);
+            let result = run(root.path(), &prepared, &runner);
+            assert!(!result.ok, "{case}: {result:?}");
+            assert_eq!(runner.call_count(), 0);
+        }
+    }
+
+    #[test]
+    fn external_output_overlap_is_physical_on_case_insensitive_volumes() {
+        let root = external_workspace(ArtifactKind::Epf);
+        if !root.path().join("EXTERNAL").is_dir() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::CaseInsensitiveFilesystem,
+                "a case variant of the source root names another directory on this volume",
+            );
+            return;
+        }
+        let prepared = build_of(
+            root.path(),
+            "EXTERNAL/renamed.epf",
+            Some("external"),
+            None,
+            true,
+        );
+        let runner = SequenceRunner::new(vec![]);
+        let result = run(root.path(), &prepared, &runner);
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
+        assert_eq!(runner.call_count(), 0);
+        assert!(!root.path().join("external/renamed.epf").exists());
+    }
+
+    #[test]
+    fn external_artifact_arguments_accept_single_file_outputs() {
+        let root = workspace();
+        for suffix in ["epf", "erf"] {
+            let args = json!({"output": format!("dist/tool.{suffix}"), "sourceSet": "external"});
+            let parsed = parse_build_arguments(args.as_object().unwrap(), &context(root.path()));
+            assert!(
+                parsed.is_ok(),
+                "external output must be accepted: {parsed:?}"
+            );
+        }
+    }
+
     #[test]
     fn arguments_are_closed_and_each_refusal_names_the_fix() {
         let root = workspace();
@@ -927,8 +1641,8 @@ mod tests {
             ),
             (
                 json!({"output": "dist/report.epf"}),
-                "unsupported_operation",
-                "not published in v0.13",
+                "bad_value",
+                "requires sourceSet",
             ),
             (
                 json!({"output": "dist/sales.cfe"}),

@@ -99,7 +99,7 @@ impl RunOperation {
                 "Fully replace a source set from the infobase with explicit force. Local-work protection and merge are unavailable."
             }
             RunIntent::ArtifactBuild => {
-                "Build a CF or CFE artifact from attached sources. EPF and ERF are unavailable with the runner 0.15 adapter."
+                "Build a CF, CFE, EPF or ERF artifact from attached sources. External artifacts require a singleton Designer sourceSet and a declared main configuration."
             }
             RunIntent::CfExport => {
                 "Export the working configuration, the database configuration, or an extension out of the infobase to a CF or CFE file."
@@ -201,9 +201,9 @@ impl RunOperation {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "output": {"type": "string", "description": "Workspace-relative .cf or .cfe file to build; .epf and .erf are not published in v0.13."},
-                    "sourceSet": {"type": "string", "description": "Name of one source set declared in v8project.yaml when several are declared."},
-                    "extension": {"type": "string", "description": "Extension name in the infobase for a .cfe output; required for .cfe and refused for .cf."}
+                    "output": {"type": "string", "description": "Workspace-relative .cf, .cfe, .epf or .erf file to build. External builds publish one file and preserve its neighbors."},
+                    "sourceSet": {"type": "string", "description": "Name of one source set declared in v8project.yaml; required for .epf/.erf, with exactly one matching external object."},
+                    "extension": {"type": "string", "description": "Extension name in the infobase for a .cfe output; required for .cfe and refused for other output kinds."}
                 },
                 "required": ["output"]
             })),

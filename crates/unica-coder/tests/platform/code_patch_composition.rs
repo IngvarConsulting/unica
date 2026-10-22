@@ -89,7 +89,7 @@ pub(crate) fn applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_s
         .join("src/CommonModules/Sample/Ext/Module.bsl");
     fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n// untouched suffix\r\n";
-    let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\nProcedure Added()\r\nEndProcedure\r\n// untouched suffix\r\n";
+    let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n\r\nProcedure Added()\r\nEndProcedure\r\n// untouched suffix\r\n";
     fs::write(&module, before).unwrap();
     let args = patch_args(
         "main",
@@ -153,7 +153,7 @@ fn code_patch_configuration_and_extension_preview_apply_preserve_unrelated_bytes
         workspace_epoch: 1,
     };
     let before = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n// untouched\r\n";
-    let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\nProcedure Added()\r\nEndProcedure\r\n// untouched\r\n";
+    let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n\r\nProcedure Added()\r\nEndProcedure\r\n// untouched\r\n";
     let mut protected = Vec::new();
     for source_root in ["cfg", "ext"] {
         let source_root = root.join(source_root);
@@ -223,7 +223,7 @@ fn code_patch_data_has_an_exact_stable_serialization_contract() {
     fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = "Procedure Run()\nEndProcedure\n";
     let inserted = "Procedure Added()\nEndProcedure\n";
-    let after = format!("{before}{inserted}");
+    let after = format!("{before}\n{inserted}");
     fs::write(&module, before).unwrap();
     let args = patch_args(
         "main",
@@ -241,9 +241,10 @@ fn code_patch_data_has_an_exact_stable_serialization_contract() {
     let diff = concat!(
         "--- a/CommonModule.Sample.Module\n",
         "+++ b/CommonModule.Sample.Module\n",
-        "@@ -1,2 +1,4 @@\n",
+        "@@ -1,2 +1,5 @@\n",
         " Procedure Run()\n",
         " EndProcedure\n",
+        "+\n",
         "+Procedure Added()\n",
         "+EndProcedure\n",
     );
@@ -261,7 +262,7 @@ fn code_patch_data_has_an_exact_stable_serialization_contract() {
                 "endByte": after.len(),
                 "startLine": 3,
                 "startColumn": 1,
-                "endLine": 5,
+                "endLine": 6,
                 "endColumn": 1
             }],
             "diff": diff,
@@ -359,55 +360,60 @@ fn closing_token_anchor_matches_crlf_and_repeats_as_noop() {
 
 #[test]
 fn patch_rejects_content_that_would_break_anchor_idempotence() {
-    let context = temp_context("unstable-anchor");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = b"Procedure Run()\n    Target();\nEndProcedure\n";
-    fs::write(&module, before).unwrap();
-    let args = patch_args_for_selector(
-        "main",
-        "CommonModule.Sample.Module",
-        json!({"anchor": "Target();"}),
-        "before",
+    let fixture = staged_code_fixture("unstable-anchor", before);
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
         "    Target();",
+        Some(CodeSelector::Anchor("Target();".to_string())),
+        Some(CodePosition::Before),
+    )];
+
+    let admission = staged_code_admission(&fixture, false);
+    let error = plan_admitted_code(&admission, &fixture.binding, &operation)
+        .expect_err("an insert that duplicates its anchor must be refused");
+
+    assert_eq!(error.kind(), ApplyPlanErrorKind::Postcondition, "{error:?}");
+    assert!(
+        error
+            .to_string()
+            .contains("does not prove repeat-noop behavior"),
+        "{error}"
     );
-
-    let result = patch_inner(&args, &context, PatchMode::Apply);
-
-    assert!(!result.outcome.ok);
-    assert!(result.outcome.errors[0].contains("cannot be applied idempotently"));
-    assert_eq!(fs::read(&module).unwrap(), before);
     assert_eq!(
-        result.data.unwrap().validation.status,
-        ValidationStatus::Passed
+        fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+        before
     );
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+    fixture.cleanup();
 }
 
 #[test]
 fn patch_rejects_content_that_duplicates_the_selected_method() {
-    let context = temp_context("unstable-method");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = b"Procedure Run()\nEndProcedure\n";
-    fs::write(&module, before).unwrap();
-    let args = patch_args(
-        "main",
-        "CommonModule.Sample.Module",
-        "Run",
+    let fixture = staged_code_fixture("unstable-method", before);
+    let operation = [staged_insert(
+        "main:CommonModule.Sample.Method.Run",
         "Procedure Run()\nEndProcedure",
+        Some(CodeSelector::Method("Run".to_string())),
+        Some(CodePosition::After),
+    )];
+
+    let admission = staged_code_admission(&fixture, false);
+    let error = plan_admitted_code(&admission, &fixture.binding, &operation)
+        .expect_err("an insert that duplicates the addressed method must be refused");
+
+    assert_eq!(error.kind(), ApplyPlanErrorKind::Postcondition, "{error:?}");
+    assert!(
+        error
+            .to_string()
+            .contains("does not prove repeat-noop behavior"),
+        "{error}"
     );
-
-    let result = patch_inner(&args, &context, PatchMode::Apply);
-
-    assert!(!result.outcome.ok);
-    assert!(result.outcome.errors[0].contains("cannot be applied idempotently"));
-    assert_eq!(fs::read(&module).unwrap(), before);
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+    assert_eq!(
+        fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+        before
+    );
+    fixture.cleanup();
 }
 
 #[test]
@@ -429,7 +435,7 @@ fn method_after_at_eof_inserts_a_separator_and_is_idempotent() {
     assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
     assert_eq!(
         fs::read_to_string(&module).unwrap(),
-        "Procedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n"
+        "Procedure Run()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n"
     );
     let repeated = patch_inner(&args, &context, PatchMode::Apply);
     assert!(repeated.outcome.ok);
@@ -488,33 +494,38 @@ fn code_patch_replaces_one_method_and_leaves_its_neighbours_untouched() {
 
 #[test]
 fn code_patch_replace_that_consumes_its_selector_cannot_apply_twice() {
-    let context = temp_context("replace-consumes-selector");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
-    fs::write(&module, "Процедура Цель()\nКонецПроцедуры\n").unwrap();
-    let args = replace_args(
-        "CommonModule.Sample.Module",
-        json!({"method": "Цель"}),
-        "Процедура Переименована()\nКонецПроцедуры",
+    let fixture = staged_code_fixture(
+        "replace-consumes-selector",
+        "Процедура Цель()\nКонецПроцедуры\n".as_bytes(),
     );
+    let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+    let operation = [staged_replace(
+        "main:CommonModule.Sample.Method.Цель",
+        "Процедура Переименована()\nКонецПроцедуры",
+        None,
+    )];
 
-    let applied = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
-    let after = fs::read_to_string(&module).unwrap();
+    let applied = staged_code_admission(&fixture, false);
+    let (state, effects) = plan_admitted_code(&applied, &fixture.binding, &operation).unwrap();
+    fixture
+        .actor
+        .publish_prepared_apply(applied.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
+    let after = fs::read_to_string(fixture.source.join(relative)).unwrap();
     assert_eq!(after, "Процедура Переименована()\nКонецПроцедуры\n");
 
-    // The selector no longer resolves, so the repeat fails closed rather
-    // than writing the edit a second time.
-    let repeated = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(!repeated.outcome.ok);
+    // The addressed method no longer resolves, so the repeat fails closed
+    // rather than writing the edit a second time.
+    let repeated = staged_code_admission(&fixture, false);
+    let error = plan_admitted_code(&repeated, &fixture.binding, &operation)
+        .expect_err("a consumed method address must not resolve again");
+    assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
     assert_eq!(
-        fs::read_to_string(&module).unwrap(),
+        fs::read_to_string(fixture.source.join(relative)).unwrap(),
         after,
         "a refused repeat must leave the module byte-identical"
     );
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+    fixture.cleanup();
 }
 
 #[test]
@@ -547,34 +558,49 @@ fn code_patch_replace_keeps_an_anchor_edit_inline() {
 
 #[test]
 fn code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop() {
-    let context = temp_context("no-source-eol");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = "Процедура Тест() КонецПроцедуры";
-    let expected = "Процедура Тест() КонецПроцедуры\nПроцедура Добавлена() КонецПроцедуры\n";
-    fs::write(&module, before).unwrap();
-    let args = patch_args(
-        "main",
-        "CommonModule.Sample.Module",
-        "Тест",
+    let expected = "Процедура Тест() КонецПроцедуры\n\nПроцедура Добавлена() КонецПроцедуры\n";
+    let fixture = staged_code_fixture("no-source-eol", before.as_bytes());
+    let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
         "Процедура Добавлена() КонецПроцедуры",
+        Some(CodeSelector::Method("Тест".to_string())),
+        Some(CodePosition::After),
+    )];
+
+    let preview = staged_code_admission(&fixture, true);
+    let (mut state, effects) = plan_admitted_code(&preview, &fixture.binding, &operation).unwrap();
+    assert_eq!(state.read(relative).unwrap().unwrap(), expected.as_bytes());
+    fixture
+        .actor
+        .publish_prepared_apply(preview.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        before.as_bytes()
     );
 
-    let preview = patch_inner(&args, &context, PatchMode::Preview);
-    assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
-    assert_eq!(fs::read_to_string(&module).unwrap(), before);
+    let applied = staged_code_admission(&fixture, false);
+    let (state, effects) = plan_admitted_code(&applied, &fixture.binding, &operation).unwrap();
+    fixture
+        .actor
+        .publish_prepared_apply(applied.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        expected.as_bytes()
+    );
 
-    let applied = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
-    assert_eq!(fs::read_to_string(&module).unwrap(), expected);
-
-    let repeated = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
-    assert!(repeated.data.unwrap().no_op);
-    assert_eq!(fs::read_to_string(&module).unwrap(), expected);
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+    let repeated = staged_code_admission(&fixture, true);
+    let (state, effects) = plan_admitted_code(&repeated, &fixture.binding, &operation).unwrap();
+    assert!(state.planned_changes().is_empty());
+    assert!(effects.events().is_empty());
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        expected.as_bytes()
+    );
+    fixture.cleanup();
 }
 
 #[test]
@@ -586,7 +612,7 @@ fn code_patch_preserves_two_leading_boms_for_preview_apply_and_repeat_noop() {
     fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\n";
     let expected =
-        b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n";
+        b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n";
     fs::write(&module, before).unwrap();
     let args = patch_args(
         "main",
@@ -612,28 +638,80 @@ fn code_patch_preserves_two_leading_boms_for_preview_apply_and_repeat_noop() {
 
 #[test]
 fn mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol() {
-    let context = temp_context("mixed-eol");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\n";
-    fs::write(&module, before).unwrap();
-    let args = patch_args(
-        "main",
-        "CommonModule.Sample.Module",
-        "Second",
+    let fixture = staged_code_fixture("mixed-eol", before);
+    let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
         "Procedure Added()\r\nEndProcedure",
-    );
+        Some(CodeSelector::Method("Second".to_string())),
+        Some(CodePosition::After),
+    )];
 
-    let applied = patch_inner(&args, &context, PatchMode::Apply);
+    let applied = staged_code_admission(&fixture, false);
+    let (state, effects) = plan_admitted_code(&applied, &fixture.binding, &operation).unwrap();
+    fixture
+        .actor
+        .publish_prepared_apply(applied.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
 
-    assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
     assert_eq!(
-            fs::read(&module).unwrap(),
-            b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\nProcedure Added()\nEndProcedure\n"
-        );
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+        fs::read(fixture.source.join(relative)).unwrap(),
+        b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n"
+    );
+    fixture.cleanup();
+}
+
+/// Модуль сам версии не задаёт; формат ему задают корень набора и описание
+/// общего модуля. Устаревшая или неточная версия любого из них блокирует
+/// канонический `code.insert` до записи.
+#[test]
+fn canonical_code_insert_inside_older_source_set_is_refused_without_writes() {
+    for relative in ["Configuration.xml", "CommonModules/Sample.xml"] {
+        for version in ["2.19", "2.20.0"] {
+            let fixture = staged_code_fixture(
+                &format!("older-owner-{}-{version}", relative.replace('/', "-")),
+                b"Procedure Base()\nEndProcedure\n",
+            );
+            let owner = fixture.source.join(relative);
+            let original = fs::read_to_string(&owner).unwrap();
+            let older = original.replace("version=\"2.20\"", &format!("version=\"{version}\""));
+            assert_ne!(
+                older, original,
+                "{relative}: fixture must declare its version"
+            );
+            fs::write(&owner, older).unwrap();
+            let source_before = snapshot_staged_code_tree(&fixture.source);
+            let cache = fixture.root.join(".build/unica");
+            let cache_before = snapshot_staged_code_tree(&cache);
+            let operation = [staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                None,
+                None,
+            )];
+
+            for dry_run in [true, false] {
+                let admission = staged_code_admission(&fixture, dry_run);
+                let error = plan_admitted_code(&admission, &fixture.binding, &operation)
+                    .expect_err("an older format owner must block the code insert");
+                assert_eq!(
+                    error.kind(),
+                    ApplyPlanErrorKind::InvalidSource,
+                    "{relative} version={version} dryRun={dry_run}: {error}"
+                );
+                // Причина — именно формат владельца, а не любая ошибка исходника.
+                let message = error.to_string();
+                assert!(
+                    message.contains("serialization profile"),
+                    "{relative} version={version} dryRun={dry_run}: {message}"
+                );
+            }
+            assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
+            assert_eq!(snapshot_staged_code_tree(&cache), cache_before);
+            fixture.cleanup();
+        }
+    }
 }
 
 #[test]
@@ -959,35 +1037,51 @@ fn code_patch_invalid_postimage_returns_failed_validation_without_writing() {
 
 #[test]
 pub(crate) fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat() {
-    let context = temp_context("tail-append");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = "Procedure Run()\nEndProcedure\n";
-    fs::write(&module, before).unwrap();
-    let args = tail_args(
-        "main",
-        "CommonModule.Sample.Module",
+    let expected = "Procedure Run()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n";
+    let fixture = staged_code_fixture("tail-append", before.as_bytes());
+    let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
         "Procedure Added()\nEndProcedure",
+        None,
+        None,
+    )];
+
+    let preview = staged_code_admission(&fixture, true);
+    let (mut state, effects) = plan_admitted_code(&preview, &fixture.binding, &operation).unwrap();
+    assert_eq!(state.read(relative).unwrap().unwrap(), expected.as_bytes());
+    fixture
+        .actor
+        .publish_prepared_apply(preview.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        before.as_bytes()
     );
 
-    let preview = patch_inner(&args, &context, PatchMode::Preview);
-    assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
-    assert_eq!(fs::read(&module).unwrap(), before.as_bytes());
-
-    let applied = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
-    let expected = "Procedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n";
-    assert_eq!(fs::read(&module).unwrap(), expected.as_bytes());
+    let applied = staged_code_admission(&fixture, false);
+    let (state, effects) = plan_admitted_code(&applied, &fixture.binding, &operation).unwrap();
+    fixture
+        .actor
+        .publish_prepared_apply(applied.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        expected.as_bytes()
+    );
 
     // The end of the module is still addressable afterwards, so the repeat
     // is a proven no-op rather than a refusal after the write landed.
-    let repeat = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(repeat.outcome.ok, "{:?}", repeat.outcome.errors);
-    assert!(repeat.outcome.summary.contains("already applied"));
-    assert_eq!(fs::read(&module).unwrap(), expected.as_bytes());
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+    let repeated = staged_code_admission(&fixture, true);
+    let (state, effects) = plan_admitted_code(&repeated, &fixture.binding, &operation).unwrap();
+    assert!(state.planned_changes().is_empty());
+    assert!(effects.events().is_empty());
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        expected.as_bytes()
+    );
+    fixture.cleanup();
 }
 
 #[test]
@@ -1062,35 +1156,52 @@ pub(crate) fn code_patch_writes_the_first_body_of_an_empty_or_bom_only_module() 
             b"Procedure Run()\nEndProcedure\n".to_vec(),
         ),
     ] {
-        let context = temp_context(&format!("tail-first-{label}"));
-        let module = context
-            .workspace_root
-            .join("src/CommonModules/Sample/Ext/Module.bsl");
-        fs::create_dir_all(module.parent().unwrap()).unwrap();
-        fs::write(&module, &before).unwrap();
-        let args = tail_args(
-            "main",
-            "CommonModule.Sample.Module",
+        let fixture = staged_code_fixture(&format!("tail-first-{label}"), &before);
+        let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+        let operation = [staged_insert(
+            "main:CommonModule.Sample",
             "Procedure Run()\nEndProcedure",
+            None,
+            None,
+        )];
+
+        let preview = staged_code_admission(&fixture, true);
+        let (mut state, effects) =
+            plan_admitted_code(&preview, &fixture.binding, &operation).unwrap();
+        assert_eq!(state.read(relative).unwrap().unwrap(), expected, "{label}");
+        fixture
+            .actor
+            .publish_prepared_apply(preview.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        assert_eq!(
+            fs::read(fixture.source.join(relative)).unwrap(),
+            before,
+            "{label} preview wrote"
         );
 
-        let preview = patch_inner(&args, &context, PatchMode::Preview);
-        assert!(preview.outcome.ok, "{label}: {:?}", preview.outcome.errors);
-        assert_eq!(fs::read(&module).unwrap(), before, "{label} preview wrote");
-        let data = preview.data.unwrap();
-        assert_eq!(data.pre_hash, hash(&before), "{label}");
-        assert_eq!(data.post_hash, hash(&expected), "{label}");
-        assert_eq!(data.validation.status, ValidationStatus::Passed, "{label}");
-
-        let applied = patch_inner(&args, &context, PatchMode::Apply);
-        assert!(applied.outcome.ok, "{label}: {:?}", applied.outcome.errors);
+        let applied = staged_code_admission(&fixture, false);
+        let (state, effects) = plan_admitted_code(&applied, &fixture.binding, &operation).unwrap();
+        fixture
+            .actor
+            .publish_prepared_apply(applied.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
         // No blank line is owed: a byte order mark is not content.
-        assert_eq!(fs::read(&module).unwrap(), expected, "{label}");
+        assert_eq!(
+            fs::read(fixture.source.join(relative)).unwrap(),
+            expected,
+            "{label}"
+        );
 
-        let repeat = patch_inner(&args, &context, PatchMode::Apply);
-        assert!(repeat.outcome.ok, "{label}: {:?}", repeat.outcome.errors);
-        assert_eq!(fs::read(&module).unwrap(), expected, "{label} repeat wrote");
-        fs::remove_dir_all(&context.workspace_root).unwrap();
+        let repeated = staged_code_admission(&fixture, true);
+        let (state, effects) = plan_admitted_code(&repeated, &fixture.binding, &operation).unwrap();
+        assert!(state.planned_changes().is_empty(), "{label}");
+        assert!(effects.events().is_empty(), "{label}");
+        assert_eq!(
+            fs::read(fixture.source.join(relative)).unwrap(),
+            expected,
+            "{label} repeat wrote"
+        );
+        fixture.cleanup();
     }
 }
 
@@ -1112,7 +1223,7 @@ fn code_patch_separates_an_appended_method_from_a_module_without_a_trailing_eol(
     assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
     assert_eq!(
         fs::read(&module).unwrap(),
-        b"Procedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n"
+        b"Procedure Run()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n"
     );
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
@@ -1376,6 +1487,89 @@ fn code_patch_rolls_back_if_absent_support_state_appears_before_commit() {
 }
 
 #[test]
+fn inserted_method_spacing_covers_positions_eol_eof_and_repeat() {
+    for eol in ["\n", "\r\n"] {
+        for terminal in ["", eol] {
+            for separator in [eol, &eol.repeat(2), &format!("{eol} \t{eol}")] {
+                let before = format!("Procedure First(){eol}EndProcedure{separator}// Second docs.{eol}&AtServer{eol}Procedure Second(){eol}EndProcedure{terminal}");
+                for (selector, position, expected) in [
+                    (Some("First"), Some(CodePosition::Before), format!("Procedure Added(){eol}EndProcedure{eol}{eol}{before}")),
+                    (Some("First"), Some(CodePosition::After), format!("Procedure First(){eol}EndProcedure{eol}{eol}Procedure Added(){eol}EndProcedure{separator}{}// Second docs.{eol}&AtServer{eol}Procedure Second(){eol}EndProcedure{terminal}", if separator == eol { eol } else { "" })),
+                    (Some("Second"), Some(CodePosition::Before), format!("Procedure First(){eol}EndProcedure{separator}{}Procedure Added(){eol}EndProcedure{eol}{eol}// Second docs.{eol}&AtServer{eol}Procedure Second(){eol}EndProcedure{terminal}", if separator == eol { eol } else { "" })),
+                    (None, None, format!("{before}{}Procedure Added(){eol}EndProcedure{eol}", if terminal.is_empty() { eol.repeat(2) } else { eol.to_string() })),
+                ] {
+                    let operation = staged_insert("main:CommonModule.Sample", "Procedure Added()\nEndProcedure", selector.map(|name| CodeSelector::Method(name.to_string())), position);
+                    let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+                    assert_eq!(post.after, expected.as_bytes(), "{eol:?} {terminal:?} {separator:?} {selector:?} {position:?}");
+                    let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+                    assert!(repeated.no_op);
+                    assert_eq!(repeated.after, post.after);
+                }
+            }
+        }
+    }
+}
+
+/// Модуль, где метод уже стоит вплотную к соседу (написан вручную или прежней
+/// версией вставки), повтор той же вставки не дублирует: проверка присутствия
+/// принимает и текст без добавленных разделителей.
+#[test]
+fn inserted_method_spacing_recognizes_an_existing_method_without_separators() {
+    for eol in ["\n", "\r\n"] {
+        let added = format!("Procedure Added(){eol}EndProcedure{eol}");
+        let first = format!("Procedure First(){eol}EndProcedure{eol}");
+        let second = format!("Procedure Second(){eol}EndProcedure{eol}");
+        for (before, selector, position) in [
+            (
+                format!("{first}{added}{second}"),
+                "Second",
+                CodePosition::Before,
+            ),
+            (
+                format!("{first}{added}{second}"),
+                "First",
+                CodePosition::After,
+            ),
+            (format!("{added}{first}"), "First", CodePosition::Before),
+            (format!("{first}{added}"), "First", CodePosition::After),
+        ] {
+            let operation = staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                Some(CodeSelector::Method(selector.to_string())),
+                Some(position),
+            );
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+            assert!(post.no_op, "{eol:?} {selector} {position:?}");
+            assert_eq!(
+                post.after,
+                before.as_bytes(),
+                "{eol:?} {selector} {position:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn inserted_method_spacing_preserves_empty_bom_payload_and_mixed_bytes() {
+    for (before, content, selector, expected) in [
+        ("", "Procedure Added()\nEndProcedure", None, "Procedure Added()\nEndProcedure\n"),
+        ("\u{feff}", "Procedure Added()\nEndProcedure", None, "\u{feff}Procedure Added()\nEndProcedure\n"),
+        ("Procedure First()\nEndProcedure", "\nProcedure Added()\nEndProcedure\n\n", None, "Procedure First()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n\n"),
+        ("Procedure First()\nEndProcedure\n\n", "Procedure Added()\nEndProcedure\n\n", None, "Procedure First()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n\n"),
+        ("\u{feff}Procedure First()\r\nEndProcedure\r\n// Second.\n&AtServer\nProcedure Second()\nEndProcedure", "// Added.\n&AtServer\nProcedure Added()\nEndProcedure", Some("First"), "\u{feff}Procedure First()\r\nEndProcedure\r\n\r\n// Added.\r\n&AtServer\r\nProcedure Added()\r\nEndProcedure\r\n\r\n// Second.\n&AtServer\nProcedure Second()\nEndProcedure"),
+    ] {
+        let operation = staged_insert("main:CommonModule.Sample", content,
+            selector.map(|name| CodeSelector::Method(name.to_string())), selector.map(|_| CodePosition::After));
+        let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+        assert_eq!(std::str::from_utf8(&post.after).unwrap(), expected);
+        let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+        assert!(repeated.no_op);
+        assert_eq!(repeated.after, post.after);
+    }
+}
+
+#[test]
 fn staged_code_insert_then_replace_reads_prior_postimage() {
     let fixture = staged_code_fixture("insert-then-replace", b"Procedure Base()\nEndProcedure\n");
     let operations = vec![
@@ -1400,7 +1594,7 @@ fn staged_code_insert_then_replace_reads_prior_postimage() {
             .read(Path::new("CommonModules/Sample/Ext/Module.bsl"))
             .unwrap()
             .unwrap(),
-        b"Procedure Base()\nEndProcedure\nProcedure Final()\nEndProcedure\n"
+        b"Procedure Base()\nEndProcedure\n\nProcedure Final()\nEndProcedure\n"
     );
     assert_eq!(
         effects.events(),
@@ -1728,6 +1922,71 @@ fn method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop() {
 }
 
 #[test]
+fn framed_method_body_text_replaces_its_closing_comment_and_repeats_as_noop() {
+    for (open, statement, close) in [
+        ("Procedure Base()", "Value = 1;", "EndProcedure"),
+        ("Function Base()", "Return 1;", "EndFunction"),
+    ] {
+        for eol in ["\n", "\r\n"] {
+            for (terminal_eol, neighbor) in [
+                ("", ""),
+                ("\n", ""),
+                ("\n", "\nProcedure Neighbor()\nEndProcedure\n"),
+            ] {
+                let read = format!(
+                        "//+ Synthetic frame\n&AtServer\n{open}\n    {statement}\n{close} //- Synthetic frame{terminal_eol}"
+                    ).replace('\n', eol);
+                let neighbor = neighbor.replace('\n', eol);
+                let before = format!("{read}{neighbor}");
+                let edited = read.replace("1;", "2;");
+                let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    at: unica_address::address::QualifiedAddress::parse(
+                        "main:CommonModule.Sample.Method.Base.Body",
+                    )
+                    .unwrap(),
+                    anchor: None,
+                    text: edited.clone(),
+                });
+                let post = plan_code_postimage(before.as_bytes(), &operation, 0)
+                    .expect("view/read-edit-replace preserves the frame without doubling its tail");
+                assert_eq!(post.after, before.replace("1;", "2;").as_bytes());
+                let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+                assert!(repeated.no_op);
+                assert_eq!(repeated.after, post.after);
+            }
+        }
+    }
+}
+
+#[test]
+fn method_body_replacement_keeps_executable_tail_on_its_closing_line() {
+    for eol in ["", "\n", "\r\n"] {
+        let before =
+            format!("Procedure Base() EndProcedure Procedure Neighbor() EndProcedure{eol}");
+        let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+            at: unica_address::address::QualifiedAddress::parse(
+                "main:CommonModule.Sample.Method.Base.Body",
+            )
+            .unwrap(),
+            anchor: None,
+            text: "Procedure Base() Value = 2; EndProcedure".to_owned(),
+        });
+        let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+        assert_eq!(
+            post.after,
+            format!(
+                "Procedure Base() Value = 2; EndProcedure Procedure Neighbor() EndProcedure{eol}"
+            )
+            .as_bytes(),
+            "a Body replacement must not consume the next method on the same line"
+        );
+        let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+        assert!(repeated.no_op);
+        assert_eq!(repeated.after, post.after);
+    }
+}
+
+#[test]
 fn method_text_that_does_not_parse_is_refused_as_the_input_text() {
     let before = "Procedure Base()\n    Value = 1;\nEndProcedure\n";
     let fixture = staged_code_fixture("broken-method-text", before.as_bytes());
@@ -1811,7 +2070,7 @@ fn a_comment_inserted_before_a_method_joins_its_head_and_repeats_as_noop() {
             ),
             (
                 "Procedure Added()\nEndProcedure\n// Описание Target.\n",
-                "Procedure Other()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n// Описание Target.\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+                "Procedure Other()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n\n// Описание Target.\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
             ),
         ] {
             let operation = parse_code_plan_operation(
@@ -2274,66 +2533,66 @@ fn insertion_around_a_method_keeps_its_head_together_and_respects_its_preprocess
                 "// О блоке.\n#Если Сервер Тогда\n#Если НЕ ВебКлиент Тогда\nProcedure Target()\nEndProcedure\n#КонецЕсли\n#КонецЕсли\n",
                 "Target",
                 "before",
-                "Procedure Added()\nEndProcedure\n// О блоке.\n#Если Сервер Тогда\n#Если НЕ ВебКлиент Тогда\nProcedure Target()\nEndProcedure\n#КонецЕсли\n#КонецЕсли\n",
+                "Procedure Added()\nEndProcedure\n\n// О блоке.\n#Если Сервер Тогда\n#Если НЕ ВебКлиент Тогда\nProcedure Target()\nEndProcedure\n#КонецЕсли\n#КонецЕсли\n",
             ),
             // Пустая строка между условием и головой оставляет вставку внутри.
             (
                 "#Если Сервер Тогда\n\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
                 "Target",
                 "before",
-                "#Если Сервер Тогда\n\nProcedure Added()\nEndProcedure\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+                "#Если Сервер Тогда\n\nProcedure Added()\nEndProcedure\n\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
             ),
             // Комментарий и директива остаются со своим методом.
             (
                 "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
                 "Target",
                 "before",
-                "Procedure Added()\nEndProcedure\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+                "Procedure Added()\nEndProcedure\n\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
             ),
             (
                 "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
                 "Target",
                 "after",
-                "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\nProcedure Added()\nEndProcedure\n",
+                "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n",
             ),
             // Аннотация расширения — тоже голова метода.
             (
                 "&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
                 "Target",
                 "before",
-                "Procedure Added()\nEndProcedure\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
+                "Procedure Added()\nEndProcedure\n\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
             ),
             (
                 "Procedure Other()\nEndProcedure\n// Документ.\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
                 "Target",
                 "before",
-                "Procedure Other()\nEndProcedure\nProcedure Added()\nEndProcedure\n// Документ.\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
+                "Procedure Other()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n\n// Документ.\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
             ),
             // Условие только вокруг метода обходится целиком.
             (
                 "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
                 "Target",
                 "before",
-                "Procedure Added()\nEndProcedure\n#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+                "Procedure Added()\nEndProcedure\n\n#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
             ),
             (
                 "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
                 "Target",
                 "after",
-                "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\nProcedure Added()\nEndProcedure\n",
+                "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n\nProcedure Added()\nEndProcedure\n",
             ),
             // В условии с другим методом вставка остаётся внутри него.
             (
                 "#Если Сервер Тогда\nProcedure Target()\nEndProcedure\nProcedure Other()\nEndProcedure\n#КонецЕсли\n",
                 "Target",
                 "before",
-                "#Если Сервер Тогда\nProcedure Added()\nEndProcedure\nProcedure Target()\nEndProcedure\nProcedure Other()\nEndProcedure\n#КонецЕсли\n",
+                "#Если Сервер Тогда\nProcedure Added()\nEndProcedure\n\nProcedure Target()\nEndProcedure\nProcedure Other()\nEndProcedure\n#КонецЕсли\n",
             ),
             (
                 "#Если Сервер Тогда\nProcedure Other()\nEndProcedure\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
                 "Target",
                 "after",
-                "#Если Сервер Тогда\nProcedure Other()\nEndProcedure\nProcedure Target()\nEndProcedure\nProcedure Added()\nEndProcedure\n#КонецЕсли\n",
+                "#Если Сервер Тогда\nProcedure Other()\nEndProcedure\nProcedure Target()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n#КонецЕсли\n",
             ),
         ];
     for (before, method, position, expected) in cases {

@@ -286,8 +286,8 @@ pub fn plan_code_postimage(
                     .at_path(&at_path)
                 })?,
             };
-            let insertion = normalized_content(&args.text, site.eol, site.leading_separator);
-            let no_op = insertion_is_present(snapshot.raw(), site, &insertion);
+            let (insertion, no_op) =
+                prepare_insertion(&snapshot, site, &args.text, &indexed.methods);
             let mut after = snapshot.raw().to_vec();
             if !no_op {
                 after.splice(site.offset..site.offset, insertion.iter().copied());
@@ -586,7 +586,12 @@ pub fn locate_addressed_replacement(
             } else {
                 method.start
             };
-            let end = if text[method.end..line_end].trim().is_empty() {
+            // A full Method.Body roundtrip includes an inline closing comment,
+            // but executable code on that line belongs outside this method.
+            let closing_tail = text[method.end..line_end].trim();
+            let end = if closing_tail.is_empty()
+                || (target.with_doc_comment && closing_tail.starts_with("//"))
+            {
                 line_end
             } else {
                 method.end
@@ -1140,9 +1145,7 @@ pub fn prove_repeat_is_noop_parts(
                 // repeat resolves; whether it writes is decided just below.
                 None => locate_module_tail(&snapshot).map_err(stale)?,
             };
-            let repeat_insertion =
-                normalized_content(content, repeat_site.eol, repeat_site.leading_separator);
-            insertion_is_present(postimage.as_bytes(), repeat_site, &repeat_insertion)
+            prepare_insertion(&snapshot, repeat_site, content, methods).1
         }
         PatchSite::Replacement(_) => {
             let selector = selector.expect("replacement has a selector");
@@ -1443,6 +1446,92 @@ pub fn canonicalize_eol(content: &str) -> String {
     content.replace("\r\n", "\n").replace('\r', "\n")
 }
 
+/// Разделители принадлежат месту вставки, а не тексту операции: при повторе
+/// у того же метода уже может стоять добавленная нами пустая строка.
+fn prepare_insertion(
+    snapshot: &SourceTextSnapshot,
+    site: InsertionSite,
+    content: &str,
+    methods: &[Method],
+) -> (Vec<u8>, bool) {
+    let mut insertion = normalized_content(content, site.eol, site.leading_separator);
+    if method_head(content).is_none() {
+        let present = insertion_is_present(snapshot.raw(), site, &insertion);
+        return (insertion, present);
+    }
+    insertion = normalized_content(content, site.eol, LeadingSeparator::None);
+    let text = snapshot.decoded_text();
+    let eol = site.eol.as_str().as_bytes();
+    let leading_breaks = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .take_while(|b| b.is_ascii_whitespace())
+            .filter(|&&b| b == b'\n')
+            .count()
+    };
+    let trailing_breaks = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .rev()
+            .take_while(|b| b.is_ascii_whitespace())
+            .filter(|&&b| b == b'\n')
+            .count()
+    };
+    if methods.iter().any(|method| method.start >= site.offset) {
+        // Замыкающий комментарий вставки становится частью головы соседа.
+        // Разделяем методы перед этим комментарием, не отрывая его от соседа.
+        let boundary = doc_comment_start(std::str::from_utf8(&insertion).unwrap(), insertion.len());
+        let following = if boundary == insertion.len() {
+            &text.as_bytes()[site.offset..]
+        } else {
+            &insertion[boundary..]
+        };
+        let missing = 2usize
+            .saturating_sub(trailing_breaks(&insertion[..boundary]) + leading_breaks(following));
+        insertion.splice(boundary..boundary, eol.repeat(missing));
+    }
+    // Метод, уже стоящий вплотную к соседу, — тоже повтор: модуль мог быть
+    // написан вручную или прежней вставкой без разделителей.
+    let bare = normalized_content(content, site.eol, LeadingSeparator::None);
+    let present = method_insertion_is_present(text, site, &bare)
+        || method_insertion_is_present(text, site, &insertion);
+    if methods.iter().any(|method| method.end <= site.offset) {
+        let missing = 2usize.saturating_sub(
+            trailing_breaks(&snapshot.raw()[..site.offset]) + leading_breaks(&insertion),
+        );
+        insertion.splice(0..0, eol.repeat(missing));
+    } else if site.leading_separator == LeadingSeparator::LocalEol {
+        insertion.splice(0..0, eol.iter().copied());
+    }
+    (insertion, present)
+}
+
+fn method_insertion_is_present(text: &str, mut site: InsertionSite, plain: &[u8]) -> bool {
+    loop {
+        if insertion_is_present(text.as_bytes(), site, plain) {
+            return true;
+        }
+        match site.position {
+            Position::Before if site.offset > 0 => {
+                let previous = safe_line_start(text, site.offset - 1);
+                if previous >= site.offset || !text[previous..site.offset].trim().is_empty() {
+                    return false;
+                }
+                site.offset = previous;
+                site.head_end = previous;
+            }
+            Position::After if site.offset < text.len() => {
+                let next = line_end(text, site.offset);
+                if !text[site.offset..next].trim().is_empty() {
+                    return false;
+                }
+                site.offset = next;
+            }
+            _ => return false,
+        }
+    }
+}
+
 pub fn normalized_content(
     content: &str,
     eol: LineEnding,
@@ -1565,8 +1654,7 @@ pub fn plan_legacy_patch(
                     locate_module_tail(&snapshot)?
                 }
             };
-            let insertion = normalized_content(&content, site.eol, site.leading_separator);
-            let no_op = insertion_is_present(snapshot.raw(), site, &insertion);
+            let (insertion, no_op) = prepare_insertion(&snapshot, site, &content, &indexed.methods);
             let mut after = snapshot.raw().to_vec();
             if !no_op {
                 after.splice(site.offset..site.offset, insertion.iter().copied());

@@ -99,7 +99,7 @@ class CollectResultsTests(unittest.TestCase):
         self.signed("results-python", "ubuntu-latest", "python", [self.python("ubuntu-latest")])
         self.plan("plan-rust-ubuntu-latest", "ubuntu-latest", ["address::resolves", "daemon::never_reached"])
         jobs = self.root / "jobs.json"
-        jobs.write_text(json.dumps({"jobs": [{"name": "Rust tests (complete inventory)", "conclusion": conclusion}]}), encoding="utf-8")
+        jobs.write_text(json.dumps({"jobs": [{"name": "Unica CI", "conclusion": conclusion}]}), encoding="utf-8")
         out = self.root / "fresh"
         lines = self.collect.collect(self.artifacts, out, jobs, "", "https://example.invalid")
         return lines, out
@@ -118,7 +118,7 @@ class CollectResultsTests(unittest.TestCase):
         self.assertEqual(stats["filled"], 1)
         gap = next(r for r in records if r["fullName"] == "unica-coder::daemon::never_reached")
         self.assertEqual(gap["status"], "skipped")
-        self.assertIn("раннер не дошёл: Rust tests (complete inventory) · cancelled", gap["statusDetails"]["message"])
+        self.assertIn("раннер не дошёл: Unica CI · cancelled", gap["statusDetails"]["message"])
         self.assertIn(self.run["run_url"], gap["statusDetails"]["message"])
         tags = [l["value"] for l in gap["labels"] if l["name"] == "tag"]
         self.assertIn("infrastructure", tags)
@@ -133,7 +133,7 @@ class CollectResultsTests(unittest.TestCase):
             {"ecosystem": "python", "id": "test_x.Guard.test_never_reached", "name": "не дошёл", "suite": "tests/ci", "lane": "medium", "subSuite": "Guard", "size": "medium"},
         ]), encoding="utf-8")
         jobs = self.root / "jobs.json"
-        jobs.write_text(json.dumps({"jobs": [{"name": "Python tests (ci-medium)", "conclusion": "cancelled"}]}), encoding="utf-8")
+        jobs.write_text(json.dumps({"jobs": [{"name": "Unica CI", "conclusion": "cancelled"}]}), encoding="utf-8")
         out = self.root / "fresh"
 
         lines = self.collect.collect(self.artifacts, out, jobs, "", "https://example.invalid")
@@ -143,7 +143,7 @@ class CollectResultsTests(unittest.TestCase):
         gaps = [json.loads(r.read_text(encoding="utf-8")) for r in (out / "release-v0.12").glob("*-result.json")]
         gap = next(g for g in gaps if g["fullName"] == "test_x.Guard.test_never_reached")
         self.assertEqual(gap["status"], "skipped")
-        self.assertIn("раннер не дошёл: Python tests (ci-medium) · cancelled", gap["statusDetails"]["message"])
+        self.assertIn("раннер не дошёл: Unica CI · cancelled", gap["statusDetails"]["message"])
         labels = {l["name"]: l["value"] for l in gap["labels"]}
         self.assertEqual((labels["language"], labels["suite"], labels["size"]), ("python", "tests/ci", "medium"))
         self.assertEqual(gap["historyId"], self.allure.history_id("test_x.Guard.test_never_reached", "ubuntu-latest"))
@@ -273,7 +273,7 @@ class CollectResultsTests(unittest.TestCase):
         self.signed("results-rust-ubuntu-latest", "ubuntu-latest", "rust", [self.rust("address::resolves", "ubuntu-latest")])
         self.signed("results-python", "ubuntu-latest", "python", [self.python("ubuntu-latest")])
         jobs = self.root / "jobs.json"
-        jobs.write_text(json.dumps({"jobs": [{"name": "Rust tests (complete inventory)", "conclusion": "failure"}]}), encoding="utf-8")
+        jobs.write_text(json.dumps({"jobs": [{"name": "Unica CI", "conclusion": "failure"}]}), encoding="utf-8")
         out = self.root / "fresh"
 
         lines = self.collect.collect(self.artifacts, out, jobs, "", "https://example.invalid")
@@ -283,7 +283,7 @@ class CollectResultsTests(unittest.TestCase):
         gaps = [json.loads(r.read_text(encoding="utf-8")) for r in (out / "release-v0.12").glob("*-result.json")]
         gap = next(g for g in gaps if g["fullName"] == "unica-coder::daemon::never_built")
         self.assertEqual(gap["status"], "skipped")
-        self.assertIn("раннер не дошёл до плана: Rust tests (complete inventory) · failure", gap["statusDetails"]["message"])
+        self.assertIn("раннер не дошёл до плана: Unica CI · failure", gap["statusDetails"]["message"])
         self.assertIn("состав взят из прогона 0123456", gap["statusDetails"]["message"])
         labels = {l["name"]: l["value"] for l in gap["labels"]}
         self.assertEqual((labels["language"], labels["host"]), ("rust", "ubuntu-latest"))
@@ -338,8 +338,8 @@ class CollectResultsTests(unittest.TestCase):
 
         self.collect.fetch = fetch
         for index, (base, head, job) in enumerate((
-            ("a", "b", "Rust tests (complete inventory)"),
-            ("b", "c", "Rust tests (complete inventory)"),
+            ("a", "b", "Unica CI"),
+            ("b", "c", "Unica CI"),
         )):
             with self.subTest(skip=index + 1):
                 self.artifacts = self.root / f"artifacts-{index}"
@@ -375,7 +375,7 @@ class CollectResultsTests(unittest.TestCase):
     def test_scope_skip_without_inventory_is_metadata_without_invented_cases(self) -> None:
         self.routing_artifacts()
         self.collect.fetch = lambda _url, _target: False
-        jobs = self.jobs_file({"Rust tests (complete inventory)": "skipped"})
+        jobs = self.jobs_file({"Unica CI": "skipped"})
         output = self.root / "fresh"
 
         stats = self.collect.collect(self.artifacts, output, jobs, "", "https://site")
@@ -392,19 +392,22 @@ class CollectResultsTests(unittest.TestCase):
         self.assertIn("docs-only", environment)
         self.assertIn("ubuntu-latest", environment)
 
-    def test_scope_skip_requires_a_skipped_job_and_rejects_conflicting_runner_outcomes(self) -> None:
+    def test_scope_skip_does_not_depend_on_the_runner_job_outcome(self) -> None:
+        """Джоба раннера в docs-only всё равно идёт (guards, Python): пропуск Rust
+        доказывает отсутствие Rust-плана и результатов, а не её исход."""
         self.routing_artifacts()
-        for conclusions in ({}, {"Rust tests (complete inventory)": "success"}, {
-            "Build Rust ordinary (ubuntu-latest)": "failure", "Rust tests (complete inventory)": "skipped",
-        }, {"Rust tests (complete inventory)": "cancelled"}):
+        for index, conclusions in enumerate(({}, {"Unica CI": "success"}, {"Unica CI": "failure"}, {"Unica CI": "cancelled"})):
             with self.subTest(conclusions=conclusions):
-                with self.assertRaisesRegex(ValueError, "scope_skip"):
-                    self.collect.collect(self.artifacts, self.root / "fresh", self.jobs_file(conclusions), "", "")
+                output = self.root / f"fresh-{index}"
+                self.collect.fetch = lambda _url, _target: False
+                self.collect.collect(self.artifacts, output, self.jobs_file(conclusions), "", "")
+                skip = json.loads((output / "main/run.json").read_text())["routing_skips"][0]
+                self.assertEqual(skip["scope_skip"], self.scope_skip())
 
     def test_scope_skip_rejects_malformed_identity_and_unsupported_scope(self) -> None:
         path = self.routing_artifacts()
         signature = json.loads((path / "run.json").read_text())
-        jobs = self.jobs_file({"Rust tests (complete inventory)": "skipped"})
+        jobs = self.jobs_file({"Unica CI": "skipped"})
         invalid = [
             {"scope_skip": None}, {"scope_skip": []}, {"scope_skip": "docs_only"},
             {"scope_skip": self.scope_skip(reason="unknown")},
@@ -425,7 +428,7 @@ class CollectResultsTests(unittest.TestCase):
 
     def test_scope_skip_rejects_actual_rust_results_or_a_plan(self) -> None:
         path = self.routing_artifacts()
-        jobs = self.jobs_file({"Rust tests (complete inventory)": "skipped"})
+        jobs = self.jobs_file({"Unica CI": "skipped"})
         result = self.allure.write(path, self.rust("actually::ran", "ubuntu-latest"))
         with self.assertRaisesRegex(ValueError, "scope_skip"):
             self.collect.collect(self.artifacts, self.root / "fresh", jobs, "", "")
@@ -444,42 +447,63 @@ class CollectResultsTests(unittest.TestCase):
         self.routing_artifacts()
         self.signed("plan-started-receipt", "ubuntu-latest", "rust", [], configuration={"lane": "receipt"})
         with self.assertRaisesRegex(ValueError, "scope_skip"):
-            self.collect.collect(self.artifacts, self.root / "fresh", self.jobs_file({"Rust tests (complete inventory)": "skipped"}), "", "")
+            self.collect.collect(self.artifacts, self.root / "fresh", self.jobs_file({"Unica CI": "skipped"}), "", "")
 
     def test_job_name_and_artifact_prefixes_match_the_workflows(self) -> None:
         release = workflow("unica-plugin-release.yml")
-        self.assertEqual(release["jobs"]["test-rust-platforms"]["name"], self.collect.RUST_JOB)
-        self.assertEqual(self.collect.RUST_JOB, "Rust tests (complete inventory)")
-        self.assertEqual(release["jobs"]["test-python"]["name"].replace("${{ matrix.slug }}", "{slug}"), self.collect.PYTHON_JOB)
-        run_tests = load("run-tests")
-        for profile in ("pr", "queue", "main"):
-            for entry in run_tests.python_matrix(profile):
-                self.assertEqual(entry["slug"], self.collect.python_slug(entry["suite"], entry["lane"]))
+        jobs = release["jobs"]
+        self.assertEqual(jobs["unica-ci"]["name"], self.collect.GATE_JOB)
+        self.assertEqual(self.collect.GATE_JOB, "Unica CI")
+        self.assertEqual(self.collect.PYTHON_JOB, self.collect.GATE_JOB)
+        self.assertEqual(jobs["rust-os"]["name"].replace("${{ matrix.runner }}", "{runner}"), self.collect.OS_JOB)
+        self.assertEqual(self.collect.runner_job("ubuntu-latest"), "Unica CI")
+        self.assertEqual(self.collect.runner_job("macos-14"), "Rust (macos-14)")
+        # The same job name the gate awaits and the verifier reads.
+        lanes = load("ci_rust_lanes")
+        self.assertEqual(lanes.GATE_JOB, self.collect.GATE_JOB)
+        self.assertEqual(lanes.os_job("windows-latest"), self.collect.runner_job("windows-latest"))
+        self.assertEqual(set(self.collect.RUST_LANES), set(lanes.LANES))
         prefixes = (self.collect.RESULTS_PREFIX, self.collect.PLAN_PREFIX)
-        rust_uploads = []
-        for lane in ("ordinary", "receipt", "vendor"):
-            build = release["jobs"][f"build-rust-{lane}"]
-            self.assertEqual(build["name"].replace("${{ matrix.runner }}", "{runner}"),
-                             self.collect.RUST_BUILD_JOB.format(lane=lane, runner="{runner}"))
-            for kind, job_id in (("plan", f"build-rust-{lane}"), ("results", f"run-rust-{lane}")):
-                uploads = [step for step in release["jobs"][job_id]["steps"]
-                           if "upload-artifact" in step.get("uses", "") and step["with"]["name"].startswith(kind + "-")]
-                self.assertEqual(len(uploads), 1)
-                upload = uploads[0]
-                self.assertEqual(upload.get("if"), "always()")
-                suffix = "-${{ matrix.shard }}" if kind == "results" else ""
-                self.assertEqual(upload["with"]["name"], f"{kind}-rust-${{{{ matrix.runner }}}}-{lane}{suffix}")
-                self.assertEqual(upload["with"]["path"], ".build/ci-lane/*.json" if kind == "plan" else ".build/results")
-                rust_uploads.append(upload["with"]["name"])
-        self.assertEqual(len(rust_uploads), 6)
-        uploads = rust_uploads + [step["with"]["name"] for step in release["jobs"]["test-python"]["steps"] if "upload-artifact" in step.get("uses", "")]
-        uploads += [step["with"]["name"] for step in workflow("unica-nightly.yml")["jobs"]["lines"]["steps"] if "upload-artifact" in step.get("uses", "")]
-        self.assertTrue(all(name.startswith(prefixes) for name in uploads))
-        verification = [step["with"]["name"] for step in release["jobs"]["test-rust-platforms"]["steps"] if "upload-artifact" in step.get("uses", "")]
-        self.assertEqual(verification, ["ci-rust-inventory-verification"])
+
+        def uploads(job: str) -> list[dict]:
+            return [step for step in jobs[job]["steps"] if "upload-artifact" in step.get("uses", "")]
+
+        # Each runner uploads its plan before the tests and its results always.
+        for job, runner in (("unica-ci", "ubuntu-latest"), ("rust-os", "${{ matrix.runner }}")):
+            with self.subTest(job=job):
+                by_name = {step["with"]["name"]: step for step in uploads(job)}
+                plan, results = by_name[f"plan-{runner}"], by_name[f"results-{runner}"]
+                self.assertEqual(plan["with"]["path"], ".build/ci-report/plan-*")
+                self.assertEqual(results.get("if"), "always()")
+                self.assertIn(".build/ci-report/results-*", results["with"]["path"])
+        reports = [step["with"]["name"] for job in ("unica-ci", "rust-os") for step in uploads(job)
+                   if not step["with"]["name"].startswith("ci-rust-inventory")]
+        reports += [step["with"]["name"] for step in workflow("unica-nightly.yml")["jobs"]["lines"]["steps"] if "upload-artifact" in step.get("uses", "")]
+        self.assertTrue(all(name.startswith(prefixes) for name in reports), reports)
+        verification = [step["with"]["name"] for step in uploads("unica-ci") if step["with"]["name"].startswith("ci-rust-inventory")]
+        self.assertEqual(verification, ["ci-rust-inventory-verification", "ci-rust-inventory-${{ env.GATE_PROFILE }}"])
         pages = workflow("unica-pages.yml")
         pattern = next(step["with"]["pattern"] for step in pages["jobs"]["build"]["steps"] if "download-artifact" in step.get("uses", ""))
         self.assertEqual(pattern, "{" + ",".join(prefix.rstrip("-") for prefix in prefixes) + "}-*")
+
+    def test_runner_artifacts_nest_lane_directories_and_attribute_gaps_to_the_runner_job(self) -> None:
+        """`plan-<runner>`/`results-<runner>` несут каталоги полос; недошедший тест
+        macOS получает исход своей джобы `Rust (macos-14)`, Linux — `Unica CI`."""
+        for runner, lane in (("ubuntu-latest", "receipt"), ("macos-14", "ordinary")):
+            self.signed(f"results-{runner}/results-rust-{runner}-{lane}-1", runner, "rust",
+                        [self.rust(f"{lane}::ran", runner)], configuration={"lane": lane})
+            self.plan(f"plan-{runner}/plan-rust-{runner}-{lane}", runner, [f"{lane}::ran", f"{lane}::never_reached"],
+                      configuration={"lane": lane})
+        jobs = self.jobs_file({"Unica CI": "failure", "Rust (macos-14)": "cancelled"})
+        out = self.root / "fresh"
+
+        lines = self.collect.collect(self.artifacts, out, jobs, "", "https://example.invalid")
+
+        self.assertEqual((lines["release-v0.12"]["copied"], lines["release-v0.12"]["filled"]), (2, 2))
+        records = {r["fullName"]: r for r in (json.loads(p.read_text(encoding="utf-8")) for p in (out / "release-v0.12").glob("*-result.json"))}
+        self.assertIn("раннер не дошёл: Unica CI · failure", records["unica-coder::receipt::never_reached"]["statusDetails"]["message"])
+        self.assertIn("раннер не дошёл: Rust (macos-14) · cancelled", records["unica-coder::ordinary::never_reached"]["statusDetails"]["message"])
+        self.assertEqual(self.collect.label(records["unica-coder::ordinary::never_reached"], "rust_lane"), "ordinary")
 
     def test_nested_artifacts_of_a_relayed_run_are_found_at_any_depth(self) -> None:
         """Ночь выкладывает артефакты запущенного large одним своим — вложенным."""
@@ -531,7 +555,7 @@ class CollectResultsTests(unittest.TestCase):
                             for original in originals:
                                 self.allure.write(path, original)
                         output = self.root / (ecosystem + ("-with-result" if has_result else "-signature-only"))
-                        stats = self.collect.collect(self.artifacts, output, self.jobs_file({"Rust tests (complete inventory)": "failure"}), "", "")
+                        stats = self.collect.collect(self.artifacts, output, self.jobs_file({"Unica CI": "failure"}), "", "")
                         config = json.loads((output / self.run["ref"] / "run.json").read_text())["rust_configurations"][0]
                         self.assertIsNone(config["lane"])
                         self.assertEqual(config["scope"], "whole_invocation")
@@ -556,7 +580,7 @@ class CollectResultsTests(unittest.TestCase):
     def test_plan_only_and_signature_only_configurations_survive_zero_results(self) -> None:
         self.plan("plan-rust-ordinary", "ubuntu-latest", ["never::reached"])
         self.signed("plan-rust-receipt", "ubuntu-latest", "rust", [], configuration={"lane": "receipt"})
-        jobs = self.jobs_file({"Rust tests (complete inventory)": "failure", "Build Rust receipt (ubuntu-latest)": "failure"})
+        jobs = self.jobs_file({"Unica CI": "failure", "Rust (macos-14)": "success"})
         output = self.root / "fresh"
         stats = self.collect.collect(self.artifacts, output, jobs, "", "")
         entries = [json.loads(path.read_text()) for path in (output / self.run["ref"]).glob("*-result.json")]
@@ -567,7 +591,7 @@ class CollectResultsTests(unittest.TestCase):
         self.assertFalse(receipt["has_plan"])
         self.assertEqual((receipt["inventory_status"], receipt["inventory_count"], receipt["result_count"]), ("unknown", 0, 0))
         self.assertEqual(receipt["observed_statuses"], {})
-        self.assertEqual(receipt["job"], {"name": "Build Rust receipt (ubuntu-latest)", "conclusion": "failure"})
+        self.assertEqual(receipt["job"], {"name": "Unica CI", "conclusion": "failure"})
         self.assertEqual(receipt["signature_artifacts"], ["plan-rust-receipt"])
 
     def test_failed_receipt_never_borrows_ordinary_or_unlabeled_prior_inventory(self) -> None:
@@ -589,7 +613,7 @@ class CollectResultsTests(unittest.TestCase):
         self.plan("plan-ordinary", "ubuntu-latest", ["healthy::ordinary"])
         self.signed("plan-receipt", "ubuntu-latest", "rust", [], configuration={"lane": "receipt"})
         output = self.root / "fresh"
-        self.collect.collect(self.artifacts, output, self.jobs_file({"Build Rust receipt (ubuntu-latest)": "failure"}), "", "https://site")
+        self.collect.collect(self.artifacts, output, self.jobs_file({"Unica CI": "failure"}), "", "https://site")
         entries = [json.loads(path.read_text()) for path in (output / self.run["ref"]).glob("*-result.json")]
         self.assertEqual(len(entries), 1)
         copied = entries[0]
@@ -616,7 +640,7 @@ class CollectResultsTests(unittest.TestCase):
         self.plan("plan-ordinary", "ubuntu-latest", ["shared::case"])
         self.signed("plan-receipt", "ubuntu-latest", "rust", [], configuration={"lane": "receipt"})
         output = self.root / "fresh"
-        self.collect.collect(self.artifacts, output, self.jobs_file({"Build Rust receipt (ubuntu-latest)": "failure"}), "", "https://site")
+        self.collect.collect(self.artifacts, output, self.jobs_file({"Unica CI": "failure"}), "", "https://site")
         entries = [json.loads(path.read_text()) for path in (output / self.run["ref"]).glob("*-result.json")]
         self.assertEqual({(self.collect.label(e, "rust_lane"), e["status"]) for e in entries}, {("ordinary", "passed"), ("receipt", "skipped")})
         skipped = next(e for e in entries if e["status"] == "skipped")

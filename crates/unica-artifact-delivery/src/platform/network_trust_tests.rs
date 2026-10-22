@@ -20,12 +20,13 @@ const URL: &str = "UNICA_NETWORK_TRUST_URL";
 const DESTINATION: &str = "UNICA_NETWORK_TRUST_DESTINATION";
 
 /// Дочерний процесс: качает штатным загрузчиком из окружения процесса.
-/// Без переменной сценария — не дочерний процесс, и делать ему нечего.
+/// Сам по себе не тест: помечен `#[ignore]`, родитель запускает его с
+/// `--ignored`, а без переменной сценария он падает, а не проходит пустым.
 #[test]
+#[ignore = "helper process: spawned by the network trust tests with UNICA_NETWORK_TRUST_SCENARIO; not a standalone test"]
 fn network_trust_child_process() {
-    let Ok(scenario) = std::env::var(SCENARIO) else {
-        return;
-    };
+    let scenario =
+        std::env::var(SCENARIO).expect("helper process: the parent test sets the scenario");
     let url = std::env::var(URL).expect("url");
     let destination = PathBuf::from(std::env::var_os(DESTINATION).expect("destination"));
     let result = HttpDownloader::default().download(&url, &destination, &SilentDownload);
@@ -116,7 +117,13 @@ fn run_child(
     extra: &[(&str, &str)],
 ) -> Output {
     let mut command = Command::new(std::env::current_exe().expect("test binary"));
-    command.args(["--exact", CHILD, "--nocapture", "--test-threads=1"]);
+    command.args([
+        "--exact",
+        CHILD,
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1",
+    ]);
     for name in INHERITED {
         command.env_remove(name);
     }

@@ -2843,7 +2843,13 @@ mod tests {
         match create_file_link_fixture_for_test(&physical, &alias).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
         let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let failure = WorkspaceFindDirectoryBuilder::default()
@@ -3218,6 +3224,10 @@ mod tests {
             .child_names_equivalent(std::ffi::OsStr::new("Й"), std::ffi::OsStr::new("И\u{306}"))
             .unwrap()
         {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::NormalizationInsensitiveFilesystem,
+                "Unicode aliases need a normalization-insensitive volume",
+            );
             return;
         }
         assert!(alias.is_dir(), "the filesystem must resolve the alias");
@@ -3248,6 +3258,10 @@ mod tests {
     #[test]
     fn windows_drive_and_unc_prefixes_keep_the_same_root_anchor_shape() {
         if std::path::MAIN_SEPARATOR != '\\' {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::WindowsPathSyntax,
+                "drive and UNC prefixes exist only on Windows",
+            );
             return;
         }
         for (ordinary, extended) in [
@@ -3282,6 +3296,10 @@ mod tests {
         let moved = workspace.join("moved-src");
         if let Err(error) = fs::rename(&source, &moved) {
             if error.kind() == io::ErrorKind::PermissionDenied {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                    "the platform keeps an open directory from being renamed",
+                );
                 return;
             }
             panic!("could not replace retained source root: {error}");
@@ -3344,6 +3362,10 @@ mod tests {
             .child_names_equivalent(std::ffi::OsStr::new("X.xml"), std::ffi::OsStr::new("x.xml"))
             .unwrap()
         {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::CaseSensitiveFilesystem,
+                "case-distinct names need a case-sensitive volume",
+            );
             return;
         }
         let foreign_path = workspace.join("Catalogs/x.xml");
@@ -3403,6 +3425,10 @@ mod tests {
             .child_names_equivalent(std::ffi::OsStr::new("A"), std::ffi::OsStr::new("a"))
             .unwrap()
         {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::CaseSensitiveFilesystem,
+                "case-distinct names need a case-sensitive volume",
+            );
             return;
         }
         let main = unica_workspace::read::open_source_directory(&lower.join("nested")).unwrap();
@@ -3410,6 +3436,10 @@ mod tests {
         let moved = workspace.join("moved-A");
         if let Err(error) = fs::rename(&upper, &moved) {
             if error.kind() == io::ErrorKind::PermissionDenied {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                    "the platform keeps an open directory from being renamed",
+                );
                 return;
             }
             panic!("could not replace foreign source parent: {error}");
@@ -3461,7 +3491,13 @@ mod tests {
             {
                 FileLinkFixtureOutcome::Created => {}
                 FileLinkFixtureOutcome::Unsupported
-                | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+                | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                    unica_process::test_support::skip_without_host_capability(
+                        unica_process::test_support::HostCapability::Symlink,
+                        "creating a link fixture needs the symlink privilege",
+                    );
+                    return;
+                }
             }
         }
         let main_root = unica_workspace::read::open_source_directory(&workspace).unwrap();
@@ -3651,7 +3687,13 @@ mod tests {
         match create_file_link_fixture_for_test(&physical, &descriptor).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
         let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let error = WorkspaceFindDirectoryBuilder::default()
@@ -3850,7 +3892,13 @@ mod tests {
         match create_file_link_fixture_for_test(&physical, &descriptor).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
 
         let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
@@ -3889,7 +3937,13 @@ mod tests {
         {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
 
         let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
@@ -3927,7 +3981,13 @@ mod tests {
         match create_file_link_fixture_for_test(&physical, &descriptor).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
         let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let refusal = WorkspaceFindDirectoryBuilder::default()
@@ -3957,7 +4017,13 @@ mod tests {
         match create_directory_link_fixture_for_test(&physical, &owner_root).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
 
         let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
@@ -4001,7 +4067,13 @@ mod tests {
         match create_directory_link_fixture_for_test(&physical, &command).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
 
         let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();

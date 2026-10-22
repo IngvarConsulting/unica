@@ -75,7 +75,7 @@ thread_local! {
     > = std::cell::RefCell::new(None);
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 fn set_apply_before_input_confirmation_hook(hook: impl FnOnce() + 'static) {
     APPLY_BEFORE_INPUT_CONFIRMATION_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
 }
@@ -89,7 +89,7 @@ fn run_apply_before_input_confirmation_hook() {
     });
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 fn set_apply_dry_run_after_confirmation_hook(hook: impl FnOnce() + 'static) {
     APPLY_DRY_RUN_AFTER_CONFIRMATION_HOOK.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(hook));

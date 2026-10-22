@@ -441,7 +441,7 @@
         },
         {
           "pointer": "/data/props/explanation",
-          "eq": null
+          "eq": ""
         },
         {
           "pointer": "/data/props/includeInCommandInterface",

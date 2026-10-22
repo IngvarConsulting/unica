@@ -16,13 +16,21 @@ import platform
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
 
 MANIFEST_ENV = "UNICA_PREPARED_BINARY_MANIFEST"
+# Default Cargo target directory of a standalone product build. The CI job
+# passes its own `target`: the product shares dependency artifacts with the
+# test archives, and its bytes are copied out before any later build.
+PRODUCT_TARGET = Path(".build/ci-product-target")
 SCHEMA = 1
 ORDINARY_FEATURES = ["default"]
+# One local build per process and checkout; CI never reaches it.
+_LOCAL_BUILDS: dict[Path, Path] = {}
+LOCAL_BUILD = ["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"]
 
 
 def digest(path: Path) -> str:
@@ -110,23 +118,36 @@ def binary_path(root: Path) -> Path:
     return (root / os.environ.get("CARGO_TARGET_DIR", "target") / "debug" / ("unica.exe" if os.name == "nt" else "unica")).resolve()
 
 
-def ensure_binary(root: Path, *, build_command: list[str] | None = None) -> Path:
+def ensure_binary(root: Path) -> Path:
     if MANIFEST_ENV in os.environ:
         return binary_path(root)
-    command = build_command or ["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"]
-    subprocess.run(command, cwd=root, check=True)
-    binary = binary_path(root)
-    if not binary.is_file():
-        raise ValueError(f"Cargo did not produce {binary}")
-    return binary
+    # CI Python suites consume the verified bytes of the `product` step. A job
+    # without the manifest is a wiring defect, not a reason to compile again.
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        raise ValueError(f"{MANIFEST_ENV} is unset in CI; Python suites never build the product")
+    key = root.resolve()
+    if key not in _LOCAL_BUILDS:
+        print(f"prepared_binary: {MANIFEST_ENV} is unset, building the product: {' '.join(LOCAL_BUILD)}\n"
+              f"prepared_binary: to reuse one verified build across runs of an unchanged tree, run "
+              f"`python scripts/ci/prepared_binary.py build --destination DIR --archive FILE` (a separate "
+              f"build into .build/ci-product-target) and set {MANIFEST_ENV}=DIR/manifest.json; unset it "
+              f"after editing sources, the manifest then refuses",
+              file=sys.stderr)
+        subprocess.run(LOCAL_BUILD, cwd=root, check=True)
+        binary = binary_path(root)
+        if not binary.is_file():
+            raise ValueError(f"Cargo did not produce {binary}")
+        _LOCAL_BUILDS[key] = binary
+    return _LOCAL_BUILDS[key]
 
 
-def build(root: Path, destination: Path) -> Path:
+def build(root: Path, destination: Path, target_dir: Path = PRODUCT_TARGET) -> Path:
     if destination.exists():
         raise ValueError(f"prepared destination already exists: {destination}")
     before = identity(root)
-    # This target directory belongs exclusively to the ordinary producer.
-    target = root / ".build" / "ci-product-target"
+    # A shared target may later be rebuilt with other features (Receipt):
+    # the copy below, outside the target, is what Python executes.
+    target = root / target_dir
     command = ["cargo", "build", "--locked", "-p", "unica-coder", "--bin", "unica",
                "--target", before["target"], "--target-dir", str(target), "--message-format", "json"]
     completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE, check=True)
@@ -213,12 +234,15 @@ def main() -> None:
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--archive", type=Path)
+    parser.add_argument("--target-dir", type=Path, default=PRODUCT_TARGET, help="Cargo target directory of the build")
     args = parser.parse_args()
     if args.action == "build":
-        if args.destination is None or args.archive is None:
-            parser.error("build requires --destination and --archive")
-        manifest = build(args.repo_root, args.destination)
-        pack(manifest, args.archive, args.repo_root)
+        if args.destination is None:
+            parser.error("build requires --destination")
+        manifest = build(args.repo_root, args.destination, args.target_dir)
+        if args.archive is not None:
+            pack(manifest, args.archive, args.repo_root)
+        print(manifest.resolve())
     elif args.action == "unpack":
         if args.destination is None or args.archive is None:
             parser.error("unpack requires --destination and --archive")
