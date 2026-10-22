@@ -23,7 +23,6 @@ import host_capability_guard as guard
 
 # Ранние выходы, существовавшие до механизма (#1893). Список только сокращается.
 ALLOWLIST = frozenset({
-    "crates/unica-adapter-bsl-analyzer/src/jsonl.rs::reported_path_cannot_escape_the_source_root_through_a_symlink",
     "crates/unica-coder/src/application/mod.rs::cf_edit_preserves_unix_mode_0600",
     "crates/unica-coder/src/application/mod.rs::cf_edit_rejects_symlink_configuration_without_touching_referent",
     "crates/unica-coder/src/infrastructure/capacity_observation.rs::report_reader_rejects_linked_snapshot_and_storage_failure_is_fail_open",
@@ -107,9 +106,6 @@ ALLOWLIST = frozenset({
     "crates/unica-coder/tests/platform/workspace_services_integration.rs::rlm_execute_rejects_replaced_root_and_retires_its_session",
     "crates/unica-coder/tests/platform/workspace_services_integration.rs::rlm_reader_command_preserves_native_generation_environment_bytes",
     "crates/unica-coder/tests/platform/workspace_services_integration.rs::rlm_ready_rejects_unsafe_provider_state_root",
-    "crates/unica-daemon/src/state_collection.rs::a_link_named_like_a_state_is_neither_followed_nor_removed",
-    "crates/unica-daemon/tests/platform/identity_admission.rs::symlinked_provider_state_root_is_rejected_before_creating_identity_state",
-    "crates/unica-daemon/tests/platform/identity_admission.rs::world_readable_identity_directory_is_rejected",
     "crates/unica-execution/src/lifecycle_link_store.rs::second_pass_refuses_link_staging_symlink_and_preserves_external_bytes",
     "crates/unica-execution/src/receipt_store/tests.rs::authority_failure_latches_every_live_entry_point_until_reopen",
     "crates/unica-execution/src/receipt_store/tests.rs::cancel_at_maximum_epoch_cannot_bypass_an_already_fail_stopped_store",
@@ -118,13 +114,6 @@ ALLOWLIST = frozenset({
     "crates/unica-execution/src/receipt_store/tests.rs::receipt_directory_link_or_reparse_point_is_rejected_without_touching_target",
     "crates/unica-execution/src/receipt_store/tests.rs::recovery_cleanup_preserves_external_targets_of_replaced_active_and_generation_orphans",
     "crates/unica-execution/src/task_store.rs::second_pass_refuses_task_staging_symlink_and_preserves_external_bytes",
-    "crates/unica-metadata-integration-tests/tests/subsystem_topology.rs::registered_descriptor_symlink_is_not_followed",
-    "crates/unica-metadata-integration-tests/tests/subsystem_topology.rs::unregistered_directory_symlink_branch_does_not_affect_the_topology",
-    "crates/unica-metadata-integration-tests/tests/subsystem_topology.rs::unregistered_file_symlink_does_not_affect_the_topology",
-    "crates/unica-process/src/runtime_job.rs::external_cancel_error_binds_system_drop_to_the_same_cleanup_deadline",
-    "crates/unica-process/src/runtime_job.rs::reap_authority_loss_makes_cancel_and_drop_send_zero_group_signals",
-    "crates/unica-process/src/runtime_job.rs::system_process_drop_uses_no_second_window_after_cleanup_deadline_is_consumed",
-    "crates/unica-process/src/runtime_job.rs::waitid_authority_loss_makes_cancel_and_drop_send_zero_group_signals",
     "crates/unica-project-health/tests/platform/project_health_git.rs::project_health_git_discovers_repository_root_containing_newline",
     "crates/unica-project-health/tests/platform/project_health_git.rs::project_health_git_ignore_rejects_host_identity_collisions",
     "crates/unica-project-health/tests/platform/project_health_inspection.rs::source_owner_index_applies_case_policy_per_parent_directory",
