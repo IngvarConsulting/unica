@@ -11,7 +11,8 @@ pub use super::process::{
 };
 
 pub use super::host_capability::{
-    skip_without_host_capability, HostCapability, HOST_CAPABILITY_SKIPS_ENV,
+    skip_named_host_capability, skip_without_host_capability, HostCapability,
+    HOST_CAPABILITY_SKIPS_ENV,
 };
 
 /// Availability of the existing Unix process-authority fixture.

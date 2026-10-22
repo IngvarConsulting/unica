@@ -385,7 +385,7 @@ pub fn post_write_validation_failure_restores_exact_registration_bytes(
 
 pub fn post_validation_rollback_restores_bytes_and_unix_mode_0600(
     registrar: fn(&mut String, &str, &str) -> Result<bool, String>,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let root = temp_root("rollback-mode");
     let config = root.join("Configuration.xml");
     let original = configuration_bytes();
@@ -393,7 +393,10 @@ pub fn post_validation_rollback_restores_bytes_and_unix_mode_0600(
     if !testing::set_unix_mode_for_test(&config, 0o600).expect("mode fixture must be configurable")
     {
         fs::remove_dir_all(root).expect("temporary root must be removed");
-        return;
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "unix-permission-bits",
+            reason: "the test sets Unix permission bits",
+        });
     }
     let mut transaction = CompileTransaction::new();
     transaction
@@ -413,6 +416,7 @@ pub fn post_validation_rollback_restores_bytes_and_unix_mode_0600(
     );
     assert!(transaction_debris(&root).is_empty());
     fs::remove_dir_all(root).expect("temporary root must be removed");
+    Ok(())
 }
 
 pub fn registration_target_remains_present_after_backup_preparation(
@@ -461,9 +465,12 @@ pub fn registration_target_remains_present_after_backup_preparation(
 
 pub fn pending_registration_cleanup_preserves_same_name_decoys_after_parent_swap(
     registrar: fn(&mut String, &str, &str) -> Result<bool, String>,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
-        return;
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "rename-under-open-handle",
+            reason: "the platform keeps an open handle from being renamed or replaced",
+        });
     }
     let root = temp_root("pending-recovery-parent-swap");
     let active_parent = root.join("active");
@@ -546,6 +553,7 @@ pub fn pending_registration_cleanup_preserves_same_name_decoys_after_parent_swap
         .join("original")
         .is_file());
     fs::remove_dir_all(root).expect("temporary root must be removed");
+    Ok(())
 }
 
 pub fn precommit_retry_finishes_the_recovery_directory_after_file_cleanup_recovers(
@@ -637,9 +645,12 @@ pub fn precommit_retry_finishes_the_recovery_directory_after_file_cleanup_recove
 
 pub fn successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap(
     registrar: fn(&mut String, &str, &str) -> Result<bool, String>,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
-        return;
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "rename-under-open-handle",
+            reason: "the platform keeps an open handle from being renamed or replaced",
+        });
     }
     let root = temp_root("finalize-recovery-parent-swap");
     let active_parent = root.join("active");
@@ -708,6 +719,7 @@ pub fn successful_registration_cleanup_warns_and_preserves_decoy_after_parent_sw
         "the identity-bound recovery must remain in its displaced parent"
     );
     fs::remove_dir_all(root).expect("temporary root must be removed");
+    Ok(())
 }
 
 pub fn successful_registration_finalize_does_not_recreate_recovery_after_directory_cleanup_failure(
@@ -940,9 +952,12 @@ pub fn rollback_preserves_concurrent_registration_replacement_and_original_recov
 
 pub fn registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap(
     registrar: fn(&mut String, &str, &str) -> Result<bool, String>,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
-        return;
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "rename-under-open-handle",
+            reason: "the platform keeps an open handle from being renamed or replaced",
+        });
     }
     let root = temp_root("rollback-recovery-parent-swap");
     let active_parent = root.join("active");
@@ -1020,6 +1035,7 @@ pub fn registration_rollback_preserves_same_name_recovery_decoy_after_parent_swa
         "the proven recovery must remain in the displaced parent"
     );
     fs::remove_dir_all(root).expect("temporary root must be removed");
+    Ok(())
 }
 
 pub fn registration_rollback_cleanup_preserves_same_name_quarantine_decoy(
@@ -1221,9 +1237,12 @@ pub fn registration_rollback_validation_reports_preserved_quarantine(
 
 pub fn registration_rollback_restore_uses_retained_parent_handles_after_route_swap(
     registrar: fn(&mut String, &str, &str) -> Result<bool, String>,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
-        return;
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "rename-under-open-handle",
+            reason: "the platform keeps an open handle from being renamed or replaced",
+        });
     }
     let root = temp_root("registration-rollback-restore-parent-route-swap");
     let active_parent = root.join("active");
@@ -1327,6 +1346,7 @@ pub fn registration_rollback_restore_uses_retained_parent_handles_after_route_sw
         "the retained quarantine link must move to the retained target parent"
     );
     fs::remove_dir_all(root).expect("temporary root must be removed");
+    Ok(())
 }
 
 pub fn after_registration_backup_failure_restores_exact_bytes_and_removes_debris(
@@ -1440,10 +1460,8 @@ pub fn symlink_targets_are_rejected(
     let real = root.join("real.xml");
     let link = root.join("Configuration.xml");
     fs::write(&real, configuration_bytes()).expect("fixture must be written");
-    let Some(symlink) = testing::create_file_symlink_for_test(&real, &link) else {
-        fs::remove_dir_all(root).expect("temporary root must be removed");
-        return;
-    };
+    let symlink = testing::create_file_symlink_for_test(&real, &link)
+        .expect("symlink fixtures exist on Unix and Windows");
     symlink.expect("symlink must be created");
     let mut transaction = CompileTransaction::new();
 

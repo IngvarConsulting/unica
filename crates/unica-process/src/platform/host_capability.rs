@@ -83,6 +83,18 @@ impl HostCapability {
     }
 }
 
+/// Report a skip a contract test returned with its capability name: a
+/// contract in a crate without this helper (for example `unica-workspace`,
+/// which may use processes only in tests) names the capability, and its
+/// `#[test]` wrapper reports it here. An unknown name is a defect.
+pub fn skip_named_host_capability(name: &str, reason: &str) {
+    let capability = HostCapability::ALL
+        .into_iter()
+        .find(|capability| capability.name() == name)
+        .unwrap_or_else(|| panic!("unknown host capability `{name}`"));
+    skip_without_host_capability(capability, reason);
+}
+
 /// Record that this test skips because the host lacks `capability`.
 /// The caller returns immediately afterwards; nothing else may skip.
 pub fn skip_without_host_capability(capability: HostCapability, reason: &str) {
@@ -119,6 +131,17 @@ pub fn skip_without_host_capability(capability: HostCapability, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_contract_skip_names_a_known_capability() {
+        // Under the lane runner this records a skip of this very test, so it
+        // names a capability no runner requires; the lookup is what is tested.
+        skip_named_host_capability("windows-job-object", "the name resolves");
+        let unknown = std::panic::catch_unwind(|| {
+            skip_named_host_capability("teleport", "no such capability")
+        });
+        assert!(unknown.is_err(), "an unknown capability name is a defect");
+    }
 
     #[test]
     fn capability_names_are_unique_kebab_case() {

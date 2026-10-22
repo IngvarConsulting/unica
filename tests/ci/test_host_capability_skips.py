@@ -163,21 +163,12 @@ ALLOWLIST = frozenset({
     "crates/unica-workspace/src/actor_local_tests.rs::descriptor_relative_read_never_follows_a_nested_directory_link",
     "crates/unica-workspace/src/actor_local_tests.rs::retained_binding_rejects_a_root_replaced_by_another_source_set_link",
     "crates/unica-workspace/src/actor_policy_contract_tests.rs::apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publication",
-    "crates/unica-workspace/src/actor_policy_contract_tests.rs::cache_preimage_link_race_and_absent_chain_occupation_preserve_foreign_namespace",
-    "crates/unica-workspace/src/actor_policy_contract_tests.rs::prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic",
-    "crates/unica-workspace/src/actor_policy_contract_tests.rs::source_role_rejects_platform_equivalent_generated_components",
     "crates/unica-workspace/src/apply.rs::retained_create_stage_source_swap_leaves_no_destination_mutation_and_loses_neither_file",
     "crates/unica-workspace/src/apply.rs::retained_directory_rollback_never_unlinks_a_public_name_swapped_after_validation",
     "crates/unica-workspace/src/apply.rs::retained_private_directory_source_swap_never_publishes_or_deletes_the_foreign_directory",
     "crates/unica-workspace/src/apply.rs::retained_rollback_published_cleanup_never_unlinks_a_concurrent_child",
     "crates/unica-workspace/src/apply.rs::retained_rollback_restore_recovery_swap_never_reports_a_different_inode_restored",
     "crates/unica-workspace/src/apply.rs::retained_success_recovery_cleanup_never_unlinks_a_concurrent_child",
-    "crates/unica-workspace/src/compile_transaction_contract_tests.rs::pending_registration_cleanup_preserves_same_name_decoys_after_parent_swap",
-    "crates/unica-workspace/src/compile_transaction_contract_tests.rs::post_validation_rollback_restores_bytes_and_unix_mode_0600",
-    "crates/unica-workspace/src/compile_transaction_contract_tests.rs::registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap",
-    "crates/unica-workspace/src/compile_transaction_contract_tests.rs::registration_rollback_restore_uses_retained_parent_handles_after_route_swap",
-    "crates/unica-workspace/src/compile_transaction_contract_tests.rs::successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap",
-    "crates/unica-workspace/src/compile_transaction_contract_tests.rs::symlink_targets_are_rejected",
     "crates/unica-workspace/src/compile_transaction_local_tests.rs::publication_cleanup_retry_does_not_treat_a_missing_route_as_cleaned",
     "crates/unica-workspace/src/compile_transaction_local_tests.rs::replacement_rejects_parent_symlink_swap_after_planning_before_locking",
     "crates/unica-workspace/src/compile_transaction_local_tests.rs::transaction_rejects_cache_create_parent_symlink_swap_before_touching_either_target",
@@ -192,11 +183,6 @@ ALLOWLIST = frozenset({
     "crates/unica-workspace/src/single_file_publisher.rs::lock_only_identity_rejects_an_existing_symlink_ancestor",
     "crates/unica-workspace/src/single_file_publisher.rs::permission_change_before_commit_is_rejected",
     "crates/unica-workspace/src/single_file_publisher.rs::sync_failpoint_reaches_post_permissions_checkpoint",
-    "crates/unica-workspace/src/workspace_actor_cache_tests.rs::cache_override_drive_prefix_follows_host_path_semantics_without_erasing_links",
-    "crates/unica-workspace/src/workspace_actor_cache_tests.rs::external_cache_route_rejects_links_including_components_cancelled_by_parent",
-    "crates/unica-workspace/src/workspace_actor_cache_tests.rs::relative_cache_uses_process_cwd_when_workspace_has_an_alias",
-    "crates/unica-workspace/src/workspace_actor_cache_tests.rs::shared_workspace_alias_does_not_retarget_prepared_external_or_default_cache",
-    "crates/unica-workspace/src/workspace_actor_cache_tests.rs::workspace_suffix_alias_cannot_disguise_a_different_shared_cache_ancestor",
 })
 
 
@@ -232,6 +218,8 @@ class HostCapabilityGuardTests(unittest.TestCase):
             "        skip_without_host_capability(HostCapability::Symlink, \"needs a privilege\");\n"
             "        return;\n    };\n}\n",
             "#[test]\nfn sample() {\n    // if !supports_retained_root_replacement_test() { return; }\n    run();\n}\n",
+            "pub fn contract() -> Result<(), CapabilitySkip> {\n    if !can_swap_named_child_behind_retained_handle_for_test() {\n"
+            "        return Err(CapabilitySkip { capability: \"rename-under-open-handle\", reason: \"x\" });\n    }\n    Ok(())\n}\n",
             "#[test]\nfn sample() {\n    let program = r#\"fn main() { if symlink(a, b).is_err() { return; } }\"#;\n}\n",
             "#[test]\nfn sample() {\n    let link = create_file_symlink_for_test(&a, &b).unwrap().unwrap();\n    assert!(link);\n}\n",
         )
