@@ -1026,6 +1026,38 @@ fn inherited_form_metadata_is_local_without_claiming_a_local_form_payload() {
     }
 }
 
+/// A form borrowed with its own `Form.xml` (#1982) carries local content:
+/// view does not report it as inherited, so its content writers stay open.
+#[test]
+fn borrowed_form_with_its_own_form_xml_reads_as_local_content() {
+    let fixture = RealReaderFixture::new();
+    install_inherited_objects(&fixture);
+    let forms = fixture.source.join("DataProcessors/Обработка/Forms");
+    let inherited = platform_borrow_fixture("extension-object-form-inherited.xml");
+    let borrowed = platform_borrow_fixture("extension-object-form-borrowed.xml")
+        .replace(
+            "4a1f0000-0000-4000-8000-0000000019f1",
+            "2f0e0000-0000-4000-8000-000000000104",
+        )
+        .replace(
+            "3a1f0000-0000-4000-8000-000000001982",
+            "1f0e0000-0000-4000-8000-000000000104",
+        )
+        .replace("<Name>CorpusForm</Name>", "<Name>Форма</Name>");
+    assert_ne!(borrowed, inherited);
+    write(&forms.join("Форма.xml"), &borrowed);
+    write(
+        &forms.join("Форма/Ext/Form.xml"),
+        &platform_borrow_fixture("extension-object-form-borrowed-Form.xml"),
+    );
+    let service = fixture.extension_view_service();
+    let form = service.view(ViewRequest::new("main:DataProcessor.Обработка.Form.Форма").unwrap());
+    assert!(form.ok, "{form:?}");
+    let data = form.data.unwrap();
+    assert_eq!(data["kind"], "Form");
+    assert!(data["props"].get("content").is_none(), "{data}");
+}
+
 #[test]
 fn form_metadata_rejects_orphans_and_does_not_follow_descriptor_links() {
     let fixture = RealReaderFixture::new();

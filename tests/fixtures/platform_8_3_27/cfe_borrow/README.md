@@ -130,3 +130,101 @@ of the `workspace-borrowed` acceptance fixture.
 `InternalInfo`, `Properties`, а внутри свойств — `ObjectBelonging`, `Name`,
 `Synonym`, `Comment`, `ExtendedConfigurationObject`; у вложенных элементов нет
 повторных объявлений пространств имён.
+
+## Заимствованная форма объекта со своим `Form.xml` (#1982)
+
+Опыт с тем же бинарём 8.3.27.2074 и теми же шестью командами. Родитель —
+конфигурация из `cf-init.py` с `Catalog.CorpusCatalog` (описание как в
+`parent-catalog.xml`, плюс `DefaultObjectForm` и `ChildObjects/Form`) и
+управляемой формой элемента `CorpusForm`: поле `Объект.Description`, кнопка
+командной панели с командой формы, событие `OnCreateAtServer` и модуль с двумя
+обработчиками. Родитель написан вручную, один раз импортирован в базу
+(`infobase create --import --apply`, затем `config check` и
+`config export`) и дальше всегда брался из этой выгрузки. Байты этой выгрузки
+лежат в `parent-catalog-with-form.xml`, `parent-catalog-form.xml`,
+`parent-catalog-form-Form.xml` и `parent-catalog-form-Module.bsl`.
+
+Расширение — пустое расширение из `cfe-init.py` (`Customization`,
+префикс `CorpusExtension_`), в котором заимствованы справочник и форма.
+Описание владельца несёт только `ObjectBelonging`, `Name`, `Comment`,
+`ExtendedConfigurationObject` и сгенерированные типы. Порядок команд:
+
+```bash
+ibcmd=/opt/1cv8/8.3.27.2074/ibcmd
+round=./round1
+connection=(--db-path="$round/ib/db" --data="$round/ib/data"
+  --temp="$round/ib/temp" --users-data="$round/ib/users"
+  --session-data="$round/ib/session" --log-data="$round/ib/log")
+"$ibcmd" infobase create "${connection[@]}" --import=./parent-src --apply --force
+"$ibcmd" extension "${connection[@]}" create --name=CorpusExtension --name-prefix=CorpusExtension_ --purpose=customization
+"$ibcmd" config "${connection[@]}" import --extension=CorpusExtension ./extension-src
+"$ibcmd" config "${connection[@]}" check --extension=CorpusExtension --force
+"$ibcmd" config "${connection[@]}" apply --extension=CorpusExtension --force
+"$ibcmd" config "${connection[@]}" export --extension=CorpusExtension "$round/export"
+```
+
+Второй круг — те же шесть команд с `round=./round2` в независимо созданной
+базе и с `./round1/export` в качестве `extension-src`. Каждый вариант ниже
+прошёл оба круга с кодом выхода 0 у всех двенадцати команд, без `[WARN]` и
+`[ERROR]`. Выгрузки двух кругов совпали побайтно во всех файлах, включая
+`ConfigDumpInfo.xml`.
+
+Проверенные формы `Ext/Form.xml` при одном и том же описании формы
+с `FormType` `Managed`:
+
+| Вход | Что выгрузила платформа |
+|---|---|
+| вывод v0.12 `unica.cfe.borrow` (копия свойств, командной панели и элементов, `CommandName` 0, без `DataPath`, `Events`, `Commands`, пустой `Attributes`, та же копия в `BaseForm`) | то же без пустых строк |
+| своя часть пуста, `BaseForm` — тело формы родителя | своя часть стала `<AutoCommandBar name="" id="-1"/>` и `<Attributes/>`; `BaseForm` сохранён, но без `UseForFoldersAndItems`, а `Event` и `Action` в нём получили `callType="Before"` |
+| своя часть и `BaseForm` — тело формы родителя | обе части сохранены; `UseForFoldersAndItems` выпал; `Event` и `Action` получили `callType="Before"`, то есть стали обработчиками расширения |
+| свойства формы, `AutoCommandBar` с `Autofill` `false`, `<Attributes/>` в обеих частях | без изменений |
+| своя часть пуста, `<BaseForm version="2.20"/>` | обе части стали `<AutoCommandBar name="" id="-1"/>` и `<Attributes/>` |
+| только корень `Form` без `BaseForm` | `<AutoCommandBar name="" id="-1"/>`, `<Attributes/>`, `BaseForm` не выгружен |
+
+Импорт не восстанавливает `BaseForm` по родителю: пустой `BaseForm`
+остаётся пустым, а тело родителя в нём хранится таким, каким его записали.
+Значит, при импорте платформа не сверяет `BaseForm` с родителем.
+
+Описание формы, импортированное без `FormType`, принимается, но выгружается
+без `FormType` и без `Form.xml`: собственное содержимое молча теряется, и
+форма переходит в состояние `extension-object-form-inherited.xml` (#1381).
+Файл `extension-object-form-borrowed-without-form-type.xml` — эта выгрузка.
+С `FormType` `Managed` описание формы, описание владельца и
+`Configuration.xml` расширения выгружаются одинаково при любом из
+перечисленных `Form.xml`. Платформа добавляет к описанию формы только
+`PropertyState Form/Extended`.
+
+Модуль `Ext/Form/Module.bsl` с одним перехватчиком `&После` сохраняется
+побайтно рядом с любым принятым `Form.xml`: с выводом v0.12, с пустой своей
+частью и с минимальной формой ниже.
+
+Фиксированная точка — вход, который платформа выгружает теми же байтами
+уже в первом круге:
+
+```xml
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" ... version="2.20">
+	<AutoCommandBar name="" id="-1"/>
+	<Attributes/>
+	<BaseForm version="2.20">
+		<AutoCommandBar name="" id="-1"/>
+		<Attributes/>
+	</BaseForm>
+</Form>
+```
+
+С модулем `&После` и без него эти байты прошли оба круга без изменений.
+Их выгрузка лежит здесь: `extension-object-form-borrowed.xml` (описание
+формы), `extension-object-form-borrowed-Form.xml`,
+`extension-object-form-borrowed-Module.bsl`,
+`extension-catalog-with-borrowed-form.xml` (владелец) и
+`extension-configuration-with-borrowed-form.xml`.
+
+Чего опыт не доказывает. Входы расширения написаны вручную или получены
+из v0.12 `unica.cfe.borrow`: это не вывод команды Конфигуратора
+«Добавить в расширение». Опыт проверяет только импорт, `check`, `apply` и
+выгрузку через `ibcmd`. Он не проверяет, какую форму клиент собирает
+во время работы: не проверено, что пустой `BaseForm` и такая же
+собственная часть оставляют форму родителя без изменений, что пустая
+собственная часть при полном `BaseForm` удаляет элементы родителя и что
+перехватчик `&После` вызывается. Не проверено и поведение при обновлении
+родителя.
