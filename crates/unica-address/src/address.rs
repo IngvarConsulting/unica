@@ -26,6 +26,7 @@ pub enum NodeKind {
     WsReference,
     EventSubscription,
     ScheduledJob,
+    Schedule,
     SettingsStorage,
     FunctionalOption,
     FunctionalOptionsParameter,
@@ -185,6 +186,7 @@ struct V13KindSpelling {
 const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Configuration, &["Конфигурация"]),
     spelling(NodeKind::Metadata, &["Метаданные"]),
+    spelling(NodeKind::Schedule, &["Расписание"]),
     spelling(NodeKind::WebSocketClient, &[]),
     spelling(NodeKind::Attribute, &["Реквизит"]),
     spelling(NodeKind::StandardAttribute, &["СтандартныйРеквизит"]),
@@ -265,7 +267,10 @@ impl NodeKind {
     /// Терминальный вид без имени — другое: это адрес ветки, и он допустим у
     /// любого вида. См. `arch/rules/mcp/qualified-logical-address.md`.
     pub const fn takes_name(self) -> bool {
-        !matches!(self, Self::Configuration | Self::Interface | Self::Metadata)
+        !matches!(
+            self,
+            Self::Configuration | Self::Interface | Self::Metadata | Self::Schedule
+        )
     }
 
     /// Может ли имя узла этого вида в этом месте адреса содержать точку.
@@ -355,6 +360,7 @@ impl NodeKind {
             Self::WsReference => "WSReference",
             Self::EventSubscription => "EventSubscription",
             Self::ScheduledJob => "ScheduledJob",
+            Self::Schedule => "Schedule",
             Self::SettingsStorage => "SettingsStorage",
             Self::FunctionalOption => "FunctionalOption",
             Self::FunctionalOptionsParameter => "FunctionalOptionsParameter",
@@ -1472,7 +1478,7 @@ mod tests {
 
 #[cfg(test)]
 mod form_metadata_addresses {
-    use super::QualifiedAddress;
+    use super::{NodeKind, QualifiedAddress};
     #[test]
     fn metadata_is_a_terminal_nameless_form_descriptor_and_keeps_operation_queries() {
         for (raw, owner) in [
@@ -1507,6 +1513,22 @@ mod form_metadata_addresses {
         ] {
             assert!(QualifiedAddress::parse(raw).is_err(), "{raw}");
         }
+    }
+
+    #[test]
+    fn schedule_is_nameless_and_preserves_its_operation_query() {
+        for raw in [
+            "main:ScheduledJob.MonthClose.Schedule",
+            "main:РегламентноеЗадание.MonthClose.Расписание",
+        ] {
+            let at = QualifiedAddress::parse(raw).unwrap();
+            assert_eq!(at.to_string(), "main:ScheduledJob.MonthClose.Schedule");
+            assert_eq!(at.segments().last().unwrap().kind(), NodeKind::Schedule);
+            assert!(at.segments().last().unwrap().name().is_none());
+            let query = QualifiedAddress::parse(&format!("{at}.Can.meta.set")).unwrap();
+            assert_eq!(query.operation_query().unwrap().0, at);
+        }
+        assert!(QualifiedAddress::parse("main:ScheduledJob.MonthClose.Schedule.Fake").is_err());
     }
 }
 

@@ -20,6 +20,8 @@ pub mod edit;
 
 pub mod info;
 
+pub mod job_schedule;
+
 pub mod template_catalog;
 
 pub mod member_properties;

@@ -179,7 +179,8 @@ pub fn attached_resource_relative(
         [] if (*owner_kind == "CommonForm" && resource == "Form.xml")
             || (*owner_kind == "Role" && resource == "Rights.xml")
             || (*owner_kind == "Subsystem" && resource == "CommandInterface.xml")
-            || (*owner_kind == "XDTOPackage" && resource == "Package.bin") =>
+            || (*owner_kind == "XDTOPackage" && resource == "Package.bin")
+            || (*owner_kind == "ScheduledJob" && resource == "Schedule.xml") =>
         {
             relative.push("Ext");
             relative.push(resource);
