@@ -356,7 +356,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "run",
-                    description: "List canonical runtime operations and their invocation contract, or preview/execute one implemented operation.",
+                    description: "List canonical runtime operations and their invocation contract, or preview/execute one listed operation.",
                     input_schema: schema(
                         json!({
                             "op": {"type": "string", "description": "Runner 1.0 operation name; omit to list the target dictionary and adapter support."},
@@ -504,7 +504,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         rejects_sessions: intent == RunIntent::ClientRun,
         // Runner 0.15 has push --no-apply, apply and reset, but its upload still applies
         // the database configuration and the adapter does not run apply or reset yet
-        // (#1246): these stay in the dictionary as unavailable.
+        // (#1246): these are not listed, and their call is refused with that reason.
         implemented: !matches!(
             intent,
             RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset

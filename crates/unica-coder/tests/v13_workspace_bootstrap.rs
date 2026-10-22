@@ -481,7 +481,7 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
         .iter()
         .find(|operation| operation["op"] == "workspace.initialize")
         .unwrap();
-    assert_eq!(source_attach["implemented"], true);
+    assert!(source_attach.get("implemented").is_none());
     assert_eq!(source_attach["execution"], "previewApply");
     assert_eq!(source_attach["effects"], json!(["workspaceFiles"]));
     assert!(source_attach["description"]
@@ -501,12 +501,10 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     );
     assert!(operations
         .iter()
-        .filter(|operation| operation["implemented"] == false)
-        .all(|operation| operation["argsSchema"].is_null()));
+        .all(|operation| operation.get("implemented").is_none()));
     assert_eq!(
         operations
             .iter()
-            .filter(|operation| operation["implemented"] == true)
             .map(|operation| operation["op"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from(["workspace.initialize", "cf.export", "infobase.export",])

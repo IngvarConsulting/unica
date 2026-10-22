@@ -118,7 +118,7 @@ def audit(records):
                     schema = (props.get("contract") or {}).get("argsSchema") or {}
                     if (at == operation_at and result.get("at") == at and data.get("at") == at
                             and data.get("kind") == "Can" and props.get("op") == operation
-                            and props.get("implemented") is True and isinstance(schema, dict) and schema.get("type") == "object"
+                            and "implemented" not in props and isinstance(schema, dict) and schema.get("type") == "object"
                             and schema.get("additionalProperties") is False):
                         try:
                             Draft202012Validator.check_schema(schema)

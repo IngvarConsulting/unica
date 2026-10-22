@@ -93,7 +93,7 @@ def dcs_physical_fixture(root, *, keep_source=True, keep_variant=True, keep_grou
 def detailed_can_response(target, operation):
     at = target + ".Can." + operation
     return {"ok": True, "at": at, "data": {"at": at, "kind": "Can", "props": {
-        "op": operation, "implemented": True, "contract": {"argsSchema": {"type": "object"}}}}}
+        "op": operation, "contract": {"argsSchema": {"type": "object"}}}}}
 
 
 def evaluate_mxl_fixture(root, mutation=None):
@@ -641,7 +641,7 @@ class AgentEvaluationAuditTests(unittest.TestCase):
             with self.subTest(response=label), self.assertRaisesRegex(ValueError, "detailed contract"):
                 audit(altered)
         for missing_path in [("at",), ("data", "at"), ("data", "kind"), ("data", "props", "op"),
-                             ("data", "props", "implemented"), ("data", "props", "contract", "argsSchema")]:
+                             ("data", "props", "contract", "argsSchema")]:
             altered = copy.deepcopy(trace)
             response = altered[3]["payload"]["result"]["structuredContent"]
             for key in missing_path[:-1]:

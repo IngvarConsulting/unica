@@ -18,16 +18,14 @@
      "pointer": "/data/can",
      "contains": {
       "op": "attribute.add",
-      "args": "items",
-      "implemented": true
+      "args": "items"
      }
     },
     {
      "pointer": "/data/can",
      "contains": {
       "op": "command.add",
-      "args": "items",
-      "implemented": true
+      "args": "items"
      }
     }
    ],

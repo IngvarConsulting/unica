@@ -1,6 +1,5 @@
 use crate::domain::apply::OperationDescriptorExt;
 use crate::domain::apply::RetiredOperationExt;
-use crate::domain::apply::IMPLEMENTED_APPLY_OPERATIONS;
 use serde_json::{json, Map, Value};
 use std::fmt;
 use unica_address::address::{NodeKind, QualifiedAddress};
@@ -154,7 +153,6 @@ fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Optio
                 json!({
                     "op": descriptor.name(),
                     "args": descriptor.skeleton_key(),
-                    "implemented": IMPLEMENTED_APPLY_OPERATIONS.contains(&descriptor.name()),
                 })
             })
             .collect(),
@@ -230,7 +228,6 @@ pub(super) fn operation_node_with(
             "operation `{operation}` does not apply to {kind}"
         )));
     }
-    let implemented = IMPLEMENTED_APPLY_OPERATIONS.contains(&operation);
     let mut contract = descriptor.argument_contract_at(&site);
     // Командная панель принимает только кнопки: её контракт `item.add`
     // публикует один вид, как и отвечает писатель (#1447).
@@ -245,7 +242,7 @@ pub(super) fn operation_node_with(
     {
         contract = Some(unica_forms::contracts::form_item_add_in_command_bar());
     }
-    if implemented && contract.is_none() {
+    if contract.is_none() {
         return Err(ReadModeError::unsupported_section(format!(
             "detailed argument contract for `{operation}` is not available yet"
         )));
@@ -257,7 +254,6 @@ pub(super) fn operation_node_with(
         "props": {
             "op": operation,
             "args": descriptor.skeleton_key(),
-            "implemented": implemented,
             "contract": contract.map(|contract| contract.details()),
         },
     }))
@@ -501,17 +497,14 @@ mod operation_dictionary_tests {
             .iter()
             .find(|item| item["op"] == "query.set")
             .unwrap();
-        assert_eq!(
-            query,
-            &json!({"op":"query.set","args":"values","implemented":true})
-        );
+        assert_eq!(query, &json!({"op":"query.set","args":"values"}));
         let at = "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query.Can.query.set";
         let detailed =
             operation_node(&data, "query.set", at, super::configuration_context()).unwrap();
         assert_eq!(detailed["at"], at);
         assert_eq!(detailed["kind"], "Can");
         assert_eq!(detailed["props"]["op"], "query.set");
-        assert_eq!(detailed["props"]["implemented"], true);
+        assert!(detailed["props"].get("implemented").is_none());
         assert_eq!(
             detailed["props"]["contract"]["argsSchema"]["properties"]["values"]["properties"]
                 ["query"]["type"],
@@ -578,11 +571,11 @@ mod operation_dictionary_tests {
         // with the honesty flag mirroring the Run dictionary.
         assert_eq!(
             entry("props.set"),
-            json!({"op": "props.set", "args": "values", "implemented": true})
+            json!({"op": "props.set", "args": "values"})
         );
         assert_eq!(
             entry("attribute.add"),
-            json!({"op": "attribute.add", "args": "items", "implemented": true})
+            json!({"op": "attribute.add", "args": "items"})
         );
         // A new object is created by its parent, the configuration root.
         assert!(can.iter().all(|entry| entry["op"] != "object.create"));
@@ -590,11 +583,11 @@ mod operation_dictionary_tests {
         assert!(can.iter().all(|entry| entry["op"] != "attribute.set"));
         assert_eq!(
             entry("form.add"),
-            json!({"op": "form.add", "args": "items", "implemented": true})
+            json!({"op": "form.add", "args": "items"})
         );
         assert_eq!(
             entry("object.remove"),
-            json!({"op": "object.remove", "args": "at", "implemented": true})
+            json!({"op": "object.remove", "args": "at"})
         );
         assert!(
             can.iter().all(|entry| entry["op"] != "enumValue.add"),
@@ -607,7 +600,7 @@ mod operation_dictionary_tests {
         assert!(data_set_can.iter().all(|entry| entry["op"] != "dcs.set"));
         assert!(data_set_can
             .iter()
-            .any(|entry| entry == &json!({"op":"dataSet.set","args":"values","implemented":true})));
+            .any(|entry| entry == &json!({"op":"dataSet.set","args":"values"})));
     }
 
     #[test]

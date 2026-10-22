@@ -10,7 +10,6 @@ use unica_templates::contracts::parse_mxl_cell_address;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::apply::IMPLEMENTED_APPLY_OPERATIONS;
 
     use unica_operations::OperationFamily;
     use unica_roles::operations::RoleOperation;
@@ -296,10 +295,11 @@ mod tests {
     fn every_implemented_dcs_operation_has_a_valid_example_and_small_contract() {
         let registry = crate::domain::apply::operation_registry();
         let mut count = 0;
-        for descriptor in registry.descriptors().iter().filter(|descriptor| {
-            descriptor.family() == OperationFamily::Dcs
-                && IMPLEMENTED_APPLY_OPERATIONS.contains(&descriptor.name())
-        }) {
+        for descriptor in registry
+            .descriptors()
+            .iter()
+            .filter(|descriptor| descriptor.family() == OperationFamily::Dcs)
+        {
             let contract = descriptor
                 .argument_contract()
                 .unwrap_or_else(|| panic!("{} lacks its DCS contract", descriptor.name()));

@@ -222,9 +222,8 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
             or set(registered[operation_type]) != set(typed[operation_type])
         ):
             raise RuntimeError(f"typed {family} registrations must name every variant exactly once")
-    implemented_start = source.index("const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[")
-    implemented_end = source.index("];", implemented_start)
-    implemented = set(re.findall(r'"([A-Za-z]+\.[A-Za-z]+)"', source[implemented_start:implemented_end]))
+    # Every registered operation is implemented: the registry is the dictionary.
+    implemented = {entry[0] for entry in entries}
     return entries, implemented
 
 
@@ -303,7 +302,6 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
             tool_scenarios.setdefault(tool, []).append(scenario["id"])
 
     uncovered = [op for op, _, _, _ in registry if op not in op_scenarios]
-    not_implemented = [op for op, _, _, _ in registry if op not in implemented]
 
     lines: list[str] = []
     out = lines.append
@@ -438,10 +436,9 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
         return f"**{count}** {word}"
 
     covered_count = len(registry) - len(uncovered)
-    implemented_count = len(registry) - len(not_implemented)
     out(
         f"Закрытый реестр содержит {operations(len(registry))}; сценарии покрывают "
-        f"{operations(covered_count)}, реализованными помечены {operations(implemented_count)}. "
+        f"{operations(covered_count)}. "
         "Операция без сценария — первая кандидатура для новой задачи."
     )
     out("")
@@ -451,14 +448,13 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     for family, entries in families.items():
         out(f"### {FAMILY_TITLES.get(family, family)}")
         out("")
-        out("| Операция | Аргументы | Реализована | Сценарии |")
-        out("| --- | --- | --- | --- |")
+        out("| Операция | Аргументы | Сценарии |")
+        out("| --- | --- | --- |")
         for op, _, _, args in entries:
             ids = op_scenarios.get(op, [])
             covered = ", ".join(ids) if ids else "**не покрыто — предложите задачу**"
             out(
-                f"| `{op}` | {ARGS_TITLES.get(args, f'`{args}`')} | "
-                f"{'да' if op in implemented else 'нет'} | {covered} |"
+                f"| `{op}` | {ARGS_TITLES.get(args, f'`{args}`')} | {covered} |"
             )
         out("")
     out("## Покрытие профилей `check`")

@@ -162,8 +162,7 @@ class UnicaObserverTests(unittest.TestCase):
             data = result["data"]
             self.assertEqual(data["at"], at, "view answers the address it was asked")
             for entry in data.get("can") or []:
-                if not entry["implemented"]:
-                    continue
+                self.assertNotIn("implemented", entry)
                 contract = self.view(f"{at}.Can.{entry['op']}")
                 if contract["ok"]:
                     found = (at, entry, contract)
@@ -358,7 +357,7 @@ class UnicaObserverTests(unittest.TestCase):
             for entry in data.get("can") or []:
                 op = entry["op"]
                 family = op.split(".", 1)[0]
-                if not entry["implemented"] or family in passed or op in unavailable_ops:
+                if family in passed or op in unavailable_ops:
                     continue
                 status, draft = self.post("/api/draft", {"at": data["at"], "op": op})
                 self.assertEqual(status, 200, draft)

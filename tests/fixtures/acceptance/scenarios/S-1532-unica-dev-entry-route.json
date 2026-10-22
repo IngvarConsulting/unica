@@ -77,8 +77,7 @@
           "pointer": "/data/can",
           "contains": {
             "op": "attribute.set",
-            "args": "values",
-            "implemented": true
+            "args": "values"
           }
         }
       ],
@@ -107,7 +106,7 @@
         },
         {
           "pointer": "/data/props/implemented",
-          "eq": true
+          "absent": true
         },
         {
           "pointer": "/data/props/contract/argsSchema/properties/values/properties/comment/type",

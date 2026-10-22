@@ -32,9 +32,8 @@ Use these standards during BSL implementation, review, and refactoring.
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `dryRunRequired`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`. Для плановой операции сначала проверь результат
-`dryRun: true`, затем исполняй запрос с `dryRun: false`. Preview не фиксирует
+выбирай только операцию из словаря. Для плановой операции сначала проверь
+результат `dryRun: true`, затем исполняй запрос с `dryRun: false`. Preview не фиксирует
 входы между вызовами. Не обходи контракт прямым runner-ом.
 
 - Run object-specific validation after metadata changes.

@@ -883,7 +883,7 @@ class Observer:
         note = None
         if result.get("ok") and contract is None:
             status = "absent"
-            note = "контракт не опубликован" + ("" if entry.get("implemented") else ": операция не реализована")
+            note = "контракт не опубликован"
         elif result.get("ok"):
             status = "ok"
         elif CONTRACT_UNAVAILABLE_CODE in {d.get("code") for d in result.get("diagnostics") or [] if isinstance(d, dict)}:
@@ -1665,10 +1665,9 @@ function renderNode(at, answer) {
         : `<p class="cnt">Словарь вычислен и пуст: на этом узле ничего не применимо.</p>`;
     }
     else {
-      html += `<table><tr><th>op</th><th>args</th><th>implemented</th><th></th></tr>`;
+      html += `<table><tr><th>op</th><th>args</th><th></th></tr>`;
       data.can.forEach((entry, index) => {
         html += `<tr><td><code>${esc(entry.op)}</code></td><td><code>${esc(JSON.stringify(skeleton(entry.args)))}</code></td>`;
-        html += `<td class="${entry.implemented ? "yes" : "no"}">${entry.implemented}</td>`;
         html += `<td><button data-contract="${index}">контракт</button> <button data-preview="${index}">предпросмотр</button></td></tr>`;
       });
       html += `</table>`;

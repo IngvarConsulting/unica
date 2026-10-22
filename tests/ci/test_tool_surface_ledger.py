@@ -295,7 +295,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             operation = arguments.get("op")
             with self.subTest(path=document.relative_to(REPO_ROOT), operation=operation):
                 self.assertIn(operation, operations)
-                self.assertIs(operations[operation]["implemented"], True)
+                self.assertNotIn("implemented", operations[operation])
 
     def test_ledger_matches_the_live_registry(self) -> None:
         result = subprocess.run(

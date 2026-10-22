@@ -305,7 +305,7 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
                 schema = contract.get("argsSchema") if isinstance(contract, dict) else None
                 if (isinstance(at, str) and suffix and at.endswith(suffix) and len(at) > len(suffix)
                         and result.get("at") == at and data.get("at") == at and data.get("kind") == "Can"
-                        and props.get("implemented") is True and isinstance(schema, dict)
+                        and "implemented" not in props and isinstance(schema, dict)
                         and schema.get("type") == "object"):
                     key = (at[:-len(suffix)], op)
                     contracts[key] = min(contracts.get(key, call["done"]), call["done"])

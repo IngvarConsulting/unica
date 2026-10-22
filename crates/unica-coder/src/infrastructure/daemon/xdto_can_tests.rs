@@ -64,7 +64,7 @@ fn assert_contract_and_preview(at: &str, operation: &str, arguments: Value, has_
     assert_eq!(data["at"], operation_at);
     assert_eq!(data["kind"], "Can");
     assert_eq!(data["props"]["op"], operation);
-    assert_eq!(data["props"]["implemented"], true);
+    assert!(data["props"].get("implemented").is_none());
     let contract = &data["props"]["contract"];
     let schema = &contract["argsSchema"];
     assert_eq!(schema["type"], "object");
