@@ -493,6 +493,7 @@ pub fn form_validate_button_commands(
 pub struct HandlerSignatureCheck<'reader> {
     reader: Option<&'reader dyn ProjectDiscoveryRead>,
     module_path: Option<PathBuf>,
+    module_text: Option<&'reader str>,
     module: Option<Option<Vec<unica_bsl_parser::BslMethodParameters>>>,
     metadata_owner: Option<unica_address::address::NodeKind>,
     owners: HashMap<(FormEventOwnerKind, Option<String>), Vec<FormEventParameterForms>>,
@@ -505,6 +506,7 @@ impl<'reader> HandlerSignatureCheck<'reader> {
             module_path: form_path
                 .parent()
                 .map(|ext| ext.join("Form").join("Module.bsl")),
+            module_text: None,
             module: None,
             metadata_owner: form_metadata_owner(form_path),
             owners: HashMap::new(),
@@ -513,15 +515,14 @@ impl<'reader> HandlerSignatureCheck<'reader> {
 
     /// Проверяет сохранённый модуль без повторного обращения к исходникам.
     pub fn from_source(
-        module: Option<&str>,
+        module: Option<&'reader str>,
         metadata_owner: Option<unica_address::address::NodeKind>,
     ) -> Self {
         Self {
             reader: None,
             module_path: None,
-            module: Some(module.and_then(|text| {
-                unica_bsl_parser::bsl_method_parameters(text.trim_start_matches('\u{feff}')).ok()
-            })),
+            module_text: module,
+            module: None,
             metadata_owner,
             owners: HashMap::new(),
         }
@@ -533,9 +534,13 @@ impl<'reader> HandlerSignatureCheck<'reader> {
     fn module(&mut self) -> Option<&[unica_bsl_parser::BslMethodParameters]> {
         let path = &self.module_path;
         let reader = self.reader;
+        let module_text = self.module_text;
         self.module
             .get_or_insert_with(|| {
-                let text = read_string(reader?, path.as_ref()?).ok()?;
+                let text = match module_text {
+                    Some(text) => std::borrow::Cow::Borrowed(text),
+                    None => std::borrow::Cow::Owned(read_string(reader?, path.as_ref()?).ok()?),
+                };
                 unica_bsl_parser::bsl_method_parameters(text.trim_start_matches('\u{feff}')).ok()
             })
             .as_deref()
@@ -599,6 +604,36 @@ pub fn form_validate_events(
     metadata_owner: Option<unica_address::address::NodeKind>,
     report: &mut FormValidationReporter,
 ) {
+    form_validate_events_inner(root, signatures, metadata_owner, report);
+}
+
+/// Определяет необходимость модуля теми же правилами, что проверка событий.
+/// Непригодный XML остаётся предметом основной проверки формы.
+pub fn form_validation_requires_module(
+    text: &str,
+    metadata_owner: Option<unica_address::address::NodeKind>,
+) -> bool {
+    let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
+        return false;
+    };
+    let root = document.root_element();
+    if require_form_root(root).is_err() {
+        return false;
+    }
+    form_validate_events_inner(
+        root,
+        None,
+        metadata_owner,
+        &mut FormValidationReporter::new("", 30, false),
+    )
+}
+
+fn form_validate_events_inner(
+    root: roxmltree::Node<'_, '_>,
+    signatures: Option<HandlerSignatureCheck<'_>>,
+    metadata_owner: Option<unica_address::address::NodeKind>,
+    report: &mut FormValidationReporter,
+) -> bool {
     struct EventValidationState<'report, 'reader> {
         context: FormEventContext,
         signatures: Option<HandlerSignatureCheck<'reader>>,
@@ -606,6 +641,7 @@ pub fn form_validate_events(
         errors: usize,
         checked: usize,
         unverified: usize,
+        module_required: bool,
     }
 
     impl EventValidationState<'_, '_> {
@@ -624,6 +660,7 @@ pub fn form_validate_events(
             if binding.call_type.is_some() {
                 return;
             }
+            self.module_required = true;
             let Some(check) = self.signatures.as_mut() else {
                 return;
             };
@@ -765,6 +802,7 @@ pub fn form_validate_events(
         errors: 0,
         checked: 0,
         unverified: 0,
+        module_required: false,
     };
     state.validate_owner(root, Some(FormEventTarget::Form), "form");
 
@@ -785,7 +823,7 @@ pub fn form_validate_events(
         let target = FormElementKind::from_xml_tag(tag).map(FormEventTarget::Element);
         state.validate_owner(owner, target, &target_label);
         if state.report.stopped {
-            return;
+            return state.module_required;
         }
     }
 
@@ -794,6 +832,7 @@ pub fn form_validate_events(
             .report
             .ok(format!("Event handlers: {} events checked", state.checked));
     }
+    state.module_required
 }
 
 fn validate_event_owner_node(

@@ -2967,6 +2967,15 @@ pub(crate) mod actor_capacity_tests {
         for module in [false, true] {
             let (workspace, at, body) = form_check_workspace("ExternalDataProcessor");
             let path = if module {
+                let text = std::fs::read_to_string(&body).unwrap();
+                std::fs::write(
+                    &body,
+                    text.replace(
+                        "</Form>",
+                        "<Events><Event name=\"OnOpen\">ПриОткрытии</Event></Events></Form>",
+                    ),
+                )
+                .unwrap();
                 let path = body.parent().unwrap().join("Form/Module.bsl");
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 std::fs::write(&path, "Процедура Тест()\nКонецПроцедуры").unwrap();

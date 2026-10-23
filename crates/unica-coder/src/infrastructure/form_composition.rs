@@ -114,6 +114,14 @@ pub(crate) fn form_validation_outcome(
 }
 
 /// Связывает сохранённые факты чтения с кодеком формы.
+pub(crate) fn form_validation_requires_module(
+    text: &str,
+    metadata_owner: Option<unica_address::address::NodeKind>,
+) -> bool {
+    unica_forms_designer::codec::form_validation_requires_module(text, metadata_owner)
+}
+
+/// Связывает сохранённые факты чтения с кодеком формы.
 pub(crate) fn validate_form_input(
     artifact: &Path,
     text: &str,

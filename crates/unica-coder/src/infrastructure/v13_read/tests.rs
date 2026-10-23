@@ -4618,6 +4618,36 @@ fn form_validation_input_keeps_the_authority_cancellation_and_deadline() {
 }
 
 #[test]
+fn form_validation_input_does_not_read_a_module_without_checkable_bindings() {
+    let fixture = RealExternalReaderFixture::new();
+    let address =
+        QualifiedAddress::parse("artifact_processor:ExternalDataProcessor.Import.Form.Main")
+            .unwrap();
+    let body = fixture.processor.join("Import/Forms/Main/Ext/Form.xml");
+    let module = fixture
+        .processor
+        .join("Import/Forms/Main/Ext/Form/Module.bsl");
+    if module.exists() {
+        fs::remove_file(&module).unwrap();
+    }
+    // Каталог вместо файла доказывает отсутствие обращения к ненужному модулю.
+    fs::create_dir_all(&module).unwrap();
+    for text in [
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="Панель" id="-1"/><ChildItems/></Form>"#,
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Events><Event name="UnknownEvent">Обработчик</Event></Events></Form>"#,
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Events><Event name="OnOpen" callType="Before">ПриОткрытии</Event></Events></Form>"#,
+        "<Form>",
+    ] {
+        write(&body, text);
+        let input = fixture
+            .read_authority("artifact_processor", SourceSetKind::ExternalProcessor)
+            .form_validation_input(&address)
+            .unwrap();
+        assert!(input.module.is_none());
+    }
+}
+
+#[test]
 fn canonical_form_validation_reports_captured_malformed_xml() {
     let fixture = RealExternalReaderFixture::new();
     let address =
@@ -4707,10 +4737,11 @@ fn canonical_form_validation_keeps_captured_xml_module_and_owner() {
             &body,
             r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="КоманднаяПанель" id="-1"/><Events><Event name="OnOpen">ПриОткрытии</Event></Events><ChildItems/></Form>"#,
         );
-        write(
-            &module,
-            "&НаКлиенте\nПроцедура ПриОткрытии(Отказ, Лишний, ЕщёОдин)\nКонецПроцедуры\n",
-        );
+        // Предел выдачи текста не ограничивает вход проверки: обработчик
+        // после этого предела всё равно должен участвовать в диагностике.
+        let padding =
+            "// Заполнение\n".repeat(crate::application::v13::source_text::MAX_SOURCE_TEXT_BYTES);
+        write(&module, &format!("{padding}&НаКлиенте\nПроцедура ПриОткрытии(Отказ, Лишний, ЕщёОдин)\nКонецПроцедуры\n"));
         let address = QualifiedAddress::parse(&format!("{source_set}:{owner}.Form.Main")).unwrap();
         let input = fixture
             .read_authority(source_set, kind)
