@@ -77,6 +77,12 @@ fn validate_form_inner(
         };
         validate_form_image(args, &reader, &form_path, &text, signatures)
     })();
+    form_validation_outcome(result)
+}
+
+pub(crate) fn form_validation_outcome(
+    result: Result<unica_forms_designer::codec::FormValidationRun, String>,
+) -> AdapterOutcome {
     match result {
         Ok((ok, stdout, artifact, validation_errors, validation_warnings)) => AdapterOutcome {
             ok,
@@ -105,6 +111,28 @@ fn validate_form_inner(
             command: None,
         },
     }
+}
+
+/// Связывает сохранённые факты чтения с кодеком формы.
+pub(crate) fn validate_form_input(
+    artifact: &Path,
+    text: &str,
+    module: Option<&str>,
+    config_context: bool,
+    metadata_owner: Option<unica_address::address::NodeKind>,
+) -> AdapterOutcome {
+    form_validation_outcome(
+        unica_forms_designer::codec::validate_form_image_with_context(
+            &Map::new(),
+            artifact,
+            text,
+            unica_forms_designer::codec::FormValidationContext {
+                config_context,
+                metadata_owner,
+                module,
+            },
+        ),
+    )
 }
 
 pub(crate) fn analyze_form_info(
