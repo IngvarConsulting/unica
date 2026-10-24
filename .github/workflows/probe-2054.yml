@@ -34,9 +34,10 @@ jobs:
           UNICA_PROBE_2054_DIR: ${{ runner.temp }}/probe-raw
         run: |
           for i in $(seq 1 "$(nproc)"); do (timeout 3000 yes > /dev/null &) ; done
-          for i in 1 2 3 4; do python .probe/loop.py "$RUNNER_TEMP/plugin" 15 > "$RUNNER_TEMP/par$i.log" 2>&1 & done
+          for i in 1 2 3 4; do env -u GITHUB_ACTIONS python .probe/loop.py "$RUNNER_TEMP/plugin" 15 > "$RUNNER_TEMP/par$i.log" 2>&1 & done
           wait
           pkill yes || true
           grep -h "^run \|^total" "$RUNNER_TEMP"/par*.log | grep -c ok || true
           grep -h "FAIL\|^total\|RESPONSE" "$RUNNER_TEMP"/par*.log | cut -c1-3000 || true
+          tail -5 "$RUNNER_TEMP"/par1.log
           for f in "$RUNNER_TEMP"/probe-raw/*; do echo "== $f"; cat "$f"; echo; done 2>/dev/null || true
