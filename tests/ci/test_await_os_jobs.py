@@ -91,6 +91,17 @@ class AwaitOsJobsTests(unittest.TestCase):
                          {"Lint and Python::Clippy": "timed_out"})
         self.assertEqual(self.wait([[job(MAC, conclusion=None)]], timeout=60), {MAC: "timed_out"})
 
+    def test_a_completed_job_without_steps_answers_for_its_steps(self):
+        # PR #2012: Jobs API kept the completed "Lint and Python" job with an
+        # empty step list; the job's own conclusion stands for each step.
+        def checks(job_conclusion):
+            return {**job("Lint and Python", conclusion=job_conclusion), "runner_name": "GitHub Actions 7", "steps": []}
+        expected = ("Lint and Python::Python", "Lint and Python::Clippy")
+        self.assertEqual(self.wait([[checks("success")]], expected=expected),
+                         {"Lint and Python::Python": "success", "Lint and Python::Clippy": "success"})
+        self.assertEqual(self.wait([[checks("failure")]], expected=expected),
+                         {"Lint and Python::Python": "failure", "Lint and Python::Clippy": "failure"})
+
     def test_timeout_keeps_the_outcome_of_steps_that_did_finish(self):
         checks = {**job("Lint and Python"), "runner_name": "GitHub Actions 7",
                   "steps": [{"name": "Python", "conclusion": "failure"}, {"name": "Clippy", "conclusion": None}]}

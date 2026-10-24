@@ -66,9 +66,12 @@ def outcome(name: str, found: dict[str, dict], jobs: list[dict]) -> str | None:
         return "missing"
     if job["status"] != "completed" or not job.get("conclusion"):
         return None
-    if step_name and conclusion(job) != NOT_ACQUIRED:
-        step = next((item for item in job.get("steps") or [] if item.get("name") == step_name), None)
+    if step_name and conclusion(job) != NOT_ACQUIRED and job.get("steps"):
+        step = next((item for item in job["steps"] if item.get("name") == step_name), None)
         return (step.get("conclusion") or None) if step else "missing"
+    # Jobs API бывает отдаёт завершённую джобу вовсе без шагов (PR #2012):
+    # тогда итог шага — итог самой джобы. Успешная джоба значит успешные
+    # шаги, а отказ джобы не превращается в успех ни одного из них.
     return conclusion(job)
 
 
