@@ -528,6 +528,8 @@ pub fn meta_remove_should_skip_file(
     }
     let relative = file.strip_prefix(config_dir).ok();
     let rel = relative_display(file, config_dir);
+    // Subsystem descriptors are walked separately. The command interface of
+    // a subsystem is a composition: what its rules leave is a reference.
     rel == "Configuration.xml"
         || rel == "ConfigDumpInfo.xml"
         || relative.is_some_and(|path| {
@@ -535,6 +537,7 @@ pub fn meta_remove_should_skip_file(
                 == Some(std::path::Component::Normal(std::ffi::OsStr::new(
                     "Subsystems",
                 )))
+                && !path.ends_with("Ext/CommandInterface.xml")
         })
 }
 

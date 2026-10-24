@@ -2661,6 +2661,29 @@ mod tests {
         );
     }
 
+    /// The command interface of a subsystem is searched like any other source
+    /// once its composition is cleaned: a mention its rules do not clean
+    /// refuses the removal and names the subsystem, instead of being left
+    /// dangling.
+    #[test]
+    fn object_removal_refuses_what_a_subsystem_command_interface_keeps() {
+        let fixture = ApplySeamFixture::new();
+        let path = fixture
+            .source_dir()
+            .join("Subsystems/Sales/Subsystems/Retail/Ext/CommandInterface.xml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"2.20\"><CommandsVisibility><Command name=\"Document.First.StandardCommand.OpenList\"/></CommandsVisibility><Unknown>Document.First</Unknown></CommandInterface>",
+        )
+        .unwrap();
+        let message = refused_removal(&fixture, "main:Document.First");
+        assert!(
+            message.contains("`main:Subsystem.Sales.Subsystem.Retail` → CommandInterface"),
+            "a mention left in the subsystem interface refuses the removal"
+        );
+    }
+
     /// The main section command interface loses the commands of the removed object.
     #[test]
     fn object_removal_cleans_the_main_section_command_interface() {
