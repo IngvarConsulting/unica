@@ -33,11 +33,13 @@ jobs:
         env:
           UNICA_PROBE_2054_DIR: ${{ runner.temp }}/probe-raw
         run: |
-          for i in $(seq 1 "$(nproc)"); do (timeout 3000 yes > /dev/null &) ; done
-          for i in 1 2 3 4; do env -u GITHUB_ACTIONS python .probe/loop.py "$RUNNER_TEMP/plugin" 15 > "$RUNNER_TEMP/par$i.log" 2>&1 & done
+          (timeout 3000 sh -c 'while true; do dd if=/dev/zero of="$RUNNER_TEMP/io.bin" bs=1M count=256 conv=fsync 2>/dev/null; done' &)
+          for r in 1 2; do (env -u GITHUB_ACTIONS timeout 2400 python scripts/ci/run-unittest.py -s tests/ci --profile queue --size small --sizes .config/python-sizes.toml > "$RUNNER_TEMP/suite$r.log" 2>&1 &); done
+          for i in 1 2 3 4; do env -u GITHUB_ACTIONS python .probe/loop.py "$RUNNER_TEMP/plugin" 25 > "$RUNNER_TEMP/par$i.log" 2>&1 & done
           wait
-          pkill yes || true
+          pkill -f "dd if=/dev/zero" || true; pkill -f run-unittest.py || true
           grep -h "^run \|^total" "$RUNNER_TEMP"/par*.log | grep -c ok || true
           grep -h "FAIL\|^total\|RESPONSE" "$RUNNER_TEMP"/par*.log | cut -c1-3000 || true
           tail -5 "$RUNNER_TEMP"/par1.log
+          grep -h "^Ran\|^OK\|^FAILED\|S-978\|provider_failed" "$RUNNER_TEMP"/suite*.log | cut -c1-600 || true
           for f in "$RUNNER_TEMP"/probe-raw/*; do echo "== $f"; cat "$f"; echo; done 2>/dev/null || true
