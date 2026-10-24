@@ -1552,16 +1552,44 @@ pub fn normalized_content(
 
 pub fn insertion_is_present(text: &[u8], site: InsertionSite, insertion: &[u8]) -> bool {
     match site.position {
-        Position::Before => (site.offset..=site.head_end.max(site.offset))
-            .filter(|&boundary| boundary == site.offset || text.get(boundary - 1) == Some(&b'\n'))
-            .any(|boundary| {
-                text.get(..boundary)
-                    .is_some_and(|head| head.ends_with(insertion))
-            }),
+        Position::Before => {
+            (site.offset..=site.head_end.max(site.offset))
+                .filter(|&boundary| {
+                    boundary == site.offset || text.get(boundary - 1) == Some(&b'\n')
+                })
+                .any(|boundary| {
+                    text.get(..boundary)
+                        .is_some_and(|head| head.ends_with(insertion))
+                })
+                || unterminated_tail_is(text, site, insertion)
+        }
         Position::After => text
             .get(site.offset..)
             .is_some_and(|tail| tail.starts_with(insertion)),
     }
+}
+
+/// Вставка всегда кончается переводом строки, а модуль может кончаться без
+/// него. Повтор вставки в такой конец — тот же текст без последнего перевода
+/// строки, с начала строки (#1911, INV.SOURCE.IDEMPOTENT-PRECHECK).
+fn unterminated_tail_is(text: &[u8], site: InsertionSite, insertion: &[u8]) -> bool {
+    if site.offset != text.len() || text.ends_with(b"\n") {
+        return false;
+    }
+    let Some(body) = insertion.strip_suffix(b"\n") else {
+        return false;
+    };
+    let body = body.strip_suffix(b"\r").unwrap_or(body);
+    // Вставка начинается с начала строки: своим разделителем или после
+    // перевода строки текста.
+    !body.is_empty()
+        && text.ends_with(body)
+        && (body.starts_with(b"\n")
+            || body.starts_with(b"\r\n")
+            || text
+                .len()
+                .checked_sub(body.len() + 1)
+                .is_none_or(|index| text[index] == b'\n'))
 }
 
 pub fn string_arg<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a str, String> {
