@@ -350,8 +350,24 @@ pub struct EventProjection {
     pub implementation_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_type: Option<String>,
+    /// Every actual binding when there is more than one. The event stays
+    /// invalid and names no single handler: the bindings conflict, and none
+    /// of them is chosen.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub handlers: Vec<EventHandlerBinding>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub can: Vec<OperationRef>,
+}
+
+/// One of several actual bindings of an event, as the source states it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventHandlerBinding {
+    pub handler: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub implementation_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -610,6 +626,7 @@ mod tests {
             handler_en: "BeforeWrite".to_string(),
             implementation_at: None,
             call_type: None,
+            handlers: Vec::new(),
             can: vec![
                 unica_metadata::event::EventOperation::implementation_skeleton(
                     "main:Document.Пустой.Module.Object.Event.BeforeWrite",
@@ -808,6 +825,7 @@ mod tests {
             handler_en: "BeforeWrite".to_string(),
             implementation_at: Some(method_at.clone()),
             call_type: None,
+            handlers: Vec::new(),
             can: Vec::new(),
         };
         let compilation = CompilationProjection {

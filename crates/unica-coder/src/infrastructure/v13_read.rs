@@ -3090,13 +3090,21 @@ fn region_item_value(region: &RegionProjection) -> Value {
 }
 
 pub(super) fn event_node(event: &EventProjection) -> NodeView {
-    let props = Map::from_iter([
+    let mut props = Map::from_iter([
         ("eventId".to_string(), json!(event.event_id)),
         ("state".to_string(), json!(event.state)),
         ("signature".to_string(), json!(event.signature)),
         ("contexts".to_string(), json!(event.contexts)),
         ("binding".to_string(), json!(event.binding)),
-        ("handler".to_string(), json!(event.handler)),
+        // Several conflicting bindings name no single handler.
+        (
+            "handler".to_string(),
+            if event.handlers.is_empty() {
+                json!(event.handler)
+            } else {
+                Value::Null
+            },
+        ),
         ("handlerEn".to_string(), json!(event.handler_en)),
         (
             "implementationAt".to_string(),
@@ -3104,6 +3112,9 @@ pub(super) fn event_node(event: &EventProjection) -> NodeView {
         ),
         ("callType".to_string(), json!(event.call_type)),
     ]);
+    if !event.handlers.is_empty() {
+        props.insert("handlers".to_string(), json!(event.handlers));
+    }
     NodeView::new(&event.at, NodeKind::Event.as_str(), &event.event_id, props)
         .with_can(event.can.clone())
 }
