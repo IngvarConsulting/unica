@@ -677,7 +677,7 @@ fn absolutize_infobase(infobase: &mut Value, root: &Path) -> Result<(), String> 
 /// The path of a `File=` value without its quotes, read like the runner reads
 /// it (`strip_matching_quotes`): one pair of matching double or single quotes
 /// encloses the path, anything else is the path itself. Each refusal names
-/// the form it rejects and the one to write instead.
+/// what it rejects and how to fix it.
 fn file_connection_path(value: &str) -> Result<&str, String> {
     let path = ['"', '\'']
         .into_iter()
@@ -693,7 +693,7 @@ fn file_connection_path(value: &str) -> Result<&str, String> {
     }
     if path.contains('"') {
         return Err(refuse(
-            "File= path contains a double quote, which the projected File=\"…\" cannot carry; enclose the path in one pair of quotes: File=\"<path>\" or File='<path>'",
+            "File= path contains a double quote, which no File= form can carry; rename the infobase directory",
         ));
     }
     Ok(path)
@@ -1123,13 +1123,25 @@ mod tests {
         // Only a path the projected `File="…"` cannot carry is refused, and
         // the refusal names the form to write.
         for (connection, names) in [
-            ("File=''", "File= names no path"),
-            ("File=", "File= names no path"),
-            ("File='a\"b'", "contains a double quote"),
+            (
+                "File=''",
+                "write File=\"<infobase directory>\" or File='<infobase directory>'",
+            ),
+            (
+                "File=",
+                "write File=\"<infobase directory>\" or File='<infobase directory>'",
+            ),
+            (
+                "File='a\"b'",
+                "contains a double quote, which no File= form can carry",
+            ),
+            (
+                "File=\"a\"b\"",
+                "contains a double quote, which no File= form can carry",
+            ),
         ] {
             let refusal = refused(&layer(connection), None);
             assert!(refusal.contains(names), "{connection}: {refusal}");
-            assert!(refusal.contains("File='<"), "{connection}: {refusal}");
         }
     }
 
