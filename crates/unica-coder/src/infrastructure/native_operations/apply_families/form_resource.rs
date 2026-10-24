@@ -2465,7 +2465,7 @@ mod tests {
             (
                 "attribute.add",
                 json!({"name":" Added ","type":"String"}),
-                json!({"attributes":[{"name":"Added","type":"xs:string"}]}),
+                json!({"attributes":[{"name":"Added","type":"string"}]}),
             ),
             (
                 "command.add",

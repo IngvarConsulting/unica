@@ -280,14 +280,22 @@ pub fn default_form_property(key: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+/// Тип реквизита или колонки формы так, как его выгружает 8.3.27: у
+/// строки, числа и даты без параметров платформа пишет квалификаторы по
+/// умолчанию — длину 0, 0 знаков, состав «дата и время» (#1996). Составной
+/// тип отображается по частям.
 pub fn form_attribute_type(type_name: &str) -> String {
-    match type_name {
-        "Boolean" | "boolean" | "Булево" => "xs:boolean".to_string(),
-        "String" | "string" | "Строка" => "xs:string".to_string(),
-        "Number" | "number" | "Число" => "xs:decimal".to_string(),
-        "Date" | "date" | "Дата" => "xs:dateTime".to_string(),
-        other => other.to_string(),
-    }
+    type_name
+        .split('|')
+        .map(|part| match part.trim() {
+            "Boolean" | "boolean" | "Булево" => "boolean",
+            "String" | "string" | "Строка" => "string",
+            "Number" | "number" | "Число" => "decimal(0,0)",
+            "Date" | "date" | "Дата" => "dateTime",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 /// The legacy element definition for one typed v0.13 item: the discriminator
 /// key named after the element type, every other property passed through.
@@ -634,6 +642,20 @@ pub fn parse_form_operation(
                         "type".to_string(),
                         Value::String(form_attribute_type(type_name)),
                     );
+                }
+                if let Some(columns) = item.get("columns").and_then(Value::as_array) {
+                    let columns = columns
+                        .iter()
+                        .map(|column| {
+                            let mut column = column.clone();
+                            if let Some(type_name) = column.get("type").and_then(Value::as_str) {
+                                let mapped = form_attribute_type(type_name);
+                                column["type"] = Value::String(mapped);
+                            }
+                            column
+                        })
+                        .collect();
+                    entry.insert("columns".to_string(), Value::Array(columns));
                 }
             },
         ),
@@ -1582,4 +1604,25 @@ pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> Str
         "</Form>"
     )
     .to_string()
+}
+
+#[cfg(test)]
+mod attribute_type_tests {
+    use super::form_attribute_type;
+
+    #[test]
+    fn bare_primitive_types_take_the_qualifiers_8_3_27_exports() {
+        for (input, expected) in [
+            ("String", "string"),
+            ("Строка", "string"),
+            ("Number", "decimal(0,0)"),
+            ("Date", "dateTime"),
+            ("Boolean", "boolean"),
+            ("string(10)", "string(10)"),
+            ("CatalogRef.Товары", "CatalogRef.Товары"),
+            ("String | Number", "string | decimal(0,0)"),
+        ] {
+            assert_eq!(form_attribute_type(input), expected, "{input}");
+        }
+    }
 }
