@@ -600,7 +600,9 @@ pub fn typed_operations_write_multilingual_text(operations: &[MetaEditOperation]
         MetaEditOperation::Update { elements, .. } => {
             elements.iter().any(|element| element.synonym.is_some())
         }
+        // A copy carries the source's own translations, never new text.
         MetaEditOperation::Remove { .. }
+        | MetaEditOperation::Copy { .. }
         | MetaEditOperation::EditRelations { .. }
         | MetaEditOperation::AddHelp { .. }
         | MetaEditOperation::AddPredefinedItems { .. }
@@ -786,6 +788,7 @@ pub fn typed_operation_name(operation: &MetaEditOperation) -> &'static str {
         MetaEditOperation::Add { .. } => "add",
         MetaEditOperation::Update { .. } => "update",
         MetaEditOperation::Remove { .. } => "remove",
+        MetaEditOperation::Copy { .. } => "copy",
         MetaEditOperation::EditRelations { .. } => "editRelations",
         MetaEditOperation::AddHelp { .. } => "addHelp",
         MetaEditOperation::AddPredefinedItems { .. } => "add",
@@ -815,6 +818,9 @@ pub fn typed_operation_target(
         }
         | MetaEditOperation::Remove {
             collection, scope, ..
+        }
+        | MetaEditOperation::Copy {
+            collection, scope, ..
         } => match scope {
             Some(scope) => format!(
                 "{base}.collections.tabularSections.{}.{}",
@@ -840,7 +846,9 @@ pub fn typed_operation_effect_value(
     after: bool,
 ) -> Result<Option<Value>, MetaDiagnostic> {
     match operation {
-        MetaEditOperation::Add { .. } if !after => return Ok(None),
+        MetaEditOperation::Add { .. } | MetaEditOperation::Copy { .. } if !after => {
+            return Ok(None)
+        }
         MetaEditOperation::Remove { .. } if after => return Ok(None),
         _ => {}
     }
@@ -985,6 +993,19 @@ pub fn typed_operation_effect_value(
             *collection,
             scope.as_ref(),
             names.iter().map(String::as_str),
+            &target,
+        )?,
+        MetaEditOperation::Copy {
+            collection,
+            scope,
+            new_name,
+            ..
+        } => typed_collection_effect_value(
+            xml,
+            object,
+            *collection,
+            scope.as_ref(),
+            std::iter::once(new_name.as_str()),
             &target,
         )?,
         MetaEditOperation::EditRelations { relation, .. } => {
@@ -1209,6 +1230,26 @@ where
                 })?;
                 counts.removed += 1;
             }
+        }
+        MetaEditOperation::Copy {
+            collection,
+            scope,
+            name,
+            new_name,
+        } => {
+            let section = scope.as_ref().map(|scope| scope.tabular_section.as_str());
+            ensure_typed_scope_exists(xml_text, section)?;
+            copy_typed_element(
+                xml_text,
+                &object_kind,
+                &object_name,
+                *collection,
+                section,
+                name,
+                new_name,
+                next_uuid,
+            )?;
+            counts.added += 1;
         }
         MetaEditOperation::EditRelations {
             relation,
@@ -2429,6 +2470,185 @@ pub fn narrow_observed_metadata_type(
         diagnostic
     })
 }
+/// Insert a copy of member `name` after the last member of its collection.
+///
+/// The copy keeps the source text byte for byte, so every setting and every
+/// translation stays, and changes only its own `uuid` and `Name`. A source
+/// whose text declares further identities or names its own UUID or path
+/// cannot be copied without guessing which reference should follow.
+#[allow(clippy::too_many_arguments)]
+pub fn copy_typed_element<F>(
+    xml_text: &mut String,
+    object_kind: &str,
+    object_name: &str,
+    collection: MetaCollection,
+    scope: Option<&str>,
+    name: &str,
+    new_name: &str,
+    next_uuid: &mut F,
+) -> Result<(), MetaDiagnostic>
+where
+    F: FnMut() -> String,
+{
+    if !unica_metadata::identifier::is_1c_identifier(new_name) {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "metadata element name is invalid",
+            Some("values.name"),
+        ));
+    }
+    let tag = collection_tag(collection);
+    let (source_range, source_name) = find_typed_element_identity(xml_text, tag, scope, name)
+        .map_err(|mut diagnostic| {
+            diagnostic.field = None;
+            diagnostic
+        })?;
+    // A taken name is the caller's to change, not a provider failure.
+    ensure_typed_name_free(xml_text, tag, scope, new_name).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            format!("`{new_name}` is already the name of a member of this collection"),
+            Some("values.name"),
+        )
+    })?;
+    let unsupported =
+        |message: &str| typed_diagnostic(MetaDiagnosticCode::InvalidArguments, message, Some("at"));
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}')).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor is not valid XML",
+            None,
+        )
+    })?;
+    let offset = xml_text.len() - xml_text.trim_start_matches('\u{feff}').len();
+    let source = document
+        .descendants()
+        .find(|node| node.is_element() && node.range().start == source_range.start)
+        .expect("the found member is an element of the same text");
+    let elements = source
+        .children()
+        .filter(|child| child.is_element())
+        .collect::<Vec<_>>();
+    let properties = match elements.as_slice() {
+        [properties] if properties.tag_name().name() == "Properties" => *properties,
+        _ => {
+            return Err(unsupported(
+                "the source member must hold exactly one Properties element",
+            ))
+        }
+    };
+    let uuid = source
+        .attribute("uuid")
+        .ok_or_else(|| unsupported("the source member has no uuid"))?;
+    if source
+        .attributes()
+        .any(|attribute| attribute.name() != "uuid")
+        || properties.descendants().skip(1).any(|node| {
+            node.is_element()
+                && node
+                    .attributes()
+                    .any(|attribute| matches!(attribute.name(), "uuid" | "id"))
+        })
+    {
+        return Err(unsupported(
+            "the source member declares nested identities; this copy supports only a member without them",
+        ));
+    }
+    // References name the canonical declaration, so the path is built from
+    // the names written in the descriptor, not from the caller's spelling.
+    let declared_name = |node: roxmltree::Node<'_, '_>| {
+        unica_xml_format::read::child_element(node, "Properties")
+            .and_then(|properties| unica_xml_format::read::child_element(properties, "Name"))
+            .and_then(|name| name.text())
+            .map(str::trim)
+            .map(str::to_string)
+    };
+    let section_name = match scope {
+        Some(_) => Some(
+            source
+                .parent()
+                .and_then(|children| children.parent())
+                .and_then(declared_name)
+                .ok_or_else(|| unsupported("the source member's tabular section has no name"))?,
+        ),
+        None => None,
+    };
+    let own_path = match &section_name {
+        Some(section) => {
+            format!("{object_kind}.{object_name}.TabularSection.{section}.{tag}.{source_name}")
+        }
+        None => format!("{object_kind}.{object_name}.{tag}.{source_name}"),
+    };
+    // A longer name such as `…Attribute.СвойствоДоп` is a neighbour.
+    let names_itself = |value: &str| {
+        value.match_indices(own_path.as_str()).any(|(at, _)| {
+            !value[at + own_path.len()..]
+                .chars()
+                .next()
+                .is_some_and(|next| next.is_alphanumeric() || next == '_')
+        })
+    };
+    let source_range = (source_range.start + offset)..(source_range.end + offset);
+    let text = &xml_text[source_range.clone()];
+    let refers_to_itself = properties.descendants().any(|node| {
+        node.text().is_some_and(|value| {
+            let value = value.trim();
+            value.eq_ignore_ascii_case(uuid) || names_itself(value)
+        })
+    });
+    if refers_to_itself {
+        return Err(unsupported(
+            "the source member refers to its own name or uuid; such references cannot be copied unambiguously",
+        ));
+    }
+    let name_node = unica_xml_format::read::child_element(properties, "Name")
+        .and_then(|node| node.first_child().filter(|child| child.is_text()))
+        .ok_or_else(|| unsupported("the source member has no Name"))?;
+    let local = |range: std::ops::Range<usize>| {
+        (range.start + offset - source_range.start)..(range.end + offset - source_range.start)
+    };
+    let uuid_range = local(
+        source
+            .attributes()
+            .find(|attribute| attribute.name() == "uuid")
+            .expect("checked above")
+            .range_value(),
+    );
+    let name_range = local(name_node.range());
+    let mut copy = String::with_capacity(text.len() + new_name.len());
+    copy.push_str(&text[..uuid_range.start]);
+    copy.push_str(&next_uuid());
+    copy.push_str(&text[uuid_range.end..name_range.start]);
+    copy.push_str(new_name);
+    copy.push_str(&text[name_range.end..]);
+    // The copy follows the last member of the collection with the layout
+    // observed in front of it.
+    let parent = source.parent().expect("a member has its collection");
+    let last = unica_xml_format::read::child_elements(parent, tag)
+        .into_iter()
+        .last()
+        .expect("the source is one of the members");
+    let last_start = last.range().start + offset;
+    let line_start = xml_text[..last_start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let indent = &xml_text[line_start..last_start];
+    if !indent
+        .chars()
+        .all(|character| matches!(character, ' ' | '\t'))
+    {
+        return Err(unsupported("the member layout is not one element per line"));
+    }
+    let eol = if xml_text[..line_start].ends_with("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let insertion = last.range().end + offset;
+    let fragment = format!("{eol}{indent}{copy}");
+    xml_text.insert_str(insertion, &fragment);
+    Ok(())
+}
 pub fn remove_typed_element(
     xml_text: &mut String,
     collection: MetaCollection,
@@ -3323,3 +3543,7 @@ pub fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut S
 #[cfg(test)]
 #[path = "../tests/platform/edit_empty_child_objects.rs"]
 mod empty_child_objects_tests;
+
+#[cfg(test)]
+#[path = "../tests/platform/edit_attribute_copy.rs"]
+mod attribute_copy_tests;

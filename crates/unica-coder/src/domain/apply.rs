@@ -494,6 +494,7 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "attribute.add",
     "attribute.set",
     "attribute.remove",
+    "attribute.copy",
     "tabularSection.add",
     "tabularSection.set",
     "tabularSection.remove",
@@ -643,6 +644,7 @@ operation_descriptors!(
     (unica_metadata::apply_operations::MetadataOperation::AttributeAdd),
     (unica_metadata::apply_operations::MetadataOperation::AttributeSet),
     (unica_metadata::apply_operations::MetadataOperation::AttributeRemove),
+    (unica_metadata::apply_operations::MetadataOperation::AttributeCopy),
     (unica_metadata::apply_operations::MetadataOperation::TabularSectionAdd),
     (unica_metadata::apply_operations::MetadataOperation::TabularSectionSet),
     (unica_metadata::apply_operations::MetadataOperation::TabularSectionRemove),
@@ -1496,6 +1498,7 @@ mod tests {
             "attribute.add",
             "attribute.set",
             "attribute.remove",
+            "attribute.copy",
             "tabularSection.add",
             "tabularSection.set",
             "tabularSection.remove",
@@ -1609,7 +1612,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 123);
+        assert_eq!(expected.len(), 124);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465): имя одно, семейство выбирает адрес. Других
@@ -1627,7 +1630,7 @@ mod tests {
         }
         assert_eq!(
             unica_metadata::apply_operations::MetadataOperation::ALL.len(),
-            35
+            36
         );
         assert_eq!(
             registry
@@ -1764,6 +1767,18 @@ mod tests {
         let cases = [
             // Реквизит объекта метаданных: свои операции есть, форм — нет.
             ("attribute.set", "main:Document.Order.Attribute.Total", true),
+            // Копия — только реквизит табличной части справочника.
+            (
+                "attribute.copy",
+                "main:Catalog.Goods.TabularSection.Prices.Attribute.Price",
+                true,
+            ),
+            (
+                "attribute.copy",
+                "main:Document.Order.TabularSection.Goods.Attribute.Price",
+                false,
+            ),
+            ("attribute.copy", "main:Catalog.Goods.Attribute.Code", false),
             (
                 "attribute.remove",
                 "main:Document.Order.Attribute.Total",

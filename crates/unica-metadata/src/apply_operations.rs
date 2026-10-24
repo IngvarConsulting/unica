@@ -64,6 +64,7 @@ metadata_operations!(
     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
     AttributeSet => ("attribute.set", MetadataAttribute, Values),
     AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
+    AttributeCopy => ("attribute.copy", CatalogTabularAttribute, Values),
     TabularSectionAdd => ("tabularSection.add", MetadataTabularSections, Items),
     TabularSectionSet => ("tabularSection.set", MetadataTabularSection, Values),
     TabularSectionRemove => ("tabularSection.remove", MetadataTabularSection, Target),
@@ -128,7 +129,8 @@ impl MetadataOperation {
             | Self::PredefinedItemAdd
             | Self::PredefinedItemSet
             | Self::PredefinedItemRemove
-            | Self::ContentSet => None,
+            | Self::ContentSet
+            | Self::AttributeCopy => None,
         }
     }
 
@@ -171,6 +173,7 @@ impl MetadataOperation {
             | Self::EnumValueRemove
             | Self::ColumnRemove
             | Self::CommandRemove => crate::contracts::metadata_member_remove(),
+            Self::AttributeCopy => crate::contracts::metadata_attribute_copy(),
             Self::ObjectBorrow => crate::contracts::metadata_object_borrow(),
             Self::ObjectCreate => crate::contracts::metadata_object_create(),
             Self::ObjectRemove => crate::contracts::metadata_object_remove(),

@@ -401,6 +401,30 @@ pub fn metadata_member_remove() -> OperationContract {
     }
 }
 
+pub fn metadata_attribute_copy() -> OperationContract {
+    OperationContract {
+        schema: object(
+            &[
+                ("at", text(true)),
+                (
+                    "values",
+                    object(
+                        &[("name", json!({"type":"string", "pattern": IDENTIFIER_PATTERN}))],
+                        &["name"],
+                    ),
+                ),
+            ],
+            &["values"],
+        ),
+        target: "The source attribute: <source-set>:Catalog.<Name>.TabularSection.<T>.Attribute.<A> of a configuration.",
+        effect: "Add a copy of the source attribute under values.name at the end of the same tabular section, with a new UUID and every other setting and translation of the source.",
+        notes: "References inside the copy keep their targets; references to the source stay on the source. A source with nested identities or references to its own name or UUID is refused.",
+        example_args: json!({"values":{"name":"Copy"}}),
+        help: METADATA_HELP,
+        format_validators: &[],
+    }
+}
+
 pub fn metadata_object_create() -> OperationContract {
     let mut schema = metadata_object_create_input_schema().clone();
     schema["properties"]["values"]["properties"]["name"]["pattern"] = json!(IDENTIFIER_PATTERN);
