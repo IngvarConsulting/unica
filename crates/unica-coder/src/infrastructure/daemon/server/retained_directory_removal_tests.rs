@@ -710,6 +710,45 @@ fn canonical_template_remove_rejects_a_late_entry_in_its_payload_without_deletin
 }
 
 #[test]
+fn canonical_template_remove_rejects_a_late_entry_in_its_emptied_collection() {
+    for late_file in [false, true] {
+        let (workspace, source, runtime) = template_fixture();
+        for name in ["Sheet", "Schema"] {
+            let token = template_removal_preview(&runtime, workspace.path(), name);
+            let published = invoke_apply(
+                &runtime,
+                workspace.path(),
+                serde_json::json!({"executionToken":token}),
+            );
+            assert!(published.ok, "{published:?}");
+        }
+        // The last template plans its collection away; a later foreign entry
+        // there makes the plan stale instead of being deleted with it.
+        let token = template_removal_preview(&runtime, workspace.path(), "Data");
+        let late = source.join("Documents/Order/Templates/late");
+        if late_file {
+            std::fs::write(&late, b"late owner").unwrap();
+        } else {
+            std::fs::create_dir(&late).unwrap();
+        }
+        let before = unica_workspace::test_support::tree_snapshot(&source);
+        let directories = directory_set(&source);
+        let result = invoke_apply(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken":token}),
+        );
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.diagnostics[0]["code"], "stale_revision");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
+        assert_eq!(directory_set(&source), directories);
+    }
+}
+
+#[test]
 fn canonical_template_remove_restores_its_directories_on_each_publication_failure() {
     use unica_workspace::compile_transaction::{
         set_retained_apply_failpoint, RetainedApplyFailpoint,
