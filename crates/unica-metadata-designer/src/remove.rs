@@ -616,7 +616,9 @@ pub enum MetaRemoveReference {
 /// logically: XML is metadata and refuses the removal, BSL is module code.
 /// The text of a query held in XML — a dynamic list's `QueryText`, a data
 /// composition `query` — is code too: it is searched with `query_patterns`
-/// and reported by the line inside the query.
+/// and reported by the line inside the query. A design-time value of data
+/// composition settings is metadata searched with `query_patterns` too: the
+/// dump writes it in the configuration's language.
 pub fn meta_remove_references(
     source_set: &str,
     relative: &Path,
@@ -682,6 +684,26 @@ pub fn meta_remove_references(
             }
             continue;
         }
+        // A design-time value — the value of a filter, a parameter or a
+        // choice parameter in data composition settings — names a predefined
+        // item or an enum value the way the dump is written, `Справочник.X.Y`
+        // in a Russian configuration, so it is searched in both languages.
+        if let Some(value) = node
+            .parent_element()
+            .filter(|parent| node.is_text() && design_time_value(*parent))
+        {
+            let text = node.text().unwrap_or_default();
+            let reference = MetaRemoveReference::Metadata {
+                at: query_text_address(source_set, &owner, node),
+                property: design_time_property(value),
+            };
+            if query_patterns.iter().any(|pattern| mentions(text, pattern))
+                && !found.contains(&reference)
+            {
+                found.push(reference);
+            }
+            continue;
+        }
         let named = if node.is_text() {
             node.text()
                 .is_some_and(|value| patterns.iter().any(|pattern| mentions(value, pattern)))
@@ -728,11 +750,54 @@ fn query_text_element(file_name: Option<&str>, element: &str) -> bool {
     }
 }
 
+/// Whether an element holds a data composition design-time value,
+/// `xsi:type="dcscor:DesignTimeValue"`.
+fn design_time_value(element: roxmltree::Node<'_, '_>) -> bool {
+    element
+        .attribute(("http://www.w3.org/2001/XMLSchema-instance", "type"))
+        .and_then(|value| value.split_once(':'))
+        .is_some_and(|(prefix, name)| {
+            name == "DesignTimeValue"
+                && element.lookup_namespace_uri(Some(prefix))
+                    == Some("http://v8.1c.ru/8.1/data-composition-system/core")
+        })
+}
+
+/// The property holding a design-time value: the outermost settings section
+/// around it — `Filter`, `ConditionalAppearance` of a list or of the whole
+/// form, `DataParameters`, the `InputParameters` or `AvailableValue` of a
+/// field or parameter — or the element itself, `Value` of a schema parameter.
+fn design_time_property(value: roxmltree::Node<'_, '_>) -> String {
+    let section = value
+        .ancestors()
+        .filter(|ancestor| {
+            matches!(
+                ancestor.tag_name().name(),
+                "filter"
+                    | "conditionalAppearance"
+                    | "ConditionalAppearance"
+                    | "dataParameters"
+                    | "inputParameters"
+                    | "availableValue"
+                    | "userFields"
+            )
+        })
+        .last()
+        .unwrap_or(value);
+    let name = section.tag_name().name();
+    let mut chars = name.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
 /// The address of the query text holding a reference: the form attribute of
-/// a dynamic list, the data set, field, calculated field, total or parameter
-/// of a data composition schema, the right entry of a role, as far as the
+/// a dynamic list, the data set, field, calculated field, total, parameter or
+/// settings variant of a data composition schema, the right entry of a role, as far as the
 /// address grammar names it; otherwise the form, template or role that owns
-/// the file.
+/// the file. The grammar has no node for a nested schema, so whatever lies
+/// inside one is addressed by the template.
 fn query_text_address(source_set: &str, owner: &str, node: roxmltree::Node<'_, '_>) -> String {
     let child_text = |element: roxmltree::Node<'_, '_>, name: &str| {
         element
@@ -743,12 +808,17 @@ fn query_text_address(source_set: &str, owner: &str, node: roxmltree::Node<'_, '
     };
     let mut segments = Vec::new();
     for ancestor in node.ancestors().filter(|ancestor| ancestor.is_element()) {
+        if ancestor.tag_name().name() == "nestedSchema" {
+            segments.clear();
+            continue;
+        }
         let member = |kind: &str, name: Option<String>| {
             name.map(|name| unica_address::address::member_address(&format!(".{kind}"), &name))
         };
         let segment = match ancestor.tag_name().name() {
             "Attribute" => member("Attribute", ancestor.attribute("name").map(str::to_string)),
             "dataSet" => member("DataSet", child_text(ancestor, "name")),
+            "settingsVariant" => member("Setting", child_text(ancestor, "name")),
             "field" => member("Field", child_text(ancestor, "dataPath")),
             "calculatedField" => member("CalculatedField", child_text(ancestor, "dataPath")),
             "totalField" => member("Total", child_text(ancestor, "dataPath")),
