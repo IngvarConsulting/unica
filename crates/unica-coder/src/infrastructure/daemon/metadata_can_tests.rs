@@ -2006,6 +2006,59 @@ fn canonical_wire_apply_refuses_removing_the_last_required_register_field_withou
     );
 }
 
+/// Состав плана обмена чтение показывает связью `content`, а меняет только
+/// `content.set`: `relation.*` с `relation: "content"` на плане обмена
+/// отказывает и ведёт к контракту `content.set` того же плана (#1923).
+#[test]
+fn exchange_plan_content_relation_leads_to_content_set() {
+    let fixture = Fixture::new("workspace-exchange-content");
+    let binding = fixture.binding(false);
+    let runtime = runtime();
+    let plan = "main:ExchangePlan.CorpusExchangePlan";
+    let args =
+        json!({"values":{"relation":"content","targets":[{"metadataPath":"Catalog.Пример"}]}});
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    for op in ["relation.add", "relation.remove", "relation.replace"] {
+        let error = parse(&binding, plan, op, &args).unwrap_err();
+        assert_eq!(error.path(), Some("ops[3].args.values.relation"), "{op}");
+        assert!(error.to_string().contains("content.set"), "{op}: {error}");
+        // Подсказка не зависит от остальных аргументов связи.
+        let without_targets = json!({"values":{"relation":"content"}});
+        let error = parse(&binding, plan, op, &without_targets).unwrap_err();
+        assert!(error.to_string().contains("content.set"), "{op}: {error}");
+
+        let refused = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":plan,"ops":[{"op":op,"args":args.clone()}]}),
+        );
+        assert!(!refused.ok, "{op}: {refused:?}");
+        assert_eq!(
+            refused.diagnostics[0]["code"], "bad_value",
+            "{op}: {refused:?}"
+        );
+        let next = &refused.next[0];
+        assert_eq!(next["tool"], "unica.view", "{op}: {refused:?}");
+        assert_eq!(next["args"]["at"], format!("{plan}.Can.content.set"));
+        // `next` открывается: контракт `content.set` существует на этом плане.
+        contract(&runtime, &fixture, plan, "content.set");
+
+        // Для объекта другого вида отказ прежний и в `content.set` не ведёт.
+        let other = parse(&binding, "main:Catalog.Пример", op, &args).unwrap_err();
+        assert!(!other.to_string().contains("content.set"), "{op}: {other}");
+    }
+    // Словарь не обещает `content` для `relation.*`.
+    let schema = contract(&runtime, &fixture, plan, "relation.add")["argsSchema"].clone();
+    let oracle = jsonschema::validator_for(&schema).unwrap();
+    assert!(!oracle.is_valid(&args), "{schema}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before,
+        "refusals write nothing"
+    );
+}
+
 /// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: набор типов платформы
 /// (`cfg:AnyIBRef` — любая ссылка базы) допустим, но не моделируется; это
 /// предупреждение у поля при итоге `passed`, а не повреждение исходника.

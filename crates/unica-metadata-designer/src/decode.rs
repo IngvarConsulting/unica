@@ -1692,6 +1692,24 @@ pub fn parse_relation(
     )?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let values = required_object(args, "values", op_index)?;
+    // Чтение показывает состав плана обмена связью `content`, но меняет его
+    // только `content.set`: отказ ведёт туда, а не в тупик (#1923).
+    if kind == MetadataKind::ExchangePlan
+        && values.get("relation").and_then(Value::as_str) == Some("content")
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "`{operation}` does not edit exchange plan content; use `content.set` on `{target}`"
+            ),
+        )
+        .at_path(format!("ops[{op_index}].args.values.relation"))
+        .with_next(serde_json::json!({
+            "tool": "unica.view",
+            "args": {"at": format!("{target}.Can.content.set")},
+            "reason": "exchange plan content is replaced by content.set on the same plan",
+        })));
+    }
     check_input_field(
         shape,
         "values",
