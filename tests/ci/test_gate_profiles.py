@@ -432,6 +432,8 @@ FACADE_GUARDS = (
     "facade_source_keeps_the_exact_abi_and_has_no_production_authority",
     "rust_authority_guard_finds_store_identifiers_inside_formatting_macros",
     "scenario_driver_cannot_mint_runtime_telemetry_events",
+    "scenario_driver_source_list_names_every_runner_file",
+    "scenario_telemetry_guard_sees_minting_in_a_nested_runner_module",
     "scenario_wire_is_closed_at_the_scenario_and_action_levels",
 )
 

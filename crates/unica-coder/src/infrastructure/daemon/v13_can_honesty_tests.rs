@@ -884,6 +884,36 @@ fn honest_can_on_external_sources() {
     check_fixture_coverage("workspace-external");
 }
 
+#[test]
+fn form_collection_check_reports_readability_without_a_content_validator() {
+    for (workspace, addresses) in [
+        (
+            "workspace-resolve",
+            vec!["main:Catalog.Items.Form", "main:CommonForm"],
+        ),
+        (
+            "workspace-external",
+            vec![
+                "epf:ExternalDataProcessor.Import.Form",
+                "epf:ExternalDataProcessor.Other.Form",
+                "erf:ExternalReport.Sales.Form",
+            ],
+        ),
+    ] {
+        let fixture = fixture(workspace);
+        for at in addresses {
+            let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": at}));
+            assert!(viewed.ok, "{at}: {}", viewed.summary);
+            let checked = invoke(&fixture.workspace, ToolIdentity::Check, json!({"at": at}));
+            assert!(checked.ok, "{at}: {}", checked.summary);
+            let data = checked.data.expect("результат проверки коллекции");
+            assert_eq!(data["status"], "readable", "{at}: {data}");
+            assert_eq!(data["validators"], json!([]), "{at}: {data}");
+            assert_eq!(data["diagnostics"], json!([]), "{at}: {data}");
+        }
+    }
+}
+
 /// Вместе фикстуры доходят до каждого маршрута, кроме названных пробелов, и
 /// до видов, совпадающих по имени в разных деревьях.
 #[test]
@@ -1094,20 +1124,8 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             ));
             continue;
         }
-        // A closed contract: the same accepted arguments plus one unknown
-        // key are refused by the family decoder, not silently ignored.
-        if listed && family == Ok(true) {
-            let mut args = node_args(descriptor, &address);
-            args["unicaUnknownArgument"] = json!(true);
-            let probe = apply_request(at, op, args);
-            match parse_family_operation_for_test(0, &probe.ops()[0], checked.binding) {
-                Err(error)
-                    if error.kind()
-                        == unica_source_contract::proposal::ApplyPlanErrorKind::BadValue => {}
-                other => mismatches.push(format!(
-                    "{at}: `{op}` does not refuse an unknown argument key: {other:?}"
-                )),
-            }
+        if listed && (family == Ok(true) || ARGUMENT_DEPENDENT.iter().any(|(name, _)| *name == op)) {
+            check_unknown_argument_is_named(checked, at, descriptor, &address, mismatches);
         }
         if plan_writes && listed && family == Ok(true) {
             if let Ok(paths) = plan(checked, &request) {
@@ -1117,6 +1135,45 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         }
     }
     });
+}
+
+/// Лишний аргумент операции словаря отвергается, и отказ называет его ключ
+/// путём или текстом (INV.WIRE.V13-CAN-DICTIONARY, #1985): агент видит,
+/// какой из аргументов убрать.
+fn check_unknown_argument_is_named(
+    checked: &Checked<'_>,
+    at: &str,
+    descriptor: OperationDescriptor,
+    address: &QualifiedAddress,
+    mismatches: &mut Vec<String>,
+) {
+    const KEY: &str = "unicaUnknownArgument";
+    let op = descriptor.name();
+    let mut args = node_args(descriptor, address);
+    let Some(object) = args.as_object_mut() else {
+        return;
+    };
+    object.insert(KEY.to_string(), json!(true));
+    let request = apply_request(at, op, args);
+    let refusal = match preflight_apply_operations(&request, checked.traits, &|_| None) {
+        Err(refusal) => refusal.diagnostics[0].to_string(),
+        Ok(_) => match parse_family_operation_for_test(0, &request.ops()[0], checked.binding) {
+            // Разбор семейства пропустил ключ: отказать обязан планировщик.
+            Ok(()) => match plan(checked, &request) {
+                Ok(_) => {
+                    mismatches.push(format!("{at}: `{op}` accepts the unknown argument `{KEY}`"));
+                    return;
+                }
+                Err(message) => message,
+            },
+            Err(error) => format!("{:?}: {error}", error.path()),
+        },
+    };
+    if !refusal.contains(KEY) {
+        mismatches.push(format!(
+            "{at}: `{op}` refuses an unknown argument without naming its key: {refusal}"
+        ));
+    }
 }
 
 /// План операции на настоящем наборе: изменённые файлы или текст отказа.

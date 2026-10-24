@@ -1,0 +1,88 @@
+{
+  "id": "S-2006-skill-example-arguments",
+  "issue": 2006,
+  "area": "Навигация",
+  "task": "Пройти примеры навыка source-access так, как агент их копирует: корень, поиск формы по имени, чтение формы и спуск в её элементы, план замены тела метода. Рабочую папку передаёт хост, аргумента cwd у инструментов нет, и вызов с ним отклоняется как неизвестный аргумент.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "corpus": "names",
+        "query": "Валюты",
+        "kind": "Form"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции.Body",
+              "text": "\t// новое тело"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "cwd": "<workspace>"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: canonical invocation has unknown argument `cwd`"
+    }
+  ]
+}
