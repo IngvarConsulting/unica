@@ -2791,13 +2791,11 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                     "Scale": 98
                 }}
             }, {
-                // Qualified types: attribute.add does not yet write the
-                // default qualifiers of a bare String or Number (#1996).
                 "op": "attribute.add",
                 "args": {"items": [
-                    {"name": "Value", "type": "string(100)"},
+                    {"name": "Value", "type": "String"},
                     {"name": "Enabled", "type": "Boolean"},
-                    {"name": "Picture", "type": "decimal(10,0)"},
+                    {"name": "Picture", "type": "Number"},
                     {"name": "Rows", "type": "ValueTable", "columns": [
                         {"name": "Value", "type": "String"},
                         {"name": "Presentation", "type": "String"},

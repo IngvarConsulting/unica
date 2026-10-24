@@ -280,18 +280,20 @@ pub fn default_form_property(key: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
-/// Тип реквизита или колонки формы так, как его выгружает 8.3.27: у
-/// строки, числа и даты без параметров платформа пишет квалификаторы по
-/// умолчанию — длину 0, 0 знаков, состав «дата и время» (#1996). Составной
-/// тип отображается по частям.
+/// Тип реквизита формы так, как его выгружает 8.3.27. Имена контракта
+/// `String`, `Number`, `Date`, `Boolean` (и русские) раньше уходили голыми
+/// `xs:*`, и платформа дописывала квалификаторы по умолчанию: длину 0,
+/// 0 знаков, состав «дата и время» (#1996). Теперь они пишутся явно, смысл
+/// прежний. Словарь кодека (`string`, `decimal`, `date`) проходит как есть.
+/// Составной тип отображается по частям.
 pub fn form_attribute_type(type_name: &str) -> String {
     type_name
-        .split('|')
+        .split(['|', '+'])
         .map(|part| match part.trim() {
-            "Boolean" | "boolean" | "Булево" => "boolean",
-            "String" | "string" | "Строка" => "string",
-            "Number" | "number" | "Число" => "decimal(0,0)",
-            "Date" | "date" | "Дата" => "dateTime",
+            "Boolean" | "Булево" => "boolean",
+            "String" | "Строка" => "string",
+            "Number" | "Число" => "decimal(0,0)",
+            "Date" | "Дата" => "dateTime",
             other => other,
         })
         .collect::<Vec<_>>()
@@ -665,20 +667,6 @@ pub fn parse_form_operation(
                         "type".to_string(),
                         Value::String(form_attribute_type(type_name)),
                     );
-                }
-                if let Some(columns) = item.get("columns").and_then(Value::as_array) {
-                    let columns = columns
-                        .iter()
-                        .map(|column| {
-                            let mut column = column.clone();
-                            if let Some(type_name) = column.get("type").and_then(Value::as_str) {
-                                let mapped = form_attribute_type(type_name);
-                                column["type"] = Value::String(mapped);
-                            }
-                            column
-                        })
-                        .collect();
-                    entry.insert("columns".to_string(), Value::Array(columns));
                 }
             },
         ),
@@ -1656,9 +1644,12 @@ mod attribute_type_tests {
             ("Number", "decimal(0,0)"),
             ("Date", "dateTime"),
             ("Boolean", "boolean"),
+            ("date", "date"),
+            ("decimal", "decimal"),
             ("string(10)", "string(10)"),
             ("CatalogRef.Товары", "CatalogRef.Товары"),
             ("String | Number", "string | decimal(0,0)"),
+            ("String+Date", "string | dateTime"),
         ] {
             assert_eq!(form_attribute_type(input), expected, "{input}");
         }
