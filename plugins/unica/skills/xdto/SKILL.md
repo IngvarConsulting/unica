@@ -68,7 +68,6 @@ allowed-tools:
   "params": {
     "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
       "at": "main:XDTOPackage.EnterpriseData_1_17_3"
     }
   }
@@ -87,7 +86,6 @@ allowed-tools:
   "params": {
     "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
       "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка"
     }
   }

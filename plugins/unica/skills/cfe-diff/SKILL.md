@@ -30,7 +30,7 @@ allowed-tools:
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
-  "params": { "name": "unica.view", "arguments": { "cwd": "<workspace>" } }
+  "params": { "name": "unica.view", "arguments": {} }
 }
 ```
 
@@ -44,7 +44,7 @@ allowed-tools:
   "method": "tools/call",
   "params": {
     "name": "unica.view",
-    "arguments": { "cwd": "<workspace>", "at": "ext:Configuration" }
+    "arguments": { "at": "ext:Configuration" }
   }
 }
 ```
@@ -75,7 +75,7 @@ allowed-tools:
   "method": "tools/call",
   "params": {
     "name": "unica.check",
-    "arguments": { "cwd": "<workspace>", "at": "ext:Configuration" }
+    "arguments": { "at": "ext:Configuration" }
   }
 }
 ```
@@ -96,7 +96,6 @@ allowed-tools:
   "params": {
     "name": "unica.diff",
     "arguments": {
-      "cwd": "<workspace>",
       "left": "main:Catalog.Валюты",
       "right": "ext:Catalog.Валюты"
     }
@@ -126,7 +125,7 @@ allowed-tools:
   "method": "tools/call",
   "params": {
     "name": "unica.search",
-    "arguments": { "cwd": "<workspace>", "query": "&ИзменениеИКонтроль", "scope": "ext:Configuration" }
+    "arguments": { "query": "&ИзменениеИКонтроль", "scope": "ext:Configuration" }
   }
 }
 ```
@@ -137,7 +136,7 @@ allowed-tools:
   "method": "tools/call",
   "params": {
     "name": "unica.search",
-    "arguments": { "cwd": "<workspace>", "query": "&Вместо", "scope": "ext:Configuration" }
+    "arguments": { "query": "&Вместо", "scope": "ext:Configuration" }
   }
 }
 ```
