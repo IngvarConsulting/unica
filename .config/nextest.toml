@@ -301,6 +301,7 @@ default-filter = '''(
     | (binary(unica_metadata_designer) & test(/^borrowed_enum_value::tests::/))
     | (binary(unica_metadata_designer) & test(/^borrowed_object::tests::/))
     | (binary(unica_metadata_designer) & test(/^configuration::tests::/))
+    | (binary(unica_metadata_designer) & test(/^edit::attribute_copy_tests::/))
     | (binary(unica_metadata_designer) & test(/^edit::empty_child_objects_tests::/))
     | (binary(unica_metadata_designer) & test(/^extension::tests::/))
     | (binary(unica_metadata_designer) & test(/^info_projection::tests::/))
