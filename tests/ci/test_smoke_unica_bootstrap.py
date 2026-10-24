@@ -15,6 +15,13 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "ci" / "smoke-unica-bootstrap.py"
+# Сколько живёт внук, держащий stdout, пока его не убьёт уборка теста.
+# Срок bootstrap в проверке — половина этой величины: дождись смоук EOF
+# трубы, он упёрся бы в этот срок раньше, чем внук умрёт сам.
+HOLDER_LIFETIME_SECONDS = 60.0
+BOOTSTRAP_FUSE_SECONDS = HOLDER_LIFETIME_SECONDS / 2
+# Предохранитель уборки фикстуры от зависания, не проверяемый срок.
+CLEANUP_FUSE_SECONDS = 30.0
 
 
 def load_module():
@@ -314,7 +321,8 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
                     # Only real subprocess.run.communicate closes this pipe,
                     # after the Popen spy has retained ownership of the parent.
                     "sys.stdin.buffer.read()\n"
-                    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(4)'])\n"
+                    "child = subprocess.Popen([sys.executable, '-c', "
+                    f"'import time; time.sleep({HOLDER_LIFETIME_SECONDS!r})'])\n"
                     f"open({str(holder_pid_path)!r}, 'w').write(str(child.pid))\n"
                     f"open({str(spawned)!r}, 'w').write('started')\n"
                     "print('bootstrap started', file=sys.stderr, flush=True)\n"
@@ -354,21 +362,25 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
                 return process
 
             try:
-                started = time.monotonic()
                 with patch.object(module.subprocess, "Popen", side_effect=owned_popen):
                     code, _, stderr = module.run_bootstrap_command(
-                        command, os.environ.copy(), 1.5
+                        command, os.environ.copy(), BOOTSTRAP_FUSE_SECONDS
                     )
                 self.assertEqual(code, 0)
                 self.assertEqual(spawned.read_text(), "started")
                 self.assertIn("bootstrap started", stderr)
-                self.assertLess(time.monotonic() - started, 2.5)
                 self.assertEqual(len(owned), 1)
                 owner = owned[0][1]
                 holder_pid = int(holder_pid_path.read_text())
                 holder_identities = owner.capture_identities({holder_pid})
                 self.assertEqual({identity.pid for identity in holder_identities}, {holder_pid})
-                self.assertEqual(owner.survivors(holder_identities), holder_identities)
+                # Событие вместо замера: смоук вернулся, пока внук с его
+                # stdout ещё жив, значит, EOF этой трубы он не ждал.
+                self.assertEqual(
+                    owner.survivors(holder_identities),
+                    holder_identities,
+                    "the bootstrap smoke returned only after the stdout holder exited",
+                )
                 if os.name == "posix":
                     self.assertEqual(
                         {identity.session_id for identity in holder_identities}, {owner.session_id}
@@ -378,9 +390,9 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
                     self.assertIsNone(error)
                     self.assertGreaterEqual(active, 1)
             finally:
-                # Cleanup is outside the original timing oracle, but has one
-                # bounded deadline, including the independent postcondition.
-                cleanup_deadline = time.monotonic() + 2.0
+                # Cleanup is outside the property, but has one bounded fuse,
+                # including the independent postcondition.
+                cleanup_deadline = time.monotonic() + CLEANUP_FUSE_SECONDS
                 cleanup_errors = []
                 for process, owner in owned:
                     try:
@@ -430,9 +442,10 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
                         remaining = cleanup_deadline - time.monotonic()
                         if remaining <= 0:
                             raise TimeoutError("no time remains to verify fixture cleanup")
-                        # The reusable helper treats failed ps reads as empty.
-                        # Check an actual successful snapshot before claiming
-                        # that our newly isolated sessions have no live members.
+                        # An independent postcondition: read the table directly
+                        # instead of trusting the helper under test, and
+                        # require a successful read before claiming that our
+                        # newly isolated sessions have no live members.
                         snapshot = subprocess.run(
                             ["ps", "-axo", "pid=,uid=,stat=,lstart="],
                             capture_output=True, text=True, encoding="utf-8",

@@ -15,8 +15,17 @@ from pathlib import Path
 
 
 _CLEANUP_GRACE_SECONDS = 0.5
+# Предохранитель от зависшего `ps`, а не контракт очистки: под нагрузкой
+# CPU чтение таблицы процессов может длиться дольше grace. Сбой или
+# истечение этого срока означает «таблица неизвестна», а не «процесса нет»:
+# его нельзя путать с бюджетом ожидания выхода процессов.
+_PROCESS_OBSERVATION_TIMEOUT_SECONDS = 10.0
 _WINDOWS_CREATE_SUSPENDED = 0x00000004
 EVIDENCE_TARGETS = ("darwin-arm64", "linux-x64", "win-x64")
+
+
+class ProcessObservationError(RuntimeError):
+    """The process table could not be read; absence is unknown, not proven."""
 
 
 class ProcessIdentity:
@@ -114,7 +123,15 @@ class ProcessOwnership:
             if os.name == "nt"
             else None
         )
-        identity = _current_process_identity(pid)
+        try:
+            identity = _current_process_identity(pid)
+        except ProcessObservationError:
+            if os.name != "posix":
+                raise
+            # POSIX ownership is the session the leader was started in, known
+            # by construction; the public identity only refines it. An
+            # unreadable table leaves it unknown instead of failing the spawn.
+            identity = None
         session_id = pid if os.name == "posix" and pid > 0 else None
         if identity is not None and identity.session_id is not None:
             session_id = identity.session_id
@@ -159,17 +176,19 @@ class ProcessOwnership:
         return identities
 
     def capture_identities(self, pids: set[int]) -> set[ProcessIdentity]:
-        return {
-            identity
-            for pid in pids
-            if (identity := _current_process_identity(pid)) is not None
-        }
+        current = _current_process_identities(pids)
+        return {identity for identity in current.values() if identity is not None}
 
     def signal(
         self, identities: set[ProcessIdentity], signal_number: int
     ) -> None:
+        # One table read decides which identities are still exact; a failed
+        # read raises instead of signalling a possibly reused bare PID.
+        current = _current_process_identities(
+            {identity.pid for identity in identities}
+        )
         for identity in sorted(identities, key=lambda item: item.pid, reverse=True):
-            if not identity.identifies(_current_process_identity(identity.pid)):
+            if not identity.identifies(current.get(identity.pid)):
                 continue
             try:
                 os.kill(identity.pid, signal_number)
@@ -179,6 +198,14 @@ class ProcessOwnership:
     def survivors(
         self, identities: set[ProcessIdentity]
     ) -> set[ProcessIdentity]:
+        if os.name == "posix":
+            # One snapshot per call; zombies are already excluded from it.
+            processes = _posix_process_snapshot()
+            return {
+                identity
+                for identity in identities
+                if identity.identifies(processes.get(identity.pid))
+            }
         return {
             identity
             for identity in identities
@@ -248,35 +275,64 @@ class ProcessOwnership:
                 active_processes,
             )
 
-        survivors = self.survivors(identities)
-        if survivors:
-            self.signal(survivors, signal.SIGTERM)
-            survivors = self.wait(
-                survivors,
-                min(0.1, max(0.0, cleanup_deadline - time.monotonic())),
-            )
+        survivors = set(identities)
+        observation_errors: list[str] = []
+        try:
+            survivors = self.survivors(identities)
             if survivors:
-                self.signal(survivors, signal.SIGKILL)
+                self.signal(survivors, signal.SIGTERM)
+                survivors = self.wait(
+                    survivors,
+                    min(0.1, max(0.0, cleanup_deadline - time.monotonic())),
+                )
+                if survivors:
+                    self.signal(survivors, signal.SIGKILL)
+        except ProcessObservationError as error:
+            # Without a readable table no identity can be proven exact, so
+            # only the leader is stopped through its own handle and the claim
+            # stays incomplete.
+            observation_errors.append(str(error))
+            try:
+                if self.process.poll() is None:
+                    self.process.kill()
+            except OSError:
+                pass
         try:
             self.process.wait(
                 timeout=max(0.0, cleanup_deadline - time.monotonic())
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
-        return ProcessCleanupResult(
-            self.wait(
-                survivors, max(0.0, cleanup_deadline - time.monotonic())
-            )
-        )
+        if not observation_errors:
+            try:
+                survivors = self.wait(
+                    survivors, max(0.0, cleanup_deadline - time.monotonic())
+                )
+            except ProcessObservationError as error:
+                observation_errors.append(str(error))
+        return ProcessCleanupResult(survivors, tuple(observation_errors))
 
     def terminate(
         self,
         additional_identities: set[ProcessIdentity] | None = None,
         timeout_seconds: float = _CLEANUP_GRACE_SECONDS,
     ) -> ProcessCleanupResult:
-        return self.quiesce(
-            self.snapshot(additional_identities), timeout_seconds
-        )
+        try:
+            owned = self.snapshot(additional_identities)
+        except ProcessObservationError as error:
+            # The session members are unknown, but the leader handle is still
+            # ours: stop it without guessing at bare PIDs, and report the gap.
+            leader_errors: list[str] = []
+            try:
+                if self.process.poll() is None:
+                    self.process.kill()
+                self.process.wait(timeout=max(0.0, timeout_seconds))
+            except (OSError, subprocess.TimeoutExpired) as leader_error:
+                leader_errors.append(f"leader termination failed: {leader_error}")
+            return ProcessCleanupResult(
+                set(), (f"owned process snapshot failed: {error}", *leader_errors)
+            )
+        return self.quiesce(owned, timeout_seconds)
 
 
 def _response_kind(response: dict) -> str:
@@ -1293,21 +1349,30 @@ def _attach_windows_process_job(
 
 
 def _posix_process_snapshot() -> dict[int, ProcessIdentity]:
+    """Return live (non-zombie) processes or raise ProcessObservationError.
+
+    An empty answer must mean an empty table, never a failed read: callers
+    decide ownership, signalling and death from it.
+    """
     try:
         snapshot = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,lstart="],
+            ["ps", "-axo", "pid=,ppid=,stat=,lstart="],
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=_CLEANUP_GRACE_SECONDS,
+            timeout=_PROCESS_OBSERVATION_TIMEOUT_SECONDS,
             check=True,
         ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return {}
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ProcessObservationError(
+            f"process table is unreadable: {error}"
+        ) from error
     processes: dict[int, ProcessIdentity] = {}
     for line in snapshot.splitlines():
-        fields = line.split(None, 2)
-        if len(fields) != 3:
+        fields = line.split(None, 3)
+        if len(fields) != 4:
+            continue
+        if fields[2].startswith("Z"):
             continue
         try:
             pid, parent_pid = map(int, fields[:2])
@@ -1318,8 +1383,12 @@ def _posix_process_snapshot() -> dict[int, ProcessIdentity]:
             pid=pid,
             parent_pid=parent_pid,
             session_id=session_id,
-            start_identity=fields[2].strip(),
+            start_identity=fields[3].strip(),
         )
+    if not processes:
+        # The reader itself is always in the table; nothing parsed means the
+        # output format changed, not that every process is gone.
+        raise ProcessObservationError("process table has no parsable rows")
     return processes
 
 
@@ -1424,22 +1493,50 @@ def _current_process_identity(pid: int) -> ProcessIdentity | None:
     return None
 
 
+def _current_process_identities(
+    pids: set[int],
+) -> dict[int, ProcessIdentity | None]:
+    """Resolve several PIDs from one table read on POSIX."""
+    if os.name == "posix":
+        processes = _posix_process_snapshot() if pids else {}
+        return {pid: processes.get(pid) if pid > 0 else None for pid in pids}
+    return {pid: _current_process_identity(pid) for pid in pids}
+
+
+def _running_pids(pids: set[int]) -> set[int]:
+    """Return the PIDs that may still run, reading the table at most once.
+
+    The kernel answers absence exactly; only zombie state needs ``ps``. When
+    that read fails the existing PIDs are reported as running: an unknown
+    state never proves that a process is gone.
+    """
+    if os.name != "posix":
+        return {pid for pid in pids if _process_is_running(pid)}
+    present: set[int] = set()
+    for pid in pids:
+        if pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass
+        present.add(pid)
+    if not present:
+        return set()
+    try:
+        processes = _posix_process_snapshot()
+    except ProcessObservationError:
+        return present
+    return {pid for pid in present if pid in processes}
+
+
 def _process_is_running(pid: int) -> bool:
     if pid <= 0:
         return False
     if os.name == "posix":
-        try:
-            status = subprocess.run(
-                ["ps", "-o", "stat=", "-p", str(pid)],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=_CLEANUP_GRACE_SECONDS,
-                check=False,
-            ).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            status = ""
-        return bool(status) and not status.startswith("Z")
+        return pid in _running_pids({pid})
     if os.name == "nt":
         _, running, _ = _windows_process_state(pid)
         return running
@@ -1452,7 +1549,7 @@ def _process_is_running(pid: int) -> bool:
 
 def _wait_for_process_pids(pids: set[int], timeout_seconds: float) -> None:
     deadline = time.monotonic() + timeout_seconds
-    while any(_process_is_running(pid) for pid in pids):
+    while _running_pids(pids):
         if time.monotonic() >= deadline:
             return
         time.sleep(0.01)

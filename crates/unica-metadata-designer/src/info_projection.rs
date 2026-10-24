@@ -566,6 +566,12 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
             if namespace != CURRENT_CONFIG_NAMESPACE {
                 return false;
             }
+            // Набор типов платформы (`AnyIBRef`, `CatalogRef`, `DocumentObject`,
+            // `ConstantValueManager`…) синтаксически допустим, но не моделируется.
+            if platform_type_set(&local) {
+                saw_unknown = true;
+                continue;
+            }
             let Ok(address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &local)
             else {
                 return false;
@@ -617,6 +623,42 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
         && saw_unknown
         && !(saw_value_storage && variant_count != 1)
         && seen_qualifiers.is_subset(&expected_qualifiers)
+}
+
+/// Наборы типов платформы без имени объекта, сверенные с выгрузкой 8.3.27:
+/// все ссылки базы, ссылки, объекты или наборы записей одного вида, менеджер
+/// значения константы.
+const PLATFORM_TYPE_SETS: &[&str] = &[
+    "AnyRef",
+    "AnyIBRef",
+    "CatalogRef",
+    "DocumentRef",
+    "EnumRef",
+    "ExchangePlanRef",
+    "ChartOfCharacteristicTypesRef",
+    "ChartOfAccountsRef",
+    "ChartOfCalculationTypesRef",
+    "BusinessProcessRef",
+    "TaskRef",
+    "CatalogObject",
+    "DocumentObject",
+    "ExchangePlanObject",
+    "ChartOfCharacteristicTypesObject",
+    "ChartOfAccountsObject",
+    "ChartOfCalculationTypesObject",
+    "BusinessProcessObject",
+    "TaskObject",
+    "InformationRegisterRecordSet",
+    "AccumulationRegisterRecordSet",
+    "AccountingRegisterRecordSet",
+    "CalculationRegisterRecordSet",
+    "SequenceRecordSet",
+    "RecalculationRecordSet",
+    "ConstantValueManager",
+];
+
+fn platform_type_set(local: &str) -> bool {
+    PLATFORM_TYPE_SETS.contains(&local)
 }
 
 pub fn expand_observed_type_qname(
@@ -2193,11 +2235,17 @@ pub fn parse_standard_attribute_property(
         name,
         "LinkByType" | "ChoiceParameterLinks" | "ChoiceParameters"
     ) {
-        if node.attributes().len() != 0 || !node_is_empty_placeholder(node) {
+        if node.attributes().len() != 0 {
             return Err(ProjectionError::malformed(
                 field.to_string(),
-                "closed format profile requires this declaration to be empty".to_string(),
+                "declaration element must not carry attributes".to_string(),
             ));
+        }
+        // Непустая декларация — допустимая выгрузка платформы, которую этот
+        // профиль не моделирует, а не повреждённый исходник: чтение соседних
+        // свойств продолжается, а читатель называет её предупреждением.
+        if !node_is_empty_placeholder(node) {
+            return Ok(MetaObservedPropertyValue::Unmodelled {});
         }
         return Ok(MetaObservedPropertyValue::Empty {});
     }

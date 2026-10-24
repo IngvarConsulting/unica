@@ -46,7 +46,9 @@ impl OperationApplicability {
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata => "`Kind.Name`",
             Self::SupportRule => "`Kind.Name` or `Kind.Name.Form.F`",
-            Self::MetadataOrRoleOrSubsystem => "`Kind.Name`, `Role.Name` or `Subsystem.Name`",
+            Self::MetadataOrRoleOrSubsystem => {
+                "`Configuration`, `Kind.Name`, `Role.Name` or `Subsystem.Name`"
+            }
             Self::MetadataAttributeContainer => {
                 "`Kind.Name` of a kind with attributes or `Kind.Name.TabularSection.T`"
             }
@@ -87,7 +89,7 @@ impl OperationApplicability {
                     && site.source().kind() == SourceSetKind::Extension
             }
             Self::Metadata => site.metadata_object().is_some(),
-            Self::MetadataOrRoleOrSubsystem => PropertiesSite::from_address(site.at()).is_some(),
+            Self::MetadataOrRoleOrSubsystem => PropertiesSite::from_site(site).is_some(),
             Self::MetadataAttributeContainer => {
                 site.metadata_owner_with(MetaCollection::Attributes)
                     || site

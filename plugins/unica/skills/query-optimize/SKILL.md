@@ -87,7 +87,6 @@ description: "Оптимизация запросов 1С и СКД. Испол�
   "params": {
     "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
       "at": "main:Report.Продажи.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet"
     }
   }
