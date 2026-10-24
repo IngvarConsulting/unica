@@ -463,6 +463,21 @@ pub fn parse_bsl_analyzer_search(
     }
 
     if hits.is_empty() {
+        // Throwaway probe for #2054; never merged.
+        if let Ok(dir) = std::env::var("UNICA_PROBE_2054_DIR") {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(
+                std::path::Path::new(&dir).join(format!(
+                    "raw-{}-{}.txt",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or_default()
+                )),
+                text,
+            );
+        }
         diagnostics.insert(
             0,
             "bsl-analyzer returned non-empty output without any valid search hits".to_string(),

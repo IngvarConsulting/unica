@@ -1,0 +1,42 @@
+name: Probe 2054 S-978 under load
+
+# Throwaway probe for #2054 on a scratch branch; never merged.
+on:
+  push:
+    branches: [probe/2054-s978-linux]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r tests/ci/requirements.txt
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci-rust-ordinary
+          save-if: false
+      - run: cargo build --locked -p unica-coder --bin unica
+      - run: python -m tests.ci.acceptance_profiles --stage-analyzer "$RUNNER_TEMP/plugin"
+      - name: Series under load
+        env:
+          UNICA_PROBE_2054_DIR: ${{ runner.temp }}/probe-raw
+        run: |
+          for i in $(seq 1 "$(nproc)"); do (timeout 3000 yes > /dev/null &) ; done
+          for i in 1 2 3 4; do python .probe/loop.py "$RUNNER_TEMP/plugin" 15 > "$RUNNER_TEMP/par$i.log" 2>&1 & done
+          wait
+          pkill yes || true
+          grep -h "^run \|^total" "$RUNNER_TEMP"/par*.log | grep -c ok || true
+          grep -h "FAIL\|^total\|RESPONSE" "$RUNNER_TEMP"/par*.log | cut -c1-3000 || true
+          for f in "$RUNNER_TEMP"/probe-raw/*; do echo "== $f"; cat "$f"; echo; done 2>/dev/null || true
