@@ -7255,6 +7255,7 @@ fn a_borrowed_exchange_plan_without_its_own_content_does_not_read_as_empty() {
     ] {
         assert!(!limits(at).contains(&json!(content_limit)), "{at}");
     }
+}
 
 #[test]
 fn xdto_restricted_value_view_returns_named_and_anonymous_facets() {
