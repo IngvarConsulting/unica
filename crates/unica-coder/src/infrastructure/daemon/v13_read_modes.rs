@@ -649,6 +649,8 @@ mod operation_dictionary_tests {
         let can = configuration["can"].as_array().expect("root can entries");
         assert!(can.iter().any(|entry| entry["op"] == "subsystem.create"));
         assert!(can.iter().any(|entry| entry["op"] == "object.create"));
+        // The root's own properties are edited at the root itself (#1644).
+        assert!(can.iter().any(|entry| entry["op"] == "props.set"));
         // A configuration root is not an extension: nothing to borrow into.
         assert!(can.iter().all(|entry| entry["op"] != "object.borrow"));
     }

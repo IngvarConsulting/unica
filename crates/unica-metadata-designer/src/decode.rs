@@ -17,6 +17,8 @@ use unica_source_contract::proposal::{
 };
 pub struct MetadataDecodeContext<'a> {
     pub source_set_name: &'a str,
+    /// The addressed source set's kind selects the root property profile.
+    pub source_kind: unica_source_contract::SourceSetKind,
     pub registry: OperationRegistry,
 }
 impl MetadataDecodeContext<'_> {
@@ -90,6 +92,7 @@ pub enum MetadataPlanKind {
 pub enum DescriptorPropertyChanges {
     Role(unica_metadata::property_input::RolePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
+    Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
 }
 /// Where the caller wrote the fields of an addressed typed edit: the typed
 /// writer names them in its own request (`elements[0]`, `names[0]`, `scope`).
@@ -1026,10 +1029,18 @@ pub fn parse_properties(
         op_index,
         binding.source_set_name(),
     )?;
-    let site = PropertiesSite::from_address(&target).ok_or_else(|| {
+    let site = if matches!(
+        target.segments(),
+        [root] if root.kind() == NodeKind::Configuration && root.name().is_none()
+    ) {
+        PropertiesSite::root_of(binding.source_kind)
+    } else {
+        PropertiesSite::from_address(&target)
+    }
+    .ok_or_else(|| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            "properties require a named top-level metadata object, role or subsystem",
+            "properties require the configuration root, a named top-level metadata object, role or subsystem",
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
@@ -1068,6 +1079,13 @@ pub fn parse_properties(
         }
         unica_metadata::property_input::PropertiesIntent::Subsystem(values) => {
             ("Subsystems", DescriptorPropertyChanges::Subsystem(values))
+        }
+        unica_metadata::property_input::PropertiesIntent::Configuration(values) => {
+            return Ok(MetadataPlanKind::DescriptorProperties {
+                relative: PathBuf::from("Configuration.xml"),
+                name: "Configuration".to_string(),
+                changes: DescriptorPropertyChanges::Configuration(values),
+            });
         }
     };
     let name = target.segments()[0]
