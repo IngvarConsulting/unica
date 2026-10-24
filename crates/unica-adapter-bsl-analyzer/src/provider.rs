@@ -369,6 +369,56 @@ pub fn parse_bsl_analyzer_search(
     if trimmed.is_empty() || empty_with_ready_footer {
         return empty_section(ProviderId::BslAnalyzer, SearchRanking::Provider);
     }
+    // A busy or still-indexing analyzer answers in plain text: no hits and
+    // no proof of absence, but a later answer is promised. That is a
+    // retryable wait, not a dead end. Only these whole answers qualify; an
+    // index state outside the known set, a failed one or any other line
+    // keeps the output failed.
+    let index_state = |line: &&str| {
+        line.starts_with("Indexing pending: ")
+            || ["Indexing lexical: ", "Indexing semantic: "]
+                .iter()
+                .filter_map(|prefix| line.strip_prefix(prefix))
+                .any(|state| matches!(state, "ready" | "disabled") || state.starts_with("running"))
+    };
+    let index_waits = |line: &&str| {
+        line.starts_with("Indexing pending: ")
+            || line.starts_with("Indexing lexical: running")
+            || line.starts_with("Indexing semantic: running")
+    };
+    if matches!(
+        empty_lines.as_slice(),
+        ["Search index is busy (a long operation is holding it); please try again in a moment."]
+            | ["Semantic search is busy (a long operation is holding the index). Lexical search is available in the meantime."]
+    ) {
+        return ProviderSearchSection::capacity_exhausted(
+            ProviderId::BslAnalyzer.identity(),
+            "bsl-analyzer search index is busy".to_string(),
+        );
+    }
+    let pending = match empty_lines.split_first() {
+        Some((
+            &"No results found (overlay is warming up, only baseline search available).",
+            tail,
+        )) if tail.iter().all(index_state) => Some("updatingIndex"),
+        Some((&"No results found.", tail))
+            if tail.iter().all(index_state) && tail.iter().any(index_waits) =>
+        {
+            Some("buildingIndex")
+        }
+        _ => None,
+    };
+    if let Some(detail) = pending {
+        return ProviderSearchSection::dependency_pending(
+            ProviderId::BslAnalyzer.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            Vec::new(),
+            vec!["bsl-analyzer search index is not ready".to_string()],
+            detail,
+        )
+        .expect("dependency-pending bsl-analyzer section is valid");
+    }
     if let Ok(envelope) = serde_json::from_str::<Value>(trimmed) {
         if envelope.get("status").and_then(Value::as_str) == Some("not_ready") {
             // The analyzer models this as pending and even ships

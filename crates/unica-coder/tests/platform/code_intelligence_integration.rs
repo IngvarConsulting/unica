@@ -1543,10 +1543,8 @@ mod tests {
             "No results found.\nIndexing lexical: ready\nIndexing semantic: ready\nIndexing semantic: ready",
             "No results found.\nIndexing lexical: ready\nIndexing semantic: ready\nIndexing semantic: disabled",
             "No results found.\nIndexing lexical: failed\nIndexing semantic: disabled",
-            "No results found.\nIndexing lexical: running (parsing): 1/2 chunks\nIndexing semantic: disabled",
             "No results found.\nIndexing lexical: ready\nIndexing semantic: unknown",
             "No results found.\nIndexing lexical: ready\nIndexing semantic: failed",
-            "No results found.\nIndexing lexical: ready\nIndexing semantic: running",
             "No results found.\n#broken header",
             "No results found.\nNo results found.",
         ] {
@@ -1555,6 +1553,65 @@ mod tests {
             assert!(!section.search_complete, "{text}");
             assert_eq!(section.matches.total, None, "{text}");
             assert_eq!(section.matches.relation, SearchCountRelation::Unknown, "{text}");
+        }
+    }
+
+    #[test]
+    fn bsl_analyzer_busy_or_building_index_is_a_retryable_wait_not_an_empty_answer() {
+        use unica_code_intelligence::model::SearchTerminationCode;
+        for (text, code, detail) in [
+            (
+                "No results found.\nIndexing lexical: running (parsing): 1/2 chunks\nIndexing semantic: disabled",
+                SearchTerminationCode::DependencyPending,
+                Some("buildingIndex"),
+            ),
+            (
+                "No results found.\nIndexing lexical: ready\nIndexing semantic: running",
+                SearchTerminationCode::DependencyPending,
+                Some("buildingIndex"),
+            ),
+            (
+                "No results found.\nIndexing pending: initializing (no live counters yet)",
+                SearchTerminationCode::DependencyPending,
+                Some("buildingIndex"),
+            ),
+            (
+                "No results found (overlay is warming up, only baseline search available).",
+                SearchTerminationCode::DependencyPending,
+                Some("updatingIndex"),
+            ),
+            (
+                "Search index is busy (a long operation is holding it); please try again in a moment.",
+                SearchTerminationCode::CapacityExhausted,
+                None,
+            ),
+            (
+                "Semantic search is busy (a long operation is holding the index). Lexical search is available in the meantime.",
+                SearchTerminationCode::CapacityExhausted,
+                None,
+            ),
+        ] {
+            let section = parse_bsl_analyzer_search(text, &context());
+            let termination = section.termination.as_ref().expect(text);
+            assert_eq!(termination.code, code, "{text}");
+            assert!(termination.retryable, "{text}");
+            assert_eq!(termination.detail_code.as_deref(), detail, "{text}");
+            assert!(!section.search_complete, "{text}");
+            assert!(section.hits.is_empty(), "{text}");
+            assert_ne!(section.status, ProviderSectionStatus::Empty, "{text}");
+            assert_ne!(section.matches.relation, SearchCountRelation::Exact, "{text}");
+        }
+        // A failed or unknown index state, or any other line, is no wait.
+        for text in [
+            "No results found.\nIndexing lexical: running\nIndexing semantic: failed",
+            "No results found.\nIndexing lexical: running\nIndexing semantic: unknown",
+            "No results found.\nIndexing lexical: running\nIndexing semantic: failed (embedding)",
+            "No results found.\nIndexing lexical: running\nunknown provider error",
+            "No results found (overlay is warming up, only baseline search available).\nIndexing lexical: failed",
+            "Search index is busy (a long operation is holding it); please try again in a moment.\nunexpected tail",
+        ] {
+            let section = parse_bsl_analyzer_search(text, &context());
+            assert_eq!(section.status, ProviderSectionStatus::Failed, "{text}");
         }
     }
 
