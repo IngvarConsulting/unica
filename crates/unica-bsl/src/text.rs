@@ -1580,16 +1580,28 @@ fn unterminated_tail_is(text: &[u8], site: InsertionSite, insertion: &[u8]) -> b
         return false;
     };
     let body = body.strip_suffix(b"\r").unwrap_or(body);
-    // Вставка начинается с начала строки: своим разделителем или после
-    // перевода строки текста.
-    !body.is_empty()
-        && text.ends_with(body)
-        && (body.starts_with(b"\n")
-            || body.starts_with(b"\r\n")
-            || text
-                .len()
-                .checked_sub(body.len() + 1)
-                .is_none_or(|index| text[index] == b'\n'))
+    // Разделитель в начале вставки не нужен, когда она — весь модуль.
+    let bare = body
+        .strip_prefix(b"\r\n")
+        .or_else(|| body.strip_prefix(b"\n"))
+        .unwrap_or(body);
+    [body, bare].into_iter().any(|candidate| {
+        let Some(head) = text
+            .len()
+            .checked_sub(candidate.len())
+            .map(|end| &text[..end])
+        else {
+            return false;
+        };
+        // Вставка начинается с начала строки: своим разделителем, после
+        // перевода строки текста или в начале модуля (после BOM).
+        !candidate.is_empty()
+            && text.ends_with(candidate)
+            && (candidate.starts_with(b"\n")
+                || candidate.starts_with(b"\r\n")
+                || head.ends_with(b"\n")
+                || head.chunks(3).all(|chunk| chunk == b"\xEF\xBB\xBF"))
+    })
 }
 
 pub fn string_arg<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a str, String> {

@@ -1570,6 +1570,14 @@ fn a_repeat_into_an_unterminated_module_end_is_a_noop() {
             ),
             (format!("{first}{eol}// Tail note."), "// Tail note.", true),
             (format!("{first}{eol}// Another note."), "// note.", false),
+            // Весь модуль — вставка, в том числе после BOM выгрузки 1С.
+            (
+                "\u{feff}Procedure Added()\nEndProcedure".replace('\n', eol),
+                "Procedure Added()\nEndProcedure",
+                true,
+            ),
+            ("// Tail note.".to_string(), "// Tail note.", true),
+            ("\u{feff}// Tail note.".to_string(), "// Tail note.", true),
         ] {
             let operation = staged_insert("main:CommonModule.Sample", content, None, None);
             let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
