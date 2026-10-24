@@ -2240,6 +2240,129 @@ pub(crate) mod actor_capacity_tests {
         );
     }
 
+    /// Пустой интерфейс платформа не выгружает: у новой подсистемы нет
+    /// `CommandInterface.xml`, и его создаёт первая правка видимости или
+    /// размещения — тем же пакетом, что `subsystem.create`, или следующим
+    /// вызовом. Предпросмотр ничего не пишет, а файл совпадает с выгрузкой
+    /// 8.3.27 байт в байт.
+    #[test]
+    fn canonical_first_command_edit_creates_interface_of_new_subsystem() {
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let command = "Catalog.Пользователи.StandardCommand.OpenList";
+        let document = |section: &str, value: &str| {
+            format!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<{section}>\r\n\t\t<Command name=\"{command}\">\r\n{value}\t\t</Command>\r\n\t</{section}>\r\n</CommandInterface>"
+            )
+        };
+        let hidden = document(
+            "CommandsVisibility",
+            "\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n",
+        );
+        let placed = document(
+            "CommandsPlacement",
+            "\t\t\t<CommandGroup>NavigationPanelImportant</CommandGroup>\r\n\t\t\t<Placement>Auto</Placement>\r\n",
+        );
+        let create = serde_json::json!({
+            "op": "subsystem.create",
+            "args": {"at": "main:Configuration", "values": {"name": "Новая"}}
+        });
+        let at = "main:Subsystem.Новая.Interface";
+        let visibility = serde_json::json!({
+            "op": "commandVisibility.set",
+            "args": {"at": at, "items": [{"command": command, "visible": false}]}
+        });
+        let placement = serde_json::json!({
+            "op": "commandPlacement.set",
+            "args": {"at": at, "items": [{"command": command, "group": "NavigationPanelImportant"}]}
+        });
+        let interface = "Subsystems/Новая/Ext/CommandInterface.xml";
+        let publish = |workspace: &std::path::Path, at: &str, ops: serde_json::Value| {
+            let preview = interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"at": at, "ops": ops}),
+            );
+            assert!(preview.ok, "{preview:?}");
+            assert!(
+                !workspace.join("src").join(interface).exists(),
+                "предпросмотр не пишет файл"
+            );
+            let applied = interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
+            assert!(applied.ok, "{applied:?}");
+        };
+        let read = |workspace: &std::path::Path| {
+            std::fs::read_to_string(workspace.join("src").join(interface)).unwrap()
+        };
+
+        let workspace = interface_order_workspace();
+        publish(
+            workspace.path(),
+            "main:Configuration",
+            serde_json::json!([create, visibility]),
+        );
+        assert_eq!(read(workspace.path()), hidden, "один пакет");
+
+        for (edit, expected) in [(&visibility, &hidden), (&placement, &placed)] {
+            let workspace = interface_order_workspace();
+            publish(
+                workspace.path(),
+                "main:Configuration",
+                serde_json::json!([create]),
+            );
+            assert!(!workspace.path().join("src").join(interface).exists());
+            publish(workspace.path(), at, serde_json::json!([edit]));
+            assert_eq!(&read(workspace.path()), expected, "два вызова: {edit}");
+        }
+
+        // Вложенная подсистема: владелец — её дескриптор внутри родителя,
+        // одноимённая корневая подсистема не появляется.
+        let workspace = interface_order_workspace();
+        let nested_at = "main:Subsystem.Администрирование.Subsystem.Новая.Interface";
+        publish(
+            workspace.path(),
+            "main:Subsystem.Администрирование",
+            serde_json::json!([
+                {"op": "childSubsystem.add", "args": {"items": [{"name": "Новая"}]}},
+                {"op": "commandVisibility.set", "args": {"at": nested_at, "items": [{"command": command, "visible": false}]}}
+            ]),
+        );
+        let source = workspace.path().join("src");
+        assert_eq!(
+            std::fs::read_to_string(
+                source
+                    .join("Subsystems/Администрирование/Subsystems/Новая/Ext/CommandInterface.xml")
+            )
+            .unwrap(),
+            hidden
+        );
+        assert!(!source.join("Subsystems/Новая").exists());
+
+        // Порядок переставляет хранимый состав: без файла он отказывает
+        // и ничего не создаёт (#2010).
+        let workspace = interface_order_workspace();
+        publish(
+            workspace.path(),
+            "main:Configuration",
+            serde_json::json!([create]),
+        );
+        let refused = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            interface_op(
+                "groupOrder.set",
+                at,
+                serde_json::json!({"groups": ["NavigationPanelImportant"]}),
+            ),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert!(!workspace.path().join("src").join(interface).exists());
+    }
+
     /// Каждая из пяти операций меняет только свою секцию и названные в запросе
     /// элементы: для видимости и размещения файл после правки совпадает
     /// с исходным байт в байт, кроме значения одной команды, для порядков —
