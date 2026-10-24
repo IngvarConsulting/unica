@@ -1047,6 +1047,9 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             ));
             continue;
         }
+        if listed && family == Ok(true) {
+            check_unknown_argument_is_named(checked, at, descriptor, &address, mismatches);
+        }
         if plan_writes && listed && family == Ok(true) {
             if let Ok(paths) = plan(checked, &request) {
                 WRITES_CHECKED.with(|done| done.borrow_mut().insert(write_key(descriptor)));
@@ -1055,6 +1058,45 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         }
     }
     });
+}
+
+/// Лишний аргумент операции словаря отвергается, и отказ называет его ключ
+/// путём или текстом (INV.WIRE.V13-CAN-DICTIONARY, #1985): агент видит,
+/// какой из аргументов убрать.
+fn check_unknown_argument_is_named(
+    checked: &Checked<'_>,
+    at: &str,
+    descriptor: OperationDescriptor,
+    address: &QualifiedAddress,
+    mismatches: &mut Vec<String>,
+) {
+    const KEY: &str = "unicaUnknownArgument";
+    let op = descriptor.name();
+    let mut args = node_args(descriptor, address);
+    let Some(object) = args.as_object_mut() else {
+        return;
+    };
+    object.insert(KEY.to_string(), json!(true));
+    let request = apply_request(at, op, args);
+    let refusal = match preflight_apply_operations(&request, checked.traits, &|_| None) {
+        Err(refusal) => refusal.diagnostics[0].to_string(),
+        Ok(_) => match parse_family_operation_for_test(0, &request.ops()[0], checked.binding) {
+            // Разбор семейства пропустил ключ: отказать обязан планировщик.
+            Ok(()) => match plan(checked, &request) {
+                Ok(_) => {
+                    mismatches.push(format!("{at}: `{op}` accepts the unknown argument `{KEY}`"));
+                    return;
+                }
+                Err(message) => message,
+            },
+            Err(error) => format!("{:?}: {error}", error.path()),
+        },
+    };
+    if !refusal.contains(KEY) {
+        mismatches.push(format!(
+            "{at}: `{op}` refuses an unknown argument without naming its key: {refusal}"
+        ));
+    }
 }
 
 /// План операции на настоящем наборе: изменённые файлы или текст отказа.
