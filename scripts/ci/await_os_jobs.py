@@ -6,9 +6,8 @@
 идёт параллельно и в конце читает исход джобы `Rust (<runner>)` из jobs API
 этого же прогона. Скрипт ничего не решает: исходы сверяет `ci_rust_lanes`
 (`CI_JOB_RESULTS`) и оценка гейта. Не дождались — исход `timed_out`, в том
-числе у завершённой джобы, чей итог так и не записан; шаг завершённой джобы
-без итога по сроку получает итог джобы; джобы нет среди завершённых —
-`missing`. Отменённая джоба без раннера — это
+числе у завершённой джобы, чей итог или итог шага так и не записан; джобы
+нет среди завершённых — `missing`. Отменённая джоба без раннера — это
 `not_acquired`: GitHub так и не выдал раннер этого типа («The job was not
 acquired by Runner … even after multiple attempts»), а не потеря её части.
 Ни один из этих исходов успехом не является.
@@ -50,15 +49,12 @@ def conclusion(job: dict) -> str:
 STEP = "::"
 
 
-def outcome(name: str, found: dict[str, dict], jobs: list[dict], *, final: bool = False) -> str | None:
+def outcome(name: str, found: dict[str, dict], jobs: list[dict]) -> str | None:
     """Исход одной ожидаемой джобы или шага; None, пока он может измениться.
 
     Jobs API отдаёт `status=completed` раньше, чем заполняет итоги: пустой
     итог у завершённой джобы или её шага значит «ещё не записан», а не
-    провал (#2008). Шаг завершённой джобы может долго оставаться без итога
-    или вовсе не попасть в список (#2026): до срока это ожидание, а по сроку
-    (`final`) итог шага — итог джобы, так что отказ джобы не становится
-    успехом шага.
+    провал (#2008).
     """
     job_name, _, step_name = name.partition(STEP)
     job = found.get(job_name)
@@ -72,8 +68,7 @@ def outcome(name: str, found: dict[str, dict], jobs: list[dict], *, final: bool 
         return None
     if step_name and conclusion(job) != NOT_ACQUIRED and job.get("steps"):
         step = next((item for item in job["steps"] if item.get("name") == step_name), None)
-        written = step.get("conclusion") if step else None
-        return written or (conclusion(job) if final else None)
+        return (step.get("conclusion") or None) if step else "missing"
     # Jobs API бывает отдаёт завершённую джобу вовсе без шагов (PR #2012):
     # тогда итог шага — итог самой джобы. Успешная джоба значит успешные
     # шаги, а отказ джобы не превращается в успех ни одного из них.
@@ -84,8 +79,7 @@ def outcomes(jobs: list[dict], expected: list[str]) -> dict[str, str] | None:
     """Исходы ожидаемых джоб или None, пока какая-то из них может появиться или идёт.
 
     `Джоба::Шаг` — исход одного шага джобы: у джобы pull request с Clippy
-    и Python отказ одного не должен выдавать себя за отказ другого, пока
-    итог каждого записан; незаписанный по сроку берёт итог джобы.
+    и Python отказ одного не должен выдавать себя за отказ другого.
     """
     found = {job["name"]: job for job in jobs}
     result = {name: outcome(name, found, jobs) for name in expected}
@@ -108,8 +102,8 @@ def wait(expected: list[str], read: Callable[[], list[dict]], *, timeout: float,
         if clock() >= deadline:
             # Записанный исход найденной джобы сохраняется; срок истёк у остальных.
             found = {job["name"]: job for job in jobs}
-            return {name: (outcome(name, found, jobs, final=True) if name.partition(STEP)[0] in found else None)
-                    or "timed_out" for name in expected}
+            return {name: (outcome(name, found, jobs) if name.partition(STEP)[0] in found else None) or "timed_out"
+                    for name in expected}
         sleep(interval)
 
 

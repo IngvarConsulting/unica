@@ -672,6 +672,7 @@ pub(super) fn read_configuration_root(
     support: Value,
     home_page: Value,
     interface: Value,
+    panels: Value,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<StreamedConfigurationRoot, ViewError> {
     let state = parse_configuration_owner(file, checkpoint)?;
@@ -730,6 +731,7 @@ pub(super) fn read_configuration_root(
         "totalObjects": total_objects,
         "homePage": home_page,
         "interface": interface,
+        "panels": panels,
     });
     Ok(StreamedConfigurationRoot { payload, counts })
 }
@@ -1238,6 +1240,7 @@ mod tests {
         read_configuration_root(
             file,
             json!({"state": "not_supported"}),
+            Value::Null,
             Value::Null,
             Value::Null,
             checkpoint,

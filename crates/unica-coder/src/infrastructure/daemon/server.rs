@@ -1576,6 +1576,8 @@ mod retained_directory_removal_tests;
 mod xdto_can_tests;
 
 #[cfg(test)]
+mod client_interface_tests;
+#[cfg(test)]
 mod html_template_tests;
 #[cfg(test)]
 mod new_xml_tests;

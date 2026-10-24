@@ -89,6 +89,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                 object,
                 op_index,
                 binding.source_set_name(),
+                binding.source_kind(),
             )?)
         }
         Some(OperationFamily::Interface) => {
@@ -97,6 +98,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                 object,
                 op_index,
                 binding.source_set_name(),
+                binding.source_kind(),
             )?)
         }
         Some(OperationFamily::Support) => {
