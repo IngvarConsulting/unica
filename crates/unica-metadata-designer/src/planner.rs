@@ -948,8 +948,9 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             .iter()
             .map(|spelling| format!("{spelling}.{name}")),
     );
-    // Module code names the object the same way and also by its Russian
-    // type names, the kind spelling followed by `Ссылка` or `Объект`.
+    // Module code names the object the same way and also by the Russian
+    // names of its derived types: `СправочникСсылка.X`,
+    // `РегистрСведенийНаборЗаписей.X`.
     let mut code_patterns = code_patterns;
     code_patterns.extend(query_patterns.iter().cloned());
     if kind == "CommonTemplate" {
@@ -958,17 +959,15 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         code_patterns.push(format!("ПолучитьОбщийМакет(\"{name}\")"));
         code_patterns.push(format!("GetCommonTemplate(\"{name}\")"));
     }
-    for reference in crate::remove::meta_remove_type_ref_names(kind).unwrap_or_default() {
-        let suffix = match reference.strip_prefix(kind) {
-            Some("Ref") => "Ссылка",
-            Some("Object") => "Объект",
-            _ => continue,
-        };
+    for derived in crate::remove::meta_remove_derived_type_names(kind) {
         code_patterns.extend(
-            spellings
-                .iter()
-                .skip(1)
-                .map(|spelling| format!("{spelling}{suffix}.{name}")),
+            crate::remove::meta_remove_ru_derived_type_names(
+                kind,
+                &derived,
+                spellings.get(1..).unwrap_or_default(),
+            )
+            .into_iter()
+            .map(|spelling| format!("{spelling}.{name}")),
         );
     }
     code_patterns.sort();
