@@ -44,37 +44,65 @@ impl ValueFacets {
             object
                 .get(key)
                 .map(|v| {
-                    let text = v.as_str().ok_or("decimal bounds must be strings")?;
-                    Decimal::parse(text).ok_or("bound must have XML decimal lexical form")?;
-                    Ok(text.to_owned())
+                    v.as_str()
+                        .map(str::to_owned)
+                        .ok_or("decimal bounds must be strings")
                 })
                 .transpose()
         };
-        let facets = Self {
-            max_length: integer("maxLength")?,
-            total_digits: integer("totalDigits")?,
-            fraction_digits: integer("fractionDigits")?,
-            min_inclusive: decimal("minInclusive")?,
-            max_inclusive: decimal("maxInclusive")?,
-        };
-        if facets.total_digits == Some(0) {
-            return Err("totalDigits must be positive");
-        }
-        if let (Some(total), Some(fraction)) = (facets.total_digits, facets.fraction_digits) {
-            if fraction > total {
-                return Err("fractionDigits exceeds totalDigits");
-            }
-        }
-        if let (Some(min), Some(max)) = (&facets.min_inclusive, &facets.max_inclusive) {
-            if Decimal::parse(min)
-                .ok_or("invalid minimum decimal")?
-                .cmp(&Decimal::parse(max).ok_or("invalid maximum decimal")?)
-                == Ordering::Greater
+        Self::from_parts(
+            integer("maxLength")?,
+            integer("totalDigits")?,
+            integer("fractionDigits")?,
+            decimal("minInclusive")?,
+            decimal("maxInclusive")?,
+        )
+        .map_err(|(_, message)| message)
+    }
+
+    /// Facets from independently read values. A refusal names the facet it
+    /// belongs to, so a caller can report it at that field.
+    pub fn from_parts(
+        max_length: Option<u64>,
+        total_digits: Option<u64>,
+        fraction_digits: Option<u64>,
+        min_inclusive: Option<String>,
+        max_inclusive: Option<String>,
+    ) -> Result<Self, (&'static str, &'static str)> {
+        for (key, bound) in [
+            ("minInclusive", &min_inclusive),
+            ("maxInclusive", &max_inclusive),
+        ] {
+            if bound
+                .as_deref()
+                .is_some_and(|text| Decimal::parse(text).is_none())
             {
-                return Err("minInclusive exceeds maxInclusive");
+                return Err((key, "bound must have XML decimal lexical form"));
             }
         }
-        Ok(facets)
+        if total_digits == Some(0) {
+            return Err(("totalDigits", "totalDigits must be positive"));
+        }
+        if let (Some(total), Some(fraction)) = (total_digits, fraction_digits) {
+            if fraction > total {
+                return Err(("fractionDigits", "fractionDigits exceeds totalDigits"));
+            }
+        }
+        if let (Some(min), Some(max)) = (&min_inclusive, &max_inclusive) {
+            let order = Decimal::parse(min)
+                .expect("checked above")
+                .cmp(&Decimal::parse(max).expect("checked above"));
+            if order == Ordering::Greater {
+                return Err(("minInclusive", "minInclusive exceeds maxInclusive"));
+            }
+        }
+        Ok(Self {
+            max_length,
+            total_digits,
+            fraction_digits,
+            min_inclusive,
+            max_inclusive,
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -153,7 +181,7 @@ impl ValueFacets {
     }
 }
 
-fn nonnegative_integer(value: &Value) -> Option<u64> {
+pub fn nonnegative_integer(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| {
         value.as_f64().and_then(|number| {
             (number >= 0.0 && number < u64::MAX as f64 && number.fract() == 0.0)

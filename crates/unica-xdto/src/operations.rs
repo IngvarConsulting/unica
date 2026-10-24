@@ -689,11 +689,34 @@ impl<'a> ArgumentReader<'a> {
         Ok(PrefixedXmlQName(value))
     }
 
+    /// Facets are read field by field through their declared shapes; the
+    /// restrictions between fields are checked once, by `ValueFacets`.
     fn facets(&mut self, key: &str) -> Result<ValueFacets, ContractError> {
-        self.read(key, |value, _shape, path| {
-            ValueFacets::from_json(Some(value)).map_err(|message| invalid(path, message))
+        let facets = self.optional_object(key, |facets| {
+            let max_length = facets.nonnegative("maxLength")?;
+            let total_digits = facets.nonnegative("totalDigits")?;
+            let fraction_digits = facets.nonnegative("fractionDigits")?;
+            let min_inclusive = facets.optional_text("minInclusive")?;
+            let max_inclusive = facets.optional_text("maxInclusive")?;
+            ValueFacets::from_parts(
+                max_length,
+                total_digits,
+                fraction_digits,
+                min_inclusive,
+                max_inclusive,
+            )
+            .map_err(|(field, message)| invalid(&format!("{}.{field}", facets.path), message))
+        })?;
+        Ok(facets.unwrap_or_default())
+    }
+
+    fn nonnegative(&mut self, key: &str) -> Result<Option<u64>, ContractError> {
+        self.read(key, |value, shape, path| {
+            let parsed = crate::facets::nonnegative_integer(value)
+                .ok_or_else(|| invalid(path, "facet must be a nonnegative integer"))?;
+            shape.validate_field(&json!(parsed), path)?;
+            Ok(parsed)
         })
-        .map(Option::unwrap_or_default)
     }
 
     fn min_occurs(&mut self, key: &str) -> Result<Option<u8>, ContractError> {
@@ -957,6 +980,55 @@ mod tests {
                 "{value}"
             );
         }
+    }
+
+    #[test]
+    fn value_facets_are_decoded_through_their_declared_shapes() {
+        let operation = XdtoOperation::AddValueType;
+        let args = |facets: Value| json!({"at":"main:XDTOPackage.Sample","values":{"name":"V","base":"xs:decimal","facets":facets}});
+        let path = |facets: Value| {
+            operation
+                .decode(&args(facets), "ops[0].args", "main")
+                .unwrap_err()
+                .path
+        };
+        assert_eq!(
+            path(json!({"maxLength":-1})),
+            "ops[0].args.values.facets.maxLength"
+        );
+        assert_eq!(
+            path(json!({"pattern":"x"})),
+            "ops[0].args.values.facets.pattern"
+        );
+        assert_eq!(
+            path(json!({"totalDigits":2,"fractionDigits":3})),
+            "ops[0].args.values.facets.fractionDigits"
+        );
+        assert_eq!(
+            path(json!({"minInclusive":"2","maxInclusive":"1"})),
+            "ops[0].args.values.facets.minInclusive"
+        );
+        // A narrowed declaration of a facet is honoured by the decoder.
+        let mut narrowed = operation.contract();
+        narrowed.schema["properties"]["values"]["properties"]["facets"]["properties"]
+            ["totalDigits"]["minimum"] = json!(7);
+        let error = operation
+            .decode_with_contract(
+                &narrowed,
+                &args(json!({"totalDigits":6})),
+                "ops[0].args",
+                "main",
+            )
+            .unwrap_err();
+        assert_eq!(error.path, "ops[0].args.values.facets.totalDigits");
+        // Every declared facet field is consumed by the decoder.
+        let mut extended = operation.contract();
+        extended.schema["properties"]["values"]["properties"]["facets"]["properties"]["unwired"] =
+            json!({"type":"boolean"});
+        let error = operation
+            .decode_with_contract(&extended, &args(json!({})), "ops[0].args", "main")
+            .unwrap_err();
+        assert_eq!(error.path, "ops[0].args.values.facets.unwired");
     }
 
     #[test]
