@@ -137,13 +137,12 @@ For `launch`, `applicationParameter` passes one exact `/C` string to an enterpri
 client. Empty is distinct from omitted; NUL and `designer` are rejected. It may
 accompany `execute`; when waiting, that file must be `.epf`. Inspect `wait.exitCode`
 and `wait.timedOut`: completion alone does not prove an application update succeeded.
-The parameter and raw runner command are not echoed in the response. Exact empty
-and quote-boundary delivery is live-verified on macOS 8.3.27.2214; the runner keeps
-its prior argv handling on Windows/Linux, where these boundaries remain unverified. Waiting with
-only an application parameter requires the runner capability added for
-[#491](https://github.com/IngvarConsulting/v8-runner-rust/issues/491); the pinned
-0.15.2 release does not provide it. A locally patched runner proves only that local
-installation until a released dependency is pinned.
+The parameter and raw runner command are not echoed in the response. The pinned
+runner encodes the value for the 1C command-line parser on every OS, so quotes,
+spaces, tabs, line breaks and `/Execute` inside it reach `ПараметрЗапуска` as
+exactly one value and never become another launch key; an external processor
+opens only through `execute`. Delivery is live-verified on macOS 8.3.27; Windows
+and Linux are not measured live.
 
 A previewApply operation requires explicit boolean `dryRun`: `true` shows the
 plan without execution, and `false` executes using the current inputs. The API

@@ -42,7 +42,6 @@ Support-state checks come from `unica.view` on the configuration root (`support`
 точную строку `/C`, в том числе пустую. Для ограниченного ожидания используй
 `clientMode: "thin"`, `waitForExit: true` и положительный `waitTimeoutMs`;
 сочетание с `execute` допустимо, при ожидании файл должен быть `.epf`.
-Ожидание без EPF требует поддержки runner #491; проверь состав сборки.
 Проверь код выхода и прикладной результат: завершение клиента не подтверждает
 успех обновления БСП. Подробности — [runtime](../../references/use-cases/workspace-runtime.md).
 
