@@ -935,6 +935,10 @@ mod tests {
         let resource = context.workspace_root.join("src/Configuration.xml");
         let Some(verbatim) = windows_extended_length_path_for_test(&resource) else {
             cleanup(&context);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::WindowsPathSyntax,
+                "verbatim paths exist only on Windows",
+            );
             return;
         };
 
@@ -967,6 +971,10 @@ mod tests {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
             | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
                 cleanup(&context);
                 return;
             }
@@ -1037,14 +1045,11 @@ mod tests {
         let planted = src.join("planted.xml");
         fs::write(&planted, "<Rights/>").unwrap();
         fs::remove_file(src.join("Roles/Sales/Ext/Rights.xml")).unwrap();
-        let Some(created) = unica_workspace::test_support::create_file_symlink_for_test(
+        let created = unica_workspace::test_support::create_file_symlink_for_test(
             &planted,
             src.join("Roles/Sales/Ext/Rights.xml"),
-        ) else {
-            // The host cannot create symlinks, so there is nothing to refuse.
-            cleanup(&context);
-            return;
-        };
+        )
+        .expect("symlink fixtures exist on Unix and Windows");
         created.unwrap();
 
         let failure = selection(&context, "Role.Sales", AttachedResource::Rights, &["Role"])

@@ -818,6 +818,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "templates",
         ],
         LogicalReader::Subsystem | LogicalReader::Interface => &[
+            "propertyLimits",
             "name",
             "synonym",
             "comment",
@@ -985,6 +986,16 @@ fn project_subsystem(
     let (content, dangling) = subsystem_content(address, payload);
     let children = subsystem_children(address, payload, suffix);
     if suffix.is_empty() {
+        let mut limits = content_limits(&dangling);
+        limits.extend(
+            payload
+                .get("propertyLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
         let mut branches = Vec::new();
         if !content.is_empty() {
             branches.push(BranchRef::new(
@@ -1015,7 +1026,7 @@ fn project_subsystem(
                 payload,
             )
             .with_branches(branches)
-            .with_limits(content_limits(&dangling)),
+            .with_limits(limits),
         ));
     }
     let first = &suffix[0];
@@ -1524,10 +1535,19 @@ fn project_xdto(
                 Value::String(serde_json::to_string(base).unwrap_or_default()),
             );
         }
+        let mut limits = Vec::new();
+        if let Some(base_at) = item.get("baseAt") {
+            if let Some(value) = bounded_prop("baseAt", base_at) {
+                props.insert("baseAt".to_string(), value);
+            } else {
+                limits.push(format!("XDTO baseAt exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+            }
+        }
         let branches = xdto_property_branch(address, item)?;
         return Ok(NodeViewData::Node(
             NodeView::new(address.to_string(), segment.kind().as_str(), name, props)
-                .with_branches(branches),
+                .with_branches(branches)
+                .with_limits(limits),
         ));
     }
     // Свойство любой вложенности: `Type.T.Property.A.Property.B` спускается
@@ -1611,12 +1631,21 @@ fn xdto_property_branch(
 }
 
 fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
-    let props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
+    let mut props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
     let limits = ["type", "reference", "bounds"]
         .into_iter()
         .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
         .map(|key| format!("XDTO property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"))
         .collect();
+    if let Some([definition]) = property
+        .get("typeDefs")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    {
+        if definition.get("discriminator").and_then(Value::as_str) == Some("ObjectType") {
+            props.insert("anonymousType".to_string(), json!("ObjectType"));
+        }
+    }
     NodeView::new(address.to_string(), "Property", name, props).with_limits(limits)
 }
 

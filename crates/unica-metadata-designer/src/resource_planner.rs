@@ -413,6 +413,18 @@ pub fn parse_subsystem_operation(
 ) -> Result<MetadataResourcePlan, ApplyPlanError> {
     let target =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
+    // Разбор ниже читает только эти ключи: остальные он молча пропускал бы,
+    // а отказ обязан назвать лишний ключ (INV.WIRE.V13-CAN-DICTIONARY, #1985).
+    if let Some(key) = args
+        .keys()
+        .find(|key| !matches!(key.as_str(), "at" | "items" | "values"))
+    {
+        return Err(bad(
+            op_index,
+            key,
+            format!("unknown {operation} argument `{key}`"),
+        ));
+    }
     if let Some(section) = operation.strip_suffix(".set").filter(|section| {
         matches!(
             *section,

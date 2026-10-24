@@ -771,16 +771,21 @@ fn map_error(code: &'static str, message: impl Into<String>) -> DiagnosticMapErr
 
 #[cfg(test)]
 mod tests {
-    use super::{map_diagnostic_observation, resolve_diagnostic_context};
+    use super::{
+        map_diagnostic_observation, resolve_diagnostic_context, CanonicalModuleDiagnosticMapping,
+    };
     use std::fs;
     use std::path::Path;
     use std::time::Duration;
     use tempfile::TempDir;
+    use unica_address::source_target::ResolvedTarget;
     use unica_address::source_target::{
         MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
+    use unica_diagnostics::coordinator::DiagnosticMapping;
     use unica_diagnostics::model::DiagnosticAction;
     use unica_diagnostics::model::DiagnosticCodeFilter;
+    use unica_diagnostics::model::DiagnosticContext;
     use unica_diagnostics::model::DiagnosticFilter;
     use unica_diagnostics::model::DiagnosticFocus;
     use unica_diagnostics::model::DiagnosticItem;
@@ -796,8 +801,10 @@ mod tests {
     use unica_diagnostics::model::UnaddressableReason;
     use unica_metadata::MetadataElement;
     use unica_source_contract::location::SourceLocation;
+    use unica_source_contract::workspace::ResolvedSourceRoot;
     use unica_source_contract::workspace::WorkspaceContext;
     use unica_source_contract::SourceFormat;
+    use unica_source_contract::{ProjectSourceSet, SourceSetKind, SourceSetState};
     use unica_work_control::cancellation::CancellationToken;
 
     const TEST_PROVIDER: DiagnosticProviderId = DiagnosticProviderId::new_const("test-provider");
@@ -918,6 +925,48 @@ mod tests {
             message: "finding".to_string(),
             tags: vec![DiagnosticTag::Unnecessary],
         }
+    }
+
+    /// Отображение одного доказанного модуля, как его строит живой
+    /// `LogicalViewReadAuthority::diagnostic_mapping` после чтения модуля.
+    fn proven_module_mapping(
+        fixture: &Fixture,
+        module_address: &str,
+        module_relative: &str,
+    ) -> (CanonicalModuleDiagnosticMapping, DiagnosticContext) {
+        let source_root = fixture.source();
+        let context = DiagnosticContext::new(
+            fixture.context.clone(),
+            ProjectSourceSet {
+                name: "main".to_string(),
+                kind: SourceSetKind::Configuration,
+                path: source_root.to_string_lossy().into_owned(),
+                source_format: SourceFormat::PlatformXml,
+                source_state: SourceSetState::Supported,
+                format_evidence: Vec::new(),
+                format_probe_error: None,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+            ResolvedTarget {
+                source_set: "main".to_string(),
+                metadata_path: Some(address(module_address)),
+                target_kind: TargetKind::Module,
+            },
+        );
+        let mapping =
+            CanonicalModuleDiagnosticMapping::from_proven_module(context, module_relative.into())
+                .unwrap();
+        let context = mapping
+            .resolve_context(
+                &request(Some(module_address)),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        (mapping, context)
     }
 
     fn mapped_location(item: DiagnosticItem) -> (SourceLocation, Option<UnaddressableReason>) {
@@ -1200,8 +1249,11 @@ mod tests {
         let fixture = Fixture::platform_xml();
         let module = fixture.write_common_module("Модуль с пробелом");
         let cancellation = CancellationToken::new();
-        let context =
-            resolve_diagnostic_context(&request(None), &fixture.context, &cancellation).unwrap();
+        let (mapping, context) = proven_module_mapping(
+            &fixture,
+            "CommonModule.Модуль с пробелом.Module",
+            "CommonModules/Модуль с пробелом/Ext/Module.bsl",
+        );
         let absolute_uri = url::Url::from_file_path(&module).unwrap().to_string();
         let handles = [
             "CommonModules\\Модуль с пробелом\\Ext\\Module.bsl".to_string(),
@@ -1210,15 +1262,16 @@ mod tests {
         ];
 
         for handle in handles {
-            let item = map_diagnostic_observation(
-                diagnostic(
-                    DiagnosticObservationLocation::Resource { handle },
-                    DiagnosticObservationFocus::Target,
-                ),
-                &context,
-                &cancellation,
-            )
-            .unwrap();
+            let item = mapping
+                .map_observation(
+                    diagnostic(
+                        DiagnosticObservationLocation::Resource { handle },
+                        DiagnosticObservationFocus::Target,
+                    ),
+                    &context,
+                    &cancellation,
+                )
+                .unwrap();
             match mapped_location(item).0 {
                 SourceLocation::Addressed {
                     metadata_path: Some(address),
@@ -1232,21 +1285,26 @@ mod tests {
     #[test]
     fn diagnostic_location_rejects_escape_without_leaking_the_raw_handle() {
         let fixture = Fixture::platform_xml();
+        fixture.write_common_module("Shared");
         let cancellation = CancellationToken::new();
-        let context =
-            resolve_diagnostic_context(&request(None), &fixture.context, &cancellation).unwrap();
+        let (mapping, context) = proven_module_mapping(
+            &fixture,
+            "CommonModule.Shared.Module",
+            "CommonModules/Shared/Ext/Module.bsl",
+        );
         let raw = "../outside/secret.bsl";
-        let error = map_diagnostic_observation(
-            diagnostic(
-                DiagnosticObservationLocation::Resource {
-                    handle: raw.to_string(),
-                },
-                DiagnosticObservationFocus::Target,
-            ),
-            &context,
-            &cancellation,
-        )
-        .unwrap_err();
+        let error = mapping
+            .map_observation(
+                diagnostic(
+                    DiagnosticObservationLocation::Resource {
+                        handle: raw.to_string(),
+                    },
+                    DiagnosticObservationFocus::Target,
+                ),
+                &context,
+                &cancellation,
+            )
+            .unwrap_err();
 
         assert_eq!(error.code, "location_outside_source_set");
         assert!(!error.message.contains(raw));
@@ -1286,8 +1344,11 @@ mod tests {
         let fixture = Fixture::platform_xml();
         let module = fixture.write_common_module("Shared");
         let cancellation = CancellationToken::new();
-        let context =
-            resolve_diagnostic_context(&request(None), &fixture.context, &cancellation).unwrap();
+        let (mapping, context) = proven_module_mapping(
+            &fixture,
+            "CommonModule.Shared.Module",
+            "CommonModules/Shared/Ext/Module.bsl",
+        );
         let caret = DiagnosticRange {
             start_line: 40,
             start_column: 4,
@@ -1295,17 +1356,18 @@ mod tests {
             end_column: 4,
         };
 
-        let item = map_diagnostic_observation(
-            diagnostic(
-                DiagnosticObservationLocation::Resource {
-                    handle: module.to_string_lossy().into_owned(),
-                },
-                DiagnosticObservationFocus::SourceRange(caret),
-            ),
-            &context,
-            &cancellation,
-        )
-        .unwrap();
+        let item = mapping
+            .map_observation(
+                diagnostic(
+                    DiagnosticObservationLocation::Resource {
+                        handle: module.to_string_lossy().into_owned(),
+                    },
+                    DiagnosticObservationFocus::SourceRange(caret),
+                ),
+                &context,
+                &cancellation,
+            )
+            .unwrap();
 
         assert!(
             matches!(

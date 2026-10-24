@@ -493,18 +493,14 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
 /// там, где хватает поля.
 fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value> {
     let mut items = Vec::new();
-    let mut push = |relation: &str, target: &str| {
-        let Ok(at) = QualifiedAddress::parse(&format!("{}:{target}", address.source_set())) else {
-            return;
-        };
-        let Some(kind) = at.segments().last().map(AddressSegment::kind) else {
-            return;
-        };
-        items.push(json!({
+    let addressed = |relation: &str, target: &str| {
+        let at = QualifiedAddress::parse(&format!("{}:{target}", address.source_set())).ok()?;
+        let kind = at.segments().last().map(AddressSegment::kind)?;
+        Some(json!({
             "relation": relation,
             "at": at.to_string(),
             "kind": kind.as_str(),
-        }));
+        }))
     };
     let relations = payload.get("relations");
     for (field, relation) in [
@@ -519,31 +515,64 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
             .and_then(Value::as_array);
         for target in targets.into_iter().flatten() {
             if let Some(value) = target.get("value").and_then(Value::as_str) {
-                push(relation, value);
+                items.extend(addressed(relation, value));
             }
         }
     }
-    // Источник события и пакеты XDTO названы платформой по-своему, но
-    // показывают ровно наружу и ложатся сюда же. Вариант без адреса —
-    // `family` у источника, пространство имён у пакета — сюда не попадает:
-    // ветвь адресует объекты, а не строки.
+    // Источник события адресует объект, но один адрес даёт разные классы:
+    // объект и менеджер справочника, менеджер константы и менеджер её
+    // значения. Элемент поэтому несёт `target` — ту же логическую цель, что
+    // принимают `targets` записи, и чтение возвращает записанный выбор.
+    // Семейство адреса не имеет и показывается видом `family`, как `typeId`.
+    let sources = relations
+        .and_then(|relations| relations.get("source"))
+        .and_then(Value::as_array);
+    for source in sources.into_iter().flatten() {
+        let item = match source.get("metadataPath").and_then(Value::as_str) {
+            Some(target) => addressed("source", target),
+            None => source
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(|kind| json!({"relation": "source", "kind": kind})),
+        };
+        if let Some(mut item) = item {
+            item["target"] = source.clone();
+            items.push(item);
+        }
+    }
+    // Пакеты XDTO названы платформой по-своему, но показывают ровно наружу
+    // и ложатся сюда же. Пространство имён пакета сюда не попадает: ветвь
+    // адресует объекты, а не строки.
     let details = metadata_details(payload);
-    for (holder, field, relation) in std::iter::once((relations, "source", "source")).chain(
-        METADATA_DETAIL_RELATIONS
-            .iter()
-            .map(|(field, relation, _)| (details, *field, *relation)),
-    ) {
-        let entries = holder
-            .and_then(|holder| holder.get(field))
+    for (field, relation, _) in METADATA_DETAIL_RELATIONS {
+        let entries = details
+            .and_then(|details| details.get(*field))
             .and_then(Value::as_array);
         for entry in entries.into_iter().flatten() {
             let target = entry
                 .as_str()
                 .or_else(|| entry.get("metadataPath").and_then(Value::as_str));
             if let Some(target) = target {
-                push(relation, target);
+                items.extend(addressed(relation, target));
             }
         }
+    }
+    for item in relations
+        .and_then(|r| r.get("content"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(target) = item.get("target").and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok(at) = QualifiedAddress::parse(&format!("{}:{target}", address.source_set())) else {
+            continue;
+        };
+        let Some(kind) = at.segments().last().map(AddressSegment::kind) else {
+            continue;
+        };
+        items.push(json!({ "relation": "content", "at": at.to_string(), "kind": kind.as_str(), "autoRecord": item.get("autoRecord") }));
     }
     // Источник подписки расширения из основной конфигурации платформа пишет
     // идентификатором типа (`v8:TypeId`, #1361): адреса у него нет, но
@@ -721,11 +750,17 @@ fn metadata_item_node(
     {
         props.insert("returnType".to_string(), value);
     }
-    if let Some(value) = item
-        .get("type")
-        .and_then(|value| bounded_prop("type", value))
-    {
-        props.insert("type".to_string(), value);
+    if let Some(value) = item.get("type") {
+        if let Some(compact) = bounded_prop("type", value) {
+            props.insert("type".to_string(), compact);
+        } else if matches!(value, Value::Object(_) | Value::Array(_))
+            && serde_json::to_string(value)
+                .is_ok_and(|rendered| rendered.len() > MAX_COMPACT_PROP_BYTES)
+        {
+            limits.push(format!(
+                "metadata type exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"
+            ));
+        }
     }
     if let Some(value) = item
         .get("fillValue")
@@ -758,6 +793,9 @@ fn metadata_item_node(
                 (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             }),
     );
+    // Пределы элемента приходят от читателя: профиль свойств переносит их
+    // вместе со своими, а без профиля они переносятся как есть, иначе узел
+    // отвечал бы `incomplete` без причины (#1933).
     let (member_props, member_limits) = member_profile
         .and_then(|profile| {
             profile
@@ -765,7 +803,17 @@ fn metadata_item_node(
                 .map(|context| (profile, context))
         })
         .map_or_else(
-            || (Map::new(), Vec::new()),
+            || {
+                let limits = item
+                    .get("propertyLimits")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+                (Map::new(), limits)
+            },
             |(profile, context)| member_properties::project(profile, context, item),
         );
     props.extend(member_props);

@@ -1,19 +1,18 @@
-//! Сетевые поставщики `unica.docs` с корнем из хранилища ОС: Linux.
+//! Сетевой поставщик `unica.docs` с корнем из хранилища ОС: Linux.
 //!
 //! Те же проверки, что у загрузчика (`unica-bootstrap`, модуль
 //! `platform::network_trust_tests`): `SSL_CERT_FILE` заменяет системный набор
 //! корней Linux и задаётся дочернему процессу этого же тестового бинаря.
-//! В дочернем процессе поставщики работают со штатными транспортами —
+//! В дочернем процессе поставщик работает со штатным транспортом —
 //! общим клиентом, собранным из окружения процесса. Отказ на недоверенном
-//! корне и маршрут через прокси на всех ОС проверяют тесты в `kb_1ci.rs`
-//! и `standards_documentation.rs`.
+//! корне и маршрут через прокси на всех ОС проверяют тесты
+//! в `standards_documentation.rs`.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use unica_documentation::model::{
     DocumentationContext, DocumentationProvider, DocumentationSearchRequest,
-    DocumentationSectionStatus, SourceKind,
+    DocumentationSectionStatus,
 };
 use unica_documentation_sources::documentation_policy::NetworkAccess;
 
@@ -58,35 +57,6 @@ fn docs_network_trust_child_process() {
                 sections[0].status
             );
             assert_eq!(sections[0].hits[0].document_id, "https://v8std.ru/std/702/");
-        }
-        "kb" => {
-            let provider = unica_documentation_sources::kb_1ci::Kb1ciProvider {
-                base: address,
-                network: NetworkAccess::Allow,
-                transport: Arc::new(
-                    unica_documentation_sources::kb_1ci::NetworkKbTransport::default(),
-                ),
-                cancellation,
-                cache_ttl: Duration::from_secs(60),
-                lexicon: Arc::new(unica_documentation_sources::kb_1ci::InstallationLexiconSource),
-            };
-            let request = DocumentationSearchRequest {
-                query: "URL".to_string(),
-                source_kinds: vec![SourceKind::PlatformHelp],
-                limit: 20,
-                language: "en".to_string(),
-            };
-            // Стенд отдаёт пустое оглавление, и поставщик отвечает, что
-            // раздела платформы нет. Это ответ площадки, дошедший по сети;
-            // сетевой отказ называл бы маршрут соединения.
-            for section in provider.search(&request, &context) {
-                if let DocumentationSectionStatus::Unavailable { detail, .. } = &section.status {
-                    assert!(
-                        !detail.contains("direct connection") && !detail.contains("through proxy"),
-                        "сеть не прошла: {detail}"
-                    );
-                }
-            }
         }
         other => panic!("неизвестный сценарий {other}"),
     }
@@ -190,24 +160,4 @@ fn standards_answer_through_https_proxy() {
         stand.requests(),
         vec![format!("POST {} HTTP/1.1", stand.url("mcp"))]
     );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn kb_reads_over_a_root_from_the_os_store_and_through_https_proxy() {
-    let root = TestRoot::generate("Unica kb trusted root");
-    let stand = TlsStand::start(&root, "[]", "application/json");
-    run_child("kb", stand.url("").trim_end_matches('/'), &root, &[]);
-    assert!(!stand.requests().is_empty(), "оглавление прочитано");
-
-    let stand = TlsStand::start(&root, "[]", "application/json");
-    let proxy = ConnectProxy::start();
-    run_child(
-        "kb",
-        stand.url("").trim_end_matches('/'),
-        &root,
-        &[("HTTPS_PROXY", &proxy.url())],
-    );
-    assert!(!stand.requests().is_empty(), "оглавление прочитано");
-    assert_eq!(proxy.targets(), vec![stand.authority()]);
 }

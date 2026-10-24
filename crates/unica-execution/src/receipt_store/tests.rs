@@ -1460,6 +1460,10 @@ fn cancel_at_maximum_epoch_cannot_bypass_an_already_fail_stopped_store() {
     let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
     let generation_path = receipts.join(GENERATION_FILE_NAME);
     if !set_unix_mode_for_test(&generation_path, 0o644).expect("weaken generation mode fixture") {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::UnixPermissionBits,
+            "the test sets Unix permission bits",
+        );
         return;
     }
     assert!(matches!(
@@ -5276,6 +5280,10 @@ fn failed_prepublication_cleanup_fail_stops_the_store_until_reopen() {
                 matches!(result, Ok(ReserveOutcome::Created(_))),
                 "a platform-prevented displacement leaves the ordinary publication valid"
             );
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open file from being displaced",
+            );
             return;
         }
         RetainedRegularFileRelocationOutcome::Relocated => {}
@@ -6401,6 +6409,10 @@ fn observed_receipt_acl_drift_latches_the_writer_before_another_reservation() {
         .join(ACTIVE_DIRECTORY_NAME)
         .join(format!("{}.json", key_digest.as_str()));
     if !set_unix_mode_for_test(&row_path, 0o644).expect("weaken receipt row mode fixture") {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::UnixPermissionBits,
+            "the test sets Unix permission bits",
+        );
         return;
     }
     let generation_before =
@@ -6448,6 +6460,10 @@ fn authority_failure_latches_every_live_entry_point_until_reopen() {
         let generation_path = receipts.join(GENERATION_FILE_NAME);
         if !set_unix_mode_for_test(&generation_path, 0o644).expect("weaken generation mode fixture")
         {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::UnixPermissionBits,
+                "the test sets Unix permission bits",
+            );
             return;
         }
         let cutoff =
@@ -6653,7 +6669,13 @@ fn receipt_directory_link_or_reparse_point_is_rejected_without_touching_target()
     {
         FileLinkFixtureOutcome::Created => {}
         FileLinkFixtureOutcome::Unsupported
-        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
+            return;
+        }
     }
 
     assert!(ReceiptLedgerStore::open(&receipts).is_err());
@@ -6979,9 +7001,8 @@ fn recovery_cleanup_preserves_external_targets_of_replaced_active_and_generation
             .expect("move original after validation handle closes");
         let external = root.path().join("external-target");
         fs::write(&external, b"external-operation-bytes").expect("write external target");
-        let Some(created) = create_file_symlink_for_test(&external, path.join(name)) else {
-            return; // No symlink backend exists on this OS.
-        };
+        let created = create_file_symlink_for_test(&external, path.join(name))
+            .expect("symlink fixtures exist on Unix and Windows");
         created.expect("supported symlink backend must actually create the link");
         assert!(store
             .remove_verified_recovery_staging(directory, name, first_identity)
@@ -7078,6 +7099,206 @@ fn body_read_hint_survives_receipt_reopen_and_tampering_is_rejected() {
     }
 }
 
+/// Only injects a barrier at the real store's existing publication seam. All
+/// receipt transitions and the caller's Ticket remain production code.
+struct HeldActualCancelledBatchPort {
+    store: ReceiptLedgerStore,
+    before_rename: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl ReceiptLedgerPort for HeldActualCancelledBatchPort {
+    fn reserve(
+        &mut self,
+        key: ReceiptKey,
+        cutoff: OriginalCutoffDescriptor,
+        deadline: OperationDeadline,
+    ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+        ReceiptLedgerPort::reserve(&mut self.store, key, cutoff, deadline)
+    }
+
+    fn publish_direct_terminal(
+        &mut self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: OperationDeadline,
+    ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+        ReceiptLedgerPort::publish_direct_terminal(
+            &mut self.store,
+            key,
+            expected_version,
+            terminal_epoch_ms,
+            terminal,
+            deadline,
+        )
+    }
+
+    fn request_cancel_or_reserve(
+        &mut self,
+        key: ReceiptKey,
+        cancel_reserved_at_epoch_ms: u64,
+        deadline: OperationDeadline,
+    ) -> Result<CancelResolution, ReceiptLedgerError> {
+        ReceiptLedgerPort::request_cancel_or_reserve(
+            &mut self.store,
+            key,
+            cancel_reserved_at_epoch_ms,
+            deadline,
+        )
+    }
+
+    fn recover(
+        &mut self,
+        key: &ReceiptKey,
+        deadline: OperationDeadline,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        ReceiptLedgerPort::recover(&mut self.store, key, deadline)
+    }
+
+    fn publish_cancelled_direct_batch(
+        &mut self,
+        requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: OperationDeadline,
+    ) -> Result<Vec<DirectTerminalUnackedReceipt>, ReceiptLedgerError> {
+        // This method runs on the real actor thread, which owns the existing
+        // thread-local filesystem hook. Installing it on the caller is too late.
+        let hook = self.before_rename.take().expect("one batch publication");
+        set_before_identity_bound_no_replace_rename_hook(hook);
+        ReceiptLedgerPort::publish_cancelled_direct_batch(
+            &mut self.store,
+            requests,
+            terminal_epoch_ms,
+            terminal,
+            deadline,
+        )
+    }
+}
+
+struct HeldBatchCaller {
+    release: Option<std::sync::mpsc::Sender<()>>,
+    caller: Option<std::thread::JoinHandle<()>>,
+}
+
+impl HeldBatchCaller {
+    fn release_and_join(&mut self) {
+        self.release
+            .take()
+            .expect("one release")
+            .send(())
+            .expect("held writer exists");
+        self.caller
+            .take()
+            .expect("one caller")
+            .join()
+            .expect("caller completed");
+    }
+}
+
+impl Drop for HeldBatchCaller {
+    fn drop(&mut self) {
+        // Disconnect releases the hook on assertion/timeout paths as well.
+        // Always join the caller before the actor/fixture can be torn down.
+        drop(self.release.take());
+        if let Some(caller) = self.caller.take() {
+            let _ = caller.join();
+        }
+    }
+}
+
+#[test]
+fn cancelled_batch_actor_ticket_waits_for_real_publication_before_reply() {
+    use crate::receipt_ledger_actor::ReceiptLedgerActor;
+    use std::sync::mpsc;
+
+    let root = tempfile::tempdir().expect("temporary root");
+    let receipts = fs::canonicalize(root.path())
+        .expect("physical root")
+        .join("receipts");
+    let (entered, observed_entry) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let actor = ReceiptLedgerActor::spawn(HeldActualCancelledBatchPort {
+        store: ReceiptLedgerStore::open(&receipts).expect("actual ledger"),
+        before_rename: Some(Box::new(move || {
+            entered
+                .send(())
+                .expect("observer is waiting for actual rename");
+            // A deadline limits fixture failure; it does not replace the
+            // scenario's original 125 ms claim with a new performance budget.
+            let _ = released.recv_timeout(Duration::from_secs(5));
+        })),
+    });
+    let requests: Vec<_> = (1_u64..=32)
+        .map(|index| {
+            let invocation = format!("00000000-0000-4000-8000-{index:012x}");
+            let task = format!("10000000-0000-4000-8000-{index:012x}");
+            (
+                receipt_key(&invocation, &task, &format!("workspace-{index}")),
+                OriginalCutoffDescriptor::new(1_000, 7_000).unwrap(),
+            )
+        })
+        .collect();
+    let caller_actor = actor.clone();
+    let caller_requests = requests.clone();
+    let (finished, observed_finish) = mpsc::channel();
+    let mut caller = HeldBatchCaller {
+        release: Some(release),
+        caller: Some(std::thread::spawn(move || {
+            let result = caller_actor.publish_cancelled_direct_batch(
+                caller_requests,
+                1_001,
+                canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728).unwrap(),
+                Instant::now() + Duration::from_secs(10),
+            );
+            let _ = finished.send(result);
+        })),
+    };
+    observed_entry
+        .recv_timeout(Duration::from_secs(5))
+        .expect("actual batch reached before-rename hook");
+    let before_release = observed_finish.recv_timeout(Duration::from_millis(50));
+    assert!(
+        matches!(before_release, Err(mpsc::RecvTimeoutError::Timeout)),
+        "Ticket completed while its real batch publication was still held: {before_release:?}"
+    );
+    assert!(
+        !fs::read_dir(receipts.join(ACTIVE_DIRECTORY_NAME))
+            .unwrap()
+            .any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("receipt-batch."))
+            }),
+        "no final batch exists at the held prepublication boundary"
+    );
+    caller.release_and_join();
+    let winners = observed_finish
+        .recv_timeout(Duration::from_secs(5))
+        .expect("Ticket completed after release")
+        .expect("real batch succeeded");
+    assert_eq!(winners.len(), 32);
+    assert!(!actor.restart_required());
+    drop(actor);
+    let reopened =
+        ReceiptLedgerStore::open(&receipts).expect("actual disk reopen after actor drop");
+    assert_eq!(reopened.generation().unwrap(), 96);
+    for ((key, cutoff), winner) in requests.iter().zip(&winners) {
+        assert_eq!(winner.key(), key);
+        assert_eq!(winner.original_cutoff(), cutoff);
+        assert!(matches!(
+            winner.terminal().outcome(),
+            ReceiptTerminalOutcome::Cancelled
+        ));
+        assert_eq!(
+            reopened.recover_exact(key, reserve_deadline()).unwrap(),
+            ReceiptState::DirectTerminalUnacked(winner.clone())
+        );
+    }
+}
 use unica_workspace::state_fs::test_support::{
     set_before_identity_bound_cleanup_mutation_hook,
     set_before_identity_bound_no_replace_rename_hook,

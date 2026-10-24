@@ -1,7 +1,8 @@
 ---
 id: INV.SOURCE.METADATA-OBJECT-FACTS
 check:
-  - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_marks_bare_fill_value_incomplete_with_diagnostic
+  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_bare_fill_value_is_a_diagnostic_not_an_absent_value
+  - crates/unica-coder/src/infrastructure/meta_info_surface_tests.rs::info_marks_bare_fill_value_incomplete_with_diagnostic
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata_declaration_diagnostics.rs::malformed_standard_attributes_keep_the_cause_and_the_characteristic_sibling
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata_declaration_diagnostics.rs::malformed_characteristics_keep_the_cause_and_the_standard_attribute_sibling
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata_declaration_diagnostics.rs::malformed_standard_tabular_sections_keep_the_root_attribute_sibling
@@ -38,5 +39,6 @@ Unica описывает объект по правилам поддержива
 
 Внутренний читатель отличает отсутствие значения заполнения от повреждённой
 записи: пустой нетипизированный `FillValue` даёт диагностику вместо молчаливого
-ответа «значение не задано». Проверка проходит внутренний читатель метаданных;
-она не закрывает весь разрыв текущего публичного чтения.
+ответа «значение не задано». Это проверяют внутренний читатель метаданных
+и канонические `check` и `view` реквизита (#1933); весь разрыв текущего
+публичного чтения проверка не закрывает.

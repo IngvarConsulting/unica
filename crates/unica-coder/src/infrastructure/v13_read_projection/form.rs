@@ -14,6 +14,7 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "isExtension",
     "baseFormVersion",
     "support",
+    "supportDetails",
     "properties",
     "events",
     "autoCommandBar",
@@ -53,7 +54,7 @@ pub(super) fn project_form(
         return project_semantic_form_event(address, suffix, events);
     }
     if suffix.is_empty() {
-        let props = selected_scalar_props(
+        let mut props = selected_scalar_props(
             payload,
             &[
                 "title",
@@ -63,6 +64,18 @@ pub(super) fn project_form(
                 "commandBarLocation",
             ],
         );
+        if let Some(support) = payload
+            .get("support")
+            .and_then(|support| support.get("state"))
+        {
+            props.insert("support".to_string(), support.clone());
+        }
+        if let Some(details) = payload.get("supportDetails") {
+            props.extend(selected_scalar_props(
+                details,
+                &["supportRule", "supportRuleReason", "directEditSafe"],
+            ));
+        }
         let mut branches = BRANCH_KINDS
             .iter()
             .copied()

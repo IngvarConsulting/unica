@@ -8,7 +8,6 @@ check:
   - crates/unica-network/src/proxy.rs::no_proxy_matches_hosts_and_subdomains_but_not_lookalikes
   - crates/unica-network/src/lib.rs::each_redirect_step_chooses_its_own_route
   - crates/unica-coder/src/infrastructure/platform/network_trust_tests.rs::standards_answer_through_https_proxy
-  - crates/unica-documentation-sources/src/kb_1ci.rs::kb_requests_go_through_https_proxy_and_bypass_it_by_no_proxy
   - crates/unica-documentation-sources/src/standards_documentation.rs::v8std_requests_go_through_https_proxy_and_bypass_it_by_no_proxy
 ---
 

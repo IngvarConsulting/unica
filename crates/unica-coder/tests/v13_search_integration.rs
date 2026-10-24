@@ -814,6 +814,8 @@ mod command_lifecycle;
 mod metadata_members;
 #[path = "platform/v13_resolve_resources.rs"]
 mod resolve_resources;
+#[path = "platform/v13_support_policy_warning.rs"]
+mod support_policy_warning;
 #[path = "platform/v13_resolve_target_isolation.rs"]
 mod target_isolation;
 

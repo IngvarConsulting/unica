@@ -10,11 +10,19 @@
 //! разрешением, — единственный по-настоящему опасный отказ этого файла.
 //! Опечатка в идентификаторе внутри правила запрета иначе оставила бы выход
 //! открытым, а автор считал бы его закрытым.
+//!
+//! Исключение — удалённые поставщики: их секция осталась у пользователей от
+//! прежних версий. Отказ на ней отключил бы всю документацию, поэтому она
+//! принимается с предупреждением и целиком игнорируется — запрета, который
+//! стал бы разрешением, в ней уже нет: поставщика самого нет.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub(crate) const MACHINE_POLICY_ENV: &str = "UNICA_DOCUMENTATION_POLICY_FILE";
+
+/// Поставщики, удалённые из Unica: `kb-1ci` — #1892.
+pub(crate) const RETIRED_PROVIDERS: &[&str] = &["kb-1ci"];
 
 pub(crate) fn network_failure(provider: &str, error: impl std::fmt::Display) -> String {
     format!("{error}. Чтобы отключить сетевой поставщик {provider}, добавьте в unica.local.toml секцию [providers.{provider}] с network = \"deny\".")
@@ -40,6 +48,7 @@ struct ProviderPolicy {
 pub struct DocumentationPolicy {
     default_network: Option<NetworkAccess>,
     providers: BTreeMap<String, ProviderPolicy>,
+    warnings: Vec<String>,
 }
 
 impl DocumentationPolicy {
@@ -85,8 +94,11 @@ impl DocumentationPolicy {
                 }
                 Err(error) => return Err(format!("{file_name}: файл не читается: {error}")),
             };
-            let parsed =
+            let mut parsed =
                 parse_policy(&text, known).map_err(|error| format!("{file_name}: {error}"))?;
+            for warning in &mut parsed.warnings {
+                *warning = format!("{file_name}: {warning}");
+            }
             policy.overlay(parsed);
         }
         Ok(policy)
@@ -98,6 +110,7 @@ impl DocumentationPolicy {
         if upper.default_network.is_some() {
             self.default_network = upper.default_network;
         }
+        self.warnings.extend(upper.warnings);
         for (id, incoming) in upper.providers {
             let entry = self.providers.entry(id).or_default();
             if incoming.network.is_some() {
@@ -117,6 +130,11 @@ impl DocumentationPolicy {
             .and_then(|policy| policy.network)
             .or(self.default_network)
             .unwrap_or(NetworkAccess::Allow)
+    }
+
+    /// Предупреждения разбора по всем слоям: секции удалённых поставщиков.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// Endpoint поставщика из файла, если задан.
@@ -164,6 +182,12 @@ fn parse_policy(text: &str, known: &[&str]) -> Result<DocumentationPolicy, Strin
                     .as_table()
                     .ok_or_else(|| "[providers] обязана быть таблицей".to_string())?;
                 for (id, entry) in providers {
+                    if RETIRED_PROVIDERS.contains(&id.as_str()) {
+                        policy.warnings.push(format!(
+                            "[providers.{id}]: поставщик {id} удалён, ключ можно убрать"
+                        ));
+                        continue;
+                    }
                     if !known.contains(&id.as_str()) {
                         return Err(format!(
                             "неизвестный поставщик {id:?}; известны: {}",
@@ -178,9 +202,6 @@ fn parse_policy(text: &str, known: &[&str]) -> Result<DocumentationPolicy, Strin
                         match key.as_str() {
                             "network" => provider.network = Some(network_access(value)?),
                             "endpoint" => {
-                                if id == "kb-1ci" {
-                                    return Err("[providers.kb-1ci].endpoint не поддерживается; удалите ключ".to_string());
-                                }
                                 provider.endpoint = Some(
                                     value
                                         .as_str()
@@ -218,7 +239,7 @@ fn root_error_message(error: WorkspaceConfigRootError) -> String {
 mod tests {
     use super::*;
 
-    const KNOWN: &[&str] = &["v8std", "kb-1ci"];
+    const KNOWN: &[&str] = &["v8std", "configuration-help"];
 
     fn workspace() -> tempfile::TempDir {
         tempfile::tempdir().expect("временный каталог")
@@ -228,12 +249,12 @@ mod tests {
     fn machine_policy_applies_to_multiple_workspaces_and_project_overlays_win_per_key() {
         let common = workspace();
         let path = common.path().join("policy.toml");
-        std::fs::write(&path, "[providers.kb-1ci]\nnetwork = \"deny\"\n[providers.v8std]\nnetwork = \"allow\"\nendpoint = \"http://common/mcp\"\n").unwrap();
+        std::fs::write(&path, "[providers.configuration-help]\nnetwork = \"deny\"\n[providers.v8std]\nnetwork = \"allow\"\nendpoint = \"http://common/mcp\"\n").unwrap();
         let first = workspace();
         let second = workspace();
         for dir in [&first, &second] {
             let policy = DocumentationPolicy::load_layers(dir.path(), KNOWN, Some(&path)).unwrap();
-            assert_eq!(policy.network("kb-1ci"), NetworkAccess::Deny);
+            assert_eq!(policy.network("configuration-help"), NetworkAccess::Deny);
             assert_eq!(policy.network("v8std"), NetworkAccess::Allow);
             assert_eq!(
                 policy.endpoint("v8std").as_deref(),
@@ -242,7 +263,7 @@ mod tests {
         }
         std::fs::write(
             first.path().join("unica.toml"),
-            "[network]\ndefault = \"deny\"\n[providers.kb-1ci]\nnetwork = \"allow\"\n",
+            "[network]\ndefault = \"deny\"\n[providers.configuration-help]\nnetwork = \"allow\"\n",
         )
         .unwrap();
         std::fs::write(
@@ -251,7 +272,7 @@ mod tests {
         )
         .unwrap();
         let policy = DocumentationPolicy::load_layers(first.path(), KNOWN, Some(&path)).unwrap();
-        assert_eq!(policy.network("kb-1ci"), NetworkAccess::Allow);
+        assert_eq!(policy.network("configuration-help"), NetworkAccess::Allow);
         assert_eq!(
             policy.network("v8std"),
             NetworkAccess::Allow,
@@ -264,7 +285,7 @@ mod tests {
         assert_eq!(
             DocumentationPolicy::load_layers(second.path(), KNOWN, Some(&path))
                 .unwrap()
-                .network("kb-1ci"),
+                .network("configuration-help"),
             NetworkAccess::Deny
         );
     }
@@ -286,7 +307,7 @@ mod tests {
         for text in [
             "{invalid",
             "[providers.unknown]\nnetwork = \"deny\"\n",
-            "[providers.kb-1ci]\nnetwork = \"denny\"\n",
+            "[providers.configuration-help]\nnetwork = \"denny\"\n",
         ] {
             std::fs::write(&path, text).unwrap();
             assert!(DocumentationPolicy::load_layers(dir.path(), KNOWN, Some(&path)).is_err());
@@ -307,8 +328,11 @@ mod tests {
         }
     }
 
+    /// Строка удалённого поставщика из прежней версии не ломает документацию:
+    /// в любом слое — с любым телом, даже неверным, — она принимается,
+    /// называется предупреждением с именем файла и ничего не настраивает.
     #[test]
-    fn kb_endpoint_is_rejected_in_every_policy_layer() {
+    fn a_retired_provider_is_accepted_with_a_warning_and_ignored_in_every_layer() {
         for layer in 0..3 {
             let common = workspace();
             let dir = workspace();
@@ -320,16 +344,30 @@ mod tests {
             std::fs::write(&paths[0], "").unwrap();
             std::fs::write(
                 &paths[layer],
-                "[providers.kb-1ci]\nendpoint = \"http://ignored.invalid\"\n",
+                "[providers.kb-1ci]\nnetwork = \"denny\"\nendpoint = \"http://ignored.invalid\"\nretry = 3\n",
             )
             .unwrap();
-            let error =
-                DocumentationPolicy::load_layers(dir.path(), KNOWN, Some(&paths[0])).unwrap_err();
+            let policy =
+                DocumentationPolicy::load_layers(dir.path(), KNOWN, Some(&paths[0])).unwrap();
+            assert_eq!(policy.warnings().len(), 1, "{:?}", policy.warnings());
+            let warning = &policy.warnings()[0];
             assert!(
-                error.contains("providers.kb-1ci") && error.contains("endpoint"),
-                "{error}"
+                warning.contains(&paths[layer].display().to_string())
+                    && warning.contains("поставщик kb-1ci удалён, ключ можно убрать"),
+                "{warning}"
             );
+            assert_eq!(policy.network("kb-1ci"), NetworkAccess::Allow);
+            assert_eq!(policy.endpoint("kb-1ci"), None);
+            assert_eq!(policy.network("v8std"), NetworkAccess::Allow);
         }
+        // Неизвестный поставщик по-прежнему отказ: исключение только для удалённых.
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("unica.toml"),
+            "[providers.kb-1c]\nnetwork = \"deny\"\n",
+        )
+        .unwrap();
+        assert!(DocumentationPolicy::load(dir.path(), KNOWN).is_err());
     }
 
     #[test]
@@ -337,7 +375,7 @@ mod tests {
         let dir = workspace();
         let policy = DocumentationPolicy::load(dir.path(), KNOWN).expect("умолчания");
         assert_eq!(policy.network("v8std"), NetworkAccess::Allow);
-        assert_eq!(policy.network("kb-1ci"), NetworkAccess::Allow);
+        assert_eq!(policy.network("configuration-help"), NetworkAccess::Allow);
         assert_eq!(policy.endpoint("v8std"), None);
     }
 
@@ -514,7 +552,7 @@ mod tests {
         let policy = DocumentationPolicy::load(dir.path(), KNOWN).expect("политика");
         assert_eq!(policy.network("v8std"), NetworkAccess::Allow);
         assert_eq!(
-            policy.network("kb-1ci"),
+            policy.network("configuration-help"),
             NetworkAccess::Deny,
             "умолчание deny действует на поставщика без собственного правила"
         );

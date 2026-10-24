@@ -1920,3 +1920,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/pure/receipt_wire.rs"]
+mod receipt_wire_tests;

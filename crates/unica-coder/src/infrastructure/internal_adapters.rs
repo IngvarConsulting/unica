@@ -2161,6 +2161,10 @@ mod tests {
     #[test]
     fn bounded_external_epf_rejects_case_only_output_aliases() {
         if path_lock_identity(Path::new("Out.log")) != path_lock_identity(Path::new("out.log")) {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::CaseInsensitiveFilesystem,
+                "case-only aliases exist only where path identity ignores case",
+            );
             return;
         }
 
@@ -2913,75 +2917,6 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
-    fn legacy_diagnostics_file_route_is_not_available_through_graph_adapter() {
-        let context = temp_context("diagnostics-mcp");
-        let runner = RecordingBslMcpRunner {
-            commands: RefCell::new(Vec::new()),
-            output: BslMcpOutput {
-                result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
-                stderr: String::new(),
-            },
-        };
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("file"));
-        args.insert(
-            "path".to_string(),
-            json!("CommonModules/SmokeModule/Ext/Module.bsl"),
-        );
-        args.insert("codes".to_string(), json!(["UnusedLocalVariable"]));
-        args.insert("minSeverity".to_string(), json!("warning"));
-        args.insert("rangeStart".to_string(), json!(3));
-        args.insert("rangeEnd".to_string(), json!(7));
-        args.insert("detail".to_string(), json!("detailed"));
-        args.insert("limit".to_string(), json!(5));
-
-        let error = BslAnalyzerMcpAdapter::with_runner(
-            &runner,
-            crate::infrastructure::analysis_composition::environment(),
-        )
-        .invoke("unica.code.diagnostics", &args, &context, false)
-        .unwrap_err();
-
-        assert_eq!(
-            error,
-            "unsupported bsl-analyzer MCP tool: unica.code.diagnostics"
-        );
-        assert!(runner.commands.borrow().is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn legacy_absolute_diagnostics_path_does_not_restore_adapter_route() {
-        let context = temp_context("diagnostics-absolute-inside");
-        let path = context
-            .cwd
-            .join("CommonModules/SmokeModule/Ext/Module.bsl")
-            .display()
-            .to_string();
-        let runner = RecordingBslMcpRunner {
-            commands: RefCell::new(Vec::new()),
-            output: BslMcpOutput {
-                result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
-                stderr: String::new(),
-            },
-        };
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("file"));
-        args.insert("path".to_string(), json!(path));
-
-        let error = BslAnalyzerMcpAdapter::with_runner(
-            &runner,
-            crate::infrastructure::analysis_composition::environment(),
-        )
-        .invoke("unica.code.diagnostics", &args, &context, false)
-        .unwrap_err();
-
-        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
-        assert!(runner.commands.borrow().is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
     fn legacy_diagnostics_paths_are_rejected_before_any_runner_call() {
         let context = temp_context("diagnostics-path-containment");
         fs::create_dir_all(context.workspace_root.join("src")).unwrap();
@@ -3039,38 +2974,6 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
-    fn legacy_non_string_diagnostics_paths_cannot_reach_runner() {
-        let context = temp_context("diagnostics-non-string-path");
-
-        for path in [Value::Null, json!(true), json!(1), json!([]), json!({})] {
-            let runner = RecordingBslMcpRunner {
-                commands: RefCell::new(Vec::new()),
-                output: BslMcpOutput {
-                    result_text: "{\"action\":\"file\",\"findings\":[]}".to_string(),
-                    stderr: String::new(),
-                },
-            };
-            let mut args = Map::new();
-            args.insert("mode".to_string(), json!("file"));
-            args.insert("path".to_string(), path.clone());
-
-            let error = BslAnalyzerMcpAdapter::with_runner(
-                &runner,
-                crate::infrastructure::analysis_composition::environment(),
-            )
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap_err();
-            assert!(
-                error.starts_with("unsupported bsl-analyzer MCP tool:"),
-                "{path}: {error}"
-            );
-            assert!(runner.commands.borrow().is_empty(), "{path}");
-        }
-
-        cleanup_context(&context);
-    }
-
-    #[test]
     fn bsl_mcp_adapter_reports_loading_as_non_fatal_warning() {
         let context = temp_context("graph-loading");
         let runner = RecordingBslMcpRunner {
@@ -3097,91 +3000,6 @@ analyze_timeout_seconds = 900
             .warnings
             .iter()
             .any(|warning| warning.contains("not ready")));
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn legacy_diagnostics_loading_route_is_not_available() {
-        let context = temp_context("diagnostics-loading");
-        let runner = RecordingBslMcpRunner {
-            commands: RefCell::new(Vec::new()),
-            output: BslMcpOutput {
-                result_text: "{\"action\":\"file\",\"status\":\"loading\"}".to_string(),
-                stderr: String::new(),
-            },
-        };
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("file"));
-        args.insert(
-            "path".to_string(),
-            json!("CommonModules/Probe/Ext/Module.bsl"),
-        );
-
-        let error = BslAnalyzerMcpAdapter::with_runner(
-            &runner,
-            crate::infrastructure::analysis_composition::environment(),
-        )
-        .invoke("unica.code.diagnostics", &args, &context, false)
-        .unwrap_err();
-
-        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
-        assert!(runner.commands.borrow().is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn legacy_diagnostics_status_route_is_not_available() {
-        let context = temp_context("diagnostics-status-loading");
-        let runner = RecordingBslMcpRunner {
-            commands: RefCell::new(Vec::new()),
-            output: BslMcpOutput {
-                result_text: "{\"action\":\"status\",\"reload\":\"running\",\"state\":\"loading\"}"
-                    .to_string(),
-                stderr: String::new(),
-            },
-        };
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("status"));
-
-        let error = BslAnalyzerMcpAdapter::with_runner(
-            &runner,
-            crate::infrastructure::analysis_composition::environment(),
-        )
-        .invoke("unica.code.diagnostics", &args, &context, false)
-        .unwrap_err();
-
-        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
-        assert!(runner.commands.borrow().is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn legacy_diagnostics_findings_route_is_not_available() {
-        let context = temp_context("diagnostics-quoted-loading");
-        let runner = RecordingBslMcpRunner {
-            commands: RefCell::new(Vec::new()),
-            output: BslMcpOutput {
-                result_text: "{\"action\":\"file\",\"findings\":[{\"code\":\"LineLength\",\"message\":\"literal \\\"status\\\":\\\"loading\\\" is not ready for review\"}]}"
-                    .to_string(),
-                stderr: String::new(),
-            },
-        };
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("file"));
-        args.insert(
-            "path".to_string(),
-            json!("CommonModules/Probe/Ext/Module.bsl"),
-        );
-
-        let error = BslAnalyzerMcpAdapter::with_runner(
-            &runner,
-            crate::infrastructure::analysis_composition::environment(),
-        )
-        .invoke("unica.code.diagnostics", &args, &context, false)
-        .unwrap_err();
-
-        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
-        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 

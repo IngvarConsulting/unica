@@ -26,6 +26,10 @@ impl MetadataDecodeContext<'_> {
 }
 #[derive(Debug, Clone)]
 pub enum MetadataPlanKind {
+    ExchangeContent {
+        owner: MetadataAddress,
+        items: Vec<unica_metadata::MetaExchangeContentItem>,
+    },
     Edit {
         target: MetadataAddress,
         operation: MetaEditOperation,
@@ -130,6 +134,15 @@ pub enum PredefinedChange {
 #[derive(Debug, Clone)]
 pub struct MetadataPlanOperation {
     pub kind: MetadataPlanKind,
+}
+
+impl MetadataPlanOperation {
+    pub fn exchange_content_owner(&self) -> Option<&MetadataAddress> {
+        match &self.kind {
+            MetadataPlanKind::ExchangeContent { owner, .. } => Some(owner),
+            _ => None,
+        }
+    }
 }
 pub fn parse_metadata_plan_operation_in(
     descriptor: Option<OperationDescriptor>,
@@ -401,6 +414,9 @@ pub fn parse_metadata_plan_operation_in(
             }
             RegisteredMetadataOperation::HelpCreate => {
                 parse_help_create(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::ContentSet => {
+                parse_exchange_content(object, op_index, binding)?
             }
         };
         // Convert the target and payload first to retain their diagnostics.
@@ -1519,6 +1535,123 @@ pub fn predefined_update(
         op_index,
     )?))
 }
+/// Object kinds whose changes an ExchangePlan composition can record.
+const EXCHANGE_CONTENT_KINDS: &[NodeKind] = &[
+    NodeKind::Catalog,
+    NodeKind::Document,
+    NodeKind::Constant,
+    NodeKind::InformationRegister,
+    NodeKind::AccumulationRegister,
+    NodeKind::ChartOfCharacteristicTypes,
+    NodeKind::BusinessProcess,
+    NodeKind::Task,
+    NodeKind::ChartOfAccounts,
+    NodeKind::ChartOfCalculationTypes,
+    NodeKind::AccountingRegister,
+    NodeKind::CalculationRegister,
+];
+
+pub fn parse_exchange_content(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &MetadataDecodeContext<'_>,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    use unica_metadata::{MetaExchangeAutoRecord, MetaExchangeContentItem};
+    reject_unknown_args(
+        "content.set",
+        args,
+        &["at", "items"],
+        op_index,
+        binding.registry,
+    )?;
+    let (owner, kind) = metadata_owner(
+        &unica_source_contract::proposal::input::qualified_target(
+            args,
+            op_index,
+            binding.source_set_name(),
+        )?,
+        op_index,
+    )?;
+    let bad = |message: &str| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+            .at_path(format!("ops[{op_index}].args.items"))
+    };
+    if kind != MetadataKind::ExchangePlan {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "content.set requires an ExchangePlan",
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
+    let values = args
+        .get("items")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| bad("items must be a nonempty array"))?;
+    let mut items = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (index, item) in values.iter().enumerate() {
+        let item_path = format!("ops[{op_index}].args.items[{index}]");
+        let bad_field = |field: &str, message: &str| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(
+                if field.is_empty() {
+                    item_path.clone()
+                } else {
+                    format!("{item_path}.{field}")
+                },
+            )
+        };
+        let object = item
+            .as_object()
+            .ok_or_else(|| bad_field("", "content item must be an object"))?;
+        if let Some(key) = object
+            .keys()
+            .find(|k| !matches!(k.as_str(), "at" | "autoRecord"))
+        {
+            return Err(bad_field(
+                key,
+                "content item expects only at and autoRecord",
+            ));
+        }
+        let target = unica_source_contract::proposal::input::qualified_target(
+            object,
+            op_index,
+            binding.source_set_name(),
+        )
+        .map_err(|e| e.at_path(format!("{item_path}.at")))?;
+        let [segment] = target.segments() else {
+            return Err(bad_field("at", "content target must be a top-level object"));
+        };
+        let name = segment
+            .name()
+            .ok_or_else(|| bad_field("at", "content target must be a named object"))?;
+        if !EXCHANGE_CONTENT_KINDS.contains(&segment.kind()) {
+            return Err(bad_field(
+                "at",
+                "content target must be a Catalog, Document, Constant, ChartOfCharacteristicTypes, ChartOfAccounts, ChartOfCalculationTypes, InformationRegister, AccumulationRegister, AccountingRegister, CalculationRegister, BusinessProcess or Task",
+            ));
+        }
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{}.{name}", segment.kind().as_str()),
+        )
+        .map_err(|_| bad_field("at", "content target must be a metadata object"))?;
+        if !seen.insert(target.as_str().to_lowercase()) {
+            return Err(bad_field("at", "content target is repeated in items"));
+        }
+        let auto_record = match object.get("autoRecord").and_then(Value::as_str) {
+            Some("Allow") => MetaExchangeAutoRecord::Allow,
+            Some("Deny") => MetaExchangeAutoRecord::Deny,
+            _ => return Err(bad_field("autoRecord", "autoRecord must be Allow or Deny")),
+        };
+        items.push(MetaExchangeContentItem {
+            target,
+            auto_record,
+        });
+    }
+    Ok(MetadataPlanKind::ExchangeContent { owner, items })
+}
+
 /// One relation edit: `values` carries the closed `relation` name and its
 /// `targets`; the mode comes from the operation name itself.
 pub fn parse_relation(

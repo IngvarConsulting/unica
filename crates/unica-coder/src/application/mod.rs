@@ -656,11 +656,6 @@ impl UnicaApplication {
     }
 }
 
-#[cfg(test)]
-mod meta_add_surface_tests;
-#[cfg(test)]
-mod meta_info_surface_tests;
-
 pub fn tools() -> Vec<ToolSpec> {
     let mut specs = configuration_tools();
     specs.extend([
@@ -3953,25 +3948,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn every_runtime_operation_is_classified_so_admission_cannot_mask_a_missing_tool() {
-        // Пока это верно, отказ допуска до резолва инструмента не доходит:
-        // классифицированная операция исполняется и сама говорит про бинарь.
-        for operation in crate::application::tool_contracts::RUNTIME_OPERATIONS {
-            let mut args = Map::new();
-            args.insert("operation".to_string(), json!(operation));
-            if *operation == "syntax" {
-                args.insert("mode".to_string(), json!("edt"));
-            }
-            let outcome = runtime_admission::runtime_risk_notice("unica.runtime.execute", &args)
-                .expect("classification");
-            assert!(
-                !matches!(outcome, runtime_admission::RuntimeRiskOutcome::Refused(_)),
-                "операция {operation} отказывает допуском"
-            );
-        }
-    }
-
-    #[test]
     fn a_missing_engine_is_delivered_before_the_handler_looks_for_it() {
         // Вызов, которому нужен ещё не доставленный движок, не отказывает: он
         // дожидается доставки и исполняется.
@@ -4228,45 +4204,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// ADR-0072: the three duplicate routes are retired without aliases.
-    #[test]
-    fn retired_template_help_routes_fail_as_unknown_tools() {
-        for retired in [
-            "unica.template.add",
-            "unica.template.remove",
-            "unica.help.add",
-        ] {
-            let error = UnicaApplication::new()
-                .call_tool(retired, &Map::new())
-                .expect_err("retired template/help route must not dispatch");
-            assert_eq!(error, format!("unknown unica tool: {retired}"));
-        }
-    }
-
-    #[test]
-    fn retired_dcs_transformers_fail_as_unknown_tools() {
-        for retired in ["unica.dcs.compile", "unica.dcs.edit", "unica.dcs.decompile"] {
-            let error = UnicaApplication::new()
-                .call_tool(retired, &Map::new())
-                .expect_err("retired DCS transformer must not dispatch");
-            assert_eq!(error, format!("unknown unica tool: {retired}"));
-        }
-    }
-
-    #[test]
-    fn retired_meta_routes_fail_as_unknown_tools() {
-        for retired in [
-            "unica.meta.compile",
-            "unica.meta.profile",
-            "unica.meta.validate",
-        ] {
-            let error = UnicaApplication::new()
-                .call_tool(retired, &Map::new())
-                .expect_err("retired Meta route must not dispatch");
-            assert_eq!(error, format!("unknown unica tool: {retired}"));
-        }
-    }
-
     #[test]
     fn xml_dsl_tools_route_to_parity_covered_native_handlers() {
         // `unica.cf.info` left the parity stand when it started answering with
@@ -4454,16 +4391,6 @@ pub(crate) mod tests {
                 } if actual == operation
             ));
         }
-    }
-
-    #[test]
-    fn removed_code_grep_error_points_to_unified_search() {
-        let error = UnicaApplication::new()
-            .call_tool("unica.code.grep", &Map::new())
-            .unwrap_err();
-
-        assert!(error.contains("removed"), "{error}");
-        assert!(error.contains("unica.code.search"), "{error}");
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod info_projection;
 
 pub mod integrity_check;
 
+pub mod exchange_content;
 pub mod form_metadata;
 
 pub mod validation;
@@ -63,7 +64,10 @@ pub mod extension;
 
 pub mod info_read;
 
+pub mod style_item_read;
+
 pub mod external;
 
 pub mod borrowed_enum_value;
+pub mod borrowed_form;
 pub mod borrowed_object;

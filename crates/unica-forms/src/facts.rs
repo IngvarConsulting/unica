@@ -20,6 +20,9 @@ pub struct FormInfoData {
     /// no base form, empty string when it declares one without a version.
     pub base_form_version: Option<String>,
     pub support: DomainObjectSupportData,
+    /// Canonical form-only evidence; legacy form.info retains its JSON shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_details: Option<FormSupportDetails>,
     pub properties: Vec<FormInfoProperty>,
     pub events: Vec<FormInfoEvent>,
     /// Items of the form's own command bar; empty when it has none or when
@@ -59,6 +62,26 @@ pub struct FormInfoConditionalAppearanceRule {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub appearance: Option<serde_json::Value>,
     pub limits: Vec<String>,
+}
+
+/// Own UUID rule is independent of configuration and owner restrictions.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormSupportDetails {
+    pub support_rule: Option<unica_metadata::support_state::ObjectSupportState>,
+    pub support_rule_reason: Option<FormSupportRuleReason>,
+    /// Own rule, owner and configuration together: a deny by any of them is
+    /// `false`; this does not imply operation availability. The owner's own
+    /// state is read from the owner itself.
+    pub direct_edit_safe: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FormSupportRuleReason {
+    MarkerAbsent,
+    RuleAbsent,
+    ConfigurationRemoved,
 }
 
 #[derive(Debug, Serialize)]

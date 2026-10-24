@@ -43,7 +43,7 @@ pub trait MetadataPlanningRead {
 /// family has contributed its image. A borrowed descriptor contains only the
 /// extension's contribution and cannot establish the parent's composition.
 pub fn validate_final_object_integrity(
-    staged: &ApplyProposal<'_>,
+    staged: &mut ApplyProposal<'_>,
     source_set_name: &str,
     source_kind: SourceSetKind,
 ) -> Result<(), ApplyPlanError> {
@@ -63,6 +63,17 @@ pub fn validate_final_object_integrity(
         let Ok(kind) = MetadataKind::parse(directory.tag) else {
             continue;
         };
+        if kind == MetadataKind::EventSubscription
+            && relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("xml")
+        {
+            if let Some(name) = relative.file_stem().and_then(|name| name.to_str()) {
+                let at = format!("{source_set_name}:EventSubscription.{name}");
+                validate_final_event_subscription(staged, relative, bytes, &at, source_kind)?;
+            }
+        }
         if unica_metadata::meta_object_integrity_rules(kind)
             .next()
             .is_none()
@@ -88,6 +99,104 @@ pub fn validate_final_object_integrity(
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message).at_path(at)
         })?;
     }
+    Ok(())
+}
+
+/// The source classes and the event a subscription descriptor binds.
+fn event_subscription_binding(
+    bytes: &[u8],
+) -> Result<(Vec<unica_metadata::MetaEventSource>, String), (&'static str, String)> {
+    let (_, document) = unica_xml_format::read::parse_metadata_image(bytes)
+        .map_err(|message| ("resources", message))?;
+    let source = crate::xml_model::meta_event_subscription_source_node(&document)
+        .map_err(|message| ("relations.source", message))?;
+    let sources = crate::xml_model::parse_meta_event_subscription_source(source)
+        .map_err(|message| ("relations.source", message))?
+        .sources;
+    let event = source
+        .parent_element()
+        .and_then(|properties| unica_xml_format::read::child_direct_text(properties, "Event"))
+        .unwrap_or_default();
+    Ok((sources, event))
+}
+
+/// INV.SOURCE.EVENT-DEFINED-TYPE: a changed source or event is checked against
+/// the classes it names, with every defined type expanded down to its event
+/// classes, nested ones included. A cycle or an unfit member refuses the plan.
+/// Defined types are read through the proposal: their descriptors become
+/// inputs of the plan, so changing one after planning makes the token stale.
+/// The handler contract stays with `check` (#931).
+fn validate_final_event_subscription(
+    staged: &mut ApplyProposal<'_>,
+    relative: &Path,
+    bytes: &[u8],
+    at: &str,
+    source_kind: SourceSetKind,
+) -> Result<(), ApplyPlanError> {
+    let refuse = |field: &str, message: String| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, format!("{field}: {message}")).at_path(at)
+    };
+    // A borrowed subscription carries no source of its own: the parent's
+    // applies, and the extension only adds to it.
+    if final_object_inherits_composition(MetadataKind::EventSubscription, bytes) {
+        return Ok(());
+    }
+    let binding = event_subscription_binding(bytes);
+    // Only a changed source or event is checked; an edit of another property
+    // keeps whatever the descriptor held, including a source this reader
+    // cannot parse.
+    if staged
+        .original_image(relative)
+        .is_some_and(|original| event_subscription_binding(original) == binding)
+    {
+        return Ok(());
+    }
+    let (sources, event) = binding.map_err(|(field, message)| refuse(field, message))?;
+    if sources.is_empty() || event.is_empty() {
+        return Ok(());
+    }
+    let mut classes = Vec::new();
+    let mut visiting = std::collections::HashSet::new();
+    for (index, source) in sources.iter().enumerate() {
+        expand_staged_event_source(staged, source_kind, source, &mut classes, &mut visiting)
+            .map_err(|message| refuse(&format!("relations.source[{index}]"), message))?;
+    }
+    unica_metadata::validate_event_subscription_sources(&classes, &event).map_err(|error| {
+        let (field, message) = crate::validation::event_binding_error_message(error);
+        refuse(field, message)
+    })?;
+    Ok(())
+}
+
+fn expand_staged_event_source(
+    staged: &mut ApplyProposal<'_>,
+    source_kind: SourceSetKind,
+    source: &unica_metadata::MetaEventSource,
+    classes: &mut Vec<unica_metadata::EventSourceClass>,
+    visiting: &mut std::collections::HashSet<MetadataAddress>,
+) -> Result<(), String> {
+    if let Some(class) = source.event_source_class()? {
+        classes.push(class);
+        return Ok(());
+    }
+    let target = source
+        .metadata_path()
+        .cloned()
+        .ok_or_else(|| "event source class is unavailable".to_string())?;
+    if !visiting.insert(target.clone()) {
+        return Err(format!(
+            "DefinedType event source cycle contains `{target}`"
+        ));
+    }
+    let relative = metadata_descriptor_relative(&target, source_kind)?;
+    let descriptor = staged
+        .read(&relative)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("DefinedType event source `{target}` was not found"))?;
+    for member in crate::xml_model::parse_defined_type_event_sources(&descriptor)? {
+        expand_staged_event_source(staged, source_kind, &member, classes, visiting)?;
+    }
+    visiting.remove(&target);
     Ok(())
 }
 
@@ -140,6 +249,17 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
     for operation in operations {
         let op_index = operation.index();
         let (target, edit, addressed) = match &operation.operation().kind {
+            MetadataPlanKind::ExchangeContent { owner, items } => {
+                stage_exchange_content(
+                    staged,
+                    authority,
+                    owner,
+                    items,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
             MetadataPlanKind::Edit {
                 target,
                 operation: edit,
@@ -1325,6 +1445,194 @@ fn register_owner_child_ref(text: &str, tag: &str, name: &str) -> Option<String>
     Some(updated)
 }
 
+fn stage_exchange_content(
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
+    owner: &MetadataAddress,
+    items: &[unica_metadata::MetaExchangeContentItem],
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let path = format!("ops[{op_index}].args.items");
+    let configuration = staged
+        .read(Path::new("Configuration.xml"))
+        .map_err(|e| ApplyPlanError::staging(e, path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "Configuration.xml is absent",
+            )
+            .at_path(path.clone())
+        })?;
+    let invalid_configuration = |message: String| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(path.clone())
+    };
+    let configuration_text = std::str::from_utf8(&configuration)
+        .map_err(|_| invalid_configuration("Configuration.xml is not UTF-8".into()))?;
+    let configuration_doc = roxmltree::Document::parse(configuration_text)
+        .map_err(|e| invalid_configuration(format!("invalid Configuration.xml: {e}")))?;
+    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let root = configuration_doc.root_element();
+    if !root.has_tag_name((MD_NS, "MetaDataObject")) {
+        return Err(invalid_configuration(
+            "expected MetaDataObject in Configuration.xml".into(),
+        ));
+    }
+    let mut configurations = root
+        .children()
+        .filter(|n| n.has_tag_name((MD_NS, "Configuration")));
+    let configuration_node = configurations.next().ok_or_else(|| {
+        invalid_configuration("Configuration.xml has no Configuration element".into())
+    })?;
+    if configurations.next().is_some() {
+        return Err(invalid_configuration(
+            "Configuration.xml has repeated Configuration elements".into(),
+        ));
+    }
+    let mut compositions = configuration_node
+        .children()
+        .filter(|n| n.has_tag_name((MD_NS, "ChildObjects")));
+    let composition = compositions.next().ok_or_else(|| {
+        invalid_configuration("Configuration.xml has no ChildObjects element".into())
+    })?;
+    if compositions.next().is_some() {
+        return Err(invalid_configuration(
+            "Configuration.xml has repeated ChildObjects elements".into(),
+        ));
+    }
+    let targets = std::iter::once((owner, format!("ops[{op_index}].args.at"))).chain(
+        items.iter().enumerate().map(|(index, item)| {
+            (
+                &item.target,
+                format!("ops[{op_index}].args.items[{index}].at"),
+            )
+        }),
+    );
+    for (target, target_path) in targets {
+        let (_, _, text) = owner_descriptor_and_text(staged, authority, target, op_index)
+            .map_err(|e| e.at_path(target_path.clone()))?;
+        let (kind, name) = crate::edit::meta_edit_object_identity(&text).map_err(|e| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, e).at_path(target_path.clone())
+        })?;
+        if !unica_metadata::metadata_name_eq(target.as_str(), &format!("{kind}.{name}")) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "content target descriptor identity does not match its address",
+            )
+            .at_path(target_path.clone()));
+        }
+        let registered = composition.children().any(|entry| {
+            entry.has_tag_name((MD_NS, kind.as_str()))
+                && entry.attributes().len() == 0
+                && !entry.children().any(|n| n.is_element())
+                && unica_metadata::metadata_name_eq(
+                    &entry
+                        .children()
+                        .filter(|n| n.is_text())
+                        .filter_map(|n| n.text())
+                        .collect::<String>(),
+                    &name,
+                )
+        });
+        if !registered {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "content target is not registered in Configuration.xml",
+            )
+            .at_path(target_path.clone()));
+        }
+    }
+    let relative = metadata_descriptor_relative(owner, authority.source_kind())
+        .map_err(|e| ApplyPlanError::new(ApplyPlanErrorKind::BadValue, e).at_path(path.clone()))?
+        .with_extension("")
+        .join("Ext/Content.xml");
+    // The platform omits Content.xml for an empty composition; the first
+    // added item creates the file in the platform layout.
+    let before = staged
+        .read(&relative)
+        .map_err(|e| ApplyPlanError::staging(e, path.clone()))?;
+    let template = crate::exchange_content::EMPTY_CONTENT.as_bytes();
+    let text = std::str::from_utf8(before.as_deref().unwrap_or(template)).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "ExchangePlan Content.xml is not UTF-8",
+        )
+        .at_path(path.clone())
+    })?;
+    let after = crate::exchange_content::update_content(text, items)
+        .map_err(|e| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, e).at_path(path.clone())
+        })?
+        .into_bytes();
+    let changed = match before {
+        Some(before) if before != after => staged.replace(&relative, &before, after).map(|()| true),
+        None if after != template => staged.create(&relative, after).map(|()| true),
+        _ => Ok(false),
+    };
+    let changed = changed.map_err(|e| ApplyPlanError::staging(e, path))?;
+    if changed {
+        provisional.push(ProvisionalApplyEffect::single(
+            relative,
+            DomainEvent::new(DomainEventKind::MetadataChanged, owner.as_str().to_owned()),
+            op_index,
+        ));
+    }
+    Ok(())
+}
+
+/// The final composition of every ExchangePlan named by the batch, read
+/// from the staged image after all families planned their changes.
+pub fn final_exchange_content(
+    staged: &mut ApplyProposal<'_>,
+    source_set_name: &str,
+    source_kind: SourceSetKind,
+    owners: impl Iterator<Item = MetadataAddress>,
+) -> Result<Vec<unica_metadata::ExchangeContentPlanDetail>, ApplyPlanError> {
+    use unica_metadata::{ExchangeContentPlanDetail, ExchangeContentPlanItem};
+    let mut seen = std::collections::HashSet::new();
+    let mut details = Vec::new();
+    for owner in owners {
+        if !seen.insert(owner.as_str().to_lowercase()) {
+            continue;
+        }
+        let fail = |message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path("ops")
+        };
+        let relative = metadata_descriptor_relative(&owner, source_kind).map_err(fail)?;
+        if staged
+            .read(&relative)
+            .map_err(|e| ApplyPlanError::staging(e, "ops"))?
+            .is_none()
+        {
+            continue;
+        }
+        let content = relative.with_extension("").join("Ext/Content.xml");
+        let bytes = staged
+            .read(&content)
+            .map_err(|e| ApplyPlanError::staging(e, "ops"))?;
+        // An absent file is the platform's empty composition.
+        let bytes =
+            bytes.unwrap_or_else(|| crate::exchange_content::EMPTY_CONTENT.as_bytes().to_vec());
+        let text = std::str::from_utf8(&bytes).map_err(|e| fail(e.to_string()))?;
+        let observed = crate::exchange_content::read_content(text).map_err(fail)?;
+        if !observed.errors.is_empty() {
+            return Err(fail(observed.errors.join("; ")));
+        }
+        details.push(ExchangeContentPlanDetail {
+            at: format!("{}:{}", source_set_name, owner.as_str()),
+            items: observed
+                .items
+                .into_iter()
+                .map(|item| ExchangeContentPlanItem {
+                    at: format!("{}:{}", source_set_name, item.target.as_str()),
+                    auto_record: item.auto_record,
+                })
+                .collect(),
+        });
+    }
+    Ok(details)
+}
+
 fn owner_descriptor_and_text(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
@@ -1734,7 +2042,7 @@ fn stage_template_remove(
     staged
         .remove(&descriptor_relative, &descriptor_preimage)
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-    touched.push(descriptor_relative);
+    touched.push(descriptor_relative.clone());
     for relative in files {
         if let Some(preimage) = staged
             .read(&relative)
@@ -1746,6 +2054,12 @@ fn stage_template_remove(
             touched.push(relative);
         }
     }
+    // The emptied payload and, when nothing else remains there, its
+    // `Templates` collection go in the same publication: the platform does
+    // not export empty template directories (#1997).
+    staged
+        .remove_owned_directories(&payload_relative, &descriptor_relative, &templates_dir)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
     staged
         .replace(
             &owner_relative,

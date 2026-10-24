@@ -826,12 +826,9 @@ pub(crate) mod tests {
         let outside = root.join("outside");
         fs::create_dir_all(&workspace).unwrap();
         fs::create_dir_all(outside.join("target")).unwrap();
-        let Some(symlink) =
+        let symlink =
             testing::create_dir_symlink_for_test(outside.join("target"), workspace.join("link"))
-        else {
-            let _ = fs::remove_dir_all(root);
-            return;
-        };
+                .expect("symlink fixtures exist on Unix and Windows");
         symlink.unwrap();
         let context = discover_workspace(Some(workspace.clone())).unwrap();
         let args = map(json!({

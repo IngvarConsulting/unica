@@ -2252,6 +2252,625 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn exchange_content_parser_rejects_invalid_items_at_their_fields() {
+        let fixture = MetadataFixture::new();
+        for (items, suffix) in [
+            (json!([]), "items"),
+            (
+                json!([{"at":"other:Catalog.Items","autoRecord":"Allow"}]),
+                "items[0].at",
+            ),
+            (
+                json!([{"at":"main:Catalog.Items.Attribute.Code","autoRecord":"Allow"}]),
+                "items[0].at",
+            ),
+            (
+                json!([{"at":"main:Catalog.Items","autoRecord":"Unknown"}]),
+                "items[0].autoRecord",
+            ),
+            (
+                json!([{"at":"main:Catalog.Items","autoRecord":"Allow","extra":true}]),
+                "items[0].extra",
+            ),
+            (
+                json!([{"at":"main:CommonModule.Shared","autoRecord":"Allow"}]),
+                "items[0].at",
+            ),
+            (
+                json!([{"at":"main:Catalog.Items","autoRecord":"Allow"},{"at":"main:ExchangePlan.Nodes","autoRecord":"Allow"}]),
+                "items[1].at",
+            ),
+            (
+                json!([{"at":"main:Catalog.Items","autoRecord":"Allow"},{"at":"main:Catalog.items","autoRecord":"Deny"}]),
+                "items[1].at",
+            ),
+        ] {
+            let error = parse_metadata_plan_operation(
+                "content.set",
+                &json!({"at":"main:ExchangePlan.Nodes","items":items}),
+                2,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+            assert_eq!(error.path(), Some(format!("ops[2].args.{suffix}").as_str()));
+        }
+    }
+
+    #[test]
+    fn exchange_content_staging_reports_the_exact_owner_or_item_path() {
+        let descriptor = |kind: &str, name: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="12345678-1234-4234-8234-123456789012"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}></MetaDataObject>"#
+            )
+        };
+        let content =
+            r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#;
+        for (case, kind, suffix) in [
+            ("missing_item", ApplyPlanErrorKind::NotFound, "items[1].at"),
+            (
+                "identity_item",
+                ApplyPlanErrorKind::InvalidSource,
+                "items[1].at",
+            ),
+            (
+                "unregistered_item",
+                ApplyPlanErrorKind::NotFound,
+                "items[1].at",
+            ),
+            ("missing_owner", ApplyPlanErrorKind::NotFound, "at"),
+            ("identity_owner", ApplyPlanErrorKind::InvalidSource, "at"),
+            ("unregistered_owner", ApplyPlanErrorKind::NotFound, "at"),
+        ] {
+            let owner_registration = if case == "unregistered_owner" {
+                ""
+            } else {
+                "<ExchangePlan>Nodes</ExchangePlan>"
+            };
+            let item_registration = if case == "unregistered_item" {
+                ""
+            } else {
+                "<Catalog>Second</Catalog>"
+            };
+            let config = RU_CONFIGURATION_XML.replace("</ChildObjects>", &format!("{owner_registration}<Catalog>First</Catalog>{item_registration}</ChildObjects>"));
+            let owner = descriptor(
+                "ExchangePlan",
+                if case == "identity_owner" {
+                    "Other"
+                } else {
+                    "Nodes"
+                },
+            );
+            let first = descriptor("Catalog", "First");
+            let second = descriptor(
+                "Catalog",
+                if case == "identity_item" {
+                    "Other"
+                } else {
+                    "Second"
+                },
+            );
+            let mut files = vec![
+                ("Configuration.xml", config.as_str()),
+                ("Documents/Order.xml", ORDER_XML),
+                ("Catalogs/First.xml", first.as_str()),
+                ("ExchangePlans/Nodes/Ext/Content.xml", content),
+            ];
+            if case != "missing_owner" {
+                files.push(("ExchangePlans/Nodes.xml", owner.as_str()));
+            }
+            if case != "missing_item" {
+                files.push(("Catalogs/Second.xml", second.as_str()));
+            }
+            let fixture = MetadataFixture::with_files(&files);
+            let before =
+                unica_workspace::test_support::tree_snapshot(fixture.binding.source_root());
+            let admission = fixture.admission();
+            let authority = admission
+                .metadata_planning_authority(&fixture.binding)
+                .unwrap();
+            let operations = [fixture.parse("content.set", json!({"at":"main:ExchangePlan.Nodes","items":[{"at":"main:Catalog.First","autoRecord":"Allow"},{"at":"main:Catalog.Second","autoRecord":"Allow"}]}), 2)];
+            let error = plan_metadata_batch_owned_for_test(
+                admission.staged_state().unwrap(),
+                authority,
+                &operations,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), kind, "{case}: {error:?}");
+            assert_eq!(
+                error.path(),
+                Some(format!("ops[2].args.{suffix}").as_str()),
+                "{case}: {error:?}"
+            );
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(fixture.binding.source_root()),
+                before,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn exchange_content_preview_uses_final_images_and_keeps_noop_out_of_events() {
+        let config = RU_CONFIGURATION_XML.replace("</ChildObjects>", "<ExchangePlan>Nodes</ExchangePlan><ExchangePlan>Other</ExchangePlan><Catalog>Old</Catalog></ChildObjects>");
+        let descriptor = |kind: &str, name: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="12345678-1234-4234-8234-123456789012"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}></MetaDataObject>"#
+            )
+        };
+        let content = r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Item><Metadata>Catalog.Old</Metadata><AutoRecord>Deny</AutoRecord></Item></ExchangePlanContent>"#;
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &config),
+            ("Documents/Order.xml", ORDER_XML),
+            (
+                "ExchangePlans/Nodes.xml",
+                &descriptor("ExchangePlan", "Nodes"),
+            ),
+            (
+                "ExchangePlans/Other.xml",
+                &descriptor("ExchangePlan", "Other"),
+            ),
+            ("Catalogs/Old.xml", &descriptor("Catalog", "Old")),
+            ("ExchangePlans/Nodes/Ext/Content.xml", content),
+            ("ExchangePlans/Other/Ext/Content.xml", content),
+        ]);
+        let admission = fixture.admission();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = [("Nodes", "Allow"), ("Other", "Allow"), ("Nodes", "Deny")].into_iter().enumerate()
+            .map(|(index,(name,mode))| fixture.parse("content.set", json!({"at":format!("main:ExchangePlan.{name}"),"items":[{"at":"main:Catalog.Old","autoRecord":mode}]}), index)).collect::<Vec<_>>();
+        let (mut state, provisional) = plan_metadata_batch_owned_for_test(
+            admission.staged_state().unwrap(),
+            authority,
+            &operations,
+        )
+        .unwrap();
+        let owners = || {
+            operations
+                .iter()
+                .filter_map(|op| op.operation().exchange_content_owner().cloned())
+        };
+        let details = unica_metadata_designer::planner::final_exchange_content(
+            &mut state.proposal(),
+            fixture.binding.source_set_name(),
+            fixture.binding.source_kind(),
+            owners(),
+        )
+        .unwrap();
+        assert_eq!(
+            details.iter().map(|d| d.at.as_str()).collect::<Vec<_>>(),
+            ["main:ExchangePlan.Nodes", "main:ExchangePlan.Other"]
+        );
+        assert_eq!(
+            details[0].items[0].auto_record,
+            unica_metadata::MetaExchangeAutoRecord::Deny
+        );
+        assert_eq!(
+            details[1].items[0].auto_record,
+            unica_metadata::MetaExchangeAutoRecord::Allow
+        );
+        let effects = unica_source_contract::proposal::reconcile_effects(
+            state.planned_changes(),
+            provisional,
+        );
+        assert_eq!(effects.events().len(), 1);
+        assert_eq!(effects.events()[0].artifact, "ExchangePlan.Other");
+        let descriptor_path = Path::new("ExchangePlans/Nodes.xml");
+        let bytes = state.read(descriptor_path).unwrap().unwrap();
+        state.remove(descriptor_path, &bytes).unwrap();
+        let removed = unica_metadata_designer::planner::final_exchange_content(
+            &mut state.proposal(),
+            fixture.binding.source_set_name(),
+            fixture.binding.source_kind(),
+            owners(),
+        )
+        .unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].at, "main:ExchangePlan.Other");
+        // Finalizer must observe replacement content, even if the logical owner
+        // is present again; no snapshot from the earlier set survives.
+        state.create(descriptor_path, bytes).unwrap();
+        let content_path = Path::new("ExchangePlans/Nodes/Ext/Content.xml");
+        let before = state.read(content_path).unwrap().unwrap();
+        state.replace(content_path, &before, br#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#.to_vec()).unwrap();
+        let replaced = unica_metadata_designer::planner::final_exchange_content(
+            &mut state.proposal(),
+            fixture.binding.source_set_name(),
+            fixture.binding.source_kind(),
+            owners(),
+        )
+        .unwrap();
+        assert!(replaced[0].items.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(fixture.binding.source_root().join(content_path)).unwrap(),
+            content
+        );
+    }
+
+    #[test]
+    fn exchange_content_requires_structural_configuration_registration() {
+        for (registration, accepted) in [
+            ("<!-- <Catalog>New</Catalog> -->", false),
+            ("<Catalog xmlns='foreign'>New</Catalog>", false),
+            ("<Wrapper><Catalog>New</Catalog></Wrapper>", false),
+            (
+                "<x:Catalog xmlns:x='http://v8.1c.ru/8.3/MDClasses'>N&#101;w</x:Catalog>",
+                true,
+            ),
+        ] {
+            let config = RU_CONFIGURATION_XML.replace(
+                "</ChildObjects>",
+                &format!("<ExchangePlan>Nodes</ExchangePlan>{registration}</ChildObjects>"),
+            );
+            let descriptor = |kind: &str, name: &str| {
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="12345678-1234-4234-8234-123456789012"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}></MetaDataObject>"#
+                )
+            };
+            let content = r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#;
+            let fixture = MetadataFixture::with_files(&[
+                ("Configuration.xml", &config),
+                ("Documents/Order.xml", ORDER_XML),
+                (
+                    "ExchangePlans/Nodes.xml",
+                    &descriptor("ExchangePlan", "Nodes"),
+                ),
+                ("Catalogs/New.xml", &descriptor("Catalog", "New")),
+                ("ExchangePlans/Nodes/Ext/Content.xml", content),
+            ]);
+            let result = plan_all(
+                &fixture,
+                &[(
+                    "content.set",
+                    json!({"at":"main:ExchangePlan.Nodes", "items":[{"at":"main:Catalog.New", "autoRecord":"Allow"}]}),
+                )],
+            );
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "{registration}: {:?}",
+                result.as_ref().err()
+            );
+            assert_eq!(
+                std::fs::read_to_string(
+                    fixture
+                        .binding
+                        .source_root()
+                        .join("ExchangePlans/Nodes/Ext/Content.xml")
+                )
+                .unwrap(),
+                content
+            );
+        }
+    }
+
+    #[test]
+    fn exchange_content_accepts_every_recordable_kind_and_refuses_others() {
+        let fixture = MetadataFixture::new();
+        for kind in [
+            "Catalog",
+            "Document",
+            "Constant",
+            "InformationRegister",
+            "AccumulationRegister",
+            "ChartOfCharacteristicTypes",
+            "BusinessProcess",
+            "Task",
+            "ChartOfAccounts",
+            "ChartOfCalculationTypes",
+            "AccountingRegister",
+            "CalculationRegister",
+        ] {
+            parse_metadata_plan_operation(
+                "content.set",
+                &json!({"at":"main:ExchangePlan.Nodes","items":[{"at":format!("main:{kind}.Item"),"autoRecord":"Allow"}]}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap_or_else(|error| panic!("{kind}: {error:?}"));
+        }
+        for kind in [
+            "CommonModule",
+            "Enum",
+            "Report",
+            "Role",
+            "ExchangePlan",
+            "DocumentJournal",
+        ] {
+            let error = parse_metadata_plan_operation(
+                "content.set",
+                &json!({"at":"main:ExchangePlan.Nodes","items":[{"at":format!("main:{kind}.Item"),"autoRecord":"Allow"}]}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{kind}");
+            assert_eq!(error.path(), Some("ops[0].args.items[0].at"), "{kind}");
+        }
+    }
+
+    #[test]
+    fn exchange_content_absent_file_is_an_empty_composition_created_in_platform_layout() {
+        let config = RU_CONFIGURATION_XML.replace(
+            "</ChildObjects>",
+            "<ExchangePlan>Nodes</ExchangePlan><Catalog>New</Catalog></ChildObjects>",
+        );
+        let descriptor = |kind: &str, name: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="12345678-1234-4234-8234-123456789012"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}></MetaDataObject>"#
+            )
+        };
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &config),
+            ("Documents/Order.xml", ORDER_XML),
+            (
+                "ExchangePlans/Nodes.xml",
+                &descriptor("ExchangePlan", "Nodes"),
+            ),
+            ("Catalogs/New.xml", &descriptor("Catalog", "New")),
+        ]);
+        let content_path = Path::new("ExchangePlans/Nodes/Ext/Content.xml");
+        let admission = fixture.admission();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = [fixture.parse(
+            "content.set",
+            json!({"at":"main:ExchangePlan.Nodes","items":[{"at":"main:Catalog.New","autoRecord":"Deny"}]}),
+            0,
+        )];
+        let (mut state, _) = plan_metadata_batch_owned_for_test(
+            admission.staged_state().unwrap(),
+            authority,
+            &operations,
+        )
+        .unwrap();
+        let created = String::from_utf8(state.read(content_path).unwrap().unwrap()).unwrap();
+        assert_eq!(
+            created,
+            "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<Item>\r\n\t\t<Metadata>Catalog.New</Metadata>\r\n\t\t<AutoRecord>Deny</AutoRecord>\r\n\t</Item>\r\n</ExchangePlanContent>"
+        );
+        assert!(!fixture.binding.source_root().join(content_path).exists());
+        let detail = unica_metadata_designer::planner::final_exchange_content(
+            &mut state.proposal(),
+            fixture.binding.source_set_name(),
+            fixture.binding.source_kind(),
+            operations
+                .iter()
+                .filter_map(|op| op.operation().exchange_content_owner().cloned()),
+        )
+        .unwrap();
+        assert_eq!(detail[0].items.len(), 1);
+        assert_eq!(detail[0].items[0].at, "main:Catalog.New");
+        // Without a staged file the final composition is empty, not unknown.
+        let mut empty = fixture.admission().staged_state().unwrap();
+        let detail = unica_metadata_designer::planner::final_exchange_content(
+            &mut empty.proposal(),
+            fixture.binding.source_set_name(),
+            fixture.binding.source_kind(),
+            operations
+                .iter()
+                .filter_map(|op| op.operation().exchange_content_owner().cloned()),
+        )
+        .unwrap();
+        assert_eq!(detail.len(), 1);
+        assert!(detail[0].items.is_empty());
+    }
+
+    #[test]
+    fn exchange_content_saved_creation_refuses_a_file_that_appeared_before_publication() {
+        let config = RU_CONFIGURATION_XML.replace(
+            "</ChildObjects>",
+            "<ExchangePlan>Nodes</ExchangePlan><Catalog>New</Catalog></ChildObjects>",
+        );
+        let descriptor = |kind: &str, name: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="12345678-1234-4234-8234-123456789012"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}></MetaDataObject>"#
+            )
+        };
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &config),
+            ("Documents/Order.xml", ORDER_XML),
+            (
+                "ExchangePlans/Nodes.xml",
+                &descriptor("ExchangePlan", "Nodes"),
+            ),
+            ("Catalogs/New.xml", &descriptor("Catalog", "New")),
+        ]);
+        let admission = fixture.admission();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = [fixture.parse(
+            "content.set",
+            json!({"at":"main:ExchangePlan.Nodes","items":[{"at":"main:Catalog.New","autoRecord":"Allow"}]}),
+            0,
+        )];
+        let (state, _) = plan_metadata_batch_owned_for_test(
+            admission.staged_state().unwrap(),
+            authority,
+            &operations,
+        )
+        .unwrap();
+        let prepared = admission
+            .prepare_with_effects(state, Default::default())
+            .unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                prepared,
+                unica_execution_contract::invocation::DomainResult::success("test preview"),
+            )
+            .unwrap();
+        let content = fixture
+            .binding
+            .source_root()
+            .join("ExchangePlans/Nodes/Ext/Content.xml");
+        let concurrent =
+            r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#;
+        std::fs::create_dir_all(content.parent().unwrap()).unwrap();
+        std::fs::write(&content, concurrent).unwrap();
+        fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |preview, result| {
+                    result.expect_err(
+                        "a plan that creates Content.xml must not overwrite a file that appeared",
+                    );
+                    preview
+                },
+            )
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&content).unwrap(), concurrent);
+    }
+
+    #[test]
+    fn exchange_content_plan_upserts_modes_without_writing_sources() {
+        let config = RU_CONFIGURATION_XML.replace("</ChildObjects>", "<ExchangePlan>Nodes</ExchangePlan><Catalog>Old</Catalog><Catalog>New</Catalog></ChildObjects>");
+        let descriptor = |kind: &str, name: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="12345678-1234-4234-8234-123456789012"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}></MetaDataObject>"#
+            )
+        };
+        let content = r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Item><Metadata>Catalog.Old</Metadata><AutoRecord>Deny</AutoRecord></Item></ExchangePlanContent>"#;
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &config),
+            ("Documents/Order.xml", ORDER_XML),
+            (
+                "ExchangePlans/Nodes.xml",
+                &descriptor("ExchangePlan", "Nodes"),
+            ),
+            ("Catalogs/Old.xml", &descriptor("Catalog", "Old")),
+            ("Catalogs/New.xml", &descriptor("Catalog", "New")),
+            ("ExchangePlans/Nodes/Ext/Content.xml", content),
+        ]);
+        let request = |mode: &str| json!({"at":"main:ExchangePlan.Nodes", "items":[{"at":"main:Catalog.New", "autoRecord":mode}]});
+        let staged = plan_all(
+            &fixture,
+            &[
+                ("content.set", request("Allow")),
+                ("content.set", request("Deny")),
+            ],
+        )
+        .unwrap();
+        let texts = staged_texts(&staged);
+        let post = &texts[Path::new("ExchangePlans/Nodes/Ext/Content.xml")];
+        let read = unica_metadata_designer::exchange_content::read_content(post).unwrap();
+        assert!(read.errors.is_empty());
+        assert_eq!(read.items.len(), 2);
+        assert!(read
+            .items
+            .iter()
+            .all(|i| i.auto_record == unica_metadata::MetaExchangeAutoRecord::Deny));
+        assert_eq!(
+            std::fs::read_to_string(
+                fixture
+                    .binding
+                    .source_root()
+                    .join("ExchangePlans/Nodes/Ext/Content.xml")
+            )
+            .unwrap(),
+            content
+        );
+        let noop = plan_all(&fixture, &[("content.set", json!({"at":"main:ExchangePlan.Nodes", "items":[{"at":"main:Catalog.Old","autoRecord":"Deny"}]}))]).unwrap();
+        assert!(noop.planned_changes().is_empty());
+        let missing = plan_all(&fixture, &[("content.set", json!({"at":"main:ExchangePlan.Nodes", "items":[{"at":"main:Catalog.New","autoRecord":"Allow"},{"at":"main:Catalog.Missing","autoRecord":"Allow"}]}))]).unwrap_err();
+        assert_eq!(missing.kind(), ApplyPlanErrorKind::NotFound);
+        assert_eq!(
+            std::fs::read_to_string(
+                fixture
+                    .binding
+                    .source_root()
+                    .join("ExchangePlans/Nodes/Ext/Content.xml")
+            )
+            .unwrap(),
+            content
+        );
+        for remove in [false, true] {
+            let admission = fixture.admission();
+            let state = admission.staged_state().unwrap();
+            let authority = admission
+                .metadata_planning_authority(&fixture.binding)
+                .unwrap();
+            let operations = [fixture.parse("content.set", request("Allow"), 0)];
+            let (mut state, _) =
+                plan_metadata_batch_owned_for_test(state, authority, &operations).unwrap();
+            let detail = unica_metadata_designer::planner::final_exchange_content(
+                &mut state.proposal(),
+                fixture.binding.source_set_name(),
+                fixture.binding.source_kind(),
+                operations
+                    .iter()
+                    .filter_map(|op| op.operation().exchange_content_owner().cloned()),
+            )
+            .unwrap();
+            assert_eq!(detail.len(), 1);
+            assert_eq!(detail[0].items[0].at, "main:Catalog.Old");
+            assert_eq!(detail[0].items[1].at, "main:Catalog.New");
+            assert_eq!(
+                detail[0].items[1].auto_record,
+                unica_metadata::MetaExchangeAutoRecord::Allow
+            );
+            let prepared = admission
+                .prepare_with_effects(state, Default::default())
+                .unwrap();
+            let token = fixture
+                .actor
+                .save_prepared_apply(
+                    prepared,
+                    unica_execution_contract::invocation::DomainResult::success("test preview"),
+                )
+                .unwrap();
+            let dependency = fixture.binding.source_root().join("Catalogs/New.xml");
+            if remove {
+                std::fs::remove_file(&dependency).unwrap();
+            } else {
+                std::fs::write(
+                    &dependency,
+                    descriptor("Catalog", "New")
+                        .replace("<ChildObjects/>", "<!--external--><ChildObjects/>"),
+                )
+                .unwrap();
+            }
+            fixture
+                .actor
+                .execute_saved_apply(
+                    &token,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                    |preview, result| {
+                        let error = result
+                            .expect_err("the saved content plan must retain the target descriptor");
+                        let expected = if remove {
+                            unica_workspace::actor::ApplyPublicationErrorKind::ContainmentIdentity
+                        } else {
+                            unica_workspace::actor::ApplyPublicationErrorKind::ConcurrentRevision
+                        };
+                        assert_eq!(error.kind(), expected, "remove={remove}: {error}");
+                        assert!(error.to_string().contains("Catalogs/New.xml"), "{error}");
+                        preview
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(
+                    fixture
+                        .binding
+                        .source_root()
+                        .join("ExchangePlans/Nodes/Ext/Content.xml")
+                )
+                .unwrap(),
+                content
+            );
+            std::fs::write(&dependency, descriptor("Catalog", "New")).unwrap();
+        }
+    }
+
     fn plan_all(
         fixture: &MetadataFixture,
         operations: &[(&str, serde_json::Value)],

@@ -1,0 +1,181 @@
+{
+  "id": "S-1934-defined-type-event-source",
+  "issue": 1934,
+  "area": "Метаданные",
+  "task": "Добавить подписке источник через определяемый тип: несовместимый с событием член вложенного типа и цикл типов отклоняются при плане без записи, а вложенный подходящий тип публикуется и читается той же целью",
+  "workspace": "tests/fixtures/acceptance/workspace-event-defined-type",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "definedType",
+                    "metadataPath": "DefinedType.Unfit"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: properties.event: event `BeforeWrite` has incompatible signatures: `catalogObject` (Cancel) versus `documentObject` (Cancel, WriteMode, PostingMode)",
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "definedType",
+                    "metadataPath": "DefinedType.LoopA"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: relations.source[2]: DefinedType event source cycle contains `DefinedType.LoopA`",
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "definedType",
+                    "metadataPath": "DefinedType.Outer"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "720799f782f0e33954397f106b082be25fd67bb15710fb8285bedc1c233e5948"
+        },
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}EventSubscription/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}TypeSet",
+          "eq": [
+            "cfg:DefinedType.Outer"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "contains": {
+            "relation": "source",
+            "at": "main:DefinedType.Outer",
+            "kind": "DefinedType",
+            "target": {
+              "kind": "definedType",
+              "metadataPath": "DefinedType.Outer"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
