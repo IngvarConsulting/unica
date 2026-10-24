@@ -4648,6 +4648,49 @@ fn form_validation_input_does_not_read_a_module_without_checkable_bindings() {
 }
 
 #[test]
+fn form_validation_input_refuses_linked_form_and_needed_module() {
+    use unica_workspace::test_support::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+    for linked in ["Form.xml", "Form/Module.bsl"] {
+        let fixture = RealExternalReaderFixture::new();
+        let address =
+            QualifiedAddress::parse("artifact_processor:ExternalDataProcessor.Import.Form.Main")
+                .unwrap();
+        let ext = fixture.processor.join("Import/Forms/Main/Ext");
+        write(
+            &ext.join("Form.xml"),
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Events><Event name="OnOpen">ПриОткрытии</Event></Events></Form>"#,
+        );
+        write(
+            &ext.join("Form/Module.bsl"),
+            "&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n",
+        );
+        let path = ext.join(linked);
+        let foreign = fixture.context.cwd.join("foreign");
+        fs::rename(&path, &foreign).unwrap();
+        let before = fs::read(&foreign).unwrap();
+        let outcome = create_file_link_fixture_for_test(&foreign, &path)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
+            return;
+        }
+        assert!(
+            fixture
+                .read_authority("artifact_processor", SourceSetKind::ExternalProcessor)
+                .form_validation_input(&address)
+                .is_err(),
+            "{linked}"
+        );
+        assert_eq!(fs::read(&foreign).unwrap(), before);
+    }
+}
+
+#[test]
 fn canonical_form_validation_reports_captured_malformed_xml() {
     let fixture = RealExternalReaderFixture::new();
     let address =
