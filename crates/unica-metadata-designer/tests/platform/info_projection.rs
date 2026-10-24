@@ -1920,8 +1920,9 @@ fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_own
     const NS: &str = r#"xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core""#;
     let localized = "<v8:item><v8:lang>ru</v8:lang><v8:content>ДЛФ=D</v8:content></v8:item>";
     let attributes = |property: &str, value: &str| {
+        // Голый текст — у второго реквизита: путь ошибки называет его индекс.
         format!(
-            r#"<StandardAttributes><xr:StandardAttribute name="Ref"><xr:{property}>{value}</xr:{property}></xr:StandardAttribute></StandardAttributes>"#
+            r#"<StandardAttributes><xr:StandardAttribute name="Ref"><xr:{property}>{localized}</xr:{property}></xr:StandardAttribute><xr:StandardAttribute name="Code"><xr:{property}>{value}</xr:{property}></xr:StandardAttribute></StandardAttributes>"#
         )
     };
     let target = |path| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap();
@@ -1948,6 +1949,12 @@ fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_own
                 accepted,
                 "catalog {property} {value}: {diagnostics:?}"
             );
+            if !accepted {
+                assert_eq!(
+                    serde_json::to_value(&diagnostics).unwrap()[0]["field"],
+                    format!("standardAttributes[1].properties.{property}")
+                );
+            }
 
             // Стандартная табличная часть.
             let xml = format!(
@@ -1972,6 +1979,14 @@ fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_own
                 accepted,
                 "standard tabular section {property} {value}: {diagnostics:?}"
             );
+            if !accepted {
+                assert_eq!(
+                    serde_json::to_value(&diagnostics).unwrap()[0]["field"],
+                    format!(
+                        "standardTabularSections[0].standardAttributes[1].properties.{property}"
+                    )
+                );
+            }
 
             // Табличная часть.
             let xml = format!(
@@ -1988,6 +2003,12 @@ fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_own
                 accepted,
                 "tabular section {property} {value}: {observed:?}"
             );
+            if let Err(error) = observed {
+                assert_eq!(
+                    error.field,
+                    format!("standardAttributes[1].properties.{property}")
+                );
+            }
         }
     }
 }
