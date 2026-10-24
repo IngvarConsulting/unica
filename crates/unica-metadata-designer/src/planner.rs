@@ -1998,7 +1998,11 @@ fn stage_template_remove(
     .map_err(|message| {
         ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
     })?;
-    if !inherited && files.is_empty() {
+    // Макет двоичных данных без содержимого платформа выгружает одним
+    // описанием, без каталога `Ext` (#2027): удалять у него нечего, кроме
+    // описания и регистрации.
+    let empty_binary = payload_absent && identity.template_type.as_deref() == Some("BinaryData");
+    if !inherited && !empty_binary && files.is_empty() {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidSource,
             "template content is missing",
@@ -2018,7 +2022,7 @@ fn stage_template_remove(
                                 .at_path(at_path.clone())
                         })?
                 }
-                None if inherited => {}
+                None if inherited || empty_binary => {}
                 None => {
                     return Err(ApplyPlanError::new(
                         ApplyPlanErrorKind::InvalidSource,
