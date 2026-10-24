@@ -2042,7 +2042,7 @@ fn stage_template_remove(
     staged
         .remove(&descriptor_relative, &descriptor_preimage)
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-    touched.push(descriptor_relative);
+    touched.push(descriptor_relative.clone());
     for relative in files {
         if let Some(preimage) = staged
             .read(&relative)
@@ -2054,6 +2054,12 @@ fn stage_template_remove(
             touched.push(relative);
         }
     }
+    // The emptied payload and, when nothing else remains there, its
+    // `Templates` collection go in the same publication: the platform does
+    // not export empty template directories (#1997).
+    staged
+        .remove_owned_directories(&payload_relative, &descriptor_relative, &templates_dir)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
     staged
         .replace(
             &owner_relative,
