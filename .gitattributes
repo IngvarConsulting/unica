@@ -89,6 +89,8 @@ tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -
 
 # The empty configuration root is the same native seed without its Report.
 /tests/fixtures/platform_8_3_27/empty_configuration/src/** -text whitespace=cr-at-eol
+# Platform re-exports of configuration and extension roots edited by props.set.
+/tests/fixtures/platform_8_3_27/configuration_root_props/**/*.xml -text whitespace=cr-at-eol
 # Metadata objects written once by the retained 8.3.27 writer for meta-info tests.
 /tests/fixtures/platform_8_3_27/meta_info_surface/** -text whitespace=cr-at-eol
 

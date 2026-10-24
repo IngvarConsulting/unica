@@ -622,6 +622,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(step_by_id(checks, "clippy")["name"], "Clippy")
         self.assertEqual(step_by_id(checks, "clippy")["run"], "scripts/ci/clippy.sh all")
         self.assertEqual(step_by_id(checks, "python")["name"], "Python")
+        # Шаг без записанного итога гейт по сроку судит итогом джобы
+        # (await_os_jobs, #2026): провал шага обязан ронять джобу.
+        for step_id in ("clippy", "python"):
+            self.assertNotIn("continue-on-error", step_by_id(checks, step_id))
         # Python идёт раньше Clippy: MCP-тесты под нагрузкой сборки падают.
         self.assertLess(steps(checks).index(step_by_id(checks, "python")), steps(checks).index(step_by_id(checks, "clippy")))
         self.assertIs(steps_using(checks, "Swatinem/rust-cache")[0]["with"]["save-if"], False)

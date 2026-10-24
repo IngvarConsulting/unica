@@ -2,7 +2,7 @@
   "id": "S-1721-properties-contextual",
   "issue": 1721,
   "area": "Свойства метаданных",
-  "task": "Прочитать подробный contextual Can общего модуля, роли и подсистемы, построить preview независимых aliases, false и очистки; отвергнуть неверные типы, пустой patch, alias collision и чужие поля до поиска ресурса. Существующий соседний владелец вне outer at отклоняется. Configuration, метод и вложенная подсистема не получают props.set. Все исходные файлы остаются побайтно неизменны.",
+  "task": "Прочитать подробный contextual Can общего модуля, роли и подсистемы, построить preview независимых aliases, false и очистки; отвергнуть неверные типы, пустой patch, alias collision и чужие поля до поиска ресурса. Существующий соседний владелец вне outer at отклоняется. Корень конфигурации не принимает имя, метод и вложенная подсистема не получают props.set. Все исходные файлы остаются побайтно неизменны.",
   "wire": [
     {
       "tool": "unica.view",
@@ -4287,7 +4287,7 @@
             "op": "props.set",
             "args": {
               "values": {
-                "Comment": "no expansion"
+                "Name": "no expansion"
               }
             }
           }
@@ -4296,7 +4296,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: apply operation `props.set` does not apply to Configuration `main:Configuration`; it addresses `Kind.Name`, `Role.Name` or `Subsystem.Name` or `Kind.Name.Form.F",
+      "refusal": "bad_value: unknown field `Name`",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",
@@ -4304,7 +4304,7 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].at"
+          "eq": "ops[0].args.values.Name"
         },
         {
           "pointer": "/data",

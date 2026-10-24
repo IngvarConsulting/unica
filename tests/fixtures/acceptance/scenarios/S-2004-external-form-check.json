@@ -1,0 +1,106 @@
+{
+  "id": "S-2004-external-form-check",
+  "name": "Проверка прочитанной формы внешней обработки и отчёта",
+  "issue": 2004,
+  "area": "Формы",
+  "task": "Прочитать форму внешней обработки и внешнего отчёта, затем проверить каждый тот же адрес существующим валидатором формы без требования Configuration.xml.",
+  "workspace": "tests/fixtures/acceptance/workspace-external-form-check",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "epf:ExternalDataProcessor.Import.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "epf:ExternalDataProcessor.Import.Form.Main"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "epf:ExternalDataProcessor.Import.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "form"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.Import.Form.Main"
+        },
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "form"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "erf:ExternalReport.Sales.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "erf:ExternalReport.Sales.Form.Main"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "erf:ExternalReport.Sales.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "form"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.Sales.Form.Main"
+        },
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "form"
+          ]
+        }
+      ]
+    }
+  ]
+}
