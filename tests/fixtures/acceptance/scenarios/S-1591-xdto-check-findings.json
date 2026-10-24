@@ -1566,7 +1566,7 @@
         {
           "path": "README.md",
           "kind": "sha256",
-          "eq": "98d335f087dceca94bd32855ca8c3f6e671d66c1f7263cc45d0fac8c623b7a2b"
+          "eq": "17ce52e06718e556f3e8db32465a927302a813f0489e0d9779dfdb99a57bf951"
         },
         {
           "path": "alt/Configuration.xml",
@@ -1621,7 +1621,7 @@
         {
           "path": "src/XDTOPackages/Unsupported/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "f4c2fc7d185f06ee07db6ef53930327d743a65c5db8ccd6eb10d567117201e7c"
+          "eq": "56649102ad8bd105f40dfe1776cb057b997514497dac28a2fca4783b808db3bb"
         },
         {
           "path": "src/XDTOPackages/Unsupported.xml",

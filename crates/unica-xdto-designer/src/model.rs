@@ -111,6 +111,8 @@ impl Property {
 
 #[derive(Clone, Debug)]
 pub struct AnonymousObject {
+    pub base: Option<QNameRef>,
+    pub facets: super::facets::ValueFacets,
     pub key: String,
     pub discriminator: Option<LocatedValue>,
     pub properties: Vec<Property>,
@@ -119,6 +121,7 @@ pub struct AnonymousObject {
 
 #[derive(Clone, Debug)]
 pub struct NamedType {
+    pub facets: super::facets::ValueFacets,
     pub kind: TypeKind,
     pub key: String,
     pub name: Option<LocatedValue>,
@@ -287,7 +290,22 @@ fn parse_named_type(
     );
     collect_unsupported_attributes(
         node,
-        &[AttrName::plain("name"), AttrName::plain("base")],
+        &if kind == TypeKind::Value {
+            [
+                "name",
+                "base",
+                "maxLength",
+                "totalDigits",
+                "fractionDigits",
+                "minInclusive",
+                "maxInclusive",
+            ]
+            .into_iter()
+            .map(AttrName::plain)
+            .collect::<Vec<_>>()
+        } else {
+            vec![AttrName::plain("name"), AttrName::plain("base")]
+        },
         &key,
         unsupported,
     );
@@ -309,7 +327,16 @@ fn parse_named_type(
             });
         }
     }
+    let facets = super::facets::from_node(node).unwrap_or_else(|message| {
+        unsupported.push(UnsupportedSyntax {
+            key: format!("{key}/facets"),
+            description: message.to_owned(),
+            span: node.range().into(),
+        });
+        super::facets::ValueFacets::default()
+    });
     NamedType {
+        facets,
         kind,
         key,
         name,
@@ -375,17 +402,18 @@ fn parse_type_def(
     unsupported: &mut Vec<UnsupportedSyntax>,
 ) -> AnonymousObject {
     let key = format!("{property_key}/typeDef");
-    collect_unsupported_attributes(
-        node,
-        &[AttrName::namespaced(XSI_NS, "type")],
-        &key,
-        unsupported,
-    );
+    let is_value = node.attribute((XSI_NS, "type")) == Some("ValueType");
+    let mut allowed = vec![AttrName::namespaced(XSI_NS, "type")];
+    if is_value {
+        allowed.push(AttrName::plain("base"));
+        allowed.extend(super::facets::NAMES.into_iter().map(AttrName::plain));
+    }
+    collect_unsupported_attributes(node, &allowed, &key, unsupported);
     let discriminator = attribute(node, Some(XSI_NS), "type");
     let mut properties = Vec::new();
     collect_unsupported_character_data(node, &key, unsupported);
     for child in node.children().filter(Node::is_element) {
-        if child.has_tag_name((XDTO_NS, "property")) {
+        if !is_value && child.has_tag_name((XDTO_NS, "property")) {
             properties.push(parse_property(child, &key, unsupported));
         } else {
             unsupported.push(UnsupportedSyntax {
@@ -398,7 +426,17 @@ fn parse_type_def(
             });
         }
     }
+    let facets = super::facets::from_node(node).unwrap_or_else(|message| {
+        unsupported.push(UnsupportedSyntax {
+            key: format!("{key}/facets"),
+            description: message.to_owned(),
+            span: node.range().into(),
+        });
+        super::facets::ValueFacets::default()
+    });
     AnonymousObject {
+        base: qname_attribute(node, "base"),
+        facets,
         key,
         discriminator,
         properties,

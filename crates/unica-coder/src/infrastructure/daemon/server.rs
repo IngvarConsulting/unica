@@ -2746,6 +2746,268 @@ pub(crate) mod actor_capacity_tests {
         .unwrap()
     }
 
+    fn form_check_workspace(kind: &str) -> (tempfile::TempDir, String, std::path::PathBuf) {
+        let extension = kind == "Extension";
+        let kind = if extension { "Report" } else { kind };
+        let (workspace, _, template) = dcs_check_workspace(kind);
+        if extension {
+            let config = workspace.path().join("v8project.yaml");
+            let text = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(config, text.replace("CONFIGURATION", "EXTENSION")).unwrap();
+            let descriptor = workspace.path().join("src/Configuration.xml");
+            let text = std::fs::read_to_string(&descriptor).unwrap();
+            std::fs::write(descriptor, text.replace("<Name>Control</Name>", "<Name>Control</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>")).unwrap();
+        }
+        let owner = template
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let descriptor = owner.with_extension("xml");
+        let text = std::fs::read_to_string(&descriptor).unwrap();
+        std::fs::write(
+            &descriptor,
+            text.replace("</ChildObjects>", "<Form>Main</Form></ChildObjects>"),
+        )
+        .unwrap();
+        let body = owner.join("Forms/Main/Ext/Form.xml");
+        std::fs::create_dir_all(body.parent().unwrap()).unwrap();
+        std::fs::write(owner.join("Forms/Main.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000020"><Properties><Name>Main</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#).unwrap();
+        std::fs::write(&body, r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="FormCommandBar" id="-1"/><ChildItems/><Attributes/><Commands/></Form>"#).unwrap();
+        (workspace, format!("main:{kind}.Sales.Form.Main"), body)
+    }
+
+    #[test]
+    fn canonical_form_check_accepts_external_report_processor_and_configuration() {
+        for kind in [
+            "ExternalDataProcessor",
+            "ExternalReport",
+            "Report",
+            "Extension",
+        ] {
+            let (workspace, at, _) = form_check_workspace(kind);
+            let before =
+                unica_workspace::test_support::tree_snapshot(&workspace.path().join("src"));
+            let viewed = call_dcs_check(workspace.path(), ToolIdentity::View, &at);
+            assert!(viewed.ok, "{kind}: {viewed:?}");
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(checked.ok, "{kind}: {checked:?}");
+            let data = checked.data.as_ref().unwrap();
+            assert_eq!(data["status"], "passed", "{kind}: {checked:?}");
+            assert_eq!(data["validators"], serde_json::json!(["form"]));
+            assert_eq!(data["diagnosticCount"], 0, "{checked:?}");
+            assert_eq!(
+                before,
+                unica_workspace::test_support::tree_snapshot(&workspace.path().join("src"))
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_reports_semantics_and_handler_signatures() {
+        for kind in [
+            "ExternalDataProcessor",
+            "ExternalReport",
+            "Report",
+            "Extension",
+        ] {
+            let (workspace, at, body) = form_check_workspace(kind);
+            let original = std::fs::read_to_string(&body).unwrap();
+            std::fs::write(&body, original.replace("id=\"-1\"", "id=\"7\"")).unwrap();
+            let invalid = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert_eq!(
+                invalid.data.as_ref().unwrap()["status"],
+                "failed",
+                "{invalid:?}"
+            );
+            assert!(
+                invalid.data.as_ref().unwrap()["diagnostics"]
+                    .to_string()
+                    .contains("AutoCommandBar"),
+                "{invalid:?}"
+            );
+            std::fs::write(
+                &body,
+                original.replace(
+                    "<ChildItems/>",
+                    "<Events><Event name=\"OnOpen\">ПриОткрытии</Event></Events><ChildItems/>",
+                ),
+            )
+            .unwrap();
+            let module = body.parent().unwrap().join("Form/Module.bsl");
+            std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+            std::fs::write(
+                module,
+                "&НаКлиенте\nПроцедура ПриОткрытии(Отказ, Лишний, ЕщёОдин)\nКонецПроцедуры\n",
+            )
+            .unwrap();
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(checked.ok, "{checked:?}");
+            let diagnostics = &checked.data.as_ref().unwrap()["diagnostics"];
+            assert!(
+                diagnostics
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| d["severity"] == "warning"
+                        && d["message"].as_str().unwrap().contains("ПриОткрытии")),
+                "{checked:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_refuses_missing_unregistered_and_mismatched_sources() {
+        for case in ["missing", "unregistered", "mismatched"] {
+            let (workspace, at, body) = form_check_workspace("ExternalDataProcessor");
+            match case {
+                "missing" => std::fs::remove_file(&body).unwrap(),
+                "unregistered" => {
+                    let owner = workspace.path().join("src/Sales.xml");
+                    let text = std::fs::read_to_string(&owner).unwrap();
+                    std::fs::write(owner, text.replace("<Form>Main</Form>", "")).unwrap();
+                }
+                "mismatched" => {
+                    let descriptor = workspace.path().join("src/Sales/Forms/Main.xml");
+                    let text = std::fs::read_to_string(&descriptor).unwrap();
+                    std::fs::write(
+                        descriptor,
+                        text.replace("<Name>Main</Name>", "<Name>Other</Name>"),
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(!checked.ok, "{case}: {checked:?}");
+            assert!(!checked.diagnostics.is_empty(), "{case}: {checked:?}");
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_keeps_owner_format_warnings() {
+        for kind in ["ExternalDataProcessor", "Report", "Extension"] {
+            let (workspace, at, body) = form_check_workspace(kind);
+            let wrapper = body
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .with_extension("xml");
+            let owner = if kind == "ExternalDataProcessor" {
+                workspace.path().join("src/Sales.xml")
+            } else {
+                workspace.path().join("src/Configuration.xml")
+            };
+            for path in [wrapper, owner] {
+                let original = std::fs::read_to_string(&path).unwrap();
+                for (version, code) in [
+                    ("2.19", "formatMigrationAvailable"),
+                    ("2.21", "platformVersionUnsupported"),
+                ] {
+                    std::fs::write(&path, original.replace("2.20", version)).unwrap();
+                    let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+                    assert_eq!(
+                        checked.data.as_ref().unwrap()["status"],
+                        "passed",
+                        "{checked:?}"
+                    );
+                    assert!(
+                        checked.data.as_ref().unwrap()["diagnostics"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|d| d["code"] == code),
+                        "{checked:?}"
+                    );
+                }
+                std::fs::write(path, original).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_supports_common_forms() {
+        for kind in ["Report", "Extension"] {
+            let (workspace, _, body) = form_check_workspace(kind);
+            let source = workspace.path().join("src");
+            let config = source.join("Configuration.xml");
+            let text = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(
+                config,
+                text.replace(
+                    "</ChildObjects>",
+                    "<CommonForm>Shared</CommonForm></ChildObjects>",
+                ),
+            )
+            .unwrap();
+            let common = source.join("CommonForms/Shared/Ext/Form.xml");
+            std::fs::create_dir_all(common.parent().unwrap()).unwrap();
+            std::fs::copy(body, common).unwrap();
+            std::fs::write(source.join("CommonForms/Shared.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonForm uuid="10000000-0000-4000-8000-000000000030"><Properties><Name>Shared</Name><FormType>Managed</FormType></Properties></CommonForm></MetaDataObject>"#).unwrap();
+            let at = "main:CommonForm.Shared";
+            assert!(call_dcs_check(workspace.path(), ToolIdentity::View, at).ok);
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, at);
+            assert_eq!(
+                checked.data.as_ref().unwrap()["status"],
+                "passed",
+                "{checked:?}"
+            );
+            assert_eq!(
+                checked.data.as_ref().unwrap()["diagnosticCount"],
+                0,
+                "{checked:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_refuses_linked_payload_and_module() {
+        use unica_workspace::test_support::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+        for module in [false, true] {
+            let (workspace, at, body) = form_check_workspace("ExternalDataProcessor");
+            let path = if module {
+                let text = std::fs::read_to_string(&body).unwrap();
+                std::fs::write(
+                    &body,
+                    text.replace(
+                        "</Form>",
+                        "<Events><Event name=\"OnOpen\">ПриОткрытии</Event></Events></Form>",
+                    ),
+                )
+                .unwrap();
+                let path = body.parent().unwrap().join("Form/Module.bsl");
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, "Процедура Тест()\nКонецПроцедуры").unwrap();
+                path
+            } else {
+                body
+            };
+            let outside = tempfile::tempdir().unwrap();
+            let external = outside.path().join("source");
+            std::fs::rename(&path, &external).unwrap();
+            if create_file_link_fixture_for_test(&external, &path).unwrap()
+                != FileLinkFixtureOutcome::Created
+            {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "Создание ссылки требует полномочий ОС",
+                );
+                return;
+            }
+            let before = std::fs::read(&external).unwrap();
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(!checked.ok, "{checked:?}");
+            assert_eq!(before, std::fs::read(external).unwrap());
+        }
+    }
+
     #[test]
     fn canonical_dcs_check_accepts_external_report_processor_and_configuration() {
         for kind in ["ExternalReport", "ExternalDataProcessor", "Report"] {

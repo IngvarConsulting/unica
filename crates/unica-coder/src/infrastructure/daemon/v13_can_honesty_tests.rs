@@ -864,6 +864,36 @@ fn honest_can_on_external_sources() {
     check_fixture_coverage("workspace-external");
 }
 
+#[test]
+fn form_collection_check_reports_readability_without_a_content_validator() {
+    for (workspace, addresses) in [
+        (
+            "workspace-resolve",
+            vec!["main:Catalog.Items.Form", "main:CommonForm"],
+        ),
+        (
+            "workspace-external",
+            vec![
+                "epf:ExternalDataProcessor.Import.Form",
+                "epf:ExternalDataProcessor.Other.Form",
+                "erf:ExternalReport.Sales.Form",
+            ],
+        ),
+    ] {
+        let fixture = fixture(workspace);
+        for at in addresses {
+            let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": at}));
+            assert!(viewed.ok, "{at}: {}", viewed.summary);
+            let checked = invoke(&fixture.workspace, ToolIdentity::Check, json!({"at": at}));
+            assert!(checked.ok, "{at}: {}", checked.summary);
+            let data = checked.data.expect("результат проверки коллекции");
+            assert_eq!(data["status"], "readable", "{at}: {data}");
+            assert_eq!(data["validators"], json!([]), "{at}: {data}");
+            assert_eq!(data["diagnostics"], json!([]), "{at}: {data}");
+        }
+    }
+}
+
 /// Вместе фикстуры доходят до каждого маршрута, кроме названных пробелов, и
 /// до видов, совпадающих по имени в разных деревьях.
 #[test]

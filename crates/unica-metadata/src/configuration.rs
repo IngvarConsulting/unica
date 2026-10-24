@@ -248,7 +248,14 @@ pub fn cf_validate_enum_allowed(property: &str) -> &'static [&'static str] {
             "TaxiEnableVersion8_2",
         ],
         "DatabaseTablespacesUseMode" => &["DontUse", "Use"],
-        "MainClientApplicationWindowMode" => &["Normal", "Fullscreen", "Kiosk"],
+        // The 8.3.27 XDTO type rejects `Fullscreen`; these are the values it reads.
+        "MainClientApplicationWindowMode" => &[
+            "Normal",
+            "Workplace",
+            "EmbeddedWorkplace",
+            "FullscreenWorkplace",
+            "Kiosk",
+        ],
         _ => &[],
     }
 }
