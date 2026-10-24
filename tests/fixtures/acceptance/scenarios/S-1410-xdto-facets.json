@@ -426,7 +426,7 @@
           "eq": "$capture.after"
         }
       ],
-      "refusal": "invalid_source: XDTO writer rejected the typed operation"
+      "refusal": "bad_value: facets are incompatible with this base; supported profiles are string and decimal"
     },
     {
       "tool": "unica.apply",
@@ -459,7 +459,7 @@
           "eq": "$capture.after"
         }
       ],
-      "refusal": "invalid_source: XDTO writer rejected the typed operation"
+      "refusal": "bad_value: anonymous ValueType supports only XML Schema string or decimal bases"
     }
   ],
   "issue": 1410

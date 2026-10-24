@@ -94,6 +94,10 @@ pub enum WriterErrorField {
     Base,
     Before,
     After,
+    /// Facets that the named value type's base cannot carry.
+    Facets,
+    /// An anonymous ValueType whose base or facets are not supported.
+    ValueType,
 }
 
 #[derive(Debug)]
@@ -191,7 +195,13 @@ pub fn plan_typed(
                     desired_base.semantic.namespace.as_deref(),
                     &desired_base.semantic.local,
                 )
-                .map_err(|message| writer_invalid_source(message.to_owned()))?;
+                .map_err(|message| {
+                    WriterError::new(
+                        WriterErrorCause::BadValue,
+                        WriterErrorField::Facets,
+                        message,
+                    )
+                })?;
             let existing = named_types(root, name);
             if !existing.is_empty() {
                 let exact = existing.len() == 1
@@ -856,7 +866,13 @@ fn validate_property_tree_bases(
                     desired.semantic.namespace.as_deref(),
                     &desired.semantic.local,
                 )
-                .map_err(|message| writer_invalid_source(message.to_string()))
+                .map_err(|message| {
+                    WriterError::new(
+                        WriterErrorCause::BadValue,
+                        WriterErrorField::ValueType,
+                        message,
+                    )
+                })
         }
     }
 }
