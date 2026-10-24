@@ -2,6 +2,7 @@
 mod platform;
 
 pub mod paths;
+pub mod probe_timing;
 pub mod read;
 pub mod state_fs;
 

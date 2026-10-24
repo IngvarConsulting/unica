@@ -1322,6 +1322,8 @@ fn run_direct_load(
 
         let window_started = clock.now_monotonic_millis();
         let wall_started = Instant::now();
+        let (mut probe_submit, mut probe_generation, mut probe_ack) =
+            (Duration::ZERO, Duration::ZERO, Duration::ZERO);
         let mut lifecycles = Vec::with_capacity(calls as usize);
         let mut expected_callback_ids = Vec::with_capacity(calls as usize);
         let mut samples = Vec::new();
@@ -1344,6 +1346,7 @@ fn run_direct_load(
                 .map_err(|error| format!("construct direct load invocation: {error}"))?;
                 batch_work.push((key, invocation, accepted));
             }
+            let probe_t = Instant::now();
             let receipts = runtime
                 .submit_direct_batch_for_load(
                     batch_work.clone(),
@@ -1352,6 +1355,7 @@ fn run_direct_load(
                 .map_err(|error| {
                     format!("direct load batch failed after {completed} completed calls: {error}")
                 })?;
+            probe_submit += probe_t.elapsed();
             let batch_completed = clock.now_monotonic_millis();
             let submitted: Vec<_> = batch_work
                 .into_iter()
@@ -1366,9 +1370,12 @@ fn run_direct_load(
                     },
                 )
                 .collect();
+            let probe_t = Instant::now();
             let generation = receipt_actor_for_fixture(&runtime)
                 .generation(Instant::now() + SCENARIO_BULK_OPERATION_TIMEOUT)
                 .map_err(|error| format!("sample direct load receipt generation: {error}"))?;
+            probe_generation += probe_t.elapsed();
+            let probe_t = Instant::now();
             let live_receipts = u64::try_from(retained_keys.len() + submitted.len())
                 .map_err(|_| "direct load live receipt count does not fit u64".to_owned())?;
             samples.push(json!({
@@ -1393,6 +1400,30 @@ fn run_direct_load(
                     Instant::now() + SCENARIO_BULK_OPERATION_TIMEOUT,
                 )
                 .map_err(|error| format!("acknowledge direct load batch: {error}"))?;
+            probe_ack += probe_t.elapsed();
+            if std::env::var("PROBE_MAX_CALLS")
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok())
+                .is_some_and(|max| completed >= max)
+            {
+                eprintln!(
+                    "PROBE stop completed={completed} wall_ms={} submit_ms={} generation_ms={} ack_ms={}\n{}",
+                    wall_started.elapsed().as_millis(),
+                    probe_submit.as_millis(),
+                    probe_generation.as_millis(),
+                    probe_ack.as_millis(),
+                    unica_workspace::probe_timing::report()
+                );
+                return Err("probe stop".to_owned());
+            }
+            if completed % 3200 == 0 {
+                eprintln!(
+                    "PROBE progress completed={completed} wall_ms={} submit_ms={} ack_ms={}",
+                    wall_started.elapsed().as_millis(),
+                    probe_submit.as_millis(),
+                    probe_ack.as_millis()
+                );
+            }
             for (submitted, acknowledged) in submitted.into_iter().zip(acknowledgements) {
                 expected_callback_ids.push(submitted.key.invocation_id().to_string());
                 let acknowledgement = V5AcknowledgedReceipt::from_receipt(&acknowledged);
@@ -1432,6 +1463,14 @@ fn run_direct_load(
             ));
         }
         let window_ended = clock.now_monotonic_millis();
+        eprintln!(
+            "PROBE load wall_ms={} submit_ms={} generation_ms={} ack_ms={}\n{}",
+            wall_started.elapsed().as_millis(),
+            probe_submit.as_millis(),
+            probe_generation.as_millis(),
+            probe_ack.as_millis(),
+            unica_workspace::probe_timing::report()
+        );
         let telemetry_snapshot = telemetry.snapshot();
         let load = json!({
             "path": "actor_batch",

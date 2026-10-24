@@ -1,0 +1,60 @@
+name: Probe 1879 receipt horizon timing
+
+# Throwaway probe for #1879 on a scratch branch; never merged.
+on:
+  push:
+    branches: [probe/1879-windows-timing]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci-rust-ordinary
+          save-if: false
+      - name: Build
+        shell: bash
+        run: cargo build --locked -p unica-coder --features receipt-ledger-test-support --test daemon_receipt_ledger
+      - name: Environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled | Format-List
+          Get-CimInstance Win32_Processor | Select-Object NumberOfLogicalProcessors | Format-List
+          echo "TEMP=$env:TEMP"
+      - name: Run A (as is, 6400 calls)
+        shell: bash
+        env:
+          PROBE_MAX_CALLS: "6400"
+        run: |
+          bin=$(ls target/debug/deps/daemon_receipt_ledger-* | grep -v '\.d$' | grep -v '\.pdb$' | head -1)
+          time "$bin" --exact deterministic_horizon_load_does_not_saturate --nocapture 2>&1 | grep -E "PROBE|panicked|test result" || true
+      - name: Defender exclusion
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath $env:TEMP, $env:GITHUB_WORKSPACE
+          Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
+      - name: Run B (Defender exclusion on Windows, 6400 calls)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          PROBE_MAX_CALLS: "6400"
+        run: |
+          bin=$(ls target/debug/deps/daemon_receipt_ledger-* | grep -v '\.d$' | grep -v '\.pdb$' | head -1)
+          time "$bin" --exact deterministic_horizon_load_does_not_saturate --nocapture 2>&1 | grep -E "PROBE|panicked|test result" || true
