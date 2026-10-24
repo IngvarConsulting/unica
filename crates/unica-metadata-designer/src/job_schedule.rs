@@ -34,7 +34,9 @@ fn children<'a, 'input>(node: Node<'a, 'input>) -> Result<Vec<Node<'a, 'input>>,
 
 /// Facts of a present schedule: `state: present`, the twelve `Schedule`
 /// attributes under their source names, and `WeekDays`/`Months` as
-/// space-separated integers in source order.
+/// space-separated integers in source order. Detailed daily schedules
+/// (`DetailedDailySchedules`, the platform's ДетальныеРасписанияДня) carry
+/// the same facts each and are read in source order.
 pub fn parse_job_schedule(text: &str) -> Result<Value, String> {
     let document = Document::parse(text).map_err(|error| error.to_string())?;
     let root = document.root_element();
@@ -50,43 +52,74 @@ pub fn parse_job_schedule(text: &str) -> Result<Value, String> {
     let [schedule] = nodes.as_slice() else {
         return Err("JobSchedule must contain one supported Schedule".to_string());
     };
-    if !schedule.has_tag_name((EXTERNAL, "Schedule"))
-        || schedule
-            .attributes()
-            .any(|attr| attr.namespace().is_some() || !ATTRIBUTES.contains(&attr.name()))
-    {
+    if !schedule.has_tag_name((EXTERNAL, "Schedule")) {
         return Err("unsupported Schedule structure".to_string());
     }
-    let mut props = Map::new();
+    let (mut props, detailed) = schedule_facts(*schedule, "Schedule", true)?;
     props.insert("state".into(), json!("present"));
+    if !detailed.is_empty() {
+        props.insert(
+            "detailedDailySchedules".into(),
+            Value::Array(detailed.into_iter().map(Value::Object).collect()),
+        );
+    }
+    Ok(Value::Object(props))
+}
+
+/// One schedule node: its twelve attributes, `WeekDays` and `Months`, and —
+/// only for the top-level `Schedule` — its detailed daily schedules.
+type Facts = Map<String, Value>;
+
+fn schedule_facts(
+    schedule: Node<'_, '_>,
+    label: &str,
+    top_level: bool,
+) -> Result<(Facts, Vec<Facts>), String> {
+    if schedule
+        .attributes()
+        .any(|attr| attr.namespace().is_some() || !ATTRIBUTES.contains(&attr.name()))
+    {
+        return Err(format!("unsupported {label} structure"));
+    }
+    let mut props = Map::new();
     for &name in ATTRIBUTES {
         let value = schedule
             .attribute(name)
-            .ok_or_else(|| format!("Schedule.{name} is absent"))?;
+            .ok_or_else(|| format!("{label}.{name} is absent"))?;
         let value = match name {
             "BeginDate" | "EndDate" => {
                 chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
-                    .map_err(|_| format!("invalid Schedule.{name}"))?;
+                    .map_err(|_| format!("invalid {label}.{name}"))?;
                 json!(value)
             }
             "BeginTime" | "EndTime" | "CompletionTime" => {
                 chrono::NaiveTime::parse_from_str(value, "%H:%M:%S")
-                    .map_err(|_| format!("invalid Schedule.{name}"))?;
+                    .map_err(|_| format!("invalid {label}.{name}"))?;
                 json!(value)
             }
             // The platform counts negative month days from the month's end.
             "WeekDayInMonth" | "DayInMonth" => json!(value
                 .parse::<i32>()
-                .map_err(|_| format!("invalid Schedule.{name}"))?),
+                .map_err(|_| format!("invalid {label}.{name}"))?),
             _ => json!(value
                 .parse::<u32>()
-                .map_err(|_| format!("invalid Schedule.{name}"))?),
+                .map_err(|_| format!("invalid {label}.{name}"))?),
         };
         props.insert(name.into(), value);
     }
-    let nodes = children(*schedule)?;
-    if nodes.len() != 2 {
-        return Err("Schedule must contain WeekDays and Months".to_string());
+    let nodes = children(schedule)?;
+    let mut detailed = Vec::new();
+    for node in &nodes {
+        if node.has_tag_name((ENTERPRISE, "WeekDays")) || node.has_tag_name((ENTERPRISE, "Months"))
+        {
+            continue;
+        }
+        if top_level && node.has_tag_name((ENTERPRISE, "DetailedDailySchedules")) {
+            let (facts, _) = schedule_facts(*node, "DetailedDailySchedules", false)?;
+            detailed.push(facts);
+            continue;
+        }
+        return Err(format!("unsupported {label} child"));
     }
     for (name, maximum) in [("WeekDays", 7), ("Months", 12)] {
         let mut matching = nodes
@@ -94,12 +127,12 @@ pub fn parse_job_schedule(text: &str) -> Result<Value, String> {
             .filter(|node| node.has_tag_name((ENTERPRISE, name)));
         let node = matching
             .next()
-            .ok_or_else(|| format!("Schedule.{name} is absent"))?;
+            .ok_or_else(|| format!("{label}.{name} is absent"))?;
         if matching.next().is_some()
             || node.attributes().len() != 0
             || node.children().any(|child| child.is_element())
         {
-            return Err(format!("unsupported Schedule.{name}"));
+            return Err(format!("unsupported {label}.{name}"));
         }
         let text = node
             .children()
@@ -110,9 +143,9 @@ pub fn parse_job_schedule(text: &str) -> Result<Value, String> {
         for token in text.split_whitespace() {
             let value = token
                 .parse::<u32>()
-                .map_err(|_| format!("invalid Schedule.{name}"))?;
+                .map_err(|_| format!("invalid {label}.{name}"))?;
             if !(1..=maximum).contains(&value) || values.contains(&value) {
-                return Err(format!("invalid Schedule.{name}"));
+                return Err(format!("invalid {label}.{name}"));
             }
             values.push(value);
         }
@@ -125,5 +158,5 @@ pub fn parse_job_schedule(text: &str) -> Result<Value, String> {
                 .join(" ")),
         );
     }
-    Ok(Value::Object(props))
+    Ok((props, detailed))
 }

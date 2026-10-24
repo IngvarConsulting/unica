@@ -173,7 +173,7 @@ fn project_metadata(
                     "schedule reader returned a non-object payload",
                 )
             })?;
-        let props = selected_scalar_props(
+        let mut props = selected_scalar_props(
             &Value::Object(properties.clone()),
             &[
                 "state",
@@ -193,6 +193,14 @@ fn project_metadata(
                 "Months",
             ],
         );
+        // Детальные расписания дня — массив тех же фактов, вложенным JSON
+        // без упаковки в строку (#2031).
+        if let Some(detailed) = properties
+            .get("detailedDailySchedules")
+            .filter(|value| value.is_array())
+        {
+            props.insert("detailedDailySchedules".to_string(), detailed.clone());
+        }
         return Ok(NodeViewData::Node(NodeView::new(
             address.to_string(),
             "Schedule",

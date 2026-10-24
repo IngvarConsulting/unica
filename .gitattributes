@@ -96,3 +96,6 @@ crates/unica-dcs-designer/tests/fixtures/** text eol=lf
 
 # The ExchangePlan composition fixture keeps the platform's BOM and CRLF layout.
 tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/*/Ext/Content.xml -text -whitespace
+
+# The job schedule fixture keeps the BOM and CRLF an 8.3.27 dump writes.
+tests/fixtures/platform_8_3_27/job_schedule/*.xml -text -whitespace

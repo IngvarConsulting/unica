@@ -280,3 +280,48 @@ fn job_schedule_resolves_to_its_file_only_while_the_file_exists() {
         RefusalCode::NotFound
     );
 }
+
+/// Детальные расписания дня (`DetailedDailySchedules`, у платформы
+/// ДетальныеРасписанияДня) — допустимая выгрузка 8.3.27, а не повреждение:
+/// каждое читается теми же фактами в порядке исходника. Фикстура повторяет
+/// разметку выгрузки: BOM, CRLF, табуляция, объявления `xs`/`xsi`.
+#[test]
+fn job_schedule_reads_detailed_daily_schedules_in_platform_export_shape() {
+    let fixture = RealReaderFixture::new();
+    let bytes = include_bytes!(
+        "../../../../../../tests/fixtures/platform_8_3_27/job_schedule/detailed-daily-schedules.xml"
+    );
+    assert!(bytes.starts_with(b"\xef\xbb\xbf") && bytes.windows(2).any(|pair| pair == b"\r\n"));
+    let path = fixture
+        .source
+        .join("ScheduledJobs/MonthClose/Ext/Schedule.xml");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, bytes).unwrap();
+    let props = read(&fixture, "main:ScheduledJob.MonthClose.Schedule")["props"].clone();
+    assert_eq!(props["state"], "present");
+    assert_eq!(props["WeekDays"], "1 2 3 4 5");
+    let detailed = props["detailedDailySchedules"]
+        .as_array()
+        .expect("detailed schedules");
+    assert_eq!(detailed.len(), 2, "{props}");
+    assert_eq!(detailed[0]["BeginTime"], "09:00:00");
+    assert_eq!(detailed[0]["EndTime"], "13:00:00");
+    assert_eq!(detailed[0]["RepeatPeriodInDay"], 600);
+    assert_eq!(detailed[0]["WeekDays"], "");
+    assert_eq!(detailed[1]["BeginTime"], "14:00:00");
+    assert_eq!(detailed[1]["RepeatPeriodInDay"], 1800);
+    assert!(detailed.iter().all(|item| item.get("state").is_none()));
+
+    // Вложенное расписание без своей вложенности: глубже детальное — отказ.
+    let text = std::str::from_utf8(&bytes[3..]).unwrap();
+    let nested = text.replacen(
+        "\t\t\t<ent:WeekDays/>",
+        "\t\t\t<ent:DetailedDailySchedules/>\r\n\t\t\t<ent:WeekDays/>",
+        1,
+    );
+    std::fs::write(&path, nested).unwrap();
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:ScheduledJob.MonthClose.Schedule").unwrap());
+    assert!(!result.ok, "{result:?}");
+}
