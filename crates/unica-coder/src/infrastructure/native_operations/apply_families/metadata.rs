@@ -25,6 +25,7 @@ fn parse_metadata_plan_operation_in(
         op_index,
         &MetadataDecodeContext {
             source_set_name: binding.source_set_name(),
+            source_kind: binding.source_kind(),
             registry: crate::domain::apply::operation_registry(),
         },
     )
@@ -3601,6 +3602,128 @@ mod tests {
             unica_workspace::test_support::tree_snapshot(fixture.binding.source_root()),
             before
         );
+    }
+
+    /// Native 8.3.27 sources of the configuration-root property edit and the
+    /// platform's own re-export of the edited root (see the fixture README).
+    fn configuration_root_fixture(relative: &str) -> String {
+        std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/platform_8_3_27")
+                .join(relative),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn configuration_root_properties_match_the_platform_reexport() {
+        let fixture = MetadataFixture::with_files(&[
+            (
+                "Configuration.xml",
+                &configuration_root_fixture("empty_configuration/src/Configuration.xml"),
+            ),
+            (
+                "Languages/Русский.xml",
+                &configuration_root_fixture("empty_configuration/src/Languages/Русский.xml"),
+            ),
+        ]);
+        let before = unica_workspace::test_support::tree_snapshot(fixture.binding.source_root());
+        let (staged, effects) = plan_all_with_effects(&fixture, &[
+            ("props.set", json!({"at":"main:Configuration","values":{
+                "Synonym":"Учёт & <склад>","comment":"Корень","Vendor":"ООО Пример",
+                "Version":"1.0.0.2","UpdateCatalogAddress":"https://example.invalid/upd",
+                "IncludeHelpInContents":true,"UseManagedFormInOrdinaryApplication":true,
+                "BriefInformation":"Кратко","Copyright":"© Пример",
+                "CompatibilityMode":"Version8_3_24","InterfaceCompatibilityMode":"Taxi",
+                "ModalityUseMode":"UseWithWarnings","MainClientApplicationWindowMode":"FullscreenWorkplace",
+                "DetailedInformation":"Подробно","VendorInformationAddress":"https://example.invalid/vendor",
+                "ConfigurationInformationAddress":"https://example.invalid/about",
+                "UseOrdinaryFormInManagedApplication":true,"DefaultRunMode":"Auto",
+                "DataLockControlMode":"AutomaticAndManaged","ObjectAutonumerationMode":"AutoFree",
+                "SynchronousPlatformExtensionAndAddInCallUseMode":"Use"
+            }})),
+            ("props.set", json!({"at":"main:Configuration","values":{"Version":"1.0.0.3"}})),
+        ]).unwrap();
+        let texts = staged_texts(&staged);
+        assert_eq!(
+            texts.keys().cloned().collect::<Vec<_>>(),
+            vec![PathBuf::from("Configuration.xml")]
+        );
+        assert_eq!(
+            texts[Path::new("Configuration.xml")],
+            configuration_root_fixture("configuration_root_props/main/Configuration.xml"),
+            "the edit must be byte-equal to the platform's re-export of it"
+        );
+        assert_eq!(
+            effects.events()[0].kind,
+            unica_source_contract::events::DomainEventKind::ConfigXmlChanged
+        );
+        assert_eq!(effects.events()[0].artifact, "Configuration");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(fixture.binding.source_root()),
+            before
+        );
+    }
+
+    #[test]
+    fn extension_root_properties_match_the_platform_reexport() {
+        let fixture = MetadataFixture::with_kind_and_files(
+            SourceSetKind::Extension,
+            &[(
+                "Configuration.xml",
+                &configuration_root_fixture(
+                    "configuration_root_props/extension/source-Configuration.xml",
+                ),
+            )],
+        );
+        let (staged, effects) = plan_all_with_effects(
+            &fixture,
+            &[(
+                "props.set",
+                json!({"at":"main:Configuration","values":{
+                    "Comment":"Исправления","Vendor":"ООО Пример","Version":"2.1",
+                    "ConfigurationExtensionCompatibilityMode":"Version8_3_24"
+                }}),
+            )],
+        )
+        .unwrap();
+        let texts = staged_texts(&staged);
+        assert_eq!(
+            texts[Path::new("Configuration.xml")],
+            configuration_root_fixture("configuration_root_props/extension/Configuration.xml"),
+            "the edit must be byte-equal to the platform's re-export of it"
+        );
+        assert_eq!(
+            effects.events()[0].kind,
+            unica_source_contract::events::DomainEventKind::CfeChanged
+        );
+        // The extension root has no own text language here, so a localized
+        // property is a typed refusal rather than a guessed `<v8:lang>`.
+        let error = plan_all(
+            &fixture,
+            &[(
+                "props.set",
+                json!({"at":"main:Configuration","values":{"Synonym":"Исправления"}}),
+            )],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+        // Identity of the adopted configuration stays the platform's own.
+        for field in [
+            "DefaultRunMode",
+            "UpdateCatalogAddress",
+            "Name",
+            "NamePrefix",
+        ] {
+            let error = parse_metadata_plan_operation(
+                "props.set",
+                &json!({"at":"main:Configuration","values":{field:"x"}}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{field}");
+        }
     }
 
     #[test]

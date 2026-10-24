@@ -1,0 +1,95 @@
+{
+  "id": "S-1983-new-subsystem-command-visibility",
+  "issue": 1983,
+  "area": "Подсистемы и интерфейс",
+  "task": "Создать подсистему «Справочники» и в той же пачке скрыть в ней список валют: предпросмотр не пишет ни подсистему, ни командный интерфейс, публикация создаёт CommandInterface.xml в форме выгрузки 8.3.27",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystem.create",
+            "args": {
+              "values": {
+                "name": "Справочники"
+              }
+            }
+          },
+          {
+            "op": "commandVisibility.set",
+            "args": {
+              "at": "main:Subsystem.Справочники.Interface",
+              "items": [
+                {
+                  "command": "Catalog.Валюты.StandardCommand.OpenList",
+                  "visible": false
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Справочники.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Subsystems/Справочники/Ext/CommandInterface.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Справочники/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "ea717bf01d53de8199b239672530aa00093b8e312108781b8027c376e311cdc7"
+        },
+        {
+          "path": "src/Subsystems/Справочники/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsVisibility/{http://v8.1c.ru/8.3/xcf/extrnprops}Command[@name='Catalog.Валюты.StandardCommand.OpenList']/{http://v8.1c.ru/8.3/xcf/extrnprops}Visibility/{http://v8.1c.ru/8.3/xcf/readable}Common",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    }
+  ]
+}

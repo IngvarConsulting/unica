@@ -80,6 +80,12 @@ allowed-tools:
    и незавершённых проверок вызови `unica.check {}`: он возвращает вердикт,
    `checks` и `diagnostics`. Успешный `view` не подтверждает готовность,
    а `check` с `ok: true` может иметь `status: "failed"` — оценивай сам вердикт.
+   Рабочую папку передаёт приложение-хост, у инструментов нет аргумента для
+   неё: `cwd` отклоняется как неизвестный. Ответ `view {}` называет выбранный
+   каталог в `workspaceRoot` и канал выбора в `workspaceRootOrigin`. Сверь его
+   с нужным проектом или worktree до правки. Другой каталог выбирается
+   средствами хоста — чатом или сессией, открытой в нём; канал, захваченный
+   при запуске, сам подсказывает в ответе, как перейти.
 2. `unica.search {corpus: "names"}` переводит в адрес имя или синоним.
    `kind` сужает вид, `limit` ограничивает страницу. Путь, пришедший
    снаружи, переводит `unica.resolve` — аварийный выход, а не обычный ход.
@@ -116,7 +122,7 @@ allowed-tools:
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
-  "params": { "name": "unica.view", "arguments": { "cwd": "<workspace>" } }
+  "params": { "name": "unica.view", "arguments": {} }
 }
 ```
 
@@ -128,7 +134,7 @@ allowed-tools:
   "method": "tools/call",
   "params": {
     "name": "unica.search",
-    "arguments": { "cwd": "<workspace>", "corpus": "names", "query": "Валюты", "kind": "Form" }
+    "arguments": { "corpus": "names", "query": "Валюты", "kind": "Form" }
   }
 }
 ```
@@ -149,7 +155,6 @@ allowed-tools:
   "params": {
     "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
     }
   }
@@ -165,7 +170,6 @@ allowed-tools:
   "params": {
     "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item"
     }
   }
@@ -240,12 +244,12 @@ allowed-tools:
   "params": {
     "name": "unica.apply",
     "arguments": {
-      "at": "main:CommonModule.SourceAccessExample",
+      "at": "main:CommonModule.GoogleПереводчик",
       "ops": [
         {
           "op": "code.replace",
           "args": {
-            "at": "main:CommonModule.SourceAccessExample.Method.BeforeReplacement.Body",
+            "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции.Body",
             "text": "\t// новое тело"
           }
         }

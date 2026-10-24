@@ -430,7 +430,7 @@ fn seven_metadata_can_contracts_publish_and_real_arguments_preview_without_write
         (
             "main:Report.АнализВерсийОбъектов",
             "object.remove",
-            json!({"force":true}),
+            json!({}),
         ),
         (
             "ext:Configuration",
@@ -528,8 +528,8 @@ fn scalar_and_nested_can_fields_agree_with_productive_readers() {
             &main,
             vec![
                 (json!({}), true),
-                (json!({"force":false}), true),
-                (json!({"force":true}), true),
+                (json!({"force":false}), false),
+                (json!({"force":true}), false),
                 (json!({"force":"true"}), false),
                 (json!({"unknown":true}), false),
             ],
@@ -2003,5 +2003,228 @@ fn canonical_wire_apply_refuses_removing_the_last_required_register_field_withou
         unica_workspace::test_support::tree_snapshot(&fixture.workspace),
         before,
         "the refused direct execution changes no source byte"
+    );
+}
+
+/// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: набор типов платформы
+/// (`cfg:AnyIBRef` — любая ссылка базы) допустим, но не моделируется; это
+/// предупреждение у поля при итоге `passed`, а не повреждение исходника.
+#[test]
+fn canonical_platform_type_set_is_an_unmodelled_warning_not_damage() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    let catalog = fixture.source.join("Catalogs/Products.xml");
+    make_type_unmodelled(&catalog);
+    rewrite(
+        &catalog,
+        "<v8:Type>v8:FutureOpaque</v8:Type>",
+        "<v8:TypeSet>cfg:AnyIBRef</v8:TypeSet>",
+    );
+
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "passed", "{diagnostics:?}");
+    assert_eq!(
+        finding(
+            &diagnostics,
+            "validation_warning",
+            "collections.attributes[0].type"
+        )["severity"],
+        "warning"
+    );
+    let attribute = view(
+        &runtime,
+        &fixture,
+        "main:Catalog.Products.Attribute.Article",
+    );
+    assert!(
+        limits(&attribute)
+            .iter()
+            .any(|limit| limit.starts_with("collections.attributes[0].type: validation_warning: ")),
+        "{attribute}"
+    );
+}
+
+/// INV.SOURCE.METADATA-OBJECT-FACTS: непустые параметры выбора стандартного
+/// реквизита — допустимая выгрузка платформы, которую профиль не моделирует.
+/// Неподдержанная конструкция не доказывает повреждение: `check` проходит с
+/// предупреждением у поля, а чтение соседних деклараций продолжается, так что
+/// настоящее повреждение после неё по-прежнему даёт ошибку.
+#[test]
+fn canonical_unmodelled_standard_attribute_choice_parameters_do_not_fail_check() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    let catalog = fixture.source.join("Catalogs/Products.xml");
+    let text = std::fs::read_to_string(&catalog).unwrap();
+    let empty = "<xr:ChoiceParameters/>";
+    let at = text
+        .find(empty)
+        .expect("standard attribute ChoiceParameters");
+    let mut changed = text.clone();
+    changed.replace_range(
+        at..at + empty.len(),
+        "<xr:ChoiceParameters><app:item xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" name=\"Отбор.Код\"><app:value xsi:type=\"xs:string\">A</app:value></app:item></xr:ChoiceParameters>",
+    );
+    std::fs::write(&catalog, &changed).unwrap();
+
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "passed", "{diagnostics:?}");
+    let field = diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic["field"].as_str())
+        .find(|field| field.ends_with(".properties.ChoiceParameters"))
+        .unwrap_or_else(|| panic!("{diagnostics:?}"))
+        .to_owned();
+    assert!(field.starts_with("standardAttributes["), "{field}");
+    assert_eq!(
+        finding(&diagnostics, "validation_warning", &field)["severity"],
+        "warning"
+    );
+    let catalog_view = view(&runtime, &fixture, "main:Catalog.Products");
+    assert!(
+        limits(&catalog_view)
+            .iter()
+            .all(|limit| !limit.contains("ChoiceParameters")),
+        "{catalog_view}"
+    );
+
+    // Повреждение у следующего стандартного реквизита не прячется за
+    // немоделируемой декларацией перед ним.
+    let next = changed[at..]
+        .find("<xr:Synonym/>")
+        .expect("a later synonym")
+        + at;
+    let mut damaged = changed.clone();
+    damaged.replace_range(
+        next..next + "<xr:Synonym/>".len(),
+        "<xr:Synonym>broken</xr:Synonym>",
+    );
+    std::fs::write(&catalog, damaged).unwrap();
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "failed", "{diagnostics:?}");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["severity"] == "error"
+                && diagnostic["field"]
+                    .as_str()
+                    .is_some_and(|field| field.starts_with("standardAttributes["))),
+        "{diagnostics:?}"
+    );
+}
+
+/// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: набор типов, которого платформа не
+/// выгружает (`cfg:CommonModuleRef`), остаётся ошибкой, а не превращается в
+/// предупреждение о неподдержанном типе.
+#[test]
+fn canonical_unknown_type_set_stays_an_error() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    let catalog = fixture.source.join("Catalogs/Products.xml");
+    make_type_unmodelled(&catalog);
+    rewrite(
+        &catalog,
+        "<v8:Type>v8:FutureOpaque</v8:Type>",
+        "<v8:TypeSet>cfg:CommonModuleRef</v8:TypeSet>",
+    );
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "failed", "{diagnostics:?}");
+    assert_eq!(
+        finding(
+            &diagnostics,
+            "validation_failed",
+            "collections.attributes[0].type"
+        )["severity"],
+        "error"
+    );
+}
+
+/// #1941, INV.SOURCE.METADATA-OBJECT-FACTS: повреждённое свойство табличной
+/// части и её реквизита из профиля их свойств `check` называет ошибкой у поля
+/// элемента так же, как `view` называет её в пределах узла.
+#[test]
+fn canonical_check_reports_a_duplicated_tabular_attribute_property() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Products","ops":[{"op":"tabularSection.add","args":{"items":[{"name":"Goods"}]}}]}),
+    );
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Products.TabularSection.Goods","ops":[{"op":"attribute.add","args":{"items":[
+            {"name":"Price","type":{"variants":[{"kind":"string","length":10,"allowedLength":"variable"}]}}
+        ]}}]}),
+    );
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["severity"] != "error"),
+        "{status}: {diagnostics:?}"
+    );
+
+    let catalog = fixture.source.join("Catalogs/Products.xml");
+    let text = std::fs::read_to_string(&catalog).unwrap();
+    let section = text
+        .find("<TabularSection uuid=")
+        .expect("the tabular section");
+    let attribute = text[section..]
+        .find("<Attribute uuid=")
+        .expect("its attribute")
+        + section;
+    let indexing = text[attribute..]
+        .find("<Indexing>")
+        .expect("attribute Indexing")
+        + attribute;
+    let end = text[indexing..].find("</Indexing>").unwrap() + indexing + "</Indexing>".len();
+    let line_number = text[section..]
+        .find("<LineNumberLength>")
+        .expect("section LineNumberLength")
+        + section;
+    assert!(
+        line_number < attribute,
+        "the section property precedes its attributes"
+    );
+    let line_end = text[line_number..].find("</LineNumberLength>").unwrap()
+        + line_number
+        + "</LineNumberLength>".len();
+    let mut duplicated = text.clone();
+    duplicated.insert_str(end, &text[indexing..end]);
+    duplicated.insert_str(line_end, &text[line_number..line_end]);
+    std::fs::write(&catalog, duplicated).unwrap();
+
+    let section_field = "collections.tabularSections[0].properties.LineNumberLength";
+    let field = "collections.tabularSections[0].attributes[0].properties.Indexing";
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "failed", "{diagnostics:?}");
+    assert_eq!(
+        finding(&diagnostics, "validation_failed", field)["severity"],
+        "error"
+    );
+    assert_eq!(
+        finding(&diagnostics, "validation_failed", section_field)["severity"],
+        "error"
+    );
+    let section_view = view(
+        &runtime,
+        &fixture,
+        "main:Catalog.Products.TabularSection.Goods",
+    );
+    assert!(
+        limits(&section_view)
+            .iter()
+            .any(|limit| limit.contains(section_field)),
+        "{section_view}"
+    );
+    let viewed = view(
+        &runtime,
+        &fixture,
+        "main:Catalog.Products.TabularSection.Goods.Attribute.Price",
+    );
+    assert!(
+        limits(&viewed).iter().any(|limit| limit.contains(field)),
+        "{viewed}"
     );
 }

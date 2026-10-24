@@ -37,10 +37,12 @@ pub(super) fn parse(
         .as_object()
         .ok_or_else(|| fail("borrow args must be an object"))?;
     let shape = ArgumentShape::new(metadata_borrow_input_schema());
-    for key in args.keys() {
-        if shape.property(key).is_none() {
-            return Err(fail("unknown object.borrow argument"));
-        }
+    if let Some(key) = args.keys().find(|key| shape.property(key).is_none()) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("unknown object.borrow argument `{key}`"),
+        )
+        .at_path(format!("ops[{index}].args.{key}")));
     }
     let target = QualifiedAddress::parse(
         args.get("at")

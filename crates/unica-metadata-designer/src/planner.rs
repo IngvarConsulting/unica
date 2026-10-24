@@ -8,6 +8,7 @@ use sha2::Digest;
 use std::path::{Path, PathBuf};
 use unica_address::address::NodeKind;
 use unica_address::source_target::MetadataAddress;
+use unica_metadata::property_input::DescriptorPropertyValue;
 use unica_metadata::{MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetadataKind};
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
@@ -295,12 +296,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 )?;
                 continue;
             }
-            MetadataPlanKind::Remove {
-                target,
-                kind,
-                name,
-                force,
-            } => {
+            MetadataPlanKind::Remove { target, kind, name } => {
                 stage_object_remove(
                     reader,
                     staged,
@@ -308,7 +304,6 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                     target,
                     *kind,
                     name,
-                    *force,
                     op_index,
                     &mut provisional,
                 )?;
@@ -895,13 +890,14 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     target: &MetadataAddress,
     kind: MetadataKind,
     name: &str,
-    force: bool,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     use crate::remove::{
-        meta_remove_search_patterns, meta_remove_should_skip_file,
-        plan_meta_remove_subsystem_replacements, META_REMOVE_REFERENCE_FILE_MAX_BYTES,
+        meta_remove_composition, meta_remove_composition_image, meta_remove_references,
+        meta_remove_referrer, meta_remove_search_patterns, meta_remove_should_skip_file,
+        plan_meta_remove_subsystem_replacements, remove_composition_entries, MetaRemoveReference,
+        META_REMOVE_REFERENCE_FILE_MAX_BYTES,
     };
     let at_path = format!("ops[{op_index}].args.at");
     unica_source_designer::registration::require_untouched_staged_state(
@@ -927,26 +923,78 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     let files = staged
         .enumerate_tree(Path::new(""))
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-    let patterns = meta_remove_search_patterns(kind.as_str(), name, layout.directory);
-    let type_name_ref = format!("{}.{name}", kind.as_str());
-    let mut references = Vec::new();
+    let code_patterns = meta_remove_search_patterns(kind.as_str(), name, layout.directory);
+    // The bare `X.` of a common module is a call in code; in XML it would
+    // match a synonym such as «X.Печать» rather than the module.
+    let bare = format!("{name}.");
+    let mut metadata_patterns = code_patterns
+        .iter()
+        .filter(|pattern| **pattern != bare)
+        .cloned()
+        .collect::<Vec<_>>();
+    metadata_patterns.push(format!("{}.{name}", kind.as_str()));
+    // A query names a table by the kind in either language: `Catalog.X`,
+    // `Справочник.X`.
+    let spellings = unica_address::source_target::metadata_address_kind_spellings(kind.as_str())
+        .unwrap_or_default();
+    let mut query_patterns = metadata_patterns.clone();
+    query_patterns.extend(
+        spellings
+            .iter()
+            .map(|spelling| format!("{spelling}.{name}")),
+    );
+    // Module code names the object the same way and also by its Russian
+    // type names, the kind spelling followed by `Ссылка` or `Объект`.
+    let mut code_patterns = code_patterns;
+    code_patterns.extend(query_patterns.iter().cloned());
+    for reference in crate::remove::meta_remove_type_ref_names(kind.as_str()).unwrap_or_default() {
+        let suffix = match reference.strip_prefix(kind.as_str()) {
+            Some("Ref") => "Ссылка",
+            Some("Object") => "Объект",
+            _ => continue,
+        };
+        code_patterns.extend(
+            spellings
+                .iter()
+                .skip(1)
+                .map(|spelling| format!("{spelling}{suffix}.{name}")),
+        );
+    }
+    code_patterns.sort();
+    code_patterns.dedup();
+    let source_set = authority.source_set_name();
+    let removed = format!("{source_set}:{}", target.as_str());
+    let qualified = format!("{}.{name}", kind.as_str());
+    let mut metadata_references = Vec::new();
+    let mut code_references = Vec::new();
+    // Compositions that list the object — role rights, command interfaces,
+    // exchange plan and functional option content — lose its entries with it.
+    let mut cleaned = Vec::new();
+    let mut cleaned_files = Vec::new();
     for relative in &files {
         let extension = relative
             .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("");
-        if !extension.eq_ignore_ascii_case("xml") && !extension.eq_ignore_ascii_case("bsl") {
+        let patterns = if extension.eq_ignore_ascii_case("xml") {
+            &metadata_patterns
+        } else if extension.eq_ignore_ascii_case("bsl") {
+            &code_patterns
+        } else {
             continue;
-        }
+        };
         let absolute = root.join(relative);
-        if meta_remove_should_skip_file(
+        let skipped = meta_remove_should_skip_file(
             &absolute,
             root,
             &descriptor_absolute,
             &object_dir,
             true,
             true,
-        ) {
+        );
+        let composition =
+            meta_remove_composition(relative).filter(|_| !absolute.starts_with(&object_dir));
+        if skipped && composition.is_none() {
             continue;
         }
         let bytes = staged
@@ -964,46 +1012,83 @@ fn stage_object_remove<R: MetadataPlanningRead>(
                 format!("reference input is not UTF-8: {error}"),
             )
         })?;
-        if patterns.iter().any(|pattern| text.contains(pattern))
-            || (extension.eq_ignore_ascii_case("xml") && text.contains(&type_name_ref))
+        let mut text = text.trim_start_matches('\u{feff}').to_string();
+        if let Some((rules, property)) = composition {
+            let (updated, removed_entries) = remove_composition_entries(&text, rules, &qualified)
+                .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
+                    .at_path(at_path.clone())
+            })?;
+            if removed_entries > 0 {
+                let (referrer, _) = meta_remove_referrer(relative);
+                cleaned.push((format!("{source_set}:{referrer}"), property));
+                cleaned_files.push((
+                    relative.clone(),
+                    bytes.clone(),
+                    meta_remove_composition_image(&bytes, updated.clone()),
+                ));
+                text = updated;
+            }
+        }
+        if skipped {
+            continue;
+        }
+        for reference in
+            meta_remove_references(source_set, relative, &text, patterns, &query_patterns)
         {
-            references.push(relative.to_string_lossy().replace('\\', "/"));
+            match reference {
+                MetaRemoveReference::Metadata { at, property } => {
+                    metadata_references.push(format!("`{at}` → {property}"));
+                }
+                MetaRemoveReference::Code { at, line } => code_references.push((at, line)),
+            }
         }
     }
-    let mut kept_references = None;
-    if !references.is_empty() {
-        let shown = references
+    if !metadata_references.is_empty() {
+        let mut shown = metadata_references
             .iter()
-            .take(5)
+            .take(10)
             .cloned()
             .collect::<Vec<_>>()
             .join(", ");
-        if !force {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidState,
-                format!(
-                    "`{}` is still referenced by {} source file(s): {shown}; remove the references first",
-                    target.as_str(),
-                    references.len()
-                ),
-            )
-            .at_path(at_path));
+        if metadata_references.len() > 10 {
+            shown.push_str(&format!(" and {} more", metadata_references.len() - 10));
         }
-        // A forced removal leaves the referrers as they are and says so:
-        // the caller asked for the object to go, the dangling references
-        // are the caller's next task.
-        kept_references = Some(serde_json::json!({
-            "code": "references_kept",
-            "at": at_path,
-            "count": references.len(),
-            "files": references.iter().take(5).cloned().collect::<Vec<_>>(),
-            "message": format!(
-                "`{}` was removed with force; {} source file(s) still refer to it: {shown}",
-                target.as_str(),
-                references.len()
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            format!(
+                "`{removed}` is referenced by other metadata: {shown}; remove these references first"
             ),
-        }));
+        )
+        .at_path(at_path));
     }
+    // References only in module code or query-language text do not block
+    // the removal: the plan names them, and executing its token confirms it.
+    let code_warning = (!code_references.is_empty()).then(|| {
+        let places = code_references
+            .iter()
+            .take(20)
+            .map(|(at, line)| serde_json::json!({"at": at, "line": line}))
+            .collect::<Vec<_>>();
+        let mut shown = code_references
+            .iter()
+            .take(5)
+            .map(|(at, line)| format!("`{at}` line {line}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if code_references.len() > 5 {
+            shown.push_str(&format!(" and {} more", code_references.len() - 5));
+        }
+        serde_json::json!({
+            "code": "code_references",
+            "at": at_path,
+            "count": code_references.len(),
+            "references": places,
+            "message": format!(
+                "module code or query text still refers to `{removed}`: {shown}; the removal leaves this text as it is"
+            ),
+        })
+    });
     let mut touched = Vec::new();
     for relative in files
         .iter()
@@ -1053,11 +1138,19 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         }
         for replacement in replacements {
             let relative = staged_relative(root, &replacement.path, op_index)?;
+            let (referrer, _) = meta_remove_referrer(&relative);
+            cleaned.push((format!("{source_set}:{referrer}"), "Content"));
             staged
                 .replace(&relative, &replacement.original, replacement.replacement)
                 .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
             touched.push(relative);
         }
+    }
+    for (relative, original, replacement) in cleaned_files {
+        staged
+            .replace(&relative, &original, replacement)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+        touched.push(relative);
     }
     let owner_relative = PathBuf::from("Configuration.xml");
     let owner_preimage = staged
@@ -1107,10 +1200,33 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         ),
         op_index,
     );
-    provisional.push(match kept_references {
+    let mut effect = match code_warning {
         Some(warning) => effect.with_warning(warning),
         None => effect,
-    });
+    };
+    if !cleaned.is_empty() {
+        let mut shown = cleaned
+            .iter()
+            .take(10)
+            .map(|(at, property)| format!("`{at}` → {property}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if cleaned.len() > 10 {
+            shown.push_str(&format!(" and {} more", cleaned.len() - 10));
+        }
+        effect = effect.with_warning(serde_json::json!({
+            "code": "composition_cleaned",
+            "at": format!("ops[{op_index}].args.at"),
+            "count": cleaned.len(),
+            "entries": cleaned
+                .iter()
+                .take(20)
+                .map(|(at, property)| serde_json::json!({"at": at, "property": property}))
+                .collect::<Vec<_>>(),
+            "message": format!("the removal also takes `{removed}` out of {shown}"),
+        }));
+    }
+    provisional.push(effect);
     Ok(())
 }
 
@@ -1346,6 +1462,48 @@ fn stage_descriptor_properties(
             }
             (NodeKind::Subsystem, text)
         }
+        DescriptorPropertyChanges::Configuration(
+            unica_metadata::property_input::ConfigurationPropertyChanges { changes, .. },
+        ) => {
+            let mut text = source.clone();
+            let missing = |tag: &str| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidSource,
+                    format!("the configuration root has no {tag} property"),
+                )
+                .at_path(at_path.clone())
+            };
+            let lang = if changes.iter().any(|(property, _)| property.localized()) {
+                Some(unica_source_designer::language::staged_text_language(
+                    staged,
+                    source_kind,
+                    op_index,
+                )?)
+            } else {
+                None
+            };
+            for (property, value) in changes {
+                let tag = property.names()[0];
+                let value = match value {
+                    DescriptorPropertyValue::Text(value) => value.clone(),
+                    DescriptorPropertyValue::Boolean(value) => value.to_string(),
+                };
+                text = if property.localized() {
+                    set_ml_property(
+                        &text,
+                        tag,
+                        "\t\t\t",
+                        lang.as_deref()
+                            .expect("localized patch retained its language"),
+                        &value,
+                    )
+                } else {
+                    set_plain_property(&text, tag, &value)
+                }
+                .ok_or_else(|| missing(tag))?;
+            }
+            (NodeKind::Configuration, text)
+        }
     };
     let postimage = unica_source_designer::registration::preserve_descriptor_image(
         &preimage,
@@ -1361,12 +1519,17 @@ fn stage_descriptor_properties(
     provisional.push(ProvisionalApplyEffect::single(
         relative.to_path_buf(),
         DomainEvent::new(
-            if kind == NodeKind::Role {
-                DomainEventKind::RoleChanged
-            } else {
-                DomainEventKind::SubsystemChanged
+            match kind {
+                NodeKind::Role => DomainEventKind::RoleChanged,
+                NodeKind::Subsystem => DomainEventKind::SubsystemChanged,
+                _ if source_kind == SourceSetKind::Extension => DomainEventKind::CfeChanged,
+                _ => DomainEventKind::ConfigXmlChanged,
             },
-            format!("{}.{name}", kind.as_str()),
+            if kind == NodeKind::Configuration {
+                name.to_string()
+            } else {
+                format!("{}.{name}", kind.as_str())
+            },
         ),
         op_index,
     ));
@@ -2042,7 +2205,7 @@ fn stage_template_remove(
     staged
         .remove(&descriptor_relative, &descriptor_preimage)
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-    touched.push(descriptor_relative);
+    touched.push(descriptor_relative.clone());
     for relative in files {
         if let Some(preimage) = staged
             .read(&relative)
@@ -2054,6 +2217,12 @@ fn stage_template_remove(
             touched.push(relative);
         }
     }
+    // The emptied payload and, when nothing else remains there, its
+    // `Templates` collection go in the same publication: the platform does
+    // not export empty template directories (#1997).
+    staged
+        .remove_owned_directories(&payload_relative, &descriptor_relative, &templates_dir)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
     staged
         .replace(
             &owner_relative,

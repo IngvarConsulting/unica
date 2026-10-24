@@ -11,6 +11,10 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_borrowed_template_saved_absence_refuses_new_empty_payload_root
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_template_removal_owner_compact_shadow_comment_at_owner
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_dcs_template_removal_clears_only_the_real_reference_and_replays
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_borrowed_sole_template_without_payload_takes_its_empty_collection
+  - crates/unica-coder/src/infrastructure/daemon/server/retained_directory_removal_tests.rs::canonical_template_remove_deletes_its_payload_directories_and_only_its_collection
+  - crates/unica-coder/src/infrastructure/daemon/server/retained_directory_removal_tests.rs::canonical_template_remove_rejects_a_late_entry_in_its_payload_without_deleting_it
+  - crates/unica-coder/src/infrastructure/daemon/server/retained_directory_removal_tests.rs::canonical_template_remove_restores_its_directories_on_each_publication_failure
   - crates/unica-coder/src/domain/apply.rs::template_format_is_a_separate_filter_for_dcs_and_mxl_families
   - tests/ci/test_whole_template_plan_diff.py::WholeTemplatePlanDiffWireTests.test_complete_removal_pages_define_the_same_token_publication
   - tests/ci/test_whole_template_plan_diff.py::WholeTemplatePlanDiffWireTests.test_owner_mutation_makes_diff_and_apply_stale_without_overwriting_it

@@ -85,6 +85,61 @@ fn append_to_missing_commands_visibility_inserts_section_before_later_sections()
     assert!(text.contains("<xr:Common>false</xr:Common>"));
 }
 
+/// Новые элементы ложатся в форме выгрузки: дочерние элементы на своих
+/// строках, вложенность табуляцией от отступа соседей. Так же пишется
+/// новая команда порядка группы.
+#[test]
+fn appended_elements_follow_platform_layout() {
+    let mut text = TWO_GROUP_ORDER.replace(
+        "\t<CommandsOrder>",
+        "\t<CommandsVisibility>\r\n\t\t<Command name=\"A\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>\r\n\t<CommandsOrder>",
+    );
+    interface_text_append_to_section(
+        &mut text,
+        "CommandsVisibility",
+        "<Command name=\"B\"><Visibility><xr:Common>true</xr:Common></Visibility></Command>",
+    )
+    .unwrap();
+    assert!(
+        text.contains("\t\t</Command>\r\n\t\t<Command name=\"B\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>true</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>"),
+        "{text}"
+    );
+
+    interface_text_replace_group_commands(&mut text, "First", &names(&["B", "A", "C"])).unwrap();
+    assert!(
+        text.contains("\t\t<Command name=\"C\">\r\n\t\t\t<CommandGroup>First</CommandGroup>\r\n\t\t</Command>\r\n"),
+        "{text}"
+    );
+
+    // У группы ещё нет порядка: элемент дописывается в конец секции
+    // той же формы, без пустых строк от повторной раскладки.
+    interface_text_replace_group_commands(&mut text, "Third", &names(&["D"])).unwrap();
+    assert!(
+        text.contains("\t\t</Command>\r\n\t\t<Command name=\"D\">\r\n\t\t\t<CommandGroup>Third</CommandGroup>\r\n\t\t</Command>\r\n\t</CommandsOrder>"),
+        "{text}"
+    );
+
+    // В LF-файле новая команда порядка не приносит CRLF.
+    let mut lf = TWO_GROUP_ORDER.replace("\r\n", "\n");
+    interface_text_replace_group_commands(&mut lf, "First", &names(&["B", "A", "C"])).unwrap();
+    assert!(!lf.contains('\r'), "{lf}");
+    assert!(
+        lf.contains(
+            "\t\t<Command name=\"C\">\n\t\t\t<CommandGroup>First</CommandGroup>\n\t\t</Command>"
+        ),
+        "{lf}"
+    );
+
+    // В сжатом файле отступ — только ведущие пробелы строки, без тегов.
+    let mut compact = "<CommandInterface><CommandsOrder><Command name=\"A\"><CommandGroup>First</CommandGroup></Command></CommandsOrder></CommandInterface>".to_string();
+    interface_text_replace_group_commands(&mut compact, "First", &names(&["A", "B"])).unwrap();
+    Document::parse(&compact).unwrap();
+    assert_eq!(
+        interface_text_group_command_order(&compact, "First"),
+        names(&["A", "B"])
+    );
+}
+
 fn names(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
