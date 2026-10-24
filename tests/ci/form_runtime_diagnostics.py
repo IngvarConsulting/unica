@@ -23,14 +23,15 @@ def prepare_case(server, scenario):
         raise ValueError("invalid runtime form diagnostic case")
     source = server.workspace / "src"
     original = Path(__file__).resolve().parents[2] / WORKSPACE / "src" / MODULE
-    text = original.read_text(encoding="utf-8")
+    # Bytes, not text mode: Windows text mode would write CRLF into the fixture.
+    text = original.read_bytes().decode("utf-8")
     if text.count(BARE) != 1:
         raise ValueError("runtime form fixture must contain exactly one pair of bare reads")
     if scenario["evaluation"] == "enabled-qualified":
         text = text.replace(BARE, QUALIFIED)
-    (source / MODULE).write_text(text, encoding="utf-8")
+    (source / MODULE).write_bytes(text.encode("utf-8"))
     config = source / ".bsl-analyzer.json"
     if scenario["evaluation"] == "default-bare":
         config.unlink(missing_ok=True)
     else:
-        config.write_text(CONFIG, encoding="utf-8")
+        config.write_bytes(CONFIG.encode("utf-8"))

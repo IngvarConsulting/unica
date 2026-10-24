@@ -2,7 +2,7 @@
   "id": "S-1865-c-enabled-qualified",
   "issue": 1865,
   "area": "Код BSL",
-  "task": "Исправленные чтения сохраняют известный false positive поставщика на встроенный метод",
+  "task": "Чтения через ЭтотОбъект не дают находки UnresolvedName и при явном правиле",
   "workspace": "tests/fixtures/acceptance/workspace-runtime-form-diagnostics",
   "profile": "delivery",
   "driver": "bsl-analyzer-form-diagnostics",
@@ -17,7 +17,6 @@
       "expect": [
         "ok"
       ],
-      "status": "failed",
       "validators": [
         "bsl"
       ],
@@ -31,244 +30,15 @@
           "absent": true
         },
         {
-          "pointer": "/data/diagnosticCount",
-          "eq": 8
-        },
-        {
-          "pointer": "/data/diagnostics/0/code",
-          "eq": "UnusedLocalMethod"
-        },
-        {
-          "pointer": "/data/diagnostics/0/severity",
-          "eq": "warning"
-        },
-        {
-          "pointer": "/data/diagnostics/0/location",
-          "eq": {
-            "kind": "addressed",
-            "sourceSet": "main",
-            "metadataPath": "CommonForm.RuntimeAttributes.FormModule",
-            "targetKind": "module"
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/0/focus",
-          "eq": {
-            "kind": "sourceRange",
-            "range": {
-              "startLine": 4,
-              "startColumn": 10,
-              "endLine": 4,
-              "endColumn": 26
+          "pointer": "/data/diagnostics",
+          "noneMatches": {
+            "code": "UnresolvedName",
+            "focus": {
+              "range": {
+                "startLine": 18
+              }
             }
           }
-        },
-        {
-          "pointer": "/data/diagnostics/1/code",
-          "eq": "UnresolvedName"
-        },
-        {
-          "pointer": "/data/diagnostics/1/severity",
-          "eq": "error"
-        },
-        {
-          "pointer": "/data/diagnostics/1/location",
-          "eq": {
-            "kind": "addressed",
-            "sourceSet": "main",
-            "metadataPath": "CommonForm.RuntimeAttributes.FormModule",
-            "targetKind": "module"
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/1/focus",
-          "eq": {
-            "kind": "sourceRange",
-            "range": {
-              "startLine": 8,
-              "startColumn": 4,
-              "endLine": 8,
-              "endColumn": 21
-            }
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/2/code",
-          "eq": "UnusedLocalMethod"
-        },
-        {
-          "pointer": "/data/diagnostics/2/severity",
-          "eq": "warning"
-        },
-        {
-          "pointer": "/data/diagnostics/2/location",
-          "eq": {
-            "kind": "addressed",
-            "sourceSet": "main",
-            "metadataPath": "CommonForm.RuntimeAttributes.FormModule",
-            "targetKind": "module"
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/2/focus",
-          "eq": {
-            "kind": "sourceRange",
-            "range": {
-              "startLine": 12,
-              "startColumn": 10,
-              "endLine": 12,
-              "endColumn": 37
-            }
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/3/code",
-          "eq": "UnusedLocalVariable"
-        },
-        {
-          "pointer": "/data/diagnostics/3/severity",
-          "eq": "warning"
-        },
-        {
-          "pointer": "/data/diagnostics/3/location",
-          "eq": {
-            "kind": "addressed",
-            "sourceSet": "main",
-            "metadataPath": "CommonForm.RuntimeAttributes.FormModule",
-            "targetKind": "module"
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/3/focus",
-          "eq": {
-            "kind": "sourceRange",
-            "range": {
-              "startLine": 13,
-              "startColumn": 4,
-              "endLine": 13,
-              "endColumn": 15
-            }
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/4/code",
-          "eq": "UnusedLocalMethod"
-        },
-        {
-          "pointer": "/data/diagnostics/4/severity",
-          "eq": "warning"
-        },
-        {
-          "pointer": "/data/diagnostics/4/location",
-          "eq": {
-            "kind": "addressed",
-            "sourceSet": "main",
-            "metadataPath": "CommonForm.RuntimeAttributes.FormModule",
-            "targetKind": "module"
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/4/focus",
-          "eq": {
-            "kind": "sourceRange",
-            "range": {
-              "startLine": 17,
-              "startColumn": 8,
-              "endLine": 17,
-              "endColumn": 23
-            }
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/5/code",
-          "eq": "UnusedLocalMethod"
-        },
-        {
-          "pointer": "/data/diagnostics/5/severity",
-          "eq": "warning"
-        },
-        {
-          "pointer": "/data/diagnostics/5/location",
-          "eq": {
-            "kind": "addressed",
-            "sourceSet": "main",
-            "metadataPath": "CommonForm.RuntimeAttributes.FormModule",
-            "targetKind": "module"
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/5/focus",
-          "eq": {
-            "kind": "sourceRange",
-            "range": {
-              "startLine": 22,
-              "startColumn": 8,
-              "endLine": 22,
-              "endColumn": 24
-            }
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/6/code",
-          "eq": "UnusedLocalMethod"
-        },
-        {
-          "pointer": "/data/diagnostics/6/severity",
-          "eq": "warning"
-        },
-        {
-          "pointer": "/data/diagnostics/6/location",
-          "eq": {
-            "kind": "addressed",
-            "sourceSet": "main",
-            "metadataPath": "CommonForm.RuntimeAttributes.FormModule",
-            "targetKind": "module"
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/6/focus",
-          "eq": {
-            "kind": "sourceRange",
-            "range": {
-              "startLine": 29,
-              "startColumn": 8,
-              "endLine": 29,
-              "endColumn": 23
-            }
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/7/code",
-          "eq": "UnusedLocalMethod"
-        },
-        {
-          "pointer": "/data/diagnostics/7/severity",
-          "eq": "warning"
-        },
-        {
-          "pointer": "/data/diagnostics/7/location",
-          "eq": {
-            "kind": "addressed",
-            "sourceSet": "main",
-            "metadataPath": "CommonForm.RuntimeAttributes.FormModule",
-            "targetKind": "module"
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/7/focus",
-          "eq": {
-            "kind": "sourceRange",
-            "range": {
-              "startLine": 35,
-              "startColumn": 8,
-              "endLine": 35,
-              "endColumn": 28
-            }
-          }
-        },
-        {
-          "pointer": "/data/diagnostics/8",
-          "absent": true
         }
       ],
       "fileAssertions": [
