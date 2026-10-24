@@ -1902,10 +1902,12 @@ mod tests {
             )
             .unwrap();
         }
-        // Both fixture documents carry uuid 1111…; the marker locks it.
+        // Both fixture documents carry uuid 1111…; the marker locks it. The
+        // vendor marks it "changes not recommended" (`-1`), as 1C deliveries
+        // do: the lock still holds (#1976).
         std::fs::write(
             ext.join("ParentConfigurations.bin"),
-            "\u{feff}{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,11111111-1111-4111-8111-111111111111,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,44444444-4444-4444-8444-444444444444,44444444-4444-4444-8444-444444444444,0,0,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111}",
+            "\u{feff}{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,11111111-1111-4111-8111-111111111111,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,44444444-4444-4444-8444-444444444444,44444444-4444-4444-8444-444444444444,0,-1,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111}",
         )
         .unwrap();
         let snapshot = || {
