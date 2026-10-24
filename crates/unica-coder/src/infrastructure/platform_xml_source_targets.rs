@@ -991,6 +991,12 @@ fn metadata_source_failure(
 }
 
 impl ClosedPlatformXmlTarget {
+    /// Вид набора исходников, в котором выдан дескриптор: от него зависит
+    /// профиль свойств элементов, который наблюдает читатель метаданных.
+    pub(crate) fn source_set_kind(&self) -> SourceSetKind {
+        self.source_set_kind
+    }
+
     pub(crate) fn target_kind(&self) -> TargetKind {
         self.target_kind
     }
