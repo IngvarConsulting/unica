@@ -386,7 +386,7 @@ const RULE_RECORD_MAX: usize = 41;
 /// затем отметка поставщика — `0`, если поставщик разрешил изменения, `-1`,
 /// если не рекомендует, — и UUID объекта. Выгрузки 8.3.27 пишут обе отметки
 /// (#1976); запись с `-1` прежде не читалась, и правило объекта терялось.
-fn object_rule_record(bytes: &[u8]) -> Option<(u8, &str, usize)> {
+pub(crate) fn object_rule_record(bytes: &[u8]) -> Option<(u8, &str, usize)> {
     let flag = *bytes.first()?;
     if !matches!(flag, b'0'..=b'2') {
         return None;
