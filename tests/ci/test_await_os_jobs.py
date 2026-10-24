@@ -73,6 +73,30 @@ class AwaitOsJobsTests(unittest.TestCase):
         self.assertEqual(self.wait([[never_started]], expected=("Lint and Python::Python",)),
                          {"Lint and Python::Python": "not_acquired"})
 
+    def test_an_unwritten_outcome_of_a_completed_job_is_still_pending(self):
+        # Jobs API marks a job completed before it fills the conclusions in
+        # (#2008, seen on PR #1610: Clippy succeeded, the gate read "unknown"
+        # and went red).
+        def checks(step_conclusion, job_conclusion="success"):
+            return {**job("Lint and Python", conclusion=job_conclusion), "runner_name": "GitHub Actions 7",
+                    "steps": [{"name": "Clippy", "conclusion": step_conclusion}]}
+        expected = ("Lint and Python::Clippy",)
+        self.assertEqual(self.wait([[checks(None)], [checks("")], [checks("success")]], expected=expected),
+                         {"Lint and Python::Clippy": "success"})
+        self.assertEqual(self.wait([[checks(None, None)], [checks("success")]], expected=expected),
+                         {"Lint and Python::Clippy": "success"})
+        self.assertEqual(self.wait([[job(MAC, conclusion=None)], [job(MAC)]]), {MAC: "success"})
+        # Never written by the deadline: the wait ran out, nothing failed or passed.
+        self.assertEqual(self.wait([[checks(None)]], expected=expected, timeout=60),
+                         {"Lint and Python::Clippy": "timed_out"})
+        self.assertEqual(self.wait([[job(MAC, conclusion=None)]], timeout=60), {MAC: "timed_out"})
+
+    def test_timeout_keeps_the_outcome_of_steps_that_did_finish(self):
+        checks = {**job("Lint and Python"), "runner_name": "GitHub Actions 7",
+                  "steps": [{"name": "Python", "conclusion": "failure"}, {"name": "Clippy", "conclusion": None}]}
+        result = self.wait([[checks]], expected=("Lint and Python::Python", "Lint and Python::Clippy"), timeout=60)
+        self.assertEqual(result, {"Lint and Python::Python": "failure", "Lint and Python::Clippy": "timed_out"})
+
     def test_an_absent_job_is_missing_only_once_nothing_else_runs(self):
         # The matrix of the other runner may not be expanded yet.
         result = self.wait([

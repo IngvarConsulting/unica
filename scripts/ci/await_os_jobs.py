@@ -5,7 +5,8 @@
 `needs` между ними сделал бы прогон последовательным, поэтому `Unica CI`
 идёт параллельно и в конце читает исход джобы `Rust (<runner>)` из jobs API
 этого же прогона. Скрипт ничего не решает: исходы сверяет `ci_rust_lanes`
-(`CI_JOB_RESULTS`) и оценка гейта. Не дождались — исход `timed_out`, джобы
+(`CI_JOB_RESULTS`) и оценка гейта. Не дождались — исход `timed_out`, в том
+числе у завершённой джобы, чей итог или итог шага так и не записан; джобы
 нет среди завершённых — `missing`. Отменённая джоба без раннера — это
 `not_acquired`: GitHub так и не выдал раннер этого типа («The job was not
 acquired by Runner … even after multiple attempts»), а не потеря её части.
@@ -48,6 +49,29 @@ def conclusion(job: dict) -> str:
 STEP = "::"
 
 
+def outcome(name: str, found: dict[str, dict], jobs: list[dict]) -> str | None:
+    """Исход одной ожидаемой джобы или шага; None, пока он может измениться.
+
+    Jobs API отдаёт `status=completed` раньше, чем заполняет итоги: пустой
+    итог у завершённой джобы или её шага значит «ещё не записан», а не
+    провал (#2008).
+    """
+    job_name, _, step_name = name.partition(STEP)
+    job = found.get(job_name)
+    if job is None:
+        # Матрица ещё не развёрнута или джобы нет вовсе: «нет» становится
+        # окончательным, только когда больше ничего, кроме гейта, не идёт.
+        if any(item["status"] != "completed" for item in jobs if item["name"] != GATE_JOB):
+            return None
+        return "missing"
+    if job["status"] != "completed" or not job.get("conclusion"):
+        return None
+    if step_name and conclusion(job) != NOT_ACQUIRED:
+        step = next((item for item in job.get("steps") or [] if item.get("name") == step_name), None)
+        return (step.get("conclusion") or None) if step else "missing"
+    return conclusion(job)
+
+
 def outcomes(jobs: list[dict], expected: list[str]) -> dict[str, str] | None:
     """Исходы ожидаемых джоб или None, пока какая-то из них может появиться или идёт.
 
@@ -55,24 +79,8 @@ def outcomes(jobs: list[dict], expected: list[str]) -> dict[str, str] | None:
     и Python отказ одного не должен выдавать себя за отказ другого.
     """
     found = {job["name"]: job for job in jobs}
-    result = {}
-    for name in expected:
-        job_name, _, step_name = name.partition(STEP)
-        job = found.get(job_name)
-        if job is None:
-            # Матрица ещё не развёрнута или джобы нет вовсе: «нет» становится
-            # окончательным, только когда больше ничего, кроме гейта, не идёт.
-            if any(item["status"] != "completed" for item in jobs if item["name"] != GATE_JOB):
-                return None
-            result[name] = "missing"
-        elif job["status"] != "completed":
-            return None
-        elif step_name and conclusion(job) != NOT_ACQUIRED:
-            step = next((item for item in job.get("steps") or [] if item.get("name") == step_name), None)
-            result[name] = (step.get("conclusion") or "unknown") if step else "missing"
-        else:
-            result[name] = conclusion(job)
-    return result
+    result = {name: outcome(name, found, jobs) for name in expected}
+    return None if None in result.values() else result
 
 
 def wait(expected: list[str], read: Callable[[], list[dict]], *, timeout: float, interval: float,
@@ -89,10 +97,10 @@ def wait(expected: list[str], read: Callable[[], list[dict]], *, timeout: float,
         if current is not None:
             return current
         if clock() >= deadline:
-            # Завершённая джоба сохраняет свой исход; срок истёк у остальных.
+            # Записанный исход найденной джобы сохраняется; срок истёк у остальных.
             found = {job["name"]: job for job in jobs}
-            return {name: conclusion(found[name]) if name in found and found[name]["status"] == "completed"
-                    else "timed_out" for name in expected}
+            return {name: (outcome(name, found, jobs) if name.partition(STEP)[0] in found else None) or "timed_out"
+                    for name in expected}
         sleep(interval)
 
 
