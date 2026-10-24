@@ -84,7 +84,8 @@ def outcomes(jobs: list[dict], expected: list[str]) -> dict[str, str] | None:
     """Исходы ожидаемых джоб или None, пока какая-то из них может появиться или идёт.
 
     `Джоба::Шаг` — исход одного шага джобы: у джобы pull request с Clippy
-    и Python отказ одного не должен выдавать себя за отказ другого.
+    и Python отказ одного не должен выдавать себя за отказ другого, пока
+    итог каждого записан; незаписанный по сроку берёт итог джобы.
     """
     found = {job["name"]: job for job in jobs}
     result = {name: outcome(name, found, jobs) for name in expected}

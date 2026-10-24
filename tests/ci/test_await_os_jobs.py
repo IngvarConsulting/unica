@@ -108,10 +108,12 @@ class AwaitOsJobsTests(unittest.TestCase):
                          {"Lint and Python::Python": "failure", "Lint and Python::Clippy": "failure"})
 
     def test_timeout_keeps_the_outcome_of_steps_that_did_finish(self):
-        checks = {**job("Lint and Python"), "runner_name": "GitHub Actions 7",
+        # A failed Python fails the job; Clippy never written takes that
+        # conclusion: the safe side, never a success.
+        checks = {**job("Lint and Python", conclusion="failure"), "runner_name": "GitHub Actions 7",
                   "steps": [{"name": "Python", "conclusion": "failure"}, {"name": "Clippy", "conclusion": None}]}
         result = self.wait([[checks]], expected=("Lint and Python::Python", "Lint and Python::Clippy"), timeout=60)
-        self.assertEqual(result, {"Lint and Python::Python": "failure", "Lint and Python::Clippy": "success"})
+        self.assertEqual(result, {"Lint and Python::Python": "failure", "Lint and Python::Clippy": "failure"})
 
     def test_a_partial_step_list_waits_for_its_steps_then_takes_the_job_conclusion(self):
         # #2026, PR #2016: the completed job listed Clippy without a conclusion
