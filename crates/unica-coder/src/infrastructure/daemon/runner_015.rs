@@ -650,34 +650,53 @@ fn absolutize_infobase(infobase: &mut Value, root: &Path) -> Result<(), String> 
         }
         let mut parts = Vec::new();
         for part in text.split(';') {
-            let trimmed = part.trim();
-            if trimmed
-                .get(..5)
-                .is_some_and(|p| p.eq_ignore_ascii_case("file="))
-            {
-                let path = trimmed[5..].trim();
-                let path = if path.starts_with('"') && path.ends_with('"') && path.len() > 1 {
-                    &path[1..path.len() - 1]
-                } else {
-                    path
-                };
-                if path.contains(['"', '\'', '\n', '\r']) || path.is_empty() {
-                    return Err(refuse("File= path cannot be projected unambiguously"));
-                }
-                let path = absolute(root, path);
-                if path.to_string_lossy().contains(['"', ';']) {
-                    return Err(refuse(
-                        "workspace path cannot be represented in File= connection",
-                    ));
-                }
-                parts.push(format!("File=\"{}\"", path.display()));
-            } else {
+            // The key reads the way the runner reads it (`declared_parameter`):
+            // case and spaces around `=` do not matter.
+            let file = part
+                .split_once('=')
+                .filter(|(key, _)| key.trim().eq_ignore_ascii_case("file"))
+                .map(|(_, value)| value.trim());
+            let Some(path) = file else {
                 parts.push(part.to_owned());
+                continue;
+            };
+            let path = file_connection_path(path)?;
+            let path = absolute(root, path);
+            if path.to_string_lossy().contains(['"', ';']) {
+                return Err(refuse(
+                    "workspace path cannot be represented in File= connection",
+                ));
             }
+            parts.push(format!("File=\"{}\"", path.display()));
         }
         *connection = Value::from(parts.join(";"));
     }
     Ok(())
+}
+
+/// The path of a `File=` value without its quotes, read like the runner reads
+/// it (`strip_matching_quotes`): one pair of matching double or single quotes
+/// encloses the path, anything else is the path itself. Each refusal names
+/// the form it rejects and the one to write instead.
+fn file_connection_path(value: &str) -> Result<&str, String> {
+    let path = ['"', '\'']
+        .into_iter()
+        .find(|quote| value.len() > 1 && value.starts_with(*quote) && value.ends_with(*quote))
+        .map_or(value, |_| &value[1..value.len() - 1]);
+    if path.trim().is_empty() {
+        return Err(refuse(
+            "File= names no path; write File=\"<infobase directory>\" or File='<infobase directory>'",
+        ));
+    }
+    if path.contains(['\n', '\r']) {
+        return Err(refuse("File= path spans lines; write it on one line"));
+    }
+    if path.contains('"') {
+        return Err(refuse(
+            "File= path contains a double quote, which the projected File=\"…\" cannot carry; enclose the path in one pair of quotes: File=\"<path>\" or File='<path>'",
+        ));
+    }
+    Ok(path)
 }
 
 fn absolute(root: &Path, text: &str) -> PathBuf {
@@ -1065,6 +1084,53 @@ mod tests {
                 .unwrap(),
             format!("File=\"{}\"", root.join("ib").display())
         );
+    }
+
+    #[test]
+    fn a_file_connection_is_read_the_way_the_runner_reads_it() {
+        // #2007: the runner strips one pair of double or single quotes and
+        // reads the key without case or spaces; the projection agrees.
+        let layer = |connection: &str| {
+            format!(
+                "infobase: {{connection: {}}}\n",
+                serde_json::to_string(connection).unwrap()
+            )
+        };
+        let origin = |local: Option<Value>| {
+            local.unwrap()["infobases"]["origin"]["connection"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        for connection in [
+            "File=synthetic-base;",
+            "File=\"synthetic-base\";",
+            "File='synthetic-base';",
+            "file = 'synthetic-base';",
+        ] {
+            let (root, _, local) = projected("workPath: build\n", Some(&layer(connection)));
+            assert_eq!(
+                origin(local),
+                format!("File=\"{}\";", root.join("synthetic-base").display()),
+                "{connection}"
+            );
+        }
+        let (root, _, local) = projected(&layer("File=O'Brien"), None);
+        assert_eq!(
+            origin(local),
+            format!("File=\"{}\"", root.join("O'Brien").display())
+        );
+        // Only a path the projected `File="…"` cannot carry is refused, and
+        // the refusal names the form to write.
+        for (connection, names) in [
+            ("File=''", "File= names no path"),
+            ("File=", "File= names no path"),
+            ("File='a\"b'", "contains a double quote"),
+        ] {
+            let refusal = refused(&layer(connection), None);
+            assert!(refusal.contains(names), "{connection}: {refusal}");
+            assert!(refusal.contains("File='<"), "{connection}: {refusal}");
+        }
     }
 
     #[test]
