@@ -1570,6 +1570,9 @@ mod form_move_tests;
 #[path = "form_native_profile_tests.rs"]
 mod form_native_profile_tests;
 #[cfg(test)]
+#[path = "form_properties_tests.rs"]
+mod form_properties_tests;
+#[cfg(test)]
 #[path = "metadata_can_tests.rs"]
 mod metadata_can_tests;
 #[cfg(test)]

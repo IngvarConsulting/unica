@@ -26,6 +26,9 @@ tests/fixtures/platform_8_3_27/form-native-profile/*.xml -text -whitespace
 # The native HTML oracle retains its exact BOM and internal line ending.
 tests/fixtures/platform_8_3_27/html-template/native-ru.html -text
 
+# The native form export keeps the BOM and CRLF 8.3.27 writes.
+tests/fixtures/platform_8_3_27/form-root-properties/*.xml -text -whitespace
+
 # XDTO platform-export fixtures assert BOM and CRLF as part of their byte contract.
 tests/fixtures/xdto/** -text -whitespace
 
