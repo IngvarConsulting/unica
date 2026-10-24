@@ -401,14 +401,22 @@ mod platform_marker_tests {
 
     /// Текст маркера без BOM — так его получают писатели.
     fn marker(name: &str) -> String {
-        let text = String::from_utf8(
-            std::fs::read(format!(
-                "{}/../../tests/fixtures/platform_8_3_27/support-markers/{name}.bin",
-                env!("CARGO_MANIFEST_DIR")
-            ))
-            .unwrap(),
-        )
-        .unwrap();
+        let bytes: &[u8] = match name {
+            "off" => {
+                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/off.bin")
+                    .as_slice()
+            }
+            "editable" => include_bytes!(
+                "../../../tests/fixtures/platform_8_3_27/support-markers/editable.bin"
+            )
+            .as_slice(),
+            "locked" => {
+                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/locked.bin")
+                    .as_slice()
+            }
+            other => panic!("no support marker fixture `{other}`"),
+        };
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
         text.strip_prefix('\u{feff}').unwrap().to_owned()
     }
 

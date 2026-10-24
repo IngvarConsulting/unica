@@ -472,12 +472,24 @@ pub fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
 mod support_stream_tests {
     use super::*;
 
+    /// Маркеры встроены в тест: кодек не читает файлы сам (граница платформы).
     fn marker(name: &str) -> Vec<u8> {
-        std::fs::read(format!(
-            "{}/../../tests/fixtures/platform_8_3_27/support-markers/{name}.bin",
-            env!("CARGO_MANIFEST_DIR")
-        ))
-        .unwrap()
+        match name {
+            "off" => {
+                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/off.bin")
+                    .as_slice()
+            }
+            "editable" => include_bytes!(
+                "../../../tests/fixtures/platform_8_3_27/support-markers/editable.bin"
+            )
+            .as_slice(),
+            "locked" => {
+                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/locked.bin")
+                    .as_slice()
+            }
+            other => panic!("no support marker fixture `{other}`"),
+        }
+        .to_vec()
     }
 
     fn both(bytes: &[u8]) -> [SupportState; 2] {
@@ -509,8 +521,8 @@ mod support_stream_tests {
             for state in both(&marker(name)) {
                 assert_eq!(state.global_editing_enabled(), editing, "{name}");
                 assert!(!state.removed(), "{name}");
-                for uuid in objects {
-                    assert_eq!(state.object_rule(uuid), Some(rule), "{name} {uuid}");
+                for (index, uuid) in objects.into_iter().enumerate() {
+                    assert_eq!(state.object_rule(uuid), Some(rule), "{name} object {index}");
                 }
             }
         }
