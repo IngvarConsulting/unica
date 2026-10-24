@@ -360,6 +360,47 @@ fn submit_and_settle(
         Err(error) => return Err(not_sent_refusal(&error)),
     };
     settle(peer, response, &receipt_key, budget)
+        .map_err(|error| read_only_uncertain_outcome(error, tool, arguments))
+}
+
+/// `outcome_uncertain` значит: демон пропал, пока шёл вызов, и исход не
+/// сохранён. Повтора нет (INV.APP.DAEMON-INVOCATION-OWNERSHIP), но вызов,
+/// который только читает, ничего не менял: отказ говорит это и предлагает
+/// тот же вызов новым вызовом, чтобы агенту не гадать (#1804).
+fn read_only_uncertain_outcome(
+    error: ErrorData,
+    tool: V5ToolIdentity,
+    arguments: &Map<String, Value>,
+) -> ErrorData {
+    let read_only = matches!(
+        tool,
+        V5ToolIdentity::View
+            | V5ToolIdentity::Resolve
+            | V5ToolIdentity::Search
+            | V5ToolIdentity::Check
+            | V5ToolIdentity::Diff
+            | V5ToolIdentity::Docs
+    );
+    let uncertain = error
+        .data
+        .as_ref()
+        .and_then(|data| data.get("code"))
+        .is_some_and(|code| code == "outcome_uncertain");
+    if !read_only || !uncertain {
+        return error;
+    }
+    let tool = tool.wire_name();
+    ErrorData::new(
+        error.code,
+        format!(
+            "{}; `{tool}` only reads, so the call changed nothing: repeat it",
+            error.message
+        ),
+        Some(serde_json::json!({
+            "code": "outcome_uncertain",
+            "next": [{"tool": tool, "args": arguments}],
+        })),
+    )
 }
 
 fn cancel_exact_endpoint(
@@ -1360,6 +1401,9 @@ mod tests {
             ReceiptTerminalOutcome::Failed {
                 reason: V5SafeFailureReason::OutcomeUncertain,
             },
+            ReceiptTerminalOutcome::Failed {
+                reason: V5SafeFailureReason::OutcomeUncertain,
+            },
         ]));
         let script_terminals = Arc::clone(&terminals);
         let fake = FakeDaemon::start(Box::new(move |raw, request| match request {
@@ -1373,11 +1417,33 @@ mod tests {
         let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let uncertain = call(&router, None).expect_err("failed terminal is an error");
+        let mutation = (router.call)(
+            V5ToolIdentity::Apply,
+            &arguments(),
+            &unica_bootstrap::HostRequest::default(),
+            deadline(None),
+            CancellationToken::new().into(),
+        )
+        .expect_err("failed terminal is an error");
         let cancelled = call(&router, None).expect_err("cancelled terminal is an error");
 
+        // A read-only call changed nothing: the refusal says so and offers
+        // the same call as a new one (#1804).
         assert_eq!(uncertain.code, ErrorCode::INTERNAL_ERROR);
-        assert_eq!(uncertain.message, "daemon invocation outcome is uncertain");
-        assert_eq!(uncertain.data, Some(json!({"code": "outcome_uncertain"})));
+        assert_eq!(
+            uncertain.message,
+            "daemon invocation outcome is uncertain; `unica.view` only reads, so the call changed nothing: repeat it"
+        );
+        assert_eq!(
+            uncertain.data,
+            Some(json!({
+                "code": "outcome_uncertain",
+                "next": [{"tool": "unica.view", "args": arguments()}],
+            }))
+        );
+        // A mutation may have taken effect: the closed refusal stays as it is.
+        assert_eq!(mutation.message, "daemon invocation outcome is uncertain");
+        assert_eq!(mutation.data, Some(json!({"code": "outcome_uncertain"})));
         assert_eq!(cancelled.message, "daemon invocation was cancelled");
         assert_eq!(
             cancelled.data,
@@ -1394,7 +1460,7 @@ mod tests {
             })
             .count();
         assert_eq!(
-            acknowledgements, 2,
+            acknowledgements, 3,
             "every delivered terminal is acknowledged"
         );
     }
