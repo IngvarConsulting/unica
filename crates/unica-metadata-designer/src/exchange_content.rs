@@ -14,6 +14,20 @@ const NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 /// first added item turns it into the platform's file, header included.
 pub const EMPTY_CONTENT: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n</ExchangePlanContent>";
 
+/// The same document in an extension: 8.3.27 writes the content of a borrowed
+/// exchange plan — only the items the extension adds — with an empty
+/// `ExtensionProperty` after them (#1924).
+pub const EMPTY_EXTENSION_CONTENT: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<ExtensionProperty/>\r\n</ExchangePlanContent>";
+
+/// The empty `ExtensionProperty` an extension's content ends with.
+fn is_extension_property(node: Node<'_, '_>) -> bool {
+    node.has_tag_name((NS, "ExtensionProperty"))
+        && node.attributes().len() == 0
+        && node
+            .children()
+            .all(|child| child.is_text() && child.text().is_none_or(|s| s.trim().is_empty()))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContentObservation {
     pub items: Vec<ContentItem>,
@@ -89,6 +103,7 @@ pub fn read_content(xml: &str) -> Result<ContentObservation, String> {
         errors: Vec::new(),
     };
     let mut seen = HashSet::new();
+    let mut extension_property = false;
     for node in root.children() {
         if node.is_text() && node.text().is_some_and(|s| !s.trim().is_empty()) {
             result
@@ -97,6 +112,20 @@ pub fn read_content(xml: &str) -> Result<ContentObservation, String> {
         }
         if !node.is_element() {
             continue;
+        }
+        if is_extension_property(node) {
+            if extension_property {
+                result
+                    .errors
+                    .push("repeated ExchangePlanContent ExtensionProperty".into());
+            }
+            extension_property = true;
+            continue;
+        }
+        if extension_property {
+            result
+                .errors
+                .push("ExchangePlanContent Item after ExtensionProperty".into());
         }
         match read_item(node) {
             Ok(item) => {
@@ -187,10 +216,16 @@ pub fn update_content(xml: &str, updates: &[ContentItem]) -> Result<String, Stri
                 format!(">{eol}{additions}</{root_qname}>"),
             ));
         } else {
-            let end = range.start
-                + fragment
-                    .rfind("</")
-                    .ok_or("missing ExchangePlanContent closing tag")?;
+            // Items of an extension stay before its `ExtensionProperty`.
+            let end = match root.children().find(|n| is_extension_property(*n)) {
+                Some(node) => node.range().start,
+                None => {
+                    range.start
+                        + fragment
+                            .rfind("</")
+                            .ok_or("missing ExchangePlanContent closing tag")?
+                }
+            };
             // New items go on their own lines before the closing tag's line,
             // which keeps its indentation; an inline closing tag moves down.
             let line = xml[..end].trim_end_matches([' ', '\t']);
@@ -213,6 +248,62 @@ pub fn update_content(xml: &str, updates: &[ContentItem]) -> Result<String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Content.xml` заимствованного плана обмена, который 8.3.27 выгрузил из
+    /// расширения после изменения состава: только добавленный расширением
+    /// элемент и пустой `ExtensionProperty` за ним (#1924).
+    const PLATFORM_EXTENSION: &str =
+        include_str!("../../../tests/fixtures/platform_8_3_27/exchange_plan/extension-Content.xml");
+
+    fn sample() -> ContentItem {
+        ContentItem {
+            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Пример")
+                .unwrap(),
+            auto_record: AutoRecord::Allow,
+        }
+    }
+
+    #[test]
+    fn the_platform_extension_content_reads_and_is_written_byte_for_byte() {
+        let observed = read_content(PLATFORM_EXTENSION.trim_start_matches('\u{feff}')).unwrap();
+        assert!(observed.errors.is_empty(), "{:?}", observed.errors);
+        assert_eq!(observed.items, [sample()]);
+        // Первая запись в расширении даёт форму платформы.
+        assert_eq!(
+            update_content(EMPTY_EXTENSION_CONTENT, &[sample()]).unwrap(),
+            PLATFORM_EXTENSION
+        );
+        // Повтор ничего не меняет, новый элемент встаёт перед `ExtensionProperty`.
+        assert_eq!(
+            update_content(PLATFORM_EXTENSION, &[sample()]).unwrap(),
+            PLATFORM_EXTENSION
+        );
+        let other = ContentItem {
+            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Прежний")
+                .unwrap(),
+            auto_record: AutoRecord::Deny,
+        };
+        let updated = update_content(PLATFORM_EXTENSION, std::slice::from_ref(&other)).unwrap();
+        assert!(
+            updated.ends_with("\t<ExtensionProperty/>\r\n</ExchangePlanContent>"),
+            "{updated}"
+        );
+        assert_eq!(read_content(&updated).unwrap().items, [sample(), other]);
+    }
+
+    #[test]
+    fn a_misplaced_or_repeated_extension_property_is_damage() {
+        for xml in [
+            wrap("<ExtensionProperty/><ExtensionProperty/>"),
+            wrap(&format!(
+                "<ExtensionProperty/>{}",
+                item("Catalog.Пример", "Allow")
+            )),
+            wrap("<ExtensionProperty>text</ExtensionProperty>"),
+        ] {
+            assert!(!read_content(&xml).unwrap().errors.is_empty(), "{xml}");
+        }
+    }
     fn wrap(items: &str) -> String {
         format!(r#"<ExchangePlanContent xmlns="{NS}" version="2.20">{items}</ExchangePlanContent>"#)
     }

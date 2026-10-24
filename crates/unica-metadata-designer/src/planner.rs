@@ -1599,7 +1599,11 @@ fn stage_exchange_content(
     let before = staged
         .read(&relative)
         .map_err(|e| ApplyPlanError::staging(e, path.clone()))?;
-    let template = crate::exchange_content::EMPTY_CONTENT.as_bytes();
+    let template = if authority.source_kind() == SourceSetKind::Extension {
+        crate::exchange_content::EMPTY_EXTENSION_CONTENT.as_bytes()
+    } else {
+        crate::exchange_content::EMPTY_CONTENT.as_bytes()
+    };
     let text = std::str::from_utf8(before.as_deref().unwrap_or(template)).map_err(|_| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidSource,
