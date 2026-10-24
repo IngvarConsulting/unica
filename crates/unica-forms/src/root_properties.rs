@@ -27,17 +27,20 @@ pub enum RootScope {
 }
 
 impl RootScope {
-    /// Тип основного реквизита формы (`DocumentObject.Заказ`) относится к
-    /// этому виду форм.
+    /// Тип основного реквизита формы относится к этому виду форм: объект
+    /// по имени (`DocumentObject.Заказ`) или любой объект вида
+    /// (`ReportObject` у общей формы отчёта).
     pub fn admits(self, main_attribute_type: Option<&str>) -> bool {
-        let prefixes: &[&str] = match self {
+        let kinds: &[&str] = match self {
             Self::Any => return true,
-            Self::Document => &["DocumentObject."],
-            Self::Catalog => &["CatalogObject.", "ChartOfCharacteristicTypesObject."],
-            Self::Report => &["ReportObject.", "ExternalReportObject."],
+            Self::Document => &["DocumentObject"],
+            Self::Catalog => &["CatalogObject", "ChartOfCharacteristicTypesObject"],
+            Self::Report => &["ReportObject", "ExternalReportObject"],
         };
-        main_attribute_type
-            .is_some_and(|value| prefixes.iter().any(|prefix| value.starts_with(prefix)))
+        main_attribute_type.is_some_and(|value| {
+            let kind = value.split_once('.').map_or(value, |(kind, _)| kind);
+            kinds.contains(&kind)
+        })
     }
 
     pub const fn describe(self) -> &'static str {
@@ -279,8 +282,8 @@ pub fn writable_root_properties() -> impl Iterator<Item = &'static RootProperty>
 
 /// Корневые элементы формы, которые стоят среди свойств, но сами
 /// свойствами `props.set` не являются: их место нужно, чтобы вставить
-/// свойство рядом с ними. Каждый стоит перед свойством с этим индексом
-/// в `ROOT_PROPERTIES`.
+/// свойство рядом с ними. Каждый стоит перед названным свойством, в порядке
+/// этого списка.
 pub const INTERLEAVED_ROOT_ELEMENTS: &[(&str, &str)] = &[
     ("MobileDeviceCommandBarContent", "ShowTitle"),
     ("CommandSet", "ShowTitle"),
@@ -314,6 +317,8 @@ mod tests {
         assert!(!Document.admits(Some("CatalogObject.Товары")));
         assert!(Catalog.admits(Some("ChartOfCharacteristicTypesObject.Виды")));
         assert!(Report.admits(Some("ExternalReportObject.Отчет")));
+        assert!(Report.admits(Some("ReportObject")));
+        assert!(!Report.admits(Some("ReportObjectX.Отчет")));
         assert!(!Report.admits(None));
         assert!(Any.admits(None));
     }

@@ -2791,11 +2791,13 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                     "Scale": 98
                 }}
             }, {
+                // Qualified types: attribute.add does not yet write the
+                // default qualifiers of a bare String or Number (#1996).
                 "op": "attribute.add",
                 "args": {"items": [
-                    {"name": "Value", "type": "String"},
+                    {"name": "Value", "type": "string(100)"},
                     {"name": "Enabled", "type": "Boolean"},
-                    {"name": "Picture", "type": "Number"},
+                    {"name": "Picture", "type": "decimal(10,0)"},
                     {"name": "Rows", "type": "ValueTable", "columns": [
                         {"name": "Value", "type": "String"},
                         {"name": "Presentation", "type": "String"},
@@ -2832,12 +2834,6 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                     "checkBoxType": "Tumbler",
                     "titleLocation": "Bottom"
                 }, {
-                    "name": "CorpusActionButton",
-                    "type": "Button",
-                    "command": "CorpusAction",
-                    "representation": "Text",
-                    "locationInCommandBar": "InCommandBar"
-                }, {
                     "name": "Rows",
                     "type": "Table",
                     "path": "Rows",
@@ -2853,6 +2849,19 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                     "autoMaxWidth": false,
                     "autoMaxHeight": false
                 }]}
+            }, {
+                // A button of the form's command bar is a CommandBarButton.
+                "op": "item.add",
+                "args": {
+                    "at": "main:Report.CorpusReport.Form.CorpusForm.Item.ФормаКоманднаяПанель",
+                    "items": [{
+                        "name": "CorpusActionButton",
+                        "type": "Button",
+                        "command": "CorpusAction",
+                        "representation": "Text",
+                        "locationInCommandBar": "InCommandBar"
+                    }]
+                }
             }]),
         );
         return Ok(args);

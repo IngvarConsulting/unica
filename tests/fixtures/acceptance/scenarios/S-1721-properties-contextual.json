@@ -4296,7 +4296,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: apply operation `props.set` does not apply to Configuration `main:Configuration`; it addresses `Kind.Name`, `Role.Name` or `Subsystem.Name`",
+      "refusal": "bad_value: apply operation `props.set` does not apply to Configuration `main:Configuration`; it addresses `Kind.Name`, `Role.Name` or `Subsystem.Name` or `Kind.Name.Form.F",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",

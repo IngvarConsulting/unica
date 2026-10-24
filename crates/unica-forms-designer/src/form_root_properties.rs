@@ -24,8 +24,8 @@ pub fn set_root_properties(
     let main_attribute = main_attribute_type(xml_text)?;
     let mut planned = Vec::with_capacity(values.len());
     for (name, value) in values {
-        let lines = if name == TITLE {
-            title_lines(value, lang)?
+        let edit = if name == TITLE {
+            title_edit(value, lang)?
         } else {
             let (_, property) = root_property(name)
                 .filter(|(_, property)| property.value != RootValue::Reference)
@@ -38,30 +38,130 @@ pub fn set_root_properties(
                 ));
             }
             let text = property_text(property, value)?;
-            if property.default == Some(text.as_str()) {
+            RootEdit::Lines(if property.default == Some(text.as_str()) {
                 Vec::new()
             } else {
                 vec![format!("<{name}>{text}</{name}>")]
-            }
+            })
         };
-        planned.push((name.as_str(), lines));
+        planned.push((name.as_str(), edit));
     }
-    for (name, lines) in planned {
-        replace_root_lines(xml_text, name, &lines)?;
+    for (name, edit) in planned {
+        match edit {
+            RootEdit::Lines(lines) => replace_root_lines(xml_text, name, &lines)?,
+            RootEdit::TitleText { lang, text } => {
+                if !set_title_text(xml_text, &lang, &text)? {
+                    let mut lines = Vec::new();
+                    crate::codec::emit_form_mltext(&mut lines, "", TITLE, &text, Some(&lang))?;
+                    replace_root_lines(xml_text, name, &lines)?;
+                }
+            }
+        }
     }
     Ok(())
 }
 
-fn title_lines(value: &Value, lang: Option<&str>) -> Result<Vec<String>, String> {
-    let mut lines = Vec::new();
+enum RootEdit {
+    /// Строки элемента целиком; пусто — элемент снимается.
+    Lines(Vec<String>),
+    /// Текст заголовка на одном языке: переводы на другие языки остаются.
+    TitleText { lang: String, text: String },
+}
+
+fn title_edit(value: &Value, lang: Option<&str>) -> Result<RootEdit, String> {
     match value {
-        Value::String(text) if text.is_empty() => {}
+        Value::String(text) if text.is_empty() => Ok(RootEdit::Lines(Vec::new())),
         Value::String(text) => {
-            crate::codec::emit_form_mltext(&mut lines, "", TITLE, text, lang)?;
+            let lang = lang
+                .filter(|lang| !lang.is_empty())
+                .ok_or_else(|| crate::codec::FORM_TEXT_LANGUAGE_REQUIRED.to_string())?;
+            Ok(RootEdit::TitleText {
+                lang: lang.to_string(),
+                text: text.clone(),
+            })
         }
-        _ => crate::codec::emit_form_mltext_value(&mut lines, "", TITLE, value, lang)?,
+        _ => {
+            if let Some((language, _)) = value
+                .as_object()
+                .into_iter()
+                .flatten()
+                .find(|(_, text)| text.as_str().is_none_or(str::is_empty))
+            {
+                return Err(format!(
+                    "form Title for `{language}` takes a non-empty text; an empty string Title removes the title"
+                ));
+            }
+            let mut lines = Vec::new();
+            crate::codec::emit_form_mltext_value(&mut lines, "", TITLE, value, lang)?;
+            Ok(RootEdit::Lines(lines))
+        }
     }
-    Ok(lines)
+}
+
+/// Меняет текст заголовка на языке `lang` внутри существующего `Title`, не
+/// трогая переводов на другие языки. `false` — заголовка нет.
+fn set_title_text(xml_text: &mut String, lang: &str, text: &str) -> Result<bool, String> {
+    let escaped = unica_xml_format::text::escape_xml(text);
+    let edit = {
+        let document = parse(xml_text)?;
+        let Some(title) = children(document.root_element(), TITLE).next() else {
+            return Ok(false);
+        };
+        let items = title
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == "item")
+            .collect::<Vec<_>>();
+        let same = items.iter().copied().find(|item| {
+            item.children().any(|node| {
+                node.is_element()
+                    && node.tag_name().name() == "lang"
+                    && node.text().map(str::trim) == Some(lang)
+            })
+        });
+        let content = match same {
+            Some(item) => Some(children(item, "content").next().ok_or_else(|| {
+                format!(
+                    "the form Title for `{lang}` has no content; re-export the form with the platform before editing it"
+                )
+            })?),
+            None => None,
+        };
+        match (content, items.last()) {
+            (Some(content), _) => {
+                let range = content.range();
+                let prefix = content.tag_name().namespace().map_or("", |_| "v8:");
+                (
+                    range,
+                    format!("<{prefix}content>{escaped}</{prefix}content>"),
+                )
+            }
+            (None, Some(last)) => {
+                let span = line_span(xml_text, last.range())?;
+                let indent = &xml_text[span.start..last.range().start];
+                let newline = if xml_text.contains("\r\n") {
+                    "\r\n"
+                } else {
+                    "\n"
+                };
+                let block = [
+                    format!("{indent}<v8:item>"),
+                    format!(
+                        "{indent}\t<v8:lang>{}</v8:lang>",
+                        unica_xml_format::text::escape_xml(lang)
+                    ),
+                    format!("{indent}\t<v8:content>{escaped}</v8:content>"),
+                    format!("{indent}</v8:item>"),
+                ]
+                .iter()
+                .map(|line| format!("{line}{newline}"))
+                .collect::<String>();
+                (span.end..span.end, block)
+            }
+            (None, None) => return Ok(false),
+        }
+    };
+    xml_text.replace_range(edit.0, &edit.1);
+    Ok(true)
 }
 
 fn property_text(property: &RootProperty, value: &Value) -> Result<String, String> {
@@ -149,7 +249,8 @@ fn replace_root_lines(xml_text: &mut String, name: &str, lines: &[String]) -> Re
         let document = parse(xml_text)?;
         let span = children(document.root_element(), name)
             .next()
-            .map(|node| line_span(xml_text, node.range()));
+            .map(|node| line_span(xml_text, node.range()))
+            .transpose()?;
         span
     };
     if let Some(span) = existing {
@@ -167,7 +268,7 @@ fn replace_root_lines(xml_text: &mut String, name: &str, lines: &[String]) -> Re
             .filter(Node::is_element)
             .find(|node| rank(node.tag_name().name()).is_some_and(|other| other > own))
             .ok_or_else(|| "the form root has no AutoCommandBar".to_string())?;
-        let span = line_span(xml_text, next.range());
+        let span = line_span(xml_text, next.range())?;
         let indent = xml_text[span.start..next.range().start].to_string();
         (span.start, indent)
     };
@@ -185,13 +286,20 @@ fn replace_root_lines(xml_text: &mut String, name: &str, lines: &[String]) -> Re
 }
 
 /// Строки, которые занимает элемент: от начала его строки до конца
-/// последней, с переводом строки.
-fn line_span(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+/// последней, с переводом строки. Элемент делит строку с соседом только
+/// в правленном вручную файле; такой корень не правится.
+fn line_span(text: &str, range: std::ops::Range<usize>) -> Result<std::ops::Range<usize>, String> {
     let start = text[..range.start].rfind('\n').map_or(0, |index| index + 1);
     let end = text[range.end..]
         .find('\n')
         .map_or(text.len(), |index| range.end + index + 1);
-    start..end
+    if !text[start..range.start].trim().is_empty() || !text[range.end..end].trim().is_empty() {
+        return Err(
+            "the form root shares a line between elements; re-export the form with the platform before editing it"
+                .to_string(),
+        );
+    }
+    Ok(start..end)
 }
 
 fn parse(xml_text: &str) -> Result<Document<'_>, String> {

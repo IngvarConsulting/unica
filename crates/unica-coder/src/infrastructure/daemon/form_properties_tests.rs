@@ -194,6 +194,42 @@ fn canonical_props_set_writes_a_multilingual_title_and_document_properties() {
         "{text}"
     );
 
+    // A plain string sets the default language and keeps other translations.
+    fixture.publish(props_set(FORM, json!({"Title": "Товары"})));
+    let text = String::from_utf8(std::fs::read(fixture.workspace.join(FORM_XML)).unwrap())
+        .unwrap()
+        .replace("\r\n", "\n");
+    assert!(
+        text.contains(concat!(
+            "\t\t\t<v8:content>Товары</v8:content>\n\t\t</v8:item>\n",
+            "\t\t<v8:item>\n\t\t\t<v8:lang>en</v8:lang>\n\t\t\t<v8:content>Product</v8:content>\n",
+        )),
+        "{text}"
+    );
+
+    // A title without the default language gains it after its translations,
+    // with the line endings of the form and the text escaped.
+    fixture.publish(props_set(FORM, json!({"Title": {"en": "Product"}})));
+    fixture.publish(props_set(FORM, json!({"Title": "A & <B>"})));
+    let raw = String::from_utf8(std::fs::read(fixture.workspace.join(FORM_XML)).unwrap()).unwrap();
+    assert!(
+        raw.contains("\t\t</v8:item>\r\n\t\t<v8:item>\r\n\t\t\t<v8:lang>ru</v8:lang>\r\n\t\t\t<v8:content>A &amp; &lt;B&gt;</v8:content>\r\n\t\t</v8:item>\r\n\t</Title>\r\n"),
+        "{raw}"
+    );
+    fixture.publish(props_set(FORM, json!({"Title": "Товар"})));
+    let text = String::from_utf8(std::fs::read(fixture.workspace.join(FORM_XML)).unwrap())
+        .unwrap()
+        .replace("\r\n", "\n");
+    assert!(
+        text.contains(concat!(
+            "\t<Title>\n",
+            "\t\t<v8:item>\n\t\t\t<v8:lang>en</v8:lang>\n\t\t\t<v8:content>Product</v8:content>\n\t\t</v8:item>\n",
+            "\t\t<v8:item>\n\t\t\t<v8:lang>ru</v8:lang>\n\t\t\t<v8:content>Товар</v8:content>\n\t\t</v8:item>\n",
+            "\t</Title>\n",
+        )),
+        "{text}"
+    );
+
     // A document form takes the posting properties; 1C exports them always.
     let document = "main:Document.Заказ.Form.ФормаДокумента";
     fixture.publish(props_set(
@@ -237,7 +273,12 @@ fn canonical_props_set_refuses_what_the_form_does_not_take() {
         (
             json!({"ReportResult": "Результат"}),
             "values.ReportResult",
-            "unknown argument",
+            "props.set does not write it",
+        ),
+        (
+            json!({"Title": {"ru": "Товар", "en": ""}}),
+            "",
+            "takes a non-empty text",
         ),
         (json!({"Width": -1}), "values.Width", ""),
         (json!({"Group": "Diagonal"}), "values.Group", ""),
@@ -256,9 +297,12 @@ fn canonical_props_set_refuses_what_the_form_does_not_take() {
             "{values}: {refused:?}"
         );
         let message = refused.diagnostics[0]["message"].as_str().unwrap();
+        // The argument path is in the message for a contract refusal and
+        // in `at` for a planner refusal.
+        let at = refused.at.as_deref().unwrap_or_default();
         assert!(
-            message.contains(path) && message.contains(part),
-            "{values}: {message}"
+            (message.contains(path) || at.ends_with(path)) && message.contains(part),
+            "{values}: {at}: {message}"
         );
         assert!(refused.changed.is_empty(), "{values}: {refused:?}");
     }
@@ -278,6 +322,29 @@ fn canonical_props_set_refuses_what_the_form_does_not_take() {
         unica_workspace::test_support::tree_snapshot(&fixture.workspace),
         before
     );
+
+    // A hand-edited root with two elements on one line is not edited.
+    let path = fixture.workspace.join(FORM_XML);
+    let text = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
+    let joined = text.replacen(
+        "</UseForFoldersAndItems>\r\n\t<AutoCommandBar",
+        "</UseForFoldersAndItems><AutoCommandBar",
+        1,
+    );
+    assert_ne!(joined, text);
+    std::fs::write(&path, &joined).unwrap();
+    let refused = fixture.call(ToolIdentity::Apply, props_set(FORM, json!({"Width": 60})));
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+    assert!(
+        refused.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("re-export the form"),
+        "{refused:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), joined.as_bytes());
+    std::fs::write(&path, &text).unwrap();
 
     // At the owner props.set keeps writing its descriptor.
     fixture.publish(props_set(

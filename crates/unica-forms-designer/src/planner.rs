@@ -577,6 +577,23 @@ pub fn parse_form_operation(
             format!("{operation_name} targets {shape}"),
         ));
     }
+    // Свойство-ссылку корня формы операция знает, но не пишет: отказ
+    // называет причину, а не «неизвестный аргумент».
+    if operation == FormOperation::PropsSet {
+        if let Some(values) = args.get("values").and_then(Value::as_object) {
+            for name in values.keys() {
+                if unica_forms::root_properties::root_property(name).is_some_and(|(_, property)| {
+                    property.value == unica_forms::root_properties::RootValue::Reference
+                }) {
+                    return Err(bad(
+                        op_index,
+                        &format!("values.{name}"),
+                        format!("`{name}` names a form attribute, item or object; props.set does not write it"),
+                    ));
+                }
+            }
+        }
+    }
     if operation == FormOperation::ItemAdd {
         if let Some(items) = args.get("items").and_then(Value::as_array) {
             for (index, item) in items.iter().enumerate() {

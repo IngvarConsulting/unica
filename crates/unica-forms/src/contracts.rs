@@ -557,9 +557,9 @@ pub fn form_props_set() -> OperationContract {
     values.insert(
         "Title".to_string(),
         json!({"anyOf":[
-            {"type":"string","description":"Text in the default language of the source set; an empty string removes the title."},
+            {"type":"string","description":"Text in the default language of the source set; other translations stay. An empty string removes the title."},
             {"type":"object","additionalProperties":{"type":"string"},"minProperties":1,
-                "description":"Text by language code: {\"ru\": \"…\", \"en\": \"…\"}."}
+                "description":"Every translation by language code: {\"ru\": \"…\", \"en\": \"…\"}."}
         ]}),
     );
     for property in writable_root_properties() {
