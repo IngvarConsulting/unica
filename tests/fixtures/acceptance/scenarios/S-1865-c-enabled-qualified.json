@@ -17,6 +17,7 @@
       "expect": [
         "ok"
       ],
+      "status": "failed",
       "validators": [
         "bsl"
       ],
