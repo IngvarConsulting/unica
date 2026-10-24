@@ -6964,3 +6964,67 @@ fn subsystem_text_properties_preserve_presence_and_damage_at_every_depth() {
         }
     }
 }
+
+/// #1924: заимствованный план обмена без своего `Ext/Content.xml` не знает
+/// состава в расширении — его несёт план родителя. Чтение не выдаёт пустой
+/// список за известный состав.
+#[test]
+fn a_borrowed_exchange_plan_without_its_own_content_does_not_read_as_empty() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+    write(
+        &fixture.source.join("Configuration.xml"),
+        &configuration.replace(
+            "</ChildObjects>",
+            "<ExchangePlan>Узлы</ExchangePlan><ExchangePlan>Собственный</ExchangePlan></ChildObjects>",
+        ),
+    );
+    // Собственный план расширения без `Ext/Content.xml` — доказанно пустой состав.
+    write(
+        &fixture.source.join("ExchangePlans/Собственный.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<ExchangePlan uuid="2f0e0000-0000-4000-8000-000000000302">
+		<Properties>
+			<Name>Собственный</Name>
+			<Comment/>
+		</Properties>
+		<ChildObjects/>
+	</ExchangePlan>
+</MetaDataObject>"#,
+    );
+    write(
+        &fixture.source.join("ExchangePlans/Узлы.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+	<ExchangePlan uuid="2f0e0000-0000-4000-8000-000000000301">
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Узлы</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>1f0e0000-0000-4000-8000-000000000301</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects/>
+	</ExchangePlan>
+</MetaDataObject>"#,
+    );
+    let service = fixture.extension_view_service();
+    let content_limit = "relations.content is absent; the relation list may be incomplete";
+    let limits = |at: &str| {
+        let view = service.view(ViewRequest::new(at).unwrap());
+        assert!(view.ok, "{at}: {view:?}");
+        view.data.unwrap()["limits"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    for at in ["main:ExchangePlan.Узлы", "main:ExchangePlan.Узлы.Relation"] {
+        assert!(limits(at).contains(&json!(content_limit)), "{at}");
+    }
+    for at in [
+        "main:ExchangePlan.Собственный",
+        "main:ExchangePlan.Собственный.Relation",
+    ] {
+        assert!(!limits(at).contains(&json!(content_limit)), "{at}");
+    }
+}

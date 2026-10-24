@@ -903,6 +903,12 @@ impl ProviderReadAuthority {
                     info.relations.content = Some(Some(observation.items));
                     observation.errors
                 }
+                // Заимствованный план без своего `Ext/Content.xml` несёт состав
+                // плана родителя: здесь он неизвестен, а не пуст (#1924).
+                Ok(None) if borrowing.as_ref().is_some_and(|b| b.extends.is_some()) => {
+                    info.relations.content = Some(None);
+                    Vec::new()
+                }
                 // The platform omits Content.xml for an empty composition.
                 Ok(None) => {
                     info.relations.content = Some(Some(Vec::new()));
