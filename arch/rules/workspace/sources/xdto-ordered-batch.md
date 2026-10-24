@@ -6,6 +6,7 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/xdto.rs::staged_xdto_poisoned_second_op_publishes_nothing
   - crates/unica-coder/src/infrastructure/native_operations/xdto.rs::staged_xdto_dry_and_real_share_postimage_effects_and_revision
   - crates/unica-coder/src/infrastructure/daemon/xdto_can_tests.rs::forward_reference_is_validated_on_the_final_public_package_without_writes
+  - crates/unica-coder/src/infrastructure/native_operations/xdto.rs::staged_xdto_rename_changes_only_names_and_keeps_pre_existing_findings
 ---
 
 # Изменения пакета XDTO выполняются по порядку одной публикацией
@@ -19,7 +20,8 @@ check:
 запроса относительно исходного пакета. Ссылка на тип, создаваемый позже
 в том же запросе, допустима, если итоговый пакет корректен. Новые ошибки
 итогового пакета блокируют публикацию и указывают исходную операцию;
-ранее существовавшие ошибки не становятся новыми из-за смещения текста.
+ранее существовавшие ошибки не становятся новыми из-за смещения текста
+или переименования свойства, к которому они относятся.
 Проверки структуры XML, идентичности и допуска записи сохраняются на каждом
 шаге.
 

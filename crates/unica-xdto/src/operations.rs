@@ -56,6 +56,7 @@ xdto_operations!(
     AddProperty => ("property.add", XdtoPropertyContainer, Values),
     RemoveType => ("type.remove", XdtoType, Target),
     RemoveProperty => ("property.remove", XdtoProperty, Target),
+    RenameProperty => ("property.rename", XdtoProperty, Values),
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +175,23 @@ impl XdtoPropertyPath {
         &self.0
     }
 
+    /// Property names of the chain with the address escape removed.
+    pub fn names(&self) -> Vec<String> {
+        let mut names = vec![String::new()];
+        let mut characters = self.0.chars();
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => names
+                    .last_mut()
+                    .expect("one name is open")
+                    .extend(characters.next()),
+                '.' => names.push(String::new()),
+                _ => names.last_mut().expect("one name is open").push(character),
+            }
+        }
+        names
+    }
+
     fn from_segments(properties: &[String]) -> Option<Self> {
         (!properties.is_empty()).then(|| {
             Self(
@@ -253,12 +271,21 @@ pub struct XdtoRemovePropertyArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XdtoRenamePropertyArgs {
+    pub at: QualifiedAddress,
+    pub name: XmlNcName,
+    pub property_path: Option<XdtoPropertyPath>,
+    pub new_name: XmlNcName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum XdtoPlanOperation {
     AddValueType(XdtoAddValueTypeArgs),
     AddObjectType(XdtoAddObjectTypeArgs),
     AddProperty(XdtoAddPropertyArgs),
     RemoveType(XdtoRemoveTypeArgs),
     RemoveProperty(XdtoRemovePropertyArgs),
+    RenameProperty(XdtoRenamePropertyArgs),
 }
 
 /// Name of the recursive property definition in the published schema.
@@ -351,6 +378,12 @@ impl XdtoOperation {
                 "Remove the addressed property, preserving the rest of its package.",
                 json!({}),
             ),
+            Self::RenameProperty => (
+                Some(object(&[("newName", ncname())], &["newName"])),
+                "The existing own property declared with name: ...Type.T.Property.P[.Property.Child...].",
+                "Change only the name of the addressed own property, keeping its type, bounds, serialization attributes including localName, and position. The renamed property is read at the address with its last segment replaced; the old address no longer resolves.",
+                json!({"values":{"newName":"RenamedProperty"}}),
+            ),
         };
         let mut schema = match payload {
             Some(payload) => object(&[("at", text(true)), ("values", payload)], &["values"]),
@@ -361,7 +394,7 @@ impl XdtoOperation {
         }
         OperationContract {
             schema, target, effect, example_args,
-            notes: "Names are XML NCNames and types are prefixed XML QNames. QName bindings and target structure are checked against the selected package. Only Package.bin is edited; exact additions repeat as no-op. Add operands belong in values; remove has no payload. The common args.at address override remains available.",
+            notes: "Names are XML NCNames and types are prefixed XML QNames. QName bindings and target structure are checked against the selected package. Only Package.bin is edited; exact additions and renaming to the current name repeat as no-op. Add and rename operands belong in values; remove has no payload. The common args.at address override remains available.",
             help: "skills/xdto/SKILL.md",
             format_validators: &[],
         }
@@ -432,6 +465,15 @@ impl XdtoOperation {
                     property_path: XdtoPropertyPath::from_segments(parents),
                 })
             }
+            Self::RenameProperty => reader.required_object("values", |values| {
+                let (name, parents) = properties.split_last().expect("resolved property target");
+                Ok(XdtoPlanOperation::RenameProperty(XdtoRenamePropertyArgs {
+                    at,
+                    name: XmlNcName(name.clone()),
+                    property_path: XdtoPropertyPath::from_segments(parents),
+                    new_name: values.ncname("newName")?,
+                }))
+            })?,
         };
         reader.finish(intent)
     }
@@ -824,7 +866,9 @@ mod tests {
             XdtoOperation::AddValueType | XdtoOperation::AddObjectType => "main:XDTOPackage.Sample",
             XdtoOperation::AddProperty | XdtoOperation::RemoveType =>
                 "main:XDTOPackage.Sample.Type.Target",
-            XdtoOperation::RemoveProperty => "main:XDTOPackage.Sample.Type.Target.Property.Child",
+            XdtoOperation::RemoveProperty | XdtoOperation::RenameProperty => {
+                "main:XDTOPackage.Sample.Type.Target.Property.Child"
+            }
         });
         args
     }
@@ -1263,5 +1307,61 @@ mod tests {
             panic!("property expected");
         };
         assert_eq!(args.property.min_occurs, Some(1));
+    }
+
+    #[test]
+    fn property_rename_takes_its_target_from_the_address_and_only_the_new_name_from_values() {
+        let operation = XdtoOperation::RenameProperty;
+        let oracle = jsonschema::validator_for(&operation.contract().schema).unwrap();
+        let args = json!({
+            "at": r"main:XDTOPackage.Sample.Type.Target.Property.A\.B.Property.Код",
+            "values": {"newName": "Внешний.Код"},
+        });
+        assert!(oracle.is_valid(&args));
+        let XdtoPlanOperation::RenameProperty(decoded) =
+            operation.decode(&args, "ops[2].args", "main").unwrap()
+        else {
+            panic!("property.rename keeps its typed intent");
+        };
+        assert_eq!(decoded.name, XmlNcName("Код".into()));
+        assert_eq!(
+            decoded.property_path,
+            Some(XdtoPropertyPath(r"A\.B".into()))
+        );
+        assert_eq!(decoded.property_path.unwrap().names(), ["A.B"]);
+        assert_eq!(decoded.new_name, XmlNcName("Внешний.Код".into()));
+        for (args, path) in [
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target.Property.Код", "values": {"newName": ""}}),
+                "ops[2].args.values.newName",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target.Property.Код", "values": {"newName": "1Код"}}),
+                "ops[2].args.values.newName",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target.Property.Код", "values": {"newName": "tns:Код"}}),
+                "ops[2].args.values.newName",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target.Property.Код", "values": {}}),
+                "ops[2].args.values.newName",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target.Property.Код"}),
+                "ops[2].args.values",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target", "values": {"newName": "Б"}}),
+                "ops[2].args.at",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target.Property.Код", "values": {"newName": "Б", "name": "Код"}}),
+                "ops[2].args.values.name",
+            ),
+        ] {
+            let error = operation.decode(&args, "ops[2].args", "main").unwrap_err();
+            assert_eq!(error.path, path, "{args}");
+        }
     }
 }
