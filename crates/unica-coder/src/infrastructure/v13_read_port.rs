@@ -731,11 +731,13 @@ impl ProviderReadAuthority {
             })?;
         // Отсутствующий или неразбираемый модуль не задаёт сигнатур. Ошибка
         // доступа и отмена сохраняются: ссылка не становится необязательным файлом.
-        let module_relative = relative.with_file_name("Form").join("Module.bsl");
         let module = if crate::infrastructure::form_composition::form_validation_requires_module(
             &text,
             metadata_owner,
         ) {
+            let module_target = unica_source_designer::module_layout::form_module_target(target)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+            let module_relative = self.module_relative(&module_target)?;
             self.read_optional_relative_with_checkpoint(&module_relative, None, checkpoint)?
                 .and_then(|bytes| String::from_utf8(bytes).ok())
         } else {

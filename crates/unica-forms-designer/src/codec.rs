@@ -624,7 +624,8 @@ pub fn form_validation_requires_module(
         root,
         None,
         metadata_owner,
-        &mut FormValidationReporter::new("", 30, false),
+        // Без предела ошибок обход видит каждую привязку при любом maxErrors проверки.
+        &mut FormValidationReporter::new("", usize::MAX, false),
     )
 }
 

@@ -113,7 +113,7 @@ pub(crate) fn form_validation_outcome(
     }
 }
 
-/// Связывает сохранённые факты чтения с кодеком формы.
+/// Нужен ли модуль формы для проверки сигнатур обработчиков; решает кодек формы.
 pub(crate) fn form_validation_requires_module(
     text: &str,
     metadata_owner: Option<unica_address::address::NodeKind>,
