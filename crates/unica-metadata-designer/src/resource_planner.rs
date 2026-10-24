@@ -3,7 +3,7 @@ use crate::interface::{
     interface_order_membership, interface_text_direct_item_values, interface_text_do_group_order,
     interface_text_do_hide, interface_text_do_order, interface_text_do_place,
     interface_text_do_show, interface_text_do_subsystem_order, interface_text_group_command_order,
-    normalize_interface_command_name,
+    normalize_interface_command_name, platform_empty_command_interface,
 };
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -413,6 +413,18 @@ pub fn parse_subsystem_operation(
 ) -> Result<MetadataResourcePlan, ApplyPlanError> {
     let target =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
+    // Разбор ниже читает только эти ключи: остальные он молча пропускал бы,
+    // а отказ обязан назвать лишний ключ (INV.WIRE.V13-CAN-DICTIONARY, #1985).
+    if let Some(key) = args
+        .keys()
+        .find(|key| !matches!(key.as_str(), "at" | "items" | "values"))
+    {
+        return Err(bad(
+            op_index,
+            key,
+            format!("unknown {operation} argument `{key}`"),
+        ));
+    }
     if let Some(section) = operation.strip_suffix(".set").filter(|section| {
         matches!(
             *section,
@@ -795,17 +807,49 @@ pub fn stage_metadata_resource_plan(
             edit,
         } => {
             let at_path = format!("ops[{op_index}].args.at");
-            let preimage = staged
+            let existing = staged
                 .read(relative)
-                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-                .ok_or_else(|| {
-                    ApplyPlanError::new(
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            // Пустой интерфейс платформа не выгружает, и у новой подсистемы
+            // файла нет: цель подтверждает дескриптор владельца, он же даёт
+            // версию формата, а файл создаёт первая правка видимости или
+            // размещения. Порядок переставляет хранимый состав, и без файла
+            // переставлять нечего (#2010).
+            let seed = match &existing {
+                Some(bytes) => bytes.clone(),
+                None if !matches!(
+                    edit,
+                    InterfaceEdit::Visibility(_) | InterfaceEdit::Placement(_)
+                ) =>
+                {
+                    return Err(ApplyPlanError::new(
                         ApplyPlanErrorKind::NotFound,
                         "the command interface document was not found",
                     )
-                    .at_path(at_path.clone())
-                })?;
-            let mut text = String::from_utf8(preimage.clone()).map_err(|_| {
+                    .at_path(at_path.clone()));
+                }
+                None => {
+                    let owner = staged
+                        .read(&command_interface_owner(relative))
+                        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                        .ok_or_else(|| {
+                            ApplyPlanError::new(
+                                ApplyPlanErrorKind::NotFound,
+                                "the command interface owner was not found",
+                            )
+                            .at_path(at_path.clone())
+                        })?;
+                    let version = descriptor_format_version(&owner).ok_or_else(|| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::InvalidSource,
+                            "the command interface owner has no format version",
+                        )
+                        .at_path(at_path.clone())
+                    })?;
+                    platform_empty_command_interface(&version).into_bytes()
+                }
+            };
+            let mut text = String::from_utf8(seed.clone()).map_err(|_| {
                 ApplyPlanError::new(
                     ApplyPlanErrorKind::InvalidSource,
                     "the command interface document is not UTF-8",
@@ -930,10 +974,12 @@ pub fn stage_metadata_resource_plan(
                 }
             }
             let postimage = text.into_bytes();
-            if postimage != preimage {
-                staged
-                    .replace(relative, &preimage, postimage)
-                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            if postimage != seed {
+                match &existing {
+                    Some(preimage) => staged.replace(relative, preimage, postimage),
+                    None => staged.create(relative, postimage),
+                }
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
                 provisional.push(ProvisionalApplyEffect::spanning(
                     vec![relative.clone()],
                     DomainEvent::new(DomainEventKind::SubsystemChanged, address.clone()),
@@ -1171,4 +1217,24 @@ pub mod test_support {
     pub fn subsystem_stub_xml(name: &str, format_version: &str, uuid: &str) -> String {
         super::subsystem_stub_xml(name, format_version, uuid)
     }
+}
+
+/// Дескриптор владельца `<владелец>/Ext/CommandInterface.xml`: `<Имя>.xml`
+/// подсистемы рядом с её каталогом или `Configuration.xml` для корня.
+fn command_interface_owner(relative: &std::path::Path) -> PathBuf {
+    let directory = relative
+        .parent()
+        .and_then(std::path::Path::parent)
+        .filter(|directory| !directory.as_os_str().is_empty());
+    match directory {
+        Some(directory) => directory.with_extension("xml"),
+        None => PathBuf::from("Configuration.xml"),
+    }
+}
+
+fn descriptor_format_version(descriptor: &[u8]) -> Option<String> {
+    let source = std::str::from_utf8(descriptor).ok()?;
+    let source = source.trim_start_matches('\u{feff}');
+    let document = roxmltree::Document::parse(source).ok()?;
+    unica_source_designer::roots::root_version_literal(source, document.root_element())
 }

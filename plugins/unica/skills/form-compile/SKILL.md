@@ -524,7 +524,6 @@ allowed-tools:
   "params": {
     "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
     }
   }

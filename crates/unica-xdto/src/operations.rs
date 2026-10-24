@@ -1,6 +1,7 @@
 //! The current XDTO mutation profile owns its names, operands and argument grammar.
 
 use crate::applicability::OperationApplicability;
+use crate::facets::ValueFacets;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use unica_address::address::{escape_name, NodeKind, QualifiedAddress};
@@ -211,7 +212,7 @@ impl XdtoPropertyPath {
 }
 
 /// The supported creation profile for an own property: a QName type or an
-/// anonymous ObjectType with ordered child properties. Observed properties
+/// anonymous ValueType or ObjectType with ordered child properties. Observed properties
 /// and future patch/ref inputs are distinct profiles; this is not the complete
 /// platform property algebra.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,6 +231,11 @@ pub enum XdtoPropertyDefinition {
     Named(PrefixedXmlQName),
     /// An anonymous ObjectType declared inside the property.
     Object(Vec<XdtoPropertySpec>),
+    /// An anonymous primitive ValueType with optional restrictions.
+    Value {
+        base: PrefixedXmlQName,
+        facets: ValueFacets,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,6 +243,7 @@ pub struct XdtoAddValueTypeArgs {
     pub at: QualifiedAddress,
     pub name: XmlNcName,
     pub base: PrefixedXmlQName,
+    pub facets: ValueFacets,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,14 +298,31 @@ pub enum XdtoPlanOperation {
 /// Name of the recursive property definition in the published schema.
 const PROPERTY_DEFINITION: &str = "xdtoProperty";
 
-/// One created property: a name, exactly one of `type` or `objectType`, and
-/// its bounds. Child properties of an anonymous ObjectType use the same
-/// definition through `$defs`.
+fn facets_schema() -> Value {
+    let decimal = lexical_schema(r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$".to_string());
+    object(
+        &[
+            ("maxLength", json!({"type":"integer","minimum":0})),
+            ("totalDigits", json!({"type":"integer","minimum":1})),
+            ("fractionDigits", json!({"type":"integer","minimum":0})),
+            ("minInclusive", decimal.clone()),
+            ("maxInclusive", decimal),
+        ],
+        &[],
+    )
+}
+
+/// One created property has exactly one definition. Anonymous ObjectType
+/// children use the same grammar through `$defs`.
 fn property_definition() -> Value {
     let mut property = object(
         &[
             ("name", ncname()),
             ("type", qname()),
+            (
+                "valueType",
+                object(&[("base", qname()), ("facets", facets_schema())], &["base"]),
+            ),
             (
                 "objectType",
                 object(
@@ -320,8 +344,9 @@ fn property_definition() -> Value {
         ],
         &["name"],
     );
-    property["anyOf"] = json!([{"required":["type"]}, {"required":["objectType"]}]);
-    property["not"] = json!({"required":["type", "objectType"]});
+    property["anyOf"] =
+        json!([{"required":["type"]}, {"required":["objectType"]}, {"required":["valueType"]}]);
+    property["not"] = json!({"anyOf":[{"required":["type","objectType"]},{"required":["type","valueType"]},{"required":["objectType","valueType"]}]});
     property
 }
 
@@ -342,7 +367,7 @@ impl XdtoOperation {
     pub fn contract(self) -> OperationContract {
         let (payload, target, effect, example_args) = match self {
             Self::AddValueType => (
-                Some(object(&[("name", ncname()), ("base", qname())], &["name", "base"])),
+                Some(object(&[("name", ncname()), ("base", qname()), ("facets",facets_schema())], &["name", "base"])),
                 "The XDTO package: <source-set>:XDTOPackage.<Name>.",
                 "Add a named value type with the supplied prefixed base QName.",
                 json!({"values":{"name":"AddedValue", "base":"xs:string"}}),
@@ -363,7 +388,7 @@ impl XdtoOperation {
             Self::AddProperty => (
                 Some(object(&[("property", property_definition())], &["property"])),
                 "An object type or a property that holds one nested anonymous ObjectType: ...Type.T[.Property.P...].",
-                "Add one own property with either a QName type or an anonymous ObjectType and its ordered child properties. Omitted bounds stay absent and mean 1; explicit values stay explicit.",
+                "Add one own property with exactly one QName type, anonymous ValueType with primitive base and optional facets, or anonymous ObjectType with ordered child properties. Omitted bounds stay absent and mean 1; explicit values stay explicit.",
                 json!({"values":{"property":{"name":"AddedProperty", "type":"xs:string", "minOccurs":0}}}),
             ),
             Self::RemoveType => (
@@ -427,6 +452,7 @@ impl XdtoOperation {
                     at,
                     name: values.ncname("name")?,
                     base: values.qname("base")?,
+                    facets: values.facets("facets")?,
                 }))
             })?,
             Self::AddObjectType => reader.required_object("values", |values| {
@@ -488,10 +514,15 @@ fn property_spec<'a>(
     let min_occurs = property.min_occurs("minOccurs")?;
     let max_occurs = property.max_occurs("maxOccurs")?;
     let name = property.ncname("name")?;
-    if property.has("type") == property.has("objectType") {
+    if ["type", "objectType", "valueType"]
+        .iter()
+        .filter(|key| property.has(key))
+        .count()
+        != 1
+    {
         return Err(invalid(
             &property.path,
-            "property requires exactly one of type or objectType",
+            "property requires exactly one of type, objectType or valueType",
         ));
     }
     let type_ref = property.optional_qname("type")?;
@@ -508,9 +539,13 @@ fn property_spec<'a>(
             Ok(spec)
         })
     })?;
-    let definition = match (type_ref, children) {
-        (Some(type_ref), None) => XdtoPropertyDefinition::Named(type_ref),
-        (None, Some(children)) => XdtoPropertyDefinition::Object(children),
+    let value = property.optional_object("valueType", |value| {
+        Ok((value.qname("base")?, value.facets("facets")?))
+    })?;
+    let definition = match (type_ref, children, value) {
+        (Some(type_ref), None, None) => XdtoPropertyDefinition::Named(type_ref),
+        (None, Some(children), None) => XdtoPropertyDefinition::Object(children),
+        (None, None, Some((base, facets))) => XdtoPropertyDefinition::Value { base, facets },
         _ => unreachable!("exactly one definition was checked above"),
     };
     Ok(XdtoPropertySpec {
@@ -694,6 +729,36 @@ impl<'a> ArgumentReader<'a> {
             ));
         }
         Ok(PrefixedXmlQName(value))
+    }
+
+    /// Facets are read field by field through their declared shapes; the
+    /// restrictions between fields are checked once, by `ValueFacets`.
+    fn facets(&mut self, key: &str) -> Result<ValueFacets, ContractError> {
+        let facets = self.optional_object(key, |facets| {
+            let max_length = facets.nonnegative("maxLength")?;
+            let total_digits = facets.nonnegative("totalDigits")?;
+            let fraction_digits = facets.nonnegative("fractionDigits")?;
+            let min_inclusive = facets.optional_text("minInclusive")?;
+            let max_inclusive = facets.optional_text("maxInclusive")?;
+            ValueFacets::from_parts(
+                max_length,
+                total_digits,
+                fraction_digits,
+                min_inclusive,
+                max_inclusive,
+            )
+            .map_err(|(field, message)| invalid(&format!("{}.{field}", facets.path), message))
+        })?;
+        Ok(facets.unwrap_or_default())
+    }
+
+    fn nonnegative(&mut self, key: &str) -> Result<Option<u64>, ContractError> {
+        self.read(key, |value, shape, path| {
+            let parsed = crate::facets::nonnegative_integer(value)
+                .ok_or_else(|| invalid(path, "facet must be a nonnegative integer"))?;
+            shape.validate_field(&json!(parsed), path)?;
+            Ok(parsed)
+        })
     }
 
     fn min_occurs(&mut self, key: &str) -> Result<Option<u8>, ContractError> {
@@ -956,6 +1021,116 @@ mod tests {
                     .unwrap_err()
                     .path,
                 path,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_facets_are_decoded_through_their_declared_shapes() {
+        let operation = XdtoOperation::AddValueType;
+        let args = |facets: Value| json!({"at":"main:XDTOPackage.Sample","values":{"name":"V","base":"xs:decimal","facets":facets}});
+        let path = |facets: Value| {
+            operation
+                .decode(&args(facets), "ops[0].args", "main")
+                .unwrap_err()
+                .path
+        };
+        assert_eq!(
+            path(json!({"maxLength":-1})),
+            "ops[0].args.values.facets.maxLength"
+        );
+        assert_eq!(
+            path(json!({"pattern":"x"})),
+            "ops[0].args.values.facets.pattern"
+        );
+        assert_eq!(
+            path(json!({"totalDigits":2,"fractionDigits":3})),
+            "ops[0].args.values.facets.fractionDigits"
+        );
+        assert_eq!(
+            path(json!({"minInclusive":"2","maxInclusive":"1"})),
+            "ops[0].args.values.facets.minInclusive"
+        );
+        // A narrowed declaration of a facet is honoured by the decoder.
+        let mut narrowed = operation.contract();
+        narrowed.schema["properties"]["values"]["properties"]["facets"]["properties"]
+            ["totalDigits"]["minimum"] = json!(7);
+        let error = operation
+            .decode_with_contract(
+                &narrowed,
+                &args(json!({"totalDigits":6})),
+                "ops[0].args",
+                "main",
+            )
+            .unwrap_err();
+        assert_eq!(error.path, "ops[0].args.values.facets.totalDigits");
+        // Every declared facet field is consumed by the decoder.
+        let mut extended = operation.contract();
+        extended.schema["properties"]["values"]["properties"]["facets"]["properties"]["unwired"] =
+            json!({"type":"boolean"});
+        let error = operation
+            .decode_with_contract(&extended, &args(json!({})), "ops[0].args", "main")
+            .unwrap_err();
+        assert_eq!(error.path, "ops[0].args.values.facets.unwired");
+    }
+
+    #[test]
+    fn restricted_values_keep_schema_and_decoder_in_agreement() {
+        for operation in [XdtoOperation::AddProperty, XdtoOperation::AddValueType] {
+            let contract = operation.contract();
+            let schema = jsonschema::validator_for(&contract.schema).unwrap();
+            let args = |facets: Value| match operation {
+                XdtoOperation::AddProperty => {
+                    json!({"at":"main:XDTOPackage.Sample.Type.Target","values":{"property":{"name":"V","valueType":{"base":"xs:decimal","facets":facets}}}})
+                }
+                _ => {
+                    json!({"at":"main:XDTOPackage.Sample","values":{"name":"V","base":"xs:decimal","facets":facets}})
+                }
+            };
+            for facets in [
+                json!({}),
+                json!({"totalDigits":5,"fractionDigits":2,"minInclusive":"-0.01","maxInclusive":"999.99"}),
+                json!({"fractionDigits":0.0,"totalDigits":5e0}),
+            ] {
+                let value = args(facets);
+                assert!(schema.is_valid(&value), "{value}");
+                operation.decode(&value, "ops[0].args", "main").unwrap();
+            }
+            for facets in [
+                json!({"minInclusive":"1\n"}),
+                json!({"maxInclusive":"1\r\n"}),
+                json!({"minInclusive":"1e2"}),
+                json!({"minInclusive":1}),
+                json!({"totalDigits":0}),
+                json!({"fractionDigits":-1}),
+                json!({"fractionDigits":0.5}),
+                json!({"unknown":1}),
+            ] {
+                let value = args(facets);
+                assert!(!schema.is_valid(&value), "{value}");
+                assert!(
+                    operation.decode(&value, "ops[0].args", "main").is_err(),
+                    "{value}"
+                );
+            }
+        }
+        let operation = XdtoOperation::AddProperty;
+        let contract = operation.contract();
+        let schema = jsonschema::validator_for(&contract.schema).unwrap();
+        for definitions in [
+            json!({"type":"xs:string","objectType":{"properties":[]}}),
+            json!({"type":"xs:string","valueType":{"base":"xs:string"}}),
+            json!({"objectType":{"properties":[]},"valueType":{"base":"xs:string"}}),
+            json!({"type":"xs:string","objectType":{"properties":[]},"valueType":{"base":"xs:string"}}),
+        ] {
+            let mut property = definitions;
+            property["name"] = json!("V");
+            let value =
+                json!({"at":"main:XDTOPackage.Sample.Type.Target","values":{"property":property}});
+            assert!(!schema.is_valid(&value), "{value}");
+            assert!(
+                operation.decode(&value, "ops[0].args", "main").is_err(),
                 "{value}"
             );
         }

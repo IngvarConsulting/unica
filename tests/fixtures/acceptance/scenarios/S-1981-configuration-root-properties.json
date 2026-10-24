@@ -1,0 +1,419 @@
+{
+  "id": "S-1981-configuration-root-properties",
+  "issue": 1981,
+  "area": "Свойства конфигурации",
+  "workspace": "tests/fixtures/acceptance/workspace-borrowed",
+  "task": "Поменять версию, поставщика, синоним и режим совместимости корня конфигурации и описание корня расширения через props.set: Can корня называет свой профиль и значения перечислений, план не пишет файлов, публикация меняет Configuration.xml своего набора, не трогает соседний и читается обратно. Значение вне перечисления, имя корня и свойство конфигурации на корне расширения отклоняются до записи.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "cf": {
+          "file": "src/cf/Configuration.xml",
+          "kind": "sha256"
+        },
+        "ext": {
+          "file": "src/ext/Configuration.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CompatibilityMode/enum",
+          "contains": "Version8_3_24"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/version/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ConfigurationExtensionCompatibilityMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Name",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Configuration.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ConfigurationExtensionCompatibilityMode/enum",
+          "contains": "Version8_3_24"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CompatibilityMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/DefaultRunMode",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "version": "1.0.0.2",
+                "Vendor": "ООО Пример",
+                "Synonym": "Учёт",
+                "CompatibilityMode": "Version8_3_27"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cf"
+        },
+        {
+          "path": "src/ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.ext"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Version",
+          "eq": [
+            "1.0.0.2"
+          ]
+        },
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Vendor",
+          "eq": [
+            "ООО Пример"
+          ]
+        },
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}CompatibilityMode",
+          "eq": [
+            "Version8_3_27"
+          ]
+        },
+        {
+          "path": "src/ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.ext"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/version",
+          "eq": "1.0.0.2"
+        },
+        {
+          "pointer": "/data/props/vendor",
+          "eq": "ООО Пример"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Учёт"
+        },
+        {
+          "pointer": "/data/props/properties/compatibilityMode",
+          "eq": "Version8_3_27"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "cfAfter": {
+          "file": "src/cf/Configuration.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CompatibilityMode": "Version9"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.CompatibilityMode"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cfAfter"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Name": "Другое"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown field `Name`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.Name"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cfAfter"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DefaultRunMode": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown field `DefaultRunMode`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.DefaultRunMode"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.ext"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Version": "2.0",
+                "comment": "Исправления",
+                "ConfigurationExtensionCompatibilityMode": "Version8_3_23"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.ext"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ext/Configuration.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Version",
+          "eq": [
+            "2.0"
+          ]
+        },
+        {
+          "path": "src/ext/Configuration.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "Исправления"
+          ]
+        },
+        {
+          "path": "src/ext/Configuration.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ConfigurationExtensionCompatibilityMode",
+          "eq": [
+            "Version8_3_23"
+          ]
+        },
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cfAfter"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/version",
+          "eq": "2.0"
+        },
+        {
+          "pointer": "/data/props/properties/comment",
+          "eq": "Исправления"
+        }
+      ]
+    }
+  ]
+}

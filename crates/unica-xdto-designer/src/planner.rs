@@ -507,6 +507,7 @@ pub fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWr
         XdtoPlanOperation::AddValueType(args) => writer::TypedWriterOperation::AddValueType {
             name: args.name.as_str(),
             base: args.base.as_str(),
+            facets: Some(&args.facets),
         },
         XdtoPlanOperation::AddObjectType(args) => writer::TypedWriterOperation::AddObjectType {
             name: args.name.as_str(),
@@ -564,6 +565,20 @@ pub fn staged_writer_error(
         writer::WriterErrorField::Base => format!("{base}.values.base"),
         writer::WriterErrorField::Before => format!("{base}.values.before"),
         writer::WriterErrorField::After => format!("{base}.values.after"),
+        writer::WriterErrorField::Facets => format!("{base}.values.facets"),
+        // The writer checks the whole tree; a top-level anonymous ValueType
+        // is named exactly, a nested one by the property that holds it.
+        writer::WriterErrorField::ValueType => match operation {
+            XdtoPlanOperation::AddProperty(args)
+                if matches!(
+                    args.property.definition,
+                    unica_xdto::operations::XdtoPropertyDefinition::Value { .. }
+                ) =>
+            {
+                format!("{base}.values.property.valueType")
+            }
+            _ => format!("{base}.values.property"),
+        },
         // Цепочка свойств и имя удаляемого свойства задаются адресом.
         writer::WriterErrorField::PropertyPath => format!("{base}.at"),
         writer::WriterErrorField::PropertyName => match operation {
@@ -573,10 +588,12 @@ pub fn staged_writer_error(
     };
     // Цепочка свойств адреса не дошла до вложенного типа: узел есть, но
     // свойства в него не кладутся — это говорится прямо, а не общим отказом.
-    let message = if matches!(error.field(), writer::WriterErrorField::PropertyPath) {
-        "the addressed XDTO property chain does not reach a single nested anonymous type (typeDef); address a type or a property that declares one"
-    } else {
-        "XDTO writer rejected the typed operation"
+    let message = match error.field() {
+        writer::WriterErrorField::PropertyPath => "the addressed XDTO property chain does not reach a single nested anonymous type (typeDef); address a type or a property that declares one".to_string(),
+        // An unsupported base and facet profile is the caller's to fix, so
+        // the refusal says which profiles are supported.
+        writer::WriterErrorField::Facets | writer::WriterErrorField::ValueType => error.to_string(),
+        _ => "XDTO writer rejected the typed operation".to_string(),
     };
     ApplyPlanError::new(kind, message).at_path(path)
 }
@@ -608,6 +625,9 @@ fn xdto_validation_error_path(operation: &XdtoPlanOperation, op_index: usize) ->
             }
             unica_xdto::operations::XdtoPropertyDefinition::Object(_) => {
                 format!("{base}.values.property.objectType")
+            }
+            unica_xdto::operations::XdtoPropertyDefinition::Value { .. } => {
+                format!("{base}.values.property.valueType")
             }
         },
         XdtoPlanOperation::RenameProperty(_) => format!("{base}.values.newName"),
@@ -815,5 +835,52 @@ impl XdtoValidationLedger {
         }
         resource.postimage_digest = Sha256::digest(after).into();
         resource.last_operation_index = op_index;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{staged_writer_error, staged_writer_operation};
+    use crate::writer::plan_typed;
+    use serde_json::json;
+    use unica_source_contract::proposal::ApplyPlanErrorKind;
+    use unica_xdto::operations::XdtoOperation;
+
+    const PACKAGE: &str = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:test" targetNamespace="urn:test"><objectType name="T"/></package>"#;
+
+    /// An unsupported base and facet profile is a refusal of the request at
+    /// the field that asked for it, with the supported profiles named.
+    #[test]
+    fn unsupported_facet_profiles_are_refused_at_their_request_fields() {
+        for (operation, args, path, message) in [
+            (
+                XdtoOperation::AddValueType,
+                json!({"at":"main:XDTOPackage.Sample","values":{"name":"V","base":"xs:string","facets":{"fractionDigits":2}}}),
+                "ops[3].args.values.facets",
+                "supported profiles are string and decimal",
+            ),
+            (
+                XdtoOperation::AddProperty,
+                json!({"at":"main:XDTOPackage.Sample.Type.T","values":{"property":{"name":"P","valueType":{"base":"tns:T"}}}}),
+                "ops[3].args.values.property.valueType",
+                "anonymous ValueType supports only XML Schema string or decimal bases",
+            ),
+            (
+                XdtoOperation::AddProperty,
+                json!({"at":"main:XDTOPackage.Sample.Type.T","values":{"property":{"name":"P","objectType":{"properties":[{"name":"C","valueType":{"base":"tns:T"}}]}}}}),
+                "ops[3].args.values.property",
+                "anonymous ValueType supports only XML Schema string or decimal bases",
+            ),
+        ] {
+            let decoded = operation.decode(&args, "ops[3].args", "main").unwrap();
+            let error = match plan_typed(PACKAGE, staged_writer_operation(&decoded)) {
+                Err(error) => error,
+                Ok(_) => panic!("{args}: an unsupported profile is refused"),
+            };
+            let refusal = staged_writer_error(error, &decoded, 3);
+            assert_eq!(refusal.kind(), ApplyPlanErrorKind::BadValue, "{args}");
+            assert_eq!(refusal.path(), Some(path), "{args}");
+            assert!(refusal.to_string().contains(message), "{refusal}");
+        }
     }
 }

@@ -262,6 +262,7 @@ class WholeTemplatePlanDiffWireTests(unittest.TestCase):
         files = {path: value[1] for path, value in public.items() if value[0] == "file"}
         self.assertTrue(files == expected, "apply must publish exactly the source postimage established before execution")
         selected_root = f"src/{TEMPLATES}/{selected}"
+        self.assertNotIn(selected_root, public, "the removed template leaves no directory behind")
         for path, entry in public.items():
             self.assertIn(path, self.before, "apply created an unplanned public entry")
             if path != f"src/{OWNER}":

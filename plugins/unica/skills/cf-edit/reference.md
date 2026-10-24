@@ -23,7 +23,7 @@
 | `SynchronousPlatformExtensionAndAddInCallUseMode` | `DontUse`, `Use`, `UseWithWarnings` |
 | `InterfaceCompatibilityMode` | `Version8_2`, `Version8_2EnableTaxi`, `Taxi`, `TaxiEnableVersion8_2`, `TaxiEnableVersion8_5`, `Version8_5EnableTaxi`, `Version8_5` |
 | `DatabaseTablespacesUseMode` | `DontUse`, `Use` |
-| `MainClientApplicationWindowMode` | `Normal`, `Fullscreen`, `Kiosk` |
+| `MainClientApplicationWindowMode` | `Normal`, `Workplace`, `EmbeddedWorkplace`, `FullscreenWorkplace`, `Kiosk` |
 
 ### Ref
 `DefaultLanguage` — значение вида `Language.Русский`

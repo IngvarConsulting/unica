@@ -37,7 +37,7 @@ allowed-tools:
 
 Операции семейства XDTO в `ops` — закрытое объединение с тегом `op`, а их
 аргументы добавления едут только внутри `args.values`: `valueType.add`
-(`name`, `base`), `objectType.add` (`name`, необязательные `base` и одно из `before` / `after`), `property.add` (`property`),
+(`name`, `base`, необязательный `facets`), `objectType.add` (`name`, необязательные `base` и одно из `before` / `after`), `property.add` (`property`),
 `property.rename` (`newName`).
 `type.remove` и `property.remove` не принимают payload, включая пустой
 `values`. Плоские поля добавления и `values.at` отклоняются с `bad_value`.
@@ -70,7 +70,6 @@ allowed-tools:
   "params": {
     "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
       "at": "main:XDTOPackage.EnterpriseData_1_17_3"
     }
   }
@@ -89,7 +88,6 @@ allowed-tools:
   "params": {
     "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
       "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка"
     }
   }
@@ -223,7 +221,7 @@ BSL-обращения к свойству по имени правь отдел
 ## Создать анонимный тип в свойстве
 
 Прочитай `Can.property.add` у именованного типа. В `property` укажи `name`
-и ровно одно определение: `type` с QName либо `objectType.properties`
+и ровно одно определение: `type` с QName, `valueType` с основой и фасетами либо `objectType.properties`
 с упорядоченным списком дочерних свойств. Дети используют тот же договор
 и могут содержать собственный анонимный тип. `minOccurs` допускает `0` или
 `1`, `maxOccurs` — `-1` (без ограничения) или положительное целое;
@@ -278,3 +276,23 @@ BSL-обращения к свойству по имени правь отдел
 определение не сворачивается в ограниченную по размеру строку `props`.
 Следующая операция того же плана может добавлять детей по адресу контейнера
 в `args.at`, например `main:XDTOPackage.ПримерФормата.Type.Пример.Property.Строки`.
+
+## Ограниченные значения
+
+Перед созданием прочитай `Can.valueType.add` у пакета или `Can.property.add`
+у типа. Для строки задай в `facets` максимальную длину `maxLength`;
+для decimal — нужные `totalDigits`, `fractionDigits`, `minInclusive` и
+`maxInclusive`. Границы числа передавай строками без экспоненты. Например,
+диапазону 0…999.99 при пяти значащих цифрах и двух дробных соответствуют
+`minInclusive: "0"`, `maxInclusive: "999.99"`, `totalDigits: 5`,
+`fractionDigits: 2`. Одних разрядности и масштаба недостаточно для запрета
+1000.00.
+
+Именованный тип создай `valueType.add`, затем ссылайся на него из свойства
+через `property.type`. Для анонимного ограниченного значения передай
+`property.valueType` с `base` и `facets`; одновременно задавать `type` или `objectType` нельзя. Основа анонимного определения —
+только XML Schema `string` или `decimal`, в том числе без фасетов.
+После применения прочитай `props.facets`; у анонимного определения дополнительно
+проверь `props.anonymousType` и `props.base`. Проверка значений выполняется
+потребителем схемы, например `ФабрикаXDTO.ПрочитатьXML` платформы. Подробные
+допустимые сочетания описаны в спецификации, на которую ссылается начало навыка.

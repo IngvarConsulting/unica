@@ -4523,6 +4523,7 @@ fn run_native_validator(
         crate::application::v13::check::CheckValidator::Subsystem
             | crate::application::v13::check::CheckValidator::Dcs
             | crate::application::v13::check::CheckValidator::Mxl
+            | crate::application::v13::check::CheckValidator::Form
     ) {
         let sources = invocation.read_sources().map_err(|error| {
             Box::new(error_result_detailed(
@@ -4550,7 +4551,12 @@ fn run_native_validator(
                     error,
                 ))
             })?;
-        if validator == crate::application::v13::check::CheckValidator::Subsystem {
+        if validator == crate::application::v13::check::CheckValidator::Form {
+            let input = authority
+                .form_validation_input(address)
+                .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?;
+            crate::infrastructure::native_operations::v13_analysis::validate_form_input(input)
+        } else if validator == crate::application::v13::check::CheckValidator::Subsystem {
             authority
                 .validate_subsystem(address)
                 .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?

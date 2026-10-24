@@ -1223,16 +1223,33 @@ mod tests {
         assert_eq!(valid.name(), "props.set");
         assert_eq!(valid.family(), OperationFamily::Properties);
         assert_eq!(valid.skeleton(), OperationSkeleton::Values);
-        let source =
-            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
-        for (raw, expected) in [
-            ("main:CommonModule.Utilities", true),
-            ("main:Role.Reader", true),
-            ("main:Subsystem.Sales", true),
-            ("main:Configuration", false),
-            ("main:Catalog.Items.Attribute.Code", false),
-            ("main:Subsystem.Sales.Subsystem.Child", false),
+        for (kind, raw, expected) in [
+            (
+                SourceSetKind::Configuration,
+                "main:CommonModule.Utilities",
+                true,
+            ),
+            (SourceSetKind::Configuration, "main:Role.Reader", true),
+            (SourceSetKind::Configuration, "main:Subsystem.Sales", true),
+            (SourceSetKind::Configuration, "main:Configuration", true),
+            (SourceSetKind::Extension, "main:Configuration", true),
+            (
+                SourceSetKind::ExternalProcessor,
+                "main:Configuration",
+                false,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Catalog.Items.Attribute.Code",
+                false,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Subsystem.Sales.Subsystem.Child",
+                false,
+            ),
         ] {
+            let source = source_set_traits_for_read(kind, PlatformProfile::v8_3_27());
             let at = QualifiedAddress::parse(raw).unwrap();
             let site = operation_site(&at, source).unwrap();
             assert_eq!(
