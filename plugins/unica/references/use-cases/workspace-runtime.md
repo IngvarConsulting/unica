@@ -91,8 +91,10 @@ infobase state and intended change, record the finding alongside the `taskId`,
 then decide a new action from that evidence. Unica does not replay this work
 automatically; a second `run` call is a new mutation, not a retry of the old
 Task. A read-only call (`view`, `resolve`, `search`, `check`, `diff`, `docs`)
-changed nothing: its `outcome_uncertain` refusal says so and carries the same
-call in `next`, which is safe to send as a new call.
+changed nothing: its direct `outcome_uncertain` refusal says so and carries the
+same call in `next`, which is safe to send as a new call. A read-only call that
+had become a Task reports `outcome_uncertain` without `next`; it changed
+nothing either, so send the original call again.
 
 Each `sourceSets[].sourceFormat` describes working-tree discovery. Repository
 checks may additionally become applicable from staged index markers; do not
