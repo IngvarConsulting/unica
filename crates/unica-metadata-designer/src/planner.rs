@@ -8,6 +8,7 @@ use sha2::Digest;
 use std::path::{Path, PathBuf};
 use unica_address::address::NodeKind;
 use unica_address::source_target::MetadataAddress;
+use unica_metadata::property_input::DescriptorPropertyValue;
 use unica_metadata::{MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetadataKind};
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
@@ -1346,6 +1347,48 @@ fn stage_descriptor_properties(
             }
             (NodeKind::Subsystem, text)
         }
+        DescriptorPropertyChanges::Configuration(
+            unica_metadata::property_input::ConfigurationPropertyChanges { changes, .. },
+        ) => {
+            let mut text = source.clone();
+            let missing = |tag: &str| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidSource,
+                    format!("the configuration root has no {tag} property"),
+                )
+                .at_path(at_path.clone())
+            };
+            let lang = if changes.iter().any(|(property, _)| property.localized()) {
+                Some(unica_source_designer::language::staged_text_language(
+                    staged,
+                    source_kind,
+                    op_index,
+                )?)
+            } else {
+                None
+            };
+            for (property, value) in changes {
+                let tag = property.names()[0];
+                let value = match value {
+                    DescriptorPropertyValue::Text(value) => value.clone(),
+                    DescriptorPropertyValue::Boolean(value) => value.to_string(),
+                };
+                text = if property.localized() {
+                    set_ml_property(
+                        &text,
+                        tag,
+                        "\t\t\t",
+                        lang.as_deref()
+                            .expect("localized patch retained its language"),
+                        &value,
+                    )
+                } else {
+                    set_plain_property(&text, tag, &value)
+                }
+                .ok_or_else(|| missing(tag))?;
+            }
+            (NodeKind::Configuration, text)
+        }
     };
     let postimage = unica_source_designer::registration::preserve_descriptor_image(
         &preimage,
@@ -1361,12 +1404,17 @@ fn stage_descriptor_properties(
     provisional.push(ProvisionalApplyEffect::single(
         relative.to_path_buf(),
         DomainEvent::new(
-            if kind == NodeKind::Role {
-                DomainEventKind::RoleChanged
-            } else {
-                DomainEventKind::SubsystemChanged
+            match kind {
+                NodeKind::Role => DomainEventKind::RoleChanged,
+                NodeKind::Subsystem => DomainEventKind::SubsystemChanged,
+                _ if source_kind == SourceSetKind::Extension => DomainEventKind::CfeChanged,
+                _ => DomainEventKind::ConfigXmlChanged,
             },
-            format!("{}.{name}", kind.as_str()),
+            if kind == NodeKind::Configuration {
+                name.to_string()
+            } else {
+                format!("{}.{name}", kind.as_str())
+            },
         ),
         op_index,
     ));

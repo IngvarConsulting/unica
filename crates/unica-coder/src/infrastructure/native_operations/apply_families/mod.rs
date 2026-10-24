@@ -515,6 +515,7 @@ fn parse_family_operation(
                 op_index,
                 &unica_metadata_designer::decode::MetadataDecodeContext {
                     source_set_name: binding.source_set_name(),
+                    source_kind: binding.source_kind(),
                     registry: crate::domain::apply::operation_registry(),
                 },
             )?;
