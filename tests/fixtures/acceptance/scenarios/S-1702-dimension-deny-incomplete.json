@@ -1,0 +1,585 @@
+{
+  "id": "S-1702-dimension-deny-incomplete",
+  "issue": 1702,
+  "area": "Реквизиты и состав",
+  "task": "Включить и выключить запрет пустых значений у измерений регистров накопления, бухгалтерии и расчёта, проверить XML и побайтовый возврат, отклонить неверный тип, ресурс и отсутствующее измерение без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-register-dimensions",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки.Dimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:AccumulationRegister.Остатки.Dimension.Товар"
+        }
+      ],
+      "captures": {
+        "acc0": {
+          "file": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256"
+        },
+        "bk0": {
+          "file": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256"
+        },
+        "calc0": {
+          "file": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256"
+        },
+        "ir0": {
+          "file": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки.Dimension.Товар.Can.dimension.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/denyIncompleteValues/type",
+          "eq": "boolean"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.acc0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Товар\"]/{http://v8.1c.ru/8.3/MDClasses}DenyIncompleteValues",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Товар\"]/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Склад\"]/{http://v8.1c.ru/8.3/MDClasses}DenyIncompleteValues",
+          "eq": [
+            "false"
+          ]
+        }
+      ],
+      "captures": {
+        "acc1": {
+          "file": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.acc1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.acc0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccountingRegister.Бухгалтерский.Dimension.Подразделение",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "$capture.bk0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Подразделение\"]/{http://v8.1c.ru/8.3/MDClasses}DenyIncompleteValues",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Подразделение\"]/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ],
+      "captures": {
+        "bk1": {
+          "file": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccountingRegister.Бухгалтерский.Dimension.Подразделение",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "$capture.bk1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccountingRegister.Бухгалтерский.Dimension.Подразделение",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "$capture.bk0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CalculationRegister.Начисления.Dimension.Сотрудник",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "$capture.calc0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Сотрудник\"]/{http://v8.1c.ru/8.3/MDClasses}DenyIncompleteValues",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"Сотрудник\"]/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ],
+      "captures": {
+        "calc1": {
+          "file": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CalculationRegister.Начисления.Dimension.Сотрудник",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "$capture.calc1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CalculationRegister.Начисления.Dimension.Сотрудник",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "$capture.calc0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": "true"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `denyIncompleteValues` must be a boolean",
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.acc0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки.Resource.Количество",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: denyIncompleteValues is a property of register dimensions",
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.acc0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки.Dimension.Нет",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: element `Нет` was not found",
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "$capture.acc0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар.Can.dimension.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/denyIncompleteValues",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки.Resource.Количество.Can.resource.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/denyIncompleteValues",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: denyIncompleteValues is available for dimensions of accumulation, accounting and calculation registers",
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.ir0"
+        }
+      ]
+    }
+  ]
+}
