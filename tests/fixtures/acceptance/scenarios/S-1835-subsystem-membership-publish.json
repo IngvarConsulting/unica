@@ -78,6 +78,11 @@
       "fileAssertions": [
         {
           "path": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "b58556c9823d6ca2d31bfa39a05c6f22a6c79bc7efea99594acef5d35872c0e4"
+        },
+        {
+          "path": "src/Subsystems/Администрирование.xml",
           "kind": "xml",
           "select": "./{http://v8.1c.ru/8.3/MDClasses}Subsystem/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content/{http://v8.1c.ru/8.3/xcf/readable}Item",
           "eq": [
@@ -248,6 +253,11 @@
       "fileAssertions": [
         {
           "path": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "2aeddf598ccb11604d2a753ff81301d6404330c1a167cefcaa8b7392b380837c"
+        },
+        {
+          "path": "src/Subsystems/Администрирование.xml",
           "kind": "xml",
           "select": "./{http://v8.1c.ru/8.3/MDClasses}Subsystem/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Subsystem",
           "eq": [
@@ -332,6 +342,11 @@
         }
       ],
       "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "12a48677bd2b4bd461de13ebc7f6e514210719c715c46630e620142bd8221f90"
+        },
         {
           "path": "src/Subsystems/Администрирование.xml",
           "kind": "xml",
