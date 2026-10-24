@@ -167,7 +167,21 @@ fn run_receipt_scenario_with_control_observer(
     let mut operation_runtime: Option<Arc<V5ReceiptRuntime>> = None;
     let mut operations: HashMap<String, ScenarioOperation> = HashMap::new();
     let mut inject_task_store_capacity_invariant_once = false;
+    struct ProbeAction(String, std::time::Instant);
+    impl Drop for ProbeAction {
+        fn drop(&mut self) {
+            eprintln!("PROBE action {} ms={}", self.0, self.1.elapsed().as_millis());
+        }
+    }
     for action in scenario.actions {
+        let _probe_action = ProbeAction(
+            format!("{action:?}")
+                .split(|c: char| c == ' ' || c == '{' || c == '(')
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+            std::time::Instant::now(),
+        );
         match action {
             ReceiptScenarioAction::ConfigureValidation { reject } => {
                 control.configure_validation(reject);

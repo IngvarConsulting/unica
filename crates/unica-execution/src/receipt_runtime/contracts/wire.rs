@@ -4,21 +4,21 @@
 
 use super::*;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReceiptScenario {
     pub clock: ScenarioClock,
     pub actions: Vec<ReceiptScenarioAction>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioClock {
     Fake,
     Wall,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReceiptScenarioAction {
     ConfigureValidation {
@@ -227,14 +227,14 @@ pub enum ReceiptScenarioAction {
     CompareClientServerIdentity,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioExecutionClass {
     Direct,
     KnownLong,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Debug)]
 #[serde(tag = "terminal", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScenarioTerminalFixture {
     Success { payload: String },
@@ -242,7 +242,7 @@ pub enum ScenarioTerminalFixture {
     NearLimitWithMaximumMetadata { canonical_result_bytes: u64 },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioRequest {
     Canonical,
@@ -251,7 +251,7 @@ pub enum ScenarioRequest {
     Mismatch(ScenarioIdentityField),
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioTaskApi {
     NativeGet,
@@ -260,21 +260,21 @@ pub enum ScenarioTaskApi {
     CompatibilityResult,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioTaskCancelApi {
     Native,
     Compatibility,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioTaskSelector {
     ExactProjected,
     ForReadLabel(String),
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioEnvelopeCase {
     MissingInvocationId,
@@ -292,7 +292,7 @@ pub enum ScenarioEnvelopeCase {
     OversizedWorkspaceHint,
 }
 
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioProtocolVersion {
     V3,
@@ -300,14 +300,14 @@ pub enum ScenarioProtocolVersion {
     V5,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioCoreIdentitySelection {
     ExactProductionV5,
     ArbitraryCanonical,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioFailureProbeReason {
     InvocationFailed,
@@ -322,7 +322,7 @@ pub enum ScenarioFailureProbeReason {
     WorkspaceChanged,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioTaskTerminalOwnerFixture {
     ReceiptBacked,
@@ -330,7 +330,7 @@ pub enum ScenarioTaskTerminalOwnerFixture {
     Staged,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioV5DaemonErrorCodeFixture {
     InvalidRequest,
@@ -353,7 +353,7 @@ pub enum ScenarioV5DaemonErrorCodeFixture {
     StoreCommitUncertain,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioStrictSchemaTarget {
     RequestUnknownField,
@@ -377,7 +377,7 @@ pub enum ScenarioStrictSchemaTarget {
     TransferCertificateCrossVariantField,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioProtocolMessage {
     Ping,
@@ -424,7 +424,7 @@ pub enum ScenarioProtocolMessage {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioDisconnect {
     Never,
@@ -432,14 +432,14 @@ pub enum ScenarioDisconnect {
     AfterTerminalCommit,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioAckDisconnect {
     Never,
     AfterTombstoneCommit,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioDigest {
     ExactTerminal,
@@ -448,7 +448,7 @@ pub enum ScenarioDigest {
     WellFormedCandidate,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioKey {
     Exact,
@@ -457,7 +457,7 @@ pub enum ScenarioKey {
     Mismatch(ScenarioIdentityField),
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioSeedReceiptState {
     CancelReserved,
@@ -477,7 +477,7 @@ pub enum ScenarioSeedReceiptState {
     TaskTerminalBound,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioTaskStatus {
     Queued,
@@ -487,21 +487,21 @@ pub enum ScenarioTaskStatus {
     Cancelled,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioIdentityRelation {
     Exact,
     Foreign,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioIdentityIndex {
     InvocationId,
     ReservedTaskId,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioReceiptLinkCase {
     Exact,
@@ -547,7 +547,7 @@ pub enum ScenarioEntryPath {
     ReservedBegun,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioCrashWorkload {
     pub path: ScenarioEntryPath,
@@ -556,7 +556,7 @@ pub struct ScenarioCrashWorkload {
     pub stage_terminal_before_crash: bool,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioTaskRetirementWorkload {
     RecoveryTerminalBeforeTerminalBound,
@@ -569,7 +569,7 @@ pub enum ScenarioTaskRetirementWorkload {
     DeleteIdentityMismatch,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 #[derive(Clone, Copy)]
 pub enum ScenarioEvent {
@@ -666,7 +666,7 @@ pub fn scenario_runtime_event_kind(event: ScenarioEvent) -> V5ReceiptRuntimeEven
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioIdentityField {
     InvocationId,
@@ -677,7 +677,7 @@ pub enum ScenarioIdentityField {
     RequestScopeHash,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioProvisionalMismatchField {
     TaskId,
@@ -688,7 +688,7 @@ pub enum ScenarioProvisionalMismatchField {
     TaskLinkDigest,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioActorProof {
     Exact,
@@ -697,7 +697,7 @@ pub enum ScenarioActorProof {
     Stale,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioOperationState {
     Blocked,

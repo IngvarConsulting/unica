@@ -37,24 +37,8 @@ jobs:
           Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled | Format-List
           Get-CimInstance Win32_Processor | Select-Object NumberOfLogicalProcessors | Format-List
           echo "TEMP=$env:TEMP"
-      - name: Run A (as is, 6400 calls)
+      - name: Run full
         shell: bash
-        env:
-          PROBE_MAX_CALLS: "6400"
-        run: |
-          bin=$(ls target/debug/deps/daemon_receipt_ledger-* | grep -v '\.d$' | grep -v '\.pdb$' | head -1)
-          time "$bin" --exact deterministic_horizon_load_does_not_saturate --nocapture 2>&1 | grep -E "PROBE|panicked|test result" || true
-      - name: Defender exclusion
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Add-MpPreference -ExclusionPath $env:TEMP, $env:GITHUB_WORKSPACE
-          Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
-      - name: Run B (Defender exclusion on Windows, 6400 calls)
-        if: runner.os == 'Windows'
-        shell: bash
-        env:
-          PROBE_MAX_CALLS: "6400"
         run: |
           bin=$(ls target/debug/deps/daemon_receipt_ledger-* | grep -v '\.d$' | grep -v '\.pdb$' | head -1)
           time "$bin" --exact deterministic_horizon_load_does_not_saturate --nocapture 2>&1 | grep -E "PROBE|panicked|test result" || true
