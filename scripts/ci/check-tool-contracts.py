@@ -49,6 +49,10 @@ V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
 V8_RUNNER_LOCAL_CONFIG = "v8project.local.yaml"
 V8_RUNNER_BOUNDED_STDERR_MARKER = "bounded-client-stderr"
 V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS = 60
+# Две фазы контракта rlm ограничены раздельно: одноразовый процесс индекса
+# (сборка, info) и MCP-сессия. Сужение срока одной фазы не должно отнимать
+# время у другой.
+RLM_INDEX_PROCESS_TIMEOUT_SECONDS = 120.0
 RLM_MCP_CONTRACT_TIMEOUT_SECONDS = 120.0
 RLM_PYTHON_UTF8_ENV = {
     "PYTHONUTF8": "1",
@@ -1936,10 +1940,14 @@ def load_shared_mcp_smoke_module():
     return module
 
 
-def terminate_shared_mcp_session(session, root: Path) -> None:
+def terminate_shared_mcp_session(
+    session, root: Path, reader_timeout_seconds: float | None = None
+) -> None:
+    if reader_timeout_seconds is None:
+        reader_timeout_seconds = RLM_MCP_CONTRACT_TIMEOUT_SECONDS
     session.terminate_tree(root)
     for reader in (session.reader, session.error_reader):
-        reader.join(timeout=RLM_MCP_CONTRACT_TIMEOUT_SECONDS)
+        reader.join(timeout=reader_timeout_seconds)
     for stream in (
         session.process.stdin,
         session.process.stdout,
@@ -1957,24 +1965,25 @@ def run_rlm_contract_process(
     cwd: Path,
     env: dict[str, str],
 ) -> tuple[int, str]:
+    timeout_seconds = RLM_INDEX_PROCESS_TIMEOUT_SECONDS
     shared = load_shared_mcp_smoke_module()
     session = shared.McpSession(
         command,
         {**os.environ, **env},
-        RLM_MCP_CONTRACT_TIMEOUT_SECONDS,
+        timeout_seconds,
         cwd=cwd,
     )
     try:
         if session.process.stdin is not None:
             session.process.stdin.close()
         try:
-            status = session.process.wait(timeout=RLM_MCP_CONTRACT_TIMEOUT_SECONDS)
+            status = session.process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
-            return 1, f"timed out after {RLM_MCP_CONTRACT_TIMEOUT_SECONDS}s"
+            return 1, f"timed out after {timeout_seconds}s"
         for reader in (session.reader, session.error_reader):
-            reader.join(timeout=RLM_MCP_CONTRACT_TIMEOUT_SECONDS)
+            reader.join(timeout=timeout_seconds)
         if session.reader.is_alive() or session.error_reader.is_alive():
-            return 1, f"timed out after {RLM_MCP_CONTRACT_TIMEOUT_SECONDS}s"
+            return 1, f"timed out after {timeout_seconds}s"
         stdout: list[str] = []
         while not session.lines.empty():
             line = session.lines.get_nowait()
@@ -1982,7 +1991,7 @@ def run_rlm_contract_process(
                 stdout.append(line)
         return status, "".join(stdout) + "".join(session.diagnostics)
     finally:
-        terminate_shared_mcp_session(session, cwd)
+        terminate_shared_mcp_session(session, cwd, timeout_seconds)
 
 
 def rlm_mcp_tool_text(response: dict[str, object], label: str) -> tuple[str | None, str | None]:
