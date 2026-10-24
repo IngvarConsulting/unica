@@ -2857,6 +2857,119 @@ mod tests {
         );
     }
 
+    /// Every expression of data composition is code, not only those of fields
+    /// and parameters: the expressions of a data set link, the total and
+    /// detail expressions of a user field in a settings variant, the
+    /// expression of an output template parameter. They are listed by the
+    /// template or the variant and the line, in either language.
+    #[test]
+    fn object_removal_lists_every_data_composition_expression_as_code() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        add_removable_object(&source, "Enum", "Enums", "Kinds");
+        let directory = source.join("Documents/Second/Templates/Data/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Template.xml"),
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:dcsat=\"http://v8.1c.ru/8.1/data-composition-system/area-template\"><dataSetLink><sourceDataSet>A</sourceDataSet><destinationDataSet>B</destinationDataSet><sourceExpression>Вид</sourceExpression><destinationExpression>ЗНАЧЕНИЕ(Enum.Kinds.Main)</destinationExpression></dataSetLink><template><name>Out</name><template xsi:type=\"dcsat:AreaTemplate\"/><parameter xsi:type=\"dcsat:ExpressionAreaTemplateParameter\"><dcsat:name>Kind</dcsat:name><dcsat:expression>Вид\n= ЗНАЧЕНИЕ(Перечисление.Kinds.Main)</dcsat:expression></parameter></template><settingsVariant><dcsset:name>Основной</dcsset:name><dcsset:settings><dcsset:userFields><dcsset:item xsi:type=\"dcsset:UserFieldExpression\"><dcsset:dataPath>ПользовательскиеПоля.Поле1</dcsset:dataPath><dcsset:detailExpression>Вид</dcsset:detailExpression><dcsset:totalExpression>Сумма(\nВЫБОР КОГДА Вид = ЗНАЧЕНИЕ(Перечисление.Kinds.Main) ТОГДА 1 КОНЕЦ)</dcsset:totalExpression></dcsset:item></dcsset:userFields></dcsset:settings></settingsVariant></DataCompositionSchema>",
+        )
+        .unwrap();
+        let (_, effects) = plan_hidden_v13_apply(
+            &seam_request("main:Enum.Kinds", "object.remove", serde_json::json!({})),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("expressions of data composition do not block the removal");
+        let code = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .expect("the plan carries the expected warning");
+        assert_eq!(
+            code["references"],
+            serde_json::json!([
+                {"at": "main:Document.Second.Template.Data", "line": 1},
+                {"at": "main:Document.Second.Template.Data", "line": 2},
+                {"at": "main:Document.Second.Template.Data.Setting.Основной", "line": 2}
+            ])
+        );
+    }
+
+    /// Only an element of a data composition namespace is an expression: an
+    /// `expression` of another namespace in a template, or the `field` next to
+    /// the expression inside `dcsat:fieldExpression`, is a property and
+    /// refuses the removal.
+    #[test]
+    fn object_removal_refuses_references_next_to_data_composition_expressions() {
+        for template in [
+            "<Root xmlns=\"urn:example:other\"><expression>Enum.Kinds.Main</expression></Root>",
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\" xmlns:dcsat=\"http://v8.1c.ru/8.1/data-composition-system/area-template\"><dataSet><name>Set</name><field><dataPath>Kind</dataPath><orderExpression><dcscom:expression>ЗНАЧЕНИЕ(Перечисление.Kinds.Main)</dcscom:expression><dcscom:orderType>Asc</dcscom:orderType></orderExpression></field></dataSet><template><name>Out</name><parameter xsi:type=\"dcsat:DetailsAreaTemplateParameter\"><dcsat:name>Details</dcsat:name><dcsat:fieldExpression><dcsat:field>Enum.Kinds.Main</dcsat:field><dcsat:expression>Вид</dcsat:expression></dcsat:fieldExpression></parameter></template></DataCompositionSchema>",
+        ] {
+            let fixture = ApplySeamFixture::new();
+            let source = fixture.source_dir();
+            add_removable_object(&source, "Enum", "Enums", "Kinds");
+            let directory = source.join("Documents/Second/Templates/Data/Ext");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("Template.xml"), template).unwrap();
+            let message = refused_removal(&fixture, "main:Enum.Kinds");
+            assert!(
+                message.contains("`main:Document.Second.Template.Data` → Template"),
+                "a reference outside an expression refuses the removal"
+            );
+        }
+    }
+
+    /// A calculated field of a form's dynamic list is code too: it is listed
+    /// by the list attribute and the line, while a filter value of the same
+    /// list still refuses the removal.
+    #[test]
+    fn object_removal_lists_dynamic_list_calculated_fields_as_code() {
+        let form = |settings: &str| {
+            format!("<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcssch=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" version=\"2.20\"><Attributes><Attribute name=\"List\"><Settings xsi:type=\"DynamicList\"><CalculatedField><dcssch:dataPath>Main</dcssch:dataPath><dcssch:expression>ВЫБОР КОГДА Вид = ЗНАЧЕНИЕ(Перечисление.Kinds.Main) ТОГДА 1 КОНЕЦ</dcssch:expression><dcssch:presentationExpression>\nВЫБОР КОГДА Вид = ЗНАЧЕНИЕ(Enum.Kinds.Main) ТОГДА \"\" КОНЕЦ</dcssch:presentationExpression></CalculatedField>{settings}</Settings></Attribute></Attributes></Form>")
+        };
+        let write = |fixture: &ApplySeamFixture, settings: &str| {
+            let source = fixture.source_dir();
+            add_removable_object(&source, "Enum", "Enums", "Kinds");
+            let directory = source.join("Documents/Second/Forms/List/Ext");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("Form.xml"), form(settings)).unwrap();
+        };
+        let fixture = ApplySeamFixture::new();
+        write(&fixture, "");
+        let (_, effects) = plan_hidden_v13_apply(
+            &seam_request("main:Enum.Kinds", "object.remove", serde_json::json!({})),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("a calculated field does not block the removal");
+        let code = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .expect("the plan carries the expected warning");
+        assert_eq!(
+            code["references"],
+            serde_json::json!([
+                {"at": "main:Document.Second.Form.List.Attribute.List", "line": 1},
+                {"at": "main:Document.Second.Form.List.Attribute.List", "line": 2}
+            ])
+        );
+
+        let fixture = ApplySeamFixture::new();
+        write(
+            &fixture,
+            &format!(
+                "<ListSettings>{}</ListSettings>",
+                design_time_filter("Перечисление.Kinds.Main")
+            ),
+        );
+        let message = refused_removal(&fixture, "main:Enum.Kinds");
+        assert!(
+            message.contains("`main:Document.Second.Form.List.Attribute.List` → Filter"),
+            "the filter value next to the calculated field refuses the removal"
+        );
+    }
+
     /// Next to an expression, a reference held in a property of the schema —
     /// the value type of a parameter — still refuses the removal.
     #[test]

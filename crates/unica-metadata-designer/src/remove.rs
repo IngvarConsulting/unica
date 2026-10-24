@@ -668,7 +668,7 @@ pub fn meta_remove_references(
         let holds_query = node.is_text()
             && node
                 .parent_element()
-                .is_some_and(|parent| query_text_element(file_name, parent.tag_name().name()));
+                .is_some_and(|parent| query_text_element(file_name, parent));
         if holds_query {
             let at = query_text_address(source_set, &owner, node);
             for (index, line) in node.text().unwrap_or_default().lines().enumerate() {
@@ -735,18 +735,33 @@ pub fn meta_remove_references(
     found
 }
 
+/// The namespaces of data composition, `…/data-composition-system/schema`,
+/// `…/settings`, `…/common`, `…/area-template` and the others.
+const DATA_COMPOSITION_NAMESPACE: &str = "http://v8.1c.ru/8.1/data-composition-system/";
+
+/// The namespace of a data composition schema.
+const DATA_COMPOSITION_SCHEMA_NAMESPACE: &str =
+    "http://v8.1c.ru/8.1/data-composition-system/schema";
+
 /// Whether an element of an XML source holds query-language text, which is
 /// searched like code: a dynamic list's `QueryText` and a data composition
-/// `query` anywhere, the expressions of a data composition schema in
-/// `Template.xml`, the access restriction `condition` of role rights.
-fn query_text_element(file_name: Option<&str>, element: &str) -> bool {
-    match element {
+/// `query` anywhere, every expression of data composition — an element of a
+/// data composition namespace named `expression` or `…Expression`, in a
+/// template or in a dynamic list of a form — and the access restriction
+/// `condition` of role rights.
+fn query_text_element(file_name: Option<&str>, element: roxmltree::Node<'_, '_>) -> bool {
+    let name = element.tag_name().name();
+    match name {
         "QueryText" | "query" => true,
-        "expression" | "presentationExpression" | "sourceExpression" | "detailExpression" => {
-            file_name == Some("Template.xml")
-        }
         "condition" => file_name == Some("Rights.xml"),
-        _ => false,
+        _ => {
+            matches!(file_name, Some("Template.xml" | "Form.xml"))
+                && (name == "expression" || name.ends_with("Expression"))
+                && element
+                    .tag_name()
+                    .namespace()
+                    .is_some_and(|namespace| namespace.starts_with(DATA_COMPOSITION_NAMESPACE))
+        }
     }
 }
 
@@ -796,8 +811,9 @@ fn design_time_property(value: roxmltree::Node<'_, '_>) -> String {
 /// a dynamic list, the data set, field, calculated field, total, parameter or
 /// settings variant of a data composition schema, the right entry of a role, as far as the
 /// address grammar names it; otherwise the form, template or role that owns
-/// the file. The grammar has no node for a nested schema, so whatever lies
-/// inside one is addressed by the template.
+/// the file. The grammar has no node for a nested schema or an output
+/// template of the schema, so whatever lies inside one is addressed by the
+/// template.
 fn query_text_address(source_set: &str, owner: &str, node: roxmltree::Node<'_, '_>) -> String {
     let child_text = |element: roxmltree::Node<'_, '_>, name: &str| {
         element
@@ -808,7 +824,11 @@ fn query_text_address(source_set: &str, owner: &str, node: roxmltree::Node<'_, '
     };
     let mut segments = Vec::new();
     for ancestor in node.ancestors().filter(|ancestor| ancestor.is_element()) {
-        if ancestor.tag_name().name() == "nestedSchema" {
+        // A nested schema and an output template of the schema have no node
+        // in the address grammar; their parameters are not the schema's.
+        if ancestor.tag_name().namespace() == Some(DATA_COMPOSITION_SCHEMA_NAMESPACE)
+            && matches!(ancestor.tag_name().name(), "nestedSchema" | "template")
+        {
             segments.clear();
             continue;
         }
