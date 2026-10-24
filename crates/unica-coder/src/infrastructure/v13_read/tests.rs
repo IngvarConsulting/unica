@@ -7240,7 +7240,7 @@ fn a_borrowed_exchange_plan_without_its_own_content_does_not_read_as_empty() {
     let content_limit = "relations.content is absent; the relation list may be incomplete";
     let limits = |at: &str| {
         let view = service.view(ViewRequest::new(at).unwrap());
-        assert!(view.ok, "{at}: {}", view.summary);
+        assert!(view.ok, "{at}");
         view.data.unwrap()["limits"]
             .as_array()
             .cloned()
