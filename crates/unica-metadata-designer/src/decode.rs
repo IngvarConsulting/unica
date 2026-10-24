@@ -1674,18 +1674,11 @@ pub fn parse_relation(
     )?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let values = required_object(args, "values", op_index)?;
-    check_input_field(
-        shape,
-        "values",
-        &args["values"],
-        &format!("ops[{op_index}].args.values"),
-    )?;
-    let values_shape = shape.property("values").expect("relation values");
-    let relation = values.get("relation").cloned().unwrap_or(Value::Null);
-    let targets = values.get("targets").cloned().unwrap_or(Value::Null);
     // Чтение показывает состав плана обмена связью `content`, но меняет его
     // только `content.set`: отказ ведёт туда, а не в тупик (#1923).
-    if kind == MetadataKind::ExchangePlan && relation == "content" {
+    if kind == MetadataKind::ExchangePlan
+        && values.get("relation").and_then(Value::as_str) == Some("content")
+    {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
             format!(
@@ -1699,6 +1692,15 @@ pub fn parse_relation(
             "reason": "exchange plan content is replaced by content.set on the same plan",
         })));
     }
+    check_input_field(
+        shape,
+        "values",
+        &args["values"],
+        &format!("ops[{op_index}].args.values"),
+    )?;
+    let values_shape = shape.property("values").expect("relation values");
+    let relation = values.get("relation").cloned().unwrap_or(Value::Null);
+    let targets = values.get("targets").cloned().unwrap_or(Value::Null);
     if values
         .keys()
         .any(|key| values_shape.property(key).is_none())

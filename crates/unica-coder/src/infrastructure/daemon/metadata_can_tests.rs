@@ -2022,6 +2022,10 @@ fn exchange_plan_content_relation_leads_to_content_set() {
         let error = parse(&binding, plan, op, &args).unwrap_err();
         assert_eq!(error.path(), Some("ops[3].args.values.relation"), "{op}");
         assert!(error.to_string().contains("content.set"), "{op}: {error}");
+        // Подсказка не зависит от остальных аргументов связи.
+        let without_targets = json!({"values":{"relation":"content"}});
+        let error = parse(&binding, plan, op, &without_targets).unwrap_err();
+        assert!(error.to_string().contains("content.set"), "{op}: {error}");
 
         let refused = call(
             &runtime,
