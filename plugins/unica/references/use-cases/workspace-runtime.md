@@ -141,8 +141,8 @@ The parameter and raw runner command are not echoed in the response. The pinned
 runner encodes the value for the 1C command-line parser on every OS, so quotes,
 spaces, tabs, line breaks and `/Execute` inside it reach `ПараметрЗапуска` as
 exactly one value and never become another launch key; an external processor
-opens only through `execute`. Delivery is live-verified on macOS 8.3.27; Windows
-and Linux are not measured live.
+opens only through `execute`. Delivery of 23 values, empty and quote-boundary ones
+included, is live-verified on macOS 8.3.27.2074; Windows and Linux are not measured live.
 
 A previewApply operation requires explicit boolean `dryRun`: `true` shows the
 plan without execution, and `false` executes using the current inputs. The API
