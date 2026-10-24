@@ -100,9 +100,44 @@
         {
           "pointer": "/data/items/0/props",
           "eq": {
-            "selection": "[{\"field\":\"ДополнительныеРеквизитыКонтрагент\"}]",
-            "filter": "[{\"type\":\"FilterItemComparison\",\"left\":{\"type\":\"Field\",\"value\":\"ДополнительныеРеквизиты.Контрагент\"},\"comparisonType\":\"NotFilled\"}]",
-            "appearance": "[{\"type\":\"SettingsParameterValue\",\"parameter\":\"ЦветТекста\",\"value\":{\"type\":\"Color\",\"value\":\"win:DisabledText\"}},{\"type\":\"SettingsParameterValue\",\"parameter\":\"Текст\",\"value\":{\"type\":\"LocalStringType\",\"values\":[{\"language\":\"ru\",\"content\":\"Все контрагенты\"}]}}]"
+            "selection": [
+              {
+                "field": "ДополнительныеРеквизитыКонтрагент"
+              }
+            ],
+            "filter": [
+              {
+                "type": "FilterItemComparison",
+                "left": {
+                  "type": "Field",
+                  "value": "ДополнительныеРеквизиты.Контрагент"
+                },
+                "comparisonType": "NotFilled"
+              }
+            ],
+            "appearance": [
+              {
+                "type": "SettingsParameterValue",
+                "parameter": "ЦветТекста",
+                "value": {
+                  "type": "Color",
+                  "value": "win:DisabledText"
+                }
+              },
+              {
+                "type": "SettingsParameterValue",
+                "parameter": "Текст",
+                "value": {
+                  "kind": "localizedString",
+                  "values": [
+                    {
+                      "language": "ru",
+                      "content": "Все контрагенты"
+                    }
+                  ]
+                }
+              }
+            ]
           }
         }
       ],
@@ -128,9 +163,44 @@
         {
           "pointer": "/data/props",
           "eq": {
-            "selection": "[{\"field\":\"ДополнительныеРеквизитыКонтрагент\"}]",
-            "filter": "[{\"type\":\"FilterItemComparison\",\"left\":{\"type\":\"Field\",\"value\":\"ДополнительныеРеквизиты.Контрагент\"},\"comparisonType\":\"NotFilled\"}]",
-            "appearance": "[{\"type\":\"SettingsParameterValue\",\"parameter\":\"ЦветТекста\",\"value\":{\"type\":\"Color\",\"value\":\"win:DisabledText\"}},{\"type\":\"SettingsParameterValue\",\"parameter\":\"Текст\",\"value\":{\"type\":\"LocalStringType\",\"values\":[{\"language\":\"ru\",\"content\":\"Все контрагенты\"}]}}]"
+            "selection": [
+              {
+                "field": "ДополнительныеРеквизитыКонтрагент"
+              }
+            ],
+            "filter": [
+              {
+                "type": "FilterItemComparison",
+                "left": {
+                  "type": "Field",
+                  "value": "ДополнительныеРеквизиты.Контрагент"
+                },
+                "comparisonType": "NotFilled"
+              }
+            ],
+            "appearance": [
+              {
+                "type": "SettingsParameterValue",
+                "parameter": "ЦветТекста",
+                "value": {
+                  "type": "Color",
+                  "value": "win:DisabledText"
+                }
+              },
+              {
+                "type": "SettingsParameterValue",
+                "parameter": "Текст",
+                "value": {
+                  "kind": "localizedString",
+                  "values": [
+                    {
+                      "language": "ru",
+                      "content": "Все контрагенты"
+                    }
+                  ]
+                }
+              }
+            ]
           }
         },
         {

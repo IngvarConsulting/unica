@@ -35,11 +35,11 @@ fn rule(address: &QualifiedAddress, value: &Value) -> NodeView {
     if let Some(enabled) = value.get("use").and_then(Value::as_bool) {
         props.insert("use".into(), json!(enabled));
     }
-    for key in ["selection", "filter", "appearance"] {
+    // Facts stay nested JSON, bounded by their serialized size (#2031).
+    for key in ["presentation", "selection", "filter", "appearance"] {
         if let Some(value) = value.get(key) {
-            let compact = value.to_string();
-            if compact.len() <= MAX_COMPACT_PROP_BYTES {
-                props.insert(key.into(), json!(compact));
+            if value.to_string().len() <= MAX_COMPACT_PROP_BYTES {
+                props.insert(key.into(), value.clone());
             } else {
                 limits.push(format!("{key}: значение превышает 2048 байт UTF-8"));
             }

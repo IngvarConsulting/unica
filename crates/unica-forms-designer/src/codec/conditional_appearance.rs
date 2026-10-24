@@ -9,6 +9,8 @@ const V8: &str = "http://v8.1c.ru/8.1/data/core";
 const UI: &str = "http://v8.1c.ru/8.1/data/ui";
 const XS: &str = "http://www.w3.org/2001/XMLSchema";
 const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
+const STYLE: &str = "http://v8.1c.ru/8.1/data/ui/style";
+const SYSTEM_FONTS: &str = "http://v8.1c.ru/8.1/data/ui/fonts/system";
 
 type Read<T> = Result<T, String>;
 
@@ -23,10 +25,13 @@ fn only(node: Node<'_, '_>, namespace: &str, names: &[&str], typed: bool) -> Rea
     {
         return Err("неподдержанные атрибуты".into());
     }
-    if children(node).any(|c| {
+    if let Some(child) = children(node).find(|c| {
         c.tag_name().namespace() != Some(namespace) || !names.contains(&c.tag_name().name())
     }) {
-        return Err("неподдержанный дочерний элемент".into());
+        return Err(format!(
+            "неподдержанный дочерний элемент {}",
+            child.tag_name().name()
+        ));
     }
     if node
         .children()
@@ -96,7 +101,13 @@ fn typed_value(node: Node<'_, '_>) -> Read<Value> {
             only(item, V8, &["lang", "content"], false)?;
             Ok(json!({"language": text(required(item, V8, "lang")?)?, "content": text(required(item, V8, "content")?)?}))
         }).collect::<Read<Vec<_>>>()?;
-        return Ok(json!({"type":kind,"values":values}));
+        return Ok(json!({"kind":"localizedString","values":values}));
+    }
+    if namespace == UI && kind == "Font" {
+        return Ok(json!({"type":kind,"value":font(node)?}));
+    }
+    if namespace == V8 && kind == "StandardBeginningDate" {
+        return Ok(json!({"type":kind,"value":beginning_date(node)?}));
     }
     only(node, "", &[], true)?;
     let raw: String = node
@@ -106,18 +117,26 @@ fn typed_value(node: Node<'_, '_>) -> Read<Value> {
         .collect();
     let value = match (namespace.as_str(), kind.as_str()) {
         (CORE, "Field") | (XS, "string") => json!(raw),
+        // A design-time reference such as `Перечисление.Вид.Значение`.
+        (CORE, "DesignTimeValue") => match raw.trim() {
+            "" => return Err("пустое DesignTimeValue".into()),
+            value => json!(value),
+        },
+        (UI, "HorizontalAlign") => match raw.trim() {
+            value @ ("Auto" | "Left" | "Center" | "Right" | "Justify") => json!(value),
+            value => return Err(format!("неподдержанное HorizontalAlign {value}")),
+        },
         (UI, "Color") => {
-            if let Some((prefix, name)) = raw.split_once(':') {
+            if raw == "auto" {
+                json!(raw)
+            } else if let Some((prefix, name)) = raw.split_once(':') {
                 let canonical = match node.lookup_namespace_uri(Some(prefix)) {
                     Some("http://v8.1c.ru/8.1/data/ui/colors/windows") => "win",
                     Some("http://v8.1c.ru/8.1/data/ui/colors/web") => "web",
-                    Some("http://v8.1c.ru/8.1/data/ui/style") => "style",
+                    Some(STYLE) => "style",
                     _ => return Err("неподдержанное пространство имён цвета".into()),
                 };
-                if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    return Err("повреждено имя цвета".into());
-                }
-                json!(format!("{canonical}:{name}"))
+                json!(format!("{canonical}:{}", ui_name(name)?))
             } else if raw.len() == 7
                 && raw.starts_with('#')
                 && raw[1..].chars().all(|c| c.is_ascii_hexdigit())
@@ -132,21 +151,97 @@ fn typed_value(node: Node<'_, '_>) -> Read<Value> {
             "false" | "0" => json!(false),
             _ => return Err("повреждено boolean".into()),
         },
-        (XS, "decimal") => {
-            let raw = raw.trim();
-            let digits = raw.strip_prefix(['+', '-']).unwrap_or(raw);
-            if !digits.chars().any(|c| c.is_ascii_digit())
-                || digits.chars().any(|c| !c.is_ascii_digit() && c != '.')
-                || digits.matches('.').count() > 1
-            {
-                return Err("повреждено decimal".into());
-            }
-            // Decimal stays lexical: converting to f64 would lose platform precision.
-            json!(raw)
-        }
+        (XS, "decimal") => json!(decimal(&raw)?),
         _ => return Err(format!("неподдержанный тип {{{namespace}}}{kind}")),
     };
     Ok(json!({"type":kind,"value":value}))
+}
+
+fn ui_name(name: &str) -> Read<&str> {
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Err("повреждено имя элемента стиля".into());
+    }
+    Ok(name)
+}
+
+fn decimal(raw: &str) -> Read<&str> {
+    let raw = raw.trim();
+    let digits = raw.strip_prefix(['+', '-']).unwrap_or(raw);
+    if !digits.chars().any(|c| c.is_ascii_digit())
+        || digits.chars().any(|c| !c.is_ascii_digit() && c != '.')
+        || digits.matches('.').count() > 1
+    {
+        return Err("повреждено decimal".into());
+    }
+    // Decimal stays lexical: converting to f64 would lose platform precision.
+    Ok(raw)
+}
+
+/// `v8ui:Font` carries its facts as attributes: a style or system font
+/// reference, an explicit face and the overridden traits.
+fn font(node: Node<'_, '_>) -> Read<Value> {
+    if node
+        .children()
+        .any(|c| c.is_element() || c.is_text() && !c.text().unwrap_or_default().trim().is_empty())
+    {
+        return Err("неожиданное содержимое Font".into());
+    }
+    let mut value = Map::new();
+    for attribute in node.attributes() {
+        let name = attribute.name();
+        let raw = attribute.value();
+        if attribute.namespace() == Some(XSI) && name == "type" {
+            continue;
+        }
+        if attribute.namespace().is_some() {
+            return Err(format!("неподдержанный атрибут Font {name}"));
+        }
+        let fact = match name {
+            "kind" => match raw {
+                "AutoFont" | "StyleItem" | "WindowsFont" | "Absolute" => json!(raw),
+                _ => return Err(format!("неподдержанный вид шрифта {raw}")),
+            },
+            "ref" => {
+                let (prefix, local) = raw.split_once(':').ok_or("повреждена ссылка шрифта")?;
+                let canonical = match node.lookup_namespace_uri(Some(prefix)) {
+                    Some(STYLE) => "style",
+                    Some(SYSTEM_FONTS) => "sys",
+                    _ => return Err("неподдержанное пространство имён шрифта".into()),
+                };
+                json!(format!("{canonical}:{}", ui_name(local)?))
+            }
+            "faceName" => json!(raw),
+            "height" | "scale" => json!(decimal(raw)?),
+            "bold" | "italic" | "underline" | "strikeout" => match raw {
+                "true" => json!(true),
+                "false" => json!(false),
+                _ => return Err(format!("повреждено {name} шрифта")),
+            },
+            _ => return Err(format!("неподдержанный атрибут Font {name}")),
+        };
+        value.insert(name.into(), fact);
+    }
+    Ok(Value::Object(value))
+}
+
+fn beginning_date(node: Node<'_, '_>) -> Read<Value> {
+    only(node, V8, &["variant", "date"], true)?;
+    let variant = required(node, V8, "variant")?;
+    if type_name(variant)? != (V8.to_string(), "StandardBeginningDateVariant".to_string()) {
+        return Err("неподдержанный тип варианта начальной даты".into());
+    }
+    only(variant, "", &[], true)?;
+    let raw: String = variant
+        .children()
+        .filter(Node::is_text)
+        .filter_map(|n| n.text())
+        .collect();
+    let mut value = Map::new();
+    value.insert("variant".into(), json!(ui_name(raw.trim())?));
+    if let Some(date) = one(node, V8, "date")? {
+        value.insert("date".into(), json!(text(date)?.trim()));
+    }
+    Ok(Value::Object(value))
 }
 
 fn selection(node: Node<'_, '_>) -> Read<Value> {
@@ -202,6 +297,7 @@ fn filter_item(node: Node<'_, '_>) -> Read<Value> {
                 "Contains",
                 "NotContains",
                 "BeginsWith",
+                "NotBeginsWith",
                 "Like",
                 "NotLike",
                 "Filled",
@@ -212,10 +308,20 @@ fn filter_item(node: Node<'_, '_>) -> Read<Value> {
                 return Err(format!("неподдержанный comparisonType {comparison}"));
             }
             value.insert("comparisonType".into(), json!(comparison));
-            if let Some(right) = one(node, SETTINGS, "right")? {
-                value.insert("right".into(), typed_value(right)?);
-            } else if !["Filled", "NotFilled"].contains(&comparison.as_str()) {
-                return Err("отсутствует right".into());
+            // A list comparison repeats `right` once per list value; the
+            // platform omits it for an undefined value and for `Filled`.
+            let mut right = children(node)
+                .filter(|n| n.has_tag_name((SETTINGS, "right")))
+                .map(typed_value)
+                .collect::<Read<Vec<_>>>()?;
+            match right.len() {
+                0 => {}
+                1 => {
+                    value.insert("right".into(), right.remove(0));
+                }
+                _ => {
+                    value.insert("right".into(), Value::Array(right));
+                }
             }
         }
         "FilterItemGroup" => {
@@ -265,6 +371,17 @@ fn appearance(node: Node<'_, '_>) -> Read<Value> {
         })
         .collect::<Read<Vec<_>>>()
         .map(Value::Array)
+}
+
+/// The rule's own caption: a plain or localized string.
+fn presentation(node: Node<'_, '_>) -> Read<Value> {
+    match type_name(node)? {
+        (namespace, kind) if namespace == V8 && kind == "LocalStringType" => typed_value(node),
+        (namespace, kind) if namespace == XS && kind == "string" => {
+            Ok(typed_value(node)?["value"].take())
+        }
+        _ => Err("неподдержанный тип представления".into()),
+    }
 }
 
 fn bounded(node: Node<'_, '_>, parse: fn(Node<'_, '_>) -> Read<Value>) -> Read<Value> {
@@ -327,6 +444,7 @@ pub(super) fn read(root: Node<'_, '_>) -> Option<FormInfoConditionalAppearance> 
             result.rules.push(FormInfoConditionalAppearanceRule {
                 name,
                 enabled: None,
+                presentation: None,
                 selection: None,
                 filter: None,
                 appearance: None,
@@ -337,7 +455,7 @@ pub(super) fn read(root: Node<'_, '_>) -> Option<FormInfoConditionalAppearance> 
         if let Err(error) = only(
             item,
             SETTINGS,
-            &["selection", "filter", "appearance", "use"],
+            &["selection", "filter", "appearance", "presentation", "use"],
             false,
         ) {
             limits.push(format!("{name}: {error}"));
@@ -352,9 +470,11 @@ pub(super) fn read(root: Node<'_, '_>) -> Option<FormInfoConditionalAppearance> 
         let selection = fact(item, "selection", selection, &mut limits);
         let filter = fact(item, "filter", filter, &mut limits);
         let appearance = fact(item, "appearance", appearance, &mut limits);
+        let presentation = fact(item, "presentation", presentation, &mut limits);
         result.rules.push(FormInfoConditionalAppearanceRule {
             name,
             enabled,
+            presentation,
             selection,
             filter,
             appearance,

@@ -22,8 +22,11 @@ fn read(fixture: &RealReaderFixture, at: &str) -> Value {
     result.data.unwrap()
 }
 
-fn compact(node: &Value, key: &str) -> Value {
-    serde_json::from_str(node["props"][key].as_str().unwrap()).unwrap()
+/// Rule facts are nested JSON, never a JSON text packed into a string.
+fn fact(node: &Value, key: &str) -> Value {
+    let value = node["props"][key].clone();
+    assert!(value.is_array() || value.is_object(), "{key}: {value}");
+    value
 }
 
 #[test]
@@ -51,18 +54,18 @@ fn form_conditional_appearance_reaches_public_view_with_all_typed_facts_without_
     let rule = read(&fixture, rules["items"][0]["at"].as_str().unwrap());
     assert_eq!(rules["items"][0], rule);
     assert_eq!(
-        compact(&rule, "selection"),
+        fact(&rule, "selection"),
         json!([{"field":"ДополнительныеРеквизитыКонтрагент"}])
     );
     assert_eq!(
-        compact(&rule, "filter"),
+        fact(&rule, "filter"),
         json!([{"type":"FilterItemComparison", "left":{"type":"Field","value":"ДополнительныеРеквизиты.Контрагент"},"comparisonType":"NotFilled"}])
     );
     assert_eq!(
-        compact(&rule, "appearance"),
+        fact(&rule, "appearance"),
         json!([
             {"type":"SettingsParameterValue","parameter":"ЦветТекста","value":{"type":"Color","value":"win:DisabledText"}},
-            {"type":"SettingsParameterValue","parameter":"Текст","value":{"type":"LocalStringType","values":[{"language":"ru","content":"Все контрагенты"}]}}
+            {"type":"SettingsParameterValue","parameter":"Текст","value":{"kind":"localizedString","values":[{"language":"ru","content":"Все контрагенты"}]}}
         ])
     );
     assert!(rule
@@ -87,13 +90,13 @@ fn form_conditional_appearance_keeps_nested_filters_false_zero_and_parameter_use
     let rule = read(&fixture, &format!("{SETTING}.Item.Rule1"));
     assert_eq!(rule["props"]["use"], false);
     assert_eq!(
-        compact(&rule, "filter"),
+        fact(&rule, "filter"),
         json!([{"type":"FilterItemGroup", "use":false, "groupType":"AndGroup", "items":[
             {"type":"FilterItemComparison", "left":{"type":"Field","value":"ДополнительныеРеквизиты.Контрагент"},"comparisonType":"NotFilled"},
             {"type":"FilterItemComparison", "left":{"type":"boolean","value":false},"comparisonType":"Equal","right":{"type":"decimal","value":"0"}}
         ]}])
     );
-    assert_eq!(compact(&rule, "appearance")[1]["use"], false);
+    assert_eq!(fact(&rule, "appearance")[1]["use"], false);
 }
 
 #[test]
@@ -125,7 +128,7 @@ fn form_conditional_appearance_absent_empty_aliases_and_bad_values_are_distinct(
             .replace("v8ui", "u"),
     );
     assert_eq!(
-        compact(
+        fact(
             &read(&fixture, &format!("{SETTING}.Item.Rule1")),
             "appearance"
         )[0]["value"]["type"],
@@ -157,7 +160,7 @@ fn form_conditional_appearance_absent_empty_aliases_and_bad_values_are_distinct(
             .iter()
             .any(|v| v.as_str().unwrap().contains("appearance")));
         assert_eq!(
-            compact(&rule, "selection")[0]["field"],
+            fact(&rule, "selection")[0]["field"],
             "ДополнительныеРеквизитыКонтрагент"
         );
         assert_eq!(
@@ -191,7 +194,7 @@ fn form_conditional_appearance_pages_in_source_order_and_opens_every_rule() {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["at"], format!("{at}.Rule{ordinal}"));
         assert_eq!(
-            compact(&items[0], "selection")[0]["field"],
+            fact(&items[0], "selection")[0]["field"],
             format!("Target{ordinal}")
         );
         assert_eq!(read(&fixture, items[0]["at"].as_str().unwrap()), items[0]);
@@ -221,7 +224,7 @@ fn form_conditional_appearance_reports_unknown_container_and_rule_structure() {
         (
             XML.replace("<dcsset:filter>", "<Unknown/><dcsset:filter>"),
             format!("{SETTING}.Item.Rule1"),
-            "Rule1",
+            "Rule1: неподдержанный дочерний элемент Unknown",
         ),
         (
             XML.replace(
@@ -274,7 +277,7 @@ fn form_conditional_appearance_keeps_localized_text_segments_and_empty_strings()
         .replace("xmlns:win=", "xmlns:windows=")
         .replace("win:DisabledText", "windows:DisabledText");
     let fixture = appearance_fixture(&xml);
-    let appearance = compact(
+    let appearance = fact(
         &read(&fixture, &format!("{SETTING}.Item.Rule1")),
         "appearance",
     );
@@ -291,7 +294,7 @@ fn form_conditional_appearance_keeps_localized_text_segments_and_empty_strings()
         "xsi:type=\"xs:string\">",
     ));
     assert_eq!(
-        compact(
+        fact(
             &read(&fixture, &format!("{SETTING}.Item.Rule1")),
             "appearance"
         )[0]["value"],
@@ -342,4 +345,102 @@ fn form_conditional_appearance_bounds_depth_count_and_never_reads_dynamic_list_s
             .view(ViewRequest::new(SETTING).unwrap())
             .ok
     );
+}
+
+/// Values the platform writes in managed-form conditional appearance of
+/// 8.3.27 exports: list comparisons repeat `right`, an undefined right value
+/// is omitted, fonts are attributes, and a rule may carry its own caption.
+#[test]
+fn form_conditional_appearance_reads_platform_value_kinds_and_rule_presentation() {
+    let filter = concat!(
+        "<dcsset:filter>",
+        "<dcsset:item xsi:type=\"dcsset:FilterItemComparison\"><dcsset:left xsi:type=\"dcscor:Field\">Статус</dcsset:left><dcsset:comparisonType>InList</dcsset:comparisonType>",
+        "<dcsset:right xsi:type=\"dcscor:DesignTimeValue\">Перечисление.Статусы.Новый</dcsset:right>",
+        "<dcsset:right xsi:type=\"dcscor:DesignTimeValue\">Перечисление.Статусы.Закрыт</dcsset:right></dcsset:item>",
+        "<dcsset:item xsi:type=\"dcsset:FilterItemComparison\"><dcsset:left xsi:type=\"dcscor:Field\">Номер</dcsset:left><dcsset:comparisonType>NotBeginsWith</dcsset:comparisonType><dcsset:right xsi:type=\"xs:string\">Т</dcsset:right></dcsset:item>",
+        "<dcsset:item xsi:type=\"dcsset:FilterItemComparison\"><dcsset:left xsi:type=\"dcscor:Field\">Склад</dcsset:left><dcsset:comparisonType>Equal</dcsset:comparisonType></dcsset:item>",
+        "<dcsset:item xsi:type=\"dcsset:FilterItemComparison\"><dcsset:left xsi:type=\"dcscor:Field\">Дата</dcsset:left><dcsset:comparisonType>Less</dcsset:comparisonType>",
+        "<dcsset:right xsi:type=\"v8:StandardBeginningDate\"><v8:variant xsi:type=\"v8:StandardBeginningDateVariant\">Custom</v8:variant><v8:date>2020-01-01T00:00:00</v8:date></dcsset:right></dcsset:item>",
+        "</dcsset:filter>",
+    );
+    let appearance = concat!(
+        "<dcsset:appearance>",
+        "<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\"><dcscor:parameter>Шрифт</dcscor:parameter><dcscor:value xsi:type=\"v8ui:Font\" ref=\"style:ВажныйШрифт\" bold=\"true\" italic=\"false\" height=\"10\" kind=\"StyleItem\"/></dcscor:item>",
+        "<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\"><dcscor:parameter>Шрифт</dcscor:parameter><dcscor:value xsi:type=\"v8ui:Font\" ref=\"sys:DefaultGUIFont\" faceName=\"Arial\" scale=\"100\" kind=\"WindowsFont\"/></dcscor:item>",
+        "<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\"><dcscor:parameter>ГоризонтальноеПоложение</dcscor:parameter><dcscor:value xsi:type=\"v8ui:HorizontalAlign\">Right</dcscor:value></dcscor:item>",
+        "<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\"><dcscor:parameter>ЦветФона</dcscor:parameter><dcscor:value xsi:type=\"v8ui:Color\">auto</dcscor:value></dcscor:item>",
+        "</dcsset:appearance>",
+        "<dcsset:presentation xsi:type=\"v8:LocalStringType\"><v8:item><v8:lang>ru</v8:lang><v8:content>Закрытые серым</v8:content></v8:item></dcsset:presentation>",
+    );
+    let start = XML.find("<dcsset:filter>").unwrap();
+    let end = XML.find("</dcsset:appearance>").unwrap() + "</dcsset:appearance>".len();
+    let mut xml = XML.replace(
+        "xmlns:win=",
+        "xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:win=",
+    );
+    let shift = xml.len() - XML.len();
+    xml.replace_range(start + shift..end + shift, &format!("{filter}{appearance}"));
+    let fixture = appearance_fixture(&xml);
+    let rule = read(&fixture, &format!("{SETTING}.Item.Rule1"));
+    assert!(
+        rule.get("limits")
+            .is_none_or(|v| v.as_array().unwrap().is_empty()),
+        "{rule}"
+    );
+    assert_eq!(
+        fact(&rule, "presentation"),
+        json!({"kind":"localizedString","values":[{"language":"ru","content":"Закрытые серым"}]})
+    );
+    assert_eq!(
+        fact(&rule, "filter"),
+        json!([
+            {"type":"FilterItemComparison","left":{"type":"Field","value":"Статус"},"comparisonType":"InList","right":[
+                {"type":"DesignTimeValue","value":"Перечисление.Статусы.Новый"},
+                {"type":"DesignTimeValue","value":"Перечисление.Статусы.Закрыт"}
+            ]},
+            {"type":"FilterItemComparison","left":{"type":"Field","value":"Номер"},"comparisonType":"NotBeginsWith","right":{"type":"string","value":"Т"}},
+            {"type":"FilterItemComparison","left":{"type":"Field","value":"Склад"},"comparisonType":"Equal"},
+            {"type":"FilterItemComparison","left":{"type":"Field","value":"Дата"},"comparisonType":"Less","right":
+                {"type":"StandardBeginningDate","value":{"variant":"Custom","date":"2020-01-01T00:00:00"}}}
+        ])
+    );
+    let values: Vec<Value> = fact(&rule, "appearance")
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["value"].clone())
+        .collect();
+    assert_eq!(
+        values,
+        [
+            json!({"type":"Font","value":{"ref":"style:ВажныйШрифт","bold":true,"italic":false,"height":"10","kind":"StyleItem"}}),
+            json!({"type":"Font","value":{"ref":"sys:DefaultGUIFont","faceName":"Arial","scale":"100","kind":"WindowsFont"}}),
+            json!({"type":"HorizontalAlign","value":"Right"}),
+            json!({"type":"Color","value":"auto"}),
+        ]
+    );
+
+    let plain = XML.replace(
+        "</dcsset:appearance>",
+        "</dcsset:appearance><dcsset:presentation xsi:type=\"xs:string\">Пусто</dcsset:presentation>",
+    );
+    let rule = read(
+        &appearance_fixture(&plain),
+        &format!("{SETTING}.Item.Rule1"),
+    );
+    assert_eq!(rule["props"]["presentation"], "Пусто");
+
+    for (bad, field) in [
+        ("bold=\"true\"", "bold=\"yes\""),
+        ("ref=\"style:ВажныйШрифт\"", "ref=\"urn:ВажныйШрифт\""),
+        ("kind=\"StyleItem\"", "kind=\"StyleItem\" color=\"red\""),
+        (">Right<", ">Sideways<"),
+    ] {
+        let rule = read(
+            &appearance_fixture(&xml.replacen(bad, field, 1)),
+            &format!("{SETTING}.Item.Rule1"),
+        );
+        assert!(rule["props"].get("appearance").is_none(), "{field}: {rule}");
+        assert!(rule["props"].get("filter").is_some(), "{field}: {rule}");
+    }
 }
