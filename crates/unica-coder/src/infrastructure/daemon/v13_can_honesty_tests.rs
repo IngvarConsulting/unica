@@ -1047,7 +1047,7 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             ));
             continue;
         }
-        if listed && family == Ok(true) {
+        if listed && (family == Ok(true) || ARGUMENT_DEPENDENT.iter().any(|(name, _)| *name == op)) {
             check_unknown_argument_is_named(checked, at, descriptor, &address, mismatches);
         }
         if plan_writes && listed && family == Ok(true) {
