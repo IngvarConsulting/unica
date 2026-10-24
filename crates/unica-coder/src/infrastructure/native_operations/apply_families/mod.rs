@@ -2647,7 +2647,7 @@ mod tests {
         )
         .expect("references in module code do not block the removal");
         assert!(!staged.planned_changes().is_empty());
-        assert_eq!(effects.warnings().len(), 1, "{:?}", effects.warnings());
+        assert_eq!(effects.warnings().len(), 1);
         let warning = &effects.warnings()[0];
         assert_eq!(warning["code"], "code_references");
         assert_eq!(warning["count"], 3);
@@ -2724,7 +2724,7 @@ mod tests {
             .warnings()
             .iter()
             .find(|warning| warning["code"] == "code_references")
-            .unwrap_or_else(|| panic!("{:?}", effects.warnings()));
+            .expect("the plan carries the expected warning");
         assert_eq!(
             warning["references"],
             serde_json::json!([
@@ -2778,7 +2778,7 @@ mod tests {
             .warnings()
             .iter()
             .find(|warning| warning["code"] == "code_references")
-            .unwrap_or_else(|| panic!("{:?}", effects.warnings()));
+            .expect("the plan carries the expected warning");
         // Two conditions of different rights on the same line are two places.
         assert_eq!(
             code["references"],
@@ -2845,7 +2845,7 @@ mod tests {
             .warnings()
             .iter()
             .find(|warning| warning["code"] == "code_references")
-            .unwrap_or_else(|| panic!("{:?}", effects.warnings()));
+            .expect("the plan carries the expected warning");
         assert_eq!(
             code["references"],
             serde_json::json!([
