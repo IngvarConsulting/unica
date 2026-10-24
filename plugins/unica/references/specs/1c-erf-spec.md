@@ -90,6 +90,8 @@
 </MetaDataObject>
 ```
 
+`InternalInfo` обязателен у `ExternalReport` и у каждой `TabularSection`, как у обработки: без него 8.3.27.2074 отвергает загрузку, см. [EPF, раздел 3](1c-epf-spec.md).
+
 ### 2.2. Отличия от EPF
 
 | Элемент | EPF | ERF |
@@ -179,7 +181,7 @@
 | `cfg:DocumentRef.<Имя>` | Ссылка на документ | — |
 | `cfg:EnumRef.<Имя>` | Ссылка на перечисление | — |
 
-> **Примечание**: Ссылочные типы (`cfg:CatalogRef.*` и т.д.) в контексте внешнего отчёта работают **только** при наличии в информационной базе конфигурации с соответствующими объектами.
+> **Примечание**: Ссылочные типы (`cfg:CatalogRef.*` и т.д.) в контексте внешнего отчёта работают **только** при наличии в информационной базе конфигурации с соответствующими объектами. Без такого объекта в базе загрузка отвергается («Неизвестное имя типа»), см. [EPF, раздел 3](1c-epf-spec.md).
 
 ### Свойства реквизита объекта (полный перечень)
 
@@ -213,7 +215,7 @@
 
 ## 4. Табличные части (TabularSection)
 
-Структура полностью аналогична EPF, отличаются только имена GeneratedType:
+Структура полностью аналогична EPF, отличаются только имена GeneratedType. Блок `StandardAttributes` с `LineNumber` выгрузка 8.3.27.2074 пишет и у табличной части отчёта; его полный состав — в [EPF, раздел 3](1c-epf-spec.md).
 
 ```xml
 <TabularSection uuid="<UUID>">
@@ -233,6 +235,9 @@
         <Comment/>
         <ToolTip/>
         <FillChecking>DontCheck</FillChecking>
+        <StandardAttributes>
+            <xr:StandardAttribute name="LineNumber">...</xr:StandardAttribute>
+        </StandardAttributes>
     </Properties>
     <ChildObjects>
         <Attribute uuid="<UUID>">
@@ -279,8 +284,15 @@
 | `ReportResult` | Имя реквизита-результата | Имя реквизита типа SpreadsheetDocument |
 | `DetailsData` | Имя реквизита данных расшифровки | Имя строкового реквизита |
 | `CustomSettingsFolder` | Группа пользовательских настроек | Имя элемента UsualGroup на форме |
+| `AutoShowState` | Автоотображение состояния | `Auto` (по умолчанию), `DontShow`, `ShowOnComposition` |
+| `ReportResultViewMode` | Режим отображения результата | по умолчанию `Auto` |
+| `ViewModeApplicationOnSetReportResult` | Применение режима при установке результата | по умолчанию `Auto` |
 
-Эти свойства размещаются в начале `<Form>`, после `<CommandBarLocation>` и до `<AutoCommandBar>`.
+Блок этих свойств стоит последним перед `<AutoCommandBar>`, после общих свойств формы (`CommandBarLocation`, `CommandSet`, `VerticalScroll` и др.), в порядке: `ReportResult`, `DetailsData`, `ReportFormType`, `VariantAppearance` (если задан), `AutoShowState`, `CustomSettingsFolder`, `ReportResultViewMode`, `ViewModeApplicationOnSetReportResult`.
+
+Выгрузка 8.3.27.2074 пишет `ReportFormType`, `AutoShowState`, `ReportResultViewMode` и `ViewModeApplicationOnSetReportResult` в каждую форму, основной реквизит которой — `cfg:ExternalReportObject.<Имя>`, даже если во входе их не было; три последних — со значением `Auto`. Такая форма без `ReportFormType` получает `Main`.
+
+Перестановка событий формы отчёта при выгрузке — в [спецификации форм](1c-form-spec.md), раздел 6.
 
 ### 6.3. Основная форма отчёта (ReportFormType = Main)
 
@@ -292,7 +304,10 @@
     <ReportResult>Результат</ReportResult>
     <DetailsData>ДанныеРасшифровки</DetailsData>
     <ReportFormType>Main</ReportFormType>
+    <AutoShowState>Auto</AutoShowState>
     <CustomSettingsFolder>КомпоновщикНастроекПользовательскиеНастройки</CustomSettingsFolder>
+    <ReportResultViewMode>Auto</ReportResultViewMode>
+    <ViewModeApplicationOnSetReportResult>Auto</ViewModeApplicationOnSetReportResult>
     <AutoCommandBar name="" id="-1">
         <Autofill>false</Autofill>
     </AutoCommandBar>
@@ -363,7 +378,10 @@
     <CommandBarLocation>Bottom</CommandBarLocation>
     <VerticalScroll>useIfNecessary</VerticalScroll>
     <ReportFormType>Settings</ReportFormType>
+    <AutoShowState>Auto</AutoShowState>
     <CustomSettingsFolder>КомпоновщикНастроекПользовательскиеНастройки</CustomSettingsFolder>
+    <ReportResultViewMode>Auto</ReportResultViewMode>
+    <ViewModeApplicationOnSetReportResult>Auto</ViewModeApplicationOnSetReportResult>
     <AutoCommandBar name="" id="-1">
         <HorizontalAlign>Right</HorizontalAlign>
     </AutoCommandBar>
@@ -396,6 +414,9 @@
     <CommandBarLocation>Bottom</CommandBarLocation>
     <CollapseItemsByImportanceVariant>DontUse</CollapseItemsByImportanceVariant>
     <ReportFormType>Variant</ReportFormType>
+    <AutoShowState>Auto</AutoShowState>
+    <ReportResultViewMode>Auto</ReportResultViewMode>
+    <ViewModeApplicationOnSetReportResult>Auto</ViewModeApplicationOnSetReportResult>
     <AutoCommandBar name="" id="-1">
         <HorizontalAlign>Right</HorizontalAlign>
     </AutoCommandBar>
@@ -493,6 +514,8 @@
 ```
 
 Тело СКД: `Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml` — формат описан в [спецификации СКД](1c-dcs-spec.md).
+
+Файл выгружается с BOM и CRLF, как остальные XML (см. [EPF, раздел 9](1c-epf-spec.md)), но переводы строк внутри текста запроса (`<query>`) остаются LF. Пиши запрос с LF: тогда его текст выгружается без изменений (остальной файл СКД платформа переформатирует отступами). Вход с CRLF в запросе не проверялся.
 
 ### 8.2. MXL-макеты печатных форм (SpreadsheetDocument)
 
@@ -617,7 +640,7 @@
    - Метаданные с `TemplateType=DataCompositionSchema`
    - Тело СКД по [спецификации СКД](1c-dcs-spec.md)
 5. При необходимости создать формы (раздел 6):
-   - Указать `ReportFormType` (`Main` / `Settings` / `Variant`)
+   - Указать `ReportFormType` (`Main` / `Settings` / `Variant`) и три свойства `AutoShowState`, `ReportResultViewMode`, `ViewModeApplicationOnSetReportResult` со значением `Auto`: платформа допишет их сама, но без них выгрузка разойдётся со входом (раздел 6.2)
    - Основная форма: `ReportResult`, `DetailsData`, `SpreadSheetDocumentField`
    - Основной реквизит: `cfg:ExternalReportObject.<Имя>`
 6. При необходимости создать `ObjectModule.bsl` (раздел 7)
