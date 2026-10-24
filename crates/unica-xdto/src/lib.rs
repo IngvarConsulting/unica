@@ -4,3 +4,5 @@ pub mod operations;
 pub mod recovery;
 
 pub mod results;
+
+pub mod facets;

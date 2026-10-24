@@ -72,6 +72,9 @@ pub enum MetaObservedPropertyValue {
     },
     Nil {},
     Empty {},
+    /// Допустимая декларация платформы, которую профиль чтения не моделирует:
+    /// её содержимое не разбирается и не выдаётся за пустое.
+    Unmodelled {},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

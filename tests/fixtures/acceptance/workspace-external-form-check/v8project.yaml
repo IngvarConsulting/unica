@@ -1,0 +1,8 @@
+format: DESIGNER
+source-set:
+  - name: epf
+    type: EXTERNAL_DATA_PROCESSORS
+    path: epf
+  - name: erf
+    type: EXTERNAL_REPORTS
+    path: erf
