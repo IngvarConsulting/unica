@@ -2056,6 +2056,8 @@ fn exchange_plan_content_relation_leads_to_content_set() {
         unica_workspace::test_support::tree_snapshot(&fixture.workspace),
         before,
         "refusals write nothing"
+    );
+}
 
 /// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: набор типов платформы
 /// (`cfg:AnyIBRef` — любая ссылка базы) допустим, но не моделируется; это
