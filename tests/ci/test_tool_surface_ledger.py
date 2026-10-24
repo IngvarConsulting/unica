@@ -73,7 +73,8 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
     def test_plugin_examples_pass_only_published_arguments(self) -> None:
         # A skill example is copied by the agent as is: an argument the
         # schema does not publish is refused as unknown (#2006, `cwd`).
-        published = {tool["name"]: schema_properties(tool["inputSchema"]) for tool in self.tools}
+        # The server checks top-level `properties` only (`validate_hidden_v13_request`).
+        published = {tool["name"]: set(tool["inputSchema"].get("properties", {})) for tool in self.tools}
         examples = 0
         for path in sorted((REPO_ROOT / "plugins/unica").rglob("*.md")):
             text = path.read_text(encoding="utf-8")
@@ -87,7 +88,6 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                     self.assertLessEqual(set(arguments), published[name])
                 examples += 1
         self.assertGreater(examples, 0)
-
 
     def test_a_branch_only_argument_is_not_published_as_freely_optional(self) -> None:
         schema = {
@@ -365,19 +365,6 @@ class SurfaceCopiesAgreeTests(unittest.TestCase):
             sorted(ledger),
             f"{BOOTSTRAP_VERIFICATION} расходится с {LEDGER}",
         )
-
-
-def schema_properties(schema, root=None) -> set[str]:
-    """Every top-level argument name a schema publishes in any of its branches."""
-    root = root or schema
-    reference = schema.get("$ref")
-    if reference is not None:
-        return schema_properties(root["$defs"][reference.removeprefix("#/$defs/")], root)
-    names = set(schema.get("properties", {}))
-    for key in ("allOf", "oneOf", "anyOf"):
-        for branch in schema.get(key, []):
-            names |= schema_properties(branch, root)
-    return names
 
 
 if __name__ == "__main__":
