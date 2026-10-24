@@ -1,0 +1,318 @@
+{
+  "id": "S-1569-subsystem-presence",
+  "issue": 1569,
+  "area": "Подсистемы",
+  "task": "Обнаружить корневую и вложенную подсистемы по возвращённым адресам; отличить пустоту, отсутствие и повреждение свойств с сохранением ветвей и исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace-subsystem-presence",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "parent": {
+          "pointer": "/data/items/2/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:Subsystem.Parent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.parent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/explanation",
+          "eq": ""
+        }
+      ],
+      "captures": {
+        "children": {
+          "pointer": "/data/branches/1/at"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2ee660be4f7f5a8ba005d19fdaca39aa8f8127b30522805a3c637d5150a0f038"
+        },
+        {
+          "path": "src/Subsystems/Parent.xml",
+          "kind": "sha256",
+          "eq": "e66fb3fbbcc3c7060c47396d44a001bac5baa70f8c2f1878c08998ace245c357"
+        },
+        {
+          "path": "src/Subsystems/Parent/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "2db7ea6634813413000ca71d5a73282d51531f62efb22ed83aa50eeb43e1ee63"
+        },
+        {
+          "path": "src/Subsystems/Parent/Subsystems/Child.xml",
+          "kind": "sha256",
+          "eq": "7f99a7eee3d701ed8bcf94bbeb6361f18457c311cb701a0364d4f4a78b6d81d8"
+        },
+        {
+          "path": "src/Subsystems/Parent/Subsystems/Child/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "2db7ea6634813413000ca71d5a73282d51531f62efb22ed83aa50eeb43e1ee63"
+        },
+        {
+          "path": "src/Subsystems/Parent/Subsystems/Child/Subsystems/Leaf.xml",
+          "kind": "sha256",
+          "eq": "9d3f221aeeee9d9eda85886e0d5723a1e5487d89ae97d6dbe2a4cb5eb78e25ab"
+        },
+        {
+          "path": "src/Subsystems/Missing.xml",
+          "kind": "sha256",
+          "eq": "a65aeb1de5c3682efdb588b79a6ffcd84f1f6adaf05a0604bde59de5253aa9f3"
+        },
+        {
+          "path": "src/Subsystems/Damaged.xml",
+          "kind": "sha256",
+          "eq": "b0a7d84908b06fd75a1218e6533ae409d3ec10d8e36dbdbc7de81ed26cae8e0f"
+        },
+        {
+          "path": "src/Subsystems/Parent.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/Subsystems/Parent.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Explanation",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/Subsystems/Parent/Subsystems/Child.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/Subsystems/Parent/Subsystems/Child.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Explanation",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.children"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "child": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.child"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/explanation",
+          "eq": ""
+        }
+      ],
+      "captures": {
+        "leaves": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.leaves"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "leaf": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.leaf"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Комментарий"
+        },
+        {
+          "pointer": "/data/props/explanation",
+          "eq": "Пояснение"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Missing"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/explanation",
+          "eq": null
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Damaged"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/explanation",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "properties.Comment"
+        },
+        {
+          "pointer": "/data/limits/1",
+          "contains": "properties.Explanation"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2ee660be4f7f5a8ba005d19fdaca39aa8f8127b30522805a3c637d5150a0f038"
+        },
+        {
+          "path": "src/Subsystems/Parent.xml",
+          "kind": "sha256",
+          "eq": "e66fb3fbbcc3c7060c47396d44a001bac5baa70f8c2f1878c08998ace245c357"
+        },
+        {
+          "path": "src/Subsystems/Parent/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "2db7ea6634813413000ca71d5a73282d51531f62efb22ed83aa50eeb43e1ee63"
+        },
+        {
+          "path": "src/Subsystems/Parent/Subsystems/Child.xml",
+          "kind": "sha256",
+          "eq": "7f99a7eee3d701ed8bcf94bbeb6361f18457c311cb701a0364d4f4a78b6d81d8"
+        },
+        {
+          "path": "src/Subsystems/Parent/Subsystems/Child/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "2db7ea6634813413000ca71d5a73282d51531f62efb22ed83aa50eeb43e1ee63"
+        },
+        {
+          "path": "src/Subsystems/Parent/Subsystems/Child/Subsystems/Leaf.xml",
+          "kind": "sha256",
+          "eq": "9d3f221aeeee9d9eda85886e0d5723a1e5487d89ae97d6dbe2a4cb5eb78e25ab"
+        },
+        {
+          "path": "src/Subsystems/Missing.xml",
+          "kind": "sha256",
+          "eq": "a65aeb1de5c3682efdb588b79a6ffcd84f1f6adaf05a0604bde59de5253aa9f3"
+        },
+        {
+          "path": "src/Subsystems/Damaged.xml",
+          "kind": "sha256",
+          "eq": "b0a7d84908b06fd75a1218e6533ae409d3ec10d8e36dbdbc7de81ed26cae8e0f"
+        },
+        {
+          "path": "src/Subsystems/Parent.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/Subsystems/Parent.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Explanation",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/Subsystems/Parent/Subsystems/Child.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/Subsystems/Parent/Subsystems/Child.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Explanation",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -68,7 +68,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BINARY = binary_path(REPO_ROOT)
 
 from tests.ci.acceptance_profiles import (
-    DIAGNOSTICS_WORKSPACE, KB_BOUNDARY_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
+    DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
     select_profile,
 )
 
@@ -549,57 +549,6 @@ def materialize_external_form_link(workspace: Path) -> None:
         raise ValueError("external link fixture does not point to the neighboring owner")
 
 
-def source_fixture_environment(workspace_relative, environment=None):
-    if workspace_relative != KB_BOUNDARY_WORKSPACE:
-        return environment
-    environment = dict(os.environ if environment is None else environment)
-    for key in ("no_proxy", "NO_PROXY", "UNICA_DOCUMENTATION_POLICY_FILE"):
-        environment.pop(key, None)
-    # The normal HTTP client rejects this proxy scheme before DNS or a socket.
-    # If the guide-root guard regresses, the corpus fails on the proxy error
-    # instead of asking the real vendor site for the forbidden page.
-    environment["https_proxy"] = "unsupported://127.0.0.1:1"
-    environment["HTTPS_PROXY"] = "unsupported://127.0.0.1:1"
-    return environment
-
-
-class KbBoundaryFixtureTests(unittest.TestCase):
-    def test_boundary_fixture_cannot_inherit_a_proxy_bypass_or_machine_policy(self):
-        inherited = {
-            "https_proxy": "http://inherited.invalid:3128",
-            "HTTPS_PROXY": "http://inherited.invalid:3129",
-            "no_proxy": "*",
-            "NO_PROXY": "kb.1ci.com",
-            "UNICA_DOCUMENTATION_POLICY_FILE": "/unrelated/machine-policy.toml",
-            "PATH": "/inherited/path",
-        }
-        original = inherited.copy()
-        environment = source_fixture_environment(KB_BOUNDARY_WORKSPACE, inherited)
-        self.assertEqual(inherited, original)
-        self.assertEqual(environment["https_proxy"], "unsupported://127.0.0.1:1")
-        self.assertEqual(environment["HTTPS_PROXY"], "unsupported://127.0.0.1:1")
-        for key in ("no_proxy", "NO_PROXY", "UNICA_DOCUMENTATION_POLICY_FILE"):
-            self.assertNotIn(key, environment)
-        self.assertEqual(environment["PATH"], inherited["PATH"])
-
-    def test_other_source_fixtures_keep_their_environment(self):
-        environment = {"https_proxy": "http://inherited.invalid:3128", "no_proxy": "*"}
-        self.assertIs(source_fixture_environment(BARE_WORKSPACE, environment), environment)
-        self.assertIsNone(source_fixture_environment(BARE_WORKSPACE))
-
-    def test_a_proxy_failure_cannot_satisfy_the_guide_root_refusal(self):
-        corpus = load_acceptance_corpus()
-        scenario = next(s for s in corpus["scenarios"] if s["id"] == "S-953-kb-guide-root-boundary")
-        for step in scenario["wire"]:
-            locator = step["args"]["query"]
-            structured = {"ok": False, "diagnostics": [{
-                "code": "not_found",
-                "message": f"documentation page `{locator}` was not found: площадка недоступна: invalid proxy setting",
-            }]}
-            actual, note = classify({"result": {"structuredContent": structured}}, {})
-            self.assertTrue(content_mismatches(step, structured, actual, note))
-
-
 class ExternalLinkFixtureTests(unittest.TestCase):
     def test_fixed_link_is_real_and_the_neighbor_bytes_are_preserved(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -829,6 +778,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("ObjectBorrow", "object.borrow", "ExtensionRoot", "From"),
         ("ObjectCreate", "object.create", "Configuration", "Values"),
         ("ObjectRemove", "object.remove", "Metadata", "Target"),
+        ("ContentSet", "content.set", "ExchangePlan", "Items"),
         ("RelationAdd", "relation.add", "Metadata", "Values"),
         ("RelationRemove", "relation.remove", "Metadata", "Values"),
         ("RelationReplace", "relation.replace", "Metadata", "Values"),
@@ -1043,9 +993,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         for family, rows in expected.items():
             with self.subTest(family=family):
                 self.assertEqual([row for row in registry if row[1] == family], rows)
-        self.assertEqual(registry[107:112], expected["Subsystem"])
-        self.assertEqual(registry[114:119], expected["Interface"])
-        self.assertEqual(registry[119:121], expected["Code"])
+        self.assertEqual(registry[108:113], expected["Subsystem"])
+        self.assertEqual(registry[115:120], expected["Interface"])
+        self.assertEqual(registry[120:122], expected["Code"])
 
     def test_every_registered_apply_operation_has_a_published_integration_case(self) -> None:
         # The inventory is the closed `apply` registry of all typed families
@@ -1146,8 +1096,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 [row for row in registry if row[1] == "Metadata"],
                 [row for row in self.CONTEXT_ROWS if row[1] == "Metadata"],
             )
-            self.assertEqual(len(registry), 122)
-            self.assertEqual(len({row[0] for row in registry}), 120)
+            self.assertEqual(len(registry), 123)
+            self.assertEqual(len({row[0] for row in registry}), 121)
             registration = f"({operation}::ObjectBorrow),"
             self.assertEqual(original.count(registration), 1)
             replacements = {
@@ -1208,7 +1158,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         table = roles + self.XDTO_REGISTRATIONS
         registry, implemented = self.renderer().load_apply_registry()
         self.assertEqual([entry for entry in registry if entry[1] == "Xdto"], self.XDTO_ROWS)
-        self.assertEqual(registry[102:107], self.XDTO_ROWS)
+        self.assertEqual(registry[103:108], self.XDTO_ROWS)
         self.assertLessEqual({entry[0] for entry in self.XDTO_ROWS}, implemented)
         row = 'AddValueType => ("valueType.add", XdtoPackage, Values)'
         self.assertIn(row, metadata)
@@ -1370,8 +1320,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             )
             self.assertEqual(sum(entry[1] == family and entry[0] not in migrated_names for entry in registry), remaining)
             self.assertLessEqual(migrated_names, implemented)
-        self.assertEqual(len(registry), 122)
-        self.assertEqual(len({entry[0] for entry in registry}), 120)
+        self.assertIn(("content.set", "Metadata", "ExchangePlan", "Items"), registry)
+        self.assertIn("content.set", implemented)
+        self.assertEqual(len(registry), 123)
+        self.assertEqual(len({entry[0] for entry in registry}), 121)
 
     def test_dcs_rows_keep_all_53_metadata_and_original_registry_positions(self) -> None:
         module = self.renderer()
@@ -1434,10 +1386,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 ("dataSetLink.remove", "DcsSchema", "Values"),
             ]
         ]
-        self.assertEqual(registry[47:100], expected)
+        self.assertEqual(registry[48:101], expected)
         self.assertEqual([row for row in registry if row[1] == "Dcs"], expected)
-        self.assertEqual(registry[46][0], "right.set")
-        self.assertEqual(registry[100][0], "mxl.set")
+        self.assertEqual(registry[47][0], "right.set")
+        self.assertEqual(registry[101][0], "mxl.set")
         self.assertLessEqual({row[0] for row in expected}, implemented)
 
     def test_typed_dcs_rows_keep_payload_metadata_and_raw_registry_neighbors(self) -> None:
@@ -1626,11 +1578,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                     with self.subTest(family=family, variant=variant, case=case), self.assertRaises(RuntimeError):
                         self.registration_fixture(source, role_source, {filename: changed_metadata}, complete_mxl_event=False)
         registry, _ = self.renderer().load_apply_registry()
-        self.assertEqual(registry[100:102], self.MXL_EVENT_ROWS[:2])
-        self.assertEqual(registry[121], self.MXL_EVENT_ROWS[2])
-        self.assertEqual(registry[99][0], "dataSetLink.remove")
-        self.assertEqual(registry[102][0], "valueType.add")
-        self.assertEqual(registry[120][0], "code.replace")
+        self.assertEqual(registry[101:103], self.MXL_EVENT_ROWS[:2])
+        self.assertEqual(registry[122], self.MXL_EVENT_ROWS[2])
+        self.assertEqual(registry[100][0], "dataSetLink.remove")
+        self.assertEqual(registry[103][0], "valueType.add")
+        self.assertEqual(registry[121][0], "code.replace")
 
     def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
@@ -1816,6 +1768,150 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                     )
 
 
+class AcceptanceCorpusScheduleTests(unittest.TestCase):
+    """The parallel schedule runs every scenario once with its old isolation."""
+
+    @staticmethod
+    def corpus(*scenarios):
+        return {"workspace": "a", "protocolVersion": "2025-03-26", "scenarios": [
+            {"id": identifier, "workspace": workspace,
+             "wire": [{"tool": "unica.apply", "args": {"executionToken": "$executionToken"}, "expect": ["ok"]}]
+             if publishes else [{"tool": "unica.view", "args": {}, "expect": ["ok"]}] * steps}
+            for identifier, workspace, publishes, steps in scenarios]}
+
+    def test_a_segment_is_the_life_of_one_server(self) -> None:
+        corpus = self.corpus(("A1", "a", False, 2), ("B1", "b", False, 1), ("A2", "a", True, 1),
+                             ("A3", "a", False, 1), ("B2", "b", True, 1), ("B3", "b", False, 3))
+        segments = [[scenario["id"] for _, scenario in segment] for segment in corpus_segments(corpus)]
+        # Exactly the old server lives: a switch or a publication ends one.
+        self.assertEqual(segments, [["A1"], ["B1"], ["A2"], ["A3"], ["B2"], ["B3"]])
+        corpus = self.corpus(("A1", "a", False, 1), ("A2", "a", False, 1), ("A3", "a", True, 1), ("A4", "a", False, 1))
+        self.assertEqual([[scenario["id"] for _, scenario in segment] for segment in corpus_segments(corpus)],
+                         [["A1", "A2", "A3"], ["A4"]])
+
+    def test_workers_share_segments_exactly_once_and_deterministically(self) -> None:
+        corpus = self.corpus(*[(f"S{index}", "abc"[index % 3], index % 4 == 0, 1 + index % 5) for index in range(40)])
+        segments = corpus_segments(corpus)
+        for workers in (1, 2, 3, 4, 100):
+            with self.subTest(workers=workers):
+                batches = corpus_batches(corpus, workers)
+                self.assertEqual(batches, corpus_batches(corpus, workers))
+                self.assertEqual(len(batches), min(workers, len(segments)))
+                dealt = [segment for batch in batches for segment in batch]
+                self.assertCountEqual(dealt, segments)
+                for batch in batches:
+                    self.assertEqual(batch, sorted(batch, key=lambda segment: segment[0][0]))
+        with self.assertRaises(ValueError):
+            corpus_batches(corpus, 0)
+
+    def test_worker_count_comes_from_the_environment_and_never_shares_a_plugin(self) -> None:
+        with patch.dict(os.environ, {"UNICA_ACCEPTANCE_WORKERS": "3"}):
+            self.assertEqual(corpus_workers(None), 3)
+            self.assertEqual(corpus_workers(Path("/staged-plugin")), 1)
+            self.assertEqual(corpus_workers(None, lambda *_: None), 1)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("UNICA_ACCEPTANCE_WORKERS", None)
+            self.assertEqual(corpus_workers(None), SOURCE_WORKERS)
+        for raw in ("0", "-1", "two", ""):
+            with self.subTest(raw=raw), patch.dict(os.environ, {"UNICA_ACCEPTANCE_WORKERS": raw}):
+                with self.assertRaises(ValueError):
+                    corpus_workers(None)
+
+    def test_a_lost_segment_fails_the_run_instead_of_passing(self) -> None:
+        started = []
+
+        class Server:
+            provider_failure_cache_is_default = False
+
+            def __init__(self, workspace, *_):
+                self.workspace = workspace
+                started.append(workspace)
+
+            def call(self, *_):
+                return {}
+
+            def close(self):
+                pass
+
+        corpus = self.corpus(("A1", "a", False, 1), ("A2", "a", True, 1), ("B1", "b", False, 1), ("A3", "a", False, 1))
+        complete = corpus_batches
+
+        def lossy(selected, workers):
+            return [batch[1:] or batch for batch in complete(selected, workers)]
+
+        runs = {"complete": complete, "lossy": lossy}
+        for name, deal in runs.items():
+            started.clear()
+            with (self.subTest(deal=name),
+                  patch.dict(os.environ, {"UNICA_ACCEPTANCE_WORKERS": "2"}),
+                  patch(f"{__name__}.AcceptanceServer", Server),
+                  patch(f"{__name__}.corpus_batches", deal),
+                  patch(f"{__name__}.shutil.copytree", lambda _, path: path.mkdir(parents=True)),
+                  patch(f"{__name__}.classify", return_value=("ok", "")),
+                  patch(f"{__name__}.content_mismatches", return_value=[]),
+                  patch(f"{__name__}.capture_values", return_value={})):
+                if name == "complete":
+                    run_corpus(self, corpus)
+                    # Two workers, three segments: one start per segment.
+                    self.assertEqual(len(started), 3)
+                else:
+                    with self.assertRaisesRegex(AssertionError, "did not cover the corpus exactly once"):
+                        run_corpus(self, corpus)
+
+    def test_a_failing_worker_stops_the_others_and_raises(self) -> None:
+        calls = []
+        lock = threading.Lock()
+        failed = threading.Event()
+        stopped = threading.Event()
+        failing_worker = []
+
+        class Server:
+            provider_failure_cache_is_default = False
+
+            def __init__(self, workspace, *_):
+                self.workspace = workspace
+
+            def call(self, *_):
+                with lock:
+                    calls.append(None)
+                return {}
+
+            def close(self):
+                # `run_batch` sets `stop` before it closes the failing
+                # worker's server: from here on the stop is observable.
+                if failing_worker == [threading.get_ident()]:
+                    stopped.set()
+
+        def classify_or_fail(response, context):
+            with lock:
+                first = not failed.is_set()
+                if first:
+                    failed.set()
+                    failing_worker.append(threading.get_ident())
+            if first:
+                raise RuntimeError("worker sentinel")
+            # The other worker finishes its scenario only once the failure is
+            # recorded, so its next scenario boundary must see the stop.
+            self.assertTrue(stopped.wait(10), "the failing worker never closed its server")
+            return "ok", ""
+
+        # Every scenario switches the workspace, so each is its own segment and
+        # each of the two workers holds twenty of them: without the stop the
+        # other worker would make all twenty calls.
+        corpus = self.corpus(*[(f"S{index}", "ab"[index % 2], False, 1) for index in range(40)])
+        with (patch.dict(os.environ, {"UNICA_ACCEPTANCE_WORKERS": "2"}),
+              patch(f"{__name__}.AcceptanceServer", Server),
+              patch(f"{__name__}.shutil.copytree", lambda _, path: path.mkdir(parents=True)),
+              patch(f"{__name__}.classify", classify_or_fail),
+              patch(f"{__name__}.content_mismatches", return_value=[]),
+              patch(f"{__name__}.capture_values", return_value={})):
+            with self.assertRaisesRegex(RuntimeError, "worker sentinel"):
+                run_corpus(self, corpus)
+        # The failing call plus at most the one call the other worker had
+        # already started; a run without the stop makes twenty-one.
+        self.assertLessEqual(len(calls), 2, "the other worker must stop at its next scenario")
+
+
 class AcceptanceCorpusRunTests(unittest.TestCase):
     maxDiff = None
 
@@ -1931,57 +2027,123 @@ class DeliveredAcceptanceServer(AcceptanceServer):
             self._closed = True
 
 
+# Workers that run the `source` profile side by side.  Each owns its server,
+# its workspace copies and whole workspace groups; `UNICA_ACCEPTANCE_WORKERS`
+# overrides it for a local run, `1` runs in the calling thread.
+SOURCE_WORKERS = 4
+# A server start (copy, process, first call) costs about as much as this many
+# steps; the weight balances the workers by expected time, not by count.
+START_WEIGHT = 4
+
+
+def corpus_segments(corpus) -> list[list[tuple[int, dict]]]:
+    """Split the corpus into the lives of its servers.
+
+    A server serves neighbouring scenarios of one workspace in corpus order;
+    a scenario of another workspace or a publishing one ends it, and the
+    next scenario starts on a fresh server over the pristine fixture.  A
+    segment is that life exactly, so it is independent of every other one
+    and keeps the state its scenarios always saw."""
+    segments: list[list[tuple[int, dict]]] = []
+    closed = True
+    for ordinal, scenario in enumerate(corpus["scenarios"]):
+        workspace = scenario.get("workspace", corpus["workspace"])
+        if closed or workspace != segments[-1][0][1].get("workspace", corpus["workspace"]):
+            segments.append([])
+        segments[-1].append((ordinal, scenario))
+        closed = scenario_publishes(scenario)
+    return segments
+
+
+def corpus_batches(corpus, workers: int) -> list[list[list[tuple[int, dict]]]]:
+    """Deal segments to workers, heaviest first, onto the least loaded one.
+
+    The deal depends only on the corpus and the worker count; every worker
+    runs its segments in corpus order."""
+    if workers < 1:
+        raise ValueError("acceptance corpus needs at least one worker")
+
+    def weight(segment):
+        return START_WEIGHT + sum(len(scenario["wire"]) for _, scenario in segment)
+
+    loads = [0] * workers
+    dealt: list[list[list[tuple[int, dict]]]] = [[] for _ in range(workers)]
+    for segment in sorted(corpus_segments(corpus), key=lambda segment: (-weight(segment), segment[0][0])):
+        target = loads.index(min(loads))
+        loads[target] += weight(segment)
+        dealt[target].append(segment)
+    return [sorted(batch, key=lambda segment: segment[0][0]) for batch in dealt if batch]
+
+
+def corpus_workers(plugin, scenario_driver=None) -> int:
+    if plugin is not None or scenario_driver is not None:
+        # A delivered plugin is one staged installation, and a driver may
+        # hold its own outside state: neither is shared between workers.
+        return 1
+    raw = os.environ.get("UNICA_ACCEPTANCE_WORKERS", str(SOURCE_WORKERS))
+    if not raw.isdigit() or int(raw) < 1:
+        raise ValueError(f"UNICA_ACCEPTANCE_WORKERS must be a positive integer: {raw!r}")
+    return int(raw)
+
+
 def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cleanup=None):
+    from concurrent.futures import ThreadPoolExecutor
     from tests.ci.private_provider_failure_evidence import before_call, emit_failure_evidence
 
     default_workspace = corpus["workspace"]
-    mismatches = []
-    with tempfile.TemporaryDirectory(
-        prefix="unica-acceptance-", ignore_cleanup_errors=True
-    ) as raw:
-        root = Path(raw).resolve()
+    if not corpus["scenarios"]:
+        raise ValueError("selected acceptance profile is empty")
+    batches = corpus_batches(corpus, corpus_workers(plugin, scenario_driver))
+    stop = threading.Event()
+    segment_starts = {segment[0][0] for batch in batches for segment in batch}
+
+    def fresh_server(root: Path, generation: int, workspace_relative: str) -> AcceptanceServer:
+        home = root / f"run-{generation}"
+        workspace = home / "workspace"
+        shutil.copytree(REPO_ROOT / workspace_relative, workspace)
+        if workspace_relative == "tests/fixtures/acceptance/workspace-search-wide":
+            # Reverse directory traversal reaches ZNoise before the BSL.
+            # Generate the capacity probe in the disposable workspace.
+            noise = workspace / "src/ZNoise"
+            noise.mkdir()
+            for index in range(16_385):
+                (noise / f"noise{index:05}.txt").touch()
+        if workspace_relative == "tests/fixtures/acceptance/workspace-external-linked":
+            materialize_external_form_link(workspace)
+        if workspace_relative in {"tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked", "tests/fixtures/acceptance/workspace-external-missing"}:
+            from tests.ci.acceptance_diagnostics import initialize_vendor_source
+            initialize_vendor_source(workspace)
+        if workspace_relative == FORMAT_WORKSPACE:
+            derive_source_sets(REPO_ROOT / default_workspace / "src", workspace)
+        state = home / "state"
+        state.mkdir()
+        environment = isolated_environment(plugin, state) if plugin else None
+        server_type = DeliveredAcceptanceServer if plugin else AcceptanceServer
+        return server_type(workspace, state, corpus["protocolVersion"], environment)
+
+    def run_batch(root: Path, batch) -> tuple[list[int], list[tuple[int, str]]]:
+        """Run one worker's segments; return the attempted ordinals and mismatches."""
+        attempted: list[int] = []
+        found_all: list[tuple[int, str]] = []
         generation = 0
-
-        def fresh_server(workspace_relative: str) -> AcceptanceServer:
-            nonlocal generation
-            generation += 1
-            home = root / f"run-{generation}"
-            workspace = home / "workspace"
-            shutil.copytree(REPO_ROOT / workspace_relative, workspace)
-            if workspace_relative == "tests/fixtures/acceptance/workspace-search-wide":
-                # Reverse directory traversal reaches ZNoise before the BSL.
-                # Generate the capacity probe in the disposable workspace.
-                noise = workspace / "src/ZNoise"
-                noise.mkdir()
-                for index in range(16_385):
-                    (noise / f"noise{index:05}.txt").touch()
-            if workspace_relative == "tests/fixtures/acceptance/workspace-external-linked":
-                materialize_external_form_link(workspace)
-            if workspace_relative in {"tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked", "tests/fixtures/acceptance/workspace-external-missing"}:
-                from tests.ci.acceptance_diagnostics import initialize_vendor_source
-                initialize_vendor_source(workspace)
-            if workspace_relative == FORMAT_WORKSPACE:
-                derive_source_sets(REPO_ROOT / default_workspace / "src", workspace)
-            state = home / "state"
-            state.mkdir()
-            environment = isolated_environment(plugin, state) if plugin else None
-            environment = source_fixture_environment(workspace_relative, environment)
-            server_type = DeliveredAcceptanceServer if plugin else AcceptanceServer
-            return server_type(workspace, state, corpus["protocolVersion"], environment)
-
-        if not corpus["scenarios"]:
-            raise ValueError("selected acceptance profile is empty")
-        current_workspace = corpus["scenarios"][0].get("workspace", default_workspace)
-        server = fresh_server(current_workspace)
+        server = None
         try:
-            for case_ordinal, scenario in enumerate(corpus["scenarios"]):
+            for case_ordinal, scenario in (entry for segment in batch for entry in segment):
+                if stop.is_set():
+                    # Another worker failed; its exception decides the run.
+                    break
                 wanted = scenario.get("workspace", default_workspace)
-                if wanted != current_workspace:
-                    # A scenario may address another fixture workspace;
-                    # the session is bound to one, so it starts over.
+                if server is not None and case_ordinal in segment_starts:
                     server.close()
-                    current_workspace = wanted
-                    server = fresh_server(current_workspace)
+                    server = None
+                if server is None:
+                    # A segment shares its server; a publishing or broken
+                    # scenario ends it, and the next one starts from the
+                    # pristine fixture so results never depend on order.
+                    generation += 1
+                    server = fresh_server(root, generation, wanted)
+                attempted.append(case_ordinal)
+                found: list[str] = []
                 context = {"workspace": server.workspace}
                 broken = False
                 finish = scenario_driver(server, scenario) if scenario_driver else None
@@ -2002,7 +2164,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                     except (TimeoutError, OSError, ValueError) as error:
                         # The session is gone: record the step with the
                         # daemon's own words and continue on a fresh one.
-                        mismatches.append(
+                        found.append(
                             f"{label}: session failed :: {error} :: "
                             f"stderr tail: {server.stderr_tail(400)}"
                         )
@@ -2011,7 +2173,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                     candidate = dict(context)
                     actual, note = classify(response, candidate)
                     if not matches_step(step, actual):
-                        mismatches.append(
+                        found.append(
                             f"{label}: expected {step['expect']}, got {actual} :: {note[:160]}"
                         )
                         broken = True
@@ -2029,7 +2191,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                         except (ValueError, OSError) as error:
                             failures.append(str(error))
                     if failures:
-                        mismatches.extend(f"{label}: {failure}" for failure in failures)
+                        found.extend(f"{label}: {failure}" for failure in failures)
                         broken = True
                         break
                     # The independent evaluator needs the actual file values,
@@ -2048,25 +2210,51 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                     )
                 if finish is not None and not broken:
                     finish(verification)
-                # A scenario that published changes leaves its mark on the
-                # workspace; the next one starts from the pristine fixture
-                # so results never depend on corpus order. The old run
-                # directory stays until the temporary directory is removed,
-                # after the daemon's idle grace has passed.
+                found_all.extend((case_ordinal, mismatch) for mismatch in found)
+                # The old run directory stays until the temporary directory
+                # is removed, after the daemon's idle grace has passed.
                 if broken or scenario_publishes(scenario):
                     server.close()
-                    server = fresh_server(current_workspace)
+                    server = None
+        except BaseException:
+            stop.set()
+            raise
         finally:
-            try:
+            if server is not None:
                 server.close()
-            finally:
-                if fixture_cleanup is not None:
-                    fixture_cleanup()
+        return attempted, found_all
+
+    mismatches: list[tuple[int, str]] = []
+    attempted: list[int] = []
+    with tempfile.TemporaryDirectory(
+        prefix="unica-acceptance-", ignore_cleanup_errors=True
+    ) as raw:
+        root = Path(raw).resolve()
+        roots = [root / f"worker-{index}" for index in range(len(batches))]
+        try:
+            if len(batches) == 1:
+                outcomes = [run_batch(roots[0], batches[0])]
+            else:
+                with ThreadPoolExecutor(max_workers=len(batches)) as pool:
+                    futures = [pool.submit(run_batch, worker_root, batch)
+                               for worker_root, batch in zip(roots, batches, strict=True)]
+                    outcomes = [future.result() for future in futures]
+            for done, found in outcomes:
+                attempted.extend(done)
+                mismatches.extend(found)
+        finally:
+            # Servers are closed; owned fixtures go before their workspaces.
+            if fixture_cleanup is not None:
+                fixture_cleanup()
+    # Every scenario of the selection runs exactly once, whatever the deal:
+    # a lost worker or a dropped scenario fails here, not as a silent pass.
+    test_case.assertEqual(sorted(attempted), list(range(len(corpus["scenarios"]))),
+                          "the acceptance workers did not cover the corpus exactly once")
     test_case.assertEqual(
-        mismatches,
+        [mismatch for _, mismatch in sorted(mismatches, key=lambda item: item[0])],
         [],
         "the surface answered outside the frozen acceptance classes:\n"
-        + "\n".join(mismatches),
+        + "\n".join(mismatch for _, mismatch in sorted(mismatches, key=lambda item: item[0])),
     )
 
 

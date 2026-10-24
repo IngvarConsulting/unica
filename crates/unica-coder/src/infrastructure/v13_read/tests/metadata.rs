@@ -51,6 +51,631 @@ fn metadata_node_props_carry_the_observed_object_properties() {
     assert_eq!(props["kind"], json!("Catalog"));
 }
 
+#[test]
+fn catalog_standard_attribute_properties_reach_collection_and_detail() {
+    let fixture = RealReaderFixture::new();
+    let xml = fixture_text("acceptance/workspace-standard-attributes/src/Catalogs/Items.xml");
+    let path = fixture.source.join("Catalogs/Items.xml");
+    write(&path, &xml);
+    let service = fixture.view_service();
+    let collection =
+        service.view(ViewRequest::new("main:Catalog.Items.StandardAttribute").unwrap());
+    assert!(collection.ok, "{collection:?}");
+    let data = collection.data.unwrap();
+    let items = data["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    for (index, name) in ["Code", "Description"].into_iter().enumerate() {
+        let at = items[index]["at"].as_str().unwrap();
+        assert_eq!(at, format!("main:Catalog.Items.StandardAttribute.{name}"));
+        let detail = service.view(ViewRequest::new(at).unwrap());
+        assert!(detail.ok, "{detail:?}");
+        let detail = detail.data.unwrap();
+        assert_eq!(detail["title"], name);
+        assert_eq!(items[index]["props"], detail["props"]);
+        let source = document
+            .descendants()
+            .find(|node| node.attribute("name") == Some(name))
+            .unwrap();
+        for key in ["Synonym", "ToolTip", "FillChecking"] {
+            let value: serde_json::Value =
+                serde_json::from_str(detail["props"][key].as_str().unwrap()).unwrap();
+            let property = source
+                .children()
+                .find(|node| node.is_element() && node.tag_name().name() == key)
+                .unwrap();
+            if key == "FillChecking" {
+                assert_eq!(
+                    value,
+                    json!({"kind":"text","value":property.text().unwrap()})
+                );
+            } else {
+                let expected = property
+                    .children()
+                    .filter(|node| node.is_element())
+                    .map(|item| {
+                        let text = |tag| {
+                            item.children()
+                                .find(|node| node.is_element() && node.tag_name().name() == tag)
+                                .unwrap()
+                                .text()
+                                .unwrap_or("")
+                        };
+                        json!({"language":text("lang"),"content":text("content")})
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(value, json!({"kind":"localizedString","values":expected}));
+            }
+        }
+    }
+    assert_eq!(items[2]["title"], "Ref");
+    assert!(items[2]
+        .get("props")
+        .is_none_or(|props| props.as_object().unwrap().is_empty()));
+    assert_eq!(fs::read_to_string(path).unwrap(), xml);
+}
+
+#[test]
+fn catalog_standard_attribute_empty_absent_and_damaged_properties_stay_distinct() {
+    for key in ["Synonym", "ToolTip", "FillChecking"] {
+        for state in ["empty", "absent", "damaged", "bare-text"] {
+            if state == "bare-text" && key == "FillChecking" {
+                continue;
+            }
+            let fixture = RealReaderFixture::new();
+            let path = fixture.source.join("Catalogs/Items.xml");
+            let base =
+                fixture_text("acceptance/workspace-standard-attributes/src/Catalogs/Items.xml");
+            let document = roxmltree::Document::parse(&base).unwrap();
+            let mut xml = base.clone();
+            let mut ranges = document
+                .descendants()
+                .filter(|node| node.is_element() && node.tag_name().name() == key)
+                .map(|node| node.range())
+                .collect::<Vec<_>>();
+            for range in ranges.drain(..).rev() {
+                let replacement = match state {
+                    "empty" => format!("<xr:{key}/>"),
+                    "absent" => String::new(),
+                    "damaged" => format!("<xr:{key}><xr:Unexpected/></xr:{key}>"),
+                    "bare-text" => format!("<xr:{key}>broken</xr:{key}>"),
+                    _ => unreachable!(),
+                };
+                xml.replace_range(range, &replacement);
+            }
+            write(&path, &xml);
+            let service = fixture.view_service();
+            let collection =
+                service.view(ViewRequest::new("main:Catalog.Items.StandardAttribute").unwrap());
+            if matches!(state, "damaged" | "bare-text") {
+                assert!(!collection.ok, "{key}: {collection:?}");
+                assert_eq!(collection.diagnostics[0]["detailCode"], "source_unreadable");
+                for name in ["Code", "Description"] {
+                    let detail = service.view(
+                        ViewRequest::new(&format!("main:Catalog.Items.StandardAttribute.{name}"))
+                            .unwrap(),
+                    );
+                    assert!(!detail.ok, "{detail:?}");
+                    assert_eq!(detail.diagnostics[0]["detailCode"], "source_unreadable");
+                }
+                let root = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+                assert!(root.ok, "{root:?}");
+                assert!(root.data.unwrap()["limits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|limit| limit.as_str().unwrap().contains("standardAttributes")));
+            } else {
+                assert!(collection.ok, "{collection:?}");
+                for item in &collection.data.unwrap()["items"].as_array().unwrap()[..2] {
+                    let detail =
+                        service.view(ViewRequest::new(item["at"].as_str().unwrap()).unwrap());
+                    assert!(detail.ok, "{detail:?}");
+                    let detail = detail.data.unwrap();
+                    assert_eq!(item.get("props"), detail.get("props"));
+                    if state == "absent" {
+                        assert!(detail["props"].get(key).is_none());
+                    } else {
+                        let value: serde_json::Value =
+                            serde_json::from_str(detail["props"][key].as_str().unwrap()).unwrap();
+                        let expected = if key == "FillChecking" {
+                            json!({"kind":"text","value":""})
+                        } else {
+                            json!({"kind":"localizedString","values":[]})
+                        };
+                        assert_eq!(value, expected);
+                    }
+                }
+            }
+            assert_eq!(fs::read_to_string(path).unwrap(), xml);
+        }
+    }
+}
+
+#[test]
+fn standard_attribute_projection_keeps_the_closed_property_profile_and_byte_limit() {
+    let at = QualifiedAddress::parse("main:Catalog.Items.StandardAttribute.Code").unwrap();
+    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+    let view = project_typed_payload(&route, json!({
+        "collections": {},
+        "declarations": {"standardAttributes": [{"name":"Code", "properties":[
+            {"name":"FillChecking", "value":{"kind":"text", "value":"ShowError"}},
+            {"name":"ToolTip", "value":{"kind":"localizedString", "values":[{"language":"ru", "content":"я".repeat(2048)}]}},
+            {"name":"FutureProperty", "value":{"kind":"text", "value":"must-not-leak"}}
+        ]}]}
+    })).unwrap();
+    let data = serde_json::to_value(view).unwrap();
+    assert_eq!(data["title"], "Code");
+    assert_eq!(data["props"].as_object().unwrap().len(), 1);
+    assert_eq!(
+        data["props"]["FillChecking"],
+        r#"{"kind":"text","value":"ShowError"}"#
+    );
+
+    let at = QualifiedAddress::parse("main:Catalog.Items.Attribute.Code").unwrap();
+    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+    let view = project_typed_payload(&route, json!({
+        "collections":{"attributes":[{"name":"Code", "properties":[{"name":"FillChecking", "value":{"kind":"text","value":"ShowError"}}]}]}
+    })).unwrap();
+    let data = serde_json::to_value(view).unwrap();
+    assert!(data
+        .get("props")
+        .is_none_or(|props| props.as_object().unwrap().is_empty()));
+}
+
+#[test]
+fn metadata_type_compact_limit_counts_utf8_bytes_and_explains_only_oversize() {
+    for bytes in [2047, 2048, 2049] {
+        let mut value = json!({"variants":[{"kind":"reference","metadataPath":"Document.Тип"}],"mutationCapability":"editable"});
+        let padding = bytes - serde_json::to_string(&value).unwrap().len();
+        value["variants"][0]["metadataPath"] = json!(format!(
+            "Document.Тип{}{}",
+            "я".repeat(padding / 2),
+            "x".repeat(padding % 2)
+        ));
+        let rendered = serde_json::to_string(&value).unwrap();
+        assert_eq!(rendered.len(), bytes);
+        assert!(rendered.chars().count() < bytes);
+        let payload = json!({"collections":{"attributes":[{"name":"Long","synonym":"Длинный тип","required":false,"type":value}]}});
+        for (at, collection) in [
+            ("main:Catalog.Items.Attribute", true),
+            ("main:Catalog.Items.Attribute.Long", false),
+        ] {
+            let address = QualifiedAddress::parse(at).unwrap();
+            let route = route_logical_address(&address, PlatformProfile::v8_3_27()).unwrap();
+            let projected =
+                serde_json::to_value(project_typed_payload(&route, payload.clone()).unwrap())
+                    .unwrap();
+            let item = if collection {
+                &projected["items"][0]
+            } else {
+                &projected
+            };
+            assert_eq!(item["props"]["required"], false);
+            assert_eq!(item["props"]["synonym"], "Длинный тип");
+            assert!(item.get("branches").is_none());
+            if bytes <= 2048 {
+                assert_eq!(item["props"]["type"], rendered);
+                assert!(item.get("limits").is_none());
+            } else {
+                assert!(item["props"].get("type").is_none());
+                assert!(item["limits"].as_array().unwrap().iter().any(|limit| limit
+                    .as_str()
+                    .unwrap()
+                    .contains("type")
+                    && limit.as_str().unwrap().contains("2048")));
+            }
+        }
+    }
+    for ty in [None, Some(serde_json::Value::Null)] {
+        let mut item = json!({"name":"Long","required":false});
+        if let Some(value) = ty {
+            item["type"] = value;
+        }
+        let at = QualifiedAddress::parse("main:Catalog.Items.Attribute.Long").unwrap();
+        let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+        let projected = serde_json::to_value(
+            project_typed_payload(&route, json!({"collections":{"attributes":[item]}})).unwrap(),
+        )
+        .unwrap();
+        assert!(projected.get("limits").is_none());
+    }
+}
+
+#[test]
+fn metadata_long_type_read_preserves_other_facts_and_names_the_size_limit() {
+    let fixture = RealReaderFixture::new();
+    for relative in ["Configuration.xml", "AccumulationRegisters/Movements.xml"] {
+        write(
+            &fixture.source.join(relative),
+            &fixture_text(&format!("acceptance/workspace-type-size/src/{relative}")),
+        );
+    }
+    let xml =
+        fixture_text("acceptance/workspace-type-size/src/AccumulationRegisters/Movements.xml");
+    let source = roxmltree::Document::parse(&xml).unwrap();
+    let references = source
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Attribute")
+        .flat_map(|node| node.descendants())
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().name() == "Type"
+                && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
+        })
+        .map(|node| node.text().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(references.len(), 20);
+    for reference in &references {
+        let name = reference.strip_prefix("cfg:DocumentRef.").unwrap();
+        let relative = format!("Documents/{name}.xml");
+        write(
+            &fixture.source.join(&relative),
+            &fixture_text(&format!("acceptance/workspace-type-size/src/{relative}")),
+        );
+    }
+    assert_eq!(
+        references
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        20
+    );
+    let service = fixture.view_service();
+    let collection =
+        service.view(ViewRequest::new("main:AccumulationRegister.Movements.Attribute").unwrap());
+    assert!(collection.ok, "{collection:?}");
+    let item = &collection.data.as_ref().unwrap()["items"][0];
+    let detail = service.view(ViewRequest::new(item["at"].as_str().unwrap()).unwrap());
+    assert!(detail.ok, "{detail:?}");
+    let data = detail.data.unwrap();
+    assert_eq!(item["limits"], data["limits"]);
+    assert!(data["limits"].as_array().unwrap().iter().any(|limit| limit
+        .as_str()
+        .unwrap()
+        .contains("type")
+        && limit.as_str().unwrap().contains("2048")));
+    assert!(data["props"].get("type").is_none());
+    assert_eq!(data["props"]["required"], false);
+    assert_eq!(data["props"]["synonym"], "Long");
+    let control = service
+        .view(ViewRequest::new("main:AccumulationRegister.Movements.Dimension.Small").unwrap());
+    assert!(control.ok, "{control:?}");
+    let control = control.data.unwrap();
+    assert!(control.get("limits").is_none());
+    let ty: serde_json::Value =
+        serde_json::from_str(control["props"]["type"].as_str().unwrap()).unwrap();
+    assert_eq!(ty["variants"].as_array().unwrap().len(), 9);
+    for (variant, expected) in ty["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(references.iter())
+    {
+        assert_eq!(
+            variant["metadataPath"],
+            expected.replace("cfg:DocumentRef.", "Document.")
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(fixture.source.join("AccumulationRegisters/Movements.xml")).unwrap(),
+        xml
+    );
+}
+
+#[test]
+fn metadata_missing_empty_and_malformed_types_do_not_claim_a_size_limit() {
+    for (fragment, damaged) in [
+        ("", false),
+        ("<Type/>", true),
+        ("<Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>broken</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type>", true),
+    ] {
+        let fixture = RealReaderFixture::new();
+        let path = fixture.source.join("Catalogs/Items.xml");
+        let original = fs::read_to_string(&path).unwrap();
+        let xml = original.replace("<Type><v8:Type>xs:string</v8:Type></Type>", fragment);
+        assert_ne!(xml, original, "fixture must replace the existing type");
+        write(&path, &xml);
+        let service = fixture.view_service();
+        let detail = service.view(ViewRequest::new("main:Catalog.Items.Attribute.Code").unwrap());
+        assert!(detail.ok, "{detail:?}");
+        let data = detail.data.unwrap();
+        assert!(data["props"].get("type").is_none(), "{data}");
+        // Отсутствующий, пустой и повреждённый тип не заявляют предел размера;
+        // причина повреждения названа у самого реквизита (#1933).
+        let item_limits = data["limits"].as_array().cloned().unwrap_or_default();
+        assert!(
+            item_limits.iter().all(|limit| {
+                let limit = limit.as_str().unwrap();
+                !limit.contains("2048") && !limit.contains("compact property limit")
+            }),
+            "a type limit of the attribute claims a size bound"
+        );
+        assert_eq!(
+            item_limits
+                .iter()
+                .any(|limit| limit.as_str().unwrap().starts_with("collections.attributes[0].type: ")),
+            damaged,
+            "the attribute limits name the type damage exactly when the type is damaged"
+        );
+        assert_eq!(data["props"].get("incomplete").and_then(serde_json::Value::as_bool).unwrap_or(false), damaged);
+        let root = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+        assert!(root.ok, "{root:?}");
+        let limits = root.data.unwrap()["limits"].as_array().cloned().unwrap_or_default();
+        assert_eq!(limits.iter().any(|limit| limit.as_str().unwrap().contains(".type не прочитано")), damaged, "{limits:?}");
+    }
+}
+
+#[test]
+fn predefined_long_type_read_preserves_other_facts_and_names_the_size_limit() {
+    const FOLDER: &str = "10000000-0000-4000-8000-000000000101";
+    const LONG: &str = "10000000-0000-4000-8000-000000000102";
+    const SMALL: &str = "10000000-0000-4000-8000-000000000103";
+    let fixture = RealReaderFixture::new();
+    let config_path = fixture.source.join("Configuration.xml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    write(
+        &config_path,
+        &config.replace(
+            "</ChildObjects>",
+            "<ChartOfCharacteristicTypes>Characteristics</ChartOfCharacteristicTypes></ChildObjects>",
+        ),
+    );
+    write_metadata_owner(
+        &fixture.source,
+        "ChartsOfCharacteristicTypes",
+        "ChartOfCharacteristicTypes",
+        "Characteristics",
+        "",
+    );
+    let type_xml = |references: &[String]| {
+        references
+            .iter()
+            .map(|reference| format!("<v8:Type xmlns:d4p1=\"http://v8.1c.ru/8.1/data/enterprise/current-config\">d4p1:{reference}</v8:Type>"))
+            .collect::<String>()
+    };
+    let long = (1..=39)
+        .map(|index| format!("DocumentRef.ДокументРасчетовСКонтрагентомНомер{index:02}"))
+        .collect::<Vec<_>>();
+    let small = vec!["DocumentRef.ДокументРасчетовСКонтрагентомНомер01".to_string()];
+    let path = fixture
+        .source
+        .join("ChartsOfCharacteristicTypes/Characteristics/Ext/Predefined.xml");
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><PredefinedData xmlns=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"PlanOfCharacteristicKindPredefinedItems\" version=\"2.20\"><Item id=\"{FOLDER}\"><Name>Группа</Name><Code>000000001</Code><Description>Группа</Description><IsFolder>true</IsFolder><ChildItems><Item id=\"{LONG}\"><Name>Длинный</Name><Code>000000002</Code><Description>Длинный тип</Description><Type>{}</Type><IsFolder>false</IsFolder></Item><Item id=\"{SMALL}\"><Name>Малый</Name><Code>000000003</Code><Description>Малый тип</Description><Type>{}</Type><IsFolder>false</IsFolder></Item></ChildItems></Item></PredefinedData>",
+        type_xml(&long),
+        type_xml(&small),
+    );
+    write(&path, &xml);
+    let source = roxmltree::Document::parse(&xml).unwrap();
+    let variants = |name: &str| {
+        source
+            .descendants()
+            .find(|node| {
+                node.is_element()
+                    && node.tag_name().name() == "Item"
+                    && node.children().any(|child| {
+                        child.tag_name().name() == "Name" && child.text() == Some(name)
+                    })
+            })
+            .unwrap()
+            .descendants()
+            .filter(|node| {
+                node.is_element()
+                    && node.tag_name().name() == "Type"
+                    && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
+            })
+            .map(|node| {
+                node.text()
+                    .unwrap()
+                    .replace("d4p1:DocumentRef.", "Document.")
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected_long = variants("Длинный");
+    assert_eq!(expected_long.len(), 39);
+    // Независимая оценка компактного вида: одни пути вариантов уже больше предела.
+    assert!(expected_long.iter().map(String::len).sum::<usize>() > 2048);
+    let expected_small = variants("Малый");
+    assert_eq!(expected_small.len(), 1);
+
+    let service = fixture.view_service();
+    let collection = service.view(
+        ViewRequest::new("main:ChartOfCharacteristicTypes.Characteristics.PredefinedItem").unwrap(),
+    );
+    assert!(collection.ok, "{collection:?}");
+    let items = collection.data.as_ref().unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let find = |name: &str| {
+        items
+            .iter()
+            .find(|item| item["at"].as_str().unwrap().ends_with(&format!(".{name}")))
+            .unwrap_or_else(|| panic!("{name} in {items:?}"))
+            .clone()
+    };
+    let size_limit = |limits: &serde_json::Value| {
+        limits.as_array().unwrap().iter().any(|limit| {
+            let limit = limit.as_str().unwrap();
+            limit.contains("type") && limit.contains("2048")
+        })
+    };
+    let item = find("Длинный");
+    let detail = service.view(ViewRequest::new(item["at"].as_str().unwrap()).unwrap());
+    assert!(detail.ok, "{detail:?}");
+    let data = detail.data.unwrap();
+    assert_eq!(item["limits"], data["limits"]);
+    assert!(size_limit(&data["limits"]), "{data}");
+    assert!(data["props"].get("type").is_none(), "{data}");
+    assert!(data.get("branches").is_none(), "{data}");
+    assert_eq!(data["props"]["id"], LONG);
+    assert_eq!(data["props"]["parentId"], FOLDER);
+    assert_eq!(data["props"]["code"], "000000002");
+    assert_eq!(data["props"]["description"], "Длинный тип");
+    assert_eq!(data["props"]["isFolder"], false);
+
+    let item = find("Малый");
+    assert!(item.get("limits").is_none(), "{item}");
+    let control = service.view(ViewRequest::new(item["at"].as_str().unwrap()).unwrap());
+    assert!(control.ok, "{control:?}");
+    let control = control.data.unwrap();
+    assert!(control.get("limits").is_none(), "{control}");
+    assert_eq!(control["props"]["id"], SMALL);
+    assert_eq!(control["props"]["parentId"], FOLDER);
+    assert_eq!(control["props"]["code"], "000000003");
+    assert_eq!(control["props"]["description"], "Малый тип");
+    assert_eq!(control["props"]["isFolder"], false);
+    let ty: serde_json::Value =
+        serde_json::from_str(control["props"]["type"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        ty,
+        json!(unica_metadata::MetadataType::new(
+            expected_small
+                .iter()
+                .map(|path| unica_metadata::MetadataTypeVariant::Reference {
+                    metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path)
+                        .unwrap(),
+                })
+                .collect()
+        )
+        .unwrap())
+    );
+
+    let folder = find("Группа");
+    assert!(folder.get("limits").is_none(), "{folder}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), xml);
+}
+
+#[test]
+fn metadata_member_comments_preserve_presence_and_damage_in_collection_and_detail() {
+    for (owner, file, kind) in [
+        ("Catalog.Items", "Catalogs/Items.xml", "Attribute"),
+        ("Catalog.Items", "Catalogs/Items.xml", "Command"),
+        (
+            "InformationRegister.Rates",
+            "InformationRegisters/Rates.xml",
+            "Dimension",
+        ),
+        (
+            "InformationRegister.Rates",
+            "InformationRegisters/Rates.xml",
+            "Resource",
+        ),
+        (
+            "DocumentJournal.Entries",
+            "DocumentJournals/Entries.xml",
+            "Column",
+        ),
+        ("Enum.Codes", "Enums/Codes.xml", "EnumValue"),
+    ] {
+        for (comment, expected, damaged) in [
+            ("<Comment/>", Some(""), false),
+            ("<Comment></Comment>", Some(""), false),
+            ("<Comment> </Comment>", Some(" "), false),
+            ("<Comment>Описание</Comment>", Some("Описание"), false),
+            ("", None, false),
+            ("<Comment><Nested/></Comment>", None, true),
+            ("<Comment attr=\"x\"/>", None, true),
+            ("<Comment/><Comment>duplicate</Comment>", None, true),
+            ("<Comment xmlns=\"urn:foreign\"/>", None, true),
+        ] {
+            let fixture = RealReaderFixture::new();
+            for relative in [
+                "Configuration.xml",
+                "Catalogs/Items.xml",
+                "InformationRegisters/Rates.xml",
+                "DocumentJournals/Entries.xml",
+                "Enums/Codes.xml",
+            ] {
+                write(
+                    &fixture.source.join(relative),
+                    &fixture_text(&format!(
+                        "acceptance/workspace-member-comments/src/{relative}"
+                    )),
+                );
+            }
+            let path = fixture.source.join(file);
+            let original = fs::read_to_string(&path).unwrap();
+            let document = roxmltree::Document::parse(&original).unwrap();
+            let source = document
+                .descendants()
+                .find(|node| {
+                    node.is_element()
+                        && node.tag_name().name() == kind
+                        && node.children().any(|child| {
+                            child.is_element()
+                                && child.tag_name().name() == "Properties"
+                                && child.children().any(|name| {
+                                    name.is_element()
+                                        && name.tag_name().name() == "Name"
+                                        && name.text() == Some("Empty")
+                                })
+                        })
+                })
+                .unwrap();
+            let range = source
+                .descendants()
+                .find(|node| node.is_element() && node.tag_name().name() == "Comment")
+                .unwrap()
+                .range();
+            let mut xml = original.clone();
+            xml.replace_range(range, comment);
+            write(&path, &xml);
+            let service = fixture.view_service();
+            let at = format!("main:{owner}.{kind}");
+            let collection = service.view(ViewRequest::new(&at).unwrap());
+            assert!(collection.ok, "{at}, {comment}: {collection:?}");
+            let items = collection.data.unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .clone();
+            assert_eq!(items.len(), 2);
+            assert!(items[1]["props"].get("comment").is_none());
+            let detail = service.view(ViewRequest::new(items[0]["at"].as_str().unwrap()).unwrap());
+            assert!(detail.ok, "{detail:?}");
+            let data = detail.data.unwrap();
+            assert_eq!(items[0]["props"], data["props"]);
+            assert_eq!(data["title"], format!("{kind} Empty"));
+            assert_eq!(
+                data["props"]
+                    .get("comment")
+                    .and_then(serde_json::Value::as_str),
+                expected,
+                "{kind}: {comment}"
+            );
+            assert_eq!(
+                data["props"]
+                    .get("incomplete")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+                damaged
+            );
+            if matches!(kind, "Attribute" | "Dimension" | "Resource") {
+                assert_eq!(data["props"]["required"], false);
+                for key in ["type", "fillValue"] {
+                    assert!(data["props"].get(key).is_some(), "{kind}: missing {key}");
+                    assert_eq!(data["props"][key], items[1]["props"][key]);
+                }
+            }
+            let root = service.view(ViewRequest::new(&format!("main:{owner}")).unwrap());
+            assert!(root.ok, "{root:?}");
+            let limits = root.data.unwrap()["limits"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(
+                limits
+                    .iter()
+                    .any(|limit| limit.as_str().unwrap().contains(".comment не прочитано")),
+                damaged,
+                "{kind}: {limits:?}"
+            );
+            assert_eq!(fs::read_to_string(path).unwrap(), xml);
+        }
+    }
+}
+
 /// Три роли дампа `PrintWebDAV`: заимствован с перекрытием, заимствован без
 /// перекрытия, собственный объект расширения.
 ///
@@ -1027,4 +1652,92 @@ fn metadata_tabular_section_attribute_consumes_the_complete_suffix() {
     );
     assert_eq!(data["kind"], "Attribute");
     assert_eq!(data["title"], "Quantity");
+}
+
+#[test]
+fn exchange_content_relations_preserve_modes_treat_missing_as_empty_and_mark_damage() {
+    for variant in ["full", "missing", "empty", "damaged", "directory"] {
+        let fixture = RealReaderFixture::new();
+        let config_path = fixture.source.join("Configuration.xml");
+        let config = fs::read_to_string(&config_path).unwrap();
+        write(
+            &config_path,
+            &config.replace(
+                "</ChildObjects>",
+                "<ExchangePlan>ExchangeNodes</ExchangePlan></ChildObjects>",
+            ),
+        );
+        write(
+            &fixture.source.join("ExchangePlans/ExchangeNodes.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExchangePlan uuid="11223344-5566-7788-99aa-bbccddeeff00"><Properties><Name>ExchangeNodes</Name><DistributedInfoBase>false</DistributedInfoBase></Properties><ChildObjects/></ExchangePlan></MetaDataObject>"#,
+        );
+        let path = fixture
+            .source
+            .join("ExchangePlans/ExchangeNodes/Ext/Content.xml");
+        let good = "<Item><Metadata>Catalog.Items</Metadata><AutoRecord>Deny</AutoRecord></Item>";
+        let contents = match variant {
+            "full" => format!("{good}<Item><Metadata>Document.Order</Metadata><AutoRecord>Allow</AutoRecord></Item>"),
+            "damaged" => format!("{good}<Item><Metadata>Document.Order</Metadata><AutoRecord>Unknown</AutoRecord></Item>"),
+            _ => String::new(),
+        };
+        let xml = format!(
+            r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20">{contents}</ExchangePlanContent>"#
+        );
+        if variant == "directory" {
+            fs::create_dir_all(&path).unwrap();
+        } else if variant != "missing" {
+            write(&path, &xml);
+        }
+        let service = fixture.view_service();
+        for suffix in ["", ".Relation"] {
+            let result = service.view(
+                ViewRequest::new(&format!("main:ExchangePlan.ExchangeNodes{suffix}")).unwrap(),
+            );
+            assert!(result.ok, "{variant}: {result:?}");
+            let data = result.data.unwrap();
+            let limits = data["limits"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|s| s.contains("relations.content"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                !limits.is_empty(),
+                matches!(variant, "damaged" | "directory"),
+                "{variant}: {data}"
+            );
+            if suffix == ".Relation" {
+                let entries = data["items"].as_array().unwrap();
+                let content = entries
+                    .iter()
+                    .filter(|item| item["relation"] == "content")
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    content.len(),
+                    match variant {
+                        "full" => 2,
+                        "damaged" => 1,
+                        _ => 0,
+                    },
+                    "{data}"
+                );
+                if !content.is_empty() {
+                    assert_eq!(content[0]["at"], "main:Catalog.Items");
+                    assert_eq!(content[0]["autoRecord"], "Deny");
+                }
+                if variant == "full" {
+                    assert_eq!(content[1]["at"], "main:Document.Order");
+                    assert_eq!(content[1]["autoRecord"], "Allow");
+                }
+            }
+        }
+        if variant == "missing" {
+            assert!(!path.exists());
+        } else if variant == "directory" {
+            assert!(path.is_dir());
+        } else {
+            assert_eq!(fs::read_to_string(path).unwrap(), xml);
+        }
+    }
 }

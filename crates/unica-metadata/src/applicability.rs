@@ -8,6 +8,7 @@ use unica_source_contract::SourceSetKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApplicability {
+    ExchangePlan,
     Configuration,
     Event,
     ExtensionRoot,
@@ -40,11 +41,14 @@ pub enum OperationApplicability {
 impl OperationApplicability {
     pub const fn shape(self) -> &'static str {
         match self {
+            Self::ExchangePlan => "`ExchangePlan.Name`",
             Self::Configuration => "`Configuration`",
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata => "`Kind.Name`",
             Self::SupportRule => "`Kind.Name` or `Kind.Name.Form.F`",
-            Self::MetadataOrRoleOrSubsystem => "`Kind.Name`, `Role.Name` or `Subsystem.Name`",
+            Self::MetadataOrRoleOrSubsystem => {
+                "`Configuration`, `Kind.Name`, `Role.Name` or `Subsystem.Name`"
+            }
             Self::MetadataAttributeContainer => {
                 "`Kind.Name` of a kind with attributes or `Kind.Name.TabularSection.T`"
             }
@@ -76,13 +80,16 @@ impl OperationApplicability {
         let segments = site.segments();
         let terminal = site.terminal();
         match self {
+            Self::ExchangePlan => {
+                matches!(segments, [only] if only.kind() == NodeKind::ExchangePlan && only.name().is_some())
+            }
             Self::Configuration => site.route() == RouteClass::Configuration,
             Self::ExtensionRoot => {
                 site.route() == RouteClass::Configuration
                     && site.source().kind() == SourceSetKind::Extension
             }
             Self::Metadata => site.metadata_object().is_some(),
-            Self::MetadataOrRoleOrSubsystem => PropertiesSite::from_address(site.at()).is_some(),
+            Self::MetadataOrRoleOrSubsystem => PropertiesSite::from_site(site).is_some(),
             Self::MetadataAttributeContainer => {
                 site.metadata_owner_with(MetaCollection::Attributes)
                     || site

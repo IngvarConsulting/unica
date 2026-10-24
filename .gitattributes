@@ -45,6 +45,8 @@ tests/fixtures/acceptance/workspace-metadata-values/** -text whitespace=cr-at-eo
 tests/fixtures/acceptance/workspace-metadata-commands/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-borrowed/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/metadata-declaration-diagnostics/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-event-defined-type/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-event-source-order/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-command-interface/** -text whitespace=cr-at-eol
 
 tests/fixtures/acceptance/workspace/** -text whitespace=cr-at-eol
@@ -53,6 +55,10 @@ tests/fixtures/acceptance/workspace/** -text whitespace=cr-at-eol
 tests/fixtures/platform_8_3_27/incomplete_borrowed/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-incomplete-borrowed/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-invalid-borrowing/** -text whitespace=cr-at-eol
+
+# Borrowing evidence is 8.3.27 export bytes; tests compare BOM and CRLF.
+tests/fixtures/platform_8_3_27/cfe_borrow/*.xml -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/cfe_borrow/*.bsl -text whitespace=cr-at-eol
 
 # Spreadsheet edit fixtures are 8.3.27 exports; BOM and CRLF are asserted.
 tests/fixtures/platform_8_3_27/mxl_edit/** -text -whitespace
@@ -78,5 +84,15 @@ tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -
 /tests/fixtures/platform_8_3_27/template-new-xml/*.xml -text whitespace=cr-at-eol
 /tests/fixtures/platform_8_3_27/template-new-xml/seed/** -text whitespace=cr-at-eol
 
+# The empty configuration root is the same native seed without its Report.
+/tests/fixtures/platform_8_3_27/empty_configuration/src/** -text whitespace=cr-at-eol
+# Platform re-exports of configuration and extension roots edited by props.set.
+/tests/fixtures/platform_8_3_27/configuration_root_props/**/*.xml -text whitespace=cr-at-eol
+# Metadata objects written once by the retained 8.3.27 writer for meta-info tests.
+/tests/fixtures/platform_8_3_27/meta_info_surface/** -text whitespace=cr-at-eol
+
 # DCS codec fixtures: tests splice them by exact text.
 crates/unica-dcs-designer/tests/fixtures/** text eol=lf
+
+# The ExchangePlan composition fixture keeps the platform's BOM and CRLF layout.
+tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/*/Ext/Content.xml -text -whitespace

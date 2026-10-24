@@ -38,6 +38,50 @@ fn typed_local_info_core_projects_the_exact_descriptor_image() {
 }
 
 #[test]
+fn typed_long_reference_type_preserves_every_xml_variant_before_public_compaction() {
+    let xml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/acceptance/workspace-type-size/src/AccumulationRegisters/Movements.xml"));
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        "AccumulationRegister.Movements",
+    )
+    .unwrap();
+    let info = unica_metadata_designer::info::parse_typed_meta_local_info(
+        xml.as_bytes(),
+        &target,
+        MetaSupportStatus::Supported,
+    )
+    .unwrap();
+    let ty = info.collections.attributes[0].r#type.as_ref().unwrap();
+    assert_eq!(ty.variants.len(), 20);
+    assert!(serde_json::to_string(ty).unwrap().len() > 2048);
+    let control = info.collections.dimensions[0].r#type.as_ref().unwrap();
+    assert_eq!(control.variants.len(), 9);
+    assert!(serde_json::to_string(control).unwrap().len() < 2048);
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let source = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "Attribute")
+        .unwrap();
+    let expected = source
+        .descendants()
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().name() == "Type"
+                && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
+        })
+        .map(|node| {
+            node.text()
+                .unwrap()
+                .replace("cfg:DocumentRef.", "Document.")
+        })
+        .collect::<Vec<_>>();
+    let data = serde_json::to_value(ty).unwrap();
+    for (variant, expected) in data["variants"].as_array().unwrap().iter().zip(expected) {
+        assert_eq!(variant["metadataPath"], expected);
+    }
+}
+
+#[test]
 fn typed_local_info_core_rejects_a_wrong_logical_owner() {
     let target = unica_address::source_target::MetadataAddress::parse(
         unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -888,4 +932,54 @@ fn typed_tabular_section_preserves_the_declared_standard_attributes() {
             .len(),
         25
     );
+}
+
+#[test]
+fn typed_member_comments_keep_empty_absent_and_damaged_observations() {
+    for (owner, tag, field) in [
+        ("Catalog", "Attribute", "attributes"),
+        ("Catalog", "Command", "commands"),
+        ("InformationRegister", "Dimension", "dimensions"),
+        ("InformationRegister", "Resource", "resources"),
+        ("DocumentJournal", "Column", "columns"),
+        ("Enum", "EnumValue", "enumValues"),
+    ] {
+        for (comment, expected, damaged) in [
+            ("<Comment/>", Some(""), false),
+            ("", None, false),
+            ("<Comment>Text</Comment>", Some("Text"), false),
+            ("<Comment><Nested/></Comment>", None, true),
+        ] {
+            let xml = format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{owner} uuid="f1584000-0000-4000-8000-000000000001"><Properties><Name>Owner</Name></Properties><ChildObjects><{tag}><Properties><Name>Value</Name>{comment}</Properties></{tag}></ChildObjects></{owner}></MetaDataObject>"#
+            );
+            let target = unica_address::source_target::MetadataAddress::parse(
+                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("{owner}.Owner"),
+            )
+            .unwrap();
+            let info = unica_metadata_designer::info::parse_typed_meta_local_info(
+                xml.as_bytes(),
+                &target,
+                MetaSupportStatus::Supported,
+            )
+            .unwrap();
+            let data = serde_json::to_value(&info.collections).unwrap();
+            let item = &data[field][0];
+            assert_eq!(item["name"], "Value");
+            assert_eq!(
+                item.get("comment").and_then(serde_json::Value::as_str),
+                expected,
+                "{tag}: {comment}"
+            );
+            assert_eq!(item["incomplete"].as_bool().unwrap_or(false), damaged);
+            assert_eq!(
+                info.diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.field.as_deref()
+                        == Some(&format!("collections.{field}[0].comment"))),
+                damaged
+            );
+        }
+    }
 }

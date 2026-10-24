@@ -1,6 +1,7 @@
 //! The current XDTO mutation profile owns its names, operands and argument grammar.
 
 use crate::applicability::OperationApplicability;
+use crate::facets::ValueFacets;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use unica_address::address::{escape_name, NodeKind, QualifiedAddress};
@@ -192,14 +193,31 @@ impl XdtoPropertyPath {
     }
 }
 
-/// The supported creation profile for an own property with a QName type.
-/// Observed properties and future patch/ref/anonymous-type inputs are distinct
-/// profiles; this is not the complete platform property algebra.
+/// The supported creation profile for an own property: a QName type or an
+/// anonymous ValueType or ObjectType with ordered child properties. Observed properties
+/// and future patch/ref inputs are distinct profiles; this is not the complete
+/// platform property algebra.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XdtoPropertySpec {
     pub name: XmlNcName,
-    pub type_ref: PrefixedXmlQName,
+    pub definition: XdtoPropertyDefinition,
     pub min_occurs: Option<u8>,
+    /// `-1` is unbounded; absent stays absent and means 1.
+    pub max_occurs: Option<i64>,
+}
+
+/// How a created property defines its values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum XdtoPropertyDefinition {
+    /// A named type referenced by its prefixed QName.
+    Named(PrefixedXmlQName),
+    /// An anonymous ObjectType declared inside the property.
+    Object(Vec<XdtoPropertySpec>),
+    /// An anonymous primitive ValueType with optional restrictions.
+    Value {
+        base: PrefixedXmlQName,
+        facets: ValueFacets,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,12 +225,19 @@ pub struct XdtoAddValueTypeArgs {
     pub at: QualifiedAddress,
     pub name: XmlNcName,
     pub base: PrefixedXmlQName,
+    pub facets: ValueFacets,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XdtoAddObjectTypeArgs {
     pub at: QualifiedAddress,
     pub name: XmlNcName,
+    /// A local object type the new one extends.
+    pub base: Option<PrefixedXmlQName>,
+    /// The object type the new one is inserted immediately before.
+    pub before: Option<XmlNcName>,
+    /// The object type the new one is inserted immediately after.
+    pub after: Option<XmlNcName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,6 +268,61 @@ pub enum XdtoPlanOperation {
     RemoveProperty(XdtoRemovePropertyArgs),
 }
 
+/// Name of the recursive property definition in the published schema.
+const PROPERTY_DEFINITION: &str = "xdtoProperty";
+
+fn facets_schema() -> Value {
+    let decimal = lexical_schema(r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$".to_string());
+    object(
+        &[
+            ("maxLength", json!({"type":"integer","minimum":0})),
+            ("totalDigits", json!({"type":"integer","minimum":1})),
+            ("fractionDigits", json!({"type":"integer","minimum":0})),
+            ("minInclusive", decimal.clone()),
+            ("maxInclusive", decimal),
+        ],
+        &[],
+    )
+}
+
+/// One created property has exactly one definition. Anonymous ObjectType
+/// children use the same grammar through `$defs`.
+fn property_definition() -> Value {
+    let mut property = object(
+        &[
+            ("name", ncname()),
+            ("type", qname()),
+            (
+                "valueType",
+                object(&[("base", qname()), ("facets", facets_schema())], &["base"]),
+            ),
+            (
+                "objectType",
+                object(
+                    &[(
+                        "properties",
+                        json!({
+                            "type":"array",
+                            "items":{"$ref":format!("#/$defs/{PROPERTY_DEFINITION}")},
+                        }),
+                    )],
+                    &["properties"],
+                ),
+            ),
+            ("minOccurs", json!({"type":"integer", "enum":[0,1]})),
+            (
+                "maxOccurs",
+                json!({"type":"integer", "anyOf":[{"enum":[-1]}, {"minimum":1}]}),
+            ),
+        ],
+        &["name"],
+    );
+    property["anyOf"] =
+        json!([{"required":["type"]}, {"required":["objectType"]}, {"required":["valueType"]}]);
+    property["not"] = json!({"anyOf":[{"required":["type","objectType"]},{"required":["type","valueType"]},{"required":["objectType","valueType"]}]});
+    property
+}
+
 fn lexical_schema(pattern: String) -> Value {
     // ECMAScript's end anchor can match before a final line ending. The
     // explicit exclusion keeps the published grammar equal to the XML names.
@@ -260,24 +340,28 @@ impl XdtoOperation {
     pub fn contract(self) -> OperationContract {
         let (payload, target, effect, example_args) = match self {
             Self::AddValueType => (
-                Some(object(&[("name", ncname()), ("base", qname())], &["name", "base"])),
+                Some(object(&[("name", ncname()), ("base", qname()), ("facets",facets_schema())], &["name", "base"])),
                 "The XDTO package: <source-set>:XDTOPackage.<Name>.",
                 "Add a named value type with the supplied prefixed base QName.",
                 json!({"values":{"name":"AddedValue", "base":"xs:string"}}),
             ),
             Self::AddObjectType => (
-                Some(object(&[("name", ncname())], &["name"])),
+                Some({
+                    let mut values = object(
+                        &[("name", ncname()), ("base", qname()), ("before", ncname()), ("after", ncname())],
+                        &["name"],
+                    );
+                    values["not"] = json!({"required":["before", "after"]});
+                    values
+                }),
                 "The XDTO package: <source-set>:XDTOPackage.<Name>.",
-                "Add a named empty object type.",
+                "Add a named object type with an optional local base, immediately before or after an existing object type or appended, preserving existing bytes and order. The base and its whole chain must resolve to local object types without a cycle; an imported base is not supported. An earlier operation on the same package may create the base or the neighbour.",
                 json!({"values":{"name":"AddedObject"}}),
             ),
             Self::AddProperty => (
-                Some(object(&[("property", object(&[
-                    ("name", ncname()), ("type", qname()),
-                    ("minOccurs", json!({"type":"integer", "enum":[0,1]})),
-                ], &["name", "type"]))], &["property"])),
+                Some(object(&[("property", property_definition())], &["property"])),
                 "An object type or a property that holds one nested anonymous ObjectType: ...Type.T[.Property.P...].",
-                "Add one own property with a QName type. Omitted minOccurs stays absent; explicit 0 or 1 stays explicit.",
+                "Add one own property with exactly one QName type, anonymous ValueType with primitive base and optional facets, or anonymous ObjectType with ordered child properties. Omitted bounds stay absent and mean 1; explicit values stay explicit.",
                 json!({"values":{"property":{"name":"AddedProperty", "type":"xs:string", "minOccurs":0}}}),
             ),
             Self::RemoveType => (
@@ -293,10 +377,13 @@ impl XdtoOperation {
                 json!({}),
             ),
         };
-        let schema = match payload {
+        let mut schema = match payload {
             Some(payload) => object(&[("at", text(true)), ("values", payload)], &["values"]),
             None => object(&[("at", text(true))], &[]),
         };
+        if self == Self::AddProperty {
+            schema["$defs"] = json!({ PROPERTY_DEFINITION: property_definition() });
+        }
         OperationContract {
             schema, target, effect, example_args,
             notes: "Names are XML NCNames and types are prefixed XML QNames. QName bindings and target structure are checked against the selected package. Only Package.bin is edited; exact additions repeat as no-op. Add operands belong in values; remove has no payload. The common args.at address override remains available.",
@@ -332,24 +419,30 @@ impl XdtoOperation {
                     at,
                     name: values.ncname("name")?,
                     base: values.qname("base")?,
+                    facets: values.facets("facets")?,
                 }))
             })?,
             Self::AddObjectType => reader.required_object("values", |values| {
+                if values.has("before") && values.has("after") {
+                    return Err(invalid(
+                        &format!("{}.after", values.path),
+                        "before and after are mutually exclusive",
+                    ));
+                }
                 Ok(XdtoPlanOperation::AddObjectType(XdtoAddObjectTypeArgs {
                     at,
                     name: values.ncname("name")?,
+                    base: values.optional_qname("base")?,
+                    before: values.optional_ncname("before")?,
+                    after: values.optional_ncname("after")?,
                 }))
             })?,
             Self::AddProperty => reader.required_object("values", |values| {
-                let property = values.required_object("property", |property| {
-                    // Preserve the established operand diagnostic order.
-                    let min_occurs = property.min_occurs("minOccurs")?;
-                    Ok(XdtoPropertySpec {
-                        name: property.ncname("name")?,
-                        type_ref: property.qname("type")?,
-                        min_occurs,
-                    })
-                })?;
+                // The top property is read by its own declared shape; nested
+                // children by the recursive definition both are built from.
+                let definition = ArgumentShape::new(&contract.schema["$defs"][PROPERTY_DEFINITION]);
+                let property = values
+                    .required_object("property", |property| property_spec(property, definition))?;
                 Ok(XdtoPlanOperation::AddProperty(XdtoAddPropertyArgs {
                     at,
                     property,
@@ -368,6 +461,63 @@ impl XdtoOperation {
         };
         reader.finish(intent)
     }
+}
+
+/// Decodes one property of the recursive definition. Bounds are read first
+/// to preserve the established operand diagnostic order.
+fn property_spec<'a>(
+    property: &mut ArgumentReader<'a>,
+    definition: ArgumentShape<'a>,
+) -> Result<XdtoPropertySpec, ContractError> {
+    let min_occurs = property.min_occurs("minOccurs")?;
+    let max_occurs = property.max_occurs("maxOccurs")?;
+    let name = property.ncname("name")?;
+    if ["type", "objectType", "valueType"]
+        .iter()
+        .filter(|key| property.has(key))
+        .count()
+        != 1
+    {
+        return Err(invalid(
+            &property.path,
+            "property requires exactly one of type, objectType or valueType",
+        ));
+    }
+    let type_ref = property.optional_qname("type")?;
+    let children = property.optional_object("objectType", |object| {
+        let mut names = HashSet::new();
+        object.required_items("properties", definition, |child, path| {
+            let spec = property_spec(child, definition)?;
+            if !names.insert(spec.name.as_str().to_string()) {
+                return Err(invalid(
+                    &format!("{path}.name"),
+                    "duplicate anonymous ObjectType property name",
+                ));
+            }
+            Ok(spec)
+        })
+    })?;
+    let value = property.optional_object("valueType", |value| {
+        Ok((value.qname("base")?, value.facets("facets")?))
+    })?;
+    let definition = match (type_ref, children, value) {
+        (Some(type_ref), None, None) => XdtoPropertyDefinition::Named(type_ref),
+        (None, Some(children), None) => XdtoPropertyDefinition::Object(children),
+        (None, None, Some((base, facets))) => XdtoPropertyDefinition::Value { base, facets },
+        _ => unreachable!("exactly one definition was checked above"),
+    };
+    Ok(XdtoPropertySpec {
+        name,
+        definition,
+        min_occurs,
+        max_occurs,
+    })
+}
+
+fn qname_is_valid(value: &str) -> bool {
+    value
+        .split_once(':')
+        .is_some_and(|(prefix, local)| xml_ncname_is_valid(prefix) && xml_ncname_is_valid(local))
 }
 
 fn invalid(path: &str, message: impl Into<String>) -> ContractError {
@@ -477,6 +627,46 @@ impl<'a> ArgumentReader<'a> {
         })
     }
 
+    fn has(&self, key: &str) -> bool {
+        self.object.contains_key(key)
+    }
+
+    fn optional_text(&mut self, key: &str) -> Result<Option<String>, ContractError> {
+        self.read(key, |value, shape, path| {
+            shape.validate_field(value, path)?;
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| invalid(path, "expected text"))
+        })
+    }
+
+    fn optional_ncname(&mut self, key: &str) -> Result<Option<XmlNcName>, ContractError> {
+        let Some(value) = self.optional_text(key)? else {
+            return Ok(None);
+        };
+        if !xml_ncname_is_valid(&value) {
+            return Err(invalid(
+                &format!("{}.{key}", self.path),
+                "value must be an XML NCName",
+            ));
+        }
+        Ok(Some(XmlNcName(value)))
+    }
+
+    fn optional_qname(&mut self, key: &str) -> Result<Option<PrefixedXmlQName>, ContractError> {
+        let Some(value) = self.optional_text(key)? else {
+            return Ok(None);
+        };
+        if !qname_is_valid(&value) {
+            return Err(invalid(
+                &format!("{}.{key}", self.path),
+                "value must be a prefixed XML QName",
+            ));
+        }
+        Ok(Some(PrefixedXmlQName(value)))
+    }
+
     fn ncname(&mut self, key: &str) -> Result<XmlNcName, ContractError> {
         let value = self.required_text(key)?;
         if !xml_ncname_is_valid(&value) {
@@ -490,16 +680,43 @@ impl<'a> ArgumentReader<'a> {
 
     fn qname(&mut self, key: &str) -> Result<PrefixedXmlQName, ContractError> {
         let value = self.required_text(key)?;
-        let valid = value.split_once(':').is_some_and(|(prefix, local)| {
-            xml_ncname_is_valid(prefix) && xml_ncname_is_valid(local)
-        });
-        if !valid {
+        if !qname_is_valid(&value) {
             return Err(invalid(
                 &format!("{}.{key}", self.path),
                 "value must be a prefixed XML QName",
             ));
         }
         Ok(PrefixedXmlQName(value))
+    }
+
+    /// Facets are read field by field through their declared shapes; the
+    /// restrictions between fields are checked once, by `ValueFacets`.
+    fn facets(&mut self, key: &str) -> Result<ValueFacets, ContractError> {
+        let facets = self.optional_object(key, |facets| {
+            let max_length = facets.nonnegative("maxLength")?;
+            let total_digits = facets.nonnegative("totalDigits")?;
+            let fraction_digits = facets.nonnegative("fractionDigits")?;
+            let min_inclusive = facets.optional_text("minInclusive")?;
+            let max_inclusive = facets.optional_text("maxInclusive")?;
+            ValueFacets::from_parts(
+                max_length,
+                total_digits,
+                fraction_digits,
+                min_inclusive,
+                max_inclusive,
+            )
+            .map_err(|(field, message)| invalid(&format!("{}.{field}", facets.path), message))
+        })?;
+        Ok(facets.unwrap_or_default())
+    }
+
+    fn nonnegative(&mut self, key: &str) -> Result<Option<u64>, ContractError> {
+        self.read(key, |value, shape, path| {
+            let parsed = crate::facets::nonnegative_integer(value)
+                .ok_or_else(|| invalid(path, "facet must be a nonnegative integer"))?;
+            shape.validate_field(&json!(parsed), path)?;
+            Ok(parsed)
+        })
     }
 
     fn min_occurs(&mut self, key: &str) -> Result<Option<u8>, ContractError> {
@@ -511,6 +728,62 @@ impl<'a> ArgumentReader<'a> {
             };
             shape.validate_field(&json!(parsed), path)?;
             Ok(parsed)
+        })
+    }
+
+    fn max_occurs(&mut self, key: &str) -> Result<Option<i64>, ContractError> {
+        self.read(key, |value, shape, path| {
+            // An integral decimal or exponent spelling denotes the same integer;
+            // the conversion is exact or the value is refused.
+            let parsed = value.as_i64().or_else(|| {
+                value.as_f64().and_then(|number| {
+                    let integer = number as i64;
+                    (number.fract() == 0.0 && integer as f64 == number).then_some(integer)
+                })
+            });
+            match parsed {
+                Some(parsed) if parsed == -1 || parsed >= 1 => {
+                    shape.validate_field(&json!(parsed), path)?;
+                    Ok(parsed)
+                }
+                _ => Err(invalid(path, "maxOccurs must be -1 or a positive integer")),
+            }
+        })
+    }
+
+    fn optional_object<T>(
+        &mut self,
+        key: &str,
+        parse: impl FnOnce(&mut Self) -> Result<T, ContractError>,
+    ) -> Result<Option<T>, ContractError> {
+        self.read(key, |value, shape, path| {
+            let mut reader = Self::new(value, shape, path)?;
+            let parsed = parse(&mut reader)?;
+            reader.finish(parsed)
+        })
+    }
+
+    /// Reads every item of an array field with the given item shape.
+    fn required_items<T>(
+        &mut self,
+        key: &str,
+        item: ArgumentShape<'a>,
+        mut parse: impl FnMut(&mut Self, &str) -> Result<T, ContractError>,
+    ) -> Result<Vec<T>, ContractError> {
+        self.required(key, |value, _shape, path| {
+            let items = value
+                .as_array()
+                .ok_or_else(|| invalid(path, "expected an array"))?;
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let item_path = format!("{path}[{index}]");
+                    let mut reader = Self::new(value, item, &item_path)?;
+                    let parsed = parse(&mut reader, &item_path)?;
+                    reader.finish(parsed)
+                })
+                .collect()
         })
     }
 
@@ -648,6 +921,324 @@ mod tests {
                 "ops[7].args.ignored"
             );
         }
+    }
+
+    #[test]
+    fn xdto_object_contract_publishes_base_and_one_exclusive_position() {
+        let operation = XdtoOperation::AddObjectType;
+        let contract = operation.contract();
+        let schema = jsonschema::validator_for(&contract.schema).unwrap();
+        for value in [
+            json!({"at":"main:XDTOPackage.Sample","values":{"name":"Child","base":"tns:Base","before":"Next"}}),
+            json!({"at":"main:XDTOPackage.Sample","values":{"name":"Child","after":"Previous"}}),
+            json!({"at":"main:XDTOPackage.Sample","values":{"name":"Child"}}),
+        ] {
+            assert!(schema.is_valid(&value), "{value}");
+            operation.decode(&value, "ops[0].args", "main").unwrap();
+        }
+        let XdtoPlanOperation::AddObjectType(args) = operation
+            .decode(
+                &json!({"at":"main:XDTOPackage.Sample","values":{"name":"Child","base":"tns:Base","after":"Previous"}}),
+                "ops[0].args",
+                "main",
+            )
+            .unwrap()
+        else {
+            panic!("objectType.add keeps its typed intent");
+        };
+        assert_eq!(args.base, Some(PrefixedXmlQName("tns:Base".into())));
+        assert_eq!(args.before, None);
+        assert_eq!(args.after, Some(XmlNcName("Previous".into())));
+        for (value, path) in [
+            (
+                json!({"values":{"name":"Child","before":"A","after":"B"}}),
+                "ops[0].args.values.after",
+            ),
+            (
+                json!({"values":{"name":"Child","base":null}}),
+                "ops[0].args.values.base",
+            ),
+            (
+                json!({"values":{"name":"Child","base":"Base"}}),
+                "ops[0].args.values.base",
+            ),
+            (
+                json!({"values":{"name":"Child","unknown":true}}),
+                "ops[0].args.values.unknown",
+            ),
+            (json!({"name":"Child"}), "ops[0].args.name"),
+        ] {
+            let mut value = value;
+            value["at"] = json!("main:XDTOPackage.Sample");
+            assert!(!schema.is_valid(&value), "{value}");
+            assert_eq!(
+                operation
+                    .decode(&value, "ops[0].args", "main")
+                    .unwrap_err()
+                    .path,
+                path,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_facets_are_decoded_through_their_declared_shapes() {
+        let operation = XdtoOperation::AddValueType;
+        let args = |facets: Value| json!({"at":"main:XDTOPackage.Sample","values":{"name":"V","base":"xs:decimal","facets":facets}});
+        let path = |facets: Value| {
+            operation
+                .decode(&args(facets), "ops[0].args", "main")
+                .unwrap_err()
+                .path
+        };
+        assert_eq!(
+            path(json!({"maxLength":-1})),
+            "ops[0].args.values.facets.maxLength"
+        );
+        assert_eq!(
+            path(json!({"pattern":"x"})),
+            "ops[0].args.values.facets.pattern"
+        );
+        assert_eq!(
+            path(json!({"totalDigits":2,"fractionDigits":3})),
+            "ops[0].args.values.facets.fractionDigits"
+        );
+        assert_eq!(
+            path(json!({"minInclusive":"2","maxInclusive":"1"})),
+            "ops[0].args.values.facets.minInclusive"
+        );
+        // A narrowed declaration of a facet is honoured by the decoder.
+        let mut narrowed = operation.contract();
+        narrowed.schema["properties"]["values"]["properties"]["facets"]["properties"]
+            ["totalDigits"]["minimum"] = json!(7);
+        let error = operation
+            .decode_with_contract(
+                &narrowed,
+                &args(json!({"totalDigits":6})),
+                "ops[0].args",
+                "main",
+            )
+            .unwrap_err();
+        assert_eq!(error.path, "ops[0].args.values.facets.totalDigits");
+        // Every declared facet field is consumed by the decoder.
+        let mut extended = operation.contract();
+        extended.schema["properties"]["values"]["properties"]["facets"]["properties"]["unwired"] =
+            json!({"type":"boolean"});
+        let error = operation
+            .decode_with_contract(&extended, &args(json!({})), "ops[0].args", "main")
+            .unwrap_err();
+        assert_eq!(error.path, "ops[0].args.values.facets.unwired");
+    }
+
+    #[test]
+    fn restricted_values_keep_schema_and_decoder_in_agreement() {
+        for operation in [XdtoOperation::AddProperty, XdtoOperation::AddValueType] {
+            let contract = operation.contract();
+            let schema = jsonschema::validator_for(&contract.schema).unwrap();
+            let args = |facets: Value| match operation {
+                XdtoOperation::AddProperty => {
+                    json!({"at":"main:XDTOPackage.Sample.Type.Target","values":{"property":{"name":"V","valueType":{"base":"xs:decimal","facets":facets}}}})
+                }
+                _ => {
+                    json!({"at":"main:XDTOPackage.Sample","values":{"name":"V","base":"xs:decimal","facets":facets}})
+                }
+            };
+            for facets in [
+                json!({}),
+                json!({"totalDigits":5,"fractionDigits":2,"minInclusive":"-0.01","maxInclusive":"999.99"}),
+                json!({"fractionDigits":0.0,"totalDigits":5e0}),
+            ] {
+                let value = args(facets);
+                assert!(schema.is_valid(&value), "{value}");
+                operation.decode(&value, "ops[0].args", "main").unwrap();
+            }
+            for facets in [
+                json!({"minInclusive":"1\n"}),
+                json!({"maxInclusive":"1\r\n"}),
+                json!({"minInclusive":"1e2"}),
+                json!({"minInclusive":1}),
+                json!({"totalDigits":0}),
+                json!({"fractionDigits":-1}),
+                json!({"fractionDigits":0.5}),
+                json!({"unknown":1}),
+            ] {
+                let value = args(facets);
+                assert!(!schema.is_valid(&value), "{value}");
+                assert!(
+                    operation.decode(&value, "ops[0].args", "main").is_err(),
+                    "{value}"
+                );
+            }
+        }
+        let operation = XdtoOperation::AddProperty;
+        let contract = operation.contract();
+        let schema = jsonschema::validator_for(&contract.schema).unwrap();
+        for definitions in [
+            json!({"type":"xs:string","objectType":{"properties":[]}}),
+            json!({"type":"xs:string","valueType":{"base":"xs:string"}}),
+            json!({"objectType":{"properties":[]},"valueType":{"base":"xs:string"}}),
+            json!({"type":"xs:string","objectType":{"properties":[]},"valueType":{"base":"xs:string"}}),
+        ] {
+            let mut property = definitions;
+            property["name"] = json!("V");
+            let value =
+                json!({"at":"main:XDTOPackage.Sample.Type.Target","values":{"property":property}});
+            assert!(!schema.is_valid(&value), "{value}");
+            assert!(
+                operation.decode(&value, "ops[0].args", "main").is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_property_contract_validates_nested_definitions() {
+        let operation = XdtoOperation::AddProperty;
+        let contract = operation.contract();
+        let validator = jsonschema::validator_for(&contract.schema).unwrap();
+        let valid = json!({"at":"main:XDTOPackage.Sample.Type.Target","values":{"property":{
+        "name":"Rows","minOccurs":0,"maxOccurs":-1,"objectType":{"properties":[
+            {"name":"Recipient","type":"tns:Recipient","maxOccurs":1},
+            {"name":"Nested","objectType":{"properties":[{"name":"Code","type":"xs:string"}]}}
+        ]}}}});
+        assert!(validator.is_valid(&valid));
+        let XdtoPlanOperation::AddProperty(args) =
+            operation.decode(&valid, "ops[0].args", "main").unwrap()
+        else {
+            panic!("property.add keeps its typed intent");
+        };
+        assert_eq!(args.property.max_occurs, Some(-1));
+        let XdtoPropertyDefinition::Object(children) = &args.property.definition else {
+            panic!("an anonymous ObjectType is decoded");
+        };
+        assert_eq!(children[0].max_occurs, Some(1));
+        assert_eq!(
+            children[0].definition,
+            XdtoPropertyDefinition::Named(PrefixedXmlQName("tns:Recipient".into()))
+        );
+        assert!(matches!(
+            &children[1].definition,
+            XdtoPropertyDefinition::Object(grandchildren) if grandchildren.len() == 1
+        ));
+        let child = "/values/property/objectType/properties/0";
+        for (field, value, path) in [
+            (
+                "maxOccurs",
+                json!(0),
+                "ops[0].args.values.property.objectType.properties[0].maxOccurs",
+            ),
+            (
+                "maxOccurs",
+                json!(-2),
+                "ops[0].args.values.property.objectType.properties[0].maxOccurs",
+            ),
+            (
+                "unknown",
+                json!(true),
+                "ops[0].args.values.property.objectType.properties[0].unknown",
+            ),
+            (
+                "objectType",
+                json!({"properties":[]}),
+                "ops[0].args.values.property.objectType.properties[0]",
+            ),
+            (
+                "type",
+                json!("unprefixed"),
+                "ops[0].args.values.property.objectType.properties[0].type",
+            ),
+        ] {
+            let mut invalid = valid.clone();
+            invalid
+                .pointer_mut(child)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_string(), value);
+            assert!(!validator.is_valid(&invalid), "{invalid}");
+            assert_eq!(
+                operation
+                    .decode(&invalid, "ops[0].args", "main")
+                    .unwrap_err()
+                    .path,
+                path,
+                "{invalid}"
+            );
+        }
+        let mut duplicate = valid.clone();
+        duplicate["values"]["property"]["objectType"]["properties"][1] =
+            json!({"name":"Recipient","type":"xs:string"});
+        duplicate["values"]["property"]["objectType"]["properties"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"Broken","type":"unprefixed"}));
+        assert_eq!(
+            operation
+                .decode(&duplicate, "ops[0].args", "main")
+                .unwrap_err()
+                .path,
+            "ops[0].args.values.property.objectType.properties[1].name"
+        );
+
+        // Bounds and the name keep the established diagnostic order even
+        // when the definition is missing.
+        let at = "main:XDTOPackage.Sample.Type.Target";
+        for (property, path) in [
+            (
+                json!({"name":"X","minOccurs":2}),
+                "ops[0].args.values.property.minOccurs",
+            ),
+            (
+                json!({"name":"bad:name"}),
+                "ops[0].args.values.property.name",
+            ),
+            (json!({"name":"X"}), "ops[0].args.values.property"),
+        ] {
+            let args = json!({"at":at,"values":{"property":property}});
+            assert_eq!(
+                operation
+                    .decode(&args, "ops[0].args", "main")
+                    .unwrap_err()
+                    .path,
+                path,
+                "{args}"
+            );
+        }
+
+        // An integral spelling is exact; a value beyond the integer range is refused.
+        let bound = |value: Value| {
+            let args = json!({"at":at,"values":{"property":{"name":"X","type":"xs:string","maxOccurs":value}}});
+            match operation.decode(&args, "ops[0].args", "main") {
+                Ok(XdtoPlanOperation::AddProperty(args)) => Ok(args.property.max_occurs),
+                Ok(other) => panic!("{other:?}"),
+                Err(error) => Err(error.path),
+            }
+        };
+        assert_eq!(
+            bound(json!(9007199254740993_i64)),
+            Ok(Some(9007199254740993))
+        );
+        assert_eq!(bound(json!(2.0)), Ok(Some(2)));
+        assert_eq!(bound(json!(-1.0)), Ok(Some(-1)));
+        assert_eq!(
+            bound(json!(1e19)),
+            Err("ops[0].args.values.property.maxOccurs".to_string())
+        );
+
+        // A narrowed declaration of maxOccurs is honoured by the decoder.
+        let mut narrowed = operation.contract();
+        narrowed.schema["properties"]["values"]["properties"]["property"]["properties"]
+            ["maxOccurs"]["enum"] = json!([-1]);
+        let args =
+            json!({"at":at,"values":{"property":{"name":"X","type":"xs:string","maxOccurs":5}}});
+        assert_eq!(
+            operation
+                .decode_with_contract(&narrowed, &args, "ops[0].args", "main")
+                .unwrap_err()
+                .path,
+            "ops[0].args.values.property.maxOccurs"
+        );
     }
 
     #[test]

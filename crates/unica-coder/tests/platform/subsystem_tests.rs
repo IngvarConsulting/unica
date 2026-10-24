@@ -82,6 +82,25 @@ fn subsystem_fixture_xml(name: &str) -> String {
         )
 }
 
+#[test]
+fn subsystem_native_text_observations_keep_empty_absent_and_invalid_distinct() {
+    for (comment_xml, explanation_xml, comment, explanation, errors) in [
+        ("<Comment/>", "<Explanation/>", Some(""), Some(""), 0),
+        ("", "", None, None, 0),
+        ("<Comment>точный текст</Comment>", "<Explanation><v8:item><v8:lang>en</v8:lang><v8:content>fallback</v8:content></v8:item></Explanation>", Some("точный текст"), Some("fallback"), 0),
+        ("<Comment>а<![CDATA[б]]>в</Comment>", "<Explanation><v8:item><v8:lang>ru</v8:lang><v8:content>а<![CDATA[б]]>в</v8:content></v8:item></Explanation>", Some("абв"), Some("абв"), 0),
+        ("<Comment><Bad/></Comment>", "<Explanation>text</Explanation>", None, None, 2),
+        ("<Comment/><Comment/>", "<Explanation/><Explanation/>", None, None, 2),
+    ] {
+        let xml = subsystem_fixture_xml("Example").replace("<Comment/>", comment_xml).replace("<Explanation/>", explanation_xml);
+        let (data, _) = parse_subsystem_info_xml(Path::new("Example.xml"), &xml, false).unwrap();
+        assert_eq!(data.comment.as_deref(), comment, "{xml}");
+        assert_eq!(data.explanation.as_deref(), explanation, "{xml}");
+        assert_eq!(data.property_limits.len(), errors, "{xml}");
+        assert_eq!(data.name, "Example");
+    }
+}
+
 /// Writes a top-level subsystem under `root` and, when `root` holds a
 /// `Configuration.xml`, registers it there in canonical position.
 fn write_subsystem_fixture(root: &Path, name: &str) -> PathBuf {

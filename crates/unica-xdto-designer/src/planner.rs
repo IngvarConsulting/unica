@@ -425,22 +425,85 @@ fn prove_staged_xdto_support(
     Ok(())
 }
 
+/// Describe object type additions from the final staged bytes, including
+/// later operations from other runs in the same apply request and equivalent
+/// no-op additions.
+pub fn final_object_addition_details(
+    staged: &mut ApplyProposal<'_>,
+    source_set: &str,
+    source_kind: SourceSetKind,
+    operations: &[XdtoPlanOperation],
+) -> Result<Vec<unica_xdto::results::XdtoObjectPlanDetail>, ApplyPlanError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut details = Vec::new();
+    for operation in operations {
+        let XdtoPlanOperation::AddObjectType(args) = operation else {
+            continue;
+        };
+        if !seen.insert((args.at.to_string(), args.name.as_str().to_string())) {
+            continue;
+        }
+        let selected = staged_xdto_package(operation, source_set, source_kind, "ops")?;
+        let mut detail = unica_xdto::results::XdtoObjectPlanDetail {
+            at: args.at.to_string(),
+            name: args.name.as_str().to_string(),
+            present: false,
+            base: None,
+            previous: None,
+            next: None,
+        };
+        if let Some(bytes) = staged
+            .read(&selected.resource_relative)
+            .map_err(|error| ApplyPlanError::staging(error, "ops"))?
+        {
+            let text = decode(&bytes).map_err(|_| invalid_staged_xdto("ops"))?;
+            let model = PackageModel::parse(&text).map_err(|_| invalid_staged_xdto("ops"))?;
+            let objects = model
+                .types
+                .iter()
+                .filter(|named| named.kind == crate::model::TypeKind::Object)
+                .collect::<Vec<_>>();
+            if let Some(index) = objects.iter().position(|named| {
+                named
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.value == args.name.as_str())
+            }) {
+                detail.present = true;
+                detail.base = objects[index].base.as_ref().map(crate::info::qname_info);
+                detail.previous = index
+                    .checked_sub(1)
+                    .and_then(|index| objects[index].name.as_ref())
+                    .map(|name| name.value.clone());
+                detail.next = objects
+                    .get(index + 1)
+                    .and_then(|named| named.name.as_ref())
+                    .map(|name| name.value.clone());
+            }
+        }
+        details.push(detail);
+    }
+    Ok(details)
+}
+
 pub fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWriterOperation<'_> {
     match operation {
         XdtoPlanOperation::AddValueType(args) => writer::TypedWriterOperation::AddValueType {
             name: args.name.as_str(),
             base: args.base.as_str(),
+            facets: Some(&args.facets),
         },
         XdtoPlanOperation::AddObjectType(args) => writer::TypedWriterOperation::AddObjectType {
             name: args.name.as_str(),
+            base: args.base.as_ref().map(|base| base.as_str()),
+            before: args.before.as_ref().map(|before| before.as_str()),
+            after: args.after.as_ref().map(|after| after.as_str()),
         },
-        XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddProperty {
+        XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddPropertyTree {
             type_name: args.at.segments()[1]
                 .name()
                 .expect("closed XDTO type target has a name"),
-            name: args.property.name.as_str(),
-            type_ref: args.property.type_ref.as_str(),
-            min_occurs: args.property.min_occurs.map(u64::from),
+            property: &args.property,
             property_path: args.property_path.as_ref().map(XdtoPropertyPath::as_str),
         },
         XdtoPlanOperation::RemoveType(args) => writer::TypedWriterOperation::RemoveType {
@@ -475,6 +538,23 @@ pub fn staged_writer_error(
         writer::WriterErrorField::Source | writer::WriterErrorField::TypeTarget => {
             format!("{base}.at")
         }
+        writer::WriterErrorField::Base => format!("{base}.values.base"),
+        writer::WriterErrorField::Before => format!("{base}.values.before"),
+        writer::WriterErrorField::After => format!("{base}.values.after"),
+        writer::WriterErrorField::Facets => format!("{base}.values.facets"),
+        // The writer checks the whole tree; a top-level anonymous ValueType
+        // is named exactly, a nested one by the property that holds it.
+        writer::WriterErrorField::ValueType => match operation {
+            XdtoPlanOperation::AddProperty(args)
+                if matches!(
+                    args.property.definition,
+                    unica_xdto::operations::XdtoPropertyDefinition::Value { .. }
+                ) =>
+            {
+                format!("{base}.values.property.valueType")
+            }
+            _ => format!("{base}.values.property"),
+        },
         // Цепочка свойств и имя удаляемого свойства задаются адресом.
         writer::WriterErrorField::PropertyPath => format!("{base}.at"),
         writer::WriterErrorField::PropertyName => match operation {
@@ -484,10 +564,12 @@ pub fn staged_writer_error(
     };
     // Цепочка свойств адреса не дошла до вложенного типа: узел есть, но
     // свойства в него не кладутся — это говорится прямо, а не общим отказом.
-    let message = if matches!(error.field(), writer::WriterErrorField::PropertyPath) {
-        "the addressed XDTO property chain does not reach a single nested anonymous type (typeDef); address a type or a property that declares one"
-    } else {
-        "XDTO writer rejected the typed operation"
+    let message = match error.field() {
+        writer::WriterErrorField::PropertyPath => "the addressed XDTO property chain does not reach a single nested anonymous type (typeDef); address a type or a property that declares one".to_string(),
+        // An unsupported base and facet profile is the caller's to fix, so
+        // the refusal says which profiles are supported.
+        writer::WriterErrorField::Facets | writer::WriterErrorField::ValueType => error.to_string(),
+        _ => "XDTO writer rejected the typed operation".to_string(),
     };
     ApplyPlanError::new(kind, message).at_path(path)
 }
@@ -510,7 +592,19 @@ fn xdto_validation_error_path(operation: &XdtoPlanOperation, op_index: usize) ->
     match operation {
         XdtoPlanOperation::AddValueType(_) => format!("{base}.values.base"),
         XdtoPlanOperation::AddObjectType(_) => format!("{base}.at"),
-        XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.type"),
+        // The final package names no child, so an anonymous type answers
+        // at the field that declares its children.
+        XdtoPlanOperation::AddProperty(args) => match args.property.definition {
+            unica_xdto::operations::XdtoPropertyDefinition::Named(_) => {
+                format!("{base}.values.property.type")
+            }
+            unica_xdto::operations::XdtoPropertyDefinition::Object(_) => {
+                format!("{base}.values.property.objectType")
+            }
+            unica_xdto::operations::XdtoPropertyDefinition::Value { .. } => {
+                format!("{base}.values.property.valueType")
+            }
+        },
         XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
             format!("{base}.at")
         }
@@ -643,5 +737,52 @@ impl XdtoValidationLedger {
         }
         resource.postimage_digest = Sha256::digest(after).into();
         resource.last_operation_index = op_index;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{staged_writer_error, staged_writer_operation};
+    use crate::writer::plan_typed;
+    use serde_json::json;
+    use unica_source_contract::proposal::ApplyPlanErrorKind;
+    use unica_xdto::operations::XdtoOperation;
+
+    const PACKAGE: &str = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:test" targetNamespace="urn:test"><objectType name="T"/></package>"#;
+
+    /// An unsupported base and facet profile is a refusal of the request at
+    /// the field that asked for it, with the supported profiles named.
+    #[test]
+    fn unsupported_facet_profiles_are_refused_at_their_request_fields() {
+        for (operation, args, path, message) in [
+            (
+                XdtoOperation::AddValueType,
+                json!({"at":"main:XDTOPackage.Sample","values":{"name":"V","base":"xs:string","facets":{"fractionDigits":2}}}),
+                "ops[3].args.values.facets",
+                "supported profiles are string and decimal",
+            ),
+            (
+                XdtoOperation::AddProperty,
+                json!({"at":"main:XDTOPackage.Sample.Type.T","values":{"property":{"name":"P","valueType":{"base":"tns:T"}}}}),
+                "ops[3].args.values.property.valueType",
+                "anonymous ValueType supports only XML Schema string or decimal bases",
+            ),
+            (
+                XdtoOperation::AddProperty,
+                json!({"at":"main:XDTOPackage.Sample.Type.T","values":{"property":{"name":"P","objectType":{"properties":[{"name":"C","valueType":{"base":"tns:T"}}]}}}}),
+                "ops[3].args.values.property",
+                "anonymous ValueType supports only XML Schema string or decimal bases",
+            ),
+        ] {
+            let decoded = operation.decode(&args, "ops[3].args", "main").unwrap();
+            let error = match plan_typed(PACKAGE, staged_writer_operation(&decoded)) {
+                Err(error) => error,
+                Ok(_) => panic!("{args}: an unsupported profile is refused"),
+            };
+            let refusal = staged_writer_error(error, &decoded, 3);
+            assert_eq!(refusal.kind(), ApplyPlanErrorKind::BadValue, "{args}");
+            assert_eq!(refusal.path(), Some(path), "{args}");
+            assert!(refusal.to_string().contains(message), "{refusal}");
+        }
     }
 }

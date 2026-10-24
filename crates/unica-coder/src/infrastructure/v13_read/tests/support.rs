@@ -914,7 +914,7 @@ fn with_root_version(document: &str) -> String {
 
 /// Описание из выгрузки платформы, сверенное с `manifest.json` опыта: тест
 /// читает ровно ту форму, которую выгрузила платформа.
-fn platform_borrow_fixture(name: &str) -> String {
+pub(super) fn platform_borrow_fixture(name: &str) -> String {
     use sha2::{Digest, Sha256};
     let manifest: serde_json::Value =
         serde_json::from_str(&fixture_text("platform_8_3_27/cfe_borrow/manifest.json")).unwrap();

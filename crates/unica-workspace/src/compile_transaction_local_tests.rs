@@ -128,16 +128,24 @@ fn replacement_rejects_parent_symlink_swap_after_planning_before_locking() {
         .expect("safe replacement must plan");
 
     fs::rename(&role_dir, &saved_role_dir).unwrap();
-    let Some(link_result) = testing::create_dir_symlink_for_test(&outside_role_dir, &role_dir)
-    else {
-        fs::rename(&saved_role_dir, &role_dir).unwrap();
-        fs::remove_dir_all(root).unwrap();
-        return;
-    };
-    if link_result.is_err() {
-        fs::rename(&saved_role_dir, &role_dir).unwrap();
-        fs::remove_dir_all(root).unwrap();
-        return;
+    // Only an explicit privilege refusal skips; any other link error fails.
+    match crate::platform::testing::create_directory_link_fixture_for_test(
+        &outside_role_dir,
+        &role_dir,
+    )
+    .expect("create a directory link fixture")
+    {
+        crate::platform::testing::FileLinkFixtureOutcome::Created => {}
+        crate::platform::testing::FileLinkFixtureOutcome::Unsupported
+        | crate::platform::testing::FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            fs::rename(&saved_role_dir, &role_dir).unwrap();
+            fs::remove_dir_all(root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a directory link needs the symlink privilege",
+            );
+            return;
+        }
     }
 
     let error = transaction
@@ -180,16 +188,24 @@ fn transaction_rejects_cache_create_parent_symlink_swap_before_touching_either_t
         .expect("cache creation must plan");
 
     fs::rename(&build_dir, &saved_build_dir).unwrap();
-    let Some(link_result) = testing::create_dir_symlink_for_test(&outside_build_dir, &build_dir)
-    else {
-        fs::rename(&saved_build_dir, &build_dir).unwrap();
-        fs::remove_dir_all(root).unwrap();
-        return;
-    };
-    if link_result.is_err() {
-        fs::rename(&saved_build_dir, &build_dir).unwrap();
-        fs::remove_dir_all(root).unwrap();
-        return;
+    // Only an explicit privilege refusal skips; any other link error fails.
+    match crate::platform::testing::create_directory_link_fixture_for_test(
+        &outside_build_dir,
+        &build_dir,
+    )
+    .expect("create a directory link fixture")
+    {
+        crate::platform::testing::FileLinkFixtureOutcome::Created => {}
+        crate::platform::testing::FileLinkFixtureOutcome::Unsupported
+        | crate::platform::testing::FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            fs::rename(&saved_build_dir, &build_dir).unwrap();
+            fs::remove_dir_all(root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a directory link needs the symlink privilege",
+            );
+            return;
+        }
     }
 
     let error = transaction
@@ -682,6 +698,10 @@ fn publication_cleanup_retry_preserves_a_same_name_file_replacement() {
 #[test]
 fn publication_cleanup_retry_does_not_treat_a_missing_route_as_cleaned() {
     if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
     use super::super::single_file_publisher::{
@@ -1428,4 +1448,38 @@ fn create_only_collision_is_rejected_before_publication() {
     assert!(error.contains("create-only"), "{error}");
     assert_eq!(fs::read(&target).unwrap(), b"original");
     fs::remove_dir_all(root).expect("temporary root must be removed");
+}
+
+#[test]
+fn prepublication_gate_failure_rolls_back_earlier_files() {
+    let root = temp_root("prepublication-refusal");
+    let first = root.join("first.bin");
+    let second = root.join("second.bin");
+    let mut transaction = CompileTransaction::new();
+    transaction.create_bytes(&first, b"first".to_vec()).unwrap();
+    transaction
+        .create_bytes(&second, b"second".to_vec())
+        .unwrap();
+    let mut gates = 0;
+    let result = transaction.commit_with_classified_pre_and_post_validation(
+        || {
+            gates += 1;
+            if gates == 2 {
+                Err(CommitFailure::provider("caller refused publication"))
+            } else {
+                Ok(())
+            }
+        },
+        || Ok(()),
+    );
+    assert!(result.is_err());
+    assert_eq!(gates, 2);
+    assert!(!first.exists());
+    assert!(!second.exists());
+    assert_eq!(
+        fs::read_dir(&root).unwrap().count(),
+        0,
+        "staging and recovery must be cleaned up"
+    );
+    fs::remove_dir_all(root).unwrap();
 }

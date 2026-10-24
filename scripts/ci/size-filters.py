@@ -12,6 +12,10 @@
 и владельцем библиотеки. Генератор проверяет их присутствие и единственность
 в списке Cargo, поэтому переименование требует обновить объявление.
 
+Тот же проход пишет профиль `queue-platform`: тесты модулей, чьи файлы лежат
+в платформенных каталогах правила INV.PLATFORM.OS-BEHIND-FACADE. Его очередь
+исполняет на macOS вместо полного набора.
+
 `--write` переписывает выражение в `.config/nextest.toml` между метками, беря
 имена тестов из `cargo nextest list --message-format json` (нужен `cargo`);
 страж размера в `tests/ci` читает то же выражение без `cargo` и проверяет, что
@@ -23,6 +27,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -41,7 +46,10 @@ MEDIUM_CONSTRUCTS = re.compile(
 BLOCKS = {
     "pr": ("# >>> размер medium (ворота pr): пишет scripts/ci/size-filters.py --write", "# <<< размер medium (ворота pr)"),
     "deadline": ("# >>> размер medium (срок): пишет scripts/ci/size-filters.py --write", "# <<< размер medium (срок)"),
+    "platform": ("# >>> платформа (очередь macOS): пишет scripts/ci/size-filters.py --write", "# <<< платформа (очередь macOS)"),
 }
+# Тест в исходнике: `#[test]`, `#[tokio::test]`, они же с аргументами.
+TEST_ATTRIBUTE_IN_SOURCE = re.compile(r"#\[\s*(?:[A-Za-z0-9_]+\s*::\s*)*test\s*[\](]")
 TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
 # 400 000 исходных наборов: 34.447 с отдельно, 41.729 с совместно, macOS.
 # Это размер конкретной проверки; соседние layout-проверки остаются small.
@@ -123,51 +131,197 @@ def inline_test_modules(source: bytes) -> tuple[set[str], bool]:
 
 
 
+def crate_root(path: Path) -> Path:
+    for parent in path.parents:
+        if (parent / "Cargo.toml").is_file():
+            return parent
+    raise ValueError(f"no Cargo.toml above {path}")
+
+
+def included_file(text: str, file_dir: Path) -> Path | None:
+    """Файл `include!`: литерал от каталога файла или от `CARGO_MANIFEST_DIR`."""
+    compact = re.sub(r"\s+", "", text)
+    literal = re.fullmatch(r'include!\("([^"]+)"\);?', compact)
+    if literal:
+        return file_dir / literal[1]
+    manifest = re.fullmatch(r'include!\(concat!\(env!\("CARGO_MANIFEST_DIR"\),"([^"]+)"\)\);?', compact)
+    if manifest:
+        return crate_root(file_dir / "x") / manifest[1].lstrip("/")
+    return None
+
+
+def module_files(root_file: Path, logical_root: tuple[str, ...] = (),
+                 includes: list[tuple[tuple[str, ...], Path]] | None = None) -> dict[tuple[str, ...], Path]:
+    """Файлы модулей одной цели от её корня, включая перенесённые `#[path]`.
+
+    Файлы `include!` вставляются в модуль, где стоит макрос: в `includes`
+    уходит пара (модуль, файл).
+    """
+    modules: dict[tuple[str, ...], Path] = {}
+    parser = Parser(Language(tree_sitter_rust.language()))
+
+    def visit_file(path, logical):
+        if not path.is_file():
+            return
+        source = path.read_bytes()
+        modules[logical] = path
+        base = path.parent if path.stem in {"lib", "main", "mod"} or logical == logical_root else path.with_suffix("")
+        walk(parser.parse(source).root_node, source, logical, base, path.parent, path.parent)
+
+    def walk(node, source, logical, default_base, explicit_base, file_dir):
+        attributes = []
+        for child in node.named_children:
+            if child.type == "attribute_item":
+                attributes.append(source[child.start_byte:child.end_byte].decode())
+                continue
+            macro = child.named_children[0] if child.type == "expression_statement" and child.named_children else child
+            if includes is not None and macro.type == "macro_invocation":
+                target = included_file(source[macro.start_byte:macro.end_byte].decode(), file_dir)
+                if target is not None:
+                    includes.append((logical, target))
+            if child.type == "mod_item":
+                name = child.child_by_field_name("name").text.decode()
+                body = child.child_by_field_name("body")
+                if body is not None:
+                    walk(body, source, (*logical, name), default_base / name, default_base / name, file_dir)
+                else:
+                    override = next((m[1] for attr in attributes if (m := re.fullmatch(
+                        r'\s*#\[\s*path\s*=\s*"([^"]+)"\s*\]\s*', attr))), None)
+                    if override is not None:
+                        target = explicit_base / override
+                    else:
+                        target = default_base / (name + ".rs")
+                        if not target.is_file():
+                            target = default_base / name / "mod.rs"
+                    visit_file(target, (*logical, name))
+            attributes = []
+
+    visit_file(root_file, logical_root)
+    return modules
+
+
 def source_modules(root: Path) -> dict[str, dict[tuple[str, ...], tuple[bool, Path]]]:
     """Resolve Rust module declarations, including moved #[path] unit targets."""
     found = {}
-    parser = Parser(Language(tree_sitter_rust.language()))
     for crate in sorted((root / "crates").iterdir()):
         src = crate / "src"
         if not src.is_dir():
             continue
-        modules = {}
-
-        def visit_file(path, logical):
-            if not path.is_file():
-                return
-            source = path.read_bytes()
-            modules[logical] = (bool(MEDIUM_CONSTRUCTS.search(source.decode())), path)
-            base = path.parent if path.stem in {"lib", "main", "mod"} else path.with_suffix("")
-            walk(parser.parse(source).root_node, source, logical, base, path.parent)
-
-        def walk(node, source, logical, default_base, explicit_base):
-            attributes = []
-            for child in node.named_children:
-                if child.type == "attribute_item":
-                    attributes.append(source[child.start_byte:child.end_byte].decode())
-                    continue
-                if child.type == "mod_item":
-                    name = child.child_by_field_name("name").text.decode()
-                    body = child.child_by_field_name("body")
-                    if body is not None:
-                        walk(body, source, (*logical, name), default_base / name, default_base / name)
-                    else:
-                        override = next((m[1] for attr in attributes if (m := re.fullmatch(
-                            r'\s*#\[\s*path\s*=\s*"([^"]+)"\s*\]\s*', attr))), None)
-                        if override is not None:
-                            target = explicit_base / override
-                        else:
-                            target = default_base / (name + ".rs")
-                            if not target.is_file():
-                                target = default_base / name / "mod.rs"
-                        visit_file(target, (*logical, name))
-                attributes = []
-
-        visit_file(src / "lib.rs", ())
-        visit_file(src / "main.rs", ("main",))
-        found[crate.name] = modules
+        files = {**module_files(src / "main.rs", ("main",)), **module_files(src / "lib.rs")}
+        found[crate.name] = {
+            logical: (bool(MEDIUM_CONSTRUCTS.search(path.read_bytes().decode())), path)
+            for logical, path in files.items()
+        }
     return found
+
+
+def platform_facade_roots(root: Path) -> tuple[str, ...]:
+    """Закрытый набор владельцев правила INV.PLATFORM.OS-BEHIND-FACADE — из его стража."""
+    spec = importlib.util.spec_from_file_location("rust_platform_boundary", root / "scripts" / "ci" / "check-rust-platform-boundary.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.PLATFORM_FACADE_ROOTS
+
+
+def is_platform_source(root: Path, path: Path) -> bool:
+    relative = path.resolve().relative_to(root.resolve()).as_posix()
+    parts = relative.split("/")
+    return (any(relative.startswith(prefix) for prefix in platform_facade_roots(root))
+            or (len(parts) >= 5 and parts[0] == "crates" and parts[2] == "tests" and parts[3] == "platform"))
+
+
+def test_targets(crate: Path) -> tuple[str, dict[str, Path]]:
+    """Интеграционные цели пакета по правилам Cargo: автообнаружение и `[[test]]`."""
+    manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
+    package = manifest["package"]["name"]
+    targets: dict[str, Path] = {}
+    if manifest["package"].get("autotests", True) and (crate / "tests").is_dir():
+        targets.update({path.stem: path for path in sorted((crate / "tests").glob("*.rs"))})
+        targets.update({path.parent.name: path for path in sorted((crate / "tests").glob("*/main.rs"))})
+    for target in manifest.get("test", []):
+        targets[target["name"]] = crate / target.get("path", f"tests/{target['name']}.rs")
+    return package, targets
+
+
+def bin_targets(crate: Path, package: str) -> dict[str, Path]:
+    """Бинарные цели пакета по правилам Cargo: `src/main.rs`, `src/bin/*` и `[[bin]]`."""
+    manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
+    targets: dict[str, Path] = {}
+    if manifest["package"].get("autobins", True):
+        if (crate / "src" / "main.rs").is_file():
+            targets[package] = crate / "src" / "main.rs"
+        targets.update({path.stem: path for path in sorted((crate / "src" / "bin").glob("*.rs"))})
+        targets.update({path.parent.name: path for path in sorted((crate / "src" / "bin").glob("*/main.rs"))})
+    for target in manifest.get("bin", []):
+        targets[target["name"]] = crate / target.get("path", f"src/bin/{target['name']}.rs")
+    return targets
+
+
+def test_items(source: bytes) -> tuple[set[str], set[str]]:
+    """Встроенные модули с тестами и тесты верхнего уровня одного файла.
+
+    Файл `include!` разбирается на одну глубину: его `mod x;` и вложенные
+    `include!` не прослеживаются; сегодня таких нет.
+    """
+    named, _ = inline_test_modules(source)
+    tree = Parser(Language(tree_sitter_rust.language())).parse(source)
+    children = tree.root_node.named_children
+    top_level = set()
+    for index, child in enumerate(children):
+        if child.type != "function_item":
+            continue
+        back = index - 1
+        while back >= 0 and children[back].type in ("attribute_item", "line_comment", "block_comment"):
+            node = children[back]
+            if node.type == "attribute_item" and TEST_ATTRIBUTE.fullmatch(re.sub(r"\s+", "", node.text.decode())):
+                top_level.add(child.child_by_field_name("name").text.decode())
+            back -= 1
+    return named, top_level
+
+
+def platform_terms(root: Path) -> list[str]:
+    """Тесты платформенных фасадов: модули, чей файл лежит в каталоге фасада.
+
+    Выбор структурный, как у правила границы: верхний модуль на платформенном
+    файле забирает всё своё поддерево, если в нём есть хоть один тест. Тесты
+    под `cfg` другой ОС тоже называются — генератор не зависит от хоста.
+    """
+    terms = set()
+
+    def collect(binary: str, files: dict[tuple[str, ...], Path], includes: list[tuple[tuple[str, ...], Path]]) -> None:
+        platform = {logical for logical, path in files.items() if is_platform_source(root, path)}
+        # `include!` вставляет платформенный файл в чужой модуль: выбор — его
+        # собственные тесты, по точному имени или встроенному модулю.
+        for logical, path in includes:
+            if not path.is_file() or not is_platform_source(root, path) or any(logical[:n] in platform for n in range(len(logical) + 1)):
+                continue
+            prefix = "".join(f"{part}::" for part in logical)
+            named, top_level_names = test_items(path.read_bytes())
+            for name in sorted(named):
+                terms.add(f"({binary} & test(/^{re.escape(prefix + name)}::/))")
+            for name in sorted(top_level_names):
+                terms.add(f"({binary} & test(/^{re.escape(prefix + name)}$/))")
+        for logical in platform:
+            if any(logical[:n] in platform for n in range(len(logical))):
+                continue
+            subtree = [path for other, path in files.items() if other[:len(logical)] == logical]
+            if not any(TEST_ATTRIBUTE_IN_SOURCE.search(path.read_text(encoding="utf-8")) for path in subtree):
+                continue
+            prefix = "::".join(logical)
+            terms.add(f"({binary} & test(/^{re.escape(prefix)}::/))" if prefix else f"({binary})")
+
+    for crate in sorted((root / "crates").iterdir()):
+        if not (crate / "Cargo.toml").is_file():
+            continue
+        package, targets = test_targets(crate)
+        roots = [(f"binary({crate.name.replace('-', '_')})", crate / "src" / "lib.rs")]
+        roots += [(f"binary_id({package}::bin/{name})", path) for name, path in bin_targets(crate, package).items()]
+        roots += [(f"binary_id({package}::{name})", path) for name, path in sorted(targets.items())]
+        for binary, path in roots:
+            if path.is_file():
+                includes: list[tuple[tuple[str, ...], Path]] = []
+                collect(binary, module_files(path, includes=includes), includes)
+    return sorted(terms)
 
 
 def flagged_modules(root: Path) -> list[tuple[str, str, Path]]:
@@ -275,9 +429,11 @@ def render(terms: list[str]) -> str:
     return "\n    | ".join(lines)
 
 
-def blocks(terms: list[str], large: str) -> dict[str, str]:
+def blocks(terms: list[str], large: str, platform: list[str]) -> dict[str, str]:
     body = render(terms)
+    platform_body = "\n    | ".join(platform)
     return {
+        "platform": f"default-filter = \'\'\'(\n{platform_body}\n) & not (\n{large}\n)\'\'\'",
         "pr": f"default-filter = \'\'\'not (\n{body}\n) & not (\n{large}\n)\'\'\'",
         "deadline": (
             "[[profile.default.overrides]]\n"
@@ -290,7 +446,7 @@ def blocks(terms: list[str], large: str) -> dict[str, str]:
 def write(root: Path, terms: list[str]) -> None:
     text = NEXTEST_TOML.read_text(encoding="utf-8")
     large = tomllib.loads(text)["profile"]["large"]["default-filter"].strip()
-    for name, body in blocks(terms, large).items():
+    for name, body in blocks(terms, large, platform_terms(root)).items():
         begin, end = BLOCKS[name]
         start, stop = text.index(begin), text.index(end) + len(end)
         text = text[:start] + f"{begin}\n{body}\n{end}" + text[stop:]

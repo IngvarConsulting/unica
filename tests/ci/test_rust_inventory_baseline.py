@@ -54,26 +54,111 @@ class InventoryBaselineTests(unittest.TestCase):
         self.assertEqual(found["workflow_run"]["id"], 6)
         self.assertIsNone(baseline.nearest([artifact("unrelated")], ancestors, REPOSITORY_ID))
 
-    def test_removals_since_the_baseline_count_but_a_reset_belongs_to_the_change_itself(self):
+    def explain(self, profile, *, own=None, entry="this entry (#10)"):
+        bodies = {
+            5: "Earlier entry.\n\n- Removes-test-target: `unica-old`\nRust-inventory-baseline: reset\n",
+            10: "This change.\n\n  Removes-test: unica-coder::cli::*  \n`Rust-inventory-baseline: reset`\n",
+            11: "Prose only: we could write Removes-test-target: x later.\n",
+        }
+
+        def gh(*args):
+            number = int(args[1].rsplit("/", 1)[1])
+            if number == 404:
+                raise baseline.NotFound("gh api failed: HTTP 404")
+            return bodies.get(number, "")
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(baseline, "gh", side_effect=gh):
+            repository = Repository(Path(temporary))
+            base = repository.commit("main")
+            repository.commit("fix: issue reference only (#404)")
+            repository.commit("prose (#11)")
+            repository.commit("earlier entry (#7) (#5)")
+            repository.commit(entry)
+            return baseline.explanations(repository.root, REPOSITORY, base, profile, own)
+
+    def test_descriptions_since_the_baseline_explain_removals(self):
+        found = self.explain("queue")
+        self.assertEqual(found["pullRequests"], [5, 10, 11, 404])
+        self.assertEqual(found["removedTargets"], ["unica-old"])
+        self.assertEqual(found["removedTests"], ["unica-coder::cli::*"])
+        self.assertEqual(found["declaredBy"]["Removes-test-target: unica-old"], [5])
+
+    def test_a_reset_belongs_to_the_change_itself_in_pull_requests_and_queue(self):
+        # The queue entry's own pull request may reset; a batch neighbour may not.
+        self.assertTrue(self.explain("queue")["reset"])
+        self.assertEqual(self.explain("queue")["declaredBy"]["Rust-inventory-baseline: reset"], [10])
+        self.assertFalse(self.explain("queue", entry="other entry (#11)")["reset"])
+        # A pull request is its own change; its commits carry no number.
+        self.assertTrue(self.explain("pr", own=10, entry="wip")["reset"])
+        self.assertFalse(self.explain("pr", own=11, entry="wip")["reset"])
+        self.assertFalse(self.explain("pr", own=None, entry="wip")["reset"])
+        # No batches elsewhere: a reset merged since the baseline applies.
+        for profile in ("main", "large", "release"):
+            self.assertTrue(self.explain(profile, entry="other entry (#11)")["reset"])
+
+    def test_gh_maps_only_http_404_to_not_found(self):
+        def failed(stderr):
+            return subprocess.CompletedProcess(["gh"], 1, stdout="", stderr=stderr)
+        with patch.object(baseline.subprocess, "run", return_value=failed("gh: Not Found (HTTP 404)")), \
+             self.assertRaises(baseline.NotFound):
+            baseline.gh("api", "repos/owner/unica/pulls/1")
+        for stderr in ("gh: Bad Gateway (HTTP 502)", "gh: Resource not accessible by integration (HTTP 403)"):
+            with self.subTest(stderr=stderr), patch.object(baseline.subprocess, "run", return_value=failed(stderr)):
+                with self.assertRaises(RuntimeError) as raised:
+                    baseline.gh("api", "repos/owner/unica/pulls/1")
+                self.assertNotIsInstance(raised.exception, baseline.NotFound)
+        # A missing gh executable is an environment failure, never an absent pull request.
+        with patch.object(baseline.subprocess, "run", side_effect=FileNotFoundError("gh")), \
+             self.assertRaises(FileNotFoundError):
+            baseline.gh("api", "repos/owner/unica/pulls/1")
+
+    def test_crlf_descriptions_declare_like_any_other(self):
+        with patch.object(baseline, "gh", return_value="Intro\r\nRemoves-test-target: unica-old\r\nRust-inventory-baseline: reset\r\n"):
+            body = baseline.description(REPOSITORY, 5)
+        self.assertEqual(baseline.REMOVED.findall(body), ["unica-old"])
+        self.assertIsNotNone(baseline.RESET.search(body))
+
+    def test_pull_request_branch_commits_do_not_name_other_pull_requests(self):
         with tempfile.TemporaryDirectory() as temporary:
             repository = Repository(Path(temporary))
             base = repository.commit("main")
-            repository.commit("earlier entry\n\n* drop\n\nRemoves-test-target: unica-old\nRust-inventory-baseline: reset")
-            repository.commit("this change\n\n  Removes-test-target: unica-coder::bin/unica  ")
-            for profile in ("pr", "queue"):
-                found = baseline.explanations(repository.root, base, profile)
-                self.assertEqual(found["removedTargets"], ["unica-coder::bin/unica", "unica-old"])
-                # A queue batch neighbour's reset does not cover this entry.
-                self.assertFalse(found["reset"])
-            for profile in ("main", "large", "release"):
-                # No batches here: a reset merged since the baseline applies.
-                self.assertTrue(baseline.explanations(repository.root, base, profile)["reset"])
-            repository.commit("next\n\nRust-inventory-baseline: reset")
-            self.assertTrue(baseline.explanations(repository.root, None, "queue")["reset"])
-            self.assertEqual(baseline.explanations(repository.root, None, "queue")["removedTargets"], [])
-            # A mention inside prose is not a declaration.
-            repository.commit("prose\n\nWe could write Removes-test-target: x later.")
-            self.assertEqual(baseline.explanations(repository.root, None, "queue")["removedTargets"], [])
+            repository.git("switch", "-q", "-c", "topic")
+            repository.commit("cherry-picked fix (#77)")
+            repository.git("switch", "-q", "main")
+            repository.commit("other main work (#78)")
+            repository.git("merge", "-q", "--no-ff", "-m", "Merge abc into def", "topic")
+            self.assertEqual(baseline.pull_requests(repository.root, f"{base}..HEAD"), {78})
+
+    def test_summary_names_each_declaration_and_a_reset_prominently(self):
+        document = {"source": {"runId": 11, "headSha": "a" * 40},
+                    "explanations": {"declaredBy": {"Removes-test: x::y": [10], "Rust-inventory-baseline: reset": [12]}}}
+        text = baseline.summary_text(document)
+        self.assertIn("**Baseline reset declared by #12", text)
+        self.assertIn("- `Removes-test: x::y` — #10", text)
+        self.assertIn("**none found**", baseline.summary_text({"source": None, "explanations": {"declaredBy": {}}}))
+
+    def test_commit_messages_no_longer_explain_anything(self):
+        found = self.explain("queue", entry="this entry (#12)\n\nRemoves-test-target: hidden\nRust-inventory-baseline: reset")
+        self.assertNotIn("hidden", found["removedTargets"])
+        self.assertFalse(found["reset"])
+
+    def test_description_api_failures_other_than_404_stop(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(baseline, "gh", side_effect=RuntimeError("gh api failed: HTTP 502")):
+            repository = Repository(Path(temporary))
+            base = repository.commit("main")
+            repository.commit("entry (#10)")
+            with self.assertRaisesRegex(RuntimeError, "502"):
+                baseline.explanations(repository.root, REPOSITORY, base, "queue", None)
+
+    def test_own_pull_request_comes_from_the_event_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            event = Path(temporary) / "event.json"
+            event.write_text(json.dumps({"pull_request": {"number": 1883}}))
+            with patch.dict(baseline.os.environ, {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event)}):
+                self.assertEqual(baseline.own_pull_request(), 1883)
+            with patch.dict(baseline.os.environ, {"GITHUB_EVENT_NAME": "merge_group", "GITHUB_EVENT_PATH": str(event)}):
+                self.assertIsNone(baseline.own_pull_request())
 
     def run_baseline(self, listing, *, inventory=None, path=baseline.WORKFLOW, failure=None, profile="queue"):
         with tempfile.TemporaryDirectory() as temporary:
@@ -93,6 +178,8 @@ class InventoryBaselineTests(unittest.TestCase):
                     directory = Path(args[args.index("--dir") + 1])
                     document = {"schemaVersion": 1, "sha": main, "profile": "queue", "runId": "11", "configurations": []}
                     (directory / "inventory.json").write_text(json.dumps({**document, **(inventory or {})}))
+                    return ""
+                if args[0] == "api" and "/pulls/" in args[1]:
                     return ""
                 if args[0] == "api" and "/actions/runs/" in args[1]:
                     return path + "\n"

@@ -128,7 +128,7 @@ impl ApplyRequest {
                 if !available_source_sets.contains(&parent.source_set())
                     || !valid_borrow_source(&parent, at.source_set())
                 {
-                    return Err(ApplyValidationError::bad_value(&location, "from must name a top-level object or Enum.EnumValue in a distinct admitted parent source set"));
+                    return Err(ApplyValidationError::bad_value(&location, "from must name a top-level object, Enum.EnumValue or object Form in a distinct admitted parent source set"));
                 }
             }
             // Configuration owns newly created metadata although its address is
@@ -244,8 +244,9 @@ pub(crate) fn valid_borrow_source(parent: &QualifiedAddress, destination_source_
     parent.source_set() != destination_source_set
         && (parent.segments().len() == 1
             || (parent.segments().len() == 2
-                && parent.segments()[0].kind() == NodeKind::Enum
-                && parent.segments()[1].kind() == NodeKind::EnumValue
+                && ((parent.segments()[0].kind() == NodeKind::Enum
+                    && parent.segments()[1].kind() == NodeKind::EnumValue)
+                    || parent.segments()[1].kind() == NodeKind::Form)
                 && parent.segments()[1].name().is_some()))
         && parent.segments()[0].name().is_some()
 }
@@ -517,6 +518,7 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "predefinedItem.add",
     "predefinedItem.set",
     "predefinedItem.remove",
+    "content.set",
     "relation.add",
     "relation.replace",
     "relation.remove",
@@ -633,6 +635,7 @@ operation_descriptors!(
     (unica_metadata::apply_operations::MetadataOperation::ObjectCreate),
     (unica_metadata::apply_operations::MetadataOperation::ObjectRemove),
     (PropertiesOperation::Set),
+    (unica_metadata::apply_operations::MetadataOperation::ContentSet),
     (unica_metadata::apply_operations::MetadataOperation::RelationAdd),
     (unica_metadata::apply_operations::MetadataOperation::RelationRemove),
     (unica_metadata::apply_operations::MetadataOperation::RelationReplace),
@@ -952,7 +955,9 @@ mod tests {
             )
         };
         assert!(request("main:Enum.Operations.EnumValue.Costs").is_ok());
+        assert!(request("main:Catalog.Orders.Form.ItemForm").is_ok());
         for from in [
+            "main:Catalog.Orders.Form",
             "main:Enum.Operations.EnumValue",
             "main:Catalog.Orders.Attribute.Code",
             "extension:Enum.Operations.EnumValue.Costs",
@@ -1216,16 +1221,33 @@ mod tests {
         assert_eq!(valid.name(), "props.set");
         assert_eq!(valid.family(), OperationFamily::Properties);
         assert_eq!(valid.skeleton(), OperationSkeleton::Values);
-        let source =
-            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
-        for (raw, expected) in [
-            ("main:CommonModule.Utilities", true),
-            ("main:Role.Reader", true),
-            ("main:Subsystem.Sales", true),
-            ("main:Configuration", false),
-            ("main:Catalog.Items.Attribute.Code", false),
-            ("main:Subsystem.Sales.Subsystem.Child", false),
+        for (kind, raw, expected) in [
+            (
+                SourceSetKind::Configuration,
+                "main:CommonModule.Utilities",
+                true,
+            ),
+            (SourceSetKind::Configuration, "main:Role.Reader", true),
+            (SourceSetKind::Configuration, "main:Subsystem.Sales", true),
+            (SourceSetKind::Configuration, "main:Configuration", true),
+            (SourceSetKind::Extension, "main:Configuration", true),
+            (
+                SourceSetKind::ExternalProcessor,
+                "main:Configuration",
+                false,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Catalog.Items.Attribute.Code",
+                false,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Subsystem.Sales.Subsystem.Child",
+                false,
+            ),
         ] {
+            let source = source_set_traits_for_read(kind, PlatformProfile::v8_3_27());
             let at = QualifiedAddress::parse(raw).unwrap();
             let site = operation_site(&at, source).unwrap();
             assert_eq!(
@@ -1466,6 +1488,7 @@ mod tests {
             "object.create",
             "object.remove",
             "props.set",
+            "content.set",
             "relation.add",
             "relation.remove",
             "relation.replace",
@@ -1586,7 +1609,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 122);
+        assert_eq!(expected.len(), 123);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465): имя одно, семейство выбирает адрес. Других
@@ -1604,7 +1627,7 @@ mod tests {
         }
         assert_eq!(
             unica_metadata::apply_operations::MetadataOperation::ALL.len(),
-            34
+            35
         );
         assert_eq!(
             registry

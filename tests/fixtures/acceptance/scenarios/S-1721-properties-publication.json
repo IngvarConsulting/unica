@@ -3507,7 +3507,7 @@
         },
         {
           "pointer": "/data/props/explanation",
-          "eq": null
+          "eq": ""
         }
       ],
       "fileAssertions": [

@@ -358,3 +358,7 @@ pub fn ensure_inside_workspace(path: &Path, workspace_root: &Path) -> Result<(),
         path.display()
     ))
 }
+
+#[cfg(test)]
+#[path = "../tests/platform/source_root_contract.rs"]
+mod source_root_contract_tests;

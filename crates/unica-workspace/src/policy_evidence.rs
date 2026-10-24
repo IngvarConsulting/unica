@@ -751,6 +751,51 @@ pub(crate) mod tests {
         }
     }
 
+    /// Ослабляют запрет только точные `warn` и `off`; пропущенное поле,
+    /// иное значение или нечитаемый файл оставляют `deny`.
+    #[test]
+    fn support_policy_downgrade_comes_only_from_exact_warn_or_off() {
+        let temporary = tempfile::tempdir().unwrap();
+        let project_dir = temporary.path().join("project");
+        let source = project_dir.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        let mode = |bytes: &[u8]| support_policy_mode_from_bytes(bytes, &project_dir, &source);
+
+        assert_eq!(
+            mode(br#"{"editingAllowedCheck":"warn"}"#),
+            SupportPolicyMode::Warn
+        );
+        assert_eq!(
+            mode(br#"{"editingAllowedCheck":"off"}"#),
+            SupportPolicyMode::Off
+        );
+        assert_eq!(
+            mode("\u{feff}{\"editingAllowedCheck\":\"off\"}".as_bytes()),
+            SupportPolicyMode::Off
+        );
+        for value in ["deny", "", "WARN", "Off", " warn", "unsupported"] {
+            let bytes =
+                serde_json::to_vec(&serde_json::json!({"editingAllowedCheck": value})).unwrap();
+            assert_eq!(mode(&bytes), SupportPolicyMode::Deny, "{value:?}");
+        }
+        for bytes in [
+            &br#"{}"#[..],
+            br#"{"editingAllowedCheck":true}"#,
+            br#"{"editingAllowedCheck":null}"#,
+            br#"{"editingAllowedCheck":"off""#,
+            b"not json",
+            b"",
+            b"\xff\xfe{\"editingAllowedCheck\":\"off\"}",
+        ] {
+            assert_eq!(
+                mode(bytes),
+                SupportPolicyMode::Deny,
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
     #[test]
     pub(crate) fn support_policy_database_paths_distinguish_nested_sources_from_prefix_siblings() {
         let temporary = tempfile::tempdir().unwrap();
@@ -853,8 +898,9 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn retained_support_policy_candidate_parent_replacement_is_rejected() {
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
-            eprintln!(
-                "[SKIPPED FIXTURE] retained support-policy parent replacement is unsupported while a directory handle is open"
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
             );
             return;
         }
@@ -893,8 +939,9 @@ pub(crate) mod tests {
     ) {
         let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
-            eprintln!(
-                "[SKIPPED FIXTURE] support-policy mid-validation name replacement is unsupported while a retained file handle is open"
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
             );
             return;
         }
@@ -946,8 +993,9 @@ pub(crate) mod tests {
     ) {
         let _test_state = SupportPolicyTestStateGuard::new(reset_support_policy_test_now);
         if !crate::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
-            eprintln!(
-                "[SKIPPED FIXTURE] support-policy post-read name replacement is unsupported while a retained file handle is open"
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
             );
             return;
         }

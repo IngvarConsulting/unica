@@ -209,6 +209,7 @@ pub fn typed_relations(
         Err(_) => Default::default(),
     };
     MetaRelationsData {
+        content: (owner_kind == MetadataKind::ExchangePlan).then_some(None),
         owners,
         register_records,
         based_on,
@@ -321,6 +322,10 @@ pub fn typed_element(
             attributes: Vec::new(),
         });
     };
+    // Диагностики самого элемента (тип, значение заполнения, флаг
+    // обязательности, измерение адресации) — с этого места; канонический
+    // `view` узнаёт о них из пределов элемента, а не из общего списка (#1933).
+    let own_diagnostics = diagnostics.len();
     let raw_name =
         crate::info_projection::direct_md_child_text(properties, "Name").unwrap_or_default();
     let mut incomplete = raw_name.trim().is_empty();
@@ -328,8 +333,18 @@ pub fn typed_element(
     let synonym = crate::info_projection::direct_md_child(properties, "Synonym")
         .map(crate::xml_model::meta_info_ml_text)
         .filter(|value| !value.is_empty());
-    let comment = crate::info_projection::direct_md_child_text(properties, "Comment")
-        .filter(|value| !value.is_empty());
+    let comment = match crate::info_projection::observe_collection_item_comment(properties) {
+        Ok(comment) => comment,
+        Err(error) => {
+            incomplete = true;
+            diagnostics.push(
+                MetaDiagnostic::error(error.code, error.message)
+                    .with_metadata_path(target.clone())
+                    .with_field(format!("{field}.comment")),
+            );
+            None
+        }
+    };
     let r#type = if crate::info_projection::direct_md_child(properties, "Type").is_some() {
         match crate::info_projection::parse_observed_metadata_type_node(properties) {
             Ok(value) => Some(value),
@@ -411,6 +426,10 @@ pub fn typed_element(
     } else {
         None
     };
+    let own_limits = diagnostics[own_diagnostics..]
+        .iter()
+        .map(element_diagnostic_limit)
+        .collect::<Vec<_>>();
     let standard_attributes = if node.tag_name().name() == "TabularSection" {
         match crate::info_projection::observe_tabular_standard_attributes(
             properties,
@@ -451,6 +470,7 @@ pub fn typed_element(
         |profile| super::member_properties::observe(node, profile, field, target, diagnostics),
     );
     incomplete |= !property_limits.is_empty();
+    let property_limits = own_limits.into_iter().chain(property_limits).collect();
     let properties_readback = properties_readback
         .into_iter()
         .chain(profile_properties)
@@ -470,6 +490,19 @@ pub fn typed_element(
         attributes,
     })
 }
+/// Предел элемента по его диагностике: поле, код и сообщение. Код отличает
+/// предупреждение о немоделируемом типе от повреждённой записи.
+fn element_diagnostic_limit(diagnostic: &MetaDiagnostic) -> String {
+    let code = serde_json::to_value(diagnostic.code)
+        .ok()
+        .and_then(|code| code.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    match diagnostic.field.as_deref() {
+        Some(field) => format!("{field}: {code}: {}", diagnostic.message),
+        None => format!("{code}: {}", diagnostic.message),
+    }
+}
+
 pub fn addressing_dimension_is_valid(value: &str) -> bool {
     let parts = value.split('.').collect::<Vec<_>>();
     parts.len() == 4
@@ -655,7 +688,7 @@ pub fn parse_typed_meta_local_info_inner(
     let collection_route = |tag, nested_attributes, field| {
         TypedRootCollectionRoute::new(kind, tag, nested_attributes, field)
     };
-    Ok(unica_metadata::validation_subject::MetaLocalInfo {
+    let mut local = unica_metadata::validation_subject::MetaLocalInfo {
         member_read_profile,
         metadata_path: target.clone(),
         kind,
@@ -770,7 +803,59 @@ pub fn parse_typed_meta_local_info_inner(
             ),
         },
         diagnostics,
-    })
+    };
+    let unmodelled = unmodelled_declaration_warnings(&local, target);
+    local.diagnostics.extend(unmodelled);
+    Ok(local)
+}
+
+/// Предупреждения о допустимых декларациях стандартных реквизитов, которые
+/// профиль не моделирует: агент видит, что их содержимое не прочитано, а
+/// `check` не считает это повреждением исходника.
+fn unmodelled_declaration_warnings(
+    local: &unica_metadata::validation_subject::MetaLocalInfo,
+    target: &MetadataAddress,
+) -> Vec<MetaDiagnostic> {
+    let mut found = Vec::new();
+    let mut scan = |field: &str, attributes: &[unica_metadata::MetaStandardAttribute]| {
+        for (index, attribute) in attributes.iter().enumerate() {
+            for property in &attribute.properties {
+                if matches!(
+                    property.value,
+                    unica_metadata::MetaObservedPropertyValue::Unmodelled {}
+                ) {
+                    found.push(
+                        MetaDiagnostic::warning(
+                            MetaDiagnosticCode::ValidationWarning,
+                            "declaration is valid but not modelled by this format profile",
+                        )
+                        .with_metadata_path(target.clone())
+                        .with_field(format!("{field}[{index}].properties.{}", property.name)),
+                    );
+                }
+            }
+        }
+    };
+    if let Some(Some(attributes)) = &local.declarations.standard_attributes {
+        scan("standardAttributes", attributes);
+    }
+    if let Some(Some(sections)) = &local.declarations.standard_tabular_sections {
+        for (index, section) in sections.iter().enumerate() {
+            scan(
+                &format!("standardTabularSections[{index}].standardAttributes"),
+                &section.standard_attributes,
+            );
+        }
+    }
+    for (index, section) in local.collections.tabular_sections.iter().enumerate() {
+        if let Some(Some(attributes)) = &section.standard_attributes {
+            scan(
+                &format!("collections.tabularSections[{index}].standardAttributes"),
+                attributes,
+            );
+        }
+    }
+    found
 }
 pub fn predefined_code_type_for_info(
     properties: Option<roxmltree::Node<'_, '_>>,

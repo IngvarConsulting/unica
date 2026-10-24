@@ -1,0 +1,454 @@
+{
+  "id": "S-1409-xdto-anonymous",
+  "area": "XDTO и обмены",
+  "task": "Создать анонимный ObjectType в свойстве с дочерними ссылками и прочитать возвращённые адреса",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-anonymous",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример.Can.property.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/$defs/xdtoProperty/properties/objectType/properties/properties/items/$ref",
+          "eq": "#/$defs/xdtoProperty"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Строки",
+                  "minOccurs": 0,
+                  "maxOccurs": -1,
+                  "objectType": {
+                    "properties": [
+                      {
+                        "name": "Основание",
+                        "type": "tns:ТипОснования",
+                        "minOccurs": 0,
+                        "maxOccurs": 1
+                      },
+                      {
+                        "name": "Получатель",
+                        "type": "tns:ТипПолучателя",
+                        "minOccurs": 0,
+                        "maxOccurs": 1
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.Строки"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/anonymousType",
+          "eq": "ObjectType"
+        },
+        {
+          "pointer": "/data/props/bounds",
+          "eq": "{\"lower\":\"0\",\"upper\":\"-1\",\"lowerExplicit\":true,\"upperExplicit\":true,\"unbounded\":true}"
+        }
+      ],
+      "captures": {
+        "after": {
+          "file": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "children": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.children"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "basis": {
+          "pointer": "/data/items/0/at"
+        },
+        "recipient": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.basis"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "{\"raw\":\"tns:ТипОснования\",\"prefix\":\"tns\",\"local\":\"ТипОснования\",\"namespace\":\"urn:unica:anonymous\"}"
+        },
+        {
+          "pointer": "/data/props/bounds",
+          "eq": "{\"lower\":\"0\",\"upper\":\"1\",\"lowerExplicit\":true,\"upperExplicit\":true,\"unbounded\":false}"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.recipient"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "{\"raw\":\"tns:ТипПолучателя\",\"prefix\":\"tns\",\"local\":\"ТипПолучателя\",\"namespace\":\"urn:unica:anonymous\"}"
+        },
+        {
+          "pointer": "/data/props/bounds",
+          "eq": "{\"lower\":\"0\",\"upper\":\"1\",\"lowerExplicit\":true,\"upperExplicit\":true,\"unbounded\":false}"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Строки",
+                  "minOccurs": 0,
+                  "maxOccurs": -1,
+                  "objectType": {
+                    "properties": [
+                      {
+                        "name": "Основание",
+                        "type": "tns:ТипОснования",
+                        "minOccurs": 0,
+                        "maxOccurs": 1
+                      },
+                      {
+                        "name": "Получатель",
+                        "type": "tns:ТипПолучателя",
+                        "minOccurs": 0,
+                        "maxOccurs": 1
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "НеверныеСтроки",
+                  "minOccurs": 0,
+                  "maxOccurs": -1,
+                  "objectType": {
+                    "properties": [
+                      {
+                        "name": "Основание",
+                        "type": "tns:ТипОснования",
+                        "minOccurs": 0,
+                        "maxOccurs": 1
+                      },
+                      {
+                        "name": "Получатель",
+                        "type": "tns:Несуществующий",
+                        "minOccurs": 0,
+                        "maxOccurs": 1
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ],
+      "refusal": "invalid_state: XDTO operation conflicts with the package postimage"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Строки",
+                  "minOccurs": 0,
+                  "maxOccurs": -1,
+                  "objectType": {
+                    "properties": [
+                      {
+                        "name": "Получатель",
+                        "type": "tns:ТипПолучателя",
+                        "minOccurs": 0,
+                        "maxOccurs": 1
+                      },
+                      {
+                        "name": "Основание",
+                        "type": "tns:ТипОснования",
+                        "minOccurs": 0,
+                        "maxOccurs": 1
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ],
+      "refusal": "invalid_state: XDTO operation conflicts with the package postimage"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Дополнительные",
+                  "objectType": {
+                    "properties": []
+                  }
+                }
+              }
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Код",
+                  "type": "xs:string"
+                }
+              },
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.Дополнительные"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.Дополнительные.Property.Код"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.Строки.Property",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "pageCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.Строки.Property.Основание"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.Строки.Property",
+        "limit": 1,
+        "cursor": "$capture.pageCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.Строки.Property.Получатель"
+        }
+      ]
+    }
+  ],
+  "issue": 1409
+}

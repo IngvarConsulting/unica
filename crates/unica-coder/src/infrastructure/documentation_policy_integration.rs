@@ -4,7 +4,7 @@ use crate::infrastructure::operational_config::load_operational_config;
 use std::time::Duration;
 use unica_documentation_sources::documentation_policy::{DocumentationPolicy, NetworkAccess};
 use unica_workspace::test_support::{create_file_link_fixture_for_test, FileLinkFixtureOutcome};
-const KNOWN: &[&str] = &["v8std", "kb-1ci"];
+const KNOWN: &[&str] = &["v8std", "configuration-help"];
 fn workspace() -> tempfile::TempDir {
     tempfile::tempdir().expect("временный каталог")
 }
@@ -64,6 +64,10 @@ fn dangling_policy_config_links_fail_closed_as_present_files() {
         )
         .expect("create dangling policy config link fixture");
         if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 

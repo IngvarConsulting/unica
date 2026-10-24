@@ -80,7 +80,11 @@ pub fn build_xdto_info(
                 XdtoInfoError::Source(format!("duplicate_type: XDTO type `{name}` is ambiguous"))
             });
         }
-        (Vec::new(), Some(type_info(identity, matches[0])), None)
+        (
+            Vec::new(),
+            Some(type_info(identity, model, matches[0])),
+            None,
+        )
     } else {
         let (start, end, next_cursor) = page.unwrap_or((0, model.types.len(), None));
         (
@@ -155,7 +159,7 @@ fn internal_location(
         },
     }
 }
-fn qname_info(qname: &model::QNameRef) -> XdtoQNameInfo {
+pub(crate) fn qname_info(qname: &model::QNameRef) -> XdtoQNameInfo {
     XdtoQNameInfo {
         raw: qname.raw.clone(),
         prefix: qname.prefix.clone(),
@@ -163,14 +167,50 @@ fn qname_info(qname: &model::QNameRef) -> XdtoQNameInfo {
         namespace: qname.namespace.clone(),
     }
 }
-fn type_info(package: &impl XdtoIdentity, named: &model::NamedType) -> XdtoTypeInfo {
+fn local_base_address(
+    package: &impl XdtoIdentity,
+    model: &PackageModel,
+    named: &model::NamedType,
+) -> Option<String> {
+    let base = named.base.as_ref()?;
+    if base.namespace.as_deref() != model.target_namespace() {
+        return None;
+    }
+    let mut candidates = model.types.iter().filter(|candidate| {
+        candidate
+            .name
+            .as_ref()
+            .is_some_and(|name| name.value == base.local)
+    });
+    let parent = candidates.next()?;
+    if candidates.next().is_some() || parent.kind != named.kind {
+        return None;
+    }
+    let at = format!(
+        "{}:{}.Type.{}",
+        package.source_set(),
+        package.metadata_path(),
+        unica_address::address::escape_name(&base.local)
+    );
+    let address = unica_address::address::QualifiedAddress::parse(&at).ok()?;
+    (address.segments().len() == 2 && address.segments()[1].name() == Some(base.local.as_str()))
+        .then_some(at)
+}
+
+fn type_info(
+    package: &impl XdtoIdentity,
+    model: &PackageModel,
+    named: &model::NamedType,
+) -> XdtoTypeInfo {
     XdtoTypeInfo {
+        facets: named.facets.clone(),
         kind: match named.kind {
             model::TypeKind::Value => XdtoTypeKind::Value,
             model::TypeKind::Object => XdtoTypeKind::Object,
         },
         name: named.name.as_ref().map(|name| name.value.clone()),
         base: named.base.as_ref().map(qname_info),
+        base_at: local_base_address(package, model, named),
         properties: named
             .properties
             .iter()
@@ -223,6 +263,8 @@ fn anonymous_type_info(
     anonymous: &model::AnonymousObject,
 ) -> XdtoAnonymousTypeInfo {
     XdtoAnonymousTypeInfo {
+        facets: anonymous.facets.clone(),
+        base: anonymous.base.as_ref().map(qname_info),
         discriminator: anonymous
             .discriminator
             .as_ref()

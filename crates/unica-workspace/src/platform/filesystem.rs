@@ -6924,6 +6924,10 @@ mod tests {
             #[cfg(windows)]
             if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) {
                 fs::remove_dir_all(root).unwrap();
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a directory link needs the symlink privilege",
+                );
                 return;
             }
             panic!("failed to create directory link fixture: {error}");
@@ -7774,6 +7778,10 @@ mod tests {
             if let Err(error) = std::os::windows::fs::symlink_dir(&target, &link) {
                 if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) {
                     fs::remove_dir_all(root).unwrap();
+                    unica_process::test_support::skip_without_host_capability(
+                        unica_process::test_support::HostCapability::Symlink,
+                        "creating a directory symlink needs the symlink privilege",
+                    );
                     return;
                 }
                 panic!("failed to create directory symlink: {error}");
@@ -8993,6 +9001,10 @@ mod tests {
         let root_identity = fs::canonicalize(&root).unwrap();
         if super::host_filesystem_case_sensitive(&root_identity).unwrap() {
             let _ = fs::remove_dir_all(root);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::CaseInsensitiveFilesystem,
+                "caseless child identity needs a case-insensitive volume",
+            );
             return;
         }
         fs::create_dir(root_identity.join("ß")).unwrap();

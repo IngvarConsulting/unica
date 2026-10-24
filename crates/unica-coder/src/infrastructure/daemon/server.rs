@@ -2740,6 +2740,268 @@ pub(crate) mod actor_capacity_tests {
         .unwrap()
     }
 
+    fn form_check_workspace(kind: &str) -> (tempfile::TempDir, String, std::path::PathBuf) {
+        let extension = kind == "Extension";
+        let kind = if extension { "Report" } else { kind };
+        let (workspace, _, template) = dcs_check_workspace(kind);
+        if extension {
+            let config = workspace.path().join("v8project.yaml");
+            let text = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(config, text.replace("CONFIGURATION", "EXTENSION")).unwrap();
+            let descriptor = workspace.path().join("src/Configuration.xml");
+            let text = std::fs::read_to_string(&descriptor).unwrap();
+            std::fs::write(descriptor, text.replace("<Name>Control</Name>", "<Name>Control</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>")).unwrap();
+        }
+        let owner = template
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let descriptor = owner.with_extension("xml");
+        let text = std::fs::read_to_string(&descriptor).unwrap();
+        std::fs::write(
+            &descriptor,
+            text.replace("</ChildObjects>", "<Form>Main</Form></ChildObjects>"),
+        )
+        .unwrap();
+        let body = owner.join("Forms/Main/Ext/Form.xml");
+        std::fs::create_dir_all(body.parent().unwrap()).unwrap();
+        std::fs::write(owner.join("Forms/Main.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000020"><Properties><Name>Main</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#).unwrap();
+        std::fs::write(&body, r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="FormCommandBar" id="-1"/><ChildItems/><Attributes/><Commands/></Form>"#).unwrap();
+        (workspace, format!("main:{kind}.Sales.Form.Main"), body)
+    }
+
+    #[test]
+    fn canonical_form_check_accepts_external_report_processor_and_configuration() {
+        for kind in [
+            "ExternalDataProcessor",
+            "ExternalReport",
+            "Report",
+            "Extension",
+        ] {
+            let (workspace, at, _) = form_check_workspace(kind);
+            let before =
+                unica_workspace::test_support::tree_snapshot(&workspace.path().join("src"));
+            let viewed = call_dcs_check(workspace.path(), ToolIdentity::View, &at);
+            assert!(viewed.ok, "{kind}: {viewed:?}");
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(checked.ok, "{kind}: {checked:?}");
+            let data = checked.data.as_ref().unwrap();
+            assert_eq!(data["status"], "passed", "{kind}: {checked:?}");
+            assert_eq!(data["validators"], serde_json::json!(["form"]));
+            assert_eq!(data["diagnosticCount"], 0, "{checked:?}");
+            assert_eq!(
+                before,
+                unica_workspace::test_support::tree_snapshot(&workspace.path().join("src"))
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_reports_semantics_and_handler_signatures() {
+        for kind in [
+            "ExternalDataProcessor",
+            "ExternalReport",
+            "Report",
+            "Extension",
+        ] {
+            let (workspace, at, body) = form_check_workspace(kind);
+            let original = std::fs::read_to_string(&body).unwrap();
+            std::fs::write(&body, original.replace("id=\"-1\"", "id=\"7\"")).unwrap();
+            let invalid = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert_eq!(
+                invalid.data.as_ref().unwrap()["status"],
+                "failed",
+                "{invalid:?}"
+            );
+            assert!(
+                invalid.data.as_ref().unwrap()["diagnostics"]
+                    .to_string()
+                    .contains("AutoCommandBar"),
+                "{invalid:?}"
+            );
+            std::fs::write(
+                &body,
+                original.replace(
+                    "<ChildItems/>",
+                    "<Events><Event name=\"OnOpen\">ПриОткрытии</Event></Events><ChildItems/>",
+                ),
+            )
+            .unwrap();
+            let module = body.parent().unwrap().join("Form/Module.bsl");
+            std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+            std::fs::write(
+                module,
+                "&НаКлиенте\nПроцедура ПриОткрытии(Отказ, Лишний, ЕщёОдин)\nКонецПроцедуры\n",
+            )
+            .unwrap();
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(checked.ok, "{checked:?}");
+            let diagnostics = &checked.data.as_ref().unwrap()["diagnostics"];
+            assert!(
+                diagnostics
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| d["severity"] == "warning"
+                        && d["message"].as_str().unwrap().contains("ПриОткрытии")),
+                "{checked:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_refuses_missing_unregistered_and_mismatched_sources() {
+        for case in ["missing", "unregistered", "mismatched"] {
+            let (workspace, at, body) = form_check_workspace("ExternalDataProcessor");
+            match case {
+                "missing" => std::fs::remove_file(&body).unwrap(),
+                "unregistered" => {
+                    let owner = workspace.path().join("src/Sales.xml");
+                    let text = std::fs::read_to_string(&owner).unwrap();
+                    std::fs::write(owner, text.replace("<Form>Main</Form>", "")).unwrap();
+                }
+                "mismatched" => {
+                    let descriptor = workspace.path().join("src/Sales/Forms/Main.xml");
+                    let text = std::fs::read_to_string(&descriptor).unwrap();
+                    std::fs::write(
+                        descriptor,
+                        text.replace("<Name>Main</Name>", "<Name>Other</Name>"),
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(!checked.ok, "{case}: {checked:?}");
+            assert!(!checked.diagnostics.is_empty(), "{case}: {checked:?}");
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_keeps_owner_format_warnings() {
+        for kind in ["ExternalDataProcessor", "Report", "Extension"] {
+            let (workspace, at, body) = form_check_workspace(kind);
+            let wrapper = body
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .with_extension("xml");
+            let owner = if kind == "ExternalDataProcessor" {
+                workspace.path().join("src/Sales.xml")
+            } else {
+                workspace.path().join("src/Configuration.xml")
+            };
+            for path in [wrapper, owner] {
+                let original = std::fs::read_to_string(&path).unwrap();
+                for (version, code) in [
+                    ("2.19", "formatMigrationAvailable"),
+                    ("2.21", "platformVersionUnsupported"),
+                ] {
+                    std::fs::write(&path, original.replace("2.20", version)).unwrap();
+                    let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+                    assert_eq!(
+                        checked.data.as_ref().unwrap()["status"],
+                        "passed",
+                        "{checked:?}"
+                    );
+                    assert!(
+                        checked.data.as_ref().unwrap()["diagnostics"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|d| d["code"] == code),
+                        "{checked:?}"
+                    );
+                }
+                std::fs::write(path, original).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_supports_common_forms() {
+        for kind in ["Report", "Extension"] {
+            let (workspace, _, body) = form_check_workspace(kind);
+            let source = workspace.path().join("src");
+            let config = source.join("Configuration.xml");
+            let text = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(
+                config,
+                text.replace(
+                    "</ChildObjects>",
+                    "<CommonForm>Shared</CommonForm></ChildObjects>",
+                ),
+            )
+            .unwrap();
+            let common = source.join("CommonForms/Shared/Ext/Form.xml");
+            std::fs::create_dir_all(common.parent().unwrap()).unwrap();
+            std::fs::copy(body, common).unwrap();
+            std::fs::write(source.join("CommonForms/Shared.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonForm uuid="10000000-0000-4000-8000-000000000030"><Properties><Name>Shared</Name><FormType>Managed</FormType></Properties></CommonForm></MetaDataObject>"#).unwrap();
+            let at = "main:CommonForm.Shared";
+            assert!(call_dcs_check(workspace.path(), ToolIdentity::View, at).ok);
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, at);
+            assert_eq!(
+                checked.data.as_ref().unwrap()["status"],
+                "passed",
+                "{checked:?}"
+            );
+            assert_eq!(
+                checked.data.as_ref().unwrap()["diagnosticCount"],
+                0,
+                "{checked:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_refuses_linked_payload_and_module() {
+        use unica_workspace::test_support::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+        for module in [false, true] {
+            let (workspace, at, body) = form_check_workspace("ExternalDataProcessor");
+            let path = if module {
+                let text = std::fs::read_to_string(&body).unwrap();
+                std::fs::write(
+                    &body,
+                    text.replace(
+                        "</Form>",
+                        "<Events><Event name=\"OnOpen\">ПриОткрытии</Event></Events></Form>",
+                    ),
+                )
+                .unwrap();
+                let path = body.parent().unwrap().join("Form/Module.bsl");
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, "Процедура Тест()\nКонецПроцедуры").unwrap();
+                path
+            } else {
+                body
+            };
+            let outside = tempfile::tempdir().unwrap();
+            let external = outside.path().join("source");
+            std::fs::rename(&path, &external).unwrap();
+            if create_file_link_fixture_for_test(&external, &path).unwrap()
+                != FileLinkFixtureOutcome::Created
+            {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "Создание ссылки требует полномочий ОС",
+                );
+                return;
+            }
+            let before = std::fs::read(&external).unwrap();
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(!checked.ok, "{checked:?}");
+            assert_eq!(before, std::fs::read(external).unwrap());
+        }
+    }
+
     #[test]
     fn canonical_dcs_check_accepts_external_report_processor_and_configuration() {
         for kind in ["ExternalReport", "ExternalDataProcessor", "Report"] {
@@ -2991,7 +3253,10 @@ pub(crate) mod actor_capacity_tests {
         let outcome = create_file_link_fixture_for_test(&external_body, &body)
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let before = std::fs::read(&external_body).unwrap();
@@ -4232,13 +4497,149 @@ pub(crate) mod actor_capacity_tests {
         assert!(output.status.success(), "{stdout}\n{stderr}");
     }
 
-    fn canonical_delivery_fixture_binary() -> (std::path::PathBuf, String) {
+    /// #406: канонический `run` создания базы в рабочей области без
+    /// поставляемого раннера отвечает одним типизированным отказом и не
+    /// раскрывает ни путь рабочей области, ни строку подключения из
+    /// `v8project.yaml`, ни значения, переданные в аргументах.
+    #[test]
+    fn canonical_infobase_create_refusal_discloses_no_private_input() {
+        const CHILD: &str = "UNICA_ISSUE_406_RUN_CHILD";
+        const ROOT: &str = "UNICA_ISSUE_406_RUN_ROOT";
+        const WORKSPACE_SENTINEL: &str = "unica-issue-406-private-workspace";
+        const CWD_SENTINEL: &str = "/missing/unica-issue-406-private-cwd";
+        const CONNECTION_SENTINEL: &str = "File=/private/issue-406-sensitive.ib";
+        if std::env::var_os(CHILD).is_some() {
+            let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let workspace = std::fs::canonicalize(root.join(WORKSPACE_SENTINEL)).unwrap();
+            let runtime = bootstrap_runtime();
+            let call = |arguments: serde_json::Value| -> DomainResult {
+                let request = InvocationRequest::new(
+                    ToolIdentity::Run,
+                    arguments,
+                    workspace.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                match runtime.bind(request) {
+                    Ok(bound) => match bound.prepare() {
+                        Ok(prepared) => prepared.execute(CancellationToken::new()).unwrap(),
+                        Err(result) => *result,
+                    },
+                    Err(V5CanonicalPrepareError::Direct(result))
+                    | Err(V5CanonicalPrepareError::Rejected(result)) => *result,
+                    Err(error) => panic!("{error:?}"),
+                }
+            };
+            // Файлы и каталоги: пустой каталог, созданный отказом, тоже изменение.
+            let image = |root: &std::path::Path| {
+                fn directories(
+                    root: &std::path::Path,
+                    current: &std::path::Path,
+                    found: &mut std::collections::BTreeSet<std::path::PathBuf>,
+                ) {
+                    for entry in std::fs::read_dir(current).unwrap() {
+                        let entry = entry.unwrap();
+                        if entry.file_type().unwrap().is_dir() {
+                            found.insert(entry.path().strip_prefix(root).unwrap().to_path_buf());
+                            directories(root, &entry.path(), found);
+                        }
+                    }
+                }
+                let mut found = std::collections::BTreeSet::new();
+                directories(root, root, &mut found);
+                (unica_workspace::test_support::tree_snapshot(root), found)
+            };
+            let before = image(&workspace);
+            for (case, arguments, code) in [
+                (
+                    "configured connection",
+                    serde_json::json!({"op":"infobase.create","args":{},"dryRun":false}),
+                    "provider_unavailable",
+                ),
+                (
+                    "private arguments",
+                    serde_json::json!({"op":"infobase.create","args":{
+                        "cwd": CWD_SENTINEL,
+                        "connection": CONNECTION_SENTINEL
+                    },"dryRun":false}),
+                    "bad_value",
+                ),
+            ] {
+                let refused = call(arguments);
+                assert!(!refused.ok, "{case}: {refused:?}");
+                assert_eq!(refused.diagnostics.len(), 1, "{case}: {refused:?}");
+                assert_eq!(refused.diagnostics[0]["code"], code, "{case}: {refused:?}");
+                if code == "provider_unavailable" {
+                    assert_eq!(
+                        refused.diagnostics[0]["detailCode"], "provider_absent",
+                        "{case}: {refused:?}"
+                    );
+                }
+                let serialized = serde_json::to_string(&refused).unwrap();
+                for private in [
+                    WORKSPACE_SENTINEL,
+                    CWD_SENTINEL,
+                    CONNECTION_SENTINEL,
+                    "issue-406-sensitive",
+                ] {
+                    assert!(
+                        !serialized.contains(private),
+                        "{case} discloses {private}: {serialized}"
+                    );
+                }
+            }
+            assert_eq!(image(&workspace), before);
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join(WORKSPACE_SENTINEL);
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            format!(
+                "format: DESIGNER\ninfobase:\n  connection: '{CONNECTION_SENTINEL}'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n"
+            ),
+        )
+        .unwrap();
+        // Поставка без раннера: манифест есть, инструментов в нём нет.
+        let plugin = root.path().join("plugin");
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        std::fs::write(
+            plugin.join("third-party/manifest.json"),
+            serde_json::json!({"schemaVersion": 2, "tools": []}).to_string(),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infrastructure::daemon::server::actor_capacity_tests::canonical_infobase_create_refusal_discloses_no_private_input",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(ROOT, root.path())
+            .env("UNICA_PLUGIN_ROOT", &plugin)
+            .env_remove("UNICA_ARTIFACT_CACHE")
+            .env_remove("UNICA_RUNTIME_MANIFEST")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("running 1 test"), "{stdout}\n{stderr}");
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+    }
+
+    const ARCHIVE_FIXTURE_BINARY_SKIP: &str =
+        "the ordinary test archive binds its Unica fixture binary; run through run-tests.py --rust-lane ordinary (phase run or medium over the build archive)";
+
+    /// The ordinary archive's prepared `unica`, verified against its producer's
+    /// SHA256. `None` only when no lane runner bound it; a bound but damaged
+    /// fixture fails instead of skipping.
+    fn canonical_delivery_fixture_binary() -> Option<(std::path::PathBuf, String)> {
         use sha2::{Digest, Sha256};
 
-        let binary = std::path::PathBuf::from(
-            std::env::var_os("UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY")
-                .expect("prepare the ordinary test archive and bind its Unica fixture binary"),
-        );
+        let binary =
+            std::path::PathBuf::from(std::env::var_os("UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY")?);
         let expected = std::env::var("UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256")
             .expect("the archive fixture binary requires its producer's SHA256");
         assert!(binary.is_absolute(), "fixture binary path must be absolute");
@@ -4255,7 +4656,7 @@ pub(crate) mod actor_capacity_tests {
             expected,
             "archive fixture binary does not match its producer's SHA256"
         );
-        (binary, expected)
+        Some((binary, expected))
     }
 
     #[test]
@@ -4470,7 +4871,8 @@ fn main() {
             std::env::set_var("UNICA_RUNTIME_MANIFEST", &release_path);
             std::env::set_var("UNICA_TEST_PROVIDER_MARKER_DIR", &root);
             std::env::set_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "1");
-            let (server, _) = canonical_delivery_fixture_binary();
+            let (server, _) = canonical_delivery_fixture_binary()
+                .expect("the parent binds the archive fixture binary for its child");
             std::env::set_var("UNICA_TEST_WORKSPACE_SERVICE_EXE", server);
             let downloader = Arc::new(PublishedFixture(
                 assets,
@@ -4643,8 +5045,14 @@ fn main() {
             return;
         }
 
+        let Some((server, digest)) = canonical_delivery_fixture_binary() else {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::ArchiveFixtureBinary,
+                ARCHIVE_FIXTURE_BINARY_SKIP,
+            );
+            return;
+        };
         let root = tempfile::tempdir().unwrap();
-        let (server, digest) = canonical_delivery_fixture_binary();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -5183,6 +5591,10 @@ fn main() {
         )
         .unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let runtime = bootstrap_runtime();
@@ -6722,40 +7134,52 @@ fn main() {
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
         audit_ordered_search_names(include_str!("ordered_search_names.rs"))
             .unwrap_or_else(|error| panic!("{error}"));
-        actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration();
-        ordered_search_names_audit_rejects_ambient_or_foreign_listing();
-        actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc();
-        actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator();
-        actor_read_source_capability_ast_audit_rejects_split_sibling_visibility();
-        actor_read_source_capability_ast_audit_rejects_multiline_derive_clone();
-        actor_read_source_capability_ast_audit_rejects_multiline_manual_clone();
-        actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl();
-        actor_read_source_capability_ast_audit_rejects_macro_generated_api();
-        actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation();
-        actor_read_source_capability_ast_audit_rejects_opaque_const_expression_macro();
-        actor_read_source_capability_ast_audit_rejects_no_arg_opaque_const_expression_macro();
-        actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros();
-        actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist();
-        actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow();
-        review_audit_rejects_opaque_attribute_macro_invocation();
-        actor_read_source_capability_ast_audit_rejects_custom_derive_macro();
-        actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes();
-        actor_read_source_capability_procedural_macros_can_reopen_sibling_api();
-        actor_read_source_capability_ast_audit_rejects_type_alias_impl();
-        actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl();
-        actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory();
-        actor_read_source_capability_ast_audit_rejects_nested_production_factory();
-        actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape();
-        actor_read_source_capability_ast_audit_rejects_associated_type_escape();
-        actor_read_source_capability_ast_audit_rejects_item_field_escape();
-        actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile();
-        actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind();
-        actor_read_source_capability_ast_audit_rejects_replenished_deadline();
-        actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure();
-        actor_read_source_capability_ast_audit_rejects_substituted_construction_fields();
-        actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution();
-        actor_read_source_capability_issuer_privacy_is_enforced_by_rustc();
-        actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope();
+        // Проверки независимы и в сумме идут секунды: каждая разбирает
+        // исходник заново, часть зовёт rustc. Параллельно, с той же паникой (#1920).
+        let checks: [fn(); 34] = [
+            actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration,
+            ordered_search_names_audit_rejects_ambient_or_foreign_listing,
+            actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc,
+            actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator,
+            actor_read_source_capability_ast_audit_rejects_split_sibling_visibility,
+            actor_read_source_capability_ast_audit_rejects_multiline_derive_clone,
+            actor_read_source_capability_ast_audit_rejects_multiline_manual_clone,
+            actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl,
+            actor_read_source_capability_ast_audit_rejects_macro_generated_api,
+            actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation,
+            actor_read_source_capability_ast_audit_rejects_opaque_const_expression_macro,
+            actor_read_source_capability_ast_audit_rejects_no_arg_opaque_const_expression_macro,
+            actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros,
+            actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist,
+            actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow,
+            review_audit_rejects_opaque_attribute_macro_invocation,
+            actor_read_source_capability_ast_audit_rejects_custom_derive_macro,
+            actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes,
+            actor_read_source_capability_procedural_macros_can_reopen_sibling_api,
+            actor_read_source_capability_ast_audit_rejects_type_alias_impl,
+            actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl,
+            actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory,
+            actor_read_source_capability_ast_audit_rejects_nested_production_factory,
+            actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape,
+            actor_read_source_capability_ast_audit_rejects_associated_type_escape,
+            actor_read_source_capability_ast_audit_rejects_item_field_escape,
+            actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile,
+            actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind,
+            actor_read_source_capability_ast_audit_rejects_replenished_deadline,
+            actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure,
+            actor_read_source_capability_ast_audit_rejects_substituted_construction_fields,
+            actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution,
+            actor_read_source_capability_issuer_privacy_is_enforced_by_rustc,
+            actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope,
+        ];
+        std::thread::scope(|scope| {
+            let running: Vec<_> = checks.iter().map(|check| scope.spawn(check)).collect();
+            for check in running {
+                if let Err(panic) = check.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        });
     }
 
     #[test]
@@ -10023,8 +10447,8 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(examples, parse_examples(&windows_skill));
         assert_eq!(
             examples.len(),
-            2,
-            "the skill must keep both public examples"
+            3,
+            "the skill must keep its three public examples"
         );
         let preview_args = examples[0]["params"]["arguments"].clone();
         let preview = submit_canonical(
@@ -10093,6 +10517,57 @@ struct ActorLogicalReadLease {"#,
         assert!(
             repeat.changed.is_empty(),
             "unchanged repeat is not an update"
+        );
+
+        // The form example borrows a managed form into the borrowed owner.
+        let forms = workspace.path().join("src/Catalogs/Items/Forms");
+        std::fs::create_dir_all(&forms).unwrap();
+        std::fs::write(
+            forms.join("ItemForm.xml"),
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                    "../../tests/fixtures/platform_8_3_27/cfe_borrow/parent-catalog-form.xml",
+                ),
+            )
+            .unwrap()
+            .replace("<Name>CorpusForm</Name>", "<Name>ItemForm</Name>"),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&parent).unwrap();
+        std::fs::write(
+            &parent,
+            text.replace(
+                "<ChildObjects/>",
+                "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
+            ),
+        )
+        .unwrap();
+        let form_args = examples[2]["params"]["arguments"].clone();
+        let form_preview =
+            submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, form_args);
+        assert!(form_preview.ok, "{form_preview:?}");
+        let borrowed = workspace.path().join("ext/Catalogs/Items/Forms/ItemForm");
+        assert!(!borrowed.exists(), "form preview must not write");
+        let form_applied = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": form_preview.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(form_applied.ok, "{form_applied:?}");
+        assert!(borrowed.join("Ext/Form.xml").exists());
+        let form = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            serde_json::json!({"at":"ext:Catalog.Items.Form.ItemForm"}),
+        );
+        assert!(form.ok, "{form:?}");
+        assert!(
+            form.data.as_ref().unwrap()["props"]
+                .get("content")
+                .is_none(),
+            "{form:?}"
         );
     }
 
@@ -15117,12 +15592,19 @@ struct ActorLogicalReadLease {"#,
             "dryRun": true,
         }))) {
             Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("an .epf output was accepted"),
+            Ok(_) => panic!("an .epf output without its external source set was accepted"),
             Err(other) => {
                 panic!(".epf on make returned infrastructure failure: {other:?}")
             }
         };
-        assert_eq!(external.diagnostics[0]["code"], "unsupported_operation");
+        // EPF/ERF build only from a named external source set (#1866).
+        assert_eq!(external.diagnostics[0]["code"], "bad_value");
+        assert!(
+            external.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("sourceSet")),
+            "{external:?}"
+        );
         assert_eq!(
             preparations.load(Ordering::SeqCst),
             0,
@@ -16634,6 +17116,13 @@ fn main() {
             assert_eq!(applied.data.as_ref().unwrap()["mode"], "published");
             let post = own_removal_snapshot(&source);
             assert_eq!(own_removal_file_bytes(&post), expected);
+            // The selected payload leaves no directory behind; the collection
+            // still holds the neighbor (#1997).
+            assert!(post.keys().all(|path| !path.starts_with(OWN_REMOVAL_BASE)));
+            assert_eq!(
+                post.get(std::path::Path::new("Reports/OwnRemovalReport/Templates")),
+                Some(&OwnRemovalEntry::Directory)
+            );
             for (path, entry) in &post {
                 assert!(before.contains_key(path), "new postimage entry: {path:?}");
                 match entry {
@@ -17182,6 +17671,58 @@ fn main() {
     }
 
     #[test]
+    fn canonical_borrowed_sole_template_without_payload_takes_its_empty_collection() {
+        // Without the borrowed neighbor the selected descriptor is the last
+        // entry of `Templates`, so the collection goes with it (#1997); the
+        // sibling `Forms` collection and the owner directory stay.
+        let workspace = borrowed_removal_workspace_without_local_type();
+        let source = workspace.path().join("src");
+        let templates = source.join("ext/DataProcessors/Обработка/Templates");
+        std::fs::remove_file(templates.join("СхемаКомпоновки.xml")).unwrap();
+        let owner = source.join(BORROWED_REMOVAL_OWNER);
+        let text = std::fs::read_to_string(&owner).unwrap();
+        let neighbor_line = "\t\t\t<Template>СхемаКомпоновки</Template>\r\n";
+        assert_eq!(text.matches(neighbor_line).count(), 1);
+        std::fs::write(&owner, text.replacen(neighbor_line, "", 1)).unwrap();
+        let before = own_removal_snapshot(&source);
+        let mut expected = own_removal_snapshot(&source);
+        let selected_line = "\t\t\t<Template>Макет</Template>\r\n";
+        let owner_text = std::fs::read_to_string(&owner).unwrap();
+        assert_eq!(owner_text.matches(selected_line).count(), 1);
+        expected.insert(
+            BORROWED_REMOVAL_OWNER.into(),
+            OwnRemovalEntry::File(owner_text.replacen(selected_line, "", 1).into_bytes()),
+        );
+        assert!(expected
+            .remove(std::path::Path::new(BORROWED_REMOVAL_DESCRIPTOR))
+            .is_some());
+        assert!(matches!(
+            expected.remove(std::path::Path::new(
+                "ext/DataProcessors/Обработка/Templates"
+            )),
+            Some(OwnRemovalEntry::Directory)
+        ));
+        let runtime = bootstrap_runtime();
+        let preview = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            borrowed_removal_plan(BORROWED_REMOVAL_AT),
+        );
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(own_removal_snapshot(&source), before);
+        let applied = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(own_removal_snapshot(&source), expected);
+        assert!(source.join("ext/DataProcessors/Обработка/Forms").is_dir());
+    }
+
+    #[test]
     fn canonical_borrowed_template_empty_payload_root_is_not_inherited_absence() {
         for top_at in [BORROWED_REMOVAL_AT, BORROWED_REMOVAL_OWNER_AT] {
             let workspace = borrowed_removal_workspace_without_local_type();
@@ -17595,6 +18136,7 @@ fn main() {
         const OWNER: &str = "cf/Reports/F05Report.xml";
         const DESCRIPTOR: &str = "cf/Reports/F05Report/Templates/F05Schema.xml";
         const PAYLOAD: &str = "cf/Reports/F05Report/Templates/F05Schema";
+        const TEMPLATES: &str = "cf/Reports/F05Report/Templates";
         const BODY: &str = "cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml";
         const PROPERTIES_START: &str = "<Properties><Name>F05Report</Name>";
         const REGISTRATION: &str = "<Template>F05Schema</Template>";
@@ -17660,9 +18202,15 @@ fn main() {
             assert_eq!(applied.data.as_ref().unwrap()["mode"], "published");
             let after = own_removal_snapshot(&source);
             assert_eq!(own_removal_file_bytes(&after), expected_files);
-            // Every surviving directory must be an existing directory. Empty
-            // directories under the removed payload may remain or disappear;
-            // every entry outside that payload and the two edited paths stays.
+            // The payload directories and the `Templates` collection the sole
+            // template leaves empty go with it (#1997); the report directory
+            // and every other entry outside them stay.
+            assert!(!after.contains_key(std::path::Path::new(PAYLOAD)));
+            assert!(!after.contains_key(std::path::Path::new(TEMPLATES)));
+            assert_eq!(
+                after.get(std::path::Path::new("cf/Reports/F05Report")),
+                Some(&OwnRemovalEntry::Directory)
+            );
             for (path, entry) in &after {
                 assert!(before.contains_key(path), "new postimage entry: {path:?}");
                 match entry {
@@ -17677,6 +18225,7 @@ fn main() {
             }
             for (path, entry) in &before {
                 if !path.starts_with(PAYLOAD)
+                    && path != std::path::Path::new(TEMPLATES)
                     && path != std::path::Path::new(DESCRIPTOR)
                     && path != std::path::Path::new(OWNER)
                 {
@@ -17885,7 +18434,14 @@ mod finite_deadline_guard {
                 if is_test_source(&relative) {
                     continue;
                 }
-                let calls = finite_deadline_calls(&std::fs::read_to_string(&path).unwrap());
+                let source = std::fs::read_to_string(&path).unwrap();
+                // Вызов возможен только через `ProviderDeadline` или его
+                // псевдоним из `use` того же файла: без этого имени разбирать
+                // файл нечего, а разбор всего workspace стоил секунды (#1920).
+                if !source.contains("ProviderDeadline") {
+                    continue;
+                }
+                let calls = finite_deadline_calls(&source);
                 if calls > 0 {
                     found.insert(relative, calls);
                 }

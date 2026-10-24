@@ -573,7 +573,13 @@ mod tests {
         {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
         assert!(read_existing_snapshot(state.path()).is_err());
         assert!(start_background_writer(
@@ -606,7 +612,13 @@ mod tests {
         {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
 
         assert!(read_existing_snapshot(state.path()).is_err());

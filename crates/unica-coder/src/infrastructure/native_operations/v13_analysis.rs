@@ -33,6 +33,9 @@ pub(crate) fn validate_with_availability(
     if availability == ValidatorAvailability::Unavailable {
         return unavailable_dependency();
     }
+    if validator == CheckValidator::Xdto {
+        return NativeCheckOutcome::unavailable("XDTO check requires retained source evidence");
+    }
     validate_with_format_guard(validator, args, context, || match validator {
         CheckValidator::Cf => super::cf::validate_cf(args, context),
         CheckValidator::Cfe => super::cfe::validate_cfe(args, context),
@@ -48,6 +51,7 @@ pub(crate) fn validate_with_availability(
         CheckValidator::Interface => {
             crate::infrastructure::interface_composition::validate_interface(args, context)
         }
+        CheckValidator::Xdto => unreachable!("XDTO requires retained source evidence"),
     })
 }
 
@@ -59,6 +63,20 @@ pub(crate) fn validate_dcs_input(
     let args = Map::from_iter([("TemplatePath".into(), json!(input.artifact))]);
     with_format_guard(Ok(input.format_guard), || {
         super::dcs::validate_dcs_input(&args, &input.text, input.artifact)
+    })
+}
+
+pub(crate) fn validate_form_input(
+    input: crate::infrastructure::v13_read_port::FormValidationInput,
+) -> NativeCheckOutcome {
+    with_format_guard(Ok(input.format_guard), || {
+        crate::infrastructure::form_composition::validate_form_input(
+            &input.artifact,
+            &input.text,
+            input.module.as_deref(),
+            input.config_context,
+            input.metadata_owner,
+        )
     })
 }
 

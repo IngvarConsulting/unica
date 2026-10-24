@@ -566,6 +566,12 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
             if namespace != CURRENT_CONFIG_NAMESPACE {
                 return false;
             }
+            // Набор типов платформы (`AnyIBRef`, `CatalogRef`, `DocumentObject`,
+            // `ConstantValueManager`…) синтаксически допустим, но не моделируется.
+            if platform_type_set(&local) {
+                saw_unknown = true;
+                continue;
+            }
             let Ok(address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &local)
             else {
                 return false;
@@ -617,6 +623,42 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
         && saw_unknown
         && !(saw_value_storage && variant_count != 1)
         && seen_qualifiers.is_subset(&expected_qualifiers)
+}
+
+/// Наборы типов платформы без имени объекта, сверенные с выгрузкой 8.3.27:
+/// все ссылки базы, ссылки, объекты или наборы записей одного вида, менеджер
+/// значения константы.
+const PLATFORM_TYPE_SETS: &[&str] = &[
+    "AnyRef",
+    "AnyIBRef",
+    "CatalogRef",
+    "DocumentRef",
+    "EnumRef",
+    "ExchangePlanRef",
+    "ChartOfCharacteristicTypesRef",
+    "ChartOfAccountsRef",
+    "ChartOfCalculationTypesRef",
+    "BusinessProcessRef",
+    "TaskRef",
+    "CatalogObject",
+    "DocumentObject",
+    "ExchangePlanObject",
+    "ChartOfCharacteristicTypesObject",
+    "ChartOfAccountsObject",
+    "ChartOfCalculationTypesObject",
+    "BusinessProcessObject",
+    "TaskObject",
+    "InformationRegisterRecordSet",
+    "AccumulationRegisterRecordSet",
+    "AccountingRegisterRecordSet",
+    "CalculationRegisterRecordSet",
+    "SequenceRecordSet",
+    "RecalculationRecordSet",
+    "ConstantValueManager",
+];
+
+fn platform_type_set(local: &str) -> bool {
+    PLATFORM_TYPE_SETS.contains(&local)
 }
 
 pub fn expand_observed_type_qname(
@@ -911,7 +953,7 @@ pub fn project_meta_info_declarations(
             properties,
             "StandardAttributes",
             "standardAttributes",
-            parse_standard_attributes,
+            parse_standard_attributes_for_public_properties,
             target,
             diagnostics,
         ))
@@ -1349,7 +1391,7 @@ pub fn meta_info_property_value_is_valid(
 
 pub fn direct_meta_info_property<'a, 'input>(
     properties: roxmltree::Node<'a, 'input>,
-    kind: MetadataKind,
+    owner: &str,
     name: &str,
 ) -> Result<Option<roxmltree::Node<'a, 'input>>, ProjectionError> {
     let field = format!("properties.{name}");
@@ -1363,10 +1405,7 @@ pub fn direct_meta_info_property<'a, 'input>(
         _ => {
             return Err(ProjectionError::unsupported(
                 field,
-                format!(
-                    "{} contains a duplicate or foreign property `{name}`",
-                    kind.as_str()
-                ),
+                format!("{owner} contains a duplicate or foreign property `{name}`"),
             ))
         }
     };
@@ -1378,7 +1417,7 @@ pub fn observe_meta_borrowing_property(
     kind: MetadataKind,
     name: &str,
 ) -> Result<Option<String>, ProjectionError> {
-    let Some(node) = direct_meta_info_property(properties, kind, name)? else {
+    let Some(node) = direct_meta_info_property(properties, kind.as_str(), name)? else {
         return Ok(None);
     };
     let value = direct_text_content(node);
@@ -1408,7 +1447,7 @@ pub fn observe_meta_info_property(
 ) -> Result<Option<unica_metadata::MetaInfoPropertyValue>, ProjectionError> {
     use unica_metadata::MetaInfoPropertyValue;
     let field = format!("properties.{name}");
-    let Some(node) = direct_meta_info_property(properties, kind, name)? else {
+    let Some(node) = direct_meta_info_property(properties, kind.as_str(), name)? else {
         return Ok(None);
     };
     let spec = META_INFO_PROPERTY_PROFILE
@@ -1459,6 +1498,22 @@ pub fn observe_meta_info_property(
         ),
     };
     Ok(Some(value))
+}
+
+pub fn observe_collection_item_comment(
+    properties: roxmltree::Node<'_, '_>,
+) -> Result<Option<String>, ProjectionError> {
+    let Some(node) = direct_meta_info_property(properties, "metadata collection item", "Comment")?
+    else {
+        return Ok(None);
+    };
+    if !meta_info_property_value_is_valid(node, MetaInfoPropertyValueKind::String) {
+        return Err(ProjectionError::malformed(
+            "properties.Comment",
+            "metadata collection item contains a malformed Comment",
+        ));
+    }
+    Ok(Some(direct_text_content(node)))
 }
 
 pub fn parsed_typed_meta_info_property_value(
@@ -1989,6 +2044,30 @@ pub fn node_is_empty_placeholder(node: roxmltree::Node<'_, '_>) -> bool {
         .any(|child| child.is_element() || child.text().is_some_and(|text| !text.trim().is_empty()))
 }
 
+fn parse_standard_attributes_for_public_properties(
+    container: roxmltree::Node<'_, '_>,
+) -> Result<Vec<MetaStandardAttribute>, ProjectionError> {
+    let attributes = parse_standard_attributes(container)?;
+    for (index, attribute) in container
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .enumerate()
+    {
+        for property in attribute.children().filter(roxmltree::Node::is_element) {
+            let name = property.tag_name().name();
+            if matches!(name, "Synonym" | "ToolTip")
+                && !direct_text_content(property).trim().is_empty()
+            {
+                return Err(ProjectionError::malformed(
+                    format!("standardAttributes[{index}].properties.{name}"),
+                    "localized standard attribute property must contain localized items",
+                ));
+            }
+        }
+    }
+    Ok(attributes)
+}
+
 pub fn observe_tabular_standard_attributes(
     properties: roxmltree::Node<'_, '_>,
     field: &str,
@@ -2156,11 +2235,17 @@ pub fn parse_standard_attribute_property(
         name,
         "LinkByType" | "ChoiceParameterLinks" | "ChoiceParameters"
     ) {
-        if node.attributes().len() != 0 || !node_is_empty_placeholder(node) {
+        if node.attributes().len() != 0 {
             return Err(ProjectionError::malformed(
                 field.to_string(),
-                "closed format profile requires this declaration to be empty".to_string(),
+                "declaration element must not carry attributes".to_string(),
             ));
+        }
+        // Непустая декларация — допустимая выгрузка платформы, которую этот
+        // профиль не моделирует, а не повреждённый исходник: чтение соседних
+        // свойств продолжается, а читатель называет её предупреждением.
+        if !node_is_empty_placeholder(node) {
+            return Ok(MetaObservedPropertyValue::Unmodelled {});
         }
         return Ok(MetaObservedPropertyValue::Empty {});
     }
@@ -3176,3 +3261,7 @@ pub fn qname_resolves_to(
         && local_name == expected_local_name
         && node.lookup_namespace_uri(Some(prefix)) == Some(expected_namespace)
 }
+
+#[cfg(test)]
+#[path = "../tests/platform/info_projection.rs"]
+mod tests;

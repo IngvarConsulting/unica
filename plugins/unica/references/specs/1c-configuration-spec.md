@@ -111,7 +111,7 @@ ClassId — фиксированные идентификаторы классо
 | `SynchronousPlatformExtensionAndAddInCallUseMode` | enum | Синхр. вызовы (`DontUse` / `Use`) |
 | `InterfaceCompatibilityMode` | enum | Совместимость интерфейса (`Taxi` / `TaxiEnableVersion8_2`) |
 | `DatabaseTablespacesUseMode` | enum | Табличные пространства (`DontUse` / `Use`) |
-| `MainClientApplicationWindowMode` | enum | Режим окна (`Normal` / `Fullscreen` / `Kiosk`) |
+| `MainClientApplicationWindowMode` | enum | Режим окна (`Normal` / `Workplace` / `EmbeddedWorkplace` / `FullscreenWorkplace` / `Kiosk`) |
 
 #### Назначение и использование
 
@@ -958,7 +958,21 @@ ChildObjects содержат `IntegrationServiceChannel` (каналы) — inl
 | Свойство | Тип | Описание |
 |----------|-----|----------|
 | `Type` | enum | Тип элемента стиля: `Color`, `Font`, `Border` |
-| `Value` | varies | Значение: цвет `#RRGGBB`, шрифт (`v8ui:FontInfo`), рамка (`v8ui:BorderInfo`) |
+| `Value` | varies | Значение: цвет `#RRGGBB`, шрифт (`v8ui:Font`), рамка (`v8ui:Border`) |
+
+В XML 2.20 параметры `Font` находятся в атрибутах `Value`: `ref`, `kind`,
+`faceName`, `height`, `scale`, `bold`, `italic`, `underline`, `strikeout`.
+У `Border` ширина находится в атрибуте `width`, а стиль — в дочернем
+`v8ui:style` с типом `v8ui:ControlBorderType`.
+
+У публичного узла `StyleItem` свойство `Type` обозначает тип элемента стиля.
+Для шрифта `props` содержит явные `fontRef`, `fontKind`, `fontFaceName`,
+`fontHeight`, `fontScale`, `fontBold`, `fontItalic`, `fontUnderline`,
+`fontStrikeout`; для рамки — `borderWidth` и `borderStyle`.
+Отсутствующие переопределения не получают значений по умолчанию, явные `false`
+сохраняются. `fontKind` описывает сам шрифт, отдельно от `Type=Font`.
+Повреждённое поле отмечается в `limits`, независимые факты остаются доступны.
+Это чтение описания; итоговый внешний вид после наследования не вычисляется.
 
 ### 6.17. Style — стиль (устаревший)
 

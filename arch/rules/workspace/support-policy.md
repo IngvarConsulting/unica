@@ -1,7 +1,7 @@
 ---
 id: INV.SAFETY.SUPPORT-POLICY-DOWNGRADE
 check:
-  - crates/unica-coder/src/infrastructure/support_guard.rs::project_editing_policy_is_the_closed_support_guard_downgrade_source
+  - crates/unica-workspace/src/policy_evidence.rs::support_policy_downgrade_comes_only_from_exact_warn_or_off
   - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_policy_preserves_workspace_ancestor_precedence_over_source_local_policy
   - crates/unica-workspace/src/policy_evidence.rs::support_policy_candidate_search_stops_at_exact_twentieth_candidate
   - crates/unica-workspace/src/policy_evidence.rs::support_policy_overlapping_chains_keep_first_occurrence_order_without_duplicates

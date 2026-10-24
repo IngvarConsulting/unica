@@ -4,7 +4,7 @@ use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
 };
-use unica_metadata::{MetaDiagnosticSeverity, MetadataKind};
+use unica_metadata::{MetaDiagnosticCode, MetaDiagnosticSeverity, MetadataKind};
 use {
     crate::application::v13::view::ViewReadAuthority,
     crate::application::v13::view::ViewSourceSnapshot,
@@ -694,6 +694,48 @@ impl<'a> LogicalViewReadAuthority<'a> {
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
+    /// One retained read prepares the complete package verdict. A separate
+    /// public view would parse and validate the same XDTO model a second time.
+    pub(crate) fn check_xdto(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<
+        (
+            ViewSourceSnapshot,
+            Option<crate::application::v13::check::NativeCheckOutcome>,
+        ),
+        ViewError,
+    > {
+        if !matches!(at.segments(), [owner] if owner.kind() == NodeKind::XdtoPackage && owner.name().is_some())
+        {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "XDTO check requires a named package root",
+            ));
+        }
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let route = route_logical_address(&canonical, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
+        let target = route
+            .reader_metadata_path()
+            .ok_or_else(|| ViewError::new(RefusalCode::BadValue, "XDTO check has no descriptor"))?;
+        self.verify_registered_owner(target, &admitted)?;
+        if self
+            .read
+            .inherited_resource(target, "Package.bin")?
+            .is_some()
+        {
+            self.read_checkpoint()?;
+            return Ok((admitted, None));
+        }
+        let outcome = self
+            .read
+            .xdto_check_outcome(target, &mut || self.read_checkpoint())?;
+        self.read_checkpoint()?;
+        Ok((admitted, Some(outcome)))
+    }
+
     pub(crate) fn validate_subsystem(
         &self,
         at: &QualifiedAddress,
@@ -708,6 +750,24 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.verify_registered_owner(target, &admitted)?;
         self.read
             .validate_subsystem(&canonical, &mut || self.read_checkpoint())
+    }
+
+    /// Проверка формы использует ту же регистрацию и удержанный корень, что view.
+    pub(crate) fn form_validation_input(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<crate::infrastructure::v13_read_port::FormValidationInput, ViewError> {
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let target = crate::infrastructure::form_composition::typed_form_reader_target(&canonical)
+            .ok_or_else(|| ViewError::new(RefusalCode::BadValue, "Проверка требует адрес формы"))?;
+        self.verify_registered_owner(&target, &admitted)?;
+        self.read_checkpoint()?;
+        let input = self
+            .read
+            .form_validation_input(&target, &mut || self.read_checkpoint())?;
+        self.read_checkpoint()?;
+        Ok(input)
     }
 
     /// Proves a DCS template through the same registration and descriptor
@@ -1060,13 +1120,28 @@ impl<'a> LogicalViewReadAuthority<'a> {
         // часть вида — узел называет в `limits`, а ветвь без данных отказывает,
         // а не отвечает пустым списком: иначе `view` выдал бы непрочитанное за
         // отсутствующее. Сведения, не зависящие от поля, остаются.
+        // Предупреждение о немоделируемом типе объекта тоже ограничивает
+        // ответ: без него узел молчал бы о том, что `check` того же объекта
+        // называет (#1933). Код в сообщении отличает его от повреждённой
+        // записи.
         let mut unreadable = local
             .diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
             .filter_map(|diagnostic| {
                 let field = diagnostic.field.as_deref()?;
-                (field.starts_with("details.")
+                if diagnostic.severity == MetaDiagnosticSeverity::Warning {
+                    return (diagnostic.code == MetaDiagnosticCode::ValidationWarning
+                        && field.starts_with("details."))
+                    .then(|| {
+                        json!({
+                            "field": field,
+                            "message": format!("validation_warning: {}", diagnostic.message),
+                        })
+                    });
+                }
+                ((field.starts_with("collections.") && field.ends_with(".type"))
+                    || (field.starts_with("collections.") && field.ends_with(".comment"))
+                    || field.starts_with("details.")
                     || field.starts_with("properties.")
                     || field.starts_with("relations.")
                     || [

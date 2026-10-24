@@ -1066,7 +1066,13 @@ fn project_health_worktree_eol_rejects_a_symlink_at_open() {
     match create_file_link_fixture_for_test(&target, &link).unwrap() {
         FileLinkFixtureOutcome::Created => {}
         FileLinkFixtureOutcome::Unsupported
-        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
+            return;
+        }
     }
     let physical_root = fs::canonicalize(temp.path()).unwrap();
 
@@ -2770,7 +2776,13 @@ fn project_health_lfs_size_failure_is_not_run_but_advisory() {
     match create_file_link_fixture_for_test(&target, &link).unwrap() {
         FileLinkFixtureOutcome::Created => {}
         FileLinkFixtureOutcome::Unsupported
-        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
+            return;
+        }
     }
     let inspection = inspect_policy(&fixture);
 
@@ -2818,7 +2830,13 @@ fn project_health_lfs_size_does_not_follow_linked_parent_directory() {
     match create_directory_link_fixture_for_test(&external, &staged_directory).unwrap() {
         FileLinkFixtureOutcome::Created => {}
         FileLinkFixtureOutcome::Unsupported
-        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
+            return;
+        }
     }
 
     let inspection = inspect_policy(&fixture);

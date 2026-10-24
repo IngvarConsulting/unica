@@ -50,7 +50,7 @@ macro_rules! user_agent {
 
 /// `User-Agent` любого запроса клиента, если вызывающий не уточнил своё.
 pub const USER_AGENT: &str = user_agent!();
-/// `User-Agent` сетевых поставщиков документации (`kb-1ci`, `v8std`).
+/// `User-Agent` сетевого поставщика документации (`v8std`).
 pub const DOCS_USER_AGENT: &str = user_agent!("docs");
 
 /// Сколько редиректов проходим. Столько же разрешал прежний агент.

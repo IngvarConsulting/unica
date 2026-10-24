@@ -572,6 +572,10 @@ fn unreadable_source_root_is_not_ready_for_source_operations() {
     let root = fixture.context.workspace_root.join("src");
     fs::create_dir_all(&root).unwrap();
     if !set_unix_mode_for_test(&root, 0o000).unwrap() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::UnixPermissionBits,
+            "the test sets Unix permission bits",
+        );
         return;
     }
 
@@ -671,6 +675,10 @@ fn linked_alias_to_workspace_reports_the_primary_identity_cause_with_evidence() 
     )
     .unwrap();
     if outcome != FileLinkFixtureOutcome::Created {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
 
@@ -694,6 +702,10 @@ fn linked_route_to_another_nested_root_is_unsafe() {
     )
     .unwrap();
     if outcome != FileLinkFixtureOutcome::Created {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
 
@@ -730,6 +742,10 @@ fn linked_route_without_trusted_format_does_not_pass_format_or_generated_checks(
     )
     .unwrap();
     if outcome != FileLinkFixtureOutcome::Created {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
 
