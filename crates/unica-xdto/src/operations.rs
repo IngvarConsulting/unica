@@ -57,6 +57,7 @@ xdto_operations!(
     AddProperty => ("property.add", XdtoPropertyContainer, Values),
     RemoveType => ("type.remove", XdtoType, Target),
     RemoveProperty => ("property.remove", XdtoProperty, Target),
+    SetType => ("type.set", XdtoType, Values),
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,12 +261,20 @@ pub struct XdtoRemovePropertyArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XdtoSetTypeArgs {
+    pub at: QualifiedAddress,
+    /// The new base of the addressed named type.
+    pub base: PrefixedXmlQName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum XdtoPlanOperation {
     AddValueType(XdtoAddValueTypeArgs),
     AddObjectType(XdtoAddObjectTypeArgs),
     AddProperty(XdtoAddPropertyArgs),
     RemoveType(XdtoRemoveTypeArgs),
     RemoveProperty(XdtoRemovePropertyArgs),
+    SetType(XdtoSetTypeArgs),
 }
 
 /// Name of the recursive property definition in the published schema.
@@ -376,6 +385,12 @@ impl XdtoOperation {
                 "Remove the addressed property, preserving the rest of its package.",
                 json!({}),
             ),
+            Self::SetType => (
+                Some(object(&[("base", qname())], &["base"])),
+                "The existing named type: <source-set>:XDTOPackage.<Name>.Type.<Type>.",
+                "Change only the base of the addressed named type, keeping its name, properties, restrictions, other attributes and position. An object type takes a local object type whose chain has no cycle; a value type takes an XML Schema type or a local value type, and its restrictions must stay valid for the new base. Setting the current base writes nothing.",
+                json!({"values":{"base":"tns:OtherBase"}}),
+            ),
         };
         let mut schema = match payload {
             Some(payload) => object(&[("at", text(true)), ("values", payload)], &["values"]),
@@ -386,7 +401,7 @@ impl XdtoOperation {
         }
         OperationContract {
             schema, target, effect, example_args,
-            notes: "Names are XML NCNames and types are prefixed XML QNames. QName bindings and target structure are checked against the selected package. Only Package.bin is edited; exact additions repeat as no-op. Add operands belong in values; remove has no payload. The common args.at address override remains available.",
+            notes: "Names are XML NCNames and types are prefixed XML QNames. QName bindings and target structure are checked against the selected package. Only Package.bin is edited; exact additions and setting the current base repeat as no-op. Add and set operands belong in values; remove has no payload. The common args.at address override remains available.",
             help: "skills/xdto/SKILL.md",
             format_validators: &[],
         }
@@ -450,6 +465,12 @@ impl XdtoOperation {
                 }))
             })?,
             Self::RemoveType => XdtoPlanOperation::RemoveType(XdtoRemoveTypeArgs { at }),
+            Self::SetType => reader.required_object("values", |values| {
+                Ok(XdtoPlanOperation::SetType(XdtoSetTypeArgs {
+                    at,
+                    base: values.qname("base")?,
+                }))
+            })?,
             Self::RemoveProperty => {
                 let (name, parents) = properties.split_last().expect("resolved property target");
                 XdtoPlanOperation::RemoveProperty(XdtoRemovePropertyArgs {
@@ -887,7 +908,7 @@ mod tests {
         let mut args = operation.contract().example_args;
         args["at"] = json!(match operation {
             XdtoOperation::AddValueType | XdtoOperation::AddObjectType => "main:XDTOPackage.Sample",
-            XdtoOperation::AddProperty | XdtoOperation::RemoveType =>
+            XdtoOperation::AddProperty | XdtoOperation::RemoveType | XdtoOperation::SetType =>
                 "main:XDTOPackage.Sample.Type.Target",
             XdtoOperation::RemoveProperty => "main:XDTOPackage.Sample.Type.Target.Property.Child",
         });
@@ -1438,5 +1459,55 @@ mod tests {
             panic!("property expected");
         };
         assert_eq!(args.property.min_occurs, Some(1));
+    }
+
+    #[test]
+    fn type_set_takes_the_type_from_the_address_and_only_the_base_from_values() {
+        let operation = XdtoOperation::SetType;
+        let oracle = jsonschema::validator_for(&operation.contract().schema).unwrap();
+        let args =
+            json!({"at": "main:XDTOPackage.Sample.Type.Target", "values": {"base": "tns:ОсноваБ"}});
+        assert!(oracle.is_valid(&args));
+        let XdtoPlanOperation::SetType(decoded) =
+            operation.decode(&args, "ops[1].args", "main").unwrap()
+        else {
+            panic!("type.set keeps its typed intent");
+        };
+        assert_eq!(decoded.base, PrefixedXmlQName("tns:ОсноваБ".into()));
+        for (args, path) in [
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target", "values": {"base": "ОсноваБ"}}),
+                "ops[1].args.values.base",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target", "values": {}}),
+                "ops[1].args.values.base",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target"}),
+                "ops[1].args.values",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target", "values": {"base": "tns:Б", "name": "Б"}}),
+                "ops[1].args.values.name",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample", "values": {"base": "tns:Б"}}),
+                "ops[1].args.at",
+            ),
+            (
+                json!({"at": "main:XDTOPackage.Sample.Type.Target.Property.P", "values": {"base": "tns:Б"}}),
+                "ops[1].args.at",
+            ),
+        ] {
+            assert_eq!(
+                operation
+                    .decode(&args, "ops[1].args", "main")
+                    .unwrap_err()
+                    .path,
+                path,
+                "{args}"
+            );
+        }
     }
 }

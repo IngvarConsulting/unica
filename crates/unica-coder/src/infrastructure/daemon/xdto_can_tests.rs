@@ -159,6 +159,16 @@ fn property_remove_can_has_no_payload_and_previews_without_writes() {
     );
 }
 #[test]
+fn type_set_can_is_closed_and_previews_without_writes() {
+    assert_contract_and_preview(
+        "main:XDTOPackage.EnterpriseData_1_17_3.Type.ВерсияФормата",
+        "type.set",
+        json!({"values": {"base": "xs:token"}}),
+        true,
+    );
+}
+
+#[test]
 fn forward_reference_is_validated_on_the_final_public_package_without_writes() {
     let fixture = Fixture::new();
     let runtime = V5CanonicalInvocationRuntime::new(

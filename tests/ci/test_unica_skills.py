@@ -2342,9 +2342,14 @@ Use `.claude/commands/xdto.md` as the execution route.
         examples = [json.loads(block.group(1)) for block in blocks]
         calls = [example for example in examples if "method" in example]
         argument_list = [example for example in examples if "method" not in example]
-        self.assertEqual(len(argument_list), 2)
+        self.assertEqual(len(argument_list), 3)
         argument_examples = {example["ops"][0]["op"]: example for example in argument_list}
-        self.assertEqual(set(argument_examples), {"objectType.add", "property.add"})
+        self.assertEqual(set(argument_examples), {"objectType.add", "property.add", "type.set"})
+        scenario = json.loads(
+            (REPO_ROOT / "tests/fixtures/acceptance/scenarios/S-1699-xdto-type-base.json").read_text(encoding="utf-8")
+        )
+        preview = next(step["args"] for step in scenario["wire"] if "ops" in step["args"])
+        self.assertEqual(argument_examples["type.set"], preview)
         self.assertEqual(
             argument_examples["objectType.add"]["ops"][0]["args"]["values"],
             {"name": "ПримерБ", "base": "tns:Основа", "before": "ПримерВ"},

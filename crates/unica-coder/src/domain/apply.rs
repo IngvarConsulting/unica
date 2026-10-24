@@ -529,6 +529,7 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "property.add",
     "type.remove",
     "property.remove",
+    "type.set",
 ];
 
 /// Composition adapters for already-observed family facts. All semantic
@@ -741,6 +742,7 @@ operation_descriptors!(
     (XdtoOperation::AddProperty),
     (XdtoOperation::RemoveType),
     (XdtoOperation::RemoveProperty),
+    (XdtoOperation::SetType),
     (SubsystemOperation::Create),
     (SubsystemOperation::ContentAdd),
     (SubsystemOperation::ContentRemove),
@@ -1592,6 +1594,7 @@ mod tests {
             "property.add",
             "type.remove",
             "property.remove",
+            "type.set",
             "subsystem.create",
             "content.add",
             "content.remove",
@@ -1609,7 +1612,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 123);
+        assert_eq!(expected.len(), 124);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465): имя одно, семейство выбирает адрес. Других
@@ -1968,6 +1971,13 @@ mod tests {
                 "main:XDTOPackage.Exchange.Type.Order.Property.Id",
                 false,
             ),
+            ("type.set", "main:XDTOPackage.Exchange.Type.Order", true),
+            (
+                "type.set",
+                "main:XDTOPackage.Exchange.Type.Order.Property.Id",
+                false,
+            ),
+            ("type.set", "main:XDTOPackage.Exchange", false),
             // Глобальное свойство пакета — не член типа.
             (
                 "property.remove",
