@@ -118,8 +118,7 @@ impl fmt::Display for V5TransportError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum V5TaskExchangeError {
     Protocol(V5DaemonErrorCode),
-    Transport,
-    ObservedTransport(TaskObservation),
+    Transport(TaskObservation),
     SessionPoisoned,
     UnexpectedResponse,
     MalformedResponse,
@@ -136,17 +135,6 @@ enum V5ExchangeFailure {
         at: Instant,
     },
     MalformedResponse,
-}
-
-impl From<V5TransportError> for V5TaskExchangeError {
-    fn from(error: V5TransportError) -> Self {
-        match error {
-            V5TransportError::SessionPoisoned => Self::SessionPoisoned,
-            V5TransportError::RequestNotSent(_)
-            | V5TransportError::RequestTooLarge { .. }
-            | V5TransportError::ResponseLost(_) => Self::Transport,
-        }
-    }
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -801,7 +789,7 @@ impl V5DaemonProcessOwner {
                 ..
             }) => Err(V5TaskExchangeError::SessionPoisoned),
             Err(V5ExchangeFailure::Transport { stage, at, .. }) => Err(
-                V5TaskExchangeError::ObservedTransport(timer.failed(stage, at, Some(&self.record))),
+                V5TaskExchangeError::Transport(timer.failed(stage, at, Some(&self.record))),
             ),
         }
     }
@@ -1662,7 +1650,7 @@ mod tests {
             daemon.join().unwrap();
             let reuse = owner.get_task_before(task_id, Instant::now() + Duration::from_secs(5));
 
-            let Err(V5TaskExchangeError::ObservedTransport(observation)) = first else {
+            let Err(V5TaskExchangeError::Transport(observation)) = first else {
                 panic!("connection closed after {cut} response bytes: {first:?}")
             };
             assert_eq!(observation.stage, TaskObservationStage::ReadResponse);
@@ -1708,7 +1696,7 @@ mod tests {
                     continue;
                 }
                 if expired {
-                    let Err(V5TaskExchangeError::ObservedTransport(observation)) = first else {
+                    let Err(V5TaskExchangeError::Transport(observation)) = first else {
                         panic!("{case}, expired={expired}: {first:?}")
                     };
                     assert_eq!(observation.stage, TaskObservationStage::DecodeResponse);

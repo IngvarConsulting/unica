@@ -49,7 +49,8 @@ use unica_work_control::progress::{NoopProgressSink, ProgressEvent, ProgressSink
 #[cfg(test)]
 use unica_daemon::client_v5::V5DaemonProcessOwner;
 use unica_daemon::client_v5::{
-    TaskObservationStage, TaskObservationTimer, V5DaemonClient, V5TaskExchangeError,
+    TaskObservation, TaskObservationStage, TaskObservationTimer, V5DaemonClient,
+    V5TaskExchangeError,
 };
 use unica_daemon::protocol_v5::V5DaemonErrorCode;
 use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
@@ -356,8 +357,15 @@ impl UnicaServer {
 
     #[cfg(test)]
     fn with_canonical_v13(handler: Arc<CanonicalCallHandler>) -> Self {
-        let unavailable: Arc<CanonicalTaskHandler> =
-            Arc::new(|_, _| Err(V5TaskExchangeError::Transport));
+        let unavailable: Arc<CanonicalTaskHandler> = Arc::new(|_, _| {
+            Err(V5TaskExchangeError::Transport(
+                TaskObservationTimer::start(Instant::now()).failed(
+                    TaskObservationStage::AcquirePeer,
+                    Instant::now(),
+                    None,
+                ),
+            ))
+        });
         Self::with_canonical_v13_tasks(handler, Arc::clone(&unavailable), unavailable)
     }
 
@@ -571,13 +579,14 @@ fn execute_compatibility_task_tool(
             )
         }
         Err(error) => {
-            let mut result = crate::application::v13::task_tools::task_tool_error_result(
-                compatibility_task_exchange_error(error),
-            );
-            if let V5TaskExchangeError::ObservedTransport(observation) = error {
-                result.data = Some(serde_json::json!({"taskObservation":observation}));
+            if let V5TaskExchangeError::Transport(observation) = error {
+                log_task_observation(&observation, deadline.received_at(), Instant::now());
             }
-            return CompatibilityTaskResult::Refusal(result);
+            return CompatibilityTaskResult::Refusal(
+                crate::application::v13::task_tools::task_tool_error_result(
+                    compatibility_task_exchange_error(error),
+                ),
+            );
         }
     };
     let projection = match request.action {
@@ -593,6 +602,7 @@ fn execute_compatibility_task_tool(
 fn compatibility_result_before(
     result: &CompatibilityTaskResult,
     budget: unica_bootstrap::ResponseBudget,
+    received_at: Instant,
     timing: TaskObservationTimer,
     after_projection: impl FnOnce() -> Instant,
 ) -> Result<CallToolResult, crate::interfaces::task_projection::TaskProjectionError> {
@@ -602,19 +612,41 @@ fn compatibility_result_before(
     if matches!(result, CompatibilityTaskResult::Refusal(_)) {
         return projected;
     }
-    let observation = timing.failed(
-        TaskObservationStage::ProjectResult,
-        after_projection(),
-        None,
-    );
+    let projected_at = after_projection();
+    let observation = timing.failed(TaskObservationStage::ProjectResult, projected_at, None);
     if observation.cutoff_expired {
-        let mut refusal = crate::application::v13::task_tools::task_tool_error_result(
+        log_task_observation(&observation, received_at, projected_at);
+        let refusal = crate::application::v13::task_tools::task_tool_error_result(
             TaskToolError::TaskTransportFailed,
         );
-        refusal.data = Some(serde_json::json!({"taskObservation":observation}));
         return crate::interfaces::task_projection::call_tool_result(&refusal, budget);
     }
     projected
+}
+
+/// A Task transport observation diagnoses the host for a person; it does not
+/// change what the agent does next, which the refusal code already decides.
+/// The wire carries only the refusal, and the observation goes to the
+/// frontend log as one line with a JSON payload. `sinceReceivedMs` measures
+/// from the moment the frontend received the request to the failure, whatever
+/// stage started the observation timer.
+fn log_task_observation(observation: &TaskObservation, received_at: Instant, failed_at: Instant) {
+    let since_received_ms =
+        u64::try_from(failed_at.saturating_duration_since(received_at).as_millis())
+            .unwrap_or(u64::MAX);
+    #[cfg(test)]
+    LOGGED_TASK_OBSERVATIONS
+        .with(|logged| logged.borrow_mut().push((*observation, since_received_ms)));
+    eprintln!(
+        "unica task observation: {}",
+        serde_json::json!({"taskObservation": observation, "sinceReceivedMs": since_received_ms})
+    );
+}
+
+#[cfg(test)]
+thread_local! {
+    static LOGGED_TASK_OBSERVATIONS: std::cell::RefCell<Vec<(TaskObservation, u64)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn compatibility_task_exchange_error(error: V5TaskExchangeError) -> TaskToolError {
@@ -626,9 +658,7 @@ fn compatibility_task_exchange_error(error: V5TaskExchangeError) -> TaskToolErro
         V5TaskExchangeError::Protocol(code) => {
             TaskToolError::TaskBackendFailed(backend_detail(code))
         }
-        V5TaskExchangeError::Transport | V5TaskExchangeError::ObservedTransport(_) => {
-            TaskToolError::TaskTransportFailed
-        }
+        V5TaskExchangeError::Transport(_) => TaskToolError::TaskTransportFailed,
         V5TaskExchangeError::SessionPoisoned => TaskToolError::TaskSessionClosed,
         V5TaskExchangeError::UnexpectedResponse | V5TaskExchangeError::MalformedResponse => {
             TaskToolError::TaskProtocolFailed
@@ -1178,9 +1208,15 @@ impl ServerHandler for UnicaServer {
                     .map(CallToolResponse::from)
             }
             Ok(Ok(SurfaceToolOutcome::CompatibilityTask { result, timing })) => {
-                compatibility_result_before(&result, response_budget, timing, Instant::now)
-                    .map(CallToolResponse::from)
-                    .map_err(crate::interfaces::task_projection::projection_error)
+                compatibility_result_before(
+                    &result,
+                    response_budget,
+                    received_at,
+                    timing,
+                    Instant::now,
+                )
+                .map(CallToolResponse::from)
+                .map_err(crate::interfaces::task_projection::projection_error)
             }
             Ok(Ok(SurfaceToolOutcome::Canonical(result))) => {
                 crate::interfaces::task_projection::call_tool_result(&result, response_budget)
@@ -1216,7 +1252,7 @@ impl ServerHandler for UnicaServer {
         let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
             .await
             .map_err(|_| task_internal_error("task_worker_failed"))?
-            .map_err(project_task_exchange_error)?;
+            .map_err(|error| project_task_exchange_error(error, received_at))?;
         ensure_task_identity(task_id, &snapshot)?;
         crate::interfaces::task_projection::detailed_task_v5(
             &snapshot,
@@ -1242,7 +1278,7 @@ impl ServerHandler for UnicaServer {
         let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
             .await
             .map_err(|_| task_internal_error("task_worker_failed"))?
-            .map_err(project_task_exchange_error)?;
+            .map_err(|error| project_task_exchange_error(error, received_at))?;
         ensure_task_identity(task_id, &snapshot)?;
         Err(ErrorData::invalid_params(
             "task_input_not_supported",
@@ -1263,7 +1299,7 @@ impl ServerHandler for UnicaServer {
         let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
             .await
             .map_err(|_| task_internal_error("task_worker_failed"))?
-            .map_err(project_task_exchange_error)?;
+            .map_err(|error| project_task_exchange_error(error, received_at))?;
         ensure_task_identity(task_id, &snapshot)?;
         Ok(())
     }
@@ -1385,7 +1421,7 @@ fn backend_detail(code: V5DaemonErrorCode) -> RefusalDetail {
     }
 }
 
-fn project_task_exchange_error(error: V5TaskExchangeError) -> ErrorData {
+fn project_task_exchange_error(error: V5TaskExchangeError, received_at: Instant) -> ErrorData {
     match error {
         V5TaskExchangeError::Protocol(V5DaemonErrorCode::TaskNotFound) => {
             ErrorData::invalid_params(
@@ -1398,12 +1434,10 @@ fn project_task_exchange_error(error: V5TaskExchangeError) -> ErrorData {
             Some(serde_json::json!({"code": "task_expired"})),
         ),
         V5TaskExchangeError::Protocol(code) => task_internal_error_detailed(backend_detail(code)),
-        V5TaskExchangeError::Transport => task_internal_error("task_transport_failed"),
-        V5TaskExchangeError::ObservedTransport(observation) => ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            "task_transport_failed",
-            Some(serde_json::json!({"code":"task_transport_failed","taskObservation":observation})),
-        ),
+        V5TaskExchangeError::Transport(observation) => {
+            log_task_observation(&observation, received_at, Instant::now());
+            task_internal_error("task_transport_failed")
+        }
         V5TaskExchangeError::SessionPoisoned => task_internal_error("task_session_closed"),
         V5TaskExchangeError::UnexpectedResponse | V5TaskExchangeError::MalformedResponse => {
             task_internal_error("task_protocol_failed")
@@ -3864,7 +3898,7 @@ mod tests {
             CanonicalCancellation::default(),
         );
 
-        let Err(V5TaskExchangeError::ObservedTransport(observation)) = outcome else {
+        let Err(V5TaskExchangeError::Transport(observation)) = outcome else {
             panic!("the operation must not rebase its cutoff after the injected pause");
         };
         assert_eq!(
@@ -4021,7 +4055,7 @@ mod tests {
 
         assert_eq!(
             first.as_ref().err().map(|error| match error {
-                V5TaskExchangeError::ObservedTransport(observation) => observation.cutoff_expired,
+                V5TaskExchangeError::Transport(observation) => observation.cutoff_expired,
                 _ => false,
             }),
             Some(true),
@@ -4076,8 +4110,7 @@ mod tests {
             Ok(snapshot) => assert_eq!(snapshot.task_id(), task_id),
             // A host cutoff shorter than handshake plus margin may expire before
             // the answer arrives; the request the daemon saw is still bounded.
-            Err(V5TaskExchangeError::Transport | V5TaskExchangeError::ObservedTransport(_))
-                if !must_answer => {}
+            Err(V5TaskExchangeError::Transport(_)) if !must_answer => {}
             Err(error) => panic!("wait failed: {error:?}"),
         }
         let observed = observations.recv_timeout(Duration::from_secs(2));
@@ -4463,6 +4496,11 @@ mod tests {
                 assert_eq!(
                     code.as_deref(),
                     Some("task_transport_failed"),
+                    "{case} via {operation}: {response}"
+                );
+                // The observation goes to the frontend log on every path.
+                assert!(
+                    !response.to_string().contains("taskObservation"),
                     "{case} via {operation}: {response}"
                 );
             }
@@ -9132,7 +9170,7 @@ fn main() {
         let budget = unica_bootstrap::ResponseBudget::default();
         let direct =
             crate::interfaces::task_projection::call_tool_result(result.result(), budget).unwrap();
-        let before = compatibility_result_before(&result, budget, timing, || {
+        let before = compatibility_result_before(&result, budget, received, timing, || {
             received + Duration::from_millis(224)
         })
         .unwrap();
@@ -9140,7 +9178,8 @@ fn main() {
             serde_json::to_value(before).unwrap(),
             serde_json::to_value(&direct).unwrap()
         );
-        let late = compatibility_result_before(&result, budget, timing, || {
+        LOGGED_TASK_OBSERVATIONS.with(|logged| logged.borrow_mut().clear());
+        let late = compatibility_result_before(&result, budget, received, timing, || {
             received + Duration::from_millis(226)
         })
         .unwrap();
@@ -9149,22 +9188,19 @@ fn main() {
             value["structuredContent"]["diagnostics"][0]["code"],
             "task_transport_failed"
         );
-        assert_eq!(
-            value["structuredContent"]["data"]["taskObservation"]["stage"],
-            "projectResult"
-        );
-        assert_eq!(
-            value["structuredContent"]["data"]["taskObservation"]["elapsedMs"],
-            226
-        );
-        assert_eq!(
-            value["structuredContent"]["data"]["taskObservation"]["cutoffExpired"],
-            true
-        );
+        assert!(!value.to_string().contains("taskObservation"), "{value}");
+        let logged = LOGGED_TASK_OBSERVATIONS.with(|logged| logged.borrow().clone());
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        let (observation, since_received_ms) = logged[0];
+        assert_eq!(observation.stage, TaskObservationStage::ProjectResult);
+        assert_eq!(observation.elapsed_ms, 226);
+        assert!(observation.cutoff_expired);
+        assert_eq!(since_received_ms, 226);
         assert!(!value.to_string().contains("private-observation-marker"));
         let recovered = compatibility_result_before(
             &result,
             budget,
+            Instant::now(),
             TaskObservationTimer::start(Instant::now() + Duration::from_secs(1)),
             Instant::now,
         )
@@ -9179,7 +9215,8 @@ fn main() {
     async fn compatibility_long_producer_survives_7000_and_100_ms_observations_once() {
         for wait_ms in [7000_u64, 100] {
             let service = Arc::new(ScriptedService {
-                delay: Duration::from_millis(8200),
+                // Long enough past a 7000 ms read that `working` survives load.
+                delay: Duration::from_millis(9500),
                 known_long: true,
                 outcome: Mutex::new(Some(Ok(
                     unica_execution_contract::invocation::DomainResult::success(
@@ -9231,6 +9268,28 @@ fn main() {
         }
     }
     #[test]
+    fn native_task_transport_failure_logs_the_observation_and_answers_only_the_refusal() {
+        let observation = TaskObservationTimer::start(Instant::now()).failed(
+            TaskObservationStage::WriteRequest,
+            Instant::now(),
+            None,
+        );
+        LOGGED_TASK_OBSERVATIONS.with(|logged| logged.borrow_mut().clear());
+        let received_at = Instant::now() - Duration::from_millis(500);
+        let error =
+            project_task_exchange_error(V5TaskExchangeError::Transport(observation), received_at);
+        assert_eq!(error.message, "task_transport_failed");
+        assert_eq!(error.data, Some(json!({"code": "task_transport_failed"})));
+        let logged = LOGGED_TASK_OBSERVATIONS.with(|logged| logged.borrow().clone());
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert_eq!(logged[0].0, observation);
+        assert!(
+            logged[0].1 >= 500,
+            "sinceReceivedMs counts from the request, not from the stage timer: {logged:?}"
+        );
+    }
+
+    #[test]
     fn compatibility_final_projection_preserves_exchange_failure_stage_and_generation() {
         let task_id = unica_execution_contract::invocation::TaskId::new();
         let start = Instant::now();
@@ -9248,9 +9307,7 @@ fn main() {
         let router = CanonicalDaemonRouter {
             call: Arc::new(|_, _, _, _, _| panic!("observation must not submit")),
             get: Arc::new(|_, _| panic!("result uses wait")),
-            wait: Arc::new(move |_, _, _, _| {
-                Err(V5TaskExchangeError::ObservedTransport(observation))
-            }),
+            wait: Arc::new(move |_, _, _, _| Err(V5TaskExchangeError::Transport(observation))),
             cancel: Arc::new(|_, _| panic!("observation must not cancel")),
         };
         let args = json!({"taskId":task_id.to_string(),"waitMs":100});
@@ -9259,23 +9316,33 @@ fn main() {
             args.as_object().unwrap(),
         )
         .unwrap();
+        LOGGED_TASK_OBSERVATIONS.with(|logged| logged.borrow_mut().clear());
         let result = execute_compatibility_task_tool(
             &router,
             request,
             FrontendInvocationDeadline::new(start, None),
             CanonicalCancellation::default(),
         );
+        let logged = LOGGED_TASK_OBSERVATIONS.with(|logged| logged.borrow().clone());
+        assert_eq!(
+            logged.iter().map(|(logged, _)| *logged).collect::<Vec<_>>(),
+            vec![observation],
+            "the exchange failure keeps its stage and generation in the log"
+        );
         let projected = compatibility_result_before(
             &result,
             unica_bootstrap::ResponseBudget::default(),
+            start,
             timing,
             || start + Duration::from_millis(230),
         )
         .unwrap();
         let public = serde_json::to_value(projected).unwrap();
+        assert!(!public.to_string().contains("taskObservation"), "{public}");
         assert_eq!(
-            public["structuredContent"]["data"]["taskObservation"],
-            serde_json::to_value(observation).unwrap()
+            LOGGED_TASK_OBSERVATIONS.with(|logged| logged.borrow().len()),
+            1,
+            "a late projection of an established refusal is not observed again"
         );
         assert_eq!(
             public["structuredContent"]["diagnostics"][0]["code"],
@@ -9324,8 +9391,10 @@ fn main() {
                 fake.owner(),
                 "/workspace".into(),
             ));
-            for id in [1, 2] {
-                client.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":task_id.to_string(),"waitMs":100},"_meta":modern_meta()}})).await;
+            for (id, wait_ms) in [(1, 100), (2, 2000)] {
+                // The recovery read gets room enough not to race the scripted
+                // listener under load.
+                client.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":task_id.to_string(),"waitMs":wait_ms},"_meta":modern_meta()}})).await;
                 let response = client.receive().await;
                 let value = &response["result"]["structuredContent"];
                 if id == 1 {
@@ -9342,20 +9411,11 @@ fn main() {
                         !response.to_string().contains(RESULT_MARKER),
                         "rejected frame leaked"
                     );
-                    if defect != "malformed" {
-                        assert_eq!(
-                            value["data"]["taskObservation"]["stage"], "readResponse",
-                            "{response}"
-                        );
-                        assert!(
-                            value["data"]["taskObservation"]["endpointGenerationHash"].is_string()
-                        );
-                        assert_eq!(
-                            value["data"]["taskObservation"]["cutoffExpired"],
-                            defect == "late",
-                            "{response}"
-                        );
-                    }
+                    // The observation goes to the frontend log, not to the agent.
+                    assert!(
+                        !response.to_string().contains("taskObservation"),
+                        "{response}"
+                    );
                     // A scripted listener finishes the late frame before accepting
                     // another peer; the second call receives its own original budget.
                     if defect == "late" {

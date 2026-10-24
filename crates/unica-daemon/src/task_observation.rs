@@ -4,6 +4,7 @@ use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// Where one Task read failed. Peer acquisition joins connect and handshake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskObservationStage {
@@ -15,6 +16,8 @@ pub enum TaskObservationStage {
     ProjectResult,
 }
 
+/// One failed Task read for the frontend log: when the stage timer started,
+/// how long it ran, the cutoff it had and the hashed endpoint generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskObservation {
@@ -30,6 +33,7 @@ pub struct TaskObservation {
     pub endpoint_generation_hash: Option<[u8; 16]>,
 }
 
+/// Starts a stage clock against the cutoff of the read it observes.
 #[derive(Clone, Copy)]
 pub struct TaskObservationTimer {
     started: Instant,
@@ -40,6 +44,7 @@ impl TaskObservationTimer {
     pub fn start(cutoff: Instant) -> Self {
         Self::since(Instant::now(), cutoff)
     }
+
     pub fn since(started: Instant, cutoff: Instant) -> Self {
         let epoch_ms = millis(
             SystemTime::now()
@@ -52,6 +57,7 @@ impl TaskObservationTimer {
             cutoff,
         }
     }
+
     pub fn failed(
         self,
         stage: TaskObservationStage,
