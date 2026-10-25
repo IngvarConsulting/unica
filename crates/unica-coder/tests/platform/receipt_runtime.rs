@@ -4536,6 +4536,23 @@ impl PromisedWorkIdleDaemon {
             .collect()
     }
 
+    /// Observe the listener until it reads an owner set without a client
+    /// lease after `since`, so a slow handler that still holds its lease
+    /// does not leave the check empty.
+    fn observe_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
+        let watchdog = Instant::now() + Duration::from_secs(5);
+        loop {
+            let observed = self.owners_without_clients_since(since);
+            if !observed.is_empty() || Instant::now() >= watchdog {
+                return observed;
+            }
+            assert!(
+                self.observe_until(Instant::now() + Duration::from_millis(20)),
+                "the daemon exited while its work was still owned"
+            );
+        }
+    }
+
     /// The owner sets the listener read after `since` with no client lease:
     /// what kept the daemon once every client had left.
     fn owners_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
@@ -5337,7 +5354,7 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
     );
     // After the handoff no client lease is left: the Task alone holds.
     assert_held_by(
-        &daemon.owners_without_clients_since(past_cutoff),
+        &daemon.observe_without_clients_since(past_cutoff),
         |owners| owners.task_cancellations,
         "the handed-over Task, through its cancellation registration",
     );
@@ -5392,30 +5409,46 @@ fn daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retire
         );
     let invocation = view_catalog_request_within(TaskId::new(), &workspace, 100);
     let mut owner = daemon.owner();
-    let promised = submitted_task_snapshot(Ok(idle_request_over_tcp(
-        &mut owner,
-        V5ClientRequest::SubmitInvocation {
+    let submitted = Instant::now();
+    // The answer that names the promised Task may be lost (#2089): the
+    // durable promise can outlast its write window. Nothing reads it here;
+    // the Task is read by its reserved id below.
+    write_json_line(
+        &mut owner.0,
+        &serde_json::to_value(V5ClientRequest::SubmitInvocation {
             invocation: invocation.clone(),
-        },
-    )));
+        })
+        .unwrap(),
+    );
     admission.wait_until_entered();
-    assert_eq!(promised.task_id(), invocation.reserved_task_id());
+    assert!(daemon.observe_until(submitted + Duration::from_millis(100) + idle * 3));
+    // The daemon may already have closed a session whose answer it lost.
+    let _ = owner.0.shutdown(std::net::Shutdown::Both);
+    drop(owner);
+    let released = Instant::now();
+
+    assert_held_by(
+        &daemon.observe_without_clients_since(released),
+        |owners| owners.task_cancellations && !owners.retained_workspace_work,
+        "the Task promised during admission, through its cancellation registration alone",
+    );
+    assert!(daemon.observe_until(Instant::now() + idle * 3));
+    assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
+    let mut successor = daemon.owner();
+    let V5ServerResponse::Task { snapshot: promised } = idle_request_over_tcp(
+        &mut successor,
+        V5ClientRequest::GetTask {
+            task_id: invocation.reserved_task_id(),
+        },
+    ) else {
+        panic!("the call must have been promised as its reserved Task");
+    };
+    assert_eq!(promised.invocation_id(), invocation.invocation_id());
     assert!(
         matches!(promised, V5DaemonTaskSnapshot::Queued { .. }),
         "a Task promised before the attempt begins is queued: {promised:?}"
     );
-    release_promised_work_owner(owner);
-    let released = Instant::now();
-
-    assert!(daemon.observe_until(released + idle * 3));
-    assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
-    assert_held_by(
-        &daemon.owners_without_clients_since(released),
-        |owners| owners.task_cancellations && !owners.retained_workspace_work,
-        "the Task promised during admission, through its cancellation registration alone",
-    );
     assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
-    let mut successor = daemon.owner();
     admission.release();
     let terminal = idle_task_terminal_over_tcp(&mut successor, &invocation);
     assert!(
