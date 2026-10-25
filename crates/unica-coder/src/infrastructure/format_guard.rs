@@ -17,6 +17,7 @@ use crate::infrastructure::native_operations::common::{
     support_uuid_dependency_paths,
 };
 use unica_metadata_designer::configuration::cf_init_post_validation_dependency_paths;
+use unica_source_contract::portable_path::PortablePathExt;
 
 use crate::infrastructure::interface_composition::resolve_interface_validate_path;
 use crate::infrastructure::native_operations::dcs::{
@@ -479,7 +480,7 @@ pub(crate) fn classify_staged_platform_xml_root(
     let namespace = root.tag_name().namespace()?;
     let name = root.tag_name().name();
     let version = root_version_literal(text, root);
-    let relative = relative.display();
+    let relative = relative.portable();
     let versioned = matches!(
         (namespace, name),
         (MD_CLASSES_NS_GATE, "MetaDataObject")

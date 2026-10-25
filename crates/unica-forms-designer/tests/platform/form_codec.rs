@@ -2924,3 +2924,46 @@ const DUMP_SHAPED_REFRESH_COMMAND: &str = concat!(
     "\t\t\t<Representation>Picture</Representation>\n",
     "\t\t</Command>",
 );
+
+/// A form edit takes the line endings of the form: a CRLF export stays CRLF,
+/// an LF or mixed form keeps them as they were (#1996).
+#[test]
+fn form_edit_inserts_lines_with_the_form_line_ending() {
+    let form = |newline: &str| {
+        [
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" version=\"2.20\">",
+            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>",
+            "</Form>",
+        ]
+        .join(newline)
+    };
+    let defn = json!({"attributes": [{"name": "Строка", "type": "string"}]});
+    let path = std::path::Path::new("Catalogs/X/Forms/F/Ext/Form.xml");
+    let edit = |mut text: String| {
+        let start = text.find("<Form").unwrap();
+        form_edit_apply_definition(&mut text, &defn, path, start, Some("ru")).unwrap();
+        text
+    };
+
+    let crlf = edit(form("\r\n"));
+    assert!(crlf.contains("<Attribute name=\"Строка\""), "{crlf}");
+    assert!(!has_bare_lf(&crlf), "{crlf:?}");
+
+    let lf = edit(form("\n"));
+    assert!(lf.contains("<Attribute name=\"Строка\""), "{lf}");
+    assert!(!lf.contains('\r'), "{lf:?}");
+
+    // A lone CR makes the endings mixed too: the inserted LF stays.
+    let lone_cr = form("\r\n").replacen("\r\n", "\r", 1);
+    let edited = edit(lone_cr);
+    assert!(has_bare_lf(&edited), "{edited:?}");
+
+    let mixed = form("\r\n").replacen("\r\n", "\n", 1);
+    let edited = edit(mixed.clone());
+    assert!(edited.starts_with(&mixed[..mixed.find("<Form").unwrap()]));
+    assert!(
+        has_bare_lf(&edited) && edited.contains("\r\n"),
+        "{edited:?}"
+    );
+}

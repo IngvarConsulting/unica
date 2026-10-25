@@ -1,0 +1,120 @@
+{
+  "id": "S-1995-object-remove-filter-values",
+  "name": "remove-object-refuses-filter-values-written-in-russian",
+  "issue": 1995,
+  "area": "Создание и удаление объектов",
+  "task": "Удалить справочник, по пустой ссылке которого отбирает динамический список формы другого справочника, — отказ называет реквизит формы и отбор; удалить справочник из отбора варианта настроек макета — отказ называет вариант и отбор; выгрузка пишет значения отбора по-русски. Справочник, названный по-русски только в синониме, удаляется",
+  "workspace": "tests/fixtures/acceptance/workspace-object-remove-filter-values",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.ПримерА",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:Catalog.ПримерА` is referenced by other metadata: `main:Catalog.ПримерБ.Form.ФормаСписка.Attribute.Список` → Filter; remove these references first",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_state"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерА.xml",
+          "eq": "f26e51844876d2c3de70bd83d5acc6569137f55247a6abc3d83647592e4f6a16"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6287051f1194d8085cf8a2e1cf009829b21b7c1f0ee41d00c280d47c6beab9f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерБ/Forms/ФормаСписка/Ext/Form.xml",
+          "eq": "67d84b576579960122377dae93916841347b59d38d7a241a521f2e520742af3f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.ПримерВ",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:Catalog.ПримерВ` is referenced by other metadata: `main:Catalog.ПримерБ.Template.Отбор.Setting.Основной` → Filter; remove these references first",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_state"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерВ.xml",
+          "eq": "e441a16221cde8ce3962978b0096632bbdb56508f1539a087ad5ac3783d8accb"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерБ/Templates/Отбор/Ext/Template.xml",
+          "eq": "931bfc75689a9de7428f0c4f20f2f135eae68e4f6bf9c66e20b21f193e7fcc01"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.ПримерГ",
+        "ops": [
+          {
+            "op": "object.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/ПримерГ.xml",
+          "eq": true
+        }
+      ]
+    }
+  ]
+}

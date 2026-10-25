@@ -280,14 +280,25 @@ pub fn default_form_property(key: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+/// Тип реквизита формы с квалификаторами, которые пишет выгрузка 8.3.27.
+/// Имена контракта `String`, `Number`, `Date`, `Boolean` (и русские) раньше
+/// уходили голыми `xs:*`, и платформа дописывала умолчания (#1996). Теперь
+/// строка — длина 0 переменной длины, дата — «дата и время», как понимает
+/// платформа, а число — 10 знаков, как ставит конфигуратор и как у колонки
+/// таблицы значений. Словарь кодека (`string`, `decimal`, `date`) проходит
+/// как есть. Составной тип отображается по частям.
 pub fn form_attribute_type(type_name: &str) -> String {
-    match type_name {
-        "Boolean" | "boolean" | "Булево" => "xs:boolean".to_string(),
-        "String" | "string" | "Строка" => "xs:string".to_string(),
-        "Number" | "number" | "Число" => "xs:decimal".to_string(),
-        "Date" | "date" | "Дата" => "xs:dateTime".to_string(),
-        other => other.to_string(),
-    }
+    type_name
+        .split(['|', '+'])
+        .map(|part| match part.trim() {
+            "Boolean" | "Булево" => "boolean",
+            "String" | "Строка" => "string",
+            "Number" | "Число" => "decimal",
+            "Date" | "Дата" => "dateTime",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 /// The legacy element definition for one typed v0.13 item: the discriminator
 /// key named after the element type, every other property passed through.
@@ -1620,4 +1631,28 @@ pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> Str
         "</Form>"
     )
     .to_string()
+}
+
+#[cfg(test)]
+mod attribute_type_tests {
+    use super::form_attribute_type;
+
+    #[test]
+    fn bare_primitive_types_take_the_qualifiers_8_3_27_exports() {
+        for (input, expected) in [
+            ("String", "string"),
+            ("Строка", "string"),
+            ("Number", "decimal"),
+            ("Date", "dateTime"),
+            ("Boolean", "boolean"),
+            ("date", "date"),
+            ("decimal", "decimal"),
+            ("string(10)", "string(10)"),
+            ("CatalogRef.Товары", "CatalogRef.Товары"),
+            ("String | Number", "string | decimal"),
+            ("String+Date", "string | dateTime"),
+        ] {
+            assert_eq!(form_attribute_type(input), expected, "{input}");
+        }
+    }
 }

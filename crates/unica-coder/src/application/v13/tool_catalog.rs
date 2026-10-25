@@ -430,10 +430,11 @@ fn schema_for_saved_apply_plan(properties: Value, required: Value) -> Value {
 }
 
 fn schema_for_plan_diff() -> Value {
-    let limit = json!({"type": "integer", "minimum": 1, "maximum": 1000,
-        "description": "Maximum differences in left/right comparisons; default 100. Saved-plan pages default to 20 chunks, maximum 50, and are also bounded by encoded bytes."});
+    let limit = json!({"type": "integer", "minimum": 1, "maximum": super::diff::MAX_DIFF_LIMIT,
+        "description": format!("Maximum differences on one page; default {}. Pages are also bounded by encoded bytes.", super::diff::DEFAULT_DIFF_LIMIT)});
     let compare = schema(
-        json!({"left": logical_address_with("Qualified logical address of the left node."), "right": logical_address_with("Qualified logical address of the right node."), "limit": limit}),
+        json!({"left": logical_address_with("Qualified logical address of the left node."), "right": logical_address_with("Qualified logical address of the right node."), "limit": limit,
+            "cursor": cursor("Continue the same left/right pair with the same limit; later pages read the pair saved by the first page. Omit, or pass an empty string or null, for the first page.")}),
         json!(["left", "right"]),
     );
     let saved = schema(
@@ -441,7 +442,7 @@ fn schema_for_plan_diff() -> Value {
             "executionToken": {"type": "string", "minLength": 1, "description": "Token from apply planning; reads stored before/after bytes without executing."},
             "limit": {"type": "integer", "minimum": 1, "maximum": SOURCE_NAVIGATION_LIMIT_MAX,
                 "description": format!("Maximum saved source chunks; default {SOURCE_NAVIGATION_LIMIT_DEFAULT}. Pages are also bounded by encoded bytes.")},
-            "cursor": cursor("Continue the same saved plan with the same limit. Only saved-plan reads support continuation.")
+            "cursor": cursor("Continue the same saved plan with the same limit.")
         }),
         json!(["executionToken"]),
     );
@@ -451,6 +452,7 @@ fn schema_for_plan_diff() -> Value {
         .unwrap()
         .extend(saved["properties"].as_object().unwrap().clone());
     properties["limit"] = compare["properties"]["limit"].clone();
+    properties["cursor"] = cursor("Continue the same left/right pair or saved plan with the same arguments and limit. Omit, or pass an empty string or null, for the first page.");
     let mut result = schema(properties, json!([]));
     result["if"] = json!({"required": ["executionToken"]});
     result["then"] = saved;
@@ -552,7 +554,7 @@ fn result_envelope_schema() -> Value {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn saved_plan_diff_limits_follow_read_pages_without_restricting_comparisons() {
+    fn diff_limits_follow_read_pages_on_both_branches() {
         let schema = super::schema_for_plan_diff();
         assert_eq!(schema["then"]["properties"]["limit"]["maximum"], 50);
         // #1210: form clients may copy defaults without selecting a branch.
@@ -560,8 +562,9 @@ mod tests {
         assert!(schema["then"]["properties"]["limit"]
             .get("default")
             .is_none());
-        assert_eq!(schema["properties"]["limit"]["maximum"], 1000);
-        assert_eq!(schema["else"]["properties"]["limit"]["maximum"], 1000);
+        let compare = crate::application::v13::diff::MAX_DIFF_LIMIT;
+        assert_eq!(schema["properties"]["limit"]["maximum"], compare);
+        assert_eq!(schema["else"]["properties"]["limit"]["maximum"], compare);
     }
 
     #[test]
@@ -832,12 +835,12 @@ mod tests {
         for (field, kind) in [("at", "string"), ("limit", "integer"), ("cursor", "string")] {
             assert_eq!(check.input_schema["properties"][field]["type"], kind);
         }
-        // Only the saved-plan alternative supports continuation.
+        // Both the comparison and the saved-plan alternative continue.
         assert_schema(
             &catalog.tools,
             "diff",
             json!([]),
-            &["left", "right", "limit", "executionToken", "cursor"],
+            &["left", "right", "limit", "cursor", "executionToken"],
         );
         assert_schema(
             &catalog.tools,
@@ -898,7 +901,7 @@ mod tests {
         assert_eq!(input_field(&catalog.tools, "view", "limit")["maximum"], 50);
         assert_eq!(
             input_field(&catalog.tools, "diff", "limit")["maximum"],
-            1000
+            crate::application::v13::diff::MAX_DIFF_LIMIT
         );
         assert_eq!(input_field(&catalog.tools, "docs", "limit")["default"], 20);
         assert_eq!(input_field(&catalog.tools, "docs", "limit")["maximum"], 50);
