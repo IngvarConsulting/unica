@@ -1010,12 +1010,9 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
     );
     assert!(viewed.ok, "{at}: {viewed:?}");
     let data = viewed.data.unwrap();
-    for entry in data["can"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|entry| entry["implemented"] == true)
-    {
+    // Every operation the node's dictionary names publishes its closed
+    // detailed contract.
+    for entry in data["can"].as_array().into_iter().flatten() {
         let op = entry["op"].as_str().unwrap();
         let detailed = invoke_on(
             &checked.runtime,
@@ -1023,10 +1020,7 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             ToolIdentity::View,
             json!({"at":format!("{at}.Can.{op}")}),
         );
-        assert!(
-            detailed.ok,
-            "implemented {op} at {at} has no contract: {detailed:?}"
-        );
+        assert!(detailed.ok, "{op} at {at} has no contract: {detailed:?}");
         let schema = &detailed.data.as_ref().unwrap()["props"]["contract"]["argsSchema"];
         assert!(schema.is_object(), "{at}.{op}: {schema}");
         assert_eq!(schema["additionalProperties"], false, "{at}.{op}: {schema}");
@@ -2883,7 +2877,7 @@ fn object_remove_skeleton_previews_with_only_the_outer_target() {
         .iter()
         .find(|entry| entry["op"] == "object.remove")
         .unwrap();
-    assert_eq!(entry["implemented"], true);
+    assert!(entry.get("implemented").is_none(), "{entry}");
     let skeleton = serde_json::to_value(
         crate::domain::apply::operation_registry()
             .lookup("object.remove")
