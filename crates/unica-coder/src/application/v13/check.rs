@@ -39,20 +39,23 @@ pub(crate) fn page_diagnostics(
             Ok(stored) => stored,
             Err(error) => return error.into_result(at),
         };
+        // One item past the page tells whether a continuation follows.
+        let window = match stored
+            .snapshot
+            .read_items(stored.offset, binding.page_limit.saturating_add(1))
+        {
+            Ok(window) => window,
+            Err(error) => return error.into_result(at),
+        };
         let node = stored.snapshot.node();
         let render = |items, cursor, stopped_by| check_page_result(node, items, cursor, stopped_by);
-        let page = match prepare_check_page(
-            &render,
-            stored.snapshot.items(),
-            stored.offset,
-            binding.page_limit,
-            &probe,
-        ) {
+        let page = match prepare_check_page(&render, &window, 0, binding.page_limit, &probe) {
             Ok(page) => page,
             Err(message) => return check_page_refusal(at, message),
         };
-        let next = if page.next_offset < stored.snapshot.items().len() {
-            match cursors.insert_next(&stored, page.next_offset, cursor) {
+        let next_offset = stored.offset + page.next_offset;
+        let next = if next_offset < stored.snapshot.len() {
+            match cursors.insert_next(&stored, next_offset, cursor) {
                 Ok(next) => Some(next),
                 Err(error) => return error.into_result(at),
             }

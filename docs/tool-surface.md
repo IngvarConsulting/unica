@@ -115,20 +115,22 @@ Search bundled Unica and safe 1C documentation by topic, or open a document loca
 
 ### `unica.resolve`
 
-Emergency bridge between a logical address and the source layout, in both directions. Use it only when a path arrived from outside Unica - a diff, a build log, a stack trace - or when a file has to be opened outside Unica. To find an object by name use search; to read it use view.
+Bridge between a logical address and the source layout, in both directions. Use it when paths arrived from outside Unica - host grep hits, a diff, a build log, a stack trace - or when a file has to be opened outside Unica: `paths` turns many of them into addresses in one call. To find an object by name use search; to read it use view.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address whose source location is needed. |
 | `path` | string | нет | Path to a source file or object directory, absolute or relative to the workspace root. |
+| `paths` | array | нет | Batch of paths, each optionally `path:line` with a 1-based file line as `grep -n` prints it. Answers `data.items` in input order with `at` and `kind`; with a line, `line` is `inMethod` (`at` is the method holding it), `outsideMethod` (`at` is the module) or `notLineBased` (a tree file; `at` is its object). A failed item carries `code` and `message` instead; the others still resolve. |
 
-**Результат сейчас:** `data` несёт один предмет: `at`, `kind`, `path` и закрытый признак `lines`; ответ точный либо `not_found` и не несёт `rev` (отвечают типизированным `data`)
+**Результат сейчас:** `data` несёт один предмет: `at`, `kind`, `path` и закрытый признак `lines`; ответ точный либо `not_found` и не несёт `rev`. Пакет `paths` отвечает `data.items` по позиции входа: `at` и `kind`, у элемента со строкой — закрытый признак `line` (`inMethod`, `outsideMethod`, `notLineBased`); отказ элемента — его `code` и `message` на его позиции (отвечают типизированным `data`)
 
 **Целевой контракт:** Держать путь в одном редком инструменте: в частом ответе он звал бы читать файл мимо адреса
 
 **Сценарии:**
 
 - Узнать, какому объекту принадлежит путь, пришедший из диффа, лога сборки или трассы
+- Перевести совпадения поиска средствами хоста (`путь:строка`) в адреса методов одним вызовом
 - Получить путь к файлу или каталогу объекта, чтобы прочитать или починить его вне Unica
 - Узнать файл и диапазон строк метода, когда его открывают вне Unica
 

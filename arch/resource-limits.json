@@ -2049,6 +2049,32 @@
       "review": null
     },
     {
+      "id": "view.snapshot-retained-bytes",
+      "class": "retention",
+      "resource": "Суммарный объём удерживаемых снимков продолжений view и check: элементы во временном файле, узлы и границы элементов в памяти.",
+      "unit": "bytes",
+      "scope": "process",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/platform/view_snapshot_spill.rs",
+        "symbol": "VIEW_SNAPSHOT_MAX_RETAINED_BYTES"
+      },
+      "expr": "4 * 1024 * 1024 * 1024",
+      "value": 4294967296,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "crates/unica-coder/src/infrastructure/platform/mod.rs",
+        "crates/unica-coder/src/infrastructure/platform/view_snapshot_spill.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 PR9 9e: заменил 64 МиБ снимков в памяти",
+      "problem": "Обещанные продолжения не вытесняются, поэтому общий объём удерживаемых снимков процесса нужно ограничить.",
+      "onReach": "новый снимок отказывает result_too_large до выдачи курсора; выданные продолжения остаются",
+      "issue": "#1119",
+      "evidence": [],
+      "decision": null,
+      "review": "временное число без замеров; пересмотр по замерам #1119 PR8"
+    },
+    {
       "id": "apply.subsystem-info-file-bytes",
       "class": "corpus",
       "resource": "Размер одного файла подсистемы при чтении состава подсистем для apply.",
@@ -4645,30 +4671,6 @@
       "derived": true
     },
     {
-      "id": "metadata.child-tree-bytes",
-      "class": "corpus",
-      "resource": "Суммарный объём файлов дерева дочерних ресурсов одного объекта метаданных, читаемых в память.",
-      "unit": "bytes",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/child_resources.rs",
-        "symbol": "TYPED_CHILD_TREE_MAX_BYTES"
-      },
-      "expr": "64 * 1024 * 1024",
-      "value": 67108864,
-      "applied": [
-        "crates/unica-metadata-designer/src/child_resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "отказ ProviderUnavailable «typed child resource topology is unavailable»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
       "id": "metadata.child-tree-depth",
       "class": "format",
       "resource": "Глубина обхода дерева дочерних ресурсов объекта метаданных.",
@@ -4691,54 +4693,6 @@
       "evidence": [],
       "decision": null,
       "review": null
-    },
-    {
-      "id": "metadata.child-tree-entries",
-      "class": "corpus",
-      "resource": "Число записей каталога в дереве дочерних ресурсов одного объекта метаданных.",
-      "unit": "count",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/child_resources.rs",
-        "symbol": "TYPED_CHILD_TREE_MAX_ENTRIES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-metadata-designer/src/child_resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "отказ ProviderUnavailable «typed child resource topology is unavailable»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.child-tree-files",
-      "class": "corpus",
-      "resource": "Число файлов в дереве дочерних ресурсов одного объекта метаданных.",
-      "unit": "count",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/child_resources.rs",
-        "symbol": "TYPED_CHILD_TREE_MAX_FILES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-metadata-designer/src/child_resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "отказ ProviderUnavailable «typed child resource topology is unavailable»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
     },
     {
       "id": "metadata.registrar-scan-bytes",
@@ -4939,54 +4893,6 @@
       "review": null
     },
     {
-      "id": "metadata.usage-file-bytes",
-      "class": "corpus",
-      "resource": "Размер одного XML-дескриптора или Predefined.xml, читаемого при скане использования.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/usage_scan.rs",
-        "symbol": "USAGE_FILE_MAX_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-metadata-designer/src/usage_scan.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "Predefined.xml: отказ чтения; прочие дескрипторы: тихо — файл выпадает из скана (.ok()?)",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.usage-section-files",
-      "class": "corpus",
-      "resource": "Число записей одного раздела конфигурации, открываемых при скане использования.",
-      "unit": "count",
-      "scope": "directory",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/usage_scan.rs",
-        "symbol": "USAGE_SECTION_MAX_FILES"
-      },
-      "expr": "8192",
-      "value": 8192,
-      "applied": [
-        "crates/unica-metadata-designer/src/usage_scan.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309; замер дампа с 2172 наборами прав ролей",
-      "problem": "остановить патологическое дерево, не формируя обычные ответы",
-      "onReach": "тихо: .take() отбрасывает хвост раздела, признака неполноты нет",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
       "id": "metadata.subsystem-address-depth",
       "class": "format",
       "resource": "Число имён в адресе подсистемы (вложенность подсистем); удвоенное значение ограничивает глубину обхода Subsystems/.",
@@ -5159,9 +5065,9 @@
       "review": null
     },
     {
-      "id": "navigation.retained-snapshot-bytes",
-      "class": "result",
-      "resource": "Суммарный объём удерживаемых снимков view и отложенных результатов процесса.",
+      "id": "navigation.result-store-bytes",
+      "class": "retention",
+      "resource": "Суммарный объём отложенных результатов прежнего хранилища ResultStore в памяти.",
       "unit": "bytes",
       "scope": "cache",
       "source": {
@@ -5176,11 +5082,11 @@
       "status": "unproven",
       "origin": "27a108daf (#537); в коде помечено «Temporary and unproven… see #1119»",
       "problem": null,
-      "onReach": "Новый снимок view — отказ result_too_large «new view snapshot exceeds the temporary retained-state budget; earlier continuations remain available»; в хранилище результатов вытесняются давно не читавшиеся записи.",
-      "issue": "#1119",
+      "onReach": "вытесняются давно не читавшиеся записи хранилища результатов",
+      "issue": null,
       "evidence": [],
       "decision": null,
-      "review": "#1119 PR9"
+      "review": null
     },
     {
       "id": "navigation.source-page-default-entries",
