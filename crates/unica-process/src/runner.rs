@@ -1,9 +1,12 @@
 use crate::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
     ManagedSpawnFailure, PendingProcessHandoff, PendingRunFailure, ProcessLineReply, StreamControl,
-    STREAM_LINE_TOO_LONG_ERROR,
+    STREAM_LINE_TOO_LONG_ERROR, STREAM_RECORD_UNTERMINATED_ERROR,
 };
 use std::{ffi::OsString, path::PathBuf, time::Duration};
+
+/// A runner without its own streaming captured an output it cannot vouch for.
+pub const STREAM_CAPTURE_INCOMPLETE_ERROR: &str = "captured stdout is truncated or is not UTF-8";
 use unica_work_control::cancellation::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -150,6 +153,57 @@ pub trait ProcessRunner {
         } else {
             Err("process_failed: process runner does not support stdin".to_string())
         }
+    }
+
+    /// Stream `delimiter`-terminated stdout records of any length to
+    /// `on_record` while `input` is written to stdin. Output that grows with
+    /// its input is never captured whole. An unterminated tail is reported in
+    /// `line_error` and is not delivered.
+    ///
+    /// A runner without its own streaming answers from its captured output;
+    /// a truncated or non-UTF-8 capture delivers no record and is reported in
+    /// `line_error`.
+    fn run_streaming_records(
+        &self,
+        command: &ProcessCommand,
+        input: &[u8],
+        delimiter: u8,
+        on_record: &mut dyn FnMut(&[u8]) -> StreamControl,
+    ) -> Result<ProcessStreamOutput, String> {
+        let output = if input.is_empty() {
+            self.run(command)?
+        } else {
+            self.run_with_input(command, input)?
+        };
+        let mut result = ProcessStreamOutput {
+            status_success: output.status_success,
+            status: output.status,
+            stderr: output.stderr,
+            timed_out: output.timed_out,
+            cancelled: output.cancelled,
+            stopped_by_consumer: false,
+            line_error: None,
+        };
+        if output.stdout_truncated || output.stdout_had_invalid_utf8 {
+            result.line_error = Some((0, STREAM_CAPTURE_INCOMPLETE_ERROR.to_string()));
+            return Ok(result);
+        }
+        let mut records = output.stdout.as_bytes().split(|byte| *byte == delimiter);
+        let tail = records.next_back().unwrap_or_default();
+        let mut delivered = 0_usize;
+        for record in records {
+            delivered += 1;
+            if on_record(record) == StreamControl::Stop {
+                result.status_success = false;
+                result.status = "stopped by consumer".to_string();
+                result.stopped_by_consumer = true;
+                return Ok(result);
+            }
+        }
+        if !tail.is_empty() {
+            result.line_error = Some((delivered + 1, STREAM_RECORD_UNTERMINATED_ERROR.to_string()));
+        }
+        Ok(result)
     }
 
     fn run_streaming(
@@ -308,6 +362,20 @@ impl ProcessRunner for SystemProcessRunner {
         Ok(map_managed_process_output(output))
     }
 
+    fn run_streaming_records(
+        &self,
+        command: &ProcessCommand,
+        input: &[u8],
+        delimiter: u8,
+        on_record: &mut dyn FnMut(&[u8]) -> StreamControl,
+    ) -> Result<ProcessStreamOutput, String> {
+        #[cfg(any(test, feature = "test-support"))]
+        process_launch_probe::record(&command.cwd, command.program.as_ref());
+        let mut child = ManagedChild::spawn(managed_command(command))?;
+        let output = child.wait_for_record_output(input.to_vec(), delimiter, on_record)?;
+        Ok(map_managed_line_output(output))
+    }
+
     fn run_streaming(
         &self,
         command: &ProcessCommand,
@@ -410,4 +478,87 @@ fn managed_truncation_is_visible_at_process_adapter_boundary() {
     assert!(output.stderr_truncated);
     assert!(output.stdout_had_invalid_utf8);
     assert!(output.stderr_had_invalid_utf8);
+}
+
+#[cfg(test)]
+mod record_fallback_tests {
+    use super::{
+        ProcessCommand, ProcessOutput, ProcessRunner, StreamControl,
+        STREAM_CAPTURE_INCOMPLETE_ERROR, STREAM_RECORD_UNTERMINATED_ERROR,
+    };
+    use std::path::PathBuf;
+    use unica_work_control::cancellation::CancellationToken;
+
+    struct CapturedRunner(ProcessOutput);
+
+    impl ProcessRunner for CapturedRunner {
+        fn run(&self, _command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn captured(stdout: &str, stdout_truncated: bool) -> CapturedRunner {
+        CapturedRunner(ProcessOutput {
+            status_success: true,
+            status: "exit status: 0".into(),
+            stdout: stdout.into(),
+            stderr: String::new(),
+            timed_out: false,
+            cancelled: false,
+            stdout_truncated,
+            stderr_truncated: false,
+            stdout_had_invalid_utf8: false,
+            stderr_had_invalid_utf8: false,
+        })
+    }
+
+    fn command() -> ProcessCommand {
+        ProcessCommand {
+            program: PathBuf::from("git"),
+            args: Vec::new(),
+            cwd: PathBuf::from("."),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: None,
+            cancellation: CancellationToken::new(),
+        }
+    }
+
+    fn records(runner: &CapturedRunner) -> (Vec<Vec<u8>>, Option<(usize, String)>) {
+        let mut records = Vec::new();
+        let output = runner
+            .run_streaming_records(&command(), &[], 0, &mut |record| {
+                records.push(record.to_vec());
+                StreamControl::Continue
+            })
+            .unwrap();
+        (records, output.line_error)
+    }
+
+    #[test]
+    fn captured_records_keep_empty_records_and_reject_an_unterminated_tail() {
+        assert_eq!(
+            records(&captured("a\0\0b\0", false)),
+            (vec![b"a".to_vec(), Vec::new(), b"b".to_vec()], None)
+        );
+        assert_eq!(
+            records(&captured("a\0tail", false)),
+            (
+                vec![b"a".to_vec()],
+                Some((2, STREAM_RECORD_UNTERMINATED_ERROR.to_string()))
+            )
+        );
+    }
+
+    #[test]
+    fn truncated_capture_delivers_no_record() {
+        assert_eq!(
+            records(&captured("a\0b\0", true)),
+            (
+                Vec::new(),
+                Some((0, STREAM_CAPTURE_INCOMPLETE_ERROR.to_string()))
+            )
+        );
+    }
 }

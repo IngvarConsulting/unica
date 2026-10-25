@@ -322,7 +322,9 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // Заимствованный узел без своего файла читается по дескриптору;
         // валидатор файла прав, формы или макета проверял бы содержимое
         // родителя, которого в этом наборе нет.
-        "Role" | "Form" | "Template" | "XDTOPackage" if facts.inherited => Vec::new(),
+        "Role" | "Form" | "Template" | "CommonTemplate" | "XDTOPackage" if facts.inherited => {
+            Vec::new()
+        }
         // Срезы `Interface` модуля — проекция его методов, а не командный
         // интерфейс подсистемы; как и метод, они читаются без своего шага:
         // код модуля проверяет шаг `bsl` на самом модуле (#1467).
@@ -339,7 +341,7 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         }
         "Configuration" => vec![CheckStep::Native(CheckValidator::Cf), CheckStep::Bsl],
         "Form" => vec![CheckStep::Native(CheckValidator::Form)],
-        "Template" => match facts.template {
+        "Template" | "CommonTemplate" => match facts.template {
             Some(TemplateFlavour::DataCompositionSchema) => {
                 vec![CheckStep::Native(CheckValidator::Dcs)]
             }
@@ -846,7 +848,7 @@ mod tests {
             inherited: true,
             ..plain
         };
-        for kind in ["Role", "Form", "Template"] {
+        for kind in ["Role", "Form", "Template", "CommonTemplate"] {
             assert!(plan_for_node(kind, inherited).is_empty(), "{kind}");
         }
         assert!(plan_for_node(
