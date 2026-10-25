@@ -10,6 +10,10 @@ macro_rules! interface_operations {
         }
 
         impl InterfaceOperation {
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name { $($name => Some(Self::$variant),)+ _ => None }
+            }
+
             pub const fn name(self) -> &'static str {
                 match self { $(Self::$variant => $name),+ }
             }
@@ -125,6 +129,9 @@ impl InterfaceOperation {
 impl unica_operations::FamilyOperation for InterfaceOperation {
     fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
         crate::recovery::RETIRED_ARGUMENTS
+    }
+    fn contract(self) -> Option<unica_operation_contract::OperationContract> {
+        Some(self.contract())
     }
     type Observation = ();
     fn family(self) -> unica_operations::OperationFamily {

@@ -1,0 +1,59 @@
+{
+  "id": "S-1468-properties-can-preview",
+  "issue": 1468,
+  "area": "Контракты операций",
+  "task": "Прочитать контракты и построить предпросмотр по exampleArgs без записи исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "args0": {
+          "pointer": "/data/props/contract/exampleArgs"
+        },
+        "before": {
+          "file": "src/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": "$capture.args0"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    }
+  ]
+}

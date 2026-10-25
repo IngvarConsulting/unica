@@ -1353,6 +1353,14 @@ mod tests {
             );
             runner.after_apply = Some(Box::new(move |command, staged| {
                 assert_ne!(staged, expected_target);
+                fs::rename(
+                    staged.join("Catalogs/Items.xml"),
+                    staged.join("Catalogs/CorpusCatalog.xml"),
+                )
+                .unwrap();
+                let indexes = staged.join("Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml");
+                fs::create_dir_all(indexes.parent().unwrap()).unwrap();
+                fs::write(&indexes, include_bytes!("../../../../../tests/fixtures/platform_8_3_27/additional_indexes/AdditionalIndexes.xml")).unwrap();
                 assert_eq!(
                     fs::read(expected_target.join("local-change.bsl")).unwrap(),
                     b"old local source"
@@ -1373,11 +1381,12 @@ mod tests {
                 &runner,
             );
             assert!(result.ok, "{set}: {result:?}");
-            assert_eq!(result.data.as_ref().unwrap()["files"], 2);
+            assert_eq!(result.data.as_ref().unwrap()["files"], 3);
             assert_eq!(result.data.as_ref().unwrap()["state"], "replaced");
             assert_eq!(result.data.as_ref().unwrap()["extension"], json!(extension));
             assert!(!target.join("local-change.bsl").exists());
-            assert!(target.join("Catalogs/Items.xml").is_file());
+            assert!(target.join("Catalogs/CorpusCatalog.xml").is_file());
+            assert_eq!(fs::read(target.join("Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml")).unwrap(), include_bytes!("../../../../../tests/fixtures/platform_8_3_27/additional_indexes/AdditionalIndexes.xml"));
             assert_eq!(fs::read(root.path().join(CONFIG_NAME)).unwrap(), original);
             assert_eq!(
                 fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap(),

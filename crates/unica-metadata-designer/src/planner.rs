@@ -844,6 +844,39 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                 }
             }
         }
+        // 8.3.27 lists a registrar's records in the order of the registers'
+        // UUIDs; the new record moves to its place once every file of the new
+        // register is staged and its UUID can be read.
+        for file in &post_image.files {
+            let Some(crate::template_catalog::MetadataDependencyEdit::AddRegisterRecord(register)) =
+                &file.edit
+            else {
+                continue;
+            };
+            let relative = file.relative_path.clone();
+            let Some(current) = staged.read(&relative).map_err(|error| {
+                ApplyPlanError::staging(error, format!("ops[{op_index}].args.at"))
+            })?
+            else {
+                continue;
+            };
+            let mut uuid_of = |reference: &str| -> Option<String> {
+                let (kind, name) = reference.split_once('.')?;
+                let layout = unica_source_designer::layout::metadata_kind(kind)?;
+                let descriptor = PathBuf::from(layout.directory).join(format!("{name}.xml"));
+                let bytes = staged.read(&descriptor).ok()??;
+                crate::template_catalog::descriptor_object_uuid(&bytes)
+            };
+            if let Some(ordered) =
+                crate::template_catalog::place_register_record(&current, register, &mut uuid_of)
+            {
+                staged
+                    .replace(&relative, &current, ordered)
+                    .map_err(|error| {
+                        ApplyPlanError::staging(error, format!("ops[{op_index}].args.at"))
+                    })?;
+            }
+        }
         let owner_preimage = staged
             .read(&owner_relative)
             .map_err(|error| ApplyPlanError::staging(error, format!("ops[{op_index}].args.at")))?
@@ -902,7 +935,6 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         meta_remove_composition, meta_remove_composition_image, meta_remove_references,
         meta_remove_referrer, meta_remove_search_patterns, meta_remove_should_skip_file,
         plan_meta_remove_subsystem_replacements, remove_composition_entries, MetaRemoveReference,
-        META_REMOVE_REFERENCE_FILE_MAX_BYTES,
     };
     let at_path = format!("ops[{op_index}].args.at");
     unica_source_designer::registration::require_untouched_staged_state(
@@ -948,8 +980,9 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             .iter()
             .map(|spelling| format!("{spelling}.{name}")),
     );
-    // Module code names the object the same way and also by its Russian
-    // type names, the kind spelling followed by `Ссылка` or `Объект`.
+    // Module code names the object the same way and also by the Russian
+    // names of its derived types: `СправочникСсылка.X`,
+    // `РегистрСведенийНаборЗаписей.X`.
     let mut code_patterns = code_patterns;
     code_patterns.extend(query_patterns.iter().cloned());
     if kind == "CommonTemplate" {
@@ -958,17 +991,15 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         code_patterns.push(format!("ПолучитьОбщийМакет(\"{name}\")"));
         code_patterns.push(format!("GetCommonTemplate(\"{name}\")"));
     }
-    for reference in crate::remove::meta_remove_type_ref_names(kind).unwrap_or_default() {
-        let suffix = match reference.strip_prefix(kind) {
-            Some("Ref") => "Ссылка",
-            Some("Object") => "Объект",
-            _ => continue,
-        };
+    for derived in crate::remove::meta_remove_derived_type_names(kind) {
         code_patterns.extend(
-            spellings
-                .iter()
-                .skip(1)
-                .map(|spelling| format!("{spelling}{suffix}.{name}")),
+            crate::remove::meta_remove_ru_derived_type_names(
+                kind,
+                &derived,
+                spellings.get(1..).unwrap_or_default(),
+            )
+            .into_iter()
+            .map(|spelling| format!("{spelling}.{name}")),
         );
     }
     code_patterns.sort();
@@ -1009,7 +1040,9 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             continue;
         }
         let bytes = staged
-            .read_guarded_bounded(relative, META_REMOVE_REFERENCE_FILE_MAX_BYTES)
+            // #1119: every XML and BSL file of the reference scan is read
+            // whole; a large module must not refuse the removal.
+            .read_guarded_bounded(relative, usize::MAX)
             .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
             .ok_or_else(|| {
                 ApplyPlanError::new(

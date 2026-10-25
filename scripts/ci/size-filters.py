@@ -84,6 +84,10 @@ MEASURED_MEDIUM_CASES = (
     ("unica-coder", "unica_coder", "infrastructure::v13_read::tests::named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback"),
     ("unica-coder", "unica_coder", "infrastructure::daemon::tests::injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities"),
     ("unica-coder", "unica_coder", "infrastructure::daemon::tests::daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it"),
+    # apply над файлами больше прежних потолков #1119: настоящие 16 и 32 МиБ.
+    # Локально, macOS arm64, 25.10.2026: около 3 с и 22 с.
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::apply_large_input_tests::object_remove_scans_a_module_larger_than_the_former_bound"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::apply_large_input_tests::apply_edits_a_descriptor_larger_than_the_former_staging_bound"),
 )
 
 

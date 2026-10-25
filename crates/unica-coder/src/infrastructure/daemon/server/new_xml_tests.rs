@@ -663,16 +663,21 @@ fn canonical_object_create_then_form_add_preserves_native_new_file_bytes() {
     let native_with_ids = bind_native_identities(NATIVE_CATALOG, &owner, "Catalog");
     let mut expected_owner = String::from_utf8(native_with_ids).unwrap();
     // The minimal native Catalog is the independent object.create baseline.
-    // These two declared form edits are not a normalized/native final golden.
+    // The registration takes its own line, as the 8.3.27 export writes the
+    // first form of an empty container (#1404).
+    let eol = if expected_owner.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let registration =
+        format!("<ChildObjects>{eol}\t\t\t<Form>CorpusForm</Form>{eol}\t\t</ChildObjects>");
     for (before, after) in [
         (
             "<DefaultObjectForm/>",
             "<DefaultObjectForm>Catalog.CorpusCatalog.Form.CorpusForm</DefaultObjectForm>",
         ),
-        (
-            "<ChildObjects/>",
-            "<ChildObjects><Form>CorpusForm</Form></ChildObjects>",
-        ),
+        ("<ChildObjects/>", registration.as_str()),
     ] {
         assert_eq!(expected_owner.matches(before).count(), 1);
         expected_owner = expected_owner.replacen(before, after, 1);
