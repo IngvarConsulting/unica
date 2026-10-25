@@ -14,6 +14,20 @@ const NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 /// first added item turns it into the platform's file, header included.
 pub const EMPTY_CONTENT: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n</ExchangePlanContent>";
 
+/// The same document in an extension: 8.3.27 writes the content of a borrowed
+/// exchange plan — only the items the extension adds — with an empty
+/// `ExtensionProperty` after them (#1924).
+pub const EMPTY_EXTENSION_CONTENT: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<ExtensionProperty/>\r\n</ExchangePlanContent>";
+
+/// The empty `ExtensionProperty` an extension's content ends with.
+fn is_extension_property(node: Node<'_, '_>) -> bool {
+    node.has_tag_name((NS, "ExtensionProperty"))
+        && node.attributes().len() == 0
+        && node
+            .children()
+            .all(|child| child.is_text() && child.text().is_none_or(|s| s.trim().is_empty()))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContentObservation {
     pub items: Vec<ContentItem>,
@@ -89,6 +103,7 @@ pub fn read_content(xml: &str) -> Result<ContentObservation, String> {
         errors: Vec::new(),
     };
     let mut seen = HashSet::new();
+    let mut extension_property = false;
     for node in root.children() {
         if node.is_text() && node.text().is_some_and(|s| !s.trim().is_empty()) {
             result
@@ -97,6 +112,20 @@ pub fn read_content(xml: &str) -> Result<ContentObservation, String> {
         }
         if !node.is_element() {
             continue;
+        }
+        if is_extension_property(node) {
+            if extension_property {
+                result
+                    .errors
+                    .push("repeated ExchangePlanContent ExtensionProperty".into());
+            }
+            extension_property = true;
+            continue;
+        }
+        if extension_property {
+            result
+                .errors
+                .push("ExchangePlanContent Item after ExtensionProperty".into());
         }
         match read_item(node) {
             Ok(item) => {
@@ -117,7 +146,13 @@ pub fn read_content(xml: &str) -> Result<ContentObservation, String> {
 
 /// Upsert only the named targets. Callers resolve target existence and retain
 /// those descriptors before publishing this image through the saved plan.
-pub fn update_content(xml: &str, updates: &[ContentItem]) -> Result<String, String> {
+/// `borrowed` — план заимствован в расширение: файл получает форму платформы,
+/// пустой `ExtensionProperty` после элементов, даже если прежде его не было.
+pub fn update_content(
+    xml: &str,
+    updates: &[ContentItem],
+    borrowed: bool,
+) -> Result<String, String> {
     if updates.is_empty() {
         return Err("ExchangePlanContent update must contain at least one item".into());
     }
@@ -173,6 +208,10 @@ pub fn update_content(xml: &str, updates: &[ContentItem]) -> Result<String, Stri
             ));
         }
     }
+    let has_extension_property = root.children().any(|n| is_extension_property(n));
+    if borrowed && !has_extension_property && !additions.is_empty() {
+        additions.push_str(&format!("\t<{prefix}ExtensionProperty/>{eol}"));
+    }
     if !additions.is_empty() {
         let range = root.range();
         let fragment = &xml[range.clone()];
@@ -187,10 +226,16 @@ pub fn update_content(xml: &str, updates: &[ContentItem]) -> Result<String, Stri
                 format!(">{eol}{additions}</{root_qname}>"),
             ));
         } else {
-            let end = range.start
-                + fragment
-                    .rfind("</")
-                    .ok_or("missing ExchangePlanContent closing tag")?;
+            // Items of an extension stay before its `ExtensionProperty`.
+            let end = match root.children().find(|n| is_extension_property(*n)) {
+                Some(node) => node.range().start,
+                None => {
+                    range.start
+                        + fragment
+                            .rfind("</")
+                            .ok_or("missing ExchangePlanContent closing tag")?
+                }
+            };
             // New items go on their own lines before the closing tag's line,
             // which keeps its indentation; an inline closing tag moves down.
             let line = xml[..end].trim_end_matches([' ', '\t']);
@@ -213,6 +258,87 @@ pub fn update_content(xml: &str, updates: &[ContentItem]) -> Result<String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Content.xml` заимствованного плана обмена, который 8.3.27 выгрузил из
+    /// расширения после изменения состава: только добавленный расширением
+    /// элемент и пустой `ExtensionProperty` за ним (#1924).
+    const PLATFORM_EXTENSION: &str =
+        include_str!("../../../tests/fixtures/platform_8_3_27/exchange_plan/extension-Content.xml");
+
+    fn sample() -> ContentItem {
+        ContentItem {
+            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Пример")
+                .unwrap(),
+            auto_record: AutoRecord::Allow,
+        }
+    }
+
+    #[test]
+    fn the_platform_extension_content_reads_and_is_written_byte_for_byte() {
+        let observed = read_content(PLATFORM_EXTENSION.trim_start_matches('\u{feff}')).unwrap();
+        assert!(observed.errors.is_empty(), "{:?}", observed.errors);
+        assert_eq!(observed.items, [sample()]);
+        // Первая запись в расширении даёт форму платформы.
+        assert_eq!(
+            update_content(EMPTY_EXTENSION_CONTENT, &[sample()], true).unwrap(),
+            PLATFORM_EXTENSION
+        );
+        // Повтор ничего не меняет, новый элемент встаёт перед `ExtensionProperty`.
+        assert_eq!(
+            update_content(PLATFORM_EXTENSION, &[sample()], true).unwrap(),
+            PLATFORM_EXTENSION
+        );
+        let other = ContentItem {
+            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Прежний")
+                .unwrap(),
+            auto_record: AutoRecord::Deny,
+        };
+        let updated =
+            update_content(PLATFORM_EXTENSION, std::slice::from_ref(&other), true).unwrap();
+        assert!(
+            updated.ends_with("\t<ExtensionProperty/>\r\n</ExchangePlanContent>"),
+            "{updated}"
+        );
+        assert_eq!(read_content(&updated).unwrap().items, [sample(), other]);
+    }
+
+    /// Файл заимствованного плана без `ExtensionProperty` (записанный прежней
+    /// Unica) получает его при правке; собственный план его не получает.
+    #[test]
+    fn only_a_borrowed_plan_gets_the_extension_property() {
+        let without = EMPTY_EXTENSION_CONTENT.replace("\t<ExtensionProperty/>\r\n", "");
+        let other = ContentItem {
+            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Прежний")
+                .unwrap(),
+            auto_record: AutoRecord::Deny,
+        };
+        let first = update_content(&without, &[sample()], false).unwrap();
+        assert!(!first.contains("ExtensionProperty"), "{first}");
+        let borrowed = update_content(&first, std::slice::from_ref(&other), true).unwrap();
+        assert!(
+            borrowed.ends_with("\t<ExtensionProperty/>\r\n</ExchangePlanContent>"),
+            "{borrowed}"
+        );
+        assert_eq!(read_content(&borrowed).unwrap().items, [sample(), other]);
+        assert_eq!(
+            update_content(&without, &[sample()], true).unwrap(),
+            PLATFORM_EXTENSION
+        );
+    }
+
+    #[test]
+    fn a_misplaced_or_repeated_extension_property_is_damage() {
+        for xml in [
+            wrap("<ExtensionProperty/><ExtensionProperty/>"),
+            wrap(&format!(
+                "<ExtensionProperty/>{}",
+                item("Catalog.Пример", "Allow")
+            )),
+            wrap("<ExtensionProperty>text</ExtensionProperty>"),
+        ] {
+            assert!(!read_content(&xml).unwrap().errors.is_empty(), "{xml}");
+        }
+    }
     fn wrap(items: &str) -> String {
         format!(r#"<ExchangePlanContent xmlns="{NS}" version="2.20">{items}</ExchangePlanContent>"#)
     }
@@ -285,14 +411,16 @@ mod tests {
     fn content_upsert_preserves_old_bytes_changes_only_requested_mode_and_repeats_as_noop() {
         let old = "<Item><!--keep--><Metadata>Catalog.Прежний</Metadata><AutoRecord>Deny</AutoRecord></Item>";
         let xml = format!("\u{feff}{}\r\n", wrap(old));
-        let added = update_content(&xml, &[update("Catalog.Пример", AutoRecord::Allow)]).unwrap();
+        let added =
+            update_content(&xml, &[update("Catalog.Пример", AutoRecord::Allow)], false).unwrap();
         assert!(added.contains(old));
         assert!(added.starts_with('\u{feff}'));
         let observed = read_content(&added).unwrap();
         assert_eq!(observed.items.len(), 2);
         assert_eq!(observed.items[0].auto_record, AutoRecord::Deny);
         assert_eq!(observed.items[1].auto_record, AutoRecord::Allow);
-        let denied = update_content(&added, &[update("Catalog.Пример", AutoRecord::Deny)]).unwrap();
+        let denied =
+            update_content(&added, &[update("Catalog.Пример", AutoRecord::Deny)], false).unwrap();
         assert_eq!(
             denied,
             added.replacen(
@@ -302,7 +430,12 @@ mod tests {
             )
         );
         assert_eq!(
-            update_content(&denied, &[update("Catalog.Пример", AutoRecord::Deny)]).unwrap(),
+            update_content(
+                &denied,
+                &[update("Catalog.Пример", AutoRecord::Deny)],
+                false
+            )
+            .unwrap(),
             denied
         );
         assert_eq!(xml, format!("\u{feff}{}\r\n", wrap(old)));
@@ -316,7 +449,8 @@ mod tests {
             format!("\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"{NS}\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\r\n{items}</ExchangePlanContent>")
         };
         let xml = document(&platform_item("Catalog.Прежний", "Deny"));
-        let added = update_content(&xml, &[update("Catalog.Пример", AutoRecord::Allow)]).unwrap();
+        let added =
+            update_content(&xml, &[update("Catalog.Пример", AutoRecord::Allow)], false).unwrap();
         assert_eq!(
             added,
             document(
@@ -326,7 +460,7 @@ mod tests {
         );
         let empty = format!("<ExchangePlanContent xmlns=\"{NS}\" version=\"2.20\"/>");
         assert_eq!(
-            update_content(&empty, &[update("Catalog.Пример", AutoRecord::Allow)]).unwrap(),
+            update_content(&empty, &[update("Catalog.Пример", AutoRecord::Allow)], false).unwrap(),
             format!(
                 "<ExchangePlanContent xmlns=\"{NS}\" version=\"2.20\">\n\t<Item>\n\t\t<Metadata>Catalog.Пример</Metadata>\n\t\t<AutoRecord>Allow</AutoRecord>\n\t</Item>\n</ExchangePlanContent>"
             )
@@ -339,7 +473,8 @@ mod tests {
             format!(r#"xmlns:a="{NS}" xmlns:x="{NS}""#),
         ] {
             let xml = format!(r#"<x:ExchangePlanContent {declarations} version="2.20"/>"#);
-            let added = update_content(&xml, &[update("Catalog.New", AutoRecord::Allow)]).unwrap();
+            let added =
+                update_content(&xml, &[update("Catalog.New", AutoRecord::Allow)], false).unwrap();
             assert!(added.ends_with("</x:ExchangePlanContent>"), "{added}");
             assert_eq!(
                 read_content(&added).unwrap().items,
@@ -350,23 +485,25 @@ mod tests {
     #[test]
     fn content_upsert_handles_empty_prefixed_root_and_refuses_ambiguous_input() {
         let xml = format!(r#"<x:ExchangePlanContent xmlns:x="{NS}" version="2.20"/>"#);
-        let added = update_content(&xml, &[update("Catalog.New", AutoRecord::Allow)]).unwrap();
+        let added =
+            update_content(&xml, &[update("Catalog.New", AutoRecord::Allow)], false).unwrap();
         assert!(added.contains("<x:Item>"));
         assert_eq!(
             read_content(&added).unwrap().items,
             [update("Catalog.New", AutoRecord::Allow)]
         );
-        assert!(update_content(&xml, &[]).is_err());
+        assert!(update_content(&xml, &[], false).is_err());
         assert!(update_content(
             &xml,
             &[
                 update("Catalog.New", AutoRecord::Allow),
                 update("Catalog.New", AutoRecord::Deny)
-            ]
+            ],
+            false
         )
         .is_err());
         assert_eq!(
-            update_content(&added, &[update("Catalog.new", AutoRecord::Allow)]).unwrap(),
+            update_content(&added, &[update("Catalog.new", AutoRecord::Allow)], false).unwrap(),
             added
         );
         assert!(update_content(
@@ -374,10 +511,13 @@ mod tests {
             &[
                 update("Catalog.New", AutoRecord::Allow),
                 update("Catalog.new", AutoRecord::Deny)
-            ]
+            ],
+            false
         )
         .is_err());
         let damaged = wrap(&(item("Catalog.Old", "Unknown") + &item("Catalog.Good", "Deny")));
-        assert!(update_content(&damaged, &[update("Catalog.New", AutoRecord::Allow)]).is_err());
+        assert!(
+            update_content(&damaged, &[update("Catalog.New", AutoRecord::Allow)], false).is_err()
+        );
     }
 }

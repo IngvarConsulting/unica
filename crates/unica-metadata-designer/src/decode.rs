@@ -54,11 +54,9 @@ pub enum MetadataPlanKind {
     },
     Remove {
         target: MetadataAddress,
-        kind: MetadataKind,
+        /// The removed object's layout: a typed kind or a common template.
+        layout: &'static unica_source_designer::layout::MetadataLayout,
         name: String,
-        /// Remove even when other source files still refer to the object;
-        /// the plan then carries a typed warning naming those files.
-        force: bool,
     },
     HelpCreate {
         target: MetadataAddress,
@@ -794,6 +792,13 @@ pub fn parse_object_remove(
     op_index: usize,
     binding: &MetadataDecodeContext<'_>,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
+    if args.contains_key("force") {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "`object.remove` does not accept `force`: remove the references from other metadata first; references only in module code or query text are listed as a warning in the plan",
+        )
+        .at_path(format!("ops[{op_index}].args.force")));
+    }
     let schema = metadata_object_remove_input_schema();
     reject_unknown_input_args("object.remove", args, schema, op_index, binding.registry)?;
     let target = unica_source_contract::proposal::input::qualified_target(
@@ -801,36 +806,48 @@ pub fn parse_object_remove(
         op_index,
         binding.source_set_name(),
     )?;
-    let (address, kind) = metadata_owner(&target, op_index)?;
+    let (address, layout) = removable_object(&target, op_index)?;
     let name = target.segments()[0]
         .name()
-        .expect("metadata_owner proved the segment is named")
+        .expect("removable_object proved the segment is named")
         .to_string();
-    let force = match args.get("force") {
-        None => false,
-        Some(Value::Bool(force)) => *force,
-        Some(_) => {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::BadValue,
-                "`force` must be a boolean",
-            )
-            .at_path(format!("ops[{op_index}].args.force")));
-        }
-    };
-    if let Some(value) = args.get("force") {
-        check_input_field(
-            ArgumentShape::new(schema),
-            "force",
-            value,
-            &format!("ops[{op_index}].args.force"),
-        )?;
-    }
     Ok(MetadataPlanKind::Remove {
         target: address,
-        kind,
+        layout,
         name,
-        force,
     })
+}
+/// The top-level object `object.remove` takes: one of the typed kinds or a
+/// common template, which the configurator removes the same way.
+fn removable_object(
+    target: &QualifiedAddress,
+    op_index: usize,
+) -> Result<
+    (
+        MetadataAddress,
+        &'static unica_source_designer::layout::MetadataLayout,
+    ),
+    ApplyPlanError,
+> {
+    if let [owner] = target.segments() {
+        if owner.kind() == NodeKind::CommonTemplate {
+            if let Some(name) = owner.name() {
+                let address = MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("CommonTemplate.{name}"),
+                )
+                .map_err(|error| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
+                        .at_path(format!("ops[{op_index}].args.at"))
+                })?;
+                let layout = unica_source_designer::layout::metadata_kind("CommonTemplate")
+                    .expect("a common template has a physical layout");
+                return Ok((address, layout));
+            }
+        }
+    }
+    let (address, kind) = metadata_owner(target, op_index)?;
+    Ok((address, crate::layout::metadata_layout(kind)))
 }
 pub fn parse_help_create(
     args: &Map<String, Value>,
@@ -1692,6 +1709,24 @@ pub fn parse_relation(
     )?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let values = required_object(args, "values", op_index)?;
+    // Чтение показывает состав плана обмена связью `content`, но меняет его
+    // только `content.set`: отказ ведёт туда, а не в тупик (#1923).
+    if kind == MetadataKind::ExchangePlan
+        && values.get("relation").and_then(Value::as_str) == Some("content")
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "`{operation}` does not edit exchange plan content; use `content.set` on `{target}`"
+            ),
+        )
+        .at_path(format!("ops[{op_index}].args.values.relation"))
+        .with_next(serde_json::json!({
+            "tool": "unica.view",
+            "args": {"at": format!("{target}.Can.content.set")},
+            "reason": "exchange plan content is replaced by content.set on the same plan",
+        })));
+    }
     check_input_field(
         shape,
         "values",
