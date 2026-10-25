@@ -590,19 +590,24 @@ fn validation_report(
 }
 
 fn safe_relative_path(path: &Path) -> Option<String> {
-    if path.as_os_str().is_empty()
-        || path
-            .components()
-            .any(|part| !matches!(part, std::path::Component::Normal(_)))
-    {
+    // Native separators are judged by `components()`; the public text always uses
+    // `/`, so a separator or drive marker left inside one component is refused.
+    let mut parts = Vec::new();
+    for part in path.components() {
+        let std::path::Component::Normal(part) = part else {
+            return None;
+        };
+        let part = part.to_str()?;
+        if part.contains(['\\', ':']) || part.chars().any(char::is_control) {
+            return None;
+        }
+        parts.push(part);
+    }
+    let value = parts.join("/");
+    if value.is_empty() || value.len() > 512 {
         return None;
     }
-    let value = path.to_str()?;
-    if value.len() > 512 || value.contains(['\\', ':']) || value.chars().any(char::is_control) {
-        return None;
-    }
-    let redacted = redactor(value);
-    (redacted == value).then(|| path_text(path))
+    (redactor(&value) == value).then_some(value)
 }
 
 fn cleanup_warning(result: &mut DomainResult, reason: FullDumpCleanupReason) {
@@ -708,6 +713,30 @@ fn preview_result(
 mod tests {
     use super::*;
     use unica_source_contract::read::full_dump::{DumpValidationFailure, DumpValidationReason};
+
+    #[test]
+    fn workspace_relative_paths_are_published_with_forward_slashes_on_every_os() {
+        let native: PathBuf = ["main", ".unica-dump-guard-1", "recovery"].iter().collect();
+        assert_eq!(
+            safe_relative_path(&native).as_deref(),
+            Some("main/.unica-dump-guard-1/recovery")
+        );
+        let root = Path::new("/workspace");
+        let mut result = DomainResult::canonical_rejection(
+            Some(OPERATION.to_string()),
+            RefusalCode::InvalidResult,
+            "rejected",
+        );
+        retain_artifact(root, &mut result, &root.join(&native));
+        assert_eq!(
+            result.artifacts,
+            vec![json!({"kind":"recovery","path":"main/.unica-dump-guard-1/recovery"})]
+        );
+        assert!(result.warnings.is_empty());
+        for refused in ["main/a\\b", "main/c:d", "main/x\u{7}y", ""] {
+            assert_eq!(safe_relative_path(Path::new(refused)), None, "{refused:?}");
+        }
+    }
 
     #[test]
     fn validation_projection_excludes_untrusted_text_and_keeps_uncertain_publication() {

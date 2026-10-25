@@ -1512,6 +1512,25 @@ mod tests {
                 assert_eq!(data["state"], "notPublished", "{defect}");
                 assert_eq!(data["validation"]["reason"], reason, "{defect}");
                 assert_eq!(data["validation"]["path"], json!(path), "{defect}");
+                let (version, qname) = match defect {
+                    "wrong_version" => (json!({"kind":"exact","literal":"2.20"}), Value::Null),
+                    "versionless_with_version" => (
+                        json!({"kind":"absent"}),
+                        json!("{http://v8.1c.ru/8.1/data-composition-system/schema}DataCompositionSchema"),
+                    ),
+                    "unknown_root" => (
+                        Value::Null,
+                        json!("{http://v8.1c.ru/8.3/xcf/extrnprops}UnregisteredDumpRoot"),
+                    ),
+                    _ => (Value::Null, Value::Null),
+                };
+                assert_eq!(
+                    data["validation"]["versionRequirement"], version,
+                    "{defect}"
+                );
+                if !qname.is_null() {
+                    assert_eq!(data["validation"]["qname"], qname, "{defect}");
+                }
                 assert!(
                     result.summary.contains(reason),
                     "text-only client needs the reason"
