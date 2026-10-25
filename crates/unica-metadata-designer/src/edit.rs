@@ -3354,5 +3354,50 @@ fn collapse_children(
 }
 
 #[cfg(test)]
+mod legacy_inline_collapse_tests {
+    use super::collapse_legacy_inline_children;
+
+    /// An inline form or template with a standalone descriptor becomes the
+    /// by-name reference in the owner's own namespace prefix; one without a
+    /// descriptor, a by-name reference and an inline command stay (#1370).
+    #[test]
+    fn only_described_inline_forms_and_templates_are_collapsed() {
+        let owner = concat!(
+            "<md:MetaDataObject xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">",
+            "<md:Catalog uuid=\"1\"><md:Properties><md:Name>Items</md:Name></md:Properties>",
+            "<md:ChildObjects>",
+            "<md:Form uuid=\"2\"><md:Properties><md:Name>Main</md:Name></md:Properties></md:Form>",
+            "<md:Form uuid=\"3\"><md:Properties><md:Name>Orphan</md:Name></md:Properties></md:Form>",
+            "<md:Form>List</md:Form>",
+            "<md:Template uuid=\"4\"><md:Properties><md:Name>Print</md:Name></md:Properties></md:Template>",
+            "<md:Command uuid=\"5\"><md:Properties><md:Name>Open</md:Name></md:Properties></md:Command>",
+            "</md:ChildObjects></md:Catalog></md:MetaDataObject>"
+        );
+        let mut image = owner.to_string();
+        let collapsed = collapse_legacy_inline_children(&mut image, &|tag, name| {
+            matches!(
+                (tag, name),
+                ("Form", "Main") | ("Form", "List") | ("Template", "Print")
+            )
+        });
+        assert_eq!(
+            collapsed,
+            vec![
+                ("Form", "Main".to_string()),
+                ("Template", "Print".to_string())
+            ]
+        );
+        assert!(image.contains("<md:Form>Main</md:Form>"), "{image}");
+        assert!(
+            image.contains("<md:Template>Print</md:Template>"),
+            "{image}"
+        );
+        assert!(image.contains("<md:Name>Orphan</md:Name>"), "{image}");
+        assert!(image.contains("<md:Form>List</md:Form>"), "{image}");
+        assert!(image.contains("<md:Name>Open</md:Name>"), "{image}");
+    }
+}
+
+#[cfg(test)]
 #[path = "../tests/platform/edit_empty_child_objects.rs"]
 mod empty_child_objects_tests;

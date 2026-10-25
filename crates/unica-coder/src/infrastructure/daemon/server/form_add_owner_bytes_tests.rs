@@ -570,6 +570,8 @@ fn canonical_form_add_refuses_prefixed_legacy_inline_duplicate_registration() {
     );
 }
 
+// The inline form has no standalone descriptor here, so the #1370 collapse
+// of an edited owner leaves it as it is.
 #[test]
 fn canonical_form_add_preserves_unrelated_legacy_inline_registration() {
     let old_form = "<md:Form uuid='22222222-2222-4222-8222-222222222222'><md:Properties><md:Name>Existing</md:Name><md:Comment /></md:Properties></md:Form>";

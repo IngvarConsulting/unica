@@ -48,7 +48,7 @@
             "metadataPath": "Catalog.Editable",
             "field": "childObjects.Form.Main",
             "validator": "meta",
-            "message": "Legacy inline registration Catalog.Editable.Form.Main exists alongside its separate descriptor; platform 8.3.27 may hang while importing this owner. Any apply edit of the owner, for example props.set of one of its properties, registers it by name"
+            "message": "Legacy inline registration Catalog.Editable.Form.Main exists alongside its separate descriptor; platform 8.3.27 may hang while importing this owner. An apply that changes the owner's description, for example props.set of one of its properties to a new value, registers it by name"
           }
         },
         {
@@ -59,7 +59,7 @@
             "metadataPath": "Catalog.Editable",
             "field": "childObjects.Template.Print",
             "validator": "meta",
-            "message": "Legacy inline registration Catalog.Editable.Template.Print exists alongside its separate descriptor; platform 8.3.27 may hang while importing this owner. Any apply edit of the owner, for example props.set of one of its properties, registers it by name"
+            "message": "Legacy inline registration Catalog.Editable.Template.Print exists alongside its separate descriptor; platform 8.3.27 may hang while importing this owner. An apply that changes the owner's description, for example props.set of one of its properties to a new value, registers it by name"
           }
         }
       ],

@@ -78,21 +78,31 @@ fn collapse_legacy_inline_registrations(
         else {
             continue;
         };
-        if change.original == change.current {
-            continue;
-        }
         let parts = change
             .relative_path
             .iter()
             .filter_map(std::ffi::OsStr::to_str)
             .collect::<Vec<_>>();
-        let [directory, file] = parts.as_slice() else {
-            continue;
+        // An object of a configuration or extension is `<Kind dir>/<Name>.xml`;
+        // an external data processor or report is `<Name>.xml` at the root.
+        let (kind, owner_dir, file) = match (parts.as_slice(), binding.source_kind()) {
+            ([directory, file], _) => {
+                let Some(layout) =
+                    unica_source_designer::layout::metadata_kind_by_directory(directory)
+                else {
+                    continue;
+                };
+                (layout.tag, std::path::PathBuf::from(directory), *file)
+            }
+            ([file], SourceSetKind::ExternalProcessor) => {
+                ("ExternalDataProcessor", std::path::PathBuf::new(), *file)
+            }
+            ([file], SourceSetKind::ExternalReport) => {
+                ("ExternalReport", std::path::PathBuf::new(), *file)
+            }
+            _ => continue,
         };
-        let (Some(layout), Some(name)) = (
-            unica_source_designer::layout::metadata_kind_by_directory(directory),
-            file.strip_suffix(".xml"),
-        ) else {
+        let Some(name) = file.strip_suffix(".xml") else {
             continue;
         };
         let (bom, text) = match current.strip_prefix(b"\xef\xbb\xbf") {
@@ -103,7 +113,7 @@ fn collapse_legacy_inline_registrations(
             continue;
         };
         let mut image = text.to_string();
-        let owner_dir = std::path::Path::new(directory).join(name);
+        let owner_dir = owner_dir.join(name);
         let mut described = std::collections::BTreeSet::new();
         for (tag, child) in unica_metadata_designer::edit::inline_standalone_child_names(&image) {
             let collection = if tag == "Form" { "Forms" } else { "Templates" };
@@ -140,7 +150,7 @@ fn collapse_legacy_inline_registrations(
         warnings.push(serde_json::json!({
             "code": "legacy_inline_registration",
             "severity": "warning",
-            "at": format!("{}:{}.{name}", binding.source_set_name(), layout.tag),
+            "at": format!("{}:{kind}.{name}", binding.source_set_name()),
             "message": format!(
                 "the owner registers {names} by name now: the description inline in the owner is an older Unica format that 1C 8.3.27 imports endlessly"
             ),

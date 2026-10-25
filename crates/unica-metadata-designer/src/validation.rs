@@ -1754,8 +1754,9 @@ pub fn validate_child_footprints(
                 &format!("childObjects.{registration}"),
                 format!(
                     "Legacy inline registration {} exists alongside its separate descriptor; \
-                     platform 8.3.27 may hang while importing this owner. Any apply edit of \
-                     the owner, for example props.set of one of its properties, registers it by name",
+                     platform 8.3.27 may hang while importing this owner. An apply that \
+                     changes the owner's description, for example props.set of one of its \
+                     properties to a new value, registers it by name",
                     child.child
                 ),
             ));
