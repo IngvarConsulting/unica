@@ -521,8 +521,9 @@ impl FindIndex {
 /// One page of the ranked answer of [`FindIndex::find_all_checked`], built
 /// while the layout is walked. Each document is scored as it is read and
 /// dropped; only the `keep` best candidates ranked after the previous page's
-/// last item stay, so memory follows the page size at any depth. Every match still counts toward the
-/// total and a fingerprint that does not depend on the order it was met in.
+/// last item stay, so memory follows the page size at any depth. Every
+/// match still counts toward the total and a fingerprint that does not
+/// depend on the order it was met in.
 /// Nearest names are scored on a second walk, only when nothing matched
 /// directly.
 pub(crate) struct NameRanker {

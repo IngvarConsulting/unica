@@ -1859,6 +1859,29 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
     }
     assert_eq!(nearest_seen, seen);
 
+    // 121 matches are eleven full pages of eleven: the last one completes
+    // without a continuation.
+    let mut exact_cursor: Option<String> = None;
+    let mut exact_pages = 0;
+    loop {
+        let mut arguments =
+            json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 11});
+        if let Some(token) = &exact_cursor {
+            arguments["cursor"] = json!(token);
+        }
+        let page = mcp.completed_tool_call(call_tool(300 + exact_pages, "unica.search", arguments));
+        assert_eq!(page["ok"], true, "{page:#}");
+        assert_eq!(page["data"]["matches"].as_array().map(Vec::len), Some(11));
+        exact_pages += 1;
+        exact_cursor = page["cursor"].as_str().map(str::to_owned);
+        if exact_cursor.is_none() {
+            assert_eq!(page["page"]["stoppedBy"], "complete");
+            break;
+        }
+        assert!(exact_pages < 11, "{page:#}");
+    }
+    assert_eq!(exact_pages, 11);
+
     let default_page = mcp.completed_tool_call(call_tool(
         200,
         "unica.search",

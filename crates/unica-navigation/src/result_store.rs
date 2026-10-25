@@ -450,6 +450,8 @@ impl std::fmt::Debug for SearchCursorOwner {
 pub struct StoredSearchCursor {
     owner: Arc<SearchCursorOwner>,
     payload: zeroize::Zeroizing<[u8; SEARCH_CURSOR_PAYLOAD_BYTES]>,
+    /// Items shown before this page. A keyed (name) continuation resumes
+    /// by `after` and keeps the offset only as a page count.
     pub offset: usize,
     pub after: Option<SearchAfter>,
 }
@@ -738,8 +740,10 @@ fn encode_search_cursor(ciphertext: &[u8], keyed: bool) -> String {
 }
 
 /// The ciphertext of a token and whether it is keyed. A keyed token is
-/// longer than the fixed one by its rank and address; the hex length is
-/// otherwise unbounded here, and decryption authenticates the rest.
+/// longer than the fixed one by its rank and address. Its length is bounded
+/// only by the request line that carries it, as every argument is: decoding
+/// and authenticating cost no more than reading that line, and decryption
+/// refuses anything the owner did not issue.
 fn decode_search_cursor(token: &str) -> Result<(Vec<u8>, bool), SearchCursorError> {
     let keyed = if token.len() == SEARCH_CURSOR_TOKEN_BYTES && token.starts_with("sc2.") {
         false
@@ -1772,6 +1776,21 @@ mod tests {
                 .err(),
             Some(SearchCursorError::Invalid)
         );
+        // Neither an odd, a too short nor a fixed-length keyed token decodes,
+        // and a fixed token under the keyed prefix does not authenticate.
+        let fixed = store.insert_first(binding.clone(), 20).unwrap();
+        for forged in [
+            format!("{keyed}0"),
+            format!("sc3.{}", &keyed[4..keyed.len() - 18]),
+            fixed.replacen("sc2.", "sc3.", 1),
+            format!("{}00", fixed.replacen("sc2.", "sc3.", 1)),
+        ] {
+            assert_eq!(
+                store.read(&forged, &binding).err(),
+                Some(SearchCursorError::Invalid),
+                "{forged}"
+            );
+        }
         assert_eq!(
             store.verify_question(&token, &other_kind),
             Err(SearchCursorError::Invalid)
