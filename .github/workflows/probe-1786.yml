@@ -39,13 +39,14 @@ jobs:
           echo "TEMP=$env:TEMP"
       - name: Large, as the nightly runs it
         shell: bash
+        env:
+          CARGO_TERM_COLOR: never
         run: |
-          cargo nextest run --workspace --profile large --no-tests=pass --no-fail-fast --success-output final --failure-output final > large.log 2>&1 || true
-          grep -E "PROBE prep|receipt_runtime_tests::|Summary \[" large.log | grep -vE "^\s+(START|SLOW)" | tail -400
-      - name: Receipt runtime tests alone under nextest
-        shell: bash
-        run: |
-          for round in 1 2; do
-            cargo nextest run -p unica-coder --lib --profile large --no-fail-fast --success-output final -E 'test(/receipt_runtime_tests::/)' > alone.log 2>&1 || true
-            grep -E "PROBE prep|  (PASS|FAIL|TRY|FLAKY) .*retirement|Summary \[" alone.log | tail -80
-          done
+          cargo nextest run --workspace --profile large --no-tests=pass --no-fail-fast --color never --success-output never --failure-output final --status-level all > large.log 2>&1 || true
+          echo "=== receipt_runtime_tests and receipt ledger durations"
+          grep -E "^\s+(PASS|FAIL|TRY|FLAKY|SLOW|LEAK)" large.log | grep -E "receipt_runtime_tests|daemon_receipt_ledger" | sort -t'[' -k2 -rn | head -60
+          echo "=== failures"
+          grep -E "TRY [0-9] FAIL|^\s+FAIL|panicked|refused at" large.log | head -60
+          echo "=== concurrency around the receipt cluster"
+          grep -nE "START .*receipt_runtime_tests::(retirement_finalize|queued_staged)" large.log | head
+          grep -E "Summary" large.log
