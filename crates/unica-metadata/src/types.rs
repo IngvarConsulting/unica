@@ -262,8 +262,14 @@ impl MetaEventSource {
     }
 }
 
+// Поля вариантов — в camelCase, как у прочитанного типа реквизита
+// (`ObservedMetadataTypeVariant`): `metadataPath`, а не `metadata_path` (#1942).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 pub enum MetadataTypeVariant {
     String {
         length: u32,
@@ -433,6 +439,54 @@ fn address_diagnostic(raw: &str, error: SourceTargetError) -> MetaDiagnostic {
 mod tests {
     use super::*;
     use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
+
+    /// Тип пишущего вызова и прочитанный тип реквизита сериализуются одинаково:
+    /// предопределённый элемент называет ссылку `metadataPath`, как реквизит
+    /// (#1942).
+    #[test]
+    fn a_metadata_type_serializes_like_the_observed_attribute_type() {
+        let address = |raw| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();
+        for variant in [
+            MetadataTypeVariant::String {
+                length: 10,
+                allowed_length: StringLengthMode::Variable,
+            },
+            MetadataTypeVariant::Number {
+                digits: 10,
+                fraction: 2,
+                sign: NumberSign::NonNegative,
+            },
+            MetadataTypeVariant::Date {
+                fractions: DateFractions::DateTime,
+            },
+            MetadataTypeVariant::BinaryData {
+                length: 0,
+                allowed_length: StringLengthMode::Fixed,
+            },
+            MetadataTypeVariant::Reference {
+                metadata_path: address("Catalog.Items"),
+            },
+            MetadataTypeVariant::DefinedType {
+                metadata_path: address("DefinedType.Money"),
+            },
+        ] {
+            let written = serde_json::to_value(&variant).unwrap();
+            let observed = serde_json::to_value(
+                crate::observed_types::ObservedMetadataTypeVariant::from(variant),
+            )
+            .unwrap();
+            assert_eq!(written, observed);
+            assert!(
+                !written.to_string().contains('_'),
+                "snake_case key in {written}"
+            );
+        }
+        let reference = serde_json::to_value(MetadataTypeVariant::Reference {
+            metadata_path: address("Catalog.Items"),
+        })
+        .unwrap();
+        assert_eq!(reference["metadataPath"], "Catalog.Items");
+    }
 
     #[test]
     fn metadata_kind_accepts_exactly_the_23_creation_spellings() {
