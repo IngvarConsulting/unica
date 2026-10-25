@@ -6278,6 +6278,7 @@ const FIXTURE_PREPARATION_BUDGET: Duration = Duration::from_secs(60);
 struct FixturePreparation<'a> {
     task: &'a str,
     started: Instant,
+    budget: Duration,
     deadline: Instant,
     stages: Vec<(&'static str, Duration)>,
 }
@@ -6288,13 +6289,14 @@ impl<'a> FixturePreparation<'a> {
         Self {
             task,
             started,
+            budget,
             deadline: started + budget,
             stages: Vec::new(),
         }
     }
 
     /// Run `stage`, recording its duration; a refusal panics with the trace.
-    fn step<T, E: std::fmt::Display>(
+    fn step<T, E: std::fmt::Debug>(
         &mut self,
         stage: &'static str,
         run: impl FnOnce(Instant) -> Result<T, E>,
@@ -6304,7 +6306,7 @@ impl<'a> FixturePreparation<'a> {
         self.stages.push((stage, begun.elapsed()));
         outcome.unwrap_or_else(|error| {
             panic!(
-                "fixture preparation of Task `{}` refused at `{stage}`: {error}; {}",
+                "fixture preparation of Task `{}` refused at `{stage}`: {error:?}; {}",
                 self.task,
                 self.trace()
             )
@@ -6321,7 +6323,7 @@ impl<'a> FixturePreparation<'a> {
         format!(
             "stages {stages}; {}ms of the {}ms budget elapsed",
             self.started.elapsed().as_millis(),
-            (self.deadline - self.started).as_millis()
+            self.budget.as_millis()
         )
     }
 }
@@ -6355,9 +6357,9 @@ fn materialize_completed_task_key(
                 OriginalCutoffDescriptor::new(created_epoch_ms, 6_000).expect("valid cutoff"),
                 deadline,
             )
-            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("{error:?}"))?
             .into_reservation()
-            .map_err(|_| "the Task receipt already exists".to_string())
+            .map_err(|existing| format!("the Task receipt already exists: {existing:?}"))
     });
     let actor_bound = preparation.step("bind actor", |deadline| {
         receipt_actor_for_fixture(runtime).bind_reserved_actor(
@@ -6392,7 +6394,7 @@ fn materialize_completed_task_key(
             deadline,
             runtime.hooks().as_ref(),
         )
-        .map_err(|failure| failure.error().to_string())
+        .map_err(|failure| failure.error().clone())
     });
     let task_bound = preparation.step("complete handoff", |deadline| {
         receipt_actor_for_fixture(runtime).complete_bound_task_handoff(
@@ -6420,7 +6422,7 @@ fn materialize_completed_task_key(
             deadline,
             runtime.hooks().as_ref(),
         )
-        .map_err(|failure| failure.error().to_string())
+        .map_err(|failure| failure.error().clone())
     });
     key
 }
