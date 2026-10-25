@@ -256,7 +256,7 @@ mod tests {
                 .unwrap();
         let mut secrets = Vec::new();
         collect(&layer, &mut secrets);
-        assert!(secrets.is_empty(), "{secrets:?}");
+        assert_eq!(secrets.len(), 0, "a path or a flag is not a secret");
     }
 
     #[test]

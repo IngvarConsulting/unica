@@ -88,8 +88,8 @@ fn case(root: &Path, op: &'static str, fail: bool) -> Case {
     }
 }
 
-/// The text around the first occurrence of `secret`, so a failure names the
-/// field that carried it.
+/// The text around the first occurrence of `secret`, with the secret masked,
+/// so a failure names the field that carried it.
 fn around(text: &str, secret: &str) -> Option<String> {
     let start = text.find(secret)?;
     let from = text[..start]
@@ -101,7 +101,8 @@ fn around(text: &str, secret: &str) -> Option<String> {
     let to = (to..=text.len())
         .find(|index| text.is_char_boundary(*index))
         .unwrap();
-    Some(text[from..to].to_string())
+    // The report names the field, never the value itself.
+    Some(text[from..to].replace(secret, "<secret>"))
 }
 
 /// Every file under `root` whose bytes carry `secret`, except `kept`.
