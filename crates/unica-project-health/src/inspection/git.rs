@@ -1567,8 +1567,9 @@ fn output_incomplete(output: &ProcessOutput) -> bool {
 ///
 /// The command echoes the matching pattern, which keeps the encoding of its
 /// ignore file (often cp1251). Only the pattern text can be non-UTF-8: the
-/// source and the path are paths Unica wrote, and the pattern is reported,
-/// never matched, so its lossy text is enough. A truncated stream is not.
+/// source and the path are paths Unica wrote, and the pattern is reported and
+/// only tested for its ASCII `!`, so its lossy text is enough. A truncated
+/// stream is not.
 /// Git skips a pattern file of 100 MiB or more with a warning; the answer
 /// then comes from part of the policy.
 fn ignore_failure_reason(output: &ProcessOutput) -> Option<String> {
@@ -2126,19 +2127,25 @@ fn ignore_facts_with_checkpoint(
     staged_ignore_root: &Path,
     checkpoint: &mut dyn FnMut() -> Result<(), IgnoreInspectionError>,
 ) -> Result<Vec<ProjectHealthFact>, IgnoreInspectionError> {
+    // `check-ignore -v` reports the deciding pattern, and a negated one
+    // (`!pattern`) decides that the path is not ignored.
     let mut staged_by_path = BTreeMap::new();
     for (match_index, matched) in staged_matches.iter().enumerate() {
         if match_index.is_multiple_of(256) {
             checkpoint()?;
         }
-        staged_by_path.insert(matched.path.as_str(), matched);
+        if !matched.pattern.starts_with('!') {
+            staged_by_path.insert(matched.path.as_str(), matched);
+        }
     }
     let mut working_by_path = BTreeMap::new();
     for (match_index, matched) in working_matches.iter().enumerate() {
         if match_index.is_multiple_of(256) {
             checkpoint()?;
         }
-        working_by_path.insert(matched.path.as_str(), matched);
+        if !matched.pattern.starts_with('!') {
+            working_by_path.insert(matched.path.as_str(), matched);
+        }
     }
     let mut tracked = BTreeSet::new();
     for (entry_index, entry) in entries.iter().enumerate() {

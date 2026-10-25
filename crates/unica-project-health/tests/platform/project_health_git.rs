@@ -1722,6 +1722,50 @@ fn project_health_git_ignore_reads_a_tracked_cp1251_gitignore() {
 }
 
 #[test]
+fn project_health_git_ignore_negated_rule_does_not_ignore_the_path() {
+    // `check-ignore -v` also reports a negated pattern that re-includes the
+    // path. Such a match must not count as the ignore rule the path needs.
+    let fixture = parent_repository_fixture();
+    fs::write(
+        fixture.repository_root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\n!ConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    git(&fixture.repository_root, &["add", ".gitignore"]);
+    let layout = inspect_layout(&fixture.context);
+
+    let inspection = GitRepositoryInspector::new()
+        .inspect_base(
+            &fixture.context,
+            &layout,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+        .unwrap();
+
+    let missing = inspection
+        .facts
+        .iter()
+        .filter_map(|fact| match fact {
+            ProjectHealthFact::IgnoreRuleMissing { path, .. } => Some(path.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        missing
+            .iter()
+            .any(|path| path.ends_with("ConfigDumpInfo.xml")),
+        "a negated rule re-includes ConfigDumpInfo.xml"
+    );
+    assert!(
+        !missing
+            .iter()
+            .any(|path| path.ends_with("DumpFilesIndex.txt")),
+        "an ordinary rule still ignores DumpFilesIndex.txt"
+    );
+}
+
+#[test]
 fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
     // Git skips a pattern file of 100 MiB or more with a warning. The skipped
     // file holds every required rule, so trusting the answer would report the
