@@ -624,7 +624,20 @@ fn settle(
         }
         V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::Task { snapshot },
-        } => Ok(CanonicalCallOutcome::Task(snapshot)),
+        } => {
+            // A submitted or recovered call continues only as the Task reserved
+            // for its exact key.
+            if snapshot.task_id() != receipt_key.reserved_task_id()
+                || snapshot.invocation_id() != receipt_key.invocation_id()
+                || snapshot.receipt_key_digest()
+                    != &unica_execution::receipt_ledger::receipt_key_digest(receipt_key)
+            {
+                return Err(protocol_refusal(
+                    "daemon answered with a task of a different invocation",
+                ));
+            }
+            Ok(CanonicalCallOutcome::Task(snapshot))
+        }
         V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::ReceiptPending { .. },
         } => Err(receipt_pending_refusal()),
@@ -1653,6 +1666,74 @@ mod tests {
         );
     }
 
+    /// The frontend reads a real answer of exactly the frame limit. One byte
+    /// more, or an answer cut before its line ends, leaves the submit session
+    /// unusable: the frontend recovers that same receipt by key on a fresh
+    /// session and never submits again.
+    #[test]
+    fn submit_answer_at_the_frame_limit_is_read_and_one_byte_over_or_cut_is_recovered() {
+        use std::io::Write as _;
+        let limit = unica_daemon::protocol_v5::MAX_V5_RESPONSE_LINE_BYTES;
+        // A valid answer padded inside its JSON to `line` bytes with the newline.
+        let padded = |line: usize| {
+            let compact = serde_json::to_vec(&V5ServerResponse::Error {
+                code: V5DaemonErrorCode::Overloaded,
+            })
+            .unwrap();
+            let mut frame = vec![b'{'];
+            frame.extend(std::iter::repeat_n(b' ', line - compact.len() - 1));
+            frame.extend_from_slice(&compact[1..]);
+            frame.push(b'\n');
+            assert_eq!(frame.len(), line);
+            frame
+        };
+        for (case, frame, recovered) in [
+            ("at the limit", padded(limit), false),
+            ("one byte over", padded(limit + 1), true),
+            ("cut", padded(limit)[..limit / 2].to_vec(), true),
+        ] {
+            let fake = FakeDaemon::start_with_raw_script(Box::new(move |_, request, writer| {
+                match request {
+                    V5ClientRequest::SubmitInvocation { .. } => {
+                        let _ = writer.write_all(&frame);
+                        let _ = writer.flush();
+                        // An answer that cannot be read closes this session.
+                        !recovered
+                    }
+                    V5ClientRequest::RecoverInvocationReceipt { receipt_key } => {
+                        super::test_support::write_frame(
+                            writer,
+                            &direct_receipt(receipt_key.clone(), completed("recovered")),
+                        );
+                        true
+                    }
+                    V5ClientRequest::AcknowledgeInvocationReceipt { .. } => false,
+                    other => panic!("{case}: unexpected frame {other:?}"),
+                }
+            }));
+            let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+            let outcome = call(&router, None);
+            if recovered {
+                let result = direct_result(outcome);
+                assert_eq!(
+                    result
+                        .structured_content
+                        .as_ref()
+                        .and_then(|value| value["summary"].as_str()),
+                    Some("recovered"),
+                    "{case}"
+                );
+            } else {
+                let refused = outcome.expect_err("the read answer is a rejection");
+                assert!(
+                    refused.message.contains("overloaded"),
+                    "{case}: {refused:?}"
+                );
+            }
+            assert_eq!(fake.submissions(), 1, "{case}: submitted again");
+        }
+    }
+
     /// A first submit is never answered with a pending receipt. If one is,
     /// the frontend refuses with the closed `receipt_pending` and neither
     /// submits again nor starts a recovery of its own.
@@ -1991,10 +2072,8 @@ mod tests {
         assert_eq!(fake.submissions(), 1);
     }
 
-    #[test]
-    fn response_lost_at_the_cutoff_is_recovered_into_the_handed_off_task() {
-        let task_id = TaskId::new();
-        let fake = FakeDaemon::start(Box::new(move |_, request| match request {
+    fn lost_cutoff_fake(foreign: bool) -> FakeDaemon {
+        FakeDaemon::start(Box::new(move |_, request| match request {
             // The daemon is still working when the frontend cutoff passes: the
             // submit session sees nothing before the client gives up on it.
             V5ClientRequest::SubmitInvocation { .. } => {
@@ -2002,12 +2081,19 @@ mod tests {
                 Step::Close
             }
             V5ClientRequest::RecoverInvocationReceipt { receipt_key } => {
+                let task_id = if foreign {
+                    TaskId::new()
+                } else {
+                    receipt_key.reserved_task_id()
+                };
                 Step::Reply(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Task {
                         snapshot: V5DaemonTaskSnapshot::Working {
                             task_id,
                             invocation_id: receipt_key.invocation_id(),
-                            receipt_key_digest: "07".repeat(32).parse().unwrap(),
+                            receipt_key_digest: unica_execution::receipt_ledger::receipt_key_digest(
+                                receipt_key,
+                            ),
                             created_at_epoch_ms: epoch_ms_now(),
                             updated_at_epoch_ms: epoch_ms_now(),
                             ttl_ms: 3_600_000,
@@ -2019,7 +2105,12 @@ mod tests {
                 })
             }
             other => panic!("unexpected frame {other:?}"),
-        }));
+        }))
+    }
+
+    #[test]
+    fn response_lost_at_the_cutoff_is_recovered_into_the_handed_off_task() {
+        let fake = lost_cutoff_fake(false);
         let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let started = Instant::now();
@@ -2028,12 +2119,38 @@ mod tests {
         let Ok(CanonicalCallOutcome::Task(snapshot)) = outcome else {
             panic!("a lost response must recover the handed-off Task: {outcome:?}");
         };
-        assert_eq!(snapshot.task_id(), task_id);
+        let reserved = fake
+            .seen()
+            .iter()
+            .find_map(|request| match request {
+                V5ClientRequest::SubmitInvocation { invocation } => {
+                    Some(invocation.reserved_task_id())
+                }
+                _ => None,
+            })
+            .expect("the call was submitted");
+        assert_eq!(snapshot.task_id(), reserved);
         assert!(
             started.elapsed()
                 < Duration::from_millis(300) + RECOVERY_BUDGET + Duration::from_millis(500),
             "recovery stays inside its bounded window: {:?}",
             started.elapsed()
+        );
+        assert_eq!(fake.submissions(), 1, "recovery never resubmits");
+    }
+
+    /// Recovery answers only with the Task reserved for the exact key: a Task
+    /// of another invocation is a protocol refusal, never this call's Task.
+    #[test]
+    fn a_recovered_task_of_another_key_is_refused() {
+        let fake = lost_cutoff_fake(true);
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+
+        let outcome = call(&router, Some(Duration::from_millis(300)));
+
+        assert!(
+            !matches!(&outcome, Ok(CanonicalCallOutcome::Task(_))),
+            "a foreign Task was taken as this call's: {outcome:?}"
         );
         assert_eq!(fake.submissions(), 1, "recovery never resubmits");
     }

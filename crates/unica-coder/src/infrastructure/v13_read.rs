@@ -104,7 +104,6 @@ fn observe_completed_view_projection_for_test(at: &QualifiedAddress, revision: &
     });
 }
 
-const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
 /// Logical read adapter over one actor-issued source capability. Its read
 /// identity is fixed at admission; the adapter never snapshots the tree.
 pub(crate) struct LogicalViewReadAuthority<'a> {
