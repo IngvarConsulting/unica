@@ -845,10 +845,7 @@ impl<'a> Collector<'a> {
                 }
                 _ => 0,
             },
-            uncovered_lower_bound: match &request.continuation {
-                TextContinuation::Resume(resume) => resume.uncovered_lower_bound,
-                TextContinuation::Start => false,
-            },
+            uncovered_lower_bound: false,
             details: Vec::new(),
             fatal: None,
         }
@@ -911,7 +908,6 @@ impl<'a> Collector<'a> {
                             file: key,
                             hits: 0,
                             uncovered: self.uncovered as u64,
-                            uncovered_lower_bound: self.uncovered_lower_bound,
                         }),
                         Self::walk_digest(&identity, &[0; 32]),
                     ));
@@ -1119,7 +1115,6 @@ impl<'a> Collector<'a> {
                     // The count before the current file: the re-entered
                     // file counts itself again.
                     uncovered: (self.uncovered - usize::from(current.uncovered)) as u64,
-                    uncovered_lower_bound: self.uncovered_lower_bound,
                 }),
                 Self::walk_digest(&current.identity, &current.chain),
             );

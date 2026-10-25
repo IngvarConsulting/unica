@@ -373,7 +373,7 @@ pub struct SearchCursorBinding {
 }
 
 /// The fixed record; a resumable traversal appends the path it re-enters.
-const SEARCH_CURSOR_PAYLOAD_BYTES: usize = 123;
+const SEARCH_CURSOR_PAYLOAD_BYTES: usize = 122;
 const SEARCH_CURSOR_CIPHERTEXT_BYTES: usize = SEARCH_CURSOR_PAYLOAD_BYTES + 16;
 const SEARCH_CURSOR_TOKEN_BYTES: usize = 4 + 2 * SEARCH_CURSOR_CIPHERTEXT_BYTES;
 /// The longest resume path a cursor carries: a source-set name and one
@@ -455,8 +455,6 @@ pub struct SearchResume {
     pub file: Vec<u8>,
     pub hits: u64,
     pub uncovered: u64,
-    /// Whether `uncovered` is only a lower bound of the files passed.
-    pub uncovered_lower_bound: bool,
 }
 
 impl SearchResume {
@@ -464,7 +462,6 @@ impl SearchResume {
         file: Vec::new(),
         hits: 0,
         uncovered: 0,
-        uncovered_lower_bound: false,
     };
 }
 
@@ -588,7 +585,6 @@ impl SearchCursorStore {
             || plaintext.len() > SEARCH_CURSOR_PAYLOAD_BYTES + SEARCH_RESUME_PATH_MAX_BYTES
             || plaintext[0] != 1
             || plaintext[33] > 1
-            || plaintext[122] > 1
             || (plaintext[33] == 0 && plaintext[34..66].iter().any(|byte| *byte != 0))
         {
             return Err(SearchCursorError::Invalid);
@@ -688,7 +684,6 @@ fn write_search_resume(
     payload.truncate(SEARCH_CURSOR_PAYLOAD_BYTES);
     payload[106..114].copy_from_slice(&resume.hits.to_be_bytes());
     payload[114..122].copy_from_slice(&resume.uncovered.to_be_bytes());
-    payload[122] = u8::from(resume.uncovered_lower_bound);
     payload.extend_from_slice(&resume.file);
     Ok(())
 }
@@ -705,7 +700,6 @@ fn read_search_resume(plaintext: &[u8]) -> SearchResume {
         file: plaintext[SEARCH_CURSOR_PAYLOAD_BYTES..].to_vec(),
         hits: field(106..114),
         uncovered: field(114..122),
-        uncovered_lower_bound: plaintext[122] == 1,
     }
 }
 
@@ -1929,7 +1923,6 @@ mod tests {
             file: b"main\0Catalogs/Items/Ext/ObjectModule.bsl".to_vec(),
             hits: 3,
             uncovered: 2,
-            uncovered_lower_bound: true,
         };
         let stored = store.read(&token, &binding).unwrap();
         let mut next = binding.clone();
