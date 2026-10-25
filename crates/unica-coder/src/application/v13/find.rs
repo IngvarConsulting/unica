@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_refusal::RefusalCode;
 use unica_work_control::cancellation::CancellationToken;
@@ -509,6 +510,102 @@ impl FindIndex {
             })
             .collect::<Vec<_>>();
         serde_json::to_vec(&facts).expect("find identity facts serialize")
+    }
+}
+
+/// The ranked answer of [`FindIndex::find_all_checked`], built while the
+/// layout is walked: each document is scored as it is read and only its
+/// candidate is kept, so a search never holds the whole directory.
+pub(crate) struct NameRanker {
+    request: FindRequest,
+    query: String,
+    seen: HashSet<String>,
+    watched: HashMap<String, bool>,
+    direct: Vec<OwnedCandidate>,
+    nearest: Vec<OwnedCandidate>,
+}
+
+struct OwnedCandidate {
+    score: usize,
+    candidate: FindCandidate,
+}
+
+impl NameRanker {
+    /// `watched` are addresses whose presence the caller checks afterwards,
+    /// such as a search scope; nothing else about absent documents is kept.
+    pub(crate) fn new(request: FindRequest, watched: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            query: normalize(&request.query),
+            request,
+            seen: HashSet::new(),
+            watched: watched.into_iter().map(|at| (at, false)).collect(),
+            direct: Vec::new(),
+            nearest: Vec::new(),
+        }
+    }
+
+    pub(crate) fn offer(&mut self, document: FindDocument) {
+        // The first document of an address wins, as in [`FindIndex::new`].
+        if !self.seen.insert(document.at.clone()) {
+            return;
+        }
+        if let Some(present) = self.watched.get_mut(&document.at) {
+            *present = true;
+        }
+        let eligible = self
+            .request
+            .kind
+            .as_ref()
+            .is_none_or(|kind| kind == &document.kind)
+            && self.request.contains_address(&document.at);
+        if !eligible {
+            return;
+        }
+        if let Some(found) = best_direct_match(&document, &self.query) {
+            // Nearest names are an answer only when nothing matches directly.
+            self.nearest = Vec::new();
+            self.direct.push(OwnedCandidate::from(found));
+        } else if self.direct.is_empty() {
+            if let Some(found) = nearest_match(&document, &self.query) {
+                self.nearest.push(OwnedCandidate::from(found));
+            }
+        }
+    }
+
+    /// The watched addresses the walk met.
+    pub(crate) fn watched_presence(&self) -> HashSet<String> {
+        self.watched
+            .iter()
+            .filter(|(_, present)| **present)
+            .map(|(at, _)| at.clone())
+            .collect()
+    }
+
+    pub(crate) fn finish(self) -> FindResult {
+        let nearest = self.direct.is_empty();
+        let mut candidates = if nearest { self.nearest } else { self.direct };
+        candidates.sort_by(|left, right| {
+            left.score
+                .cmp(&right.score)
+                .then_with(|| left.candidate.at.cmp(&right.candidate.at))
+        });
+        candidates.dedup_by(|left, right| left.candidate.at == right.candidate.at);
+        FindResult {
+            nearest: nearest && !candidates.is_empty(),
+            candidates: candidates
+                .into_iter()
+                .map(|owned| owned.candidate)
+                .collect(),
+        }
+    }
+}
+
+impl From<ScoredCandidate<'_>> for OwnedCandidate {
+    fn from(scored: ScoredCandidate<'_>) -> Self {
+        Self {
+            score: scored.score,
+            candidate: scored.into_candidate(),
+        }
     }
 }
 

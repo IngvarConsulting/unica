@@ -255,6 +255,76 @@ mod tests {
     }
 
     #[test]
+    fn name_search_ignores_the_layout_directory_budgets() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Requested</Catalog><Catalog>Unrelated</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        for name in ["Requested", "Unrelated"] {
+            std::fs::write(
+                source.join(format!("Catalogs/{name}.xml")),
+                format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>{name}</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#),
+            )
+            .unwrap();
+        }
+        let workspace_hint = physical_root(workspace.path())
+            .to_string_lossy()
+            .into_owned();
+        // A directory of one document or one fact byte held the whole name
+        // search before; the search keeps candidates, not the directory.
+        for (budget, service) in [
+            (
+                "entry count",
+                CanonicalV13ReadService::with_directory_limit_for_test(1),
+            ),
+            (
+                "aggregate fact bytes",
+                CanonicalV13ReadService::with_directory_fact_limit_for_test(1),
+            ),
+        ] {
+            let daemon = LiveV5Daemon::start(Arc::new(service));
+            let owner = daemon.owner();
+            let submission = daemon.submit(
+                &owner,
+                &InvocationRequest::new(
+                    ToolIdentity::Search,
+                    serde_json::json!({"query": "Requested", "corpus": "names"}),
+                    workspace_hint.as_str(),
+                    7_000,
+                )
+                .unwrap(),
+            );
+            let result = match submission {
+                V5Submission::Direct(result) => *result,
+                V5Submission::Task(task_id) => {
+                    let terminal = daemon.wait_terminal(&owner, task_id, INTEGRATION_TASK_WAIT);
+                    terminal
+                        .completed_result()
+                        .cloned()
+                        .expect("name search publishes its terminal result")
+                }
+            };
+            assert!(result.ok, "{budget}: {result:?}");
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(
+                data["matches"][0]["at"], "main:Catalog.Requested",
+                "{budget}"
+            );
+            assert_eq!(data["sourceCoverage"]["complete"], true, "{budget}");
+            daemon.finish(owner);
+        }
+    }
+
+    #[test]
     fn name_search_reports_an_injected_local_read_fault_through_the_live_daemon() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");

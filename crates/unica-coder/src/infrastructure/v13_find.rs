@@ -1,5 +1,6 @@
 use crate::application::v13::find::{
     normalize_layout_path, FindDocument, FindFact, FindFactKind, FindIndex, FindPathAlias,
+    FindResult, NameRanker,
 };
 use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::event_sources::module_address_for_relative;
@@ -156,6 +157,14 @@ enum DescriptorHeadReadError {
     Local(io::ErrorKind),
 }
 
+/// The ranked names of one search and what its layout walk could not read.
+pub(crate) struct NameSearchOutcome {
+    pub(crate) result: FindResult,
+    pub(crate) omissions: FindOmissions,
+    /// Whether a watched address, such as the search scope, exists.
+    pub(crate) scope_present: Box<dyn Fn(&str) -> bool + Send>,
+}
+
 #[derive(Debug)]
 pub(crate) struct FindBuildOutcome {
     pub(crate) index: FindIndex,
@@ -187,6 +196,9 @@ struct DirectoryBuild {
     attempted_fact_bytes: usize,
     omissions: FindOmissions,
     include_module_aliases: bool,
+    /// A name search scores each document as it is read and keeps only its
+    /// candidates: no directory is held, so no directory budget applies.
+    ranker: Option<NameRanker>,
 }
 
 impl DirectoryBuild {
@@ -279,8 +291,13 @@ impl WorkspaceFindDirectoryBuilder {
         cancellation: &CancellationToken,
         include_module_aliases: bool,
     ) -> Result<FindIndex, FindBuildError> {
-        let outcome =
-            self.build_internal(sources, deadline, cancellation, include_module_aliases)?;
+        let (outcome, _) = self.build_internal(
+            sources,
+            deadline,
+            cancellation,
+            include_module_aliases,
+            None,
+        )?;
         if outcome.omissions.total != 0 {
             return Err(FindBuildError::with_detail(
                 RefusalDetail::SourceUnreadable,
@@ -293,13 +310,50 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(outcome.index)
     }
 
+    #[cfg(test)]
     pub(crate) fn build_for_search(
         &self,
         sources: &[LayoutFindSource<'_>],
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<FindBuildOutcome, FindBuildError> {
-        self.build_internal(sources, deadline, cancellation, false)
+        self.build_internal(sources, deadline, cancellation, false, None)
+            .map(|(outcome, _)| outcome)
+    }
+
+    /// Search the names of `sources` in one pass over the layout. Each
+    /// document is scored while it is read and only its candidate is kept,
+    /// so neither the directory entry count nor its facts are budgeted; a
+    /// collection is listed whole. The ranker also answers whether its
+    /// watched addresses exist.
+    pub(crate) fn search_names(
+        &self,
+        sources: &[LayoutFindSource<'_>],
+        ranker: NameRanker,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<NameSearchOutcome, FindBuildError> {
+        let (outcome, ranker) =
+            self.build_internal(sources, deadline, cancellation, false, Some(ranker))?;
+        let ranker = ranker.expect("a name search keeps its ranker");
+        find_checkpoint(deadline, cancellation)?;
+        Ok(NameSearchOutcome {
+            scope_present: Box::new({
+                let watched = ranker.watched_presence();
+                move |at: &str| watched.contains(at)
+            }),
+            result: ranker.finish(),
+            omissions: outcome.omissions,
+        })
+    }
+
+    /// A name search lists a collection whole; the layout directory that
+    /// resolve and call-graph neighbours hold keeps its collection limit.
+    fn collection_limit(&self, build: &DirectoryBuild) -> Option<usize> {
+        build
+            .ranker
+            .is_none()
+            .then_some(self.max_collection_entries)
     }
 
     fn build_internal(
@@ -308,7 +362,8 @@ impl WorkspaceFindDirectoryBuilder {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
         include_module_aliases: bool,
-    ) -> Result<FindBuildOutcome, FindBuildError> {
+        ranker: Option<NameRanker>,
+    ) -> Result<(FindBuildOutcome, Option<NameRanker>), FindBuildError> {
         if sources.len() > MAX_SOURCE_SETS {
             return Err(FindBuildError::new(
                 RefusalCode::ProviderLimitExceeded,
@@ -322,6 +377,7 @@ impl WorkspaceFindDirectoryBuilder {
             attempted_fact_bytes: 0,
             omissions: FindOmissions::default(),
             include_module_aliases,
+            ranker,
         };
         let result = (|| {
             for source in sources {
@@ -344,10 +400,13 @@ impl WorkspaceFindDirectoryBuilder {
             }
         }
         result?;
-        Ok(FindBuildOutcome {
-            index: FindIndex::new(build.documents),
-            omissions: build.omissions,
-        })
+        Ok((
+            FindBuildOutcome {
+                index: FindIndex::new(build.documents),
+                omissions: build.omissions,
+            },
+            build.ranker,
+        ))
     }
 
     /// Resolve only paths that could be the requested object. The name-search
@@ -1257,6 +1316,7 @@ impl WorkspaceFindDirectoryBuilder {
             attempted_fact_bytes: 0,
             omissions: FindOmissions::default(),
             include_module_aliases: false,
+            ranker: None,
         };
         let head = self.read_descriptor_head(
             file,
@@ -1342,7 +1402,7 @@ impl WorkspaceFindDirectoryBuilder {
         }
         for entry in immediate_names(
             source.root,
-            self.max_collection_entries,
+            self.collection_limit(build),
             deadline,
             cancellation,
             self.capacity_observer.as_deref(),
@@ -1364,7 +1424,7 @@ impl WorkspaceFindDirectoryBuilder {
             let mut unsafe_owner_directories = HashSet::new();
             for owner in immediate_names(
                 &collection,
-                self.max_collection_entries,
+                self.collection_limit(build),
                 deadline,
                 cancellation,
                 self.capacity_observer.as_deref(),
@@ -1532,7 +1592,7 @@ impl WorkspaceFindDirectoryBuilder {
         };
         for entry in immediate_names(
             source.root,
-            self.max_collection_entries,
+            self.collection_limit(build),
             deadline,
             cancellation,
             self.capacity_observer.as_deref(),
@@ -1623,7 +1683,7 @@ impl WorkspaceFindDirectoryBuilder {
             };
             for entry in immediate_names(
                 &family,
-                self.max_collection_entries,
+                self.collection_limit(build),
                 deadline,
                 cancellation,
                 self.capacity_observer.as_deref(),
@@ -1730,6 +1790,14 @@ impl WorkspaceFindDirectoryBuilder {
         }
         let title = synonym.filter(|value| !value.is_empty()).unwrap_or(name);
         let document = FindDocument::new(at, kind, title, facts).with_path(path);
+        if let Some(ranker) = build.ranker.as_mut() {
+            build.attempted_entries = build.attempted_entries.saturating_add(1);
+            build.attempted_fact_bytes = build
+                .attempted_fact_bytes
+                .saturating_add(document.estimated_identity_bytes());
+            ranker.offer(document);
+            return Ok(());
+        }
         let next_total = build
             .fact_bytes
             .saturating_add(document.estimated_identity_bytes());
@@ -2264,13 +2332,13 @@ fn unsafe_layout_entry() -> FindBuildError {
 
 fn immediate_names(
     directory: &SourceDirectory,
-    maximum_entries: usize,
+    maximum_entries: Option<usize>,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
     observer: Option<&CapacityObserver>,
 ) -> Result<Vec<std::ffi::OsString>, FindBuildError> {
     directory
-        .read_immediate_names_bounded(maximum_entries, || {
+        .read_immediate_names_with_limit(maximum_entries, || {
             find_checkpoint(deadline, cancellation)
                 .map_err(|error| std::io::Error::other(error.to_string()))
         })
@@ -2294,7 +2362,8 @@ fn immediate_names(
                 )
             } else if error.kind() == io::ErrorKind::FileTooLarge {
                 if let Some(observer) = observer {
-                    observer.record_find_collection(maximum_entries as u64 + 1, false);
+                    let bound = maximum_entries.map_or(u64::MAX, |entries| entries as u64 + 1);
+                    observer.record_find_collection(bound, false);
                 }
                 FindBuildError::new(
                     RefusalCode::ProviderLimitExceeded,
@@ -4255,6 +4324,7 @@ mod tests {
             attempted_fact_bytes: 0,
             omissions: super::FindOmissions::default(),
             include_module_aliases: false,
+            ranker: None,
         };
         for _ in 0..=super::MAX_OMISSION_DETAILS {
             build.record_omission("main", "descriptor_unreadable");

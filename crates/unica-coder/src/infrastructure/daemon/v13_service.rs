@@ -19,7 +19,7 @@ use super::v13_call_graph::{
 use super::v13_read_modes::{attach_can, operation_node_with, search_scope_prefix, source_backed};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
-use crate::application::v13::find::{FindIndex, FindRequest};
+use crate::application::v13::find::{FindIndex, FindRequest, NameRanker};
 use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
 use crate::application::v13::tool_catalog::catalog_for;
 use crate::domain::apply::UNWRITABLE_SOURCE_MESSAGE;
@@ -2057,16 +2057,27 @@ impl CanonicalV13ReadService {
             .iter()
             .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
             .collect::<Vec<_>>();
-        let built = match self
-            .find_builder
-            .build_for_search(&layout, deadline, cancellation)
-        {
+        // One pass over the layout ranks the names and notes whether the
+        // scope exists; the directory itself is never held.
+        let ranked_request = match &scope {
+            Some(scope) => request.clone().with_scope(scope.clone()),
+            None => request.clone(),
+        };
+        let watched = scope.as_ref().map(name_scope_witnesses).unwrap_or_default();
+        let built = match self.find_builder.search_names(
+            &layout,
+            NameRanker::new(ranked_request, watched),
+            deadline,
+            cancellation,
+        ) {
             Ok(built) => built,
             Err(error) => return find_build_error_result(None, error),
         };
         let scope_binding = scope.as_ref().map(ToString::to_string);
         if let Some(scope) = scope {
-            if let Err((code, message)) = validate_name_scope(&built.index, &scope, first.kind()) {
+            if let Err((code, message)) =
+                validate_name_scope(&*built.scope_present, &scope, first.kind())
+            {
                 if built.omissions.total != 0
                     && matches!(code, RefusalCode::NotFound | RefusalCode::InvalidState)
                 {
@@ -2078,15 +2089,8 @@ impl CanonicalV13ReadService {
                 }
                 return error_result(Some(scope.to_string()), code, message);
             }
-            request = request.with_scope(scope);
         }
-        let found = match built
-            .index
-            .find_all_checked(request, deadline, cancellation)
-        {
-            Ok(found) => found,
-            Err(error) => return error_result(None, error.code(), error.to_string()),
-        };
+        let found = built.result;
         let summary = if built.omissions.total == 0 {
             "name search completed".to_string()
         } else {
@@ -5324,8 +5328,25 @@ enum SearchCorpus {
     Names,
 }
 
+/// The addresses whose existence [`validate_name_scope`] asks about.
+fn name_scope_witnesses(scope: &QualifiedAddress) -> Vec<String> {
+    let mut witnesses = vec![
+        format!("{}:Configuration", scope.source_set()),
+        scope.to_string(),
+    ];
+    let first = &scope.segments()[0];
+    if let Some(name) = first.name() {
+        witnesses.push(format!(
+            "{}:{}.{name}",
+            scope.source_set(),
+            first.kind().as_str()
+        ));
+    }
+    witnesses
+}
+
 fn validate_name_scope(
-    directory: &FindIndex,
+    has_address: &dyn Fn(&str) -> bool,
     scope: &QualifiedAddress,
     source_kind: SourceSetKind,
 ) -> Result<(), (RefusalCode, &'static str)> {
@@ -5348,13 +5369,10 @@ fn validate_name_scope(
                 "external source sets have no Configuration root",
             ));
         }
-        return directory
-            .has_address(&scope.to_string())
-            .then_some(())
-            .ok_or((
-                RefusalCode::InvalidState,
-                "name search Configuration descriptor is unavailable",
-            ));
+        return has_address(&scope.to_string()).then_some(()).ok_or((
+            RefusalCode::InvalidState,
+            "name search Configuration descriptor is unavailable",
+        ));
     }
     if !supported_owner || segments.len() > 2 {
         return Err((
@@ -5365,7 +5383,7 @@ fn validate_name_scope(
     if matches!(
         source_kind,
         SourceSetKind::Configuration | SourceSetKind::Extension
-    ) && !directory.has_address(&format!("{}:Configuration", scope.source_set()))
+    ) && !has_address(&format!("{}:Configuration", scope.source_set()))
     {
         return Err((
             RefusalCode::InvalidState,
@@ -5391,7 +5409,7 @@ fn validate_name_scope(
             first.kind().as_str(),
             first.name().expect("checked owner name")
         );
-        if !directory.has_address(&owner) {
+        if !has_address(&owner) {
             return Err((
                 RefusalCode::NotFound,
                 "name search scope owner does not exist",
@@ -5401,7 +5419,7 @@ fn validate_name_scope(
     if segments
         .last()
         .is_some_and(|segment| segment.name().is_some())
-        && !directory.has_address(&scope.to_string())
+        && !has_address(&scope.to_string())
     {
         return Err((
             RefusalCode::NotFound,
