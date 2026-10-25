@@ -1082,7 +1082,7 @@ class CorpusAdapterTests(unittest.TestCase):
         self.assertIsNone(verifier.EXPECTED_CASE_CONTRACT_SHA256)
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
-            "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb",
+            "5681aa80006dfb5091c8e326c6e47edb1462a5011b195bf5871ab24a49700e8a",
         )
 
         with tempfile.TemporaryDirectory() as tmp:

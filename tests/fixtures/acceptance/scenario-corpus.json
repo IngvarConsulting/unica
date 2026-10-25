@@ -3429,7 +3429,7 @@
   },
   {
    "area": "Создание и удаление объектов",
-   "task": "Удалить справочник, на который ссылаются права роли — поверхность отказывает и называет ссылающийся файл",
+   "task": "Удалить справочник, на который ссылаются права роли и состав подсистемы, — план вычищает права роли, состав и командный интерфейс подсистемы и называет их адресами",
    "wire": [
     {
      "tool": "unica.apply",
@@ -3470,9 +3470,39 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_state: `Catalog.Валюты` is still referenced by 1 source file(s): Roles/SalesReader/Ext/Rights.xml; remove the references first"
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "composition_cleaned"
+      },
+      {
+       "pointer": "/warnings/0/entries",
+       "contains": {
+        "at": "main:Role.SalesReader",
+        "property": "Rights"
+       }
+      },
+      {
+       "pointer": "/warnings/0/entries",
+       "contains": {
+        "at": "main:Subsystem.Администрирование",
+        "property": "Content"
+       }
+      },
+      {
+       "pointer": "/warnings/0/entries",
+       "contains": {
+        "at": "main:Subsystem.Администрирование",
+        "property": "CommandInterface"
+       }
+      }
+     ]
     },
     {
      "tool": "unica.view",
@@ -7658,7 +7688,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
     }
    ]
   },
@@ -7687,7 +7717,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
     }
    ]
   },
@@ -7717,7 +7747,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
     }
    ]
   },
@@ -7747,7 +7777,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
     }
    ]
   },
@@ -7770,7 +7800,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; set `off-support` with `supportRule.set` in a separate apply before removal"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; take the object off support with `supportRule.set` and the rule `off-support`"
     }
    ]
   },
@@ -7990,7 +8020,7 @@
   {
    "id": "S293",
    "area": "Объекты метаданных",
-   "task": "Удалить объект, на который ещё ссылаются права роли, с force — план исполним и несёт предупреждение о сохранённых ссылках",
+   "task": "Удалить объект, на который ещё ссылаются права роли, с force — аргумент снят из контракта, поверхность отказывает bad_value до записи",
    "wire": [
     {
      "tool": "unica.apply",
@@ -8034,8 +8064,9 @@
       ]
      },
      "expect": [
-      "ok"
-     ]
+      "refused"
+     ],
+     "refusal": "bad_value: `object.remove` does not accept `force`: remove the references from other metadata first; references only in module code or query text are listed as a warning i"
     }
    ]
   },
@@ -8080,7 +8111,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
     }
    ]
   },

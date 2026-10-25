@@ -25,11 +25,25 @@ pub struct SubsystemPropertyChanges {
     pub use_one_command: Option<bool>,
 }
 
+/// One supplied root property value, typed by its profile kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DescriptorPropertyValue {
+    Text(String),
+    Boolean(bool),
+}
+
+/// Root property changes in profile order; each property appears once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigurationPropertyChanges {
+    pub changes: Vec<(DescriptorProperty, DescriptorPropertyValue)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
     Role(RolePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
+    Configuration(ConfigurationPropertyChanges),
 }
 
 type DecodeResult<T> = Result<T, ContractError>;
@@ -161,6 +175,35 @@ impl<'a> PropertyArgumentReader<'a> {
             .transpose()
     }
 
+    fn enumerated(&mut self, field: DescriptorProperty) -> DecodeResult<Option<String>> {
+        if field.kind() != DescriptorPropertyKind::Enum {
+            return Err(invalid(
+                &self.path,
+                "property kind disagrees with its enumeration decoder",
+            ));
+        }
+        self.alias(field)?
+            .map(|(value, path)| {
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| invalid(&path, "property value must be a string"))?;
+                let allowed = field.allowed_values();
+                if allowed.contains(&value) {
+                    Ok(value.to_string())
+                } else {
+                    Err(invalid(
+                        path,
+                        format!(
+                            "`{value}` is not a value of `{}`; expected one of: {}",
+                            field.names()[0],
+                            allowed.join(", ")
+                        ),
+                    ))
+                }
+            })
+            .transpose()
+    }
+
     fn finish<T>(self, decoded: T) -> DecodeResult<T> {
         for name in self.object.keys() {
             if self.shape.property(name).is_none() {
@@ -278,6 +321,26 @@ fn decode_with_contract(
                             .boolean(DescriptorProperty::UseOneCommand)?,
                     })
                 }
+                PropertiesSite::Configuration { .. } => {
+                    let mut changes = Vec::new();
+                    for field in site.descriptor_fields() {
+                        let value = match field.kind() {
+                            DescriptorPropertyKind::String => values_reader
+                                .string(field)?
+                                .map(DescriptorPropertyValue::Text),
+                            DescriptorPropertyKind::Enum => values_reader
+                                .enumerated(field)?
+                                .map(DescriptorPropertyValue::Text),
+                            DescriptorPropertyKind::Boolean => values_reader
+                                .boolean(field)?
+                                .map(DescriptorPropertyValue::Boolean),
+                        };
+                        if let Some(value) = value {
+                            changes.push((field, value));
+                        }
+                    }
+                    PropertiesIntent::Configuration(ConfigurationPropertyChanges { changes })
+                }
             };
             reader.finish(values_reader.finish(intent)?)
         }
@@ -368,12 +431,18 @@ mod tests {
                 include_help_in_contents: Some(false), include_in_command_interface: Some(true), use_one_command: Some(false),
             })
         );
-        for site in [PropertiesSite::Role, PropertiesSite::Subsystem] {
+        for site in [
+            PropertiesSite::Role,
+            PropertiesSite::Subsystem,
+            PropertiesSite::Configuration { extension: false },
+            PropertiesSite::Configuration { extension: true },
+        ] {
             for field in site.descriptor_fields() {
                 for spelling in field.names() {
                     let value = match field.kind() {
                         DescriptorPropertyKind::String => json!(""),
                         DescriptorPropertyKind::Boolean => json!(false),
+                        DescriptorPropertyKind::Enum => json!(field.allowed_values()[0]),
                     };
                     assert!(
                         decode(site, json!({"values":{*spelling:value}})).is_ok(),
@@ -386,13 +455,19 @@ mod tests {
 
     #[test]
     fn collisions_types_and_closed_fields_report_the_original_caller_path() {
-        for site in [PropertiesSite::Role, PropertiesSite::Subsystem] {
+        for site in [
+            PropertiesSite::Role,
+            PropertiesSite::Subsystem,
+            PropertiesSite::Configuration { extension: false },
+            PropertiesSite::Configuration { extension: true },
+        ] {
             for field in site.descriptor_fields() {
                 let names = field.names();
                 for equal in [true, false] {
                     let value = match field.kind() {
                         DescriptorPropertyKind::String => json!("value"),
                         DescriptorPropertyKind::Boolean => json!(true),
+                        DescriptorPropertyKind::Enum => json!(field.allowed_values()[0]),
                     };
                     let other = if equal { value.clone() } else { json!(false) };
                     let error = decode(site, json!({"values":{names[0]:value,names[1]:other}}))
@@ -404,6 +479,7 @@ mod tests {
                     let invalid = match field.kind() {
                         DescriptorPropertyKind::String => json!(false),
                         DescriptorPropertyKind::Boolean => json!("false"),
+                        DescriptorPropertyKind::Enum => json!("NotAPlatformValue"),
                     };
                     assert_eq!(
                         decode(site, json!({"values":{*spelling:invalid}}))

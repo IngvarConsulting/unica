@@ -1567,6 +1567,9 @@ mod form_lifecycle_tests;
 #[path = "form_move_tests.rs"]
 mod form_move_tests;
 #[cfg(test)]
+#[path = "form_properties_tests.rs"]
+mod form_properties_tests;
+#[cfg(test)]
 #[path = "metadata_can_tests.rs"]
 mod metadata_can_tests;
 #[cfg(test)]
@@ -2240,6 +2243,280 @@ pub(crate) mod actor_capacity_tests {
         );
     }
 
+    /// Пустой интерфейс платформа не выгружает: у новой подсистемы нет
+    /// `CommandInterface.xml`, и его создаёт первая правка видимости или
+    /// размещения — тем же пакетом, что `subsystem.create`, или следующим
+    /// вызовом. Предпросмотр ничего не пишет, а файл совпадает с выгрузкой
+    /// 8.3.27 байт в байт.
+    #[test]
+    fn canonical_first_command_edit_creates_interface_of_new_subsystem() {
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let command = "Catalog.Пользователи.StandardCommand.OpenList";
+        let document = |section: &str, value: &str| {
+            format!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<{section}>\r\n\t\t<Command name=\"{command}\">\r\n{value}\t\t</Command>\r\n\t</{section}>\r\n</CommandInterface>"
+            )
+        };
+        let hidden = document(
+            "CommandsVisibility",
+            "\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n",
+        );
+        let placed = document(
+            "CommandsPlacement",
+            "\t\t\t<CommandGroup>NavigationPanelImportant</CommandGroup>\r\n\t\t\t<Placement>Auto</Placement>\r\n",
+        );
+        let create = serde_json::json!({
+            "op": "subsystem.create",
+            "args": {"at": "main:Configuration", "values": {"name": "Новая"}}
+        });
+        let at = "main:Subsystem.Новая.Interface";
+        let visibility = serde_json::json!({
+            "op": "commandVisibility.set",
+            "args": {"at": at, "items": [{"command": command, "visible": false}]}
+        });
+        let placement = serde_json::json!({
+            "op": "commandPlacement.set",
+            "args": {"at": at, "items": [{"command": command, "group": "NavigationPanelImportant"}]}
+        });
+        let interface = "Subsystems/Новая/Ext/CommandInterface.xml";
+        let publish = |workspace: &std::path::Path, at: &str, ops: serde_json::Value| {
+            let preview = interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"at": at, "ops": ops}),
+            );
+            assert!(preview.ok, "{preview:?}");
+            assert!(
+                !workspace.join("src").join(interface).exists(),
+                "предпросмотр не пишет файл"
+            );
+            let applied = interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
+            assert!(applied.ok, "{applied:?}");
+        };
+        let read = |workspace: &std::path::Path| {
+            std::fs::read_to_string(workspace.join("src").join(interface)).unwrap()
+        };
+
+        let workspace = interface_order_workspace();
+        publish(
+            workspace.path(),
+            "main:Configuration",
+            serde_json::json!([create, visibility]),
+        );
+        assert_eq!(read(workspace.path()), hidden, "один пакет");
+
+        for (edit, expected) in [(&visibility, &hidden), (&placement, &placed)] {
+            let workspace = interface_order_workspace();
+            publish(
+                workspace.path(),
+                "main:Configuration",
+                serde_json::json!([create]),
+            );
+            assert!(!workspace.path().join("src").join(interface).exists());
+            publish(workspace.path(), at, serde_json::json!([edit]));
+            assert_eq!(&read(workspace.path()), expected, "два вызова: {edit}");
+        }
+
+        // Вложенная подсистема: владелец — её дескриптор внутри родителя,
+        // одноимённая корневая подсистема не появляется.
+        let workspace = interface_order_workspace();
+        let nested_at = "main:Subsystem.Администрирование.Subsystem.Новая.Interface";
+        publish(
+            workspace.path(),
+            "main:Subsystem.Администрирование",
+            serde_json::json!([
+                {"op": "childSubsystem.add", "args": {"items": [{"name": "Новая"}]}},
+                {"op": "commandVisibility.set", "args": {"at": nested_at, "items": [{"command": command, "visible": false}]}}
+            ]),
+        );
+        let source = workspace.path().join("src");
+        assert_eq!(
+            std::fs::read_to_string(
+                source
+                    .join("Subsystems/Администрирование/Subsystems/Новая/Ext/CommandInterface.xml")
+            )
+            .unwrap(),
+            hidden
+        );
+        assert!(!source.join("Subsystems/Новая").exists());
+
+        // Порядок переставляет хранимый состав: без файла он отказывает
+        // и ничего не создаёт (#2010).
+        let workspace = interface_order_workspace();
+        publish(
+            workspace.path(),
+            "main:Configuration",
+            serde_json::json!([create]),
+        );
+        let refused = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            interface_op(
+                "groupOrder.set",
+                at,
+                serde_json::json!({"groups": ["NavigationPanelImportant"]}),
+            ),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert!(!workspace.path().join("src").join(interface).exists());
+    }
+
+    /// Пока порядок разделов не задан, корневого `CommandInterface.xml` нет.
+    /// Первый порядок, как у платформы, может быть частичным: он называет
+    /// разделы интерфейса — подсистемы верхнего уровня, включённые в него, —
+    /// и создаёт файл в форме выгрузки 8.3.27. Чужое имя, раздел вне
+    /// интерфейса и повтор отклоняются без записи.
+    #[test]
+    fn canonical_first_subsystem_order_creates_root_interface_from_sections() {
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let root_order = |subsystems: serde_json::Value| {
+            serde_json::json!({
+                "op": "subsystemOrder.set",
+                "args": {"at": "main:Configuration", "values": {"subsystems": subsystems}}
+            })
+        };
+        let document = |subsystems: &[&str]| {
+            let items = subsystems
+                .iter()
+                .map(|name| format!("\t\t<Subsystem>{name}</Subsystem>\r\n"))
+                .collect::<String>();
+            format!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<SubsystemsOrder>\r\n{items}\t</SubsystemsOrder>\r\n</CommandInterface>"
+            )
+        };
+        let fresh = || {
+            let workspace = interface_order_workspace();
+            let source = workspace.path().join("src");
+            std::fs::remove_file(source.join(ROOT_INTERFACE)).unwrap();
+            // `Продажи` не показывается в интерфейсе: разделом она не станет.
+            let sales = source.join("Subsystems/Продажи.xml");
+            let text = std::fs::read_to_string(&sales).unwrap().replace(
+                "<IncludeInCommandInterface>true</IncludeInCommandInterface>",
+                "<IncludeInCommandInterface>false</IncludeInCommandInterface>",
+            );
+            std::fs::write(&sales, text).unwrap();
+            workspace
+        };
+        let preview = |workspace: &std::path::Path, ops: serde_json::Value| {
+            interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"at": "main:Configuration", "ops": ops}),
+            )
+        };
+
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([root_order(serde_json::json!([
+                "Subsystem.КонтрольРаботыПользователей"
+            ]))]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        assert!(!root.exists(), "предпросмотр не пишет файл");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            document(&["Subsystem.КонтрольРаботыПользователей"])
+        );
+
+        // Новая подсистема того же пакета уже раздел интерфейса.
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([
+                {"op": "subsystem.create", "args": {"at": "main:Configuration", "values": {"name": "Новая"}}},
+                root_order(serde_json::json!(["Subsystem.Новая", "Subsystem.Администрирование"]))
+            ]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            document(&["Subsystem.Новая", "Subsystem.Администрирование"])
+        );
+
+        // Файл есть, но порядка разделов в нём нет: тот же первый порядок,
+        // соседняя секция остаётся на месте.
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let visibility = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<CommandsVisibility>\r\n\t\t<Command name=\"Catalog.Пользователи.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>\r\n</CommandInterface>";
+        std::fs::write(&root, visibility).unwrap();
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([root_order(serde_json::json!([
+                "Subsystem.Администрирование"
+            ]))]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            visibility.replace(
+                "\t</CommandsVisibility>\r\n",
+                "\t</CommandsVisibility>\r\n\t<SubsystemsOrder>\r\n\t\t<Subsystem>Subsystem.Администрирование</Subsystem>\r\n\t</SubsystemsOrder>\r\n",
+            )
+        );
+
+        for (subsystems, needle) in [
+            (
+                serde_json::json!(["Subsystem.Продажи"]),
+                "not a top-level subsystem shown in the command interface: `Subsystem.Продажи`",
+            ),
+            (
+                serde_json::json!(["Subsystem.Нет", "Subsystem.Нет"]),
+                "not a top-level subsystem shown in the command interface: `Subsystem.Нет`; the sections are",
+            ),
+            // Вложенная подсистема разделом не бывает, даже одноимённая
+            // корневой.
+            (
+                serde_json::json!(["Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей"]),
+                "not a top-level subsystem shown in the command interface",
+            ),
+            (
+                serde_json::json!(["Subsystem.Администрирование", "Subsystem.Администрирование"]),
+                "listed more than once",
+            ),
+        ] {
+            let workspace = fresh();
+            let refused = preview(
+                workspace.path(),
+                serde_json::json!([root_order(subsystems)]),
+            );
+            assert!(!refused.ok, "{refused:?}");
+            assert!(
+                refused.diagnostics[0]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(needle)),
+                "{refused:?}"
+            );
+            assert!(!workspace.path().join("src").join(ROOT_INTERFACE).exists());
+        }
+    }
+
     /// Каждая из пяти операций меняет только свою секцию и названные в запросе
     /// элементы: для видимости и размещения файл после правки совпадает
     /// с исходным байт в байт, кроме значения одной команды, для порядков —
@@ -2738,6 +3015,268 @@ pub(crate) mod actor_capacity_tests {
             .unwrap(),
         )
         .unwrap()
+    }
+
+    fn form_check_workspace(kind: &str) -> (tempfile::TempDir, String, std::path::PathBuf) {
+        let extension = kind == "Extension";
+        let kind = if extension { "Report" } else { kind };
+        let (workspace, _, template) = dcs_check_workspace(kind);
+        if extension {
+            let config = workspace.path().join("v8project.yaml");
+            let text = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(config, text.replace("CONFIGURATION", "EXTENSION")).unwrap();
+            let descriptor = workspace.path().join("src/Configuration.xml");
+            let text = std::fs::read_to_string(&descriptor).unwrap();
+            std::fs::write(descriptor, text.replace("<Name>Control</Name>", "<Name>Control</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>")).unwrap();
+        }
+        let owner = template
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let descriptor = owner.with_extension("xml");
+        let text = std::fs::read_to_string(&descriptor).unwrap();
+        std::fs::write(
+            &descriptor,
+            text.replace("</ChildObjects>", "<Form>Main</Form></ChildObjects>"),
+        )
+        .unwrap();
+        let body = owner.join("Forms/Main/Ext/Form.xml");
+        std::fs::create_dir_all(body.parent().unwrap()).unwrap();
+        std::fs::write(owner.join("Forms/Main.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000020"><Properties><Name>Main</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#).unwrap();
+        std::fs::write(&body, r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="FormCommandBar" id="-1"/><ChildItems/><Attributes/><Commands/></Form>"#).unwrap();
+        (workspace, format!("main:{kind}.Sales.Form.Main"), body)
+    }
+
+    #[test]
+    fn canonical_form_check_accepts_external_report_processor_and_configuration() {
+        for kind in [
+            "ExternalDataProcessor",
+            "ExternalReport",
+            "Report",
+            "Extension",
+        ] {
+            let (workspace, at, _) = form_check_workspace(kind);
+            let before =
+                unica_workspace::test_support::tree_snapshot(&workspace.path().join("src"));
+            let viewed = call_dcs_check(workspace.path(), ToolIdentity::View, &at);
+            assert!(viewed.ok, "{kind}: {viewed:?}");
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(checked.ok, "{kind}: {checked:?}");
+            let data = checked.data.as_ref().unwrap();
+            assert_eq!(data["status"], "passed", "{kind}: {checked:?}");
+            assert_eq!(data["validators"], serde_json::json!(["form"]));
+            assert_eq!(data["diagnosticCount"], 0, "{checked:?}");
+            assert_eq!(
+                before,
+                unica_workspace::test_support::tree_snapshot(&workspace.path().join("src"))
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_reports_semantics_and_handler_signatures() {
+        for kind in [
+            "ExternalDataProcessor",
+            "ExternalReport",
+            "Report",
+            "Extension",
+        ] {
+            let (workspace, at, body) = form_check_workspace(kind);
+            let original = std::fs::read_to_string(&body).unwrap();
+            std::fs::write(&body, original.replace("id=\"-1\"", "id=\"7\"")).unwrap();
+            let invalid = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert_eq!(
+                invalid.data.as_ref().unwrap()["status"],
+                "failed",
+                "{invalid:?}"
+            );
+            assert!(
+                invalid.data.as_ref().unwrap()["diagnostics"]
+                    .to_string()
+                    .contains("AutoCommandBar"),
+                "{invalid:?}"
+            );
+            std::fs::write(
+                &body,
+                original.replace(
+                    "<ChildItems/>",
+                    "<Events><Event name=\"OnOpen\">ПриОткрытии</Event></Events><ChildItems/>",
+                ),
+            )
+            .unwrap();
+            let module = body.parent().unwrap().join("Form/Module.bsl");
+            std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+            std::fs::write(
+                module,
+                "&НаКлиенте\nПроцедура ПриОткрытии(Отказ, Лишний, ЕщёОдин)\nКонецПроцедуры\n",
+            )
+            .unwrap();
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(checked.ok, "{checked:?}");
+            let diagnostics = &checked.data.as_ref().unwrap()["diagnostics"];
+            assert!(
+                diagnostics
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| d["severity"] == "warning"
+                        && d["message"].as_str().unwrap().contains("ПриОткрытии")),
+                "{checked:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_refuses_missing_unregistered_and_mismatched_sources() {
+        for case in ["missing", "unregistered", "mismatched"] {
+            let (workspace, at, body) = form_check_workspace("ExternalDataProcessor");
+            match case {
+                "missing" => std::fs::remove_file(&body).unwrap(),
+                "unregistered" => {
+                    let owner = workspace.path().join("src/Sales.xml");
+                    let text = std::fs::read_to_string(&owner).unwrap();
+                    std::fs::write(owner, text.replace("<Form>Main</Form>", "")).unwrap();
+                }
+                "mismatched" => {
+                    let descriptor = workspace.path().join("src/Sales/Forms/Main.xml");
+                    let text = std::fs::read_to_string(&descriptor).unwrap();
+                    std::fs::write(
+                        descriptor,
+                        text.replace("<Name>Main</Name>", "<Name>Other</Name>"),
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(!checked.ok, "{case}: {checked:?}");
+            assert!(!checked.diagnostics.is_empty(), "{case}: {checked:?}");
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_keeps_owner_format_warnings() {
+        for kind in ["ExternalDataProcessor", "Report", "Extension"] {
+            let (workspace, at, body) = form_check_workspace(kind);
+            let wrapper = body
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .with_extension("xml");
+            let owner = if kind == "ExternalDataProcessor" {
+                workspace.path().join("src/Sales.xml")
+            } else {
+                workspace.path().join("src/Configuration.xml")
+            };
+            for path in [wrapper, owner] {
+                let original = std::fs::read_to_string(&path).unwrap();
+                for (version, code) in [
+                    ("2.19", "formatMigrationAvailable"),
+                    ("2.21", "platformVersionUnsupported"),
+                ] {
+                    std::fs::write(&path, original.replace("2.20", version)).unwrap();
+                    let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+                    assert_eq!(
+                        checked.data.as_ref().unwrap()["status"],
+                        "passed",
+                        "{checked:?}"
+                    );
+                    assert!(
+                        checked.data.as_ref().unwrap()["diagnostics"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|d| d["code"] == code),
+                        "{checked:?}"
+                    );
+                }
+                std::fs::write(path, original).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_supports_common_forms() {
+        for kind in ["Report", "Extension"] {
+            let (workspace, _, body) = form_check_workspace(kind);
+            let source = workspace.path().join("src");
+            let config = source.join("Configuration.xml");
+            let text = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(
+                config,
+                text.replace(
+                    "</ChildObjects>",
+                    "<CommonForm>Shared</CommonForm></ChildObjects>",
+                ),
+            )
+            .unwrap();
+            let common = source.join("CommonForms/Shared/Ext/Form.xml");
+            std::fs::create_dir_all(common.parent().unwrap()).unwrap();
+            std::fs::copy(body, common).unwrap();
+            std::fs::write(source.join("CommonForms/Shared.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonForm uuid="10000000-0000-4000-8000-000000000030"><Properties><Name>Shared</Name><FormType>Managed</FormType></Properties></CommonForm></MetaDataObject>"#).unwrap();
+            let at = "main:CommonForm.Shared";
+            assert!(call_dcs_check(workspace.path(), ToolIdentity::View, at).ok);
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, at);
+            assert_eq!(
+                checked.data.as_ref().unwrap()["status"],
+                "passed",
+                "{checked:?}"
+            );
+            assert_eq!(
+                checked.data.as_ref().unwrap()["diagnosticCount"],
+                0,
+                "{checked:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_form_check_refuses_linked_payload_and_module() {
+        use unica_workspace::test_support::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+        for module in [false, true] {
+            let (workspace, at, body) = form_check_workspace("ExternalDataProcessor");
+            let path = if module {
+                let text = std::fs::read_to_string(&body).unwrap();
+                std::fs::write(
+                    &body,
+                    text.replace(
+                        "</Form>",
+                        "<Events><Event name=\"OnOpen\">ПриОткрытии</Event></Events></Form>",
+                    ),
+                )
+                .unwrap();
+                let path = body.parent().unwrap().join("Form/Module.bsl");
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, "Процедура Тест()\nКонецПроцедуры").unwrap();
+                path
+            } else {
+                body
+            };
+            let outside = tempfile::tempdir().unwrap();
+            let external = outside.path().join("source");
+            std::fs::rename(&path, &external).unwrap();
+            if create_file_link_fixture_for_test(&external, &path).unwrap()
+                != FileLinkFixtureOutcome::Created
+            {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "Создание ссылки требует полномочий ОС",
+                );
+                return;
+            }
+            let before = std::fs::read(&external).unwrap();
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(!checked.ok, "{checked:?}");
+            assert_eq!(before, std::fs::read(external).unwrap());
+        }
     }
 
     #[test]
@@ -10185,8 +10724,8 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(examples, parse_examples(&windows_skill));
         assert_eq!(
             examples.len(),
-            2,
-            "the skill must keep both public examples"
+            3,
+            "the skill must keep its three public examples"
         );
         let preview_args = examples[0]["params"]["arguments"].clone();
         let preview = submit_canonical(
@@ -10255,6 +10794,57 @@ struct ActorLogicalReadLease {"#,
         assert!(
             repeat.changed.is_empty(),
             "unchanged repeat is not an update"
+        );
+
+        // The form example borrows a managed form into the borrowed owner.
+        let forms = workspace.path().join("src/Catalogs/Items/Forms");
+        std::fs::create_dir_all(&forms).unwrap();
+        std::fs::write(
+            forms.join("ItemForm.xml"),
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                    "../../tests/fixtures/platform_8_3_27/cfe_borrow/parent-catalog-form.xml",
+                ),
+            )
+            .unwrap()
+            .replace("<Name>CorpusForm</Name>", "<Name>ItemForm</Name>"),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&parent).unwrap();
+        std::fs::write(
+            &parent,
+            text.replace(
+                "<ChildObjects/>",
+                "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
+            ),
+        )
+        .unwrap();
+        let form_args = examples[2]["params"]["arguments"].clone();
+        let form_preview =
+            submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, form_args);
+        assert!(form_preview.ok, "{form_preview:?}");
+        let borrowed = workspace.path().join("ext/Catalogs/Items/Forms/ItemForm");
+        assert!(!borrowed.exists(), "form preview must not write");
+        let form_applied = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": form_preview.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(form_applied.ok, "{form_applied:?}");
+        assert!(borrowed.join("Ext/Form.xml").exists());
+        let form = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            serde_json::json!({"at":"ext:Catalog.Items.Form.ItemForm"}),
+        );
+        assert!(form.ok, "{form:?}");
+        assert!(
+            form.data.as_ref().unwrap()["props"]
+                .get("content")
+                .is_none(),
+            "{form:?}"
         );
     }
 
@@ -16803,6 +17393,13 @@ fn main() {
             assert_eq!(applied.data.as_ref().unwrap()["mode"], "published");
             let post = own_removal_snapshot(&source);
             assert_eq!(own_removal_file_bytes(&post), expected);
+            // The selected payload leaves no directory behind; the collection
+            // still holds the neighbor (#1997).
+            assert!(post.keys().all(|path| !path.starts_with(OWN_REMOVAL_BASE)));
+            assert_eq!(
+                post.get(std::path::Path::new("Reports/OwnRemovalReport/Templates")),
+                Some(&OwnRemovalEntry::Directory)
+            );
             for (path, entry) in &post {
                 assert!(before.contains_key(path), "new postimage entry: {path:?}");
                 match entry {
@@ -17351,6 +17948,58 @@ fn main() {
     }
 
     #[test]
+    fn canonical_borrowed_sole_template_without_payload_takes_its_empty_collection() {
+        // Without the borrowed neighbor the selected descriptor is the last
+        // entry of `Templates`, so the collection goes with it (#1997); the
+        // sibling `Forms` collection and the owner directory stay.
+        let workspace = borrowed_removal_workspace_without_local_type();
+        let source = workspace.path().join("src");
+        let templates = source.join("ext/DataProcessors/Обработка/Templates");
+        std::fs::remove_file(templates.join("СхемаКомпоновки.xml")).unwrap();
+        let owner = source.join(BORROWED_REMOVAL_OWNER);
+        let text = std::fs::read_to_string(&owner).unwrap();
+        let neighbor_line = "\t\t\t<Template>СхемаКомпоновки</Template>\r\n";
+        assert_eq!(text.matches(neighbor_line).count(), 1);
+        std::fs::write(&owner, text.replacen(neighbor_line, "", 1)).unwrap();
+        let before = own_removal_snapshot(&source);
+        let mut expected = own_removal_snapshot(&source);
+        let selected_line = "\t\t\t<Template>Макет</Template>\r\n";
+        let owner_text = std::fs::read_to_string(&owner).unwrap();
+        assert_eq!(owner_text.matches(selected_line).count(), 1);
+        expected.insert(
+            BORROWED_REMOVAL_OWNER.into(),
+            OwnRemovalEntry::File(owner_text.replacen(selected_line, "", 1).into_bytes()),
+        );
+        assert!(expected
+            .remove(std::path::Path::new(BORROWED_REMOVAL_DESCRIPTOR))
+            .is_some());
+        assert!(matches!(
+            expected.remove(std::path::Path::new(
+                "ext/DataProcessors/Обработка/Templates"
+            )),
+            Some(OwnRemovalEntry::Directory)
+        ));
+        let runtime = bootstrap_runtime();
+        let preview = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            borrowed_removal_plan(BORROWED_REMOVAL_AT),
+        );
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(own_removal_snapshot(&source), before);
+        let applied = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(own_removal_snapshot(&source), expected);
+        assert!(source.join("ext/DataProcessors/Обработка/Forms").is_dir());
+    }
+
+    #[test]
     fn canonical_borrowed_template_empty_payload_root_is_not_inherited_absence() {
         for top_at in [BORROWED_REMOVAL_AT, BORROWED_REMOVAL_OWNER_AT] {
             let workspace = borrowed_removal_workspace_without_local_type();
@@ -17764,6 +18413,7 @@ fn main() {
         const OWNER: &str = "cf/Reports/F05Report.xml";
         const DESCRIPTOR: &str = "cf/Reports/F05Report/Templates/F05Schema.xml";
         const PAYLOAD: &str = "cf/Reports/F05Report/Templates/F05Schema";
+        const TEMPLATES: &str = "cf/Reports/F05Report/Templates";
         const BODY: &str = "cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml";
         const PROPERTIES_START: &str = "<Properties><Name>F05Report</Name>";
         const REGISTRATION: &str = "<Template>F05Schema</Template>";
@@ -17835,9 +18485,15 @@ fn main() {
             assert_eq!(applied.data.as_ref().unwrap()["mode"], "published");
             let after = own_removal_snapshot(&source);
             assert_eq!(own_removal_file_bytes(&after), expected_files);
-            // Every surviving directory must be an existing directory. Empty
-            // directories under the removed payload may remain or disappear;
-            // every entry outside that payload and the two edited paths stays.
+            // The payload directories and the `Templates` collection the sole
+            // template leaves empty go with it (#1997); the report directory
+            // and every other entry outside them stay.
+            assert!(!after.contains_key(std::path::Path::new(PAYLOAD)));
+            assert!(!after.contains_key(std::path::Path::new(TEMPLATES)));
+            assert_eq!(
+                after.get(std::path::Path::new("cf/Reports/F05Report")),
+                Some(&OwnRemovalEntry::Directory)
+            );
             for (path, entry) in &after {
                 assert!(before.contains_key(path), "new postimage entry: {path:?}");
                 match entry {
@@ -17852,6 +18508,7 @@ fn main() {
             }
             for (path, entry) in &before {
                 if !path.starts_with(PAYLOAD)
+                    && path != std::path::Path::new(TEMPLATES)
                     && path != std::path::Path::new(DESCRIPTOR)
                     && path != std::path::Path::new(OWNER)
                 {

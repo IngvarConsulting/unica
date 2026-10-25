@@ -4523,6 +4523,7 @@ fn run_native_validator(
         crate::application::v13::check::CheckValidator::Subsystem
             | crate::application::v13::check::CheckValidator::Dcs
             | crate::application::v13::check::CheckValidator::Mxl
+            | crate::application::v13::check::CheckValidator::Form
     ) {
         let sources = invocation.read_sources().map_err(|error| {
             Box::new(error_result_detailed(
@@ -4550,7 +4551,12 @@ fn run_native_validator(
                     error,
                 ))
             })?;
-        if validator == crate::application::v13::check::CheckValidator::Subsystem {
+        if validator == crate::application::v13::check::CheckValidator::Form {
+            let input = authority
+                .form_validation_input(address)
+                .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?;
+            crate::infrastructure::native_operations::v13_analysis::validate_form_input(input)
+        } else if validator == crate::application::v13::check::CheckValidator::Subsystem {
             authority
                 .validate_subsystem(address)
                 .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?
@@ -7127,6 +7133,88 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains(hit["snippet"].as_str().unwrap()));
+    }
+
+    /// Literal search under a module scope opens no publication artifact:
+    /// an unreadable staged copy or private directory left beside the module
+    /// right after apply does not refuse the search. An unreadable entry the
+    /// search does need is named in the refusal.
+    #[test]
+    fn literal_search_skips_publication_artifacts_and_names_an_unreadable_entry() {
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_workspace::test_support::set_unix_mode_for_test;
+
+        /// Restores the mode even when an assertion fails, so the
+        /// temporary workspace can still be removed.
+        struct Unlocked(Vec<std::path::PathBuf>);
+        impl Drop for Unlocked {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    let _ = set_unix_mode_for_test(path, 0o755);
+                }
+            }
+        }
+
+        let workspace = resolve_exact_workspace();
+        let ext = workspace.path().join("src/CommonModules/Probe/Ext");
+        std::fs::write(
+            ext.join("Module.bsl"),
+            "Процедура Ping()\n\tСообщить(\"needle\");\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let artifact = ext.join(".unica-apply-left-behind");
+        std::fs::write(&artifact, b"preimage").unwrap();
+        let staged = ext.join(".unica-apply-dir-left-behind");
+        std::fs::create_dir(&staged).unwrap();
+        std::fs::write(staged.join("Module.bsl"), "stale needle\n").unwrap();
+        let locked = ext.join("Locked");
+        std::fs::create_dir(&locked).unwrap();
+        let mut unlocked = Unlocked(Vec::new());
+        for path in [&artifact, &staged] {
+            if !set_unix_mode_for_test(path, 0o000).unwrap() {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::UnixPermissionBits,
+                    "the test sets Unix permission bits",
+                );
+                return;
+            }
+            unlocked.0.push(path.clone());
+        }
+        if std::fs::read(&artifact).is_ok() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::EnforcedPermissionBits,
+                "the test process ignores permission bits",
+            );
+            return;
+        }
+        let search = || {
+            invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Search,
+                json!({"query":"needle", "scope":"main:CommonModule.Probe"}),
+            )
+        };
+        let found = search();
+        assert!(found.ok, "{found:?}");
+        let matches = found.data.as_ref().unwrap()["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1, "{found:?}");
+        assert_eq!(
+            matches[0]["at"],
+            "main:CommonModule.Probe.Method.Ping.Body#L2"
+        );
+
+        set_unix_mode_for_test(&locked, 0o000).unwrap();
+        unlocked.0.push(locked);
+        let refused = search();
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "provider_unavailable");
+        assert!(
+            refused.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message
+                    .contains("could not open source entry `CommonModules/Probe/Ext/Locked`")),
+            "{refused:?}"
+        );
     }
 
     #[test]

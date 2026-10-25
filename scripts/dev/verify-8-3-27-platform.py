@@ -100,15 +100,19 @@ EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
 EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
-# Full 66-case gate on 1C 8.3.27.2074 passed on 2026-10-20:
-# 450 commands in two rounds, no accepted-normalized or source-error cases.
-# Two independent corpora from composition 4bf85f5f32c7fdea3728a8a5b50b9aa2b77cb202
-# agree on this contract. Native report SHA256:
-# db331df7f10c4272a625613138c2471a273a8647f3cc6878dafbe60696e86372.
+# The 5681aa80 contract is proven by two 1C 8.3.27.2074 runs on 2026-10-24.
+# A full 67-case run (456 commands, report SHA256
+# 460e3e56f5e1126cad9518fc8334d7ca5ee4f829b4f3d12ed31ac18aef243545) passed
+# 66 cases; form-compile-managed was accepted-normalized there: the platform
+# adds the default qualifiers of a bare String and Number attribute that
+# canonical attribute.add omits (#1996). That case then switched to qualified
+# types, the only change of the contract, and a run of both form cases passed
+# (report SHA256 554e72d29681d038c901f983aa757dc5229f19cb2678554f3d470fcec243bd12).
+# Two independent corpora generated from this change agree on this contract.
 # This records semantic retention and stable round trips under the existing
 # comparison policy; it is not whole-tree raw-byte or full-release acceptance.
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
-    "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb"
+    "5681aa80006dfb5091c8e326c6e47edb1462a5011b195bf5871ab24a49700e8a"
 )
 # The corpus moved off the v0.12 surface (#1813): the 48 remaining cases
 # publish through canonical unica.apply, so every case contract changed. With
@@ -118,6 +122,8 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 # LAST_VERIFIED_CASE_CONTRACT_SHA256 too. A run on 2026-10-22 gave 45 pass and
 # 3 accepted-normalized (form-edit-managed and form-compile-managed: #1996;
 # template-remove-object-template: #1997), so the contract stays unpinned.
+# Since then form-compile-managed took the qualified types and props.set of
+# #2043; the v0.12 form-compile-managed-v012 case left with the v0.12 corpus.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = None
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")

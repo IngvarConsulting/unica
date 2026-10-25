@@ -251,6 +251,8 @@ def completed_delivery_call(server, tool, arguments, label):
                 return response
             task_id = None
             next_tool, next_args = tool, arguments
+            # The provider promised a different answer later, not at once.
+            time.sleep(.25)
         if time.monotonic() >= deadline or poll == 19:
             raise TimeoutError(f"{label}: analyzer did not reach a terminal result")
         response = invoke(next_tool, next_args)

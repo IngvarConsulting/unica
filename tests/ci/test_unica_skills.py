@@ -2593,5 +2593,22 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         self.assertIn("unsupported_source", self.text)
 
 
+class SourceAccessExamplesRunTests(unittest.TestCase):
+    """Каждый пример source-access исполняется сценарием над фикстурой (#2006)."""
+
+    def test_each_example_is_a_step_of_the_acceptance_scenario(self) -> None:
+        text = (REPO_ROOT / "plugins/unica/skills/source-access/SKILL.md").read_text(encoding="utf-8")
+        examples = [
+            (call["params"]["name"], call["params"]["arguments"])
+            for call in (json.loads(block) for block in re.findall(r"```json\n(.*?)\n```", text, flags=re.S))
+            if call.get("method") == "tools/call"
+        ]
+        scenario = json.loads((REPO_ROOT / "tests/fixtures/acceptance/scenarios/S-2006-skill-example-arguments.json")
+                              .read_text(encoding="utf-8"))
+        steps = [(step["tool"], step["args"]) for step in scenario["wire"] if step["expect"] == ["ok"]]
+        self.assertTrue(examples)
+        self.assertEqual(examples, steps)
+
+
 if __name__ == "__main__":
     unittest.main()

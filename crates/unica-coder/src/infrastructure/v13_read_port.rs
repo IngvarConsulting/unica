@@ -5,6 +5,7 @@ use unica_metadata_designer::configuration::{
     cf_home_page_item_data, parse_cf_command_interface_xml, parse_cf_home_page_xml_strict,
     parse_cf_info_xml,
 };
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_designer::module_layout::module_relative as shared_module_relative;
 
 use crate::infrastructure::v13_large_configuration::{
@@ -80,6 +81,16 @@ pub(crate) fn review_clear_revision_identity_hooks() {
 pub(crate) struct TemplateValidationInput {
     pub(crate) artifact: PathBuf,
     pub(crate) text: String,
+    pub(crate) format_guard: crate::application::ports::FormatGuardCheck,
+}
+
+/// Сохранённые входы проверки формы; пути не дают права повторного чтения.
+pub(crate) struct FormValidationInput {
+    pub(crate) artifact: PathBuf,
+    pub(crate) text: String,
+    pub(crate) module: Option<String>,
+    pub(crate) config_context: bool,
+    pub(crate) metadata_owner: Option<NodeKind>,
     pub(crate) format_guard: crate::application::ports::FormatGuardCheck,
 }
 
@@ -238,7 +249,7 @@ impl ProviderReadAuthority {
             .ok_or_else(|| {
                 ViewError::detailed(
                     RefusalDetail::SourceUnreadable,
-                    format!("relative source `{}` is absent", relative.display()),
+                    format!("relative source `{}` is absent", relative.portable()),
                 )
             })
     }
@@ -517,7 +528,7 @@ impl ProviderReadAuthority {
                     RefusalDetail::SourceUnreadable,
                     format!(
                         "external descriptor `{}` has kind `{}`, expected `{expected_kind}`",
-                        relative.display(),
+                        relative.portable(),
                         evidence.artifact_kind()
                     ),
                 ));
@@ -527,7 +538,7 @@ impl ProviderReadAuthority {
                     RefusalDetail::SourceUnreadable,
                     format!(
                         "external descriptor `{}` has no non-empty Properties/Name",
-                        relative.display()
+                        relative.portable()
                     ),
                 )
             })?;
@@ -540,7 +551,7 @@ impl ProviderReadAuthority {
             if path.file_stem().and_then(|value| value.to_str()) != Some(artifact_name) {
                 owner_path_mismatches.push(format!(
                     "external descriptor `{}` belongs to `{artifact_name}`",
-                    relative.display()
+                    relative.portable()
                 ));
             }
         }
@@ -663,6 +674,84 @@ impl ProviderReadAuthority {
             direct_edit_safe,
         });
         Ok(data)
+    }
+
+    pub(crate) fn form_validation_input(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<FormValidationInput, ViewError> {
+        let wrapper = self.metadata_descriptor(target)?;
+        let wrapper_relative = self.metadata_descriptor_relative(target)?;
+        let relative = self.attached_resource_relative(target, "Form.xml")?;
+        let bytes = self.read_relative_with_checkpoint(
+            &relative,
+            Some(MAX_CONFIGURATION_BYTES),
+            checkpoint,
+        )?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "Form.xml не является UTF-8",
+            )
+        })?;
+        let artifact = self.root_path().join(&relative);
+        let parts = target.as_str().split('.').collect::<Vec<_>>();
+        let metadata_owner = if parts[0] == "CommonForm" {
+            None
+        } else {
+            NodeKind::parse(parts[0]).ok()
+        };
+        let source_relative = if self.is_external_source_set() {
+            let owner =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
+                    .map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+            self.metadata_descriptor_relative(&owner)?
+        } else {
+            PathBuf::from("Configuration.xml")
+        };
+        let source_bytes =
+            self.read_relative_with_checkpoint(&source_relative, None, checkpoint)?;
+        let format_guard =
+            crate::infrastructure::format_guard::evaluate_retained_template_format_guard(
+                "form-validate",
+                unica_source_designer::owner::MANAGED_FORM_ROOT,
+                &artifact,
+                &text,
+                (self.root_path().join(wrapper_relative), wrapper),
+                (
+                    self.root_path().join(source_relative),
+                    source_bytes,
+                    self.source_set_kind,
+                ),
+            )
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        // Отсутствующий или неразбираемый модуль не задаёт сигнатур. Ошибка
+        // доступа и отмена сохраняются: ссылка не становится необязательным файлом.
+        let module = if crate::infrastructure::form_composition::form_validation_requires_module(
+            &text,
+            metadata_owner,
+        ) {
+            let module_target = unica_source_designer::module_layout::form_module_target(target)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+            let module_relative = self.module_relative(&module_target)?;
+            self.read_optional_relative_with_checkpoint(&module_relative, None, checkpoint)?
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+        } else {
+            None
+        };
+        Ok(FormValidationInput {
+            artifact,
+            text,
+            module,
+            config_context: !self.is_external_source_set(),
+            metadata_owner,
+            format_guard,
+        })
     }
 
     pub(crate) fn dcs_payload(
@@ -902,6 +991,12 @@ impl ProviderReadAuthority {
                 Ok(Some(observation)) => {
                     info.relations.content = Some(Some(observation.items));
                     observation.errors
+                }
+                // Заимствованный план без своего `Ext/Content.xml` несёт состав
+                // плана родителя: здесь он неизвестен, а не пуст (#1924).
+                Ok(None) if borrowing.as_ref().is_some_and(|b| b.extends.is_some()) => {
+                    info.relations.content = Some(None);
+                    Vec::new()
                 }
                 // The platform omits Content.xml for an empty composition.
                 Ok(None) => {
@@ -1197,7 +1292,7 @@ impl ProviderReadAuthority {
                     RefusalDetail::SourceUnreadable,
                     format!(
                         "subsystem descriptor `{}` names `{}` instead of `{expected}`",
-                        descriptor_relative.display(),
+                        descriptor_relative.portable(),
                         data.name
                     ),
                 ));
@@ -1244,7 +1339,7 @@ impl ProviderReadAuthority {
                         RefusalDetail::SourceUnreadable,
                         format!(
                             "subsystem descriptor `{}` names `{}` instead of `{expected}`",
-                            relative.display(),
+                            relative.portable(),
                             parent.name
                         ),
                     ));
@@ -1255,7 +1350,7 @@ impl ProviderReadAuthority {
                     RefusalCode::NotFound,
                     format!(
                         "subsystem `{name}` is not registered in `{}`",
-                        relative.display()
+                        relative.portable()
                     ),
                 ));
             }
@@ -1265,7 +1360,7 @@ impl ProviderReadAuthority {
                 .ok_or_else(|| {
                     ViewError::new(
                         RefusalCode::NotFound,
-                        format!("subsystem descriptor `{}` is absent", relative.display()),
+                        format!("subsystem descriptor `{}` is absent", relative.portable()),
                     )
                 })?;
         }
@@ -1413,7 +1508,7 @@ impl ProviderReadAuthority {
             .ok_or_else(|| {
                 ViewError::new(
                     RefusalCode::NotFound,
-                    format!("metadata descriptor `{}` is absent", relative.display()),
+                    format!("metadata descriptor `{}` is absent", relative.portable()),
                 )
             })
     }

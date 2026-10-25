@@ -549,7 +549,10 @@ pub fn parse_form_operation(
             !target.items.is_empty() && target.event.is_none()
         }
         FormOperation::EventBind => target.event.is_some(),
-        FormOperation::Remove | FormOperation::AttributeAdd | FormOperation::CommandAdd => {
+        FormOperation::Remove
+        | FormOperation::AttributeAdd
+        | FormOperation::CommandAdd
+        | FormOperation::PropsSet => {
             target.form.is_some() && target.items.is_empty() && target.event.is_none()
         }
     };
@@ -563,13 +566,33 @@ pub fn parse_form_operation(
                 "the existing item `Owner.Name.Form.F.Item.A[.Item.B…]`"
             }
             FormOperation::EventBind => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
-            FormOperation::Remove | FormOperation::AttributeAdd | FormOperation::CommandAdd => "the form `Owner.Name.Form.F`",
+            FormOperation::Remove
+            | FormOperation::AttributeAdd
+            | FormOperation::CommandAdd
+            | FormOperation::PropsSet => "the form `Owner.Name.Form.F`",
         };
         return Err(bad(
             op_index,
             "at",
             format!("{operation_name} targets {shape}"),
         ));
+    }
+    // Свойство-ссылку корня формы операция знает, но не пишет: отказ
+    // называет причину, а не «неизвестный аргумент».
+    if operation == FormOperation::PropsSet {
+        if let Some(values) = args.get("values").and_then(Value::as_object) {
+            for name in values.keys() {
+                if unica_forms::root_properties::root_property(name).is_some_and(|(_, property)| {
+                    property.value == unica_forms::root_properties::RootValue::Reference
+                }) {
+                    return Err(bad(
+                        op_index,
+                        &format!("values.{name}"),
+                        format!("`{name}` names a form attribute, item or object; props.set does not write it"),
+                    ));
+                }
+            }
+        }
     }
     if operation == FormOperation::ItemAdd {
         if let Some(items) = args.get("items").and_then(Value::as_array) {
@@ -637,6 +660,21 @@ pub fn parse_form_operation(
                 }
             },
         ),
+        FormOperation::PropsSet => {
+            let form = form_of(&target)?;
+            let values = args
+                .get("values")
+                .cloned()
+                .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
+            let mut wrapper = Map::new();
+            wrapper.insert("rootProperties".to_string(), values);
+            Ok(FormPlan::FormEdit {
+                owner: target.owner,
+                form,
+                subject: FormEditSubject::Node(Vec::new()),
+                definitions: vec![FormEditStep::Definition(Value::Object(wrapper))],
+            })
+        }
         FormOperation::CommandAdd => {
             parse_form_root_addition(target, args, op_index, "commands", |_item, entry, name| {
                 if !entry.contains_key("action") {

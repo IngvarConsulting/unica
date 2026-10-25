@@ -1747,25 +1747,77 @@ pub fn patch_subsystem_lists(
             .next()
             .unwrap()
     }
+    /// Отступ строки, на которой стоит `offset`, если до него на строке
+    /// только пробельные символы: элемент стоит на своей строке.
+    fn line_indent(body: &str, offset: usize) -> Option<&str> {
+        let start = body[..offset].rfind('\n').map_or(0, |at| at + 1);
+        let indent = &body[start..offset];
+        indent
+            .chars()
+            .all(|c| c == ' ' || c == '\t')
+            .then_some(indent)
+    }
+    /// Удаляемый элемент на своей строке уходит вместе со строкой: отступ
+    /// и перевод строки не остаются пустой строкой (#1889).
+    fn removal(body: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+        let rest = &body[range.end..];
+        let line_end = rest.find('\n').map(|at| range.end + at + 1);
+        match (line_indent(body, range.start), line_end) {
+            (Some(indent), Some(end))
+                if body[range.end..end]
+                    .trim_end_matches(['\r', '\n'])
+                    .trim()
+                    .is_empty() =>
+            {
+                range.start - indent.len()..end
+            }
+            _ => range,
+        }
+    }
+    /// Новые элементы встают как в выгрузке платформы: каждый на своей строке
+    /// с отступом соседей, перед строкой закрывающего тега. Контейнер,
+    /// записанный в одну строку, остаётся в одну строку.
     fn insert(
         body: &str,
         node: roxmltree::Node<'_, '_>,
-        value: &str,
+        entries: &[roxmltree::Node<'_, '_>],
+        items: &[String],
     ) -> Result<(std::ops::Range<usize>, String), String> {
         let range = node.range();
         let raw = &body[range.clone()];
+        let eol = if body.contains("\r\n") { "\r\n" } else { "\n" };
+        let own_line = line_indent(body, range.start);
+        let lines = |indent: &str| {
+            items
+                .iter()
+                .map(|item| format!("{indent}{item}{eol}"))
+                .collect::<String>()
+        };
         if raw.ends_with("/>") {
             let at = range.end - 2;
-            Ok((
-                at..range.end,
-                format!(">{value}</{}>", lexical_name(body, node)),
-            ))
-        } else {
-            let at = raw
-                .rfind("</")
-                .ok_or("subsystem container has no closing tag")?
-                + range.start;
-            Ok((at..at, value.to_owned()))
+            let name = lexical_name(body, node);
+            return Ok(match own_line {
+                Some(indent) if body.contains('\n') => (
+                    at..range.end,
+                    format!(">{eol}{}{indent}</{name}>", lines(&format!("{indent}\t"))),
+                ),
+                _ => (at..range.end, format!(">{}</{name}>", items.concat())),
+            });
+        }
+        let at = raw
+            .rfind("</")
+            .ok_or("subsystem container has no closing tag")?
+            + range.start;
+        match line_indent(body, at) {
+            Some(closing) if own_line.is_some() => {
+                let indent = entries
+                    .iter()
+                    .find_map(|entry| line_indent(body, entry.range().start))
+                    .map_or_else(|| format!("{closing}\t"), str::to_owned);
+                let line_start = at - closing.len();
+                Ok((line_start..line_start, lines(&indent)))
+            }
+            _ => Ok((at..at, items.concat())),
         }
     }
     let body = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -1846,18 +1898,33 @@ pub fn patch_subsystem_lists(
         {
             continue;
         }
-        for entry in &entries {
-            if !desired
-                .iter()
-                .any(|v| v == entry.text().unwrap_or("").trim())
-            {
-                edits.push((entry.range(), String::new()));
+        let removed: Vec<_> = entries
+            .iter()
+            .filter(|entry| {
+                !desired
+                    .iter()
+                    .any(|v| v == entry.text().unwrap_or("").trim())
+            })
+            .map(|entry| (removal(body, entry.range()), String::new()))
+            .collect();
+        // Опустевший контейнер платформа пишет пустым тегом `<Content/>`.
+        if desired.is_empty() {
+            if let Some(node) = container {
+                let only_entries = node.children().all(|child| {
+                    entries.contains(&child)
+                        || (child.is_text() && child.text().unwrap_or("").trim().is_empty())
+                });
+                if only_entries && !entries.is_empty() {
+                    edits.push((node.range(), format!("<{}/>", lexical_name(body, node))));
+                    continue;
+                }
             }
         }
+        edits.extend(removed);
         let scope = container.unwrap_or(parent);
         let prefix = scope.lookup_prefix(item_namespace);
         let tag = prefix.map_or_else(|| item_name.to_owned(), |p| format!("{p}:{item_name}"));
-        let mut added = String::new();
+        let mut added = Vec::new();
         for value in desired.iter().filter(|v| !current.contains(&v.as_str())) {
             if item_namespace == XR {
                 // A QName in xsi:type must bind to the readable namespace too.
@@ -1878,12 +1945,12 @@ pub fn patch_subsystem_lists(
                 } else {
                     String::new()
                 };
-                added.push_str(&format!(
+                added.push(format!(
                     "<{xr}:Item{xr_decl}{xsi_decl} {xsi}:type=\"{xr}:MDObjectRef\">{}</{xr}:Item>",
                     unica_xml_format::text::escape_xml(value)
                 ));
             } else {
-                added.push_str(&format!(
+                added.push(format!(
                     "<{tag}>{}</{tag}>",
                     unica_xml_format::text::escape_xml(value)
                 ));
@@ -1891,11 +1958,12 @@ pub fn patch_subsystem_lists(
         }
         if !added.is_empty() {
             if let Some(node) = container {
-                edits.push(insert(body, node, &added)?);
+                edits.push(insert(body, node, &entries, &added)?);
             } else {
                 let prefix = parent.lookup_prefix(MD);
                 let tag = prefix.map_or_else(|| name.to_owned(), |p| format!("{p}:{name}"));
-                edits.push(insert(body, parent, &format!("<{tag}>{added}</{tag}>"))?);
+                let wrapped = format!("<{tag}>{}</{tag}>", added.concat());
+                edits.push(insert(body, parent, &[], &[wrapped])?);
             }
         }
     }

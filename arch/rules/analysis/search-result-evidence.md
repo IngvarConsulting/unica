@@ -22,6 +22,7 @@ check:
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_empty_results_with_index_ready_footer_are_empty
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_empty_marker_does_not_hide_untrusted_tail
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_empty_marker_with_a_queued_or_running_index_is_pending
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_at_requested_limit_does_not_claim_exhaustion
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_at_one_source_quota_does_not_claim_exhaustion
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_does_not_claim_complete_when_one_header_is_unreadable

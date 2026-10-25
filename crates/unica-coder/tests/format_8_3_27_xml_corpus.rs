@@ -104,7 +104,7 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
     },
     MutatorRegistryEntry {
         operation: "form-compose",
-        ops: &["attribute.add", "command.add", "item.add"],
+        ops: &["props.set", "attribute.add", "command.add", "item.add"],
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["form-compile-managed"],
         required_branches: &["managed-form"],
@@ -2249,16 +2249,25 @@ fn target_args(case: &ExecutableCase, workspace: &Path) -> Result<Map<String, Va
     }
 }
 
-/// Состав управляемой формы отчёта каноническими операциями формы. Заголовок
-/// и свойства самой формы (autoTitle, предельные width/height, scale) канон
-/// не пишет, и кейс их больше не проверяет (#1984).
+/// Управляемая форма отчёта целиком каноническими операциями формы: свойства
+/// самой формы, реквизиты, команда и элементы формы, которую сделал
+/// `form.add`, одним вызовом (#1984, #2043).
 fn form_compose_ops() -> Vec<Value> {
     let form = "main:Report.CorpusReport.Form.CorpusForm";
     vec![
+        json!({"op": "props.set", "args": {"values": {
+            "Title": "Corpus form",
+            "AutoTitle": false,
+            "Width": 4_294_967_295_u64,
+            "Height": 4_294_967_294_u64,
+            "Scale": 98
+        }}}),
+        // Квалифицированные типы: attribute.add пока не пишет квалификаторы
+        // по умолчанию у голых String и Number (#1996).
         json!({"op": "attribute.add", "args": {"items": [
-            {"name": "Value", "type": "String"},
+            {"name": "Value", "type": "string(100)"},
             {"name": "Enabled", "type": "Boolean"},
-            {"name": "Picture", "type": "Number"},
+            {"name": "Picture", "type": "decimal(10,0)"},
             {"name": "Rows", "type": "ValueTable", "columns": [
                 {"name": "Value", "type": "String"},
                 {"name": "Presentation", "type": "String"},

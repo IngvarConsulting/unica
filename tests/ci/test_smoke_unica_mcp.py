@@ -19,6 +19,22 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "smoke-unica-mcp.py"
+# Предохранитель от зависания процесса теста или ожидания события, а не
+# проверяемый срок: зелёный прогон кончается событием задолго до него.
+FUSE_SECONDS = 30.0
+# Срок жизни фейковых держателей, если их никто не убил. Предохранители
+# короче него, поэтому «дождались события» не путается с «держатель сам
+# умер».
+HOLDER_LIFETIME_SECONDS = 60.0
+# Бюджет старта фейка для проверки жёсткого общего срока смоука: срок
+# должен истечь уже после того, как фейк породил потомка. Его величина —
+# не контракт; контракт в том, что общий срок обрывает смоук раньше
+# заведомо большего срока запроса.
+SMOKE_TOTAL_START_BUDGET_SECONDS = 3.0
+SMOKE_REQUEST_TIMEOUT_SECONDS = 10 * SMOKE_TOTAL_START_BUDGET_SECONDS
+# Колпак запроса в проверке трубы, удержанной потомком: он покрывает старт
+# фейка и initialize, а держатель живёт много дольше колпака.
+PIPE_HOLDER_REQUEST_CAP_SECONDS = 5.0
 
 
 def load_module():
@@ -221,6 +237,20 @@ def fake_kernel32_windows_api(module, kernel32: FakeKernel32):
     return api
 
 
+def assert_processes_exit(test: unittest.TestCase, module, pids, message: str) -> None:
+    """Wait for the exit event, then check it; the fuse is not the property.
+
+    A process killed by cleanup leaves the table asynchronously, and a
+    reparented zombie lingers until its new parent reaps it. A process that
+    cleanup never signalled outlives the fuse, so the check still fails.
+    """
+    pids = set(pids)
+    module._wait_for_process_pids(pids, FUSE_SECONDS)
+    for pid in sorted(pids):
+        with test.subTest(pid=pid):
+            test.assertFalse(module._process_is_running(pid), message)
+
+
 class SmokeUnicaMcpTests(unittest.TestCase):
     def test_v13_contract_allows_path_only_as_the_resolve_bridge_input(self) -> None:
         # `unica.resolve` — аварийный мост между адресом и раскладкой, и путь на
@@ -259,33 +289,47 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         return module.expected_tool_names(REPO_ROOT / "plugins" / "unica")
 
     def test_request_notifications_cannot_restart_the_aggregate_deadline(self) -> None:
+        # Часы управляемые: уведомления приходят каждые 0.02 с бесконечно,
+        # срок запроса 0.05 с. Перезапуск срока на уведомлении не дал бы
+        # запросу кончиться вовсе, а не «кончиться медленнее».
         module = load_module()
+        wire = module._WIRE_PROBE
+
+        class Notifications:
+            def __init__(self) -> None:
+                self.now = 0.0
+                self.delivered = 0
+
+            def monotonic(self) -> float:
+                return self.now
+
+            def get(self, *, timeout: float) -> str:
+                next_arrival = (self.delivered + 1) * 0.02
+                if next_arrival > self.now + timeout:
+                    self.now += timeout
+                    raise wire.queue.Empty
+                if next_arrival > 1.0:
+                    raise AssertionError("notifications restarted the request deadline")
+                self.now = next_arrival
+                self.delivered += 1
+                return '{"jsonrpc":"2.0","method":"notifications/progress"}\n'
 
         class Process:
             stdin = io.StringIO()
 
+        lines = Notifications()
         session = module.McpSession.__new__(module.McpSession)
         session.process = Process()
         session.timeout_seconds = 0.05
-        session.lines = module.queue.Queue()
+        session.lines = lines
         session.diagnostics = []
 
-        def publish_notifications() -> None:
-            for _ in range(10):
-                session.lines.put('{"jsonrpc":"2.0","method":"notifications/progress"}\n')
-                time.sleep(0.02)
-
-        publisher = threading.Thread(target=publish_notifications)
-        publisher.start()
-        started = time.monotonic()
-        try:
+        with mock.patch.object(wire, "time", mock.Mock(monotonic=lines.monotonic)):
             with self.assertRaisesRegex(SystemExit, "timed out after 0.05s"):
                 session.request({"jsonrpc": "2.0", "id": 41, "method": "tools/list"})
-        finally:
-            elapsed = time.monotonic() - started
-            publisher.join(timeout=1.0)
 
-        self.assertLess(elapsed, 0.15, "notifications restarted the request deadline")
+        self.assertEqual(lines.delivered, 2)
+        self.assertAlmostEqual(lines.now, 0.05)
 
     def test_request_records_the_response_kind_for_shared_wire_diagnostics(self) -> None:
         module = load_module()
@@ -338,14 +382,17 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                         ],
                         **options,
                     )
-                    Path(sys.argv[1]).write_text(
-                        f"{os.getpid()} {child.pid}", encoding="utf-8"
-                    )
+                    # Атомарно: тест читает файл, не дожидаясь писателя.
+                    staged = Path(sys.argv[1] + ".tmp")
+                    staged.write_text(f"{os.getpid()} {child.pid}", encoding="utf-8")
+                    os.replace(staged, sys.argv[1])
                     time.sleep(60)
                     """
                 ),
                 encoding="utf-8",
             )
+            # Общий срок покрывает старт фейка; срок запроса заведомо больше,
+            # так что оборвать смоук раньше него может только общий срок.
             started = time.monotonic()
             result = subprocess.run(
                 [
@@ -360,16 +407,20 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     "--plugin-root",
                     str(REPO_ROOT / "plugins" / "unica"),
                     "--timeout-seconds",
-                    "10",
+                    str(SMOKE_REQUEST_TIMEOUT_SECONDS),
                     "--total-timeout-seconds",
-                    "1",
+                    str(SMOKE_TOTAL_START_BUDGET_SECONDS),
                 ],
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=6.0,
+                timeout=SMOKE_REQUEST_TIMEOUT_SECONDS + FUSE_SECONDS,
             )
             elapsed = time.monotonic() - started
+            self.assertTrue(
+                child_pid_path.is_file(),
+                "the fake server did not start within the smoke start budget",
+            )
             child_pids = [
                 int(value)
                 for value in child_pid_path.read_text(encoding="utf-8").split()
@@ -382,11 +433,10 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertIn("last phase:", result.stderr)
         self.assertIn("initialize", result.stderr)
         self.assertEqual(result.stderr.count("---- smoke diagnostics"), 1, result.stderr)
-        self.assertLess(elapsed, 4.0)
-        module = load_module()
-        for child_pid in child_pids:
-            with self.subTest(child_pid=child_pid):
-                self.assertFalse(module._process_is_running(child_pid))
+        self.assertLess(elapsed, SMOKE_REQUEST_TIMEOUT_SECONDS)
+        assert_processes_exit(
+            self, load_module(), child_pids, "the deadline left the fake tree alive"
+        )
 
     def test_close_reports_pipes_held_by_a_detached_descendant_within_the_request_cap(
         self,
@@ -407,6 +457,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 server.write_text(
                     textwrap.dedent(
                         """
+                        import os
                         import subprocess
                         import sys
                         from pathlib import Path
@@ -416,7 +467,10 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                         child = subprocess.Popen(
                             [sys.executable, "-c", "import time; time.sleep(60)"]
                         )
-                        Path(sys.argv[1]).write_text(str(child.pid), encoding="utf-8")
+                        # Atomic: the test polls for the file, not the writer.
+                        staged = Path(sys.argv[1] + ".tmp")
+                        staged.write_text(str(child.pid), encoding="utf-8")
+                        os.replace(staged, sys.argv[1])
                         """
                     ),
                     encoding="utf-8",
@@ -428,7 +482,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     cwd=root,
                     deadline=time.monotonic() + 30.0,
                 )
-                deadline = time.monotonic() + 5.0
+                deadline = time.monotonic() + FUSE_SECONDS
                 while not pid_path.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
                 grandchild_pid = int(pid_path.read_text(encoding="utf-8"))
@@ -438,9 +492,11 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 ):
                     session.close()
                 elapsed = time.monotonic() - started
-            self.assertLess(elapsed, 5.0)
-            module._wait_for_process_pids({grandchild_pid}, 2.0)
-            self.assertFalse(module._process_is_running(grandchild_pid))
+            # Ожидание EOF длилось бы весь срок жизни держателя.
+            self.assertLess(elapsed, HOLDER_LIFETIME_SECONDS / 2)
+            assert_processes_exit(
+                self, module, {grandchild_pid}, "cleanup left the pipe holder alive"
+            )
         finally:
             if grandchild_pid is not None and module._process_is_running(grandchild_pid):
                 if os.name == "posix":
@@ -486,14 +542,44 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
 
+            import threading
+
+            # Порядок задают события: срок истёк и очистка началась до того,
+            # как передний план вернул успех. Сон в очистке лишь даёт
+            # сломанному коду время выйти с 0; верный код ждёт её при любой
+            # длительности.
+            release_watchdog = threading.Event()
+            cleanup_entered = threading.Event()
+            foreground_returned = threading.Event()
+
+            class PausedTimer:
+                daemon = True
+
+                def __init__(self, interval, callback):
+                    self.callback = callback
+
+                def start(self):
+                    def run():
+                        release_watchdog.wait()
+                        self.callback()
+                    threading.Thread(target=run, daemon=True).start()
+
+                def cancel(self):
+                    pass
+
             class SlowCleanupSession:
                 def terminate_tree(self, cache_root):
+                    cleanup_entered.set()
+                    foreground_returned.wait({FUSE_SECONDS!r})
                     time.sleep(0.3)
 
             def fake_smoke(command, plugin_root, timeout_seconds, deadline, session_started, admission_lock):
                 session_started(SlowCleanupSession(), Path("cache"))
-                time.sleep(0.1)
+                release_watchdog.set()
+                cleanup_entered.wait({FUSE_SECONDS!r})
+                foreground_returned.set()
 
+            module.threading.Timer = PausedTimer
             module.smoke = fake_smoke
             sys.argv = [
                 "smoke-unica-mcp.py",
@@ -510,7 +596,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
-            timeout=2.0,
+            timeout=FUSE_SECONDS,
         )
 
         self.assertEqual(result.returncode, 124, result.stderr)
@@ -530,9 +616,38 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 import time
                 from pathlib import Path
 
+                import threading
+
                 spec = importlib.util.spec_from_file_location("smoke_under_test", {str(SMOKE_SCRIPT)!r})
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
+
+                # Сторож отпускается, только когда допуск уже взят и потомок
+                # порождён: срок истекает строго внутри допуска. Сон после
+                # входа сторожа лишь даёт сломанному коду прочесть пустой
+                # список сессий; верный код ждёт замок при любой длительности.
+                release_watchdog = threading.Event()
+                watchdog_fired = threading.Event()
+                real_last_phase = module._last_phase
+
+                def observed_last_phase():
+                    watchdog_fired.set()
+                    return real_last_phase()
+
+                class PausedTimer:
+                    daemon = True
+
+                    def __init__(self, interval, callback):
+                        self.callback = callback
+
+                    def start(self):
+                        def run():
+                            release_watchdog.wait()
+                            self.callback()
+                        threading.Thread(target=run, daemon=True).start()
+
+                    def cancel(self):
+                        pass
 
                 class Session:
                     def __init__(self, process):
@@ -541,7 +656,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     def terminate_tree(self, cache_root):
                         if self.process.poll() is None:
                             self.process.kill()
-                        self.process.wait(timeout=1)
+                        self.process.wait(timeout={FUSE_SECONDS!r})
 
                 def fake_smoke(
                     command,
@@ -561,10 +676,14 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                             **options,
                         )
                         Path({str(child_pid_path)!r}).write_text(str(child.pid), encoding="utf-8")
+                        release_watchdog.set()
+                        watchdog_fired.wait({FUSE_SECONDS!r})
                         time.sleep(0.2)
                         session_started(Session(child), Path("cache"))
                     time.sleep(60)
 
+                module._last_phase = observed_last_phase
+                module.threading.Timer = PausedTimer
                 module.smoke = fake_smoke
                 sys.argv = [
                     "smoke-unica-mcp.py",
@@ -580,12 +699,17 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=2.0,
+                timeout=FUSE_SECONDS,
             )
             child_pid = int(child_pid_path.read_text(encoding="utf-8"))
             try:
                 self.assertEqual(result.returncode, 124, result.stderr)
-                self.assertFalse(load_module()._process_is_running(child_pid))
+                assert_processes_exit(
+                    self,
+                    load_module(),
+                    {child_pid},
+                    "the watchdog missed the child spawned during admission",
+                )
             finally:
                 if load_module()._process_is_running(child_pid):
                     os.kill(child_pid, signal.SIGKILL)
@@ -621,8 +745,11 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     threading.Thread(target=run, daemon=True).start()
 
                 def cancel(self):
+                    # Поздний обратный вызов обязан отработать до выхода:
+                    # иначе проверка была бы пустой.
                     release_callback.set()
-                    callback_finished.wait(0.5)
+                    if not callback_finished.wait({FUSE_SECONDS!r}):
+                        raise SystemExit("late watchdog callback never finished")
 
             def fake_smoke(command, plugin_root, timeout_seconds, deadline, session_started, admission_lock):
                 callback_entered.wait()
@@ -635,7 +762,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 "--plugin-root", {str(REPO_ROOT / "plugins" / "unica")!r},
             ]
             module.main()
-            time.sleep(0.1)
             """
         )
 
@@ -644,7 +770,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
-            timeout=2.0,
+            timeout=FUSE_SECONDS,
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -682,7 +808,8 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
                 def cancel(self):
                     release_callback.set()
-                    callback_finished.wait(0.5)
+                    if not callback_finished.wait({FUSE_SECONDS!r}):
+                        raise SystemExit("late watchdog callback never finished")
 
             def fake_smoke(command, plugin_root, timeout_seconds, deadline, session_started, admission_lock):
                 callback_entered.wait()
@@ -704,7 +831,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
-            timeout=2.0,
+            timeout=FUSE_SECONDS,
         )
 
         self.assertEqual(result.returncode, 1, result.stderr)
@@ -770,7 +897,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             nonlocal starts
             starts += 1
             if starts == 2:
-                deadline = time.monotonic() + 2
+                deadline = time.monotonic() + FUSE_SECONDS
                 while not child_pid_path.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
                 raise RuntimeError("reader start failed")
@@ -800,7 +927,10 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                         ],
                         **options,
                     )
-                    Path(sys.argv[1]).write_text(str(child.pid), encoding="utf-8")
+                    # Atomic: the test polls for the file, not the writer.
+                    staged = Path(sys.argv[1] + ".tmp")
+                    staged.write_text(str(child.pid), encoding="utf-8")
+                    os.replace(staged, sys.argv[1])
                     time.sleep(60)
                     """
                 ),
@@ -820,9 +950,15 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(spawned), 1)
         public = spawned[0]
-        self.assertIsNotNone(public.poll())
-        self.assertFalse(module._process_is_running(public.pid))
-        self.assertFalse(module._process_is_running(child_pid))
+        # Без очистки корень спал бы 60 с: ожидание с предохранителем
+        # отличает «добит» от «жив», не замеряя скорость машины.
+        public.wait(timeout=FUSE_SECONDS)
+        assert_processes_exit(
+            self,
+            module,
+            {public.pid, child_pid},
+            "constructor cleanup left the spawned tree alive",
+        )
 
     def test_smoke_uses_the_shared_wire_process_ownership_boundary(self) -> None:
         module = load_module()
@@ -1511,10 +1647,12 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
         with mock.patch.object(
             module._WIRE_PROBE,
-            "_current_process_identity",
-            side_effect=lambda pid: next(
-                identity for identity in identities if identity.pid == pid
-            ),
+            "_current_process_identities",
+            side_effect=lambda pids: {
+                identity.pid: identity
+                for identity in identities
+                if identity.pid in pids
+            },
         ), mock.patch.object(
             module._WIRE_PROBE.os, "kill", side_effect=signal_process
         ):
@@ -1545,16 +1683,16 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             module, "_workspace_service_pids", return_value={41}
         ), mock.patch.object(
             module._WIRE_PROBE,
-            "_current_process_identity",
-            return_value=original,
+            "_current_process_identities",
+            return_value={41: original},
         ):
             session.observe_workspace_services(Path("cache"))
         with mock.patch.object(
             module, "_workspace_service_pids", return_value={41}
         ), mock.patch.object(
             module._WIRE_PROBE,
-            "_current_process_identity",
-            return_value=replacement,
+            "_current_process_identities",
+            return_value={41: replacement},
         ):
             session.observe_workspace_services(Path("cache"))
 
@@ -1625,9 +1763,9 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             worker = threading.Thread(target=retire_service)
             worker.start()
             try:
-                module._wait_for_workspace_services(cache_root, 1.0)
+                module._wait_for_workspace_services(cache_root, FUSE_SECONDS)
             finally:
-                worker.join(timeout=2.0)
+                worker.join(timeout=FUSE_SECONDS)
 
             self.assertFalse(worker.is_alive())
             self.assertFalse(record.exists())
@@ -1641,7 +1779,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             listener = socket.socket()
             listener.bind(("127.0.0.1", 0))
             listener.listen(1)
-            listener.settimeout(1.0)
+            listener.settimeout(FUSE_SECONDS)
             record.write_text(
                 json.dumps(
                     {
@@ -1671,11 +1809,13 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             worker = threading.Thread(target=serve_shutdown)
             worker.start()
             try:
-                service_pids = module._shutdown_workspace_services(cache_root, 1.0)
-                module._wait_for_workspace_services(cache_root, 1.0)
+                service_pids = module._shutdown_workspace_services(
+                    cache_root, FUSE_SECONDS
+                )
+                module._wait_for_workspace_services(cache_root, FUSE_SECONDS)
             finally:
                 listener.close()
-                worker.join(timeout=2.0)
+                worker.join(timeout=FUSE_SECONDS)
 
             self.assertFalse(worker.is_alive())
             self.assertEqual(service_pids, {os.getpid()})
@@ -1700,7 +1840,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             try:
                 module._wait_for_workspace_services(
                     cache_root,
-                    1.0,
+                    FUSE_SECONDS,
                     {process.pid},
                 )
                 self.assertFalse(module._process_is_running(process.pid))
@@ -1735,6 +1875,46 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             module._close_session_and_workspace_services(
                 FailingSession(), cache_root, 7.0
             )
+
+        self.assertEqual(
+            events,
+            [
+                ("shutdown", cache_root, 7.0),
+                "close",
+                ("wait", cache_root, 7.0, {41}),
+                ("terminate", cache_root, set()),
+            ],
+        )
+
+    def test_unreadable_process_table_still_stops_services_before_refusing(self) -> None:
+        # Мягкой остановке сервисов таблица процессов не нужна; без таблицы
+        # нельзя только утверждать, что дерево снято, поэтому отказ — в конце.
+        module = load_module()
+        events: list[object] = []
+
+        class Session:
+            def close(self) -> None:
+                events.append("close")
+
+            def terminate_tree(
+                self, root: Path, known_service_identities: set[object]
+            ) -> None:
+                events.append(("terminate", root, known_service_identities))
+
+        def unreadable(session, identities):
+            raise module.ProcessObservationError("process table is unreadable: hung")
+
+        cache_root = Path("cache")
+        module._capture_owned_processes = unreadable
+        module._shutdown_workspace_services = lambda root, timeout: (
+            events.append(("shutdown", root, timeout)) or {41}
+        )
+        module._wait_for_workspace_services = lambda root, timeout, pids: events.append(
+            ("wait", root, timeout, pids)
+        )
+
+        with self.assertRaisesRegex(SystemExit, "snapshot failed before cleanup"):
+            module._close_session_and_workspace_services(Session(), cache_root, 7.0)
 
         self.assertEqual(
             events,
@@ -1883,7 +2063,9 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     module._close_session_and_workspace_services(
                         session, cache_root, 0.1
                 )
-                self.assertFalse(module._process_is_running(public.pid))
+                assert_processes_exit(
+                    self, module, {public.pid}, "cleanup left the owned public process alive"
+                )
                 self.assertTrue(module._process_is_running(service.pid))
             finally:
                 for process in (service, public):
@@ -1989,6 +2171,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         code_search_status: str = "ok",
         code_search_root_field: str | None = None,
         leave_pipe_holder: bool = False,
+        request_timeout_seconds: float = FUSE_SECONDS,
     ) -> subprocess.CompletedProcess[str]:
         expected_tools = self.expected_tools()
         module = load_module()
@@ -2236,11 +2419,12 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     "--plugin-root",
                     str(plugin_root),
                     "--timeout-seconds",
-                    "2",
+                    str(request_timeout_seconds),
                 ],
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=request_timeout_seconds + FUSE_SECONDS,
             )
 
     def test_accepts_exact_v13_compatibility_surface(self) -> None:
@@ -2305,7 +2489,10 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
     def test_cleanup_failure_does_not_replace_the_failure_that_caused_it(self) -> None:
         result = self.run_smoke(
-            self.tool_entries(), server_name="other", leave_pipe_holder=True
+            self.tool_entries(),
+            server_name="other",
+            leave_pipe_holder=True,
+            request_timeout_seconds=PIPE_HOLDER_REQUEST_CAP_SECONDS,
         )
 
         self.assertNotEqual(result.returncode, 0)
