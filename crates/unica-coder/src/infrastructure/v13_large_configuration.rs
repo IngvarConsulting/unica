@@ -252,14 +252,15 @@ impl Default for RegistrationCache {
 pub(crate) type RetainedSupportState = (Option<FileStamp>, Option<Arc<SupportState>>);
 
 /// Stamps of every file the configuration-root payload is built from.
-pub(crate) type ConfigurationStamps = [Option<FileStamp>; 4];
+pub(crate) type ConfigurationStamps = [Option<FileStamp>; 5];
 
 /// Files the configuration-root payload reads, in stamp order.
-pub(crate) const CONFIGURATION_PAYLOAD_FILES: [&str; 4] = [
+pub(crate) const CONFIGURATION_PAYLOAD_FILES: [&str; 5] = [
     "Configuration.xml",
     "Ext/ParentConfigurations.bin",
     "Ext/HomePageWorkArea.xml",
     "Ext/CommandInterface.xml",
+    "Ext/ClientApplicationInterface.xml",
 ];
 
 fn unreadable(error: io::Error) -> ViewError {
@@ -410,7 +411,7 @@ impl RegistrationCache {
 pub(crate) fn configuration_stamps(
     root: &SourceDirectory,
 ) -> Result<ConfigurationStamps, ViewError> {
-    let mut stamps = [None; 4];
+    let mut stamps = [None; CONFIGURATION_PAYLOAD_FILES.len()];
     for (stamp, relative) in stamps.iter_mut().zip(CONFIGURATION_PAYLOAD_FILES) {
         *stamp = root
             .relative_file_stamp(std::path::Path::new(relative))
@@ -1686,6 +1687,7 @@ mod tests {
                 "Ext/ParentConfigurations.bin",
                 "Ext/HomePageWorkArea.xml",
                 "Ext/CommandInterface.xml",
+                "Ext/ClientApplicationInterface.xml",
             ]
         );
     }

@@ -1013,7 +1013,7 @@ fn stage_client_interface(
             String::from_utf8(bytes.clone()).map_err(|_| {
                 ApplyPlanError::new(
                     ApplyPlanErrorKind::InvalidSource,
-                    format!("{} is not UTF-8", relative.display()),
+                    format!("{} is not UTF-8", relative.portable()),
                 )
                 .at_path(at_path.clone())
             })
