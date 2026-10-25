@@ -1318,7 +1318,7 @@ fn commit_uncertain_is_returned_before_process_owned_fail_stop_retains_endpoint(
 }
 
 /// A submit's answer is due at its own response budget plus one
-/// serialization margin, counted from receipt and never renewed. The largest
+/// serialization margin, computed once from receipt. The largest
 /// budget a submit may carry keeps that deadline under the 10 s safety cap,
 /// so the cap never shortens it.
 #[test]

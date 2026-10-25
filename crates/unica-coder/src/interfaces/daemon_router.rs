@@ -1626,12 +1626,11 @@ mod tests {
         let outcome = call(&router, Some(host));
         let elapsed = started.elapsed();
         assert!(
-            !matches!(&outcome, Ok(CanonicalCallOutcome::Direct(_))),
-            "the trickled answer was taken as delivered: {outcome:?}"
+            matches!(&outcome, Ok(CanonicalCallOutcome::LostSubmit(_))),
+            "the trickled submit was not lost by its deadline: {outcome:?}"
         );
         assert!(
-            elapsed
-                < host + RESPONSE_SERIALIZATION_MARGIN + RECOVERY_BUDGET + Duration::from_secs(1),
+            elapsed < host + RECOVERY_BUDGET + Duration::from_secs(1),
             "the trickle renewed the deadline: {elapsed:?}"
         );
         assert_eq!(fake.submissions(), 1);
