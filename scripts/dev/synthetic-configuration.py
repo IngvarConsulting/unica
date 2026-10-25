@@ -221,9 +221,13 @@ def generate(out: Path, profile: dict, scale: float, seed: int) -> dict:
     )
     (src / "Configuration.xml").write_text(BOM + configuration, encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(out)], check=True)
+    for key, value in [("gc.auto", "0"), ("maintenance.auto", "false")]:
+        subprocess.run(["git", "-C", str(out), "config", key, value], check=True)
     subprocess.run(["git", "-C", str(out), "add", "-A"], check=True)
     subprocess.run(
+        # No background repack: it would run during the measurement.
         ["git", "-C", str(out), "-c", "user.name=synthetic", "-c", "user.email=synthetic@example.invalid",
+         "-c", "gc.auto=0", "-c", "maintenance.auto=false",
          "commit", "-q", "--no-gpg-sign", "-m", "synthetic configuration"],
         check=True,
     )
