@@ -92,6 +92,70 @@ pub fn inside_work_tree(
         .is_ok_and(|output| output.status_success && output.stdout.trim() == "true")
 }
 
+/// Whether the corpus holds a Git work tree of its own: a submodule
+/// (gitlink) or an embedded repository, tracked or not. `git grep` reads
+/// neither, so a candidate stream would miss their files; only the walk can
+/// read such a corpus. Any failure to tell answers `true`.
+pub fn holds_foreign_work_tree(
+    runner: &(dyn ProcessRunner + Send + Sync),
+    root: &Path,
+    corpus: &CandidateCorpus,
+    max_line_bytes: usize,
+    cancellation: &CancellationToken,
+) -> bool {
+    // Index entries print as `<mode> <object> <stage>\t<path>`, untracked
+    // entries as the bare path; an embedded repository is listed as its
+    // directory with a trailing slash, never entered.
+    let mut args = [
+        "-c",
+        "core.quotepath=false",
+        "ls-files",
+        "--stage",
+        "--others",
+        "--",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    args.push(match &corpus.subtree {
+        None => ".".to_string(),
+        Some(prefix) => format!(":(literal){prefix}"),
+    });
+    args.push(generated_corpus_exclusion());
+    for excluded in &corpus.excluded {
+        args.push(format!(":(exclude,literal){excluded}"));
+    }
+    let command = ProcessCommand {
+        program: PathBuf::from("git"),
+        args,
+        cwd: root.to_path_buf(),
+        env: Vec::new(),
+        env_remove: Vec::new(),
+        capture_limits: None,
+        timeout: None,
+        cancellation: cancellation.clone(),
+    };
+    let mut found = false;
+    let mut consume = |_: usize, record: &[u8]| {
+        let record = record.strip_suffix(b"\r").unwrap_or(record);
+        let gitlink = record.starts_with(b"160000 ") && record.contains(&b'\t');
+        let path = record.strip_suffix(b"\"").unwrap_or(record);
+        if gitlink || path.ends_with(b"/") {
+            found = true;
+            return StreamControl::Stop;
+        }
+        StreamControl::Continue
+    };
+    match runner.run_streaming_staged(&command, max_line_bytes, &mut consume) {
+        Ok(output) => {
+            found
+                || output.line_error.is_some()
+                || output.cancelled
+                || !(output.status_success && output.stderr.trim().is_empty())
+        }
+        Err(_) => true,
+    }
+}
+
 /// Streams candidate BSL lines of `root` to `on_line`.
 ///
 /// Tracked, untracked and ignored files are read alike, binary-looking

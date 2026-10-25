@@ -28,7 +28,8 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use unica_adapter_lexical::lines::{
-    inside_work_tree, stream_candidate_lines, CandidateCorpus, CandidateEnd, CandidatePattern,
+    holds_foreign_work_tree, inside_work_tree, stream_candidate_lines, CandidateCorpus,
+    CandidateEnd, CandidatePattern,
 };
 use unica_execution_contract::view_error::ViewError;
 use unica_navigation::result_store::SearchResume;
@@ -268,7 +269,9 @@ impl TextSearchError {
 }
 
 /// Chooses Git when the query has a Git preselection and every selected
-/// source root lies in a Git work tree.
+/// source root lies in a Git work tree that holds no work tree of its own:
+/// `git grep` reads no submodule and no embedded repository, the walk reads
+/// both.
 pub(in crate::infrastructure::daemon) fn choose_engine(
     query: &TextQuery,
     sources: &[TextSource<'_>],
@@ -276,11 +279,16 @@ pub(in crate::infrastructure::daemon) fn choose_engine(
 ) -> TextEngine {
     let all_in_git = || {
         sources.iter().all(|source| {
-            inside_work_tree(
-                system_process_runner(),
-                source.source.retained_root().path(),
-                cancellation,
-            )
+            let retained = source.source.retained_root();
+            let root = retained.path();
+            inside_work_tree(system_process_runner(), root, cancellation)
+                && !holds_foreign_work_tree(
+                    system_process_runner(),
+                    root,
+                    &candidate_corpus(source),
+                    CANONICAL_SEARCH_MAX_LINE_BYTES,
+                    cancellation,
+                )
         })
     };
     if query.candidates.is_some() && all_in_git() {
@@ -337,6 +345,17 @@ fn scan_with<'a>(
     Ok(collector.finish())
 }
 
+/// The part of a source root Git reads for one source set.
+fn candidate_corpus(source: &TextSource<'_>) -> CandidateCorpus {
+    CandidateCorpus {
+        subtree: source.prefix.clone(),
+        excluded: source.excluded.clone(),
+        excluded_name_prefixes: vec![
+            unica_workspace::compile_transaction::PUBLICATION_ARTIFACT_PREFIX.to_string(),
+        ],
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flow {
     Continue,
@@ -369,13 +388,7 @@ fn git_source(
         system_process_runner(),
         root.path(),
         pattern,
-        &CandidateCorpus {
-            subtree: source.prefix.clone(),
-            excluded: source.excluded.clone(),
-            excluded_name_prefixes: vec![
-                unica_workspace::compile_transaction::PUBLICATION_ARTIFACT_PREFIX.to_string(),
-            ],
-        },
+        &candidate_corpus(source),
         CANONICAL_SEARCH_MAX_LINE_BYTES,
         cancellation,
         &mut |record| {

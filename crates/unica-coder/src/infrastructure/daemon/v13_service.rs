@@ -9082,6 +9082,64 @@ mod tests {
         assert_eq!(case.len(), 6, "{case:?}");
     }
 
+    /// `git grep` reads neither a submodule nor an embedded repository. A
+    /// source root holding either is read by the walk: a match there that
+    /// comes first in file order is on the first page, and the answer is
+    /// the walk's own.
+    #[test]
+    fn literal_search_reads_submodules_and_embedded_repositories() {
+        let git = |directory: &std::path::Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.email=probe@example.invalid",
+                    "-c",
+                    "user.name=probe",
+                ])
+                .args(args)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "{args:?}: {status:?}");
+        };
+        for gitlink in [false, true] {
+            let workspace = text_engine_workspace();
+            let nested = workspace.path().join("src/Aaa");
+            std::fs::create_dir_all(&nested).unwrap();
+            std::fs::write(nested.join("first.bsl"), "Needle in a nested work tree\n").unwrap();
+            git(&nested, &["init", "--quiet"]);
+            if gitlink {
+                git(&nested, &["add", "first.bsl"]);
+                git(
+                    &nested,
+                    &["commit", "--quiet", "--no-gpg-sign", "-m", "nested"],
+                );
+                git(workspace.path(), &["add", "src/Aaa"]);
+            }
+            let chosen = text_search_pages_with(
+                workspace.path(),
+                Arc::new(super::CanonicalV13ReadService::default()),
+                json!({"query":"Needle","limit":1}),
+            );
+            let walk = text_search_pages(
+                workspace.path(),
+                TextEngine::Walk,
+                json!({"query":"Needle","limit":1}),
+            );
+            let first = &chosen[0].data.as_ref().unwrap()["matches"][0];
+            assert_eq!(
+                first["snippet"], "Needle in a nested work tree",
+                "gitlink {gitlink}"
+            );
+            assert_eq!(
+                text_search_matches(&chosen),
+                text_search_matches(&walk),
+                "gitlink {gitlink}"
+            );
+            assert_eq!(text_search_matches(&walk).len(), 9, "gitlink {gitlink}");
+        }
+    }
+
     /// #2096: a match without a proven module names its file by an
     /// identifier, never by path, in either engine.
     #[test]

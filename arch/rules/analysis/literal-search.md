@@ -3,6 +3,7 @@ id: INV.APP.LITERAL-SEARCH
 check:
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_search_engines_agree_on_matches_order_and_addresses
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_module_scope_searches_only_the_selected_module_with_either_engine
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_search_reads_submodules_and_embedded_repositories
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::git_first_page_continues_by_the_walk_to_the_last_match
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::walk_literal_continuation_resumes_at_its_file
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::walk_pages_end_by_time_and_continue_without_loss
