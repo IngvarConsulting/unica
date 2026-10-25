@@ -327,7 +327,9 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // Заимствованный узел без своего файла читается по дескриптору;
         // валидатор файла прав, формы или макета проверял бы содержимое
         // родителя, которого в этом наборе нет.
-        "Role" | "Form" | "Template" | "XDTOPackage" if facts.inherited => Vec::new(),
+        "Role" | "Form" | "Template" | "CommonTemplate" | "XDTOPackage" if facts.inherited => {
+            Vec::new()
+        }
         // Срезы `Interface` модуля — проекция его методов, а не командный
         // интерфейс подсистемы; как и метод, они читаются без своего шага:
         // код модуля проверяет шаг `bsl` на самом модуле (#1467).
@@ -337,10 +339,14 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // Коллекция форм перечисляет узлы и не владеет отдельным Form.xml.
         "Form" if !facts.named => Vec::new(),
         "Body" if facts.in_template => Vec::new(),
-        "Configuration" if facts.extension => vec![CheckStep::Native(CheckValidator::Cfe)],
-        "Configuration" => vec![CheckStep::Native(CheckValidator::Cf)],
+        // Шаг `bsl` на корне и объекте спрашивает только поставщиков, которые
+        // объявили такую цель; анализатор модулей его пропускает.
+        "Configuration" if facts.extension => {
+            vec![CheckStep::Native(CheckValidator::Cfe), CheckStep::Bsl]
+        }
+        "Configuration" => vec![CheckStep::Native(CheckValidator::Cf), CheckStep::Bsl],
         "Form" => vec![CheckStep::Native(CheckValidator::Form)],
-        "Template" => match facts.template {
+        "Template" | "CommonTemplate" => match facts.template {
             Some(TemplateFlavour::DataCompositionSchema) => {
                 vec![CheckStep::Native(CheckValidator::Dcs)]
             }
@@ -360,7 +366,7 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // ради которых его и зовут.
         "Module" | "Body" => vec![CheckStep::Bsl],
         other if facts.named && unica_metadata::MetadataKind::parse(other).is_ok() => {
-            vec![CheckStep::Meta]
+            vec![CheckStep::Meta, CheckStep::Bsl]
         }
         _ => Vec::new(),
     }
@@ -787,7 +793,7 @@ mod tests {
         };
         assert_eq!(
             plan_for_node("Configuration", plain),
-            [CheckStep::Native(CheckValidator::Cf)]
+            [CheckStep::Native(CheckValidator::Cf), CheckStep::Bsl]
         );
         assert_eq!(
             plan_for_node(
@@ -797,7 +803,7 @@ mod tests {
                     ..plain
                 }
             ),
-            [CheckStep::Native(CheckValidator::Cfe)]
+            [CheckStep::Native(CheckValidator::Cfe), CheckStep::Bsl]
         );
         assert_eq!(
             plan_for_node("Form", plain),
@@ -836,7 +842,10 @@ mod tests {
             plan_for_node("Interface", plain),
             [CheckStep::Native(CheckValidator::Interface)]
         );
-        assert_eq!(plan_for_node("Catalog", plain), [CheckStep::Meta]);
+        assert_eq!(
+            plan_for_node("Catalog", plain),
+            [CheckStep::Meta, CheckStep::Bsl]
+        );
         // #1381: заимствованный узел без своего файла не отдаёт валидатору
         // файла содержимое родителя; остальные виды плана не меняют.
         let inherited = NodeFacts {
@@ -844,7 +853,7 @@ mod tests {
             inherited: true,
             ..plain
         };
-        for kind in ["Role", "Form", "Template"] {
+        for kind in ["Role", "Form", "Template", "CommonTemplate"] {
             assert!(plan_for_node(kind, inherited).is_empty(), "{kind}");
         }
         assert!(plan_for_node(
@@ -855,10 +864,13 @@ mod tests {
             }
         )
         .is_empty());
-        assert_eq!(plan_for_node("DataProcessor", inherited), [CheckStep::Meta]);
+        assert_eq!(
+            plan_for_node("DataProcessor", inherited),
+            [CheckStep::Meta, CheckStep::Bsl]
+        );
         assert_eq!(
             plan_for_node("Configuration", inherited),
-            [CheckStep::Native(CheckValidator::Cfe)]
+            [CheckStep::Native(CheckValidator::Cfe), CheckStep::Bsl]
         );
         // Узел с кодом owns анализатор BSL. Прежде план у него был пуст, и
         // `check` отвечал «читается», молча пропуская находки, ради которых

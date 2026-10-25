@@ -995,7 +995,7 @@
     {
       "id": "diff.cursor-store-entries",
       "class": "retention",
-      "resource": "Число одновременно хранимых курсоров продолжения diff в процессе.",
+      "resource": "Число одновременно хранимых пар сравнения diff с продолжением в процессе.",
       "unit": "count",
       "scope": "cache",
       "source": {
@@ -1010,7 +1010,7 @@
       "status": "unproven",
       "origin": "781b94962",
       "problem": null,
-      "onReach": "тихо: при выдаче нового курсора вытесняется произвольный прежний (первый ключ HashMap); его продолжение затем отказывает как неизвестный курсор.",
+      "onReach": "тихо: обход хранит одну пару на все свои страницы; при сохранении новой пары вытесняется самая старая, и её продолжение затем отказывает как неизвестный курсор.",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1024,12 +1024,14 @@
       "scope": "request",
       "source": {
         "file": "crates/unica-coder/src/application/v13/diff.rs",
-        "symbol": "DEFAULT_LIMIT"
+        "symbol": "DEFAULT_DIFF_LIMIT"
       },
-      "expr": "100",
-      "value": 100,
+      "expr": "20",
+      "value": 20,
       "applied": [
-        "crates/unica-coder/src/application/v13/diff.rs"
+        "crates/unica-coder/src/application/v13/diff.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
       "status": "unproven",
       "origin": "781b94962",
@@ -1048,17 +1050,19 @@
       "scope": "request",
       "source": {
         "file": "crates/unica-coder/src/application/v13/diff.rs",
-        "symbol": "MAX_LIMIT"
+        "symbol": "MAX_DIFF_LIMIT"
       },
-      "expr": "1_000",
-      "value": 1000,
+      "expr": "50",
+      "value": 50,
       "applied": [
-        "crates/unica-coder/src/application/v13/diff.rs"
+        "crates/unica-coder/src/application/v13/diff.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
       "status": "unproven",
       "origin": "781b94962",
       "problem": null,
-      "onReach": "тихо: больший limit сводится к 1000 (clamp), остаток доступен по cursor.",
+      "onReach": "на проводе limit больше 50 получает bad_value; внутри обработчика больший limit сводится к 50, остаток доступен по cursor.",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1227,6 +1231,7 @@
       "value": 65536,
       "applied": [
         "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/diff.rs",
         "crates/unica-coder/src/application/v13/view.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
@@ -1918,30 +1923,6 @@
       "review": null
     },
     {
-      "id": "check.metadata-focus-descriptor-bytes",
-      "class": "corpus",
-      "resource": "Размер дескриптора объекта, который диагностика читает для фокуса находки на метаданных.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/diagnostics.rs",
-        "symbol": "MAX_METADATA_FOCUS_DESCRIPTOR_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/diagnostics.rs"
-      ],
-      "status": "unproven",
-      "origin": "5fa4c1b02",
-      "problem": null,
-      "onReach": "тихо: фокус метаданных не строится (None), находка остаётся без адреса метаданных.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR4"
-    },
-    {
       "id": "analysis.internal-adapter-process-ms",
       "class": "deadline",
       "resource": "Срок процесса внутреннего адаптера анализа (и bsl-analyzer) по умолчанию.",
@@ -2014,54 +1995,6 @@
       "evidence": [],
       "decision": null,
       "review": "временное число без замеров; пересмотр по замерам #1119 PR8"
-    },
-    {
-      "id": "resolve.navigation-descriptor-bytes",
-      "class": "corpus",
-      "resource": "Размер одного дескриптора, читаемого навигационным инвентарём платформенного XML.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
-        "symbol": "MAX_NAVIGATION_DESCRIPTOR_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs"
-      ],
-      "status": "unproven",
-      "origin": "517463e56 (#266)",
-      "problem": null,
-      "onReach": "Неполнота: дескриптор пропускается, ставится только partial = true.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR4"
-    },
-    {
-      "id": "resolve.navigation-inventory-entries",
-      "class": "corpus",
-      "resource": "Число проверяемых дескрипторов одного вида при построении навигационного инвентаря платформенного XML.",
-      "unit": "count",
-      "scope": "directory",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
-        "symbol": "MAX_NAVIGATION_INVENTORY_ENTRIES"
-      },
-      "expr": "4_096",
-      "value": 4096,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs"
-      ],
-      "status": "unproven",
-      "origin": "517463e56 (#266)",
-      "problem": null,
-      "onReach": "Неполнота: partial = true, обход вида прекращается.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR4"
     },
     {
       "id": "apply.subsystem-info-file-bytes",
@@ -2304,38 +2237,14 @@
       "review": null
     },
     {
-      "id": "view.module-bytes",
-      "class": "corpus",
-      "resource": "Размер модуля BSL при чтении через логический адаптер (прежняя граница).",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/v13_read.rs",
-        "symbol": "MAX_MODULE_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/v13_read.rs"
-      ],
-      "status": "unproven",
-      "origin": "cec3ddf7c",
-      "problem": null,
-      "onReach": "Не применяется: мёртвая константа после #1130, модули читаются через удержанный файл и страницы.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR4"
-    },
-    {
-      "id": "view.descriptor-file-bytes",
-      "class": "corpus",
-      "resource": "Размер одного XML-файла при чтении узла: дескриптор объекта, Form.xml, Rights.xml, макет СКД, командный интерфейс, Predefined (около 20 мест).",
+      "id": "view.configuration-streaming-threshold-bytes",
+      "class": "step",
+      "resource": "Размер Configuration.xml, с которого корень разбирается потоковым путём вместо полного дерева.",
       "unit": "bytes",
       "scope": "file",
       "source": {
         "file": "crates/unica-coder/src/infrastructure/v13_read_port.rs",
-        "symbol": "MAX_CONFIGURATION_BYTES"
+        "symbol": "CONFIGURATION_STREAMING_THRESHOLD_BYTES"
       },
       "expr": "8 * 1024 * 1024",
       "value": 8388608,
@@ -2344,12 +2253,12 @@
       ],
       "status": "unproven",
       "origin": "bbf0a901e",
-      "problem": "Configuration.xml больше предела выбирает потоковое чтение (#1130); остальные файлы читаются целиком.",
-      "onReach": "Отказ source_unreadable: «relative file exceeds the 8388608-byte read limit».",
+      "problem": null,
+      "onReach": "Выбор разборщика, а не отказ: больший файл читается потоком (#1130), меньший — полным деревом с кешем корня.",
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR4"
+      "review": null
     },
     {
       "id": "view.compact-property-bytes",
@@ -3079,6 +2988,31 @@
       "review": null
     },
     {
+      "id": "daemon.stale-state-idle",
+      "class": "retention",
+      "resource": "Срок простоя, после которого демон удаляет устаревшее состояние: каталоги чужих идентичностей демона и файлы продолжения корневой проверки, не переписанные дольше срока.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-daemon/src/state_collection.rs",
+        "literal": "pub const STALE_DAEMON_STATE_IDLE: Duration = Duration::from_secs(7 * 24 * 60 * 60);",
+        "count": 1
+      },
+      "expr": "Duration::from_secs(7 * 24 * 60 * 60)",
+      "value": 604800000,
+      "applied": [
+        "crates/unica-daemon/src/state_collection.rs"
+      ],
+      "status": "unproven",
+      "origin": null,
+      "problem": null,
+      "onReach": "тихо: устаревший каталог или файл продолжения удаляется; следующая корневая проверка такого проекта идёт с начала",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "daemon.accept-poll",
       "class": "step",
       "resource": "Пауза между опросами слушающего сокета демона на новые соединения.",
@@ -3424,7 +3358,8 @@
       "expr": "4_096",
       "value": 4096,
       "applied": [
-        "crates/unica-execution-contract/src/result_delivery.rs"
+        "crates/unica-execution-contract/src/result_delivery.rs",
+        "crates/unica-execution/src/receipt_ledger.rs"
       ],
       "status": "unproven",
       "origin": "#1857",
@@ -3453,6 +3388,7 @@
       "value": 8388608,
       "applied": [
         "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/diff.rs",
         "crates/unica-coder/src/application/v13/view.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
@@ -4850,30 +4786,6 @@
       "review": "снимается в #1119 PR5"
     },
     {
-      "id": "metadata.predefined-bytes",
-      "class": "corpus",
-      "resource": "Размер файла Ext/Predefined.xml при планировании изменения предопределённых элементов.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/predefined.rs",
-        "symbol": "MAX_PREDEFINED_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-metadata-designer/src/predefined.rs"
-      ],
-      "status": "unproven",
-      "origin": "#325",
-      "problem": null,
-      "onReach": "отказ плана ProviderUnavailable «predefined data cannot be read through the source-root boundary»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR4"
-    },
-    {
       "id": "metadata.remove-reference-file-bytes",
       "class": "corpus",
       "resource": "Размер одного XML- или BSL-файла, читаемого при поиске ссылок на удаляемый объект.",
@@ -5789,8 +5701,8 @@
     },
     {
       "id": "project-health.git-stdout-capture-bytes",
-      "class": "corpus",
-      "resource": "Захват stdout команд git (ls-files --eol/--stage и др.) в проверке здоровья проекта.",
+      "class": "retention",
+      "resource": "Захват stdout коротких команд git в проверке здоровья проекта: rev-parse, config, version, check-ignore и cat-file blob ConfigDumpInfo. Вывод, растущий с репозиторием (ls-files --stage и --eol, check-attr, cat-file --batch-check), читается потоком без этого захвата.",
       "unit": "bytes",
       "scope": "repository",
       "source": {
@@ -5806,12 +5718,12 @@
       ],
       "status": "unproven",
       "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "вывод усекается, команда считается неуспешной («stdout was truncated»), проверка помечается невыполненной",
+      "problem": "Блоб ConfigDumpInfo.xml растёт с конфигурацией и читается целиком в пределах этого захвата; блоб больше 64 МиБ даёт неполную проверку ConfigDumpInfo.",
+      "onReach": "вывод усекается, команда считается неполной («stdout was truncated»), зависимая проверка помечается невыполненной",
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR3"
+      "review": "блоб ConfigDumpInfo по-прежнему захватывается целиком (#1119)"
     },
     {
       "id": "project-health.ambiguous-owner-reason-bytes",
@@ -5838,54 +5750,6 @@
       "review": null
     },
     {
-      "id": "project-health.expanded-repository-fact-bytes",
-      "class": "corpus",
-      "resource": "Объём фактов при раскрытии владения наборами исходников в репозитории.",
-      "unit": "bytes",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/git.rs",
-        "symbol": "MAX_EXPANDED_REPOSITORY_FACT_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-project-health/src/inspection/git.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 8f45a9c4d (bound staged repository health)",
-      "problem": null,
-      "onReach": "неполнота: «fact budget exceeded while expanding source-set ownership»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3"
-    },
-    {
-      "id": "project-health.expanded-repository-facts",
-      "class": "corpus",
-      "resource": "Число фактов при раскрытии владения наборами исходников в репозитории.",
-      "unit": "count",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/git.rs",
-        "symbol": "MAX_EXPANDED_REPOSITORY_FACTS"
-      },
-      "expr": "4096",
-      "value": 4096,
-      "applied": [
-        "crates/unica-project-health/src/inspection/git.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 8f45a9c4d (bound staged repository health)",
-      "problem": null,
-      "onReach": "неполнота: «fact budget exceeded while expanding source-set ownership»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3"
-    },
-    {
       "id": "project-health.staged-ignore-batch-metadata-bytes",
       "class": "corpus",
       "resource": "Захват вывода `git cat-file --batch-check` по индексированным .gitignore (128 байт на файл).",
@@ -5908,7 +5772,7 @@
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR3"
+      "review": "снимается в #1119 PR3b"
     },
     {
       "id": "project-health.staged-ignore-bytes",
@@ -5932,7 +5796,7 @@
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR3"
+      "review": "снимается в #1119 PR3b"
     },
     {
       "id": "project-health.staged-ignore-files",
@@ -5956,60 +5820,12 @@
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR3"
-    },
-    {
-      "id": "project-health.classified-resources",
-      "class": "corpus",
-      "resource": "Число классифицированных ресурсов репозитория в проверке здоровья проекта.",
-      "unit": "count",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/resources.rs",
-        "symbol": "MAX_CLASSIFIED_RESOURCES"
-      },
-      "expr": "65_536",
-      "value": 65536,
-      "applied": [
-        "crates/unica-project-health/src/inspection/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 8f45a9c4d (bound staged repository health)",
-      "problem": null,
-      "onReach": "неполнота GitInspectionIncomplete, проверки ресурсов not run: «resource classification count exceeds 65536 entries»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3"
-    },
-    {
-      "id": "project-health.continuation-evidence-bytes",
-      "class": "retention",
-      "resource": "Объём свидетельств EOL, удерживаемых для продолжения проверки одного рабочего пространства.",
-      "unit": "bytes",
-      "scope": "workspace",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/resources.rs",
-        "symbol": "MAX_CONTINUATION_EVIDENCE_BYTES"
-      },
-      "expr": "32 * 1024 * 1024",
-      "value": 33554432,
-      "applied": [
-        "crates/unica-project-health/src/inspection/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "#1113",
-      "problem": null,
-      "onReach": "новое свидетельство не сохраняется, прогресс помечается capacity_limited",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
+      "review": "снимается в #1119 PR3b"
     },
     {
       "id": "project-health.continuation-ttl",
       "class": "retention",
-      "resource": "Срок удержания незанятого прогресса проверки EOL между вызовами check.",
+      "resource": "Срок удержания в памяти незанятого держателя продолжения проверки EOL между вызовами check.",
       "unit": "ms",
       "scope": "cache",
       "source": {
@@ -6024,7 +5840,7 @@
       "status": "unproven",
       "origin": "#1113",
       "problem": null,
-      "onReach": "незанятая запись вычищается, следующий check начинает проверку EOL заново",
+      "onReach": "незанятый держатель вычищается; следующий check снова открывает продолжение из файла в состоянии демона",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -6033,7 +5849,7 @@
     {
       "id": "project-health.continuation-workspaces",
       "class": "retention",
-      "resource": "Число рабочих пространств, для которых удерживается прогресс проверки EOL между вызовами check.",
+      "resource": "Число рабочих пространств, для которых в памяти удерживается держатель продолжения проверки EOL.",
       "unit": "count",
       "scope": "cache",
       "source": {
@@ -6048,7 +5864,7 @@
       "status": "unproven",
       "origin": "#1113",
       "problem": null,
-      "onReach": "вытесняется самое давнее незанятое; если все заняты — продолжение для нового корня не удерживается",
+      "onReach": "вытесняется самый давний незанятый держатель, его файл остаётся; если все заняты — новый корень проверяется без продолжения, с начала",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -6124,31 +5940,7 @@
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR3"
-    },
-    {
-      "id": "project-health.resource-owner-expansion-bytes",
-      "class": "corpus",
-      "resource": "Объём раскрытия владельцев классифицированных ресурсов репозитория.",
-      "unit": "bytes",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/resources.rs",
-        "symbol": "MAX_RESOURCE_OWNER_EXPANSION_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-project-health/src/inspection/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 8f45a9c4d (bound staged repository health)",
-      "problem": null,
-      "onReach": "неполнота: «resource owner expansion budget exceeds 8388608 bytes», проверки ресурсов not run",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3"
+      "review": "снимается в #1119 PR3b"
     },
     {
       "id": "project-health.resource-ownership-reason-bytes",
@@ -6175,6 +5967,31 @@
       "review": null
     },
     {
+      "id": "project-health.resource-page-paths",
+      "class": "step",
+      "resource": "Число ресурсов одной страницы проверки ресурсов репозитория: страница проходит check-attr, политику атрибутов, EOL индекса и рабочих файлов и агрегаты LFS.",
+      "unit": "count",
+      "scope": "operation",
+      "source": {
+        "file": "crates/unica-project-health/src/inspection/resources.rs",
+        "literal": "const RESOURCE_PAGE_PATHS: usize = 4096;",
+        "count": 1
+      },
+      "expr": "4096",
+      "value": 4096,
+      "applied": [
+        "crates/unica-project-health/src/inspection/resources.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119",
+      "problem": null,
+      "onReach": "страница проверяется и начинается следующая; общий результат не ограничивается",
+      "issue": "#1119",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "project-health.staged-attributes-bytes",
       "class": "corpus",
       "resource": "Суммарный объём индексированных файлов .gitattributes, читаемых проверкой здоровья проекта.",
@@ -6196,7 +6013,7 @@
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR3"
+      "review": "снимается в #1119 PR3b"
     },
     {
       "id": "project-health.staged-attributes-files",
@@ -6220,7 +6037,7 @@
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR3"
+      "review": "снимается в #1119 PR3b"
     },
     {
       "id": "project-health.diagnostic-evidence",
@@ -6337,30 +6154,6 @@
       ],
       "status": "unproven",
       "origin": "#266",
-      "problem": null,
-      "onReach": "Не применяется: константа в рабочем коде не проверяется (используется только в тестах).",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
-      "id": "source-contract.replacement-bytes",
-      "class": "format",
-      "resource": "Наибольший объём замены содержимого ресурса по контракту источника.",
-      "unit": "bytes",
-      "scope": "request",
-      "source": {
-        "file": "crates/unica-source-contract/src/resources.rs",
-        "symbol": "SOURCE_REPLACEMENT_MAX_BYTES"
-      },
-      "expr": "1024 * 1024",
-      "value": 1048576,
-      "applied": [
-        "crates/unica-source-contract/src/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "517463e56 (#266)",
       "problem": null,
       "onReach": "Не применяется: константа в рабочем коде не проверяется (используется только в тестах).",
       "issue": null,
@@ -6628,7 +6421,8 @@
       "expr": "32 * 1024 * 1024",
       "value": 33554432,
       "applied": [
-        "crates/unica-workspace/src/apply.rs"
+        "crates/unica-workspace/src/apply.rs",
+        "crates/unica-coder/src/infrastructure/native_operations/meta/predefined.rs"
       ],
       "status": "unproven",
       "origin": "коммит 337d12744 (transactional apply foundation)",

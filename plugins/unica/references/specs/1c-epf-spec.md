@@ -89,6 +89,7 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
     xmlns:app="http://v8.1c.ru/8.2/managed-application/core"
     xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"
     xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core"
+    xmlns:dcssch="http://v8.1c.ru/8.1/data-composition-system/schema"
     xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings"
     xmlns:ent="http://v8.1c.ru/8.1/data/enterprise"
     xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform"
@@ -154,6 +155,7 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 
 | Элемент | Описание |
 |---------|----------|
+| `InternalInfo` | Обязателен у `ExternalDataProcessor` и у каждой `TabularSection`. Без него 8.3.27.2074 отвергает загрузку: «…Отсутствует внутренняя информация (узел InternalInfo) для объекта ExternalDataProcessor.», у ТЧ — то же для `TabularSection` |
 | `ClassId` | Всегда `c3831ec8-d8d5-4f93-8a22-f9bfae07327f` (идентификатор класса ExternalDataProcessor) |
 | `ObjectId`, `TypeId`, `ValueId` | Уникальные UUID, генерируются при создании |
 | `DefaultForm` | Полный путь: `ExternalDataProcessor.<Имя>.Form.<ИмяФормы>` |
@@ -252,7 +254,7 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 | `cfg:DocumentRef.<Имя>` | Ссылка на документ | — |
 | `cfg:EnumRef.<Имя>` | Ссылка на перечисление | — |
 
-> **Примечание**: Ссылочные типы (`cfg:CatalogRef.*` и т.д.) работают **только** при наличии в информационной базе конфигурации с соответствующими объектами.
+> **Примечание**: Ссылочные типы (`cfg:CatalogRef.*` и т.д.) работают **только** при наличии в информационной базе конфигурации с соответствующими объектами. Без такого объекта в базе загрузка отвергается: «Неизвестное имя типа - CatalogRef.<Имя>». Сама запись типа в XML корректна; загрузку с конфигурацией в базе эталон 8.3.27.2074 не проверял.
 
 ### Табличные части объекта
 
@@ -278,7 +280,31 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
         <FillChecking>DontCheck</FillChecking>
         <StandardAttributes>
             <xr:StandardAttribute name="LineNumber">
-                <!-- Стандартные свойства реквизита -->
+                <xr:LinkByType/>
+                <xr:FillChecking>DontCheck</xr:FillChecking>
+                <xr:MultiLine>false</xr:MultiLine>
+                <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+                <xr:CreateOnInput>Auto</xr:CreateOnInput>
+                <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+                <xr:MaxValue xsi:nil="true"/>
+                <xr:ToolTip/>
+                <xr:ExtendedEdit>false</xr:ExtendedEdit>
+                <xr:Format/>
+                <xr:ChoiceForm/>
+                <xr:QuickChoice>Auto</xr:QuickChoice>
+                <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+                <xr:EditFormat/>
+                <xr:PasswordMode>false</xr:PasswordMode>
+                <xr:DataHistory>Use</xr:DataHistory>
+                <xr:MarkNegatives>false</xr:MarkNegatives>
+                <xr:MinValue xsi:nil="true"/>
+                <xr:Synonym/>
+                <xr:Comment/>
+                <xr:FullTextSearch>Use</xr:FullTextSearch>
+                <xr:ChoiceParameterLinks/>
+                <xr:FillValue xsi:nil="true"/>
+                <xr:Mask/>
+                <xr:ChoiceParameters/>
             </xr:StandardAttribute>
         </StandardAttributes>
     </Properties>
@@ -317,6 +343,8 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 ```
 
 > **Важно**: Реквизиты табличных частей имеют 2 дополнительных свойства по сравнению с реквизитами объекта: `FillFromFillingValue` и `FillValue`. Они вставляются между `MaxValue` и `FillChecking`. При этом свойства `Indexing`, `FullTextSearch`, `DataHistory` и `Use` **отсутствуют** как у реквизитов объекта, так и у реквизитов ТЧ обработок/отчётов (в отличие от хранимых объектов конфигурации).
+>
+> Блок `StandardAttributes` с `LineNumber` выгрузка 8.3.27.2074 пишет у каждой табличной части, даже если во входе его не было: 25 свойств `xr:` в показанном порядке. У стандартного `LineNumber`, в отличие от пользовательских реквизитов, есть `FullTextSearch` и `DataHistory` со значением `Use`.
 
 ## 4. Метаданные формы (`Forms/<Имя>.xml`)
 
@@ -510,14 +538,15 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 <Table name="ТаблицаРеквизитов" id="26">
     <DataPath>ТаблицаРеквизитов</DataPath>
     <TitleLocation>None</TitleLocation>
+    <ChangeRowSet>false</ChangeRowSet>
+    <ChangeRowOrder>false</ChangeRowOrder>
+    <RowFilter xsi:nil="true"/>
     <ContextMenu name="ТаблицаРеквизитовКонтекстноеМеню" id="27"/>
     <ExtendedTooltip name="ТаблицаРеквизитовExtendedTooltip" id="119"/>
     <CommandBar name="ТаблицаРеквизитовКоманднаяПанель" id="28">
         <Autofill>false</Autofill>
         <ExtendedTooltip name="ТаблицаРеквизитовКоманднаяПанельExtendedTooltip" id="120"/>
     </CommandBar>
-    <ChangeRowSet>false</ChangeRowSet>
-    <ChangeRowOrder>false</ChangeRowOrder>
     <ChildItems>
         <CheckBoxField name="ТаблицаРеквизитовПометка" id="29">
             <DataPath>ТаблицаРеквизитов.Пометка</DataPath>
@@ -548,6 +577,17 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 | Табличная часть объекта | `Объект.<ИмяТЧ>` | `Объект.<ИмяТЧ>.<ИмяРеквизита>` | (определён в корневом XML) |
 | Реквизит формы (ValueTable) | `<ИмяРеквизита>` | `<ИмяРеквизита>.<ИмяКолонки>` | `v8:ValueTable` |
 | Реквизит формы (ValueTree) | `<ИмяРеквизита>` | `<ИмяРеквизита>.<ИмяКолонки>` | `v8:ValueTree` |
+
+У таблицы по табличной части выгрузка 8.3.27.2074 пишет `<RowFilter xsi:nil="true"/>` последним свойством, перед `ContextMenu`. В выгрузках конфигураций формата 2.20 то же у таблиц по `v8:ValueTable` и по набору записей регистра; у дерева значений, динамического списка и списка значений его нет.
+
+```xml
+<Table name="Строки" id="4">
+    <DataPath>Объект.Строки</DataPath>
+    <RowFilter xsi:nil="true"/>
+    <ContextMenu name="СтрокиКонтекстноеМеню" id="5"/>
+    ...
+</Table>
+```
 
 ### 6.4. Реквизиты формы (`<Attributes>`)
 
@@ -756,13 +796,15 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 </Attribute>
 ```
 
-### BOM в файлах метаданных
+### BOM и переводы строк
 
-Файлы метаданных (корневой XML, формы, макеты), выгруженные конфигуратором, содержат BOM (Byte Order Mark, `\xEF\xBB\xBF`) в начале. Файл `Form.xml` (описание формы) и `.bsl`-модули — **без BOM**. При ручном создании файлов рекомендуется следовать этому же правилу, хотя конфигуратор принимает файлы и без BOM.
+Выгрузка 8.3.27.2074 пишет все XML (корневой файл, метаданные форм и макетов, `Form.xml`, тела макетов SpreadsheetDocument и DataCompositionSchema) и `.bsl`-модули в UTF-8 с BOM (`\xEF\xBB\xBF`) и переводами строк CRLF. XML-файл кончается закрывающим тегом без перевода строки, `.bsl` — переводом строки CRLF. Тела `Template.txt` и `Template.bin` выгружаются байтами входа, без BOM.
+
+Конфигуратор принимает XML и `.bsl` без BOM и с LF, но выгружает их с BOM и CRLF. Пиши сразу с BOM и CRLF, чтобы эти байты не менялись при загрузке и выгрузке. Что платформа ещё дописывает: `StandardAttributes` табличной части (раздел 3), `RowFilter` таблицы (раздел 6.3), свойства формы отчёта ([ERF, раздел 6.2](1c-erf-spec.md)). Исключение — текст запроса СКД, см. [спецификацию внешнего отчёта](1c-erf-spec.md), раздел 8.1.
 
 ### Кодировка
 
-Все файлы — UTF-8. XML-файлы имеют заголовок `<?xml version="1.0" encoding="UTF-8"?>`.
+Текстовые файлы — UTF-8, `Template.bin` — двоичный. XML-файлы имеют заголовок `<?xml version="1.0" encoding="UTF-8"?>`.
 
 ## 10. Чеклист для создания новой обработки
 
@@ -770,7 +812,8 @@ xmlns="http://v8.1c.ru/8.3/xcf/logform"
 2. Создать структуру каталогов (раздел 1)
 3. Создать корневой XML (раздел 3) с правильными ChildObjects:
    - Порядок: Attribute → TabularSection → Form → Template
-   - GeneratedType для ТЧ: `DataProcessorTabularSection.<Имя>.<ТЧ>` (не `ExternalDataProcessorTabularSection`!)
+   - `InternalInfo` у обработки и у каждой ТЧ (раздел 3)
+   - GeneratedType для ТЧ: `DataProcessorTabularSection.<Имя>.<ТЧ>` (имя `ExternalDataProcessorTabularSection…` платформа примет, но выгрузит как `DataProcessorTabularSection…`)
 4. Для каждой формы:
    - Создать `<Имя>.xml` (раздел 4)
    - Создать `Form.xml` (раздел 6) — проверить пространство имён!
