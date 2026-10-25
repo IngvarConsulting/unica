@@ -1567,6 +1567,12 @@ mod form_lifecycle_tests;
 #[path = "form_move_tests.rs"]
 mod form_move_tests;
 #[cfg(test)]
+#[path = "form_native_profile_tests.rs"]
+mod form_native_profile_tests;
+#[cfg(test)]
+#[path = "form_properties_tests.rs"]
+mod form_properties_tests;
+#[cfg(test)]
 #[path = "metadata_can_tests.rs"]
 mod metadata_can_tests;
 #[cfg(test)]
@@ -2238,6 +2244,280 @@ pub(crate) mod actor_capacity_tests {
             expected,
             "команды других групп остаются на своих местах"
         );
+    }
+
+    /// Пустой интерфейс платформа не выгружает: у новой подсистемы нет
+    /// `CommandInterface.xml`, и его создаёт первая правка видимости или
+    /// размещения — тем же пакетом, что `subsystem.create`, или следующим
+    /// вызовом. Предпросмотр ничего не пишет, а файл совпадает с выгрузкой
+    /// 8.3.27 байт в байт.
+    #[test]
+    fn canonical_first_command_edit_creates_interface_of_new_subsystem() {
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let command = "Catalog.Пользователи.StandardCommand.OpenList";
+        let document = |section: &str, value: &str| {
+            format!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<{section}>\r\n\t\t<Command name=\"{command}\">\r\n{value}\t\t</Command>\r\n\t</{section}>\r\n</CommandInterface>"
+            )
+        };
+        let hidden = document(
+            "CommandsVisibility",
+            "\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n",
+        );
+        let placed = document(
+            "CommandsPlacement",
+            "\t\t\t<CommandGroup>NavigationPanelImportant</CommandGroup>\r\n\t\t\t<Placement>Auto</Placement>\r\n",
+        );
+        let create = serde_json::json!({
+            "op": "subsystem.create",
+            "args": {"at": "main:Configuration", "values": {"name": "Новая"}}
+        });
+        let at = "main:Subsystem.Новая.Interface";
+        let visibility = serde_json::json!({
+            "op": "commandVisibility.set",
+            "args": {"at": at, "items": [{"command": command, "visible": false}]}
+        });
+        let placement = serde_json::json!({
+            "op": "commandPlacement.set",
+            "args": {"at": at, "items": [{"command": command, "group": "NavigationPanelImportant"}]}
+        });
+        let interface = "Subsystems/Новая/Ext/CommandInterface.xml";
+        let publish = |workspace: &std::path::Path, at: &str, ops: serde_json::Value| {
+            let preview = interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"at": at, "ops": ops}),
+            );
+            assert!(preview.ok, "{preview:?}");
+            assert!(
+                !workspace.join("src").join(interface).exists(),
+                "предпросмотр не пишет файл"
+            );
+            let applied = interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
+            assert!(applied.ok, "{applied:?}");
+        };
+        let read = |workspace: &std::path::Path| {
+            std::fs::read_to_string(workspace.join("src").join(interface)).unwrap()
+        };
+
+        let workspace = interface_order_workspace();
+        publish(
+            workspace.path(),
+            "main:Configuration",
+            serde_json::json!([create, visibility]),
+        );
+        assert_eq!(read(workspace.path()), hidden, "один пакет");
+
+        for (edit, expected) in [(&visibility, &hidden), (&placement, &placed)] {
+            let workspace = interface_order_workspace();
+            publish(
+                workspace.path(),
+                "main:Configuration",
+                serde_json::json!([create]),
+            );
+            assert!(!workspace.path().join("src").join(interface).exists());
+            publish(workspace.path(), at, serde_json::json!([edit]));
+            assert_eq!(&read(workspace.path()), expected, "два вызова: {edit}");
+        }
+
+        // Вложенная подсистема: владелец — её дескриптор внутри родителя,
+        // одноимённая корневая подсистема не появляется.
+        let workspace = interface_order_workspace();
+        let nested_at = "main:Subsystem.Администрирование.Subsystem.Новая.Interface";
+        publish(
+            workspace.path(),
+            "main:Subsystem.Администрирование",
+            serde_json::json!([
+                {"op": "childSubsystem.add", "args": {"items": [{"name": "Новая"}]}},
+                {"op": "commandVisibility.set", "args": {"at": nested_at, "items": [{"command": command, "visible": false}]}}
+            ]),
+        );
+        let source = workspace.path().join("src");
+        assert_eq!(
+            std::fs::read_to_string(
+                source
+                    .join("Subsystems/Администрирование/Subsystems/Новая/Ext/CommandInterface.xml")
+            )
+            .unwrap(),
+            hidden
+        );
+        assert!(!source.join("Subsystems/Новая").exists());
+
+        // Порядок переставляет хранимый состав: без файла он отказывает
+        // и ничего не создаёт (#2010).
+        let workspace = interface_order_workspace();
+        publish(
+            workspace.path(),
+            "main:Configuration",
+            serde_json::json!([create]),
+        );
+        let refused = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            interface_op(
+                "groupOrder.set",
+                at,
+                serde_json::json!({"groups": ["NavigationPanelImportant"]}),
+            ),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert!(!workspace.path().join("src").join(interface).exists());
+    }
+
+    /// Пока порядок разделов не задан, корневого `CommandInterface.xml` нет.
+    /// Первый порядок, как у платформы, может быть частичным: он называет
+    /// разделы интерфейса — подсистемы верхнего уровня, включённые в него, —
+    /// и создаёт файл в форме выгрузки 8.3.27. Чужое имя, раздел вне
+    /// интерфейса и повтор отклоняются без записи.
+    #[test]
+    fn canonical_first_subsystem_order_creates_root_interface_from_sections() {
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let root_order = |subsystems: serde_json::Value| {
+            serde_json::json!({
+                "op": "subsystemOrder.set",
+                "args": {"at": "main:Configuration", "values": {"subsystems": subsystems}}
+            })
+        };
+        let document = |subsystems: &[&str]| {
+            let items = subsystems
+                .iter()
+                .map(|name| format!("\t\t<Subsystem>{name}</Subsystem>\r\n"))
+                .collect::<String>();
+            format!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<SubsystemsOrder>\r\n{items}\t</SubsystemsOrder>\r\n</CommandInterface>"
+            )
+        };
+        let fresh = || {
+            let workspace = interface_order_workspace();
+            let source = workspace.path().join("src");
+            std::fs::remove_file(source.join(ROOT_INTERFACE)).unwrap();
+            // `Продажи` не показывается в интерфейсе: разделом она не станет.
+            let sales = source.join("Subsystems/Продажи.xml");
+            let text = std::fs::read_to_string(&sales).unwrap().replace(
+                "<IncludeInCommandInterface>true</IncludeInCommandInterface>",
+                "<IncludeInCommandInterface>false</IncludeInCommandInterface>",
+            );
+            std::fs::write(&sales, text).unwrap();
+            workspace
+        };
+        let preview = |workspace: &std::path::Path, ops: serde_json::Value| {
+            interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"at": "main:Configuration", "ops": ops}),
+            )
+        };
+
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([root_order(serde_json::json!([
+                "Subsystem.КонтрольРаботыПользователей"
+            ]))]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        assert!(!root.exists(), "предпросмотр не пишет файл");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            document(&["Subsystem.КонтрольРаботыПользователей"])
+        );
+
+        // Новая подсистема того же пакета уже раздел интерфейса.
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([
+                {"op": "subsystem.create", "args": {"at": "main:Configuration", "values": {"name": "Новая"}}},
+                root_order(serde_json::json!(["Subsystem.Новая", "Subsystem.Администрирование"]))
+            ]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            document(&["Subsystem.Новая", "Subsystem.Администрирование"])
+        );
+
+        // Файл есть, но порядка разделов в нём нет: тот же первый порядок,
+        // соседняя секция остаётся на месте.
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let visibility = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<CommandsVisibility>\r\n\t\t<Command name=\"Catalog.Пользователи.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>\r\n</CommandInterface>";
+        std::fs::write(&root, visibility).unwrap();
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([root_order(serde_json::json!([
+                "Subsystem.Администрирование"
+            ]))]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            visibility.replace(
+                "\t</CommandsVisibility>\r\n",
+                "\t</CommandsVisibility>\r\n\t<SubsystemsOrder>\r\n\t\t<Subsystem>Subsystem.Администрирование</Subsystem>\r\n\t</SubsystemsOrder>\r\n",
+            )
+        );
+
+        for (subsystems, needle) in [
+            (
+                serde_json::json!(["Subsystem.Продажи"]),
+                "not a top-level subsystem shown in the command interface: `Subsystem.Продажи`",
+            ),
+            (
+                serde_json::json!(["Subsystem.Нет", "Subsystem.Нет"]),
+                "not a top-level subsystem shown in the command interface: `Subsystem.Нет`; the sections are",
+            ),
+            // Вложенная подсистема разделом не бывает, даже одноимённая
+            // корневой.
+            (
+                serde_json::json!(["Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей"]),
+                "not a top-level subsystem shown in the command interface",
+            ),
+            (
+                serde_json::json!(["Subsystem.Администрирование", "Subsystem.Администрирование"]),
+                "listed more than once",
+            ),
+        ] {
+            let workspace = fresh();
+            let refused = preview(
+                workspace.path(),
+                serde_json::json!([root_order(subsystems)]),
+            );
+            assert!(!refused.ok, "{refused:?}");
+            assert!(
+                refused.diagnostics[0]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(needle)),
+                "{refused:?}"
+            );
+            assert!(!workspace.path().join("src").join(ROOT_INTERFACE).exists());
+        }
     }
 
     /// Каждая из пяти операций меняет только свою секцию и названные в запросе
@@ -13476,6 +13756,242 @@ struct ActorLogicalReadLease {"#,
             assert!(message.contains(cause), "{kind:?}");
             assert!(!checked_text_leaks(&checked), "{kind:?}");
         }
+    }
+
+    /// #1966, INV.APP.DIAGNOSTIC-FOCUS, INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY:
+    /// `check` справочника спрашивает находки у поставщика, который объявил цель
+    /// «объект метаданных». Находка на свойстве реквизита приходит цепочкой
+    /// коллекция → элемент → свойство и язык; недоказанный элемент — находкой
+    /// объекта целиком; файл внутри объекта без логического адреса — путём
+    /// с причиной и владельцем; находка модуля объекту не принадлежит.
+    /// Анализатор модулей такой цели не объявляет, и без подмены шага нет.
+    #[test]
+    fn object_check_shows_the_metadata_focus_chain_of_a_provider_finding() {
+        use unica_diagnostics::model::{
+            DiagnosticAction, DiagnosticContext, DiagnosticFocusKind, DiagnosticObservation,
+            DiagnosticObservationFocus, DiagnosticObservationLocation, DiagnosticProvider,
+            DiagnosticProviderDescriptor, DiagnosticProviderId, DiagnosticProviderOutcome,
+            DiagnosticProviderRequest, DiagnosticProviderStatus, DiagnosticSeverity, MetadataFocus,
+        };
+        use unica_metadata::MetadataElement;
+        use unica_work_control::provider_deadline::ProviderDeadline;
+
+        static DESCRIPTOR: DiagnosticProviderDescriptor = DiagnosticProviderDescriptor {
+            id: DiagnosticProviderId::new_const("metadata-provider"),
+            actions: &[DiagnosticAction::Findings],
+            findings_target_kinds: &[
+                unica_address::source_target::TargetKind::MetadataObject,
+                unica_address::source_target::TargetKind::SourceRoot,
+            ],
+            emits_focus_kinds: &[DiagnosticFocusKind::Target, DiagnosticFocusKind::Metadata],
+        };
+        struct MetadataProvider(Vec<DiagnosticObservation>);
+        impl DiagnosticProvider for MetadataProvider {
+            fn descriptor(&self) -> &'static DiagnosticProviderDescriptor {
+                &DESCRIPTOR
+            }
+            fn execute(
+                &self,
+                _request: &DiagnosticProviderRequest,
+                _context: &DiagnosticContext,
+                _deadline: ProviderDeadline,
+                _cancellation: &CancellationToken,
+            ) -> DiagnosticProviderOutcome {
+                DiagnosticProviderOutcome {
+                    observations: self.0.clone(),
+                    ..DiagnosticProviderOutcome::empty(DiagnosticProviderStatus::Completed)
+                }
+            }
+        }
+        let finding = |location, focus| DiagnosticObservation::Diagnostic {
+            provider: DESCRIPTOR.id,
+            location,
+            focus,
+            code: "MetadataRule".to_string(),
+            severity: DiagnosticSeverity::Warning,
+            message: "finding".to_string(),
+            tags: Vec::new(),
+        };
+        let object = || DiagnosticObservationLocation::Logical {
+            metadata_path: Some(
+                unica_address::source_target::MetadataAddress::parse(
+                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "Catalog.Items",
+                )
+                .unwrap(),
+            ),
+        };
+        let attribute = |name: &str| MetadataFocus {
+            element_path: vec![MetadataElement {
+                collection: "attributes".to_string(),
+                name: name.to_string(),
+            }],
+            property: Some("Synonym".to_string()),
+            language: Some("ru".to_string()),
+        };
+
+        let workspace =
+            scheduled_handler_workspace("CONFIGURATION", "Procedure Run()\nEndProcedure\n");
+        let source = workspace.path().join("src");
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name></Properties><ChildObjects><Attribute uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Номенклатура</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item></Synonym></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join("Catalogs/Items/Ext")).unwrap();
+        std::fs::write(source.join("Catalogs/Items/Ext/Unknown.xml"), "<unknown/>").unwrap();
+        let provider = MetadataProvider(vec![
+            finding(
+                DiagnosticObservationLocation::Logical {
+                    metadata_path: None,
+                },
+                DiagnosticObservationFocus::Target,
+            ),
+            finding(
+                object(),
+                DiagnosticObservationFocus::Metadata(attribute("Номенклатура")),
+            ),
+            finding(
+                object(),
+                DiagnosticObservationFocus::Metadata(attribute("Missing")),
+            ),
+            finding(
+                DiagnosticObservationLocation::Resource {
+                    handle: source
+                        .join("Catalogs/Items/Ext/Unknown.xml")
+                        .to_string_lossy()
+                        .into_owned(),
+                },
+                DiagnosticObservationFocus::Target,
+            ),
+            finding(
+                DiagnosticObservationLocation::Resource {
+                    handle: source
+                        .join("CommonModules/Handlers/Ext/Module.bsl")
+                        .to_string_lossy()
+                        .into_owned(),
+                },
+                DiagnosticObservationFocus::Target,
+            ),
+        ]);
+
+        let runtime = bootstrap_runtime();
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let cancellation = CancellationToken::new();
+        let check = |at: &str, override_provider: Option<Arc<dyn DiagnosticProvider>>| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Check,
+                serde_json::json!({"at": at}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let check = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = override_provider);
+            let checked = service.execute(&check, cancellation.clone());
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = None);
+            let checked = checked.unwrap();
+            assert!(checked.ok, "object check must answer a verdict");
+            checked.data.unwrap()
+        };
+
+        let provider: Arc<dyn DiagnosticProvider> = Arc::new(provider);
+        let data = check("main:Catalog.Items", Some(Arc::clone(&provider)));
+        assert_eq!(
+            data["validators"],
+            serde_json::json!(["meta", "bsl"]),
+            "the provider finding keeps its location"
+        );
+        let provided = data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["provider"] == "metadata-provider")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            provided.len(),
+            3,
+            "neither the module nor the root finding is the object's"
+        );
+        let addressed = serde_json::json!({
+            "kind": "addressed",
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Items",
+            "targetKind": "metadataObject",
+        });
+        assert!(
+            provided.iter().any(|item| item["location"] == addressed
+                && item["focus"]
+                    == serde_json::json!({
+                        "kind": "metadata",
+                        "elementPath": [{"collection": "attributes", "name": "Номенклатура"}],
+                        "property": "Synonym",
+                        "language": "ru",
+                    })),
+            "the provider finding keeps its location"
+        );
+        assert!(
+            provided.iter().any(|item| item["location"] == addressed
+                && item["focus"] == serde_json::json!({"kind": "target"})),
+            "an unproven element weakens to the object"
+        );
+        assert!(
+            provided
+                .iter()
+                .any(|item| item["location"]["kind"] == "unaddressable"
+                    && item["location"]["ownerMetadataPath"] == "Catalog.Items"
+                    && item["location"]["path"] == "Catalogs/Items/Ext/Unknown.xml"
+                    && item["locationReason"] == "resourceNotAddressable"),
+            "the provider finding keeps its location"
+        );
+        assert!(
+            !data.to_string().contains(&*source.to_string_lossy()),
+            "the provider finding keeps its location"
+        );
+
+        let plain = check("main:Catalog.Items", None);
+        assert_eq!(
+            plain["validators"],
+            serde_json::json!(["meta"]),
+            "no step without a provider"
+        );
+
+        // Корень принимает только свою находку: объекты и модули — свои цели.
+        let root = check("main:Configuration", Some(provider));
+        let provided = root["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["provider"] == "metadata-provider")
+            .collect::<Vec<_>>();
+        assert_eq!(provided.len(), 1, "the root keeps only its own finding");
+        assert_eq!(
+            provided[0]["location"],
+            serde_json::json!({"kind": "addressed", "sourceSet": "main", "targetKind": "sourceRoot"}),
+            "the root finding is addressed to the root"
+        );
+        let plain = check("main:Configuration", None);
+        assert_eq!(
+            plain["validators"],
+            serde_json::json!(["cf"]),
+            "no step without a provider"
+        );
     }
 
     /// #1460: платформа не компилирует модуль, где `Перем` стоит после

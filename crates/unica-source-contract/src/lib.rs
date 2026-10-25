@@ -251,6 +251,7 @@ pub mod workspace;
 pub mod events;
 pub mod resources;
 
+pub mod portable_path;
 pub mod read;
 
 pub mod proposal;

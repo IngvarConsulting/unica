@@ -1550,6 +1550,45 @@ fn inserted_method_spacing_recognizes_an_existing_method_without_separators() {
     }
 }
 
+/// Модуль кончается вставляемым методом без перевода строки: повтор вставки
+/// в конец модуля его не дублирует (#1911). Комментарий в том же положении —
+/// тоже повтор, а чужой хвост, лишь кончающийся теми же байтами, — нет.
+#[test]
+fn a_repeat_into_an_unterminated_module_end_is_a_noop() {
+    for eol in ["\n", "\r\n"] {
+        let first = format!("Procedure First(){eol}EndProcedure");
+        for (before, content, present) in [
+            (
+                format!("{first}{eol}{eol}Procedure Added(){eol}EndProcedure"),
+                "Procedure Added()\nEndProcedure",
+                true,
+            ),
+            (
+                "Procedure Added()\nEndProcedure".replace('\n', eol),
+                "Procedure Added()\nEndProcedure",
+                true,
+            ),
+            (format!("{first}{eol}// Tail note."), "// Tail note.", true),
+            (format!("{first}{eol}// Another note."), "// note.", false),
+            // Весь модуль — вставка, в том числе после BOM выгрузки 1С.
+            (
+                "\u{feff}Procedure Added()\nEndProcedure".replace('\n', eol),
+                "Procedure Added()\nEndProcedure",
+                true,
+            ),
+            ("// Tail note.".to_string(), "// Tail note.", true),
+            ("\u{feff}// Tail note.".to_string(), "// Tail note.", true),
+        ] {
+            let operation = staged_insert("main:CommonModule.Sample", content, None, None);
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+            assert_eq!(post.no_op, present, "{eol:?} {before:?}");
+            if present {
+                assert_eq!(post.after, before.as_bytes(), "{eol:?} {before:?}");
+            }
+        }
+    }
+}
+
 #[test]
 fn inserted_method_spacing_preserves_empty_bom_payload_and_mixed_bytes() {
     for (before, content, selector, expected) in [

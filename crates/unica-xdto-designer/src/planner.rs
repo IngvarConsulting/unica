@@ -21,7 +21,9 @@ use unica_source_designer::owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     PlatformXmlSourceSetOwnerEvidence,
 };
-use unica_xdto::operations::{XdtoOperation, XdtoPlanOperation, XdtoPropertyPath};
+use unica_xdto::operations::{
+    XdtoOperation, XdtoPlanOperation, XdtoPropertyPath, XdtoRenamePropertyArgs,
+};
 
 pub fn decode_xdto_plan_operation(
     operation: XdtoOperation,
@@ -147,6 +149,18 @@ pub fn plan_xdto_batch(
             ));
         }
         prove_staged_xdto_addition_repeat(&writer_plan.after, operation, &at_path)?;
+        if let XdtoPlanOperation::RenameProperty(args) = operation {
+            let keys = renamed_property_key(&before_model, args, args.name.as_str())
+                .zip(renamed_property_key(
+                    &after_model,
+                    args,
+                    args.new_name.as_str(),
+                ))
+                .ok_or_else(|| {
+                    postcondition_xdto(&at_path, "renamed XDTO property was not found by its names")
+                })?;
+            validation_ledger.rename_property(&selected, &keys.0, &keys.1);
+        }
         validation_ledger.record_postimage(&selected, validate(&after_model), &after, op_index);
     }
 
@@ -251,6 +265,7 @@ fn xdto_operation_at(operation: &XdtoPlanOperation) -> &QualifiedAddress {
         XdtoPlanOperation::AddProperty(args) => &args.at,
         XdtoPlanOperation::RemoveType(args) => &args.at,
         XdtoPlanOperation::RemoveProperty(args) => &args.at,
+        XdtoPlanOperation::RenameProperty(args) => &args.at,
         XdtoPlanOperation::SetType(args) => &args.at,
     }
 }
@@ -273,6 +288,7 @@ fn staged_xdto_package(
         XdtoPlanOperation::AddProperty(_)
             | XdtoPlanOperation::RemoveType(_)
             | XdtoPlanOperation::RemoveProperty(_)
+            | XdtoPlanOperation::RenameProperty(_)
             | XdtoPlanOperation::SetType(_)
     );
     let package_name = match (type_target, at.segments()) {
@@ -526,6 +542,14 @@ pub fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWr
             name: args.name.as_str(),
             property_path: args.property_path.as_ref().map(XdtoPropertyPath::as_str),
         },
+        XdtoPlanOperation::RenameProperty(args) => writer::TypedWriterOperation::RenameProperty {
+            type_name: args.at.segments()[1]
+                .name()
+                .expect("closed XDTO type target has a name"),
+            name: args.name.as_str(),
+            property_path: args.property_path.as_ref().map(XdtoPropertyPath::as_str),
+            new_name: args.new_name.as_str(),
+        },
     }
 }
 
@@ -594,6 +618,7 @@ fn xdto_operation_identity_path(operation: &XdtoPlanOperation, op_index: usize) 
             format!("{base}.values.name")
         }
         XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.name"),
+        XdtoPlanOperation::RenameProperty(_) => format!("{base}.values.newName"),
         XdtoPlanOperation::SetType(_) => format!("{base}.values.base"),
         XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
             format!("{base}.at")
@@ -621,6 +646,7 @@ fn xdto_validation_error_path(operation: &XdtoPlanOperation, op_index: usize) ->
                 format!("{base}.values.property.valueType")
             }
         },
+        XdtoPlanOperation::RenameProperty(_) => format!("{base}.values.newName"),
         XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
             format!("{base}.at")
         }
@@ -649,6 +675,45 @@ fn prove_staged_xdto_addition_repeat(
         ));
     }
     Ok(())
+}
+
+/// The validation key of the renamed property under one of its names. Findings
+/// below this key belong to the same declaration before and after the rename.
+fn renamed_property_key(
+    model: &PackageModel,
+    args: &XdtoRenamePropertyArgs,
+    name: &str,
+) -> Option<String> {
+    let named = |property: &&crate::model::Property, name: &str| {
+        property
+            .name
+            .as_ref()
+            .is_some_and(|value| value.value == name)
+    };
+    let type_name = args.at.segments()[1].name()?;
+    let mut properties = &model
+        .types
+        .iter()
+        .find(|named| {
+            named.kind == crate::model::TypeKind::Object
+                && named
+                    .name
+                    .as_ref()
+                    .is_some_and(|value| value.value == type_name)
+        })?
+        .properties;
+    for parent in args.property_path.iter().flat_map(XdtoPropertyPath::names) {
+        properties = &properties
+            .iter()
+            .find(|property| named(property, &parent))?
+            .type_defs
+            .first()?
+            .properties;
+    }
+    properties
+        .iter()
+        .find(|property| named(property, name))
+        .map(|property| property.key.clone())
 }
 
 fn invalid_staged_xdto(path: &str) -> ApplyPlanError {
@@ -729,6 +794,39 @@ impl XdtoValidationLedger {
             },
         );
         Ok(())
+    }
+
+    /// A rename moves the declaration's findings to its new key. Its own
+    /// pre-existing findings stay pre-existing and keep their provenance.
+    fn rename_property(&mut self, package: &StagedXdtoPackage, old: &str, new: &str) {
+        if old == new {
+            return;
+        }
+        let resource = self
+            .resources
+            .get_mut(&package.resource_relative)
+            .expect("the XDTO preimage retained its original baseline");
+        let moved = |key: &str| {
+            key.strip_prefix(old)
+                .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+                .map(|rest| format!("{new}{rest}"))
+        };
+        for finding in &mut resource.baseline {
+            if let Some(key) = moved(&finding.location.key) {
+                finding.location.key = key;
+            }
+        }
+        resource.origins = std::mem::take(&mut resource.origins).into_iter().fold(
+            HashMap::new(),
+            |mut origins, ((code, key), queue)| {
+                let key = moved(&key).unwrap_or(key);
+                origins
+                    .entry((code, key))
+                    .or_insert_with(VecDeque::new)
+                    .extend(queue);
+                origins
+            },
+        );
     }
 
     fn record_postimage(

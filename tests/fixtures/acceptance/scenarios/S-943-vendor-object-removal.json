@@ -1,9 +1,9 @@
 {
  "id": "S-943-vendor-object-removal",
- "name": "remove-vendor-object-after-separate-off-support-publication",
+ "name": "remove-vendor-object-with-locked-forms-after-separate-off-support-publication",
  "issue": 943,
  "area": "Поддержка поставщика",
- "task": "Отказать удалению редактируемого объекта поставщика, снять поддержку только с объекта отдельным применением и затем удалить его",
+ "task": "Отказать удалению редактируемого объекта поставщика с закрытыми формами, снять поддержку только с объекта отдельным применением и затем удалить его, не меняя маркер при удалении",
  "workspace": "tests/fixtures/acceptance/workspace-support-form",
  "wire": [
   {
@@ -67,82 +67,7 @@
      "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
     }
    ],
-   "refusal": "invalid_state: `Catalog.Items` is a vendor object with the support rule `editable`; set `off-support` with `supportRule.set` in a separate apply before removal",
-   "assertions": [
-    {
-     "pointer": "/diagnostics/0/code",
-     "eq": "invalid_state"
-    },
-    {
-     "pointer": "/data",
-     "absent": true
-    }
-   ]
-  },
-  {
-   "tool": "unica.apply",
-   "args": {
-    "at": "main:Catalog.Items",
-    "ops": [
-     {
-      "op": "object.remove",
-      "args": {
-       "force": true
-      }
-     }
-    ]
-   },
-   "expect": [
-    "refused"
-   ],
-   "fileAssertions": [
-    {
-     "kind": "sha256",
-     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
-    },
-    {
-     "kind": "sha256",
-     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
-    },
-    {
-     "kind": "sha256",
-     "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
-    },
-    {
-     "kind": "sha256",
-     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
-    },
-    {
-     "kind": "sha256",
-     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
-    },
-    {
-     "kind": "sha256",
-     "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
-    },
-    {
-     "kind": "sha256",
-     "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
-    },
-    {
-     "kind": "sha256",
-     "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
-    },
-    {
-     "kind": "sha256",
-     "path": "src/Ext/ParentConfigurations.bin",
-     "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
-    }
-   ],
-   "refusal": "invalid_state: `Catalog.Items` is a vendor object with the support rule `editable`; set `off-support` with `supportRule.set` in a separate apply before removal",
+   "refusal": "invalid_state: `main:Catalog.Items` has vendor child objects with the support rule `locked`: `main:Catalog.Items.Form.Main`, `main:Catalog.Items.Form.Other`; take the object o",
    "assertions": [
     {
      "pointer": "/diagnostics/0/code",
@@ -223,7 +148,7 @@
      "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
     }
    ],
-   "refusal": "invalid_state: `Catalog.Items` is a vendor object with the support rule `editable`; set `off-support` with `supportRule.set` in a separate apply before removal",
+   "refusal": "invalid_state: `main:Catalog.Items` has vendor child objects with the support rule `locked`: `main:Catalog.Items.Form.Main`, `main:Catalog.Items.Form.Other`; take the object o",
    "assertions": [
     {
      "pointer": "/diagnostics/0/code",

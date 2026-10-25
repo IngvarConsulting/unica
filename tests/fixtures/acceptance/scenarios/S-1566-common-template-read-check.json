@@ -1,0 +1,682 @@
+{
+  "id": "S-1566-common-template-read-check",
+  "issue": 1566,
+  "area": "Метаданные",
+  "task": "Прочитать зарегистрированный общий MXL до Rectangle/Body/Parameter по выданным адресам, проверить MXL/DCS валидаторы и диагностику испорченной палитры; HTML заканчивается известным видом без чтения тела.",
+  "workspace": "tests/fixtures/acceptance/workspace-common-template",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "commonTemplates": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonTemplates"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "Bad"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "Empty"
+        },
+        {
+          "pointer": "/data/items/2/title",
+          "eq": "Html"
+        },
+        {
+          "pointer": "/data/items/3/title",
+          "eq": "Print"
+        },
+        {
+          "pointer": "/data/items/4/title",
+          "eq": "Schema"
+        }
+      ],
+      "captures": {
+        "commonMxl": {
+          "pointer": "/data/items/3/at"
+        },
+        "commonDcs": {
+          "pointer": "/data/items/4/at"
+        },
+        "commonHtml": {
+          "pointer": "/data/items/2/at"
+        },
+        "commonBad": {
+          "pointer": "/data/items/0/at"
+        },
+        "commonEmpty": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonMxl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/format",
+          "eq": "SpreadsheetDocument"
+        },
+        {
+          "pointer": "/data/props/TemplateType",
+          "eq": "SpreadsheetDocument"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Общий Print"
+        }
+      ],
+      "captures": {
+        "commonAreas": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonAreas"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/kind",
+          "eq": "Rectangle"
+        },
+        {
+          "pointer": "/data/items/0/props/beginRow",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/items/0/props/endRow",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/items/0/props/beginCol",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/items/0/props/endCol",
+          "eq": 2
+        }
+      ],
+      "captures": {
+        "commonArea": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonArea"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contentCount",
+          "eq": 3
+        }
+      ],
+      "captures": {
+        "commonAreaParameters": {
+          "pointer": "/data/branches/0/at"
+        },
+        "commonAreaBody": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonAreaBody"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "index": 1,
+              "template": false,
+              "text": "Changed"
+            },
+            {
+              "index": 2,
+              "template": true,
+              "text": "[Label]"
+            },
+            {
+              "index": 3,
+              "template": false,
+              "text": "Shared"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonAreaParameters"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "Probe"
+        }
+      ],
+      "captures": {
+        "commonParameter": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Parameter"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.commonMxl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "mxl"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonBad"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Bad"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/format",
+          "eq": "SpreadsheetDocument"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "properties.Synonym"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.commonBad"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "failed",
+      "validators": [
+        "mxl"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 4
+        },
+        {
+          "pointer": "/data/diagnostics/0/message",
+          "contains": "cell format index 9999"
+        },
+        {
+          "pointer": "/data/diagnostics/0/validator",
+          "eq": "mxl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonDcs"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/format",
+          "eq": "DataCompositionSchema"
+        }
+      ],
+      "captures": {
+        "commonDataSets": {
+          "pointer": "/data/branches/1/at"
+        },
+        "commonDcsParameters": {
+          "pointer": "/data/branches/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonDataSets"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "MainData"
+        }
+      ],
+      "captures": {
+        "commonDataSet": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonDataSet"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "DataSet"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonDcsParameters"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "Period"
+        }
+      ],
+      "captures": {
+        "commonDcsParameter": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonDcsParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "DateTime"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.commonDcs"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "dcs"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonHtml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/format",
+          "eq": "HTMLDocument"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Общий Html"
+        },
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonTemplate.Html.Area"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: template kind has no requested interior"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonEmpty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/format",
+          "eq": "SpreadsheetDocument"
+        },
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Empty"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.commonEmpty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "mxl"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.commonHtml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": [],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonTemplates/Bad/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "c034ae03f4abfa03d3f5eb4f71b7353d2eba749ad2744562c22cd66833bc5bf3"
+        },
+        {
+          "path": "src/CommonTemplates/Bad.xml",
+          "kind": "sha256",
+          "eq": "dd519c7debc0b5d734d33646846e7073c6c61e63f88a69f9f9fba2d53f92eda4"
+        },
+        {
+          "path": "src/CommonTemplates/Empty/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "cfd17d8b9fb43b4d8650ba0a3e35aacd9bcc1c3b7d01c55a275a439ebff24836"
+        },
+        {
+          "path": "src/CommonTemplates/Empty.xml",
+          "kind": "sha256",
+          "eq": "08f4f6cd3a0c113401872b9a4ad06ea82c03af17403aa963f266ff944d6678e1"
+        },
+        {
+          "path": "src/CommonTemplates/Html/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "3c37d59410f54dd780b91572a65690d4c9f36e9102fafeaa00076c01b448a299"
+        },
+        {
+          "path": "src/CommonTemplates/Html.xml",
+          "kind": "sha256",
+          "eq": "31a7cf53f54fed9b6e0689f24613feb88cf5577ea66cc86374fbb6bab8fb9266"
+        },
+        {
+          "path": "src/CommonTemplates/Print/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "c4148f243689c3ab05dab0e40c5cd5f1e998531a2294387636f327f78281ac82"
+        },
+        {
+          "path": "src/CommonTemplates/Print.xml",
+          "kind": "sha256",
+          "eq": "74b2fed0550a2db0be4b67c09d7748de835032cbb7e4ac2d6946aceb522b675a"
+        },
+        {
+          "path": "src/CommonTemplates/Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "ec547bb196186e519e432e157f0f3308b0db5e258fb64497777cd037de763628"
+        },
+        {
+          "path": "src/CommonTemplates/Schema.xml",
+          "kind": "sha256",
+          "eq": "0e87c60fb082a2f77faacec95a2719ed369e70c779484bd9ef9bf6cda9c9b724"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "aadd0b45b3512ee3213b6eb6b53745de62519d2b28b3af7a90bfdcdf147e89ef"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "borrowedTemplates": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.borrowedTemplates"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "borrowedAppearance": {
+          "pointer": "/data/items/0/at"
+        },
+        "borrowedHtml": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.borrowedAppearance"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/content",
+          "eq": "inherited"
+        },
+        {
+          "pointer": "/data/props/format",
+          "eq": null
+        },
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.borrowedAppearance"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.borrowedHtml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/content",
+          "eq": "inherited"
+        },
+        {
+          "pointer": "/data/props/format",
+          "eq": null
+        },
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.borrowedHtml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": [],
+      "fileAssertions": [
+        {
+          "path": "ext/CommonTemplates/Appearance.xml",
+          "kind": "sha256",
+          "eq": "bdb7c374e39fee34026492472f0a43b94192e262e3168b4b9c8691c18e8389d5"
+        },
+        {
+          "path": "ext/CommonTemplates/Html.xml",
+          "kind": "sha256",
+          "eq": "e4793ef756c7164427ed27cef470bd6399229f43cca5ce0a6e2cff7a098a0c21"
+        },
+        {
+          "path": "ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "8ae0378c62de200d4a683978b371844bf4329f509e3e120c153bcb4720e206a9"
+        }
+      ]
+    }
+  ]
+}
