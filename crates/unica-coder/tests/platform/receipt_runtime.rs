@@ -7337,6 +7337,187 @@ fn submitted_task_snapshot(response: Result<V5ServerResponse, String>) -> V5Daem
     }
 }
 
+/// Keeps a weak handle on the live runtime so a test can latch fail-stop on
+/// it as a failed durable write of another call would.
+#[derive(Default)]
+struct FailStopHooks {
+    observations: Mutex<Option<mpsc::Sender<(Instant, bool)>>>,
+    runtime: Mutex<Option<std::sync::Weak<V5ReceiptRuntime>>>,
+}
+
+impl FailStopHooks {
+    fn latch_fail_stop(&self) {
+        let runtime = self
+            .runtime
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .expect("the live runtime");
+        latch_fail_stop_for_fixture(&runtime);
+    }
+}
+
+impl V5RuntimeHooks<CanonicalInvocationHost> for FailStopHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn after_idle_owner_leases_read(&self, empty: bool) {
+        if let Some(observations) = self.observations.lock().unwrap().as_ref() {
+            let _ = observations.send((Instant::now(), empty));
+        }
+    }
+
+    fn runtime_opened(&self, runtime: &Arc<V5ReceiptRuntime>) {
+        *self.runtime.lock().unwrap() = Some(Arc::downgrade(runtime));
+    }
+}
+
+/// Holds the call in its prepare until the test opens it; an execution that
+/// begins anyway waits for its cancellation and reports having seen it.
+struct HeldPrepareService {
+    known_long: bool,
+    prepare: IdleIndexGate,
+    preparing: mpsc::Sender<()>,
+    executing: mpsc::Sender<()>,
+    executions: AtomicUsize,
+    cancelled: AtomicBool,
+}
+
+impl CanonicalInvocationService for HeldPrepareService {
+    fn prepare(
+        &self,
+        _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>> {
+        let _ = self.preparing.send(());
+        let (open, changed) = &*self.prepare;
+        let mut open = open.lock().unwrap();
+        while !*open {
+            open = changed.wait(open).unwrap();
+        }
+        Ok(if self.known_long {
+            ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+        } else {
+            ExecutionClass::InlineCandidate
+        })
+    }
+
+    fn execute(
+        &self,
+        _invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+        cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        let _ = self.executing.send(());
+        let watchdog = Instant::now() + Duration::from_secs(5);
+        while !cancellation.is_cancelled() && Instant::now() < watchdog {
+            thread::sleep(Duration::from_millis(5));
+        }
+        self.cancelled
+            .store(cancellation.is_cancelled(), Ordering::SeqCst);
+        Ok(DomainResult::success("held attempt returned"))
+    }
+}
+
+fn fail_stop_daemon(
+    service: Arc<HeldPrepareService>,
+) -> (PromisedWorkIdleDaemon, Arc<FailStopHooks>) {
+    let hooks = Arc::new(FailStopHooks::default());
+    let installed = Arc::clone(&hooks);
+    let daemon = PromisedWorkIdleDaemon::with_service_and_hooks(
+        Duration::from_secs(5),
+        service,
+        move |observations| {
+            *installed.observations.lock().unwrap() = Some(observations);
+            installed
+        },
+    );
+    (daemon, hooks)
+}
+
+fn held_prepare_service(
+    known_long: bool,
+) -> (
+    Arc<HeldPrepareService>,
+    mpsc::Receiver<()>,
+    mpsc::Receiver<()>,
+) {
+    let (preparing, prepared) = mpsc::channel();
+    let (executing, executed) = mpsc::channel();
+    let service = Arc::new(HeldPrepareService {
+        known_long,
+        prepare: Arc::new((Mutex::new(false), Condvar::new())),
+        preparing,
+        executing,
+        executions: AtomicUsize::new(0),
+        cancelled: AtomicBool::new(false),
+    });
+    (service, prepared, executed)
+}
+
+/// #984: fail-stop latched by another call stops subject work that has not
+/// begun. The call is held in its prepare while the process latches
+/// fail-stop; released, it never enters its provider, and the daemon stops.
+#[test]
+fn fail_stop_by_another_call_during_prepare_never_enters_the_provider() {
+    let (_workspace, workspace) = catalog_workspace();
+    let (service, preparing, _executing) = held_prepare_service(false);
+    let (mut daemon, hooks) = fail_stop_daemon(Arc::clone(&service));
+    let invocation = view_catalog_request(TaskId::new(), &workspace);
+    let mut owner = daemon.owner();
+    write_json_line(
+        &mut owner.0,
+        &serde_json::to_value(V5ClientRequest::SubmitInvocation {
+            invocation: invocation.clone(),
+        })
+        .unwrap(),
+    );
+    preparing.recv_timeout(Duration::from_secs(3)).unwrap();
+    hooks.latch_fail_stop();
+    IdleInvocationRelease(Arc::clone(&service.prepare)).release();
+
+    daemon.await_idle_exit();
+    drop(owner);
+    daemon.join();
+    assert_eq!(
+        service.executions.load(Ordering::SeqCst),
+        0,
+        "subject work began after the process latched fail-stop"
+    );
+}
+
+/// #984: fail-stop asks running subject work to stop. A known-long Task is
+/// already executing when another call latches fail-stop; its cancellation
+/// is signalled before the daemon stops.
+#[test]
+fn fail_stop_signals_cancellation_to_running_subject_work() {
+    let (_workspace, workspace) = catalog_workspace();
+    let (service, preparing, executing) = held_prepare_service(true);
+    *service.prepare.0.lock().unwrap() = true;
+    let (mut daemon, hooks) = fail_stop_daemon(Arc::clone(&service));
+    let invocation = view_catalog_request(TaskId::new(), &workspace);
+    let mut owner = daemon.owner();
+    let _task = submitted_task_snapshot(Ok(idle_request_over_tcp(
+        &mut owner,
+        V5ClientRequest::SubmitInvocation {
+            invocation: invocation.clone(),
+        },
+    )));
+    preparing.recv_timeout(Duration::from_secs(3)).unwrap();
+    executing.recv_timeout(Duration::from_secs(3)).unwrap();
+    hooks.latch_fail_stop();
+
+    daemon.await_idle_exit();
+    drop(owner);
+    daemon.join();
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+    assert!(
+        service.cancelled.load(Ordering::SeqCst),
+        "running work was not asked to stop on fail-stop"
+    );
+}
+
 /// #1384: the exact repeat of a submit whose receipt already passed into its
 /// Task reads that Task — while it runs and after it ends. The key is never
 /// reserved again, nothing is prepared a second time, and the daemon keeps

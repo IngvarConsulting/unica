@@ -264,6 +264,17 @@ impl V5ActiveTaskCancellations {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_empty()
     }
+
+    fn cancel_all(&self) {
+        for token in self
+            .tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+        {
+            token.cancel();
+        }
+    }
 }
 
 struct V5ActiveTaskCancellationGuard {
@@ -3405,6 +3416,12 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             || self.external_store_fail_stop.load(Ordering::Acquire)
     }
 
+    /// Fail-stop delivers its closed answer and nothing more: every attempt
+    /// still running is asked to stop, whichever call latched it.
+    pub fn cancel_active_attempts_after_fail_stop(&self) {
+        self.active_task_cancellations.cancel_all();
+    }
+
     fn project_task_failure(&self, failure: V5TaskProjectionFailure) -> ReceiptLedgerError {
         if failure.fail_stop {
             self.external_store_fail_stop.store(true, Ordering::Release);
@@ -4540,27 +4557,12 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 // runs on this thread so the pause sees its exact outcome.
                 self.hooks
                     .pause(V5PausePoint::BeforeTaskTerminalReceipt, deadline)?;
-                self.hooks.stage_entered(V5Stage::Execute);
-                self.hooks
-                    .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
-                self.hooks
-                    .callback_invocation_id(reservation.key().invocation_id());
-                let result = prepared.execute(cancellation.clone());
-                let authority = cancellation.factual_outcome_authority();
-                let outcome = if cancellation.is_cancelled()
-                    && authority == FactualOutcomeAuthority::Cancellable
-                {
-                    ReceiptTerminalOutcome::Cancelled
-                } else {
-                    match result {
-                        Ok(result) => ReceiptTerminalOutcome::Completed {
-                            result: Box::new(result),
-                        },
-                        Err(failure) => ReceiptTerminalOutcome::Failed {
-                            reason: V5SafeFailureReason::of_execution_failure(&failure),
-                        },
-                    }
-                };
+                let outcome = self.provider_outcome(
+                    prepared,
+                    &cancellation,
+                    epoch_ms,
+                    Some(reservation.key().invocation_id()),
+                );
                 self.hooks
                     .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
                 let snapshot = self.publish_task_execution_outcome(
@@ -4855,10 +4857,30 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         cancellation: &CancellationToken,
         invocation_id: unica_execution_contract::invocation::InvocationId,
     ) -> ReceiptTerminalOutcome {
+        self.provider_outcome(prepared, cancellation, self.epoch_ms(), Some(invocation_id))
+    }
+
+    /// Runs the provider and maps its result to the attempt's outcome. No
+    /// subject work begins once the process latched fail-stop: the attempt
+    /// then ends interrupted without entering the provider.
+    fn provider_outcome(
+        &self,
+        prepared: H::Prepared,
+        cancellation: &CancellationToken,
+        epoch_ms: u64,
+        invocation_id: Option<unica_execution_contract::invocation::InvocationId>,
+    ) -> ReceiptTerminalOutcome {
+        if self.restart_required() {
+            return ReceiptTerminalOutcome::Failed {
+                reason: V5SafeFailureReason::Interrupted,
+            };
+        }
         self.hooks.stage_entered(V5Stage::Execute);
         self.hooks
-            .event(V5ReceiptRuntimeEventKind::ExecuteEntered, self.epoch_ms());
-        self.hooks.callback_invocation_id(invocation_id);
+            .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
+        if let Some(invocation_id) = invocation_id {
+            self.hooks.callback_invocation_id(invocation_id);
+        }
         let result = prepared.execute(cancellation.clone());
         let authority = cancellation.factual_outcome_authority();
         if cancellation.is_cancelled() && authority == FactualOutcomeAuthority::Cancellable {
@@ -5335,26 +5357,8 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             // runs on this thread so the pause sees its exact outcome.
             self.hooks
                 .pause(V5PausePoint::BeforeTaskTerminalReceipt, deadline)?;
-            self.hooks.stage_entered(V5Stage::Execute);
-            self.hooks
-                .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
-            self.hooks.callback_invocation_id(invocation_id);
-            let result = prepared.execute(cancellation.clone());
-            let authority = cancellation.factual_outcome_authority();
-            let outcome = if cancellation.is_cancelled()
-                && authority == FactualOutcomeAuthority::Cancellable
-            {
-                ReceiptTerminalOutcome::Cancelled
-            } else {
-                match result {
-                    Ok(result) => ReceiptTerminalOutcome::Completed {
-                        result: Box::new(result),
-                    },
-                    Err(failure) => ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::of_execution_failure(&failure),
-                    },
-                }
-            };
+            let outcome =
+                self.provider_outcome(prepared, &cancellation, epoch_ms, Some(invocation_id));
             if self.hooks.crash_after_side_effect() {
                 return Err(ReceiptLedgerError::StoreUnavailable);
             }
@@ -5396,25 +5400,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         }
         // A direct attempt promoted to a Task runs to its terminal on this
         // continuation thread; the client already holds the Task reply.
-        self.hooks.stage_entered(V5Stage::Execute);
-        self.hooks
-            .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
-        self.hooks.callback_invocation_id(invocation_id);
-        let result = prepared.execute(cancellation.clone());
-        let authority = cancellation.factual_outcome_authority();
-        let outcome =
-            if cancellation.is_cancelled() && authority == FactualOutcomeAuthority::Cancellable {
-                ReceiptTerminalOutcome::Cancelled
-            } else {
-                match result {
-                    Ok(result) => ReceiptTerminalOutcome::Completed {
-                        result: Box::new(result),
-                    },
-                    Err(failure) => ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::of_execution_failure(&failure),
-                    },
-                }
-            };
+        let outcome = self.provider_outcome(prepared, &cancellation, epoch_ms, Some(invocation_id));
         if self.hooks.crash_after_side_effect() {
             return Err(ReceiptLedgerError::StoreUnavailable);
         }
@@ -5449,27 +5435,8 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         let execution = thread::Builder::new()
             .name("unica-v5-task-execution".to_owned())
             .spawn(move || {
-                runtime.hooks.stage_entered(V5Stage::Execute);
-                runtime.hooks.event(
-                    V5ReceiptRuntimeEventKind::ExecuteEntered,
-                    runtime.epoch_ms(),
-                );
-                let result = prepared.execute(cancellation.clone());
-                let authority = cancellation.factual_outcome_authority();
-                let outcome = if cancellation.is_cancelled()
-                    && authority == FactualOutcomeAuthority::Cancellable
-                {
-                    ReceiptTerminalOutcome::Cancelled
-                } else {
-                    match result {
-                        Ok(result) => ReceiptTerminalOutcome::Completed {
-                            result: Box::new(result),
-                        },
-                        Err(failure) => ReceiptTerminalOutcome::Failed {
-                            reason: V5SafeFailureReason::of_execution_failure(&failure),
-                        },
-                    }
-                };
+                let outcome =
+                    runtime.provider_outcome(prepared, &cancellation, runtime.epoch_ms(), None);
                 let publication = runtime
                     .publish_task_execution_outcome(
                         &bound,
@@ -7936,6 +7903,15 @@ pub mod test_support {
     }
 
     pub const RETIREMENT_RETRY_INITIAL_DELAY_MS: u64 = super::RETIREMENT_RETRY_INITIAL_DELAY_MS;
+    /// Latches the process-owned fail-stop as a failed durable write of
+    /// another call would.
+    pub fn latch_fail_stop_for_fixture<H: super::ports::InvocationHost>(
+        runtime: &super::V5ReceiptRuntime<H>,
+    ) {
+        runtime
+            .external_store_fail_stop
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     /// The original owner error projection, including its existing fail-stop effect.
     pub fn project_task_failure_for_fixture<H: super::ports::InvocationHost>(
         runtime: &super::V5ReceiptRuntime<H>,
