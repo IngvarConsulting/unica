@@ -18,11 +18,12 @@ impl PredefinedResourceRead for PredefinedResourceReadBinding {
         unica_workspace::read::read_root_relative_regular_file(source_root, path, maximum, |_| {})
             .map(|observed| observed.bytes)
     }
+    // #1119: the configuration, not apply, decides the size of Predefined.xml.
     fn read_resource(&self, source_root: &Path, path: &Path) -> std::io::Result<Vec<u8>> {
         unica_workspace::read::read_root_relative_regular_file(
             source_root,
             path,
-            unica_workspace::apply::MAX_APPLY_FILE_BYTES,
+            usize::MAX,
             |_| {},
         )
         .map(|observed| observed.bytes)

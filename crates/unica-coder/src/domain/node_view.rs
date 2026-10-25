@@ -91,6 +91,10 @@ impl BranchRef {
         }
     }
 
+    pub(crate) fn at(&self) -> &str {
+        &self.at
+    }
+
     /// Размер текста ветви в байтах UTF-8, когда ветвь отдаёт текст.
     #[must_use]
     pub(crate) fn with_bytes(mut self, bytes: Option<u64>) -> Self {

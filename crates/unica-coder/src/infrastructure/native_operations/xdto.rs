@@ -851,6 +851,7 @@ pub(crate) mod tests {
     use unica_source_contract::events::DomainEventKind;
     use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
     use unica_xdto::operations::XdtoRenamePropertyArgs;
+    use unica_xdto::operations::XdtoSetTypeArgs;
     use unica_xdto_designer::test_support::{args, PACKAGE};
 
     use crate::infrastructure::native_operations::common::support_guard_violation;
@@ -1903,6 +1904,13 @@ pub(crate) mod tests {
             name: ncname(name),
             property_path: property_path.map(XdtoPropertyPath::for_test),
             new_name: ncname(new_name),
+        })
+    }
+
+    fn set_type(at: &str, base: &str) -> XdtoPlanOperation {
+        XdtoPlanOperation::SetType(XdtoSetTypeArgs {
+            at: qaddr(at),
+            base: qname(base),
         })
     }
 
@@ -3387,6 +3395,105 @@ pub(crate) mod tests {
             let error = plan_admitted_xdto(&admission, &fixture.binding, &operations).unwrap_err();
             assert_eq!(error.kind(), kind, "{path}");
             assert_eq!(error.path(), Some(path));
+        }
+        assert_eq!(snapshot_tree(&fixture.source), source);
+        assert_eq!(snapshot_tree(&fixture.context.cache_root), cache);
+        fixture.cleanup();
+    }
+
+    const BASED_PACKAGE: &str = "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n\t<valueType name=\"Процент\" base=\"xs:decimal\" totalDigits=\"5\" fractionDigits=\"2\"/>\r\n\t<valueType name=\"Количество\" base=\"xs:decimal\"/>\r\n\t<objectType name=\"ОсноваА\">\r\n\t\t<property name=\"А\" type=\"xs:string\"/>\r\n\t</objectType>\r\n\t<objectType name=\"ОсноваБ\">\r\n\t\t<property name=\"Б\" type=\"tns:Количество\"/>\r\n\t</objectType>\r\n\t<objectType name=\"Производный\" base=\"tns:ОсноваА\" sequenced=\"true\">\r\n\t\t<property name=\"Своё\" type=\"tns:Процент\"/>\r\n\t</objectType>\r\n\t<objectType name=\"Ссылка\">\r\n\t\t<property name=\"Цель\" type=\"tns:Производный\"/>\r\n\t</objectType>\r\n</package>";
+
+    #[test]
+    fn staged_xdto_type_set_changes_only_the_base_and_repeats_the_current_base_as_no_op() {
+        let fixture = staged_xdto_fixture("type-set", BASED_PACKAGE.as_bytes());
+        let admission = staged_xdto_admission(&fixture, None, false);
+        let (state, effects) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[
+                set_type("main:XDTOPackage.Sample.Type.Производный", "tns:ОсноваБ"),
+                set_type("main:XDTOPackage.Sample.Type.Количество", "xs:integer"),
+                set_type("main:XDTOPackage.Sample.Type.Количество", "xs:decimal"),
+                set_type("main:XDTOPackage.Sample.Type.Процент", "xs:decimal"),
+            ],
+        )
+        .unwrap();
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        assert_eq!(result.commit_count_for_test(), 1);
+        let expected = BASED_PACKAGE.replacen(
+            "\"Производный\" base=\"tns:ОсноваА\"",
+            "\"Производный\" base=\"tns:ОсноваБ\"",
+            1,
+        );
+        assert_eq!(fs::read(&fixture.package).unwrap(), expected.as_bytes());
+        // sequenced валидатор пока не поддерживает; смена основы находок не добавляет.
+        let findings = |bytes: &[u8]| {
+            super::validate(&model::PackageModel::parse(&decode(bytes).unwrap()).unwrap())
+                .into_iter()
+                .map(|finding| (finding.code, finding.location.key))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            findings(expected.as_bytes()),
+            findings(BASED_PACKAGE.as_bytes())
+        );
+
+        let admission = staged_xdto_admission(&fixture, None, false);
+        let (state, _) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[set_type(
+                "main:XDTOPackage.Sample.Type.Производный",
+                "tns:ОсноваБ",
+            )],
+        )
+        .unwrap();
+        assert!(state.planned_changes().is_empty());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_type_set_refuses_cycles_families_and_restrictions_without_writes() {
+        let fixture = staged_xdto_fixture("type-set-refusals", BASED_PACKAGE.as_bytes());
+        let source = snapshot_tree(&fixture.source);
+        let cache = snapshot_tree(&fixture.context.cache_root);
+        for (operations, kind) in [
+            (
+                vec![
+                    set_type("main:XDTOPackage.Sample.Type.Количество", "xs:integer"),
+                    set_type("main:XDTOPackage.Sample.Type.Процент", "xs:integer"),
+                ],
+                ApplyPlanErrorKind::BadValue,
+            ),
+            (
+                vec![
+                    add_object("main:XDTOPackage.Sample", "Новый"),
+                    set_type("main:XDTOPackage.Sample.Type.ОсноваА", "tns:Производный"),
+                ],
+                ApplyPlanErrorKind::BadValue,
+            ),
+            (
+                vec![
+                    add_value("main:XDTOPackage.Sample", "Новое", "xs:string"),
+                    set_type("main:XDTOPackage.Sample.Type.Производный", "tns:Количество"),
+                ],
+                ApplyPlanErrorKind::BadValue,
+            ),
+            (
+                vec![
+                    add_value("main:XDTOPackage.Sample", "Новое", "xs:string"),
+                    set_type("main:XDTOPackage.Sample.Type.Производный", "tns:Нет"),
+                ],
+                ApplyPlanErrorKind::NotFound,
+            ),
+        ] {
+            let admission = staged_xdto_admission(&fixture, None, false);
+            let error = plan_admitted_xdto(&admission, &fixture.binding, &operations).unwrap_err();
+            assert_eq!(error.kind(), kind, "{operations:?}");
+            assert_eq!(error.path(), Some("ops[1].args.values.base"));
         }
         assert_eq!(snapshot_tree(&fixture.source), source);
         assert_eq!(snapshot_tree(&fixture.context.cache_root), cache);

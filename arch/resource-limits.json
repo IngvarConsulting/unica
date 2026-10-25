@@ -4639,31 +4639,6 @@
       "review": "снимается в #1119 PR5"
     },
     {
-      "id": "metadata.remove-reference-file-bytes",
-      "class": "corpus",
-      "resource": "Размер одного XML- или BSL-файла, читаемого при поиске ссылок на удаляемый объект.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/remove.rs",
-        "symbol": "META_REMOVE_REFERENCE_FILE_MAX_BYTES"
-      },
-      "expr": "16 * 1024 * 1024",
-      "value": 16777216,
-      "applied": [
-        "crates/unica-metadata-designer/src/planner.rs",
-        "crates/unica-metadata-designer/src/remove.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": "без предела на файл один большой файл задаёт размер всей операции",
-      "onReach": "отказ плана apply: ошибка staging при чтении файла сверх предела",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR7"
-    },
-    {
       "id": "metadata.remove-traversal-depth",
       "class": "format",
       "resource": "Глубина обхода корня исходников при поиске ссылок на удаляемый объект.",
@@ -4686,30 +4661,6 @@
       "evidence": [],
       "decision": null,
       "review": null
-    },
-    {
-      "id": "metadata.remove-traversal-entries",
-      "class": "corpus",
-      "resource": "Число записей, обходимых в корне исходников при поиске ссылок на удаляемый объект.",
-      "unit": "count",
-      "scope": "source-set",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/remove.rs",
-        "symbol": "META_REMOVE_MAX_TRAVERSAL_ENTRIES"
-      },
-      "expr": "1_000_000",
-      "value": 1000000,
-      "applied": [
-        "crates/unica-metadata-designer/src/remove.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 17ad07915 (enforce 8.3.27 export profile)",
-      "problem": null,
-      "onReach": "отказ плана удаления «traversal exceeded the maximum of 1000000 entries»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR7"
     },
     {
       "id": "support.rule-record-length",
@@ -6056,31 +6007,6 @@
       "review": null
     },
     {
-      "id": "apply.dependency-input-bytes",
-      "class": "corpus",
-      "resource": "Байты одной зависимости apply, которую актор рабочего пространства собирает в память.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-workspace/src/actor.rs",
-        "literal": "(16 * 1024 * 1024_usize)",
-        "count": 1
-      },
-      "expr": "16 * 1024 * 1024",
-      "value": 16777216,
-      "applied": [
-        "crates/unica-workspace/src/actor.rs"
-      ],
-      "status": "unproven",
-      "origin": "#1141",
-      "problem": null,
-      "onReach": "отказ «apply dependency exceeds the input limit»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR7"
-    },
-    {
       "id": "workspace.warm-actor-ttl",
       "class": "retention",
       "resource": "Интервал простоя, после которого незанятый актор рабочего пространства освобождает удержанные дескрипторы корня.",
@@ -6132,81 +6058,6 @@
       "evidence": [],
       "decision": null,
       "review": null
-    },
-    {
-      "id": "apply.namespace-entries",
-      "class": "corpus",
-      "resource": "Число записей пространства имён, перечисляемых оверлеем apply и удалением каталогов.",
-      "unit": "count",
-      "scope": "operation",
-      "source": {
-        "file": "crates/unica-workspace/src/apply.rs",
-        "symbol": "MAX_APPLY_NAMESPACE_ENTRIES"
-      },
-      "expr": "1_000_000",
-      "value": 1000000,
-      "applied": [
-        "crates/unica-workspace/src/apply.rs",
-        "crates/unica-workspace/src/retained_directory.rs"
-      ],
-      "status": "unproven",
-      "origin": "#1632",
-      "problem": null,
-      "onReach": "ошибка staging UnsupportedProvider «namespace input exceeds entry bound», apply отказывает атомарно",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR7"
-    },
-    {
-      "id": "apply.staged-file-bytes",
-      "class": "corpus",
-      "resource": "Размер одного файла, читаемого staging-оверлеем apply.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-workspace/src/apply.rs",
-        "symbol": "MAX_APPLY_FILE_BYTES"
-      },
-      "expr": "32 * 1024 * 1024",
-      "value": 33554432,
-      "applied": [
-        "crates/unica-workspace/src/apply.rs",
-        "crates/unica-coder/src/infrastructure/native_operations/meta/predefined.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 337d12744 (transactional apply foundation)",
-      "problem": null,
-      "onReach": "ошибка staging UnsupportedProvider «staged input exceeds read bound», apply отказывает атомарно",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR7"
-    },
-    {
-      "id": "apply.preimage-file-bytes",
-      "class": "corpus",
-      "resource": "Байты прежнего и вытесненного файла, которые staging apply читает при публикации.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-workspace/src/compile_transaction.rs",
-        "literal": "read_bounded(32 * 1024 * 1024)",
-        "count": 2
-      },
-      "expr": "32 * 1024 * 1024",
-      "value": 33554432,
-      "applied": [
-        "crates/unica-workspace/src/compile_transaction.rs"
-      ],
-      "status": "unproven",
-      "origin": null,
-      "problem": null,
-      "onReach": "отказ RetainedApplyValidationError (UnsupportedProvider): apply атомарно отклоняется",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR7"
     },
     {
       "id": "workspace.runtime-dir-retry-delay",
@@ -6534,6 +6385,11 @@
       "reason": "точный размер заголовка кадра хранилища операций, вычисляет формат"
     },
     {
+      "file": "crates/unica-metadata-designer/src/remove.rs",
+      "symbol": "META_REMOVE_MAX_TRAVERSAL_ENTRIES",
+      "reason": "usize::MAX: предел числа записей снят в #1119, константа задаёт отсутствие предела обходу ссылок"
+    },
+    {
       "file": "crates/unica-navigation/src/result_store.rs",
       "symbol": "SEARCH_CURSOR_CIPHERTEXT_BYTES",
       "reason": "точный размер формата курсора, вычисляет формат, ничего не ограничивает"
@@ -6577,6 +6433,11 @@
       "file": "crates/unica-project-health/src/inspection/resources.rs",
       "symbol": "LFS_SINGLE_FILE_THRESHOLD_BYTES",
       "reason": "порог рекомендации о Git LFS: находка, а не отказ и не предел работы (#1119)"
+    },
+    {
+      "file": "crates/unica-workspace/src/apply.rs",
+      "symbol": "MAX_APPLY_NAMESPACE_ENTRIES",
+      "reason": "usize::MAX: предел числа записей снят в #1119, тесты подставляют свой предел через entry_limit"
     }
   ]
 }
