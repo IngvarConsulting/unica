@@ -45,6 +45,7 @@ mod tests {
             json!({"executionToken":"saved-plan"}),
             json!({"executionToken":"saved-plan", "limit":2, "cursor":"saved-cursor"}),
             json!({"left":"main:Document.Order", "right":"ext:Document.Order", "limit":2}),
+            json!({"left":"main:Document.Order", "right":"ext:Document.Order", "cursor":"compare-cursor"}),
         ] {
             assert!(
                 validator.is_valid(&valid),
@@ -57,7 +58,7 @@ mod tests {
             json!({"executionToken":"saved-plan", "ops":[]}),
             json!({"executionToken":"saved-plan", "limit":0}),
             json!({"executionToken":"saved-plan", "limit":1001}),
-            json!({"left":"main:Document.Order", "right":"ext:Document.Order", "cursor":"saved-cursor"}),
+            json!({"left":"main:Document.Order", "cursor":"compare-cursor"}),
         ] {
             assert!(
                 !validator.is_valid(&invalid),

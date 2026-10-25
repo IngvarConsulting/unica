@@ -17,6 +17,7 @@ pub(crate) struct DiffRequest {
     right: QualifiedAddress,
     limit: usize,
     cursor: Option<String>,
+    workspace: String,
 }
 
 impl DiffRequest {
@@ -34,6 +35,7 @@ impl DiffRequest {
             right,
             limit: DEFAULT_LIMIT,
             cursor: None,
+            workspace: String::new(),
         })
     }
 
@@ -47,8 +49,29 @@ impl DiffRequest {
         self
     }
 
+    /// A continuation answers only the workspace that asked the first page.
+    pub(crate) fn in_workspace(mut self, workspace: impl Into<String>) -> Self {
+        self.workspace = workspace.into();
+        self
+    }
+
+    pub(crate) fn left(&self) -> &QualifiedAddress {
+        &self.left
+    }
+
+    pub(crate) fn right(&self) -> &QualifiedAddress {
+        &self.right
+    }
+
+    pub(crate) fn limit(&self) -> usize {
+        self.limit
+    }
+
     fn fingerprint(&self) -> String {
-        format!("{}|{}|{}", self.left, self.right, self.limit)
+        format!(
+            "{}|{}|{}|{}",
+            self.workspace, self.left, self.right, self.limit
+        )
     }
 }
 
@@ -81,7 +104,8 @@ pub(crate) struct DiffPage {
     equal: bool,
     changes: Vec<DiffChange>,
     truncated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The continuation travels in the envelope, not in the page data.
+    #[serde(skip)]
     cursor: Option<String>,
 }
 
@@ -191,40 +215,64 @@ impl DiffHandler {
                 message: "sources do not match the logical diff request".to_string(),
             });
         }
+        if request.cursor.is_some() {
+            return self.continue_saved(request);
+        }
+        if left.kind != right.kind {
+            return Err(DiffError::IncomparableNodes);
+        }
+        let left_data = source_backed(&left.data);
+        let right_data = source_backed(&right.data);
+        if left_data.get("kind") != right_data.get("kind") {
+            return Err(DiffError::IncomparableNodes);
+        }
+        Ok(self.page(
+            request.fingerprint(),
+            request.limit,
+            std::sync::Arc::new(left_data),
+            std::sync::Arc::new(right_data),
+            0,
+        ))
+    }
+
+    /// Continues the pair saved by the first page. The sources are not read
+    /// again: a later edit of either side does not replace the saved pair.
+    pub(crate) fn continue_saved(&self, request: &DiffRequest) -> Result<DiffPage, DiffError> {
+        let token = request.cursor.as_deref().ok_or(DiffError::InvalidCursor)?;
         let fingerprint = request.fingerprint();
-        let (left_data, right_data, offset) = if let Some(token) = request.cursor.as_deref() {
-            let entry = self.cursors.read(token)?;
-            if entry.fingerprint != fingerprint {
-                return Err(DiffError::InvalidCursor);
-            }
-            (entry.left_data, entry.right_data, entry.offset)
-        } else {
-            if left.kind != right.kind {
-                return Err(DiffError::IncomparableNodes);
-            }
-            let left_data = source_backed(&left.data);
-            let right_data = source_backed(&right.data);
-            if left_data.get("kind") != right_data.get("kind") {
-                return Err(DiffError::IncomparableNodes);
-            }
-            (
-                std::sync::Arc::new(left_data),
-                std::sync::Arc::new(right_data),
-                0,
-            )
-        };
+        let entry = self.cursors.read(token)?;
+        if entry.fingerprint != fingerprint {
+            return Err(DiffError::InvalidCursor);
+        }
+        Ok(self.page(
+            fingerprint,
+            request.limit,
+            entry.left_data,
+            entry.right_data,
+            entry.offset,
+        ))
+    }
+
+    fn page(
+        &self,
+        fingerprint: String,
+        limit: usize,
+        left_data: std::sync::Arc<Value>,
+        right_data: std::sync::Arc<Value>,
+        offset: usize,
+    ) -> DiffPage {
         let mut skip = offset;
-        let mut changes = Vec::with_capacity(request.limit.saturating_add(1));
+        let mut changes = Vec::with_capacity(limit.saturating_add(1));
         collect_changes(
             "",
             &left_data,
             &right_data,
             &mut skip,
-            request.limit.saturating_add(1),
+            limit.saturating_add(1),
             &mut changes,
         );
-        let truncated = changes.len() > request.limit;
-        changes.truncate(request.limit);
+        let truncated = changes.len() > limit;
+        changes.truncate(limit);
         let next_cursor = truncated
             .then(|| {
                 self.cursors.issue(CursorEntry {
@@ -235,12 +283,12 @@ impl DiffHandler {
                 })
             })
             .flatten();
-        Ok(DiffPage {
+        DiffPage {
             equal: changes.is_empty() && !truncated,
             changes,
             truncated,
             cursor: next_cursor,
-        })
+        }
     }
 }
 

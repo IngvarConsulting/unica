@@ -9605,6 +9605,15 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({"executionToken": token, "limit": 1}),
                 true,
             ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({
+                    "left": "main:Catalog.Items",
+                    "right": "main:Catalog.Other",
+                    "limit": 1
+                }),
+                true,
+            ),
             (ToolIdentity::Check, serde_json::json!({}), false),
             (
                 ToolIdentity::Check,
@@ -9654,17 +9663,6 @@ struct ActorLogicalReadLease {"#,
                 "{name} {arguments}: first page continuation"
             );
         }
-        // Only saved-plan diff publishes a cursor; comparison keeps even an empty one unknown.
-        let diff = call(
-            ToolIdentity::Diff,
-            serde_json::json!({
-                "left": "main:Catalog.Items",
-                "right": "main:Catalog.Other",
-                "cursor": ""
-            }),
-        );
-        assert!(!diff.ok);
-        assert_eq!(diff.diagnostics[0]["code"], "bad_value", "{diff:?}");
     }
 
     #[test]
@@ -9844,11 +9842,128 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
-    /// #1218: diff has no continuation. A truncated answer names the cut and
-    /// how to narrow the question, and issues no cursor; a cursor argument is
-    /// an unknown argument rather than an unimplemented feature.
+    /// #977: a cut left/right comparison continues on the canonical route.
+    /// Pages walk the whole difference once, in order; the cursor answers
+    /// only the same pair and page size and keeps the pair the first page
+    /// read; nothing is published.
     #[test]
-    fn diff_truncation_names_the_cut_and_offers_no_continuation() {
+    fn diff_pages_continue_the_saved_pair_on_the_canonical_route() {
+        let (_state, workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
+        let source = workspace.path().join("src");
+        let call = |arguments| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Diff,
+                arguments,
+                workspace_hint.as_str(),
+                7_000,
+            )
+            .unwrap();
+            direct_v5(&runtime, request).unwrap()
+        };
+        let before = unica_workspace::test_support::tree_snapshot(&source);
+        let pair = serde_json::json!({
+            "left": "main:Catalog.Items",
+            "right": "main:Catalog.Other"
+        });
+        let whole = call(pair.clone());
+        assert!(whole.ok, "{whole:?}");
+        assert_eq!(whole.data.as_ref().unwrap()["truncated"], false);
+        assert!(whole.cursor.is_none(), "{whole:?}");
+        let all = whole.data.as_ref().unwrap()["changes"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(all.len() > 2, "fixture must differ in more than two places");
+
+        let mut first_args = pair.clone();
+        first_args["limit"] = serde_json::json!(1);
+        let first = call(first_args.clone());
+        assert!(first.ok, "{first:?}");
+        assert_eq!(first.data.as_ref().unwrap()["truncated"], true);
+        let first_cursor = first.cursor.clone().expect("a cut page issues a cursor");
+        assert_eq!(first.next[0]["tool"], "unica.diff");
+        assert_eq!(first.next[0]["arguments"]["cursor"], first_cursor.as_str());
+        assert_eq!(first.next[0]["arguments"]["limit"], 1);
+
+        let mut empty = first_args.clone();
+        empty["cursor"] = serde_json::json!("");
+        let restarted = call(empty);
+        assert_eq!(
+            restarted.data.as_ref().unwrap()["changes"],
+            first.data.as_ref().unwrap()["changes"]
+        );
+
+        let mut paged = Vec::new();
+        let mut page = first.clone();
+        loop {
+            paged.extend(
+                page.data.as_ref().unwrap()["changes"]
+                    .as_array()
+                    .unwrap()
+                    .clone(),
+            );
+            let Some(cursor) = page.cursor.clone() else {
+                assert_eq!(page.data.as_ref().unwrap()["truncated"], false);
+                break;
+            };
+            assert!(paged.len() <= all.len(), "pages repeat: {paged:?}");
+            let mut next = first_args.clone();
+            next["cursor"] = serde_json::json!(cursor);
+            page = call(next);
+            assert!(page.ok, "{page:?}");
+        }
+        assert_eq!(
+            paged, all,
+            "pages must walk the whole difference once, in order"
+        );
+
+        for (field, value) in [
+            ("limit", serde_json::json!(2)),
+            ("right", serde_json::json!("main:Catalog.Items")),
+            ("left", serde_json::json!("main:Catalog.Other")),
+        ] {
+            let mut replay = first_args.clone();
+            replay[field] = value;
+            replay["cursor"] = serde_json::json!(first_cursor.as_str());
+            let refused = call(replay);
+            assert!(!refused.ok, "{field}: {refused:?}");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "invalid_cursor",
+                "{field}: {refused:?}"
+            );
+        }
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before,
+            "comparison must not publish source edits"
+        );
+
+        let other = source.join("Catalogs/Other.xml");
+        let edited = std::fs::read_to_string(&other)
+            .unwrap()
+            .replace("<Comment>second</Comment>", "<Comment>edited</Comment>");
+        std::fs::write(&other, edited).unwrap();
+        let mut continued = first_args.clone();
+        continued["cursor"] = serde_json::json!(first_cursor.as_str());
+        let saved = call(continued);
+        assert!(saved.ok, "{saved:?}");
+        assert_eq!(
+            saved.data.as_ref().unwrap()["changes"],
+            serde_json::json!([all[1].clone()]),
+            "a continuation reads the pair saved by its first page"
+        );
+        let fresh = call(pair);
+        assert!(fresh.ok, "{fresh:?}");
+        assert!(
+            fresh.data.as_ref().unwrap().to_string().contains("edited"),
+            "a new first page reads the edited source: {fresh:?}"
+        );
+    }
+
+    /// #977: nodes of different kinds are not compared, and an unreadable
+    /// side is a refusal, never an empty node.
+    #[test]
+    fn diff_refuses_incomparable_kinds_and_an_unreadable_side() {
         let (_state, _workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
         let call = |arguments| {
             let request = InvocationRequest::new(
@@ -9860,40 +9975,21 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
             direct_v5(&runtime, request).unwrap()
         };
-        let pair = serde_json::json!({
+        let incomparable = call(serde_json::json!({
             "left": "main:Catalog.Items",
-            "right": "main:Catalog.Other"
-        });
-        let whole = call(pair.clone());
-        assert!(whole.ok, "{whole:?}");
-        let data = whole.data.as_ref().unwrap();
-        assert_eq!(data["truncated"], false);
-        let all = data["changes"].as_array().unwrap();
-        assert!(all.len() > 1, "fixture must differ in more than one place");
-        assert_eq!(whole.summary, "logical nodes compared");
-
-        let mut limited = pair.clone();
-        limited["limit"] = serde_json::json!(1);
-        let cut = call(limited);
-        assert!(cut.ok, "{cut:?}");
-        let data = cut.data.as_ref().unwrap();
-        assert_eq!(data["truncated"], true);
-        assert_eq!(data["equal"], false);
-        assert_eq!(data["changes"], serde_json::json!([all[0].clone()]));
-        assert!(cut.cursor.is_none(), "no continuation exists: {cut:?}");
-        assert!(cut.page.is_none(), "{cut:?}");
-        assert_ne!(cut.summary, whole.summary, "truncation must be named");
-        assert!(
-            !cut.summary.contains("cursor"),
-            "a truncated diff must not promise a cursor: {}",
-            cut.summary
+            "right": "main:Catalog.Items.Module.Object"
+        }));
+        assert!(!incomparable.ok, "{incomparable:?}");
+        assert_eq!(
+            incomparable.diagnostics[0]["code"], "incomparable_nodes",
+            "{incomparable:?}"
         );
-
-        let mut continued = pair;
-        continued["cursor"] = serde_json::json!("opaque");
-        let refused = call(continued);
-        assert!(!refused.ok);
-        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+        let missing = call(serde_json::json!({
+            "left": "main:Catalog.Items",
+            "right": "main:Catalog.Missing"
+        }));
+        assert!(!missing.ok, "{missing:?}");
+        assert!(missing.data.is_none(), "{missing:?}");
     }
 
     /// `filter` снят с `view` и `diff` (#1374). Вызов с ним — отказ
