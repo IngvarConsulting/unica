@@ -7364,14 +7364,16 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for StepOrderHooks {
 #[test]
 fn zero_budget_call_is_a_durable_task_before_the_provider_runs() {
     let (_workspace, workspace) = catalog_workspace();
-    let (entered, _executing) = mpsc::channel();
+    let (entered, executing) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
     let service = Arc::new(IdleInvocationService {
         known_long: false,
         prepares: AtomicUsize::new(0),
         executions: AtomicUsize::new(0),
         entered,
-        release: Arc::new((Mutex::new(true), Condvar::new())),
+        release: Arc::clone(&release),
     });
+    let running = IdleInvocationRelease(release);
     let steps = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&steps);
     let mut daemon = PromisedWorkIdleDaemon::with_service_and_hooks(
@@ -7405,7 +7407,23 @@ fn zero_budget_call_is_a_durable_task_before_the_provider_runs() {
         })
         .unwrap(),
     );
+    // While the provider runs, a client already reads the same Task.
+    executing.recv_timeout(Duration::from_secs(3)).unwrap();
     let mut reader = daemon.owner();
+    let V5ServerResponse::Task { snapshot: working } = idle_request_over_tcp(
+        &mut reader,
+        V5ClientRequest::GetTask {
+            task_id: invocation.reserved_task_id(),
+        },
+    ) else {
+        panic!("the running attempt must already be its reserved Task");
+    };
+    assert_eq!(working.invocation_id(), invocation.invocation_id());
+    assert!(
+        matches!(working, V5DaemonTaskSnapshot::Working { .. }),
+        "{working:?}"
+    );
+    running.release();
     let terminal = idle_task_terminal_over_tcp(&mut reader, &invocation);
     assert!(
         matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. }
