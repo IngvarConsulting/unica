@@ -2552,6 +2552,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
+ "regex-syntax",
  "rmcp",
  "roxmltree",
  "rust-stemmers",

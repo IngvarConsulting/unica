@@ -137,6 +137,7 @@ pub fn parse_cf_info_xml(
     support: ConfigurationSupportData,
     home_page: Option<CfHomePageData>,
     interface: Option<CfInterfaceData>,
+    panels: Option<serde_json::Value>,
 ) -> Result<ParsedCfInfo, String> {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -224,6 +225,7 @@ pub fn parse_cf_info_xml(
         total_objects,
         home_page,
         interface,
+        panels,
     };
     Ok(ParsedCfInfo {
         data,

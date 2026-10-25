@@ -9,6 +9,10 @@ macro_rules! subsystem_operations {
         }
 
         impl SubsystemOperation {
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name { $($name => Some(Self::$variant),)+ _ => None }
+            }
+
             pub const fn name(self) -> &'static str {
                 match self { $(Self::$variant => $name),+ }
             }
@@ -35,7 +39,7 @@ macro_rules! subsystem_operations {
 subsystem_operations!(
     Create => ("subsystem.create", Configuration, Values),
     ContentAdd => ("content.add", Subsystem, Items),
-    ContentRemove => ("content.remove", Subsystem, Target),
+    ContentRemove => ("content.remove", Subsystem, Items),
     ChildAdd => ("childSubsystem.add", Subsystem, Items),
     ChildRemove => ("childSubsystem.remove", NestedSubsystem, Target),
 );
@@ -43,6 +47,9 @@ subsystem_operations!(
 impl unica_operations::FamilyOperation for SubsystemOperation {
     fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
         crate::recovery::RETIRED_ARGUMENTS
+    }
+    fn contract(self) -> Option<unica_operation_contract::OperationContract> {
+        Some(self.contract())
     }
     type Observation = ();
     fn family(self) -> unica_operations::OperationFamily {

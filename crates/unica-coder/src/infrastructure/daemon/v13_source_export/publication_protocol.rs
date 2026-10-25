@@ -5,7 +5,8 @@ use std::time::Duration;
 use unica_process::runner::ProcessStreamFailure;
 use unica_process::ProcessLineReply;
 use unica_workspace::full_dump::{
-    FullDumpFailure, FullDumpPhase, PublishedFullDump, RunnerProjectLockFailure,
+    FullDumpCleanupReason, FullDumpFailure, FullDumpPhase, PublishedFullDump,
+    RunnerProjectLockFailure,
 };
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -377,8 +378,8 @@ pub(super) fn execute(
             error.data = result.data;
             result = error;
         }
-        for warning in proof.warnings {
-            warn(&mut result, "export_cleanup", warning);
+        if !proof.warnings.is_empty() {
+            cleanup_warning(&mut result, FullDumpCleanupReason::PublicationCleanup);
         }
         let saved = terminal
             .as_ref()
@@ -400,11 +401,22 @@ pub(super) fn execute(
         }
         match guard.finish() {
             Ok(finish) => {
-                report_recovery(&root, &mut result, finish.retained, finish.warnings);
+                report_recovery(
+                    &root,
+                    &mut result,
+                    finish.retained,
+                    finish.recovery_origin,
+                    finish.cleanup_reasons,
+                );
             }
             Err(error) => {
-                let warning = error.to_string();
-                report_recovery(&root, &mut result, error.recovery, vec![warning]);
+                report_recovery(
+                    &root,
+                    &mut result,
+                    error.recovery,
+                    error.report.recovery_origin,
+                    error.report.cleanup_reasons,
+                );
             }
         }
         return result;
@@ -457,10 +469,23 @@ pub(super) fn execute(
     }
     if let Err(error) = guard.abort() {
         if error.publication_uncertain {
+            let validation = result
+                .data
+                .as_ref()
+                .and_then(|data| data.get("validation"))
+                .cloned();
             result = failure(&root, error);
+            if let Some(report) = validation {
+                attach_validation(&mut result, report);
+            }
         } else {
-            let warning = error.to_string();
-            report_recovery(&root, &mut result, error.recovery, vec![warning]);
+            report_recovery(
+                &root,
+                &mut result,
+                error.recovery,
+                error.report.recovery_origin,
+                error.report.cleanup_reasons,
+            );
         }
     }
     result
@@ -496,45 +521,143 @@ fn failure(root: &Path, error: FullDumpFailure) -> DomainResult {
         }
     };
     let mut result = reject(code, error.to_string());
+    if let Some(validation) = &error.report.validation {
+        result.data = Some(json!({"op":OPERATION,"state":"notPublished"}));
+        attach_validation(&mut result, validation_report(validation));
+    }
     if error.publication_uncertain {
         let relative = match &error.recovery {
-            Ok(Some(recovery)) => Some(retained_path(root, recovery)),
+            Ok(Some(recovery)) => retained_path(root, recovery),
             Ok(None) | Err(_) => None,
         };
-        result.data = Some(json!({"op":OPERATION,"state":"unknown","recovery":relative}));
+        let data = result.data.get_or_insert_with(|| json!({"op":OPERATION}));
+        data["state"] = json!("unknown");
+        data["recovery"] = json!(relative);
     }
-    report_recovery(root, &mut result, error.recovery, Vec::new());
+    report_recovery(
+        root,
+        &mut result,
+        error.recovery,
+        error.report.recovery_origin,
+        error.report.cleanup_reasons,
+    );
     result
+}
+
+fn attach_validation(result: &mut DomainResult, report: Value) {
+    let message = format!("{}; validation: {}", result.summary, report);
+    result.summary = message.clone();
+    if let Some(diagnostic) = result.diagnostics.first_mut() {
+        diagnostic["message"] = json!(message);
+    }
+    let data = result.data.get_or_insert_with(|| json!({"op":OPERATION}));
+    data["validation"] = report;
+}
+
+fn validation_report(
+    error: &unica_source_contract::read::full_dump::DumpValidationFailure,
+) -> Value {
+    let mut report = json!({"reason":error.reason});
+    if let Some(path) = error.path.as_deref() {
+        report["path"] = json!(safe_relative_path(path));
+    }
+    if let Some((namespace, local_name)) = &error.root {
+        // The format owner owns the namespace vocabulary. Unknown namespace text
+        // may contain connection credentials, a query or a private filesystem URI.
+        let namespace = if unica_source_designer::roots::PLATFORM_XML_ROOTS
+            .iter()
+            .any(|root| root.namespace == namespace)
+        {
+            namespace.as_str()
+        } else {
+            "<unrecognized namespace>"
+        };
+        let local_name = if local_name.len() <= 128
+            && local_name
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            local_name.as_str()
+        } else {
+            "<redacted>"
+        };
+        report["qname"] = json!(format!("{{{namespace}}}{local_name}"));
+    }
+    if let Some(requirement) = &error.version_requirement {
+        report["versionRequirement"] = json!(requirement);
+    }
+    report
+}
+
+fn safe_relative_path(path: &Path) -> Option<String> {
+    // Native separators are judged by `components()`; the public text always uses
+    // `/`, so a separator or drive marker left inside one component is refused.
+    let mut parts = Vec::new();
+    for part in path.components() {
+        let std::path::Component::Normal(part) = part else {
+            return None;
+        };
+        let part = part.to_str()?;
+        if part.contains(['\\', ':']) || part.chars().any(char::is_control) {
+            return None;
+        }
+        parts.push(part);
+    }
+    let value = parts.join("/");
+    if value.is_empty() || value.len() > 512 {
+        return None;
+    }
+    (redactor(&value) == value).then_some(value)
+}
+
+fn cleanup_warning(result: &mut DomainResult, reason: FullDumpCleanupReason) {
+    let message = match reason {
+        FullDumpCleanupReason::VerifyPrivateStage => "private stage identity could not be verified; cleanup did not remove unverified data",
+        FullDumpCleanupReason::CleanupPrivateStage => "private stage cleanup could not finish; retained data requires recovery",
+        FullDumpCleanupReason::CleanupCreatedParents => "created target parent directories could not be cleaned",
+        FullDumpCleanupReason::WriterCompletionUnconfirmed => "executor completion was not confirmed; private data was retained to protect pending writers",
+        FullDumpCleanupReason::RecoveryRetained => "private execution data was retained for recovery",
+        FullDumpCleanupReason::RecoveryLocationUnavailable => "a safe workspace-relative recovery location could not be verified",
+        FullDumpCleanupReason::PublicationCleanup => "sources were published; publication cleanup requires recovery",
+    };
+    let warning = json!({"code":"export_cleanup","reason":reason,"message":message});
+    if !result.warnings.contains(&warning) {
+        result.warnings.push(warning);
+    }
 }
 
 fn report_recovery(
     root: &Path,
     result: &mut DomainResult,
     recovery: Result<Option<PathBuf>, String>,
-    mut warnings: Vec<String>,
+    origin: Option<PathBuf>,
+    reasons: Vec<FullDumpCleanupReason>,
 ) {
     match recovery {
         Ok(Some(recovery)) => retain_artifact(root, result, &recovery),
         Ok(None) => {}
-        Err(note) => {
-            if let Some(warning) = warnings.first_mut() {
-                warning.push_str(&format!("; {note}"));
-            } else {
-                warnings.push(note);
+        Err(_) => {
+            cleanup_warning(result, FullDumpCleanupReason::RecoveryLocationUnavailable);
+            if let Some(name) = origin.as_deref().and_then(|path| retained_path(root, path)) {
+                result.warnings.push(json!({"code":"export_cleanup","reason":"recoveryLocationUnconfirmed",
+                    "originalName":name,"message":format!("retained private object's current location is unconfirmed; original name: {name}")}));
             }
         }
     }
-    for warning in warnings {
-        warn(result, "export_cleanup", warning);
+    for reason in reasons {
+        cleanup_warning(result, reason);
     }
 }
 
-fn retained_path(root: &Path, recovery: &Path) -> String {
-    path_text(recovery.strip_prefix(root).unwrap_or(recovery))
+fn retained_path(root: &Path, recovery: &Path) -> Option<String> {
+    safe_relative_path(recovery.strip_prefix(root).ok()?)
 }
 
 fn retain_artifact(root: &Path, result: &mut DomainResult, recovery: &Path) {
-    let path = retained_path(root, recovery);
+    let Some(path) = retained_path(root, recovery) else {
+        cleanup_warning(result, FullDumpCleanupReason::RecoveryLocationUnavailable);
+        return;
+    };
     let artifact = json!({"kind":"recovery","path":path});
     if !result.artifacts.contains(&artifact) {
         result.artifacts.push(artifact);
@@ -584,4 +707,84 @@ fn preview_result(
     result.next.push(json!({"tool":"unica.run","args":{"op":OPERATION,"args":public_arguments(prepared),"dryRun":false},"reason":"execute with the current arguments"}));
     note_another_copy(&mut result, envelope);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unica_source_contract::read::full_dump::{DumpValidationFailure, DumpValidationReason};
+
+    #[test]
+    fn workspace_relative_paths_are_published_with_forward_slashes_on_every_os() {
+        let native: PathBuf = ["main", ".unica-dump-guard-1", "recovery"].iter().collect();
+        assert_eq!(
+            safe_relative_path(&native).as_deref(),
+            Some("main/.unica-dump-guard-1/recovery")
+        );
+        let root = Path::new("/workspace");
+        let mut result = DomainResult::canonical_rejection(
+            Some(OPERATION.to_string()),
+            RefusalCode::InvalidResult,
+            "rejected",
+        );
+        retain_artifact(root, &mut result, &root.join(&native));
+        assert_eq!(
+            result.artifacts,
+            vec![json!({"kind":"recovery","path":"main/.unica-dump-guard-1/recovery"})]
+        );
+        assert!(result.warnings.is_empty());
+        for refused in ["main/a\\b", "main/c:d", "main/x\u{7}y", ""] {
+            assert_eq!(safe_relative_path(Path::new(refused)), None, "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn validation_projection_excludes_untrusted_text_and_keeps_uncertain_publication() {
+        let root = Path::new("/private/workspace-marker");
+        for path in [
+            "/private/path-marker",
+            "../outside",
+            "C:\\private\\path-marker",
+            "Catalogs/password=path-secret.xml",
+        ] {
+            let mut error = FullDumpFailure::new(
+                FullDumpPhase::Validation,
+                "password=detail-secret raw-provider-output".into(),
+            );
+            error.report.validation = Some(
+                DumpValidationFailure::new(
+                    DumpValidationReason::WrongVersion,
+                    Some(Path::new(path)),
+                    "parser-secret raw-provider-output".into(),
+                )
+                .with_root("http://v8.1c.ru/password=namespace-secret", "SafeRoot"),
+            );
+            error.publication_uncertain = true;
+            error.recovery = Err("/private/recovery-marker password=recovery-secret".into());
+            let result = failure(root, error);
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["state"], "unknown");
+            assert_eq!(data["validation"]["path"], Value::Null);
+            assert_eq!(
+                data["validation"]["qname"],
+                "{<unrecognized namespace>}SafeRoot"
+            );
+            assert!(data["validation"].get("versionRequirement").is_none());
+            assert!(result.artifacts.is_empty());
+            let encoded = serde_json::to_string(&result).unwrap();
+            for marker in [
+                "path-marker",
+                "path-secret",
+                "detail-secret",
+                "raw-provider-output",
+                "parser-secret",
+                "namespace-secret",
+                "recovery-marker",
+                "recovery-secret",
+                "workspace-marker",
+            ] {
+                assert!(!encoded.contains(marker), "{path}: leaked {marker}");
+            }
+        }
+    }
 }

@@ -11,9 +11,6 @@ use uuid::Uuid;
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 const READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
 const XSI_NS: &str = "http://www.w3.org/2001/XMLSchema-instance";
-pub const SUBSYSTEM_SCAN_MAX_ENTRIES: usize = 20_000;
-pub const SUBSYSTEM_SCAN_MAX_FILES: usize = 20_000;
-pub const SUBSYSTEM_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubsystemTopologyError {

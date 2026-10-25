@@ -1,9 +1,11 @@
+use crate::format_profile::writable_profile_refusal;
 use crate::module_layout::PlatformXmlModuleIdentity;
 use crate::owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     PlatformXmlSourceSetOwnerEvidence,
 };
 use std::path::Path;
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind, ApplyProposal};
 use unica_source_contract::SourceSetKind;
 pub fn prove_staged_code_owner(
@@ -26,7 +28,7 @@ pub fn prove_staged_code_owner(
         })?;
     let mut evidence = prove_already_read_source_set_owner(root_relative, &root, source_kind)
         .map_err(|_| invalid_code_owner(at_path))?;
-    require_code_owner_format(&evidence, expected_format, at_path)?;
+    require_code_owner_format(&evidence, expected_format, root_relative, at_path)?;
     let mut owner_bytes = vec![root];
     let owner_parts = identity.address.as_str().split('.').collect::<Vec<_>>();
     let (owner_pairs, remainder) =
@@ -69,7 +71,7 @@ pub fn prove_staged_code_owner(
             })?;
         let current = prove_already_read_metadata_owner(relative, &bytes)
             .map_err(|_| invalid_code_owner(at_path))?;
-        require_code_owner_format(&current, expected_format, at_path)?;
+        require_code_owner_format(&current, expected_format, relative, at_path)?;
         if current.artifact_kind() != expected[0] || current.artifact_name() != Some(expected[1]) {
             return Err(invalid_code_owner(at_path));
         }
@@ -86,20 +88,27 @@ pub fn prove_staged_code_owner(
     }
     Ok(owner_bytes)
 }
+/// The refusal names the owner file, the version it records and the
+/// re-export the platform needs, as the shared writable-profile guard does.
 fn require_code_owner_format(
     evidence: &PlatformXmlSourceSetOwnerEvidence,
     expected_format: &str,
+    relative: &Path,
     at_path: &str,
 ) -> Result<(), ApplyPlanError> {
     if evidence.version() == Some(expected_format) {
-        Ok(())
-    } else {
-        Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            "module owner does not match the actor-issued serialization profile",
-        )
-        .at_path(at_path))
+        return Ok(());
     }
+    let message = writable_profile_refusal(relative.portable(), evidence.version()).map_or_else(
+        || {
+            format!(
+                "{}: module owner does not match the actor-issued serialization profile {expected_format}",
+                relative.portable()
+            )
+        },
+        |refusal| refusal.message,
+    );
+    Err(ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path))
 }
 fn invalid_code_owner(at_path: &str) -> ApplyPlanError {
     ApplyPlanError::new(

@@ -1,0 +1,6 @@
+format: DESIGNER
+workPath: work
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src

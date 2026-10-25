@@ -77,6 +77,12 @@ impl InvocationResponseDeadline {
         self.response_at
     }
 
+    /// How long after the frame's receipt the answer is due: the frontend
+    /// budget within the handoff window plus the serialization margin.
+    pub fn response_window(&self) -> Duration {
+        self.response_at.saturating_duration_since(self.receipt_at)
+    }
+
     pub fn now(&self) -> Instant {
         self.clock.now()
     }

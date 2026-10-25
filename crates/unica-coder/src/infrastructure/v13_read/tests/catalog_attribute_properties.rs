@@ -51,7 +51,8 @@ fn attribute_views(fixture: &RealReaderFixture) -> [Value; 2] {
 }
 
 fn assert_string_type(node: &Value, length: u64) {
-    let observed: Value = serde_json::from_str(node["props"]["type"].as_str().unwrap()).unwrap();
+    let observed = &node["props"]["type"];
+    assert!(observed.is_object(), "type must arrive as nested JSON");
     assert_eq!(observed["variants"][0]["kind"], "string");
     assert_eq!(observed["variants"][0]["length"], length);
     assert_eq!(observed["variants"][0]["allowedLength"], "variable");
@@ -92,10 +93,10 @@ fn catalog_attribute_profile_reaches_public_collection_and_detail_without_writes
     assert_eq!(sibling["props"]["FullTextSearch"], "Use");
     assert_eq!(sibling["props"]["DataHistory"], "Use");
     assert_eq!(
-        serde_json::from_str::<Value>(sibling["props"]["ToolTip"].as_str().unwrap()).unwrap(),
-        json!({"kind": "localizedString", "values": [{
+        sibling["props"]["ToolTip"],
+        json!([{
             "language": "ru", "content": "Настройки представления суммы прописью"
-        }]})
+        }])
     );
     assert_eq!(tree_snapshot(&fixture.source), before);
 }

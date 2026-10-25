@@ -226,12 +226,12 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             "unica.apply": {"at", "ops", "executionToken"},
             # Единственный инструмент, которому путь на входе разрешён:
             # аварийный мост затем и заведён, чтобы путь не просачивался
-            # в частые ответы.
-            "unica.resolve": {"at", "path"},
+            # в частые ответы. `paths` — пакет тех же путей со строками.
+            "unica.resolve": {"at", "path", "paths"},
             # `corpus` выбирает свод — текст модулей или имена метаданных, —
             # а `kind` сужает поиск по именам до одного вида узла. Оба входа
             # логические: ни один не называет файл.
-            "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "limit", "cursor"},
+            "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "ignoreCase", "limit", "cursor"},
             "unica.check": {"at", "limit", "cursor"},
             # Курсор есть только у чтения сохранённого плана; сравнение
             # left/right по-прежнему не публикует продолжение (#1218).
@@ -251,7 +251,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 # частые ответы (DEC.2026-09-08.RESOLVE-REPLACES-FIND).
                 physical_inputs = ("cwd", "sourceDir", "workdir")
                 if name != "unica.resolve":
-                    physical_inputs += ("path",)
+                    physical_inputs += ("path", "paths")
                 for physical in physical_inputs:
                     self.assertNotIn(f'"{physical}"', encoded)
 

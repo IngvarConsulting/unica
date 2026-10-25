@@ -19,6 +19,10 @@ pub struct CfInfoData {
     pub total_objects: usize,
     pub home_page: Option<CfHomePageData>,
     pub interface: Option<CfInterfaceData>,
+    /// Раскладка панелей `Ext/ClientApplicationInterface.xml`: области с
+    /// панелями, группа — массив имён. Без документа ключа нет.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub panels: Option<serde_json::Value>,
 }
 
 #[derive(serde::Serialize)]

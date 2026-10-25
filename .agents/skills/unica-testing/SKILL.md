@@ -170,8 +170,8 @@ Rust items: например, функцию, модуль или `impl`. Не �
 `--ecosystem rust|python|all` сужает экосистему; `--suite tests/ci|tests/dev`
 и `--only-size` относятся только к Python. `--dry-run` лишь печатает команды.
 Ночной профиль ворот `large` выбирает nextest `nightly-full`, полный Rust-набор
-и оба Python suites. На Windows сохраняется явно исключённый тест; сверяй
-override в `.config/nextest.toml`. Nextest-профиль `large` остаётся каталогом
+и оба Python suites, на Windows тоже — без исключений по платформе.
+Nextest-профиль `large` остаётся каталогом
 тяжёлых тестов для классификатора размеров; это другое назначение.
 
 В CI `--phase build` создаёт архивы и полные планы всех полос раннера

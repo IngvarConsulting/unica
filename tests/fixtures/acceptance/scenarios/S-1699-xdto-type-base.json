@@ -1,0 +1,427 @@
+{
+  "id": "S-1699-xdto-type-base",
+  "issue": 1699,
+  "area": "XDTO и обмены",
+  "task": "Сменить основу существующих объектного типа и типа значения, сохранив имя, собственные свойства, sequenced, входящую ссылку и место, прочитать новую основу и отклонить цикл, чужое семейство, несовместимые ограничения и неизвестную основу без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-base",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Документ"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/baseAt",
+          "eq": "main:XDTOPackage.Пример.Type.ОсноваА"
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Документ.Can.type.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/required",
+          "eq": [
+            "base"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример",
+        "ops": [
+          {
+            "op": "type.set",
+            "args": {
+              "at": "main:XDTOPackage.Пример.Type.Документ",
+              "values": {
+                "base": "tns:ОсноваБ"
+              }
+            }
+          },
+          {
+            "op": "type.set",
+            "args": {
+              "at": "main:XDTOPackage.Пример.Type.Количество",
+              "values": {
+                "base": "xs:integer"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "cdd2ef6df0d4e49ba5c7737f7fe2ba278267830a45379e022bfcd862b964f90c"
+        },
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}objectType[@name=\"Документ\"][@base=\"tns:ОсноваБ\"][@sequenced=\"true\"]",
+          "eq": [
+            "objectType"
+          ]
+        },
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}objectType[@name=\"Документ\"]/{http://v8.1c.ru/8.1/xdto}property[@name=\"Сумма\"]",
+          "eq": [
+            "property"
+          ]
+        },
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}valueType[@name=\"Количество\"][@base=\"xs:integer\"]",
+          "eq": [
+            "valueType"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Документ"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/baseAt",
+          "eq": "main:XDTOPackage.Пример.Type.ОсноваБ"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Документ.Property"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.Пример.Type.Документ.Property.Сумма"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Ссылка.Property.Цель"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/raw",
+          "contains": "tns:Документ"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Количество",
+        "ops": [
+          {
+            "op": "type.set",
+            "args": {
+              "values": {
+                "base": "xs:decimal"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "cdd2ef6df0d4e49ba5c7737f7fe2ba278267830a45379e022bfcd862b964f90c"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+        },
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}valueType[@name=\"Количество\"][@base=\"xs:decimal\"]",
+          "eq": [
+            "valueType"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Документ",
+        "ops": [
+          {
+            "op": "type.set",
+            "args": {
+              "values": {
+                "base": "tns:ОсноваБ"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.ОсноваБ",
+        "ops": [
+          {
+            "op": "type.set",
+            "args": {
+              "values": {
+                "base": "tns:Документ"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: base introduces or reaches an inheritance cycle",
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Документ",
+        "ops": [
+          {
+            "op": "type.set",
+            "args": {
+              "values": {
+                "base": "tns:Количество"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: base must name an ObjectType, not a ValueType",
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Процент",
+        "ops": [
+          {
+            "op": "type.set",
+            "args": {
+              "values": {
+                "base": "xs:integer"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: facets are incompatible with this base; supported profiles are string and decimal",
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Документ",
+        "ops": [
+          {
+            "op": "type.set",
+            "args": {
+              "values": {
+                "base": "tns:Нет"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: base ObjectType does not exist",
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Количество",
+        "ops": [
+          {
+            "op": "type.set",
+            "args": {
+              "values": {
+                "base": "tns:Процент"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "f3732eb93b04e913801709bd2fe8b280f51131eae4a6056871295a0710334d82"
+        },
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}valueType[@name=\"Количество\"][@base=\"tns:Процент\"]",
+          "eq": [
+            "valueType"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Количество"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/baseAt",
+          "eq": "main:XDTOPackage.Пример.Type.Процент"
+        }
+      ]
+    }
+  ]
+}

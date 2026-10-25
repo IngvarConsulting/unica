@@ -94,7 +94,7 @@ def helper_invalidation_step(step):
 
 
 def select_profile(corpus, profile):
-    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection"}:
+    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection", "runtime-fault"}:
         raise ValueError(f"profile {profile!r} has no executable driver")
     selected = []
     for scenario in corpus["scenarios"]:
@@ -109,6 +109,15 @@ def select_profile(corpus, profile):
             if any(step["tool"] in {"unica.run", "unica.task.get", "unica.task.result", "unica.task.cancel"}
                    for step in scenario["wire"]):
                 raise ValueError(f"{scenario['id']}: runtime operations need an executable runtime driver")
+        elif current == "runtime-fault":
+            from tests.ci.acceptance_pull_validation import WORKSPACE, CASES
+            if (driver != "pull-validation-fault" or workspace != WORKSPACE
+                    or scenario.get("evaluation") not in CASES
+                    or [step["args"] for step in scenario["wire"]] != [
+                        {"op": "pull", "args": {"sourceSet": "main", "force": True}, "dryRun": True},
+                        {"op": "pull", "args": {"sourceSet": "main", "force": True}, "dryRun": False}]
+                    or any(step["tool"] != "unica.run" for step in scenario["wire"])):
+                raise ValueError(f"{scenario['id']}: invalid runtime-fault fixture or pull wire")
         elif current == "delivery":
             if driver == "bsl-analyzer-external" and workspace == EXTERNAL_WORKSPACE:
                 if "evaluation" in scenario or any(

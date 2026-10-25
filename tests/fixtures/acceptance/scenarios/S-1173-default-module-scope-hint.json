@@ -2,7 +2,7 @@
   "id": "S-1173-default-module-scope-hint",
   "issue": 1173,
   "area": "Поиск",
-  "task": "При default literal поиске по конкретному модулю вернуть применимый совет выбрать lexical с тем же адресом, не расширяя поиск автоматически.",
+  "task": "Найти текст в одном конкретном модуле буквальным поиском без роли: адрес модуля в scope не расширяет поиск до соседних модулей и наборов. Прежняя роль lexical отклоняется с советом убрать role.",
   "workspace": "tests/fixtures/acceptance/workspace-code",
   "wire": [
     {
@@ -12,22 +12,51 @@
         "scope": "main:Catalog.Пример.Module.Object"
       },
       "expect": [
-        "unsupported"
+        "ok"
       ],
       "assertions": [
         {
-          "pointer": "/diagnostics/0/code",
-          "eq": "unsupported_scope"
+          "pointer": "/data/matches/0/line",
+          "eq": 1
         },
         {
-          "pointer": "/diagnostics/0/message",
-          "contains": "role: \"lexical\""
+          "pointer": "/data/matches/1/at",
+          "eq": "main:Catalog.Пример.Module.Object.Method.ОбработатьПример.Body#L4"
         },
         {
-          "pointer": "/diagnostics/0/message",
-          "contains": "main:Catalog.Пример.Module.Object"
+          "pointer": "/data/matches/2",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
         }
       ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "insertion point",
+        "role": "lexical",
+        "scope": "main:Catalog.Пример.Module.Object"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.search"
+        },
+        {
+          "pointer": "/next/0/args",
+          "eq": {
+            "query": "insertion point",
+            "scope": "main:Catalog.Пример.Module.Object"
+          }
+        }
+      ],
+      "refusal": "bad_value: search role `lexical` is the literal search without a role; omit `role`, or use one of `symbol`, `semantic`"
     }
   ]
 }

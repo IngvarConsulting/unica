@@ -55,27 +55,51 @@
         },
         {
           "pointer": "/data/items/0/props/Synonym",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код\"},{\"language\":\"en\",\"content\":\"Numeric code\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Цифровой код"
+            },
+            {
+              "language": "en",
+              "content": "Numeric code"
+            }
+          ]
         },
         {
           "pointer": "/data/items/0/props/ToolTip",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код валюты\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Цифровой код валюты"
+            }
+          ]
         },
         {
           "pointer": "/data/items/0/props/FillChecking",
-          "eq": "{\"kind\":\"text\",\"value\":\"ShowError\"}"
+          "eq": "ShowError"
         },
         {
           "pointer": "/data/items/1/props/Synonym",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Символьный код"
+            }
+          ]
         },
         {
           "pointer": "/data/items/1/props/ToolTip",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код валюты\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Символьный код валюты"
+            }
+          ]
         },
         {
           "pointer": "/data/items/1/props/FillChecking",
-          "eq": "{\"kind\":\"text\",\"value\":\"DontCheck\"}"
+          "eq": "DontCheck"
         }
       ],
       "fileAssertions": [
@@ -101,15 +125,29 @@
         },
         {
           "pointer": "/data/props/Synonym",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код\"},{\"language\":\"en\",\"content\":\"Numeric code\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Цифровой код"
+            },
+            {
+              "language": "en",
+              "content": "Numeric code"
+            }
+          ]
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код валюты\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Цифровой код валюты"
+            }
+          ]
         },
         {
           "pointer": "/data/props/FillChecking",
-          "eq": "{\"kind\":\"text\",\"value\":\"ShowError\"}"
+          "eq": "ShowError"
         }
       ],
       "fileAssertions": [
@@ -135,15 +173,25 @@
         },
         {
           "pointer": "/data/props/Synonym",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Символьный код"
+            }
+          ]
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код валюты\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Символьный код валюты"
+            }
+          ]
         },
         {
           "pointer": "/data/props/FillChecking",
-          "eq": "{\"kind\":\"text\",\"value\":\"DontCheck\"}"
+          "eq": "DontCheck"
         }
       ],
       "fileAssertions": [
