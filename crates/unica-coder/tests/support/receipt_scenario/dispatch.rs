@@ -1886,6 +1886,31 @@ fn run_receipt_scenario_with_control_observer(
                     }
                 }
             }
+            ReceiptScenarioAction::AwaitResponse { label } => {
+                let pending = pending_submit
+                    .as_mut()
+                    .filter(|pending| pending.label == label)
+                    .ok_or_else(|| format!("await_response has no running submit `{label}`"))?;
+                let response =
+                    pending.await_response(Instant::now() + SCENARIO_OPERATION_TIMEOUT)?;
+                let workspace = control.actor_workspace_identity().and_then(|identity| {
+                    serde_json::to_value(identity)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                });
+                report.responses.insert(
+                    label.clone(),
+                    response_observation_with_exact_task(
+                        &response,
+                        Some((pending.accepted_epoch_ms, pending.response_budget_ms)),
+                        submit_keys.get(&label).unwrap_or(&exact_key),
+                        state.path(),
+                        &identity,
+                        Some(workspace),
+                    )?,
+                );
+                pending.response_projected = true;
+            }
             ReceiptScenarioAction::Checkpoint { label } => {
                 quiesce_promoted_continuation(state.path(), &identity, &control, &telemetry)?;
                 let (mut snapshot, live_task_projection) = if let Some(snapshot) =
