@@ -50,6 +50,9 @@ pub(in crate::infrastructure::daemon) struct TextQuery {
     /// What `git grep` may preselect lines with; `None` leaves the question
     /// to the walk.
     pub(in crate::infrastructure::daemon) candidates: Option<CandidatePattern>,
+    /// Whether the bytes of a line that is not UTF-8 may hold a match: only
+    /// such a line leaves its file uncovered, the line Git would select.
+    candidate_bytes: regex::bytes::Regex,
 }
 
 impl TextQuery {
@@ -68,11 +71,20 @@ impl TextQuery {
                 .build()
                 .map_err(|error| format!("search regex is not a valid pattern: {error}"))
         };
+        let escaped = regex::escape(query);
+        let pattern = if regex { query } else { escaped.as_str() };
+        let candidate_bytes = regex::bytes::RegexBuilder::new(pattern)
+            .case_insensitive(ignore_case)
+            .size_limit(1 << 20)
+            .dfa_size_limit(1 << 20)
+            .build()
+            .map_err(|error| format!("search regex is not a valid pattern: {error}"))?;
         if regex {
             return Ok(Self {
                 matcher: SearchMatcher::Regex(compile(query)?),
                 mode: "regex",
                 candidates: None,
+                candidate_bytes,
             });
         }
         if !ignore_case {
@@ -80,10 +92,12 @@ impl TextQuery {
                 matcher: SearchMatcher::Literal(query.to_string()),
                 mode: "literal",
                 candidates: Some(CandidatePattern::Fixed(query.to_string())),
+                candidate_bytes,
             });
         }
         Ok(Self {
-            matcher: SearchMatcher::Regex(compile(&regex::escape(query))?),
+            candidate_bytes,
+            matcher: SearchMatcher::Regex(compile(&escaped)?),
             mode: "literal",
             candidates: case_folded_candidates(query).map(CandidatePattern::Extended),
         })
@@ -390,6 +404,26 @@ fn git_source(
     }
 }
 
+/// Passes the rest of a line the bounded reader refused.
+fn skip_line(
+    reader: &mut impl std::io::BufRead,
+    mut checkpoint: impl FnMut() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    loop {
+        checkpoint()?;
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        if let Some(end) = available.iter().position(|byte| *byte == b'\n') {
+            reader.consume(end + 1);
+            return Ok(());
+        }
+        let count = available.len();
+        reader.consume(count);
+    }
+}
+
 /// The retained directory a source's prefix names, or `None` when the
 /// admitted logical scope has no files there.
 fn retained_subtree(
@@ -640,8 +674,17 @@ fn walk_source(
                         Ok(true) => {}
                         Ok(false) => break,
                         Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
-                            collector.uncovered("line_too_long");
-                            break;
+                            // The unread line stays uncovered; the lines
+                            // after it are read like any other.
+                            line += 1;
+                            collector.uncovered_line("line_too_long");
+                            skip_line(&mut reader, checkpoint).map_err(|error| {
+                                context(
+                                    format!("could not read source file `{}`", entry(&relative)),
+                                    error,
+                                )
+                            })?;
+                            continue;
                         }
                         Err(error)
                             if matches!(
@@ -696,6 +739,8 @@ struct CurrentFile {
     chain: [u8; 32],
     /// Matches of a resumed file still to pass over.
     passing: u64,
+    /// Whether the file is already counted uncovered.
+    uncovered: bool,
 }
 
 /// The one line consumer both engines feed.
@@ -759,7 +804,10 @@ impl<'a> Collector<'a> {
                 }
                 _ => 0,
             },
-            uncovered_lower_bound: false,
+            uncovered_lower_bound: match &request.continuation {
+                TextContinuation::Resume(resume) => resume.uncovered_lower_bound,
+                TextContinuation::Start => false,
+            },
             details: Vec::new(),
             fatal: None,
         }
@@ -822,6 +870,7 @@ impl<'a> Collector<'a> {
                             file: key,
                             hits: 0,
                             uncovered: self.uncovered as u64,
+                            uncovered_lower_bound: self.uncovered_lower_bound,
                         }),
                         Self::walk_digest(&identity, &[0; 32]),
                     ));
@@ -839,6 +888,7 @@ impl<'a> Collector<'a> {
             matches: 0,
             chain: [0; 32],
             passing,
+            uncovered: false,
         };
         if let Some(module) = &self.request.module {
             match self.module_of(&mut current) {
@@ -904,15 +954,27 @@ impl<'a> Collector<'a> {
         Ok(mapped)
     }
 
+    /// Leaves the current file uncovered once and stops reading it.
     fn uncovered(&mut self, reason: &'static str) {
-        let Some(current) = self.current.take() else {
+        self.uncovered_line(reason);
+        self.current = None;
+    }
+
+    /// Leaves the current file uncovered once; its other lines stay read.
+    fn uncovered_line(&mut self, reason: &'static str) {
+        let Some(current) = self.current.as_mut() else {
             return;
         };
+        if current.uncovered {
+            return;
+        }
+        current.uncovered = true;
+        let file_id = current.file_id.clone();
         self.uncovered += 1;
         if self.details.len() < CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS {
             let mut detail = Map::new();
             detail.insert("sourceSet".to_owned(), self.source_set.clone().into());
-            detail.insert("fileId".to_owned(), current.file_id.into());
+            detail.insert("fileId".to_owned(), file_id.into());
             detail.insert("reason".to_owned(), reason.into());
             self.details.push(Value::Object(detail));
         }
@@ -941,6 +1003,10 @@ impl<'a> Collector<'a> {
             raw
         };
         let Ok(text) = std::str::from_utf8(raw) else {
+            // A line that cannot hold a match is no gap in the answer.
+            if !self.request.query.candidate_bytes.is_match(raw) {
+                return LineStep::Continue;
+            }
             self.uncovered("invalid_utf8");
             return LineStep::SkipFile;
         };
@@ -1009,10 +1075,10 @@ impl<'a> Collector<'a> {
                 TextContinuation::Resume(SearchResume {
                     file: current.key.clone(),
                     hits: current.matches,
-                    // Every file this page found uncovered lies before the
-                    // current one: a file is left at its first unreadable
-                    // line, after any match it delivered.
-                    uncovered: self.uncovered as u64,
+                    // The count before the current file: the re-entered
+                    // file counts itself again.
+                    uncovered: (self.uncovered - usize::from(current.uncovered)) as u64,
+                    uncovered_lower_bound: self.uncovered_lower_bound,
                 }),
                 Self::walk_digest(&current.identity, &current.chain),
             );

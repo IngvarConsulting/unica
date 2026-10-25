@@ -102,7 +102,7 @@ pub(crate) struct CanonicalV13ReadService {
     search_providers:
         Option<Vec<Arc<dyn unica_code_intelligence::model::CodeIntelligenceProvider>>>,
     #[cfg(test)]
-    text_engine: std::sync::Mutex<Option<TextEngine>>,
+    text_engine: Option<TextEngine>,
     #[cfg(test)]
     walk_budget: Option<std::time::Duration>,
 }
@@ -128,7 +128,7 @@ impl Default for CanonicalV13ReadService {
             #[cfg(test)]
             search_providers: None,
             #[cfg(test)]
-            text_engine: std::sync::Mutex::new(None),
+            text_engine: None,
             #[cfg(test)]
             walk_budget: None,
         }
@@ -285,7 +285,7 @@ impl CanonicalV13ReadService {
     #[cfg(test)]
     pub(super) fn with_text_engine_for_test(engine: TextEngine) -> Self {
         Self {
-            text_engine: std::sync::Mutex::new(Some(engine)),
+            text_engine: Some(engine),
             ..Self::default()
         }
     }
@@ -1433,10 +1433,9 @@ impl CanonicalV13ReadService {
             TextContinuation::Resume(_) => TextEngine::Walk,
         };
         #[cfg(test)]
-        let engine = (*self.text_engine.lock().unwrap())
-            .filter(|_| {
-                text_query.candidates.is_some() && continuation == TextContinuation::Start
-            })
+        let engine = self
+            .text_engine
+            .filter(|_| text_query.candidates.is_some() && continuation == TextContinuation::Start)
             .unwrap_or(engine);
         let walk_budget = {
             let remaining =
@@ -1658,7 +1657,7 @@ impl CanonicalV13ReadService {
                 "details": scan.details,
             }),
         );
-        // A walk cursor also carries the path it re-enters.
+        // A cursor also carries the path it re-enters.
         let resume_bytes = scan
             .hits
             .iter()
@@ -8886,6 +8885,11 @@ mod tests {
             assert_eq!(walk.len(), git.len(), "{question}: the same pages");
             let last = walk.last().unwrap().data.as_ref().unwrap();
             assert_eq!(last["fileCoverage"]["complete"], true, "{question}");
+            assert_eq!(
+                last["fileCoverage"],
+                git.last().unwrap().data.as_ref().unwrap()["fileCoverage"],
+                "{question}: the same coverage"
+            );
         }
         let walk = text_search_matches(&text_search_pages(
             workspace.path(),
@@ -9074,7 +9078,10 @@ mod tests {
         let ended = search(Some(&cursors[4]));
         assert!(ended.ok, "{ended:?}");
         assert_eq!(ended.data.as_ref().unwrap()["matches"], json!([]));
-        assert_eq!(ended.data.as_ref().unwrap()["fileCoverage"]["scanComplete"], true);
+        assert_eq!(
+            ended.data.as_ref().unwrap()["fileCoverage"]["scanComplete"],
+            true
+        );
         assert!(ended.cursor.is_none());
 
         std::fs::write(
@@ -9084,6 +9091,12 @@ mod tests {
         .unwrap();
         let edited = search(Some(&cursors[4]));
         assert_eq!(edited.diagnostics[0]["code"], "stale_cursor", "{edited:?}");
+        // The cursor the Git page issued is bound the same way.
+        let edited_first = search(Some(&cursors[0]));
+        assert_eq!(
+            edited_first.diagnostics[0]["code"], "stale_cursor",
+            "{edited_first:?}"
+        );
     }
 
     /// A continuation resumes at the file of the last delivered match
@@ -9156,7 +9169,7 @@ mod tests {
         assert_eq!(moved.diagnostics[0]["code"], "stale_cursor", "{moved:?}");
     }
 
-    /// Without Git a page ends at its time share of the response budget at a
+    /// A walk page ends at its time share of the response budget at a
     /// file boundary, even with no match yet, and the cursor carries the
     /// walk on from there: every match is reached, none repeats.
     #[test]
@@ -9174,7 +9187,7 @@ mod tests {
             std::fs::write(directory.join("x.bsl"), text).unwrap();
         }
         let service = Arc::new(super::CanonicalV13ReadService {
-            text_engine: std::sync::Mutex::new(Some(TextEngine::Walk)),
+            text_engine: Some(TextEngine::Walk),
             walk_budget: Some(Duration::ZERO),
             ..super::CanonicalV13ReadService::default()
         });
@@ -9220,6 +9233,32 @@ mod tests {
                 let pages = text_search_pages(workspace.path(), engine, json!({"query":"Needle"}));
                 assert_eq!(text_search_matches(&pages), expected, "{value} {engine:?}");
             }
+        }
+    }
+
+    /// A line that is not UTF-8 and cannot hold a match is no gap: the
+    /// first page read through Git and the walk that continues it agree on
+    /// the file, and the continuation reaches every later match.
+    #[test]
+    fn unreadable_line_without_a_match_does_not_break_the_continuation() {
+        let workspace = text_engine_workspace();
+        std::fs::write(
+            workspace
+                .path()
+                .join("src/CommonModules/Probe/Ext/Module.bsl"),
+            b"// Mark 1\n\xff\n// Mark 2\n// Mark 3\n",
+        )
+        .unwrap();
+        for engine in [TextEngine::Git, TextEngine::Walk] {
+            let pages =
+                text_search_pages(workspace.path(), engine, json!({"query":"Mark","limit":2}));
+            let lines = text_search_matches(&pages)
+                .iter()
+                .map(|hit| hit["line"].as_u64().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(lines, vec![1, 3, 4], "{engine:?}");
+            let last = pages.last().unwrap().data.as_ref().unwrap();
+            assert_eq!(last["fileCoverage"]["complete"], true, "{engine:?}: {last}");
         }
     }
 }

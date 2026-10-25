@@ -1708,13 +1708,13 @@
     {
       "id": "search.provider-regex-dfa-bytes",
       "class": "format",
-      "resource": "Размер DFA регулярного выражения текстового поиска: одна компиляция служит допуску и исполнению.",
+      "resource": "Размер DFA регулярного выражения текстового поиска: одна сборка служит допуску и исполнению; вторая — тот же шаблон над байтами для строки, не являющейся UTF-8.",
       "unit": "bytes",
       "scope": "request",
       "source": {
         "file": "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
         "literal": ".dfa_size_limit(1 << 20)",
-        "count": 1
+        "count": 2
       },
       "expr": "1 << 20",
       "value": 1048576,
@@ -1733,13 +1733,13 @@
     {
       "id": "search.provider-regex-size-bytes",
       "class": "format",
-      "resource": "Размер скомпилированного регулярного выражения текстового поиска: одна компиляция служит допуску и исполнению.",
+      "resource": "Размер скомпилированного регулярного выражения текстового поиска: одна сборка служит допуску и исполнению; вторая — тот же шаблон над байтами для строки, не являющейся UTF-8.",
       "unit": "bytes",
       "scope": "request",
       "source": {
         "file": "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
         "literal": ".size_limit(1 << 20)",
-        "count": 1
+        "count": 2
       },
       "expr": "1 << 20",
       "value": 1048576,

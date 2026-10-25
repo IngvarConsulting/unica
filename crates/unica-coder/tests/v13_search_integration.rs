@@ -1482,7 +1482,8 @@ fn unreadable_source_lines_keep_other_hits_and_truthful_coverage_across_pages() 
         format!("// {}Needle\n", "x".repeat(8 * 1024 * 1024)),
     )
     .expect("overlong source line");
-    std::fs::write(workspace.join("C.bsl"), b"// Needle\n\xff").expect("source with invalid UTF-8");
+    std::fs::write(workspace.join("C.bsl"), b"// Needle\n\xff Needle")
+        .expect("source with an invalid UTF-8 line that may hold a match");
     std::fs::write(workspace.join("D.bsl"), "// Needle\n".repeat(21))
         .expect("source after the uncovered files");
     std::fs::write(workspace.join("E.bsl"), "// Needle\n")
@@ -1593,8 +1594,8 @@ fn text_file_coverage_counts_all_uncovered_files_when_details_are_capped() {
     )
     .expect("configuration");
     for index in 0..33 {
-        std::fs::write(workspace.join(format!("Bad{index:02}.bsl")), b"\xff")
-            .expect("undecodable BSL source");
+        std::fs::write(workspace.join(format!("Bad{index:02}.bsl")), b"\xffNeedle")
+            .expect("undecodable BSL source line that may hold a match");
     }
     std::fs::write(workspace.join("Good.bsl"), "// Needle\n").expect("readable BSL source");
 
