@@ -4504,6 +4504,30 @@ impl PromisedWorkIdleDaemon {
         daemon
     }
 
+    /// The daemon whose invocation clock the test moves: it decides when an
+    /// unfinished inline attempt passes into its Task.
+    fn with_service_and_clock(
+        idle_grace: Duration,
+        service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+        clock: Arc<InspectionClock>,
+    ) -> Self {
+        let owners = ListenerOwnersLog::default();
+        let recorded = Arc::clone(&owners);
+        let mut daemon = Self::start_configured(
+            idle_grace,
+            service,
+            |observations| {
+                Arc::new(PromisedWorkIdleHooks {
+                    observations,
+                    owners: recorded,
+                })
+            },
+            Some(clock),
+        );
+        daemon.owners = owners;
+        daemon
+    }
+
     fn with_service_and_hooks(
         idle_grace: Duration,
         service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
@@ -4511,14 +4535,30 @@ impl PromisedWorkIdleDaemon {
             mpsc::Sender<(Instant, bool)>,
         ) -> Arc<dyn V5RuntimeHooks<CanonicalInvocationHost>>,
     ) -> Self {
+        Self::start_configured(idle_grace, service, hooks, None)
+    }
+
+    fn start_configured(
+        idle_grace: Duration,
+        service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+        hooks: impl FnOnce(
+            mpsc::Sender<(Instant, bool)>,
+        ) -> Arc<dyn V5RuntimeHooks<CanonicalInvocationHost>>,
+        clock: Option<Arc<InspectionClock>>,
+    ) -> Self {
         let state = tempfile::tempdir().unwrap();
         let state_root = std::fs::canonicalize(state.path()).unwrap();
         let identity = CoreIdentity::production_v5();
         let (observations, observed) = mpsc::channel();
         let (exit, exited) = mpsc::channel();
-        let config = DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace)
-            .with_invocation_service(service)
-            .with_runtime_hooks_for_test(hooks(observations));
+        let config = DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace);
+        let config = match clock {
+            Some(clock) => config.with_canonical_runtime_for_test(Arc::new(
+                V5CanonicalInvocationRuntime::new(service, clock),
+            )),
+            None => config.with_invocation_service(service),
+        }
+        .with_runtime_hooks_for_test(hooks(observations));
         let stop = Arc::new(AtomicBool::new(false));
         let server_stop = Arc::clone(&stop);
         let server = thread::spawn(move || {
@@ -5342,13 +5382,20 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
         release: Arc::clone(&release),
     });
     let idle = Duration::from_millis(80);
-    let budget = Duration::from_millis(3_000);
-    let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service.clone());
+    let budget = Duration::from_millis(600);
+    // The invocation clock stands still until the test moves it past the
+    // window, so the client leaves before the cutoff however slowly the
+    // machine schedules the execution.
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let mut daemon =
+        PromisedWorkIdleDaemon::with_service_and_clock(idle, service.clone(), Arc::clone(&clock));
     let cleanup = IdleInvocationRelease(release);
     let invocation =
         view_catalog_request_within(TaskId::new(), &workspace, budget.as_millis() as u64);
     let mut owner = daemon.owner();
-    let submitted = Instant::now();
     write_json_line(
         &mut owner.0,
         &serde_json::to_value(V5ClientRequest::SubmitInvocation {
@@ -5360,13 +5407,11 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
     owner.0.shutdown(std::net::Shutdown::Both).unwrap();
     drop(owner);
     let disconnected = Instant::now();
-    assert!(
-        disconnected < submitted + budget,
-        "the client must leave before the window closes"
-    );
-
-    // Well past the window: the attempt has been handed over by now.
-    let past_cutoff = submitted + budget + idle * 3;
+    assert!(daemon.observe_until(disconnected + idle * 3));
+    let past_cutoff = Instant::now();
+    clock
+        .elapsed_ms
+        .store(budget.as_millis() as u64 + 1, Ordering::SeqCst);
     assert!(daemon.observe_until(past_cutoff + idle * 3));
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
     assert_held_by(
