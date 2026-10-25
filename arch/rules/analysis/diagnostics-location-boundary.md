@@ -2,7 +2,9 @@
 id: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
 check:
   - crates/unica-coder/src/infrastructure/internal_adapters.rs::diagnostics_analyze_preserves_cyrillic_paths_through_typed_jsonl
-  - crates/unica-coder/src/infrastructure/diagnostics.rs::diagnostic_location_distinguishes_unaddressable_owner_and_unproven_owner
+  - crates/unica-coder/src/infrastructure/diagnostics.rs::canonical_diagnostic_location_distinguishes_unaddressable_owner_and_unproven_owner
+  - crates/unica-coder/src/infrastructure/diagnostics.rs::canonical_diagnostic_location_reports_unsupported_source_format_without_a_physical_path
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::object_check_shows_the_metadata_focus_chain_of_a_provider_finding
   - crates/unica-coder/src/infrastructure/diagnostics.rs::diagnostic_location_rejects_escape_without_leaking_the_raw_handle
   - crates/unica-coder/src/infrastructure/diagnostics.rs::diagnostics_windows_normalizes_separators_unicode_file_uri_and_dot_segments
   - crates/unica-diagnostics/src/coordinator.rs::diagnostics_out_of_scope_handle_still_costs_the_whole_provider_section
