@@ -358,6 +358,7 @@ impl ProviderReadAuthority {
             self.configuration_support(checkpoint)?,
             self.home_page()?,
             self.command_interface()?,
+            self.panels()?,
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         let owner = prove_already_read_source_set_owner(
@@ -428,7 +429,8 @@ impl ProviderReadAuthority {
         let interface = serde_json::to_value(self.command_interface()?).map_err(|error| {
             ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
         })?;
-        read_configuration_root(file, support, home_page, interface, checkpoint)
+        let panels = self.panels()?.unwrap_or(Value::Null);
+        read_configuration_root(file, support, home_page, interface, panels, checkpoint)
     }
 
     /// Build root registration evidence from the complete retained XML once.
@@ -1893,6 +1895,25 @@ impl ProviderReadAuthority {
         })?;
         parse_cf_command_interface_xml(text)
             .map(Some)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
+    /// Раскладка панелей корня в форме, которую принимает `panels.set`.
+    fn panels(&self) -> Result<Option<Value>, ViewError> {
+        let Some(bytes) = self.read_optional_relative_whole(Path::new(
+            unica_metadata_designer::client_interface::CLIENT_INTERFACE_RELATIVE,
+        ))?
+        else {
+            return Ok(None);
+        };
+        let text = std::str::from_utf8(&bytes).map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "ClientApplicationInterface.xml is not UTF-8",
+            )
+        })?;
+        unica_metadata_designer::client_interface::parse_panels(text)
+            .map(|stored| Some(stored.to_json()))
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 

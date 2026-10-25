@@ -8,7 +8,7 @@ mod joining;
 pub mod ports;
 pub mod response;
 mod retirement_facts;
-use crate::invocation::{RESPONSE_SERIALIZATION_MARGIN, TASK_RECONCILIATION_BUDGET};
+use crate::invocation::TASK_RECONCILIATION_BUDGET;
 use crate::invocation_store::EpochMillisClock;
 use crate::invocation_store_v5::{
     InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
@@ -263,6 +263,17 @@ impl V5ActiveTaskCancellations {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_empty()
+    }
+
+    fn cancel_all(&self) {
+        for token in self
+            .tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+        {
+            token.cancel();
+        }
     }
 }
 
@@ -3405,6 +3416,12 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             || self.external_store_fail_stop.load(Ordering::Acquire)
     }
 
+    /// Fail-stop delivers its closed answer and nothing more: every attempt
+    /// still running is asked to stop, whichever call latched it.
+    pub fn cancel_active_attempts_after_fail_stop(&self) {
+        self.active_task_cancellations.cancel_all();
+    }
+
     fn project_task_failure(&self, failure: V5TaskProjectionFailure) -> ReceiptLedgerError {
         if failure.fail_stop {
             self.external_store_fail_stop.store(true, Ordering::Release);
@@ -3619,17 +3636,31 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         }
     }
 
+    /// The call's one deadline, fixed when the daemon accepts the submit
+    /// frame: the transport captures it before anything else reads the frame
+    /// and hands it to [`Self::submit_invocation`], so no later stage starts a
+    /// window of its own.
+    pub fn capture_submit_deadline(
+        &self,
+        response_budget_ms: u64,
+    ) -> crate::invocation::InvocationResponseDeadline {
+        self.invocation_executor
+            .capture_response_deadline(response_budget_ms)
+    }
+
     pub fn submit_invocation(
         self: &Arc<Self>,
         decoded: impl DecodedSubmit<H::Request>,
         epoch_ms: u64,
         deadline: Instant,
+        response_deadline: crate::invocation::InvocationResponseDeadline,
     ) -> Result<ReceiptReply, ReceiptLedgerError> {
         let task_id = decoded
             .reserved_task_id()
             .ok_or(ReceiptLedgerError::InvocationIdentityMismatch)?;
         let before = self.joins.capture_reply(task_id);
-        let reply = self.submit_invocation_canonical(decoded, epoch_ms, deadline)?;
+        let reply =
+            self.submit_invocation_canonical(decoded, epoch_ms, deadline, response_deadline)?;
         self.project_holder_reply(&before, reply, deadline)
     }
 
@@ -3638,18 +3669,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         decoded: impl DecodedSubmit<H::Request>,
         epoch_ms: u64,
         deadline: Instant,
+        response_deadline: crate::invocation::InvocationResponseDeadline,
     ) -> Result<ReceiptReply, ReceiptLedgerError> {
         self.hooks
             .event(V5ReceiptRuntimeEventKind::V5ExecutorEntered, epoch_ms);
-        // One opaque daemon-side deadline per request, captured before strict
-        // validation and narrowed to the frontend budget: every later stage
-        // measures against it and none of them starts a new clock.
-        let response_budget_ms = decoded
-            .response_budget_ms()
-            .ok_or(ReceiptLedgerError::InvocationIdentityMismatch)?;
-        let response_deadline = self
-            .invocation_executor
-            .capture_response_deadline(response_budget_ms);
+        // One opaque daemon-side deadline per request, fixed at frame receipt
+        // before strict validation and narrowed to the frontend budget: every
+        // later stage measures against it and none of them starts a new clock.
         let strict = decoded
             .into_strict_submit(&self.core_identity_digest)
             .map_err(|_| ReceiptLedgerError::InvocationIdentityMismatch)?;
@@ -4242,8 +4268,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 .receipt_ledger
                 .recover(reservation.key().clone(), deadline)?;
             if reservation_is_still_unbound(&current) {
-                let terminal = crate::receipt_ledger::canonical_cancelled_terminal()
-                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                // Fail-stop stops the bind too, and that is no client cancel.
+                let terminal = if self.restart_required() {
+                    rejection_terminal(&Self::interrupted(), H::MAX_SUPPORTED_BODY_RESPONSE_BYTES)?
+                } else {
+                    crate::receipt_ledger::canonical_cancelled_terminal()
+                        .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?
+                };
                 return self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
             }
             return self.reply_for_existing_state(current, deadline);
@@ -4464,6 +4495,11 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 };
             }
         }
+        // The direct answer's publication point: the call's deadline plus the
+        // serialization margin, both fixed at frame receipt.
+        let response_at = actor_bound
+            .response_deadline()
+            .map(|deadline| deadline.response_at());
         let (prepared, direct_outcome) = match self.drive_inline_invocation(actor_bound, &begun)? {
             InlineDrive::Rejected(result) => {
                 let terminal = rejection_terminal(
@@ -4540,27 +4576,12 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 // runs on this thread so the pause sees its exact outcome.
                 self.hooks
                     .pause(V5PausePoint::BeforeTaskTerminalReceipt, deadline)?;
-                self.hooks.stage_entered(V5Stage::Execute);
-                self.hooks
-                    .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
-                self.hooks
-                    .callback_invocation_id(reservation.key().invocation_id());
-                let result = prepared.execute(cancellation.clone());
-                let authority = cancellation.factual_outcome_authority();
-                let outcome = if cancellation.is_cancelled()
-                    && authority == FactualOutcomeAuthority::Cancellable
-                {
-                    ReceiptTerminalOutcome::Cancelled
-                } else {
-                    match result {
-                        Ok(result) => ReceiptTerminalOutcome::Completed {
-                            result: Box::new(result),
-                        },
-                        Err(failure) => ReceiptTerminalOutcome::Failed {
-                            reason: V5SafeFailureReason::of_execution_failure(&failure),
-                        },
-                    }
-                };
+                let outcome = self.provider_outcome(
+                    prepared,
+                    &cancellation,
+                    epoch_ms,
+                    Some(reservation.key().invocation_id()),
+                );
                 self.hooks
                     .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
                 let snapshot = self.publish_task_execution_outcome(
@@ -4596,9 +4617,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             return Err(ReceiptLedgerError::StoreUnavailable);
         }
         // An outcome that arrived on the last tick of the budget is still
-        // published: the ledger command gets the serialization margin, not
-        // an already spent operation deadline.
-        let deadline = deadline.max(Instant::now() + RESPONSE_SERIALIZATION_MARGIN);
+        // published: the ledger command keeps the serialization margin the
+        // call was given at frame receipt, never a new one from now.
+        let deadline = response_at.map_or(deadline, |response_at| deadline.max(response_at));
         let (terminal, oversized_result) =
             match canonical_v5_terminal(&outcome, H::MAX_SUPPORTED_BODY_RESPONSE_BYTES) {
                 Ok(terminal) => (terminal, false),
@@ -4806,6 +4827,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         cancellation: CancellationToken,
         invocation_id: unica_execution_contract::invocation::InvocationId,
     ) {
+        if self.restart_required() {
+            self.publish_inline_settlement(
+                slot.settle(InlineWorkerReport::Outcome(Self::interrupted())),
+                cancellation,
+            );
+            return;
+        }
         let prepared = match actor_bound.prepare() {
             Ok(prepared) => prepared,
             Err(result) => {
@@ -4855,14 +4883,45 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         cancellation: &CancellationToken,
         invocation_id: unica_execution_contract::invocation::InvocationId,
     ) -> ReceiptTerminalOutcome {
+        self.provider_outcome(prepared, cancellation, self.epoch_ms(), Some(invocation_id))
+    }
+
+    /// The outcome of an attempt the process stopped on fail-stop.
+    fn interrupted() -> ReceiptTerminalOutcome {
+        ReceiptTerminalOutcome::Failed {
+            reason: V5SafeFailureReason::Interrupted,
+        }
+    }
+
+    /// Runs the provider and maps its result to the attempt's outcome. No
+    /// subject work begins once the process latched fail-stop: the attempt
+    /// then ends interrupted without entering the provider.
+    fn provider_outcome(
+        &self,
+        prepared: H::Prepared,
+        cancellation: &CancellationToken,
+        epoch_ms: u64,
+        invocation_id: Option<unica_execution_contract::invocation::InvocationId>,
+    ) -> ReceiptTerminalOutcome {
+        if self.restart_required() {
+            return Self::interrupted();
+        }
         self.hooks.stage_entered(V5Stage::Execute);
         self.hooks
-            .event(V5ReceiptRuntimeEventKind::ExecuteEntered, self.epoch_ms());
-        self.hooks.callback_invocation_id(invocation_id);
+            .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
+        if let Some(invocation_id) = invocation_id {
+            self.hooks.callback_invocation_id(invocation_id);
+        }
         let result = prepared.execute(cancellation.clone());
         let authority = cancellation.factual_outcome_authority();
         if cancellation.is_cancelled() && authority == FactualOutcomeAuthority::Cancellable {
-            ReceiptTerminalOutcome::Cancelled
+            // A stop the process asked for on fail-stop is no cancel the
+            // client requested.
+            if self.restart_required() {
+                Self::interrupted()
+            } else {
+                ReceiptTerminalOutcome::Cancelled
+            }
         } else {
             match result {
                 Ok(result) => ReceiptTerminalOutcome::Completed {
@@ -5310,6 +5369,17 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 deadline,
             );
         }
+        if self.restart_required() {
+            let terminal =
+                rejection_terminal(&Self::interrupted(), H::MAX_SUPPORTED_BODY_RESPONSE_BYTES)?;
+            return self.publish_bound_terminal_reply(
+                &bound,
+                &task_record,
+                &terminal,
+                epoch_ms,
+                deadline,
+            );
+        }
         let prepared = match actor_bound.prepare() {
             Ok(prepared) => prepared,
             Err(result) => {
@@ -5335,26 +5405,8 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             // runs on this thread so the pause sees its exact outcome.
             self.hooks
                 .pause(V5PausePoint::BeforeTaskTerminalReceipt, deadline)?;
-            self.hooks.stage_entered(V5Stage::Execute);
-            self.hooks
-                .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
-            self.hooks.callback_invocation_id(invocation_id);
-            let result = prepared.execute(cancellation.clone());
-            let authority = cancellation.factual_outcome_authority();
-            let outcome = if cancellation.is_cancelled()
-                && authority == FactualOutcomeAuthority::Cancellable
-            {
-                ReceiptTerminalOutcome::Cancelled
-            } else {
-                match result {
-                    Ok(result) => ReceiptTerminalOutcome::Completed {
-                        result: Box::new(result),
-                    },
-                    Err(failure) => ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::of_execution_failure(&failure),
-                    },
-                }
-            };
+            let outcome =
+                self.provider_outcome(prepared, &cancellation, epoch_ms, Some(invocation_id));
             if self.hooks.crash_after_side_effect() {
                 return Err(ReceiptLedgerError::StoreUnavailable);
             }
@@ -5396,25 +5448,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         }
         // A direct attempt promoted to a Task runs to its terminal on this
         // continuation thread; the client already holds the Task reply.
-        self.hooks.stage_entered(V5Stage::Execute);
-        self.hooks
-            .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
-        self.hooks.callback_invocation_id(invocation_id);
-        let result = prepared.execute(cancellation.clone());
-        let authority = cancellation.factual_outcome_authority();
-        let outcome =
-            if cancellation.is_cancelled() && authority == FactualOutcomeAuthority::Cancellable {
-                ReceiptTerminalOutcome::Cancelled
-            } else {
-                match result {
-                    Ok(result) => ReceiptTerminalOutcome::Completed {
-                        result: Box::new(result),
-                    },
-                    Err(failure) => ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::of_execution_failure(&failure),
-                    },
-                }
-            };
+        let outcome = self.provider_outcome(prepared, &cancellation, epoch_ms, Some(invocation_id));
         if self.hooks.crash_after_side_effect() {
             return Err(ReceiptLedgerError::StoreUnavailable);
         }
@@ -5449,27 +5483,8 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         let execution = thread::Builder::new()
             .name("unica-v5-task-execution".to_owned())
             .spawn(move || {
-                runtime.hooks.stage_entered(V5Stage::Execute);
-                runtime.hooks.event(
-                    V5ReceiptRuntimeEventKind::ExecuteEntered,
-                    runtime.epoch_ms(),
-                );
-                let result = prepared.execute(cancellation.clone());
-                let authority = cancellation.factual_outcome_authority();
-                let outcome = if cancellation.is_cancelled()
-                    && authority == FactualOutcomeAuthority::Cancellable
-                {
-                    ReceiptTerminalOutcome::Cancelled
-                } else {
-                    match result {
-                        Ok(result) => ReceiptTerminalOutcome::Completed {
-                            result: Box::new(result),
-                        },
-                        Err(failure) => ReceiptTerminalOutcome::Failed {
-                            reason: V5SafeFailureReason::of_execution_failure(&failure),
-                        },
-                    }
-                };
+                let outcome =
+                    runtime.provider_outcome(prepared, &cancellation, runtime.epoch_ms(), None);
                 let publication = runtime
                     .publish_task_execution_outcome(
                         &bound,
@@ -7936,6 +7951,15 @@ pub mod test_support {
     }
 
     pub const RETIREMENT_RETRY_INITIAL_DELAY_MS: u64 = super::RETIREMENT_RETRY_INITIAL_DELAY_MS;
+    /// Latches the process-owned fail-stop as a failed durable write of
+    /// another call would.
+    pub fn latch_fail_stop_for_fixture<H: super::ports::InvocationHost>(
+        runtime: &super::V5ReceiptRuntime<H>,
+    ) {
+        runtime
+            .external_store_fail_stop
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     /// The original owner error projection, including its existing fail-stop effect.
     pub fn project_task_failure_for_fixture<H: super::ports::InvocationHost>(
         runtime: &super::V5ReceiptRuntime<H>,

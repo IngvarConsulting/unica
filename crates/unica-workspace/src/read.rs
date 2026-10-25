@@ -10,7 +10,8 @@ pub use crate::platform::secure_read::with_secure_tree_test_hook;
 pub use crate::platform::secure_read::{
     capture_root_relative_regular_files, read_root_relative_regular_file,
     read_root_relative_regular_file_checked, read_root_relative_regular_file_whole,
-    RetainedRootSecureRead, SecureRead, SecureReadPhase, SecureTreePhase,
+    visit_root_relative_regular_files, RetainedRootSecureRead, SecureRead, SecureReadPhase,
+    SecureTreePhase, SecureTreeVisit,
 };
 pub use unica_source_contract::read::{
     FileIdentity, FileStamp, SourceDirectory, SourceEntry, SourceFile, SourceNameComparator,

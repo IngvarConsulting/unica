@@ -8,18 +8,22 @@ check:
   - crates/unica-coder/src/application/v13/view.rs::supplied_graph_collection_uses_stable_pages_bound_to_its_owner
   - crates/unica-coder/src/application/v13/diff.rs::diff_page_names_why_it_stopped_and_never_cuts_a_difference
   - crates/unica-coder/src/application/v13/diff.rs::a_difference_over_the_transport_limit_refuses_before_a_cursor
+  - crates/unica-coder/src/application/v13/check.rs::a_root_group_over_the_page_target_travels_whole
+  - crates/unica-coder/src/application/v13/check.rs::a_late_root_group_over_the_result_limit_refuses_before_a_cursor
 ---
 
 # Страница чтения сообщает полноту и сохраняет доступ к элементам
 
 Для страничных ответов канонической поверхности `limit` по умолчанию равен
 20, максимум — 50. Ответ сообщает, завершена ли выдача полученных элементов
-и почему страница остановилась: по числу или объёму. Следующие доступные
+и почему страница остановилась: по числу, объёму или времени. Следующие доступные
 элементы получают применимое продолжение; содержимое элемента не обрезается.
-Конец полученного окна поставщика отличается от конца всего корпуса:
-неполнота сообщается отдельно, курсор за пределы окна не обещается.
+Конец полученного окна ранжирующего поставщика отличается от конца всего
+корпуса: неполнота сообщается отдельно, курсор за пределы окна не обещается.
+Буквальный поиск без роли окна не имеет и продолжается до конца корпуса.
 
-Для адресной коллекции `view` 64 КиБ — целевой размер страницы. Неделимый
+Для адресной коллекции `view`, диагностик `check` и сравнения `diff` 64 КиБ —
+целевой размер страницы вместе с конвертом ответа. Неделимый
 элемент или метаданные узла возвращаются целиком, даже если страница больше
 цели. Если сохранённый результат или неделимый элемент не проходят
 применимую техническую границу, отказ приходит до первого курсора, включая
@@ -32,5 +36,6 @@ check:
 [вердикт check](check-diagnostic-pages.md),
 [живой текстовый поиск и поиск имён](search-corpus-schema.md),
 [окно поставщика кода](../analysis/search-result-evidence.md),
+[продолжение буквального поиска](../analysis/literal-search.md),
 [поиск справки](../analysis/documentation/search-pages.md) и
 [страницы документа](../analysis/documentation/document-text-pages.md).

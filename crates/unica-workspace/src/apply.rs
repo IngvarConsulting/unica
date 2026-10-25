@@ -4,7 +4,8 @@ use crate::compile_transaction::{
 };
 use crate::paths::GENERATED_DIR_NAME;
 use crate::platform::filesystem::{
-    FileIdentity, RetainedChildCapability, RetainedChildNameComparator, RetainedDirectoryCapability,
+    CheckedReadError, FileIdentity, RetainedChildCapability, RetainedChildNameComparator,
+    RetainedDirectoryCapability,
 };
 use sha2::Digest;
 use std::ffi::{OsStr, OsString};
@@ -804,12 +805,15 @@ impl ApplyStagedState {
             }
             return Ok(current);
         }
-        let bytes = file.read_bounded(limit).map_err(|error| {
-            ApplyStagingError::new(
-                ApplyStagingErrorKind::UnsupportedProvider,
-                format!("reference input read failed: {error}"),
-            )
-        })?;
+        let bytes = file
+            .read_checked(limit, || self.checkpoint("apply reference input read"))
+            .map_err(|error| match error {
+                CheckedReadError::Stopped(error) => error,
+                CheckedReadError::Io(error) => ApplyStagingError::new(
+                    ApplyStagingErrorKind::UnsupportedProvider,
+                    format!("reference input read failed: {error}"),
+                ),
+            })?;
         self.checkpoint("apply reference input result")?;
         let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
         if let Some(guard) = self.read_guards.get(&id) {
@@ -1293,12 +1297,15 @@ impl ApplyStagedState {
                         ),
                     ));
                 }
-                let bytes = file.read_bounded(limit).map_err(|error| {
-                    ApplyStagingError::new(
-                        ApplyStagingErrorKind::UnsupportedProvider,
-                        format!("staged target read failed: {error}"),
-                    )
-                })?;
+                let bytes = file
+                    .read_checked(limit, || self.checkpoint("apply staged target read"))
+                    .map_err(|error| match error {
+                        CheckedReadError::Stopped(error) => error,
+                        CheckedReadError::Io(error) => ApplyStagingError::new(
+                            ApplyStagingErrorKind::UnsupportedProvider,
+                            format!("staged target read failed: {error}"),
+                        ),
+                    })?;
                 let identity = file.identity();
                 let len = bytes.len() as u64;
                 let sha256 = sha2::Sha256::digest(&bytes).into();

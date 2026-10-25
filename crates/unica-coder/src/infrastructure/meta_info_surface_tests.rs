@@ -1797,8 +1797,10 @@ fn meta_info_private_closed_read_treats_absent_and_empty_documents_as_complete_e
     }
 }
 
+/// #1119: the registrar scan visits one document at a time, so a document
+/// past the former 64 MiB budget is read rather than refused.
 #[test]
-fn meta_info_private_closed_read_registrar_scan_enforces_byte_cap() {
+fn meta_info_private_closed_read_registrar_scan_reads_a_document_past_the_former_byte_cap() {
     let files = [
         "Configuration.xml",
         "Documents/Регистратор.xml",
@@ -1806,20 +1808,25 @@ fn meta_info_private_closed_read_registrar_scan_enforces_byte_cap() {
         "Languages/Русский.xml",
     ];
     let workspace = fixture_workspace(
-        "registrar-byte-cap",
+        "registrar-large-document",
         "meta-validate-subordinate-register",
         &files,
     );
-    std::fs::File::create(workspace.path().join("src/Documents/000-Oversized.xml"))
-        .unwrap()
-        .set_len(64 * 1024 * 1024 + 1)
-        .unwrap();
+    let descriptor = workspace.path().join("src/Documents/Регистратор.xml");
+    let inflated = std::fs::read_to_string(&descriptor).unwrap().replace(
+        "</MetaDataObject>",
+        &format!("<!--{}--></MetaDataObject>", "x".repeat(65 * 1024 * 1024)),
+    );
+    std::fs::write(&descriptor, inflated).unwrap();
 
     let result = call_info_path(workspace.path(), "InformationRegister.SubordinateRegister");
 
-    assert!(!result.ok);
-    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
-    assert_no_error_diagnostic(&result, "validation_failed");
+    assert!(result.ok);
+    assert_eq!(
+        result.data.as_ref().unwrap()["validation"]["status"],
+        "passed"
+    );
+    assert_no_error_diagnostic(&result, "provider_unavailable");
 }
 
 #[test]
@@ -1966,11 +1973,12 @@ fn meta_info_post_capture_cancellation_after_last_registrar_parse_is_provider_un
         move |phase| {
             if matches!(
                 phase,
+                // Documents are visited in byte order of their names, so the
+                // Cyrillic name comes after `Z-Second.xml` and is the last.
                 RegistrarProcessingPhase::AfterRegistrarParse {
-                    ordinal,
-                    total,
-                    ..
-                } if ordinal + 1 == *total
+                    logical_path,
+                    ordinal: 1,
+                } if logical_path.ends_with("Регистратор.xml")
             ) {
                 cancellation_for_hook.cancel();
             }

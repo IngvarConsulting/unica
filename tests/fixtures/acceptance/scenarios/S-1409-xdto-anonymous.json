@@ -114,7 +114,13 @@
         },
         {
           "pointer": "/data/props/bounds",
-          "eq": "{\"lower\":\"0\",\"upper\":\"-1\",\"lowerExplicit\":true,\"upperExplicit\":true,\"unbounded\":true}"
+          "eq": {
+            "lower": "0",
+            "upper": "-1",
+            "lowerExplicit": true,
+            "upperExplicit": true,
+            "unbounded": true
+          }
         }
       ],
       "captures": {
@@ -155,11 +161,22 @@
       "assertions": [
         {
           "pointer": "/data/props/type",
-          "eq": "{\"raw\":\"tns:ТипОснования\",\"prefix\":\"tns\",\"local\":\"ТипОснования\",\"namespace\":\"urn:unica:anonymous\"}"
+          "eq": {
+            "raw": "tns:ТипОснования",
+            "prefix": "tns",
+            "local": "ТипОснования",
+            "namespace": "urn:unica:anonymous"
+          }
         },
         {
           "pointer": "/data/props/bounds",
-          "eq": "{\"lower\":\"0\",\"upper\":\"1\",\"lowerExplicit\":true,\"upperExplicit\":true,\"unbounded\":false}"
+          "eq": {
+            "lower": "0",
+            "upper": "1",
+            "lowerExplicit": true,
+            "upperExplicit": true,
+            "unbounded": false
+          }
         }
       ]
     },
@@ -174,11 +191,22 @@
       "assertions": [
         {
           "pointer": "/data/props/type",
-          "eq": "{\"raw\":\"tns:ТипПолучателя\",\"prefix\":\"tns\",\"local\":\"ТипПолучателя\",\"namespace\":\"urn:unica:anonymous\"}"
+          "eq": {
+            "raw": "tns:ТипПолучателя",
+            "prefix": "tns",
+            "local": "ТипПолучателя",
+            "namespace": "urn:unica:anonymous"
+          }
         },
         {
           "pointer": "/data/props/bounds",
-          "eq": "{\"lower\":\"0\",\"upper\":\"1\",\"lowerExplicit\":true,\"upperExplicit\":true,\"unbounded\":false}"
+          "eq": {
+            "lower": "0",
+            "upper": "1",
+            "lowerExplicit": true,
+            "upperExplicit": true,
+            "unbounded": false
+          }
         }
       ]
     },

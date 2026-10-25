@@ -1579,6 +1579,7 @@ fn run_lazy_cancel_storm(
                 unica_daemon::protocol_v5::DecodedSubmitAdapter::new(decoded, identity.clone()),
                 accepted_epoch_ms,
                 operation_deadline,
+                runtime.capture_submit_deadline(7_000),
             )
             .map_err(|error| format!("submit lazy cancelled invocation: {error}"))?;
         observation::mark(

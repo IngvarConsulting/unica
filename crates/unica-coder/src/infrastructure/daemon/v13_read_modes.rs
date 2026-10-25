@@ -667,31 +667,44 @@ mod operation_dictionary_tests {
     }
 }
 
-pub(super) fn search_scope_prefix(
+/// Where a text search reads for a logical scope: the retained-relative
+/// subtree to traverse and, for a concrete module, the one module whose
+/// matches the page keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SearchScopeRoute {
+    pub(super) prefix: Option<String>,
+    pub(super) module: Option<QualifiedAddress>,
+}
+
+pub(super) fn search_scope_route(
     scope: &QualifiedAddress,
-) -> Result<Option<String>, ReadModeError> {
-    let concrete_module = unica_bsl::profile::PlatformProfile::v8_3_27()
-        .module_capability(scope)
-        .is_some();
-    let common_module =
-        scope.segments().len() == 1 && scope.segments()[0].kind() == NodeKind::CommonModule;
-    if concrete_module && !common_module {
-        return Err(ReadModeError::unsupported_scope(format!(
-            "literal search does not accept a concrete Module scope; repeat unica.search with role: \"lexical\", the same query and scope: \"{scope}\" to search only this module"
-        )));
-    }
-    if scope.segments().len() != 1 {
-        return Err(ReadModeError::unsupported_scope(
-            "literal search currently accepts only Configuration or one metadata-object subtree",
-        ));
-    }
+) -> Result<SearchScopeRoute, ReadModeError> {
     let Some(owner) = scope.segments().first() else {
         return Err(ReadModeError::bad_value(
             "search scope has no logical segments",
         ));
     };
+    let module = unica_bsl::profile::PlatformProfile::v8_3_27()
+        .module_capability(scope)
+        .is_some()
+        .then(|| scope.clone());
+    if module.is_none() && scope.segments().len() != 1 {
+        return Err(ReadModeError::unsupported_scope(
+            "text search accepts the Configuration, one metadata branch or owner, or one module",
+        ));
+    }
     if owner.kind() == NodeKind::Configuration {
-        return Ok(None);
+        return Ok(SearchScopeRoute {
+            prefix: None,
+            module,
+        });
+    }
+    // The application modules of the configuration live in its own `Ext`.
+    if owner.kind() == NodeKind::Module {
+        return Ok(SearchScopeRoute {
+            prefix: Some("Ext".to_string()),
+            module,
+        });
     }
     let layout = metadata_kind(owner.kind().as_str()).ok_or_else(|| {
         ReadModeError::unsupported_scope(format!(
@@ -704,36 +717,46 @@ pub(super) fn search_scope_prefix(
         prefix.push('/');
         prefix.push_str(name);
     }
-    Ok(Some(prefix))
+    Ok(SearchScopeRoute {
+        prefix: Some(prefix),
+        module,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::search_scope_prefix;
+    use super::search_scope_route;
     use unica_address::address::QualifiedAddress;
 
     #[test]
     fn logical_scope_maps_to_a_retained_relative_prefix_without_accepting_paths() {
-        let root = QualifiedAddress::parse("main:Configuration").unwrap();
-        let catalog = QualifiedAddress::parse("main:Catalog.Items").unwrap();
-        assert_eq!(search_scope_prefix(&root).unwrap(), None);
+        let route = |at: &str| search_scope_route(&QualifiedAddress::parse(at).unwrap());
+        let root = route("main:Configuration").unwrap();
+        assert_eq!((root.prefix, root.module), (None, None));
         assert_eq!(
-            search_scope_prefix(&catalog).unwrap().as_deref(),
+            route("main:Catalog.Items").unwrap().prefix.as_deref(),
             Some("Catalogs/Items")
         );
-        let common = QualifiedAddress::parse("main:CommonModule.Shared").unwrap();
         assert_eq!(
-            search_scope_prefix(&common).unwrap().as_deref(),
+            route("main:CommonModule.Shared").unwrap().prefix.as_deref(),
             Some("CommonModules/Shared")
         );
+        // A concrete module reads its owner's subtree and keeps only itself.
+        for (at, prefix) in [
+            ("main:Catalog.Items.Module.Object", "Catalogs/Items"),
+            ("main:Catalog.Items.Form.Main.Module.Form", "Catalogs/Items"),
+            ("main:Module.Session", "Ext"),
+        ] {
+            let scoped = route(at).unwrap();
+            assert_eq!(scoped.prefix.as_deref(), Some(prefix), "{at}");
+            assert_eq!(scoped.module.unwrap().to_string(), at);
+        }
         for at in [
             "main:Catalog.Items.Attribute.Code",
             "main:Catalog.Items.Module.Object.Method.Read",
             "main:Catalog.Items.Module.Unknown",
         ] {
-            let scope = QualifiedAddress::parse(at).unwrap();
-            let refusal = search_scope_prefix(&scope).unwrap_err();
-            assert!(!refusal.message.contains("lexical"), "{at}");
+            assert!(route(at).is_err(), "{at}");
         }
     }
 }

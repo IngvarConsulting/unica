@@ -78,17 +78,13 @@ fn catalog_standard_attribute_properties_reach_collection_and_detail() {
             .find(|node| node.attribute("name") == Some(name))
             .unwrap();
         for key in ["Synonym", "ToolTip", "FillChecking"] {
-            let value: serde_json::Value =
-                serde_json::from_str(detail["props"][key].as_str().unwrap()).unwrap();
+            let value = detail["props"][key].clone();
             let property = source
                 .children()
                 .find(|node| node.is_element() && node.tag_name().name() == key)
                 .unwrap();
             if key == "FillChecking" {
-                assert_eq!(
-                    value,
-                    json!({"kind":"text","value":property.text().unwrap()})
-                );
+                assert_eq!(value, json!(property.text().unwrap()));
             } else {
                 let expected = property
                     .children()
@@ -104,7 +100,11 @@ fn catalog_standard_attribute_properties_reach_collection_and_detail() {
                         json!({"language":text("lang"),"content":text("content")})
                     })
                     .collect::<Vec<_>>();
-                assert_eq!(value, json!({"kind":"localizedString","values":expected}));
+                assert!(
+                    !expected.is_empty(),
+                    "the fixture must carry {key} translations"
+                );
+                assert_eq!(value, json!(expected));
             }
         }
     }
@@ -116,7 +116,8 @@ fn catalog_standard_attribute_properties_reach_collection_and_detail() {
 }
 
 #[test]
-fn catalog_standard_attribute_empty_absent_and_damaged_properties_stay_distinct() {
+fn catalog_standard_attribute_empty_translations_read_as_absence_while_empty_text_and_damage_stay_distinct(
+) {
     for key in ["Synonym", "ToolTip", "FillChecking"] {
         for state in ["empty", "absent", "damaged", "bare-text"] {
             if state == "bare-text" && key == "FillChecking" {
@@ -173,17 +174,20 @@ fn catalog_standard_attribute_empty_absent_and_damaged_properties_stay_distinct(
                     assert!(detail.ok, "{detail:?}");
                     let detail = detail.data.unwrap();
                     assert_eq!(item.get("props"), detail.get("props"));
-                    if state == "absent" {
-                        assert!(detail["props"].get(key).is_none());
+                    if state == "absent" || key != "FillChecking" {
+                        // Пустой набор переводов, как и отсутствие, свойства не создаёт.
+                        assert!(detail["props"].get(key).is_none(), "{key}: {state}");
+                        assert!(
+                            !detail["limits"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(serde_json::Value::as_str)
+                                .any(|limit| limit.contains(key)),
+                            "{key}: {state} is not damage"
+                        );
                     } else {
-                        let value: serde_json::Value =
-                            serde_json::from_str(detail["props"][key].as_str().unwrap()).unwrap();
-                        let expected = if key == "FillChecking" {
-                            json!({"kind":"text","value":""})
-                        } else {
-                            json!({"kind":"localizedString","values":[]})
-                        };
-                        assert_eq!(value, expected);
+                        assert_eq!(detail["props"][key], json!(""));
                     }
                 }
             }
@@ -207,10 +211,7 @@ fn standard_attribute_projection_keeps_the_closed_property_profile_and_byte_limi
     let data = serde_json::to_value(view).unwrap();
     assert_eq!(data["title"], "Code");
     assert_eq!(data["props"].as_object().unwrap().len(), 1);
-    assert_eq!(
-        data["props"]["FillChecking"],
-        r#"{"kind":"text","value":"ShowError"}"#
-    );
+    assert_eq!(data["props"]["FillChecking"], "ShowError");
 
     let at = QualifiedAddress::parse("main:Catalog.Items.Attribute.Code").unwrap();
     let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
@@ -255,7 +256,11 @@ fn metadata_type_compact_limit_counts_utf8_bytes_and_explains_only_oversize() {
             assert_eq!(item["props"]["synonym"], "Длинный тип");
             assert!(item.get("branches").is_none());
             if bytes <= 2048 {
-                assert_eq!(item["props"]["type"], rendered);
+                assert_eq!(item["props"]["type"], value);
+                assert_eq!(
+                    serde_json::to_string(&item["props"]["type"]).unwrap().len(),
+                    bytes
+                );
                 assert!(item.get("limits").is_none());
             } else {
                 assert!(item["props"].get("type").is_none());
@@ -343,8 +348,8 @@ fn metadata_long_type_read_preserves_other_facts_and_names_the_size_limit() {
     assert!(control.ok, "{control:?}");
     let control = control.data.unwrap();
     assert!(control.get("limits").is_none());
-    let ty: serde_json::Value =
-        serde_json::from_str(control["props"]["type"].as_str().unwrap()).unwrap();
+    let ty = &control["props"]["type"];
+    assert!(ty.is_object(), "type must arrive as nested JSON");
     assert_eq!(ty["variants"].as_array().unwrap().len(), 9);
     for (variant, expected) in ty["variants"]
         .as_array()
@@ -526,8 +531,7 @@ fn predefined_long_type_read_preserves_other_facts_and_names_the_size_limit() {
     assert_eq!(control["props"]["code"], "000000003");
     assert_eq!(control["props"]["description"], "Малый тип");
     assert_eq!(control["props"]["isFolder"], false);
-    let ty: serde_json::Value =
-        serde_json::from_str(control["props"]["type"].as_str().unwrap()).unwrap();
+    let ty = control["props"]["type"].clone();
     assert_eq!(
         ty,
         json!(unica_metadata::MetadataType::new(
@@ -798,8 +802,7 @@ fn metadata_attribute_fill_value_is_a_bounded_observed_fact() {
         assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
         let props = &result.data.as_ref().unwrap()["props"];
         assert!(props.get("incomplete").is_none(), "{props}");
-        let observed: serde_json::Value =
-            serde_json::from_str(props["fillValue"].as_str().unwrap()).unwrap();
+        let observed = props["fillValue"].clone();
         assert_eq!(
             observed,
             json!({"kind": "reference", "metadataPath": owner, "item": item})
@@ -836,14 +839,13 @@ fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
         json!("InformationRegister.WorkSchedules.Dimension.Date")
     );
 
-    // Тип константы: одно составное значение, компактной строкой — тем же
-    // механизмом, каким отвечает тип реквизита.
+    // Тип константы: одно составное значение, вложенным JSON — тем же
+    // механизмом, каким отвечает тип реквизита (#2031).
     let constant = service.view(ViewRequest::new("main:Constant.MainCurrency").unwrap());
     assert!(constant.ok, "{:?}", refusal_codes(&constant));
-    let rendered = constant.data.as_ref().unwrap()["props"]["type"]
-        .as_str()
-        .expect("constant type renders compactly");
-    assert!(rendered.contains("string"), "{rendered}");
+    let ty = &constant.data.as_ref().unwrap()["props"]["type"];
+    assert!(ty.is_object(), "constant type arrives as nested JSON");
+    assert_eq!(ty["variants"][0]["kind"], json!("string"));
 }
 
 /// Сервис в том виде, в каком его выгружает Конфигуратор 8.3.27: у шаблона
@@ -1029,10 +1031,9 @@ fn declared_service_kinds_finally_get_their_subject() {
     let operation = operation.data.as_ref().unwrap();
     assert_eq!(operation["props"]["procedure"], json!("SendData"));
     assert_eq!(operation["props"]["transactioned"], json!(true));
-    assert!(
-        operation["props"]["returnType"]
-            .as_str()
-            .is_some_and(|rendered| rendered.contains("boolean")),
+    assert_eq!(
+        operation["props"]["returnType"],
+        json!({"namespace": "http://www.w3.org/2001/XMLSchema", "localName": "boolean"}),
         "{operation:#}"
     );
     assert_eq!(
@@ -1532,8 +1533,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
     assert_eq!(props["offBalance"], false);
     assert_eq!(props["order"], " 01.01");
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(props["accountingFlags"].as_str().unwrap())
-            .unwrap(),
+        props["accountingFlags"],
         json!({
             "ChartOfAccounts.Хозрасчетный.AccountingFlag.Валютный": false,
             "ChartOfAccounts.Хозрасчетный.AccountingFlag.Количественный": false,
@@ -1542,8 +1542,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
         })
     );
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(props["extDimensionTypes"].as_str().unwrap())
-            .unwrap(),
+        props["extDimensionTypes"],
         json!([{
             "name": "ChartOfCharacteristicTypes.ВидыСубконтоХозрасчетные.ОсновныеСредства",
             "turnover": false,
@@ -1561,12 +1560,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
         false
     );
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(
-            characteristic.data.as_ref().unwrap()["props"]["type"]
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap(),
+        characteristic.data.as_ref().unwrap()["props"]["type"],
         json!(MetadataType::new(vec![MetadataTypeVariant::Reference {
             metadata_path: MetadataAddress::parse(
                 PLATFORM_XML_8_3_27_FORMAT_2_20,

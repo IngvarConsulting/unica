@@ -89,6 +89,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                 object,
                 op_index,
                 binding.source_set_name(),
+                binding.source_kind(),
             )?)
         }
         Some(OperationFamily::Interface) => {
@@ -97,6 +98,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                 object,
                 op_index,
                 binding.source_set_name(),
+                binding.source_kind(),
             )?)
         }
         Some(OperationFamily::Support) => {
@@ -1607,7 +1609,9 @@ mod tests {
             count += 1;
             let op = descriptor.name();
             let at = match op {
-                "subsystem.create" | "subsystemOrder.set" => "main:Configuration",
+                "subsystem.create" | "subsystemOrder.set" | "panels.set" | "homePage.set" => {
+                    "main:Configuration"
+                }
                 "childSubsystem.remove" => "main:Subsystem.Sales.Subsystem.Orders",
                 "commandOrder.set" => {
                     "main:Subsystem.Sales.Interface.Group.NavigationPanelImportant"
@@ -1645,7 +1649,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(count, 10);
+        assert_eq!(count, 12);
         for (op, key, value) in [
             ("content.add", "object", "Catalog.X"),
             ("content.remove", "object", "Catalog.X"),

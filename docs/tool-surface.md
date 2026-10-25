@@ -45,21 +45,22 @@ Plan typed edits with at and ops without writing; execute that saved plan with e
 
 ### `unica.check`
 
-Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node diagnostics are returned in stable pages.
+Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node findings and workspace diagnostic groups are returned in stable pages; every page repeats the whole verdict.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit to check workspace source-set admission; null is treated as omitted. |
-| `cursor` | string | нет | Continuation cursor from an earlier check of the same node; valid only with at. Omit, or pass an empty string or null, for the first page. |
-| `limit` | integer | нет | Maximum diagnostics in one node-check page, from 1 to 50; valid only with at. Omit for 20; null is treated as omitted. |
+| `cursor` | string | нет | Continue the same check with the same limit: the same node with at, or the same workspace verdict without it; later pages read the result saved by the first page. Omit, or pass an empty string or null, for the first page. |
+| `limit` | integer | нет | Maximum diagnostics in one page, from 1 to 50: node findings, or workspace diagnostic groups without at. Omit for 20; null is treated as omitted. Pages are also bounded by encoded bytes. |
 
-**Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
+**Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. Корневой вердикт, `checks` и `diagnosticCount` приходят целиком на каждой странице, а группы диагностик — страницами до 20 групп по умолчанию (максимум 50) и около 64 КиБ; page.stoppedBy сообщает limit/bytes/complete, группа не режется, cursor привязан к рабочему пространству и limit и читает вердикт, сохранённый первой страницей. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
 **Целевой контракт:** Держать таблицу вид → валидаторы закрытой и доказанной корпусом; на проводе у `check` нет аргумента выбора валидатора
 
 **Сценарии:**
 
 - Проверить, что рабочее пространство и его source set допущены
+- Дочитать все страницы групп диагностик корневого вердикта
 - Проверить один логический узел всеми валидаторами его вида и дочитать все страницы диагностик
 - Проверить читаемость узла без валидаторов
 
@@ -160,20 +161,21 @@ List canonical runtime operations and their invocation contract, or preview/exec
 
 ### `unica.search`
 
-Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Results use pages; provider roles report whether their finite search window is complete. Names report descriptor-read coverage separately from approximate name matching.
+Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Results use pages; `symbol` and `semantic` report whether their finite search window is complete. Names report descriptor-read coverage separately from approximate name matching.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `corpus` | string | нет | Where to search: `text` matches BSL module content and answers scope, line, column, snippet and the proven module address at; a hit without one carries unaddressed and fileId instead; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`. |
 | `cursor` | string | нет | Continue a previous search page. Bound to the question, source sets and page limit. Text search reads live sources; indexed providers report freshness and the build generation when known. |
+| `ignoreCase` | boolean | нет | Literal search without a role: ignore letter case. Omit to match case. |
 | `kind` | string | нет | `names` corpus only: narrow the search to one logical node kind. |
-| `limit` | integer | нет | Maximum matches per page, from 1 to 50. Provider roles may stop after their first 200 retrieved matches and mark the search incomplete. |
+| `limit` | integer | нет | Maximum matches per page, from 1 to 50. `symbol` and `semantic` may stop after their first 200 retrieved matches and mark the search incomplete. |
 | `query` | string | да | Literal BSL text, symbol, or metadata name to search for. |
-| `regex` | boolean | нет | Use a regular expression for local text search. |
-| `role` | string | нет | `text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself. |
+| `regex` | boolean | нет | Literal search without a role: match a regular expression instead of the literal text. |
+| `role` | string | нет | `text` corpus only: which provider answers. `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search, which pages to the last match. |
 | `scope` | string | нет | logical subtree address |
 
-**Результат сейчас:** Локальный поиск по BSL и именам и поиск через поставщика возвращают `data.matches`, `page.stoppedBy` и, пока есть следующие полученные совпадения, `cursor`. Текстовый курсор повторно читает исходники и сообщает `dataFreshness: unknown`, `pageConsistency: live`: изменения могут сдвигать совпадения между страницами. Курсоры имён и поставщика повторно собирают ответ и проверяют его отпечаток; изменение такого ответа даёт `stale_cursor`. Ответы RLM сообщают поколение сборки и неизвестную актуальность относительно исходников, включая пустой результат. Ответы bsl-analyzer также помечают актуальность как неизвестную; поколение его собственного индекса Unica не определяет. Общая ревизия дерева не вычисляется. Локальный текстовый режим поддерживает литерал и regex. Кодовая роль запрашивает до 200 совпадений, но внутренние пределы bsl-analyzer и RLM могут остановить поиск раньше. Последняя страница полученного окна имеет `page.stoppedBy: complete`; при достижении квоты секция сохраняет `searchComplete: false`, `status: limitReached` и нижнюю оценку числа совпадений; при потере результата статус становится `partial`. При 200 полученных совпадениях ответ рекомендует уточнить запрос. (отвечают типизированным `data`)
+**Результат сейчас:** Локальный поиск по BSL и именам и поиск через поставщика возвращают `data.matches`, `page.stoppedBy` и, пока есть следующие полученные совпадения, `cursor`. Текстовый поиск без роли буквальный (литерал, `regex`, `ignoreCase`), принимает корень, ветвь, владельца или один модуль и сообщает `dataFreshness: unknown`, `pageConsistency: live`. Его курсор продолжает выдачу до последнего совпадения с места остановки, страница может закончиться по времени (`page.stoppedBy: deadline`), а изменение выданных совпадений в файле продолжения даёт `stale_cursor`. Курсоры имён и ранжирующих ролей повторно собирают ответ и проверяют его отпечаток; изменение такого ответа даёт `stale_cursor`. Ответы RLM сообщают поколение сборки и неизвестную актуальность относительно исходников, включая пустой результат. Ответы bsl-analyzer также помечают актуальность как неизвестную; поколение его собственного индекса Unica не определяет. Общая ревизия дерева не вычисляется. Роли `symbol` и `semantic` запрашивают до 200 совпадений, но внутренние пределы bsl-analyzer и RLM могут остановить поиск раньше. Последняя страница полученного окна имеет `page.stoppedBy: complete`; при достижении квоты секция сохраняет `searchComplete: false`, `status: limitReached` и нижнюю оценку числа совпадений; при потере результата статус становится `partial`. При 200 полученных совпадениях ответ рекомендует уточнить запрос. (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 

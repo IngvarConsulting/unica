@@ -77,7 +77,7 @@ fn catalog_attribute_provider_transfers_each_closed_enum_to_row_and_detail() {
                 assert_eq!(node["props"][name], json!(expected));
                 assert_eq!(node["props"]["required"], false);
                 assert_eq!(node["props"]["synonym"], "Language code");
-                assert!(node["props"]["type"].is_string());
+                assert!(node["props"]["type"].is_object());
                 for old_section_fact in ["LineNumberLength", "Use"] {
                     assert!(node["props"].get(old_section_fact).is_none());
                 }
@@ -137,7 +137,7 @@ fn assert_bad_fact_is_local(payload: Value, name: &str) {
         }
         assert_eq!(node["props"]["required"], false);
         assert_eq!(node["props"]["synonym"], "Language code");
-        assert!(node["props"]["type"].is_string());
+        assert!(node["props"]["type"].is_object());
         assert!(
             node["limits"]
                 .as_array()
@@ -192,7 +192,8 @@ fn catalog_attribute_provider_keeps_contexts_closed_and_ignores_raw_item_keys() 
         assert_absent(&node);
     }
     // StandardAttribute has its own closed observation profile. Shared names
-    // retain tagged values there instead of inheriting the Attribute enums.
+    // keep their own observed values there instead of inheriting the
+    // Attribute enums.
     for source_kind in [None, Some(SourceSetKind::Configuration)] {
         let standard = project(
             "main:Catalog.Items.TabularSection.Lines.StandardAttribute.LineNumber",
@@ -202,8 +203,8 @@ fn catalog_attribute_provider_keeps_contexts_closed_and_ignores_raw_item_keys() 
         assert!(standard["props"].get("Indexing").is_none());
         for name in ["FullTextSearch", "DataHistory"] {
             assert_eq!(
-                serde_json::from_str::<Value>(standard["props"][name].as_str().unwrap()).unwrap(),
-                json!({"kind": "text", "value": "Use"}),
+                standard["props"][name],
+                json!("Use"),
                 "the independent standard attribute observation must survive: {standard}"
             );
         }
@@ -250,24 +251,37 @@ fn tooltip_observations(value: Value) -> Value {
 }
 
 #[test]
-fn catalog_attribute_provider_tooltip_keeps_the_tagged_localized_value_in_row_and_detail() {
-    for value in [
-        json!({"kind": "localizedString", "values": []}),
-        json!({"kind": "localizedString", "values": [
-            {"language": "ru", "content": " Подсказка & текст "},
-            {"language": "en", "content": ""},
-            {"language": " custom language ", "content": "Line 1\nLine 2"},
-            {"language": "", "content": "Empty language is not inferred"}
-        ]}),
-    ] {
-        for node in attribute_views(payload(tooltip_observations(value.clone()))) {
-            let compact = node["props"]["ToolTip"].as_str().unwrap();
-            assert_eq!(serde_json::from_str::<Value>(compact).unwrap(), value);
-            assert!(compact.len() <= 2048);
-            assert!(node["limits"].as_array().is_none_or(Vec::is_empty));
-            for (name, expected, _) in ENUMS {
-                assert_eq!(node["props"][name], expected);
-            }
+fn catalog_attribute_provider_tooltip_publishes_localized_values_in_row_and_detail() {
+    let values = json!([
+        {"language": "ru", "content": " Подсказка & текст "},
+        {"language": "en", "content": ""},
+        {"language": " custom language ", "content": "Line 1\nLine 2"},
+        {"language": "", "content": "Empty language is not inferred"}
+    ]);
+    let value = json!({"kind": "localizedString", "values": values.clone()});
+    for node in attribute_views(payload(tooltip_observations(value))) {
+        // Translations arrive as nested JSON in source order, not as a
+        // string and not under the observation wrapper.
+        assert_eq!(node["props"]["ToolTip"], values, "{node}");
+        assert!(
+            serde_json::to_string(&node["props"]["ToolTip"])
+                .unwrap()
+                .len()
+                <= 2048
+        );
+        assert!(node["limits"].as_array().is_none_or(Vec::is_empty));
+        for (name, expected, _) in ENUMS {
+            assert_eq!(node["props"][name], expected);
+        }
+    }
+    // An empty translation set is no value: the key is absent and no limit is
+    // claimed, while independent facts survive.
+    let empty = json!({"kind": "localizedString", "values": []});
+    for node in attribute_views(payload(tooltip_observations(empty))) {
+        assert!(node["props"].get("ToolTip").is_none(), "{node}");
+        assert!(node["limits"].as_array().is_none_or(Vec::is_empty));
+        for (name, expected, _) in ENUMS {
+            assert_eq!(node["props"][name], expected);
         }
     }
 }
@@ -302,15 +316,20 @@ fn catalog_attribute_provider_tooltip_rejects_wrong_shapes_and_duplicate_languag
 
 #[test]
 fn catalog_attribute_provider_tooltip_obeys_the_utf8_compact_property_boundary() {
-    let empty = json!({"kind": "localizedString", "values": [{"language": "ru", "content": ""}]});
+    // The bound applies to the published value: the translations array.
+    let empty = json!([{"language": "ru", "content": ""}]);
     let available = 2048 - serde_json::to_string(&empty).unwrap().len();
     let content = format!("{}{}", "я".repeat(available / 2), "x".repeat(available % 2));
-    let value =
-        json!({"kind": "localizedString", "values": [{"language": "ru", "content": content}]});
-    for node in attribute_views(payload(tooltip_observations(value.clone()))) {
-        let compact = node["props"]["ToolTip"].as_str().unwrap();
-        assert_eq!(compact.len(), 2048);
-        assert_eq!(serde_json::from_str::<Value>(compact).unwrap(), value);
+    let values = json!([{"language": "ru", "content": content}]);
+    let value = json!({"kind": "localizedString", "values": values.clone()});
+    for node in attribute_views(payload(tooltip_observations(value))) {
+        assert_eq!(node["props"]["ToolTip"], values, "{node}");
+        assert_eq!(
+            serde_json::to_string(&node["props"]["ToolTip"])
+                .unwrap()
+                .len(),
+            2048
+        );
     }
     let value = json!({"kind": "localizedString", "values": [{"language": "ru", "content": format!("{content}x")}]});
     assert_bad_fact_is_local(payload(tooltip_observations(value)), "ToolTip");

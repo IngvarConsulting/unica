@@ -84,6 +84,8 @@ impl SubsystemOperation {
 impl InterfaceOperation {
     pub fn contract(self) -> OperationContract {
         let (schema, example) = match self {
+            Self::PanelsSet => return crate::interface_operations::panels_contract(),
+            Self::HomePageSet => return crate::interface_operations::home_page_contract(),
             Self::VisibilitySet => (
                 object(
                     &[

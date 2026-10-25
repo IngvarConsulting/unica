@@ -25,7 +25,15 @@
         },
         {
           "pointer": "/data/props/type",
-          "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Catalog.Items\"}],\"mutationCapability\":\"editable\"}"
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "Catalog.Items"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
         }
       ],
       "captures": {
@@ -115,7 +123,10 @@
       "assertions": [
         {
           "pointer": "/data/props/fillValue",
-          "eq": "{\"kind\":\"boolean\",\"value\":false}"
+          "eq": {
+            "kind": "boolean",
+            "value": false
+          }
         }
       ]
     },
@@ -134,7 +145,15 @@
         },
         {
           "pointer": "/data/props/type",
-          "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Catalog.Items\"}],\"mutationCapability\":\"editable\"}"
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "Catalog.Items"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
         }
       ],
       "fileAssertions": [
@@ -159,7 +178,11 @@
       "assertions": [
         {
           "pointer": "/data/props/fillValue",
-          "eq": "{\"kind\":\"reference\",\"metadataPath\":\"Enum.Flags\",\"item\":\"EnumValue.Yes\"}"
+          "eq": {
+            "kind": "reference",
+            "metadataPath": "Enum.Flags",
+            "item": "EnumValue.Yes"
+          }
         }
       ]
     }

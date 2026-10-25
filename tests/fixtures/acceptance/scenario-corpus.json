@@ -17763,7 +17763,15 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Catalog.Items\"}],\"mutationCapability\":\"editable\"}"
+       "eq": {
+        "variants": [
+         {
+          "kind": "reference",
+          "metadataPath": "Catalog.Items"
+         }
+        ],
+        "mutationCapability": "editable"
+       }
       },
       {
        "pointer": "/data/props/incomplete",
@@ -17771,7 +17779,11 @@
       },
       {
        "pointer": "/data/props/fillValue",
-       "eq": "{\"kind\":\"reference\",\"metadataPath\":\"Catalog.Items\",\"item\":\"EmptyRef\"}"
+       "eq": {
+        "kind": "reference",
+        "metadataPath": "Catalog.Items",
+        "item": "EmptyRef"
+       }
       }
      ],
      "fileAssertions": [
@@ -17818,7 +17830,15 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Enum.Flags\"}],\"mutationCapability\":\"editable\"}"
+       "eq": {
+        "variants": [
+         {
+          "kind": "reference",
+          "metadataPath": "Enum.Flags"
+         }
+        ],
+        "mutationCapability": "editable"
+       }
       },
       {
        "pointer": "/data/props/incomplete",
@@ -17826,7 +17846,11 @@
       },
       {
        "pointer": "/data/props/fillValue",
-       "eq": "{\"kind\":\"reference\",\"metadataPath\":\"Enum.Flags\",\"item\":\"EnumValue.Yes\"}"
+       "eq": {
+        "kind": "reference",
+        "metadataPath": "Enum.Flags",
+        "item": "EnumValue.Yes"
+       }
       }
      ],
      "fileAssertions": [
@@ -17873,7 +17897,15 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"variants\":[{\"kind\":\"characteristicTypes\",\"metadataPath\":\"ChartOfCharacteristicTypes.Properties\"}],\"mutationCapability\":\"readOnly\"}"
+       "eq": {
+        "variants": [
+         {
+          "kind": "characteristicTypes",
+          "metadataPath": "ChartOfCharacteristicTypes.Properties"
+         }
+        ],
+        "mutationCapability": "readOnly"
+       }
       },
       {
        "pointer": "/data/props/incomplete",
@@ -33921,7 +33953,15 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"variants\":[{\"kind\":\"typeId\",\"typeId\":\"41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f\"}],\"mutationCapability\":\"readOnly\"}"
+       "eq": {
+        "variants": [
+         {
+          "kind": "typeId",
+          "typeId": "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f"
+         }
+        ],
+        "mutationCapability": "readOnly"
+       }
       },
       {
        "pointer": "/data/props/incomplete",
@@ -38308,11 +38348,22 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"raw\":\"tns:EnterpriseData\",\"prefix\":\"tns\",\"local\":\"EnterpriseData\",\"namespace\":\"http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3\"}"
+       "eq": {
+        "raw": "tns:EnterpriseData",
+        "prefix": "tns",
+        "local": "EnterpriseData",
+        "namespace": "http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3"
+       }
       },
       {
        "pointer": "/data/props/bounds",
-       "eq": "{\"lower\":\"1\",\"upper\":\"1\",\"lowerExplicit\":false,\"upperExplicit\":false,\"unbounded\":false}"
+       "eq": {
+        "lower": "1",
+        "upper": "1",
+        "lowerExplicit": false,
+        "upperExplicit": false,
+        "unbounded": false
+       }
       }
      ]
     },
@@ -38327,11 +38378,22 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"raw\":\"tns:ВерсияФормата\",\"prefix\":\"tns\",\"local\":\"ВерсияФормата\",\"namespace\":\"http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3\"}"
+       "eq": {
+        "raw": "tns:ВерсияФормата",
+        "prefix": "tns",
+        "local": "ВерсияФормата",
+        "namespace": "http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3"
+       }
       },
       {
        "pointer": "/data/props/bounds",
-       "eq": "{\"lower\":\"0\",\"upper\":\"1\",\"lowerExplicit\":true,\"upperExplicit\":false,\"unbounded\":false}"
+       "eq": {
+        "lower": "0",
+        "upper": "1",
+        "lowerExplicit": true,
+        "upperExplicit": false,
+        "unbounded": false
+       }
       }
      ]
     },
@@ -38346,11 +38408,22 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"raw\":\"v8:UUID\",\"prefix\":\"v8\",\"local\":\"UUID\",\"namespace\":\"http://v8.1c.ru/8.1/data/core\"}"
+       "eq": {
+        "raw": "v8:UUID",
+        "prefix": "v8",
+        "local": "UUID",
+        "namespace": "http://v8.1c.ru/8.1/data/core"
+       }
       },
       {
        "pointer": "/data/props/bounds",
-       "eq": "{\"lower\":\"1\",\"upper\":\"3\",\"lowerExplicit\":true,\"upperExplicit\":true,\"unbounded\":false}"
+       "eq": {
+        "lower": "1",
+        "upper": "3",
+        "lowerExplicit": true,
+        "upperExplicit": true,
+        "unbounded": false
+       }
       }
      ]
     }

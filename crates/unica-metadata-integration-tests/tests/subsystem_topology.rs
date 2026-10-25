@@ -263,19 +263,18 @@ mod tests {
     }
 
     #[test]
-    fn unregistered_oversized_xml_does_not_spend_the_topology_byte_budget() {
+    fn unregistered_large_xml_is_not_read_for_the_topology() {
         let root = tempfile::tempdir().unwrap();
         write_configuration(root.path(), &["Registered"]);
         write_subsystem(root.path(), &[], "Registered", "true", &[], &[]);
         let source_root = root.path().canonicalize().unwrap();
         let expected = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
         let unrelated = fs::File::create(root.path().join("Subsystems/Unregistered.xml")).unwrap();
-        unrelated
-            .set_len((SUBSYSTEM_SCAN_MAX_BYTES as u64) + 1)
-            .unwrap();
+        // A large file outside the registration leaves the topology as it was.
+        unrelated.set_len(65 * 1024 * 1024).unwrap();
 
         let actual = capture_registered_subsystem_topology(&source_root, checkpoint)
-            .expect("an unregistered XML must not spend the registered byte budget");
+            .expect("an unregistered XML is never read");
 
         assert_eq!(actual, expected);
     }
@@ -340,21 +339,29 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// #1119: a registered descriptor past the former 64 MiB budget is read;
+    /// its size is no reason to refuse the topology.
     #[test]
-    fn registered_oversized_descriptor_fails_closed() {
+    fn registered_descriptor_past_the_former_byte_budget_is_read() {
         let root = tempfile::tempdir().unwrap();
         write_configuration(root.path(), &["Registered"]);
-        fs::create_dir_all(root.path().join("Subsystems")).unwrap();
-        let descriptor = fs::File::create(root.path().join("Subsystems/Registered.xml")).unwrap();
-        descriptor
-            .set_len((SUBSYSTEM_SCAN_MAX_BYTES as u64) + 1)
-            .unwrap();
+        write_subsystem(root.path(), &[], "Registered", "true", &[], &[]);
         let source_root = root.path().canonicalize().unwrap();
+        let expected = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
+        let descriptor = root.path().join("Subsystems/Registered.xml");
+        let text = fs::read_to_string(&descriptor).unwrap().replace(
+            "</MetaDataObject>",
+            &format!("<!--{}--></MetaDataObject>", "x".repeat(65 * 1024 * 1024)),
+        );
+        fs::write(descriptor, text).unwrap();
 
-        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
-            .expect_err("a registered descriptor must spend the registered byte budget");
+        let actual = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect("a large registered descriptor is read whole");
 
-        assert!(error.to_string().contains("byte"), "{error}");
+        // Compare the structure only: the dependency documents now carry the
+        // large descriptor and must not be printed on failure.
+        assert!(actual.roots == expected.roots);
+        assert!(actual.dependency_paths == expected.dependency_paths);
     }
 
     #[test]
@@ -710,9 +717,6 @@ mod tests {
             source_root,
             SecureTreeCaptureLimits {
                 maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2,
-                maximum_entries: SUBSYSTEM_SCAN_MAX_ENTRIES,
-                maximum_files: SUBSYSTEM_SCAN_MAX_FILES,
-                maximum_bytes: SUBSYSTEM_SCAN_MAX_BYTES,
             },
             &mut checkpoint,
         )?;

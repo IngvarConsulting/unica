@@ -7,22 +7,32 @@ use crate::domain::engine::MissingEngineRefusal;
 use unica_work_control::provider_deadline::ProviderDeadline;
 /// Потолок страницы ветви графа: объявленный максимум поверхности.
 const CALL_GRAPH_PAGE_LIMIT: usize = 50;
-/// Provider APIs accept a top-N request, but no offset. Keep their existing
-/// public bound as the fetch window and page the returned evidence separately.
+/// Ranked providers (`symbol`, `semantic`) accept a top-N request, but no
+/// offset, and a larger N is another answer rather than a longer one (RLM
+/// splits N into per-category quotas). Keep their
+/// public bound as the fetch window and page the returned evidence
+/// separately.
 const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
 
+use super::server::text_search::{
+    choose_engine, scan_text_page, TextContinuation, TextEngine, TextPageRequest, TextQuery,
+    TextScan, TextScanEnd, TextSearchError, TextSource, WALK_PAGE_RESPONSE_BUDGET_DIVISOR,
+};
 use super::v13_call_graph::{
     branch_collection, branch_direction, branch_owner, call_graph_support, complete_branch,
     declare_method_branches, fetch_summary, module_file_for_placed, placed_for_module_file,
     unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
-use super::v13_read_modes::{attach_can, operation_node_with, search_scope_prefix, source_backed};
+use super::v13_read_modes::{
+    attach_can, operation_node_with, search_scope_route, source_backed, SearchScopeRoute,
+};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
+use crate::application::v13::check::{DEFAULT_CHECK_LIMIT, MAX_CHECK_LIMIT};
 use crate::application::v13::diff::{
     DiffError, DiffHandler, DiffPage, DiffRequest, DiffSource, DEFAULT_DIFF_LIMIT, MAX_DIFF_LIMIT,
 };
-use crate::application::v13::find::{FindIndex, FindRequest};
+use crate::application::v13::find::{public_name_match, FindIndex, FindRequest, NameRanker};
 use crate::application::v13::resolve::{
     LinePlace, ModuleLine, PathLine, ResolveError, ResolveRequest, ResolvedLines, ResolvedPath,
     ResolvedSource,
@@ -45,7 +55,6 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Instant;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_code_intelligence::model::CallGraphState;
 use unica_code_intelligence::model::CodeIntelligenceContext;
@@ -55,7 +64,8 @@ use unica_code_intelligence::model::SearchRequest;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
 use unica_navigation::result_store::{
-    SearchCursorBinding, SearchCursorStore, StoredSearchCursor, ViewCursorBinding, ViewCursorStore,
+    SearchAfter, SearchCursorBinding, SearchCursorError, SearchCursorStore, SearchResume,
+    StoredSearchCursor, ViewCursorBinding, ViewCursorStore,
 };
 use unica_navigation::source_navigation::{
     SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
@@ -92,11 +102,15 @@ pub(crate) struct CanonicalV13ReadService {
     #[cfg(test)]
     search_providers:
         Option<Vec<Arc<dyn unica_code_intelligence::model::CodeIntelligenceProvider>>>,
+    #[cfg(test)]
+    text_engine: Option<TextEngine>,
+    #[cfg(test)]
+    walk_budget: Option<std::time::Duration>,
 }
 
 /// Снимки продолжений лежат во временном файле: в памяти процесса остаются
 /// узлы и границы элементов.
-fn product_view_cursors() -> ViewCursorStore {
+pub(crate) fn product_view_cursors() -> ViewCursorStore {
     use crate::infrastructure::platform::{TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
     ViewCursorStore::new(VIEW_SNAPSHOT_MAX_RETAINED_BYTES)
         .with_spill(Arc::new(TempFileSpill::default()))
@@ -114,11 +128,19 @@ impl Default for CanonicalV13ReadService {
             ),
             #[cfg(test)]
             search_providers: None,
+            #[cfg(test)]
+            text_engine: None,
+            #[cfg(test)]
+            walk_budget: None,
         }
     }
 }
 
 impl CanonicalInvocationService for CanonicalV13ReadService {
+    fn check_snapshots(&self) -> Option<Arc<ViewCursorStore>> {
+        Some(Arc::clone(&self.cursors))
+    }
+
     fn prepare(
         &self,
         invocation: &ActorBoundInvocation,
@@ -261,6 +283,14 @@ impl CanonicalV13ReadService {
     ) -> Self {
         Self {
             search_providers: Some(providers),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_text_engine_for_test(engine: TextEngine) -> Self {
+        Self {
+            text_engine: Some(engine),
             ..Self::default()
         }
     }
@@ -1271,39 +1301,20 @@ impl CanonicalV13ReadService {
             };
             return self.execute_search_role(invocation, query, role, arguments, cancellation);
         }
-        let (matcher, mode) = match arguments.get("regex") {
-            None | Some(Value::Bool(false)) => (
-                super::v13_read_modes::SearchMatcher::Literal(query.to_string()),
-                "literal",
-            ),
-            Some(Value::Bool(true)) => {
-                // Bounded compile: a pattern that cannot be compiled within
-                // the size budget is a caller error, not a provider failure.
-                match regex::RegexBuilder::new(query)
-                    .size_limit(1 << 20)
-                    .dfa_size_limit(1 << 20)
-                    .build()
-                {
-                    Ok(compiled) => (
-                        super::v13_read_modes::SearchMatcher::Regex(compiled),
-                        "regex",
-                    ),
-                    Err(error) => {
-                        return error_result(
-                            None,
-                            RefusalCode::BadValue,
-                            format!("search regex is not a valid pattern: {error}"),
-                        )
-                    }
-                }
+        let flag = |name: &str| match arguments.get(name) {
+            None | Some(Value::Bool(false)) => Ok(false),
+            Some(Value::Bool(true)) => Ok(true),
+            Some(_) => Err(format!("search {name} must be a boolean")),
+        };
+        let (regex, ignore_case) = match (flag("regex"), flag("ignoreCase")) {
+            (Ok(regex), Ok(ignore_case)) => (regex, ignore_case),
+            (Err(error), _) | (_, Err(error)) => {
+                return error_result(None, RefusalCode::BadValue, error)
             }
-            Some(_) => {
-                return error_result(
-                    None,
-                    RefusalCode::BadValue,
-                    "search regex must be a boolean",
-                )
-            }
+        };
+        let text_query = match TextQuery::new(query, regex, ignore_case) {
+            Ok(text_query) => text_query,
+            Err(error) => return error_result(None, RefusalCode::BadValue, error),
         };
         let limit = match arguments.get("limit") {
             Some(value) => match bounded_usize(value).filter(|limit| *limit <= 50) {
@@ -1339,7 +1350,7 @@ impl CanonicalV13ReadService {
             Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
         };
         let selected = sources
-            .into_iter()
+            .iter()
             .filter(|source| {
                 scope
                     .as_ref()
@@ -1353,86 +1364,30 @@ impl CanonicalV13ReadService {
                 "search scope does not name an admitted source set",
             );
         }
-        if let Some(scope) = scope.as_ref() {
-            if let Err(error) = search_scope_prefix(scope) {
-                return error_result(Some(scope.to_string()), error.code(), error.to_string());
-            }
-            let source = selected
-                .first()
-                .expect("a scoped source set is admitted above");
-            let authority = match source.logical_view_read_authority(cancellation) {
-                Ok(authority) => authority,
-                Err(error) => {
-                    return error_result_detailed(
-                        Some(scope.to_string()),
-                        RefusalDetail::ProviderAbsent,
-                        error,
-                    )
-                }
-            };
-            let snapshot = match authority.snapshot(scope) {
-                Ok(snapshot) => snapshot,
-                Err(error) => return view_error_result(Some(scope.to_string()), error),
-            };
-            if let Err(error) = authority.validate_search_scope_owner(scope, &snapshot) {
-                return view_error_result(Some(scope.to_string()), error);
-            }
-            if scope.segments()[0].kind() == NodeKind::Configuration
-                || scope.segments()[0].name().is_none()
-            {
-                // The root and an unnamed kind branch both depend on the
-                // configuration descriptor, but neither needs its projected
-                // child collection before a text-search page is returned.
-                let root_at =
-                    QualifiedAddress::parse(&format!("{}:Configuration", scope.source_set()))
-                        .expect("Configuration is a canonical root address");
-                let descriptor = match authority.identity_export_path(&root_at) {
-                    Ok(descriptor) => descriptor,
-                    Err(error) => return view_error_result(Some(scope.to_string()), error),
-                };
-                if let Some(descriptor) = descriptor {
-                    if let Err(error) = source
-                        .retained_root()
-                        .read_relative_regular_prefix(std::path::Path::new(&descriptor), 1)
-                    {
-                        let message = format!("search scope descriptor is unavailable: {error}");
-                        return if error.kind() == std::io::ErrorKind::NotFound {
-                            error_result(
-                                Some(scope.to_string()),
-                                RefusalCode::InvalidState,
-                                message,
-                            )
-                        } else {
-                            error_result_detailed(
-                                Some(scope.to_string()),
-                                RefusalDetail::SourceUnreadable,
-                                message,
-                            )
-                        };
-                    }
-                }
-            }
-        }
-        let source_sets = selected
-            .iter()
-            .map(|source| source.source_set_name().to_owned())
-            .collect();
+        let route = match scope.as_ref() {
+            None => None,
+            Some(scope) => match self.admit_text_scope(scope, selected[0], cancellation) {
+                Ok(route) => Some(route),
+                Err(refusal) => return *refusal,
+            },
+        };
+        let mode = text_query.mode;
         let binding = SearchCursorBinding {
             workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
             query: query.to_owned(),
             scope: scope.as_ref().map(ToString::to_string),
-            mode: mode.to_owned(),
+            mode: text_search_binding_mode(mode, ignore_case),
             kind: None,
-            source_sets,
+            source_sets: selected
+                .iter()
+                .map(|source| source.source_set_name().to_owned())
+                .collect(),
             result_fingerprint: None,
             page_limit: limit,
         };
-        let cursor = match arguments.get("cursor") {
+        let cursor_token = match arguments.get("cursor") {
             None => None,
-            Some(Value::String(token)) => match self.search_cursors.read(token, &binding) {
-                Ok(cursor) => Some((token.as_str(), cursor)),
-                Err(error) => return error.into_result(None),
-            },
+            Some(Value::String(token)) => Some(token.as_str()),
             Some(_) => {
                 return error_result(
                     None,
@@ -1441,143 +1396,389 @@ impl CanonicalV13ReadService {
                 )
             }
         };
-        let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
-        let mut skip = offset;
-        let mut matches = Vec::new();
-        let mut uncovered = 0_usize;
-        let mut uncovered_details = Vec::new();
-        let mut scan_complete = true;
-        for source in selected {
-            let scope_at = scope.clone().unwrap_or_else(|| {
-                QualifiedAddress::parse(&format!("{}:Configuration", source.source_set_name()))
-                    .expect("actor source-set names and Configuration address are canonical")
-            });
-            let scope_prefix = match search_scope_prefix(&scope_at) {
-                Ok(prefix) => prefix,
-                Err(error) => {
-                    return error_result(
-                        Some(scope_at.to_string()),
-                        error.code(),
-                        error.to_string(),
-                    )
+        let (offset, continuation) = match cursor_token {
+            None => (0, TextContinuation::Start),
+            Some(token) => match self.search_cursors.resume_position(token, &binding) {
+                Ok((offset, resume)) if !resume.file.is_empty() => {
+                    (offset, TextContinuation::Resume(resume))
                 }
-            };
-            match source.search_bsl_literal(
-                &matcher,
-                &mut skip,
-                limit.saturating_add(1).saturating_sub(matches.len()),
-                scope_prefix.as_deref(),
-                &scope_at,
-                cancellation,
-            ) {
-                Ok(mut found) => {
-                    let mut groups = std::collections::BTreeMap::<String, Vec<usize>>::new();
-                    for (index, hit) in found.matches.iter().enumerate() {
-                        if let Some(at) = hit.get("at").and_then(Value::as_str) {
-                            groups.entry(at.to_owned()).or_default().push(index);
-                        }
-                    }
-                    // A page retains its hits, not every full module projection.
-                    // Each module is parsed once and released before the next one.
-                    for (raw, indices) in groups {
-                        let Ok(module) = QualifiedAddress::parse(&raw) else {
-                            continue;
-                        };
-                        let Ok(authority) = source.logical_view_read_authority(cancellation) else {
-                            continue;
-                        };
-                        for index in indices {
-                            let hit = &mut found.matches[index];
-                            let Some(line) = hit
-                                .get("line")
-                                .and_then(Value::as_u64)
-                                .and_then(|line| usize::try_from(line).ok())
-                            else {
-                                continue;
-                            };
-                            let body = match authority.narrowest_body_for_lines(&module, line, line)
-                            {
-                                Ok(body) => body.to_string(),
-                                Err(error) => {
-                                    if matches!(
-                                        error.code(),
-                                        RefusalCode::Cancelled
-                                            | RefusalCode::DeadlineExceeded
-                                            | RefusalCode::ConcurrentChange
-                                    ) {
-                                        return view_error_result(Some(module.to_string()), error);
-                                    }
-                                    hit["limits"] = json!(["Method boundaries could not be established; this address opens the module Body line"]);
-                                    format!("{module}.Body")
-                                }
-                            };
-                            hit["at"] = json!(format!("{body}#L{line}"));
-                        }
-                    }
-                    matches.extend(found.matches);
-                    uncovered += found.uncovered;
-                    uncovered_details.extend(
-                        found
-                            .details
-                            .into_iter()
-                            .take(32_usize.saturating_sub(uncovered_details.len())),
-                    );
-                    scan_complete &= found.scan_complete;
+                // Every continuation names the file it re-enters.
+                Ok(_) => return SearchCursorError::Stale.into_result(None),
+                Err(error) => return error.into_result(None),
+            },
+        };
+        let text_sources = selected
+            .iter()
+            .map(|source| {
+                let root = source.retained_root().path().to_path_buf();
+                TextSource {
+                    source,
+                    scope: scope.as_ref().map_or_else(
+                        || format!("{}:Configuration", source.source_set_name()),
+                        ToString::to_string,
+                    ),
+                    prefix: route.as_ref().and_then(|route| route.prefix.clone()),
+                    // A nested source set owns its files; its parent skips them.
+                    excluded: sources
+                        .iter()
+                        .filter_map(|other| {
+                            let other = other.retained_root();
+                            let nested = other.path().strip_prefix(&root).ok()?;
+                            (!nested.as_os_str().is_empty())
+                                .then(|| nested.to_string_lossy().replace('\\', "/"))
+                        })
+                        .collect(),
                 }
-                Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+            })
+            .collect::<Vec<_>>();
+        // Git reads a first page fastest; a continuation re-enters its file
+        // through the walk, which does not read the delivered part again.
+        let engine = match continuation {
+            TextContinuation::Start => choose_engine(&text_query, &text_sources, cancellation),
+            TextContinuation::Resume(_) => TextEngine::Walk,
+        };
+        #[cfg(test)]
+        let engine = self
+            .text_engine
+            .filter(|_| text_query.candidates.is_some() && continuation == TextContinuation::Start)
+            .unwrap_or(engine);
+        let walk_budget = {
+            let remaining =
+                invocation.remaining_response_budget() / WALK_PAGE_RESPONSE_BUDGET_DIVISOR;
+            (!remaining.is_zero()).then_some(remaining)
+        };
+        #[cfg(test)]
+        let walk_budget = self.walk_budget.or(walk_budget);
+        let request = TextPageRequest {
+            query: &text_query,
+            sources: text_sources,
+            module: route
+                .as_ref()
+                .and_then(|route| route.module.as_ref())
+                .map(ToString::to_string),
+            wanted: limit + 1,
+            engine,
+            continuation,
+            walk_budget,
+        };
+        let scan = match scan_text_page(&request, cancellation) {
+            Ok(scan) => scan,
+            Err(TextSearchError::Interrupted(error)) => return view_error_result(None, error),
+            Err(TextSearchError::Engine(error)) => {
+                return error_result(None, RefusalCode::ProviderUnavailable, error)
             }
-            if matches.len() > limit {
-                scan_complete = false;
-                break;
+        };
+        let stored = match cursor_token {
+            None => None,
+            Some(token) => {
+                // The traversal must still reach the file the cursor
+                // re-enters and the matches it delivered there.
+                let Some(passed) = scan.passed.clone() else {
+                    return SearchCursorError::Stale.into_result(None);
+                };
+                let mut answered = binding.clone();
+                answered.result_fingerprint = Some(passed);
+                match self.search_cursors.read(token, &answered) {
+                    Ok(stored) => Some(stored),
+                    Err(error) => return error.into_result(None),
+                }
             }
-        }
-        self.search_page(
-            matches,
-            cursor,
-            binding,
-            uncovered,
-            uncovered_details,
-            scan_complete,
-        )
+        };
+        self.text_search_page(&sources, scan, binding, stored, offset, mode, cancellation)
     }
 
-    fn search_page(
+    /// Checks a text-search scope against the admitted source set before
+    /// any source is read, and routes it to a subtree and a module.
+    fn admit_text_scope(
         &self,
-        matches: Vec<Value>,
-        cursor: Option<(&str, StoredSearchCursor)>,
-        binding: SearchCursorBinding,
-        uncovered: usize,
-        uncovered_details: Vec<Value>,
-        scan_complete: bool,
+        scope: &QualifiedAddress,
+        source: &super::server::ActorReadSourceCapability,
+        cancellation: &CancellationToken,
+    ) -> Result<SearchScopeRoute, Box<DomainResult>> {
+        let refuse = |result: DomainResult| Box::new(result);
+        let route = search_scope_route(scope).map_err(|error| {
+            refuse(error_result(
+                Some(scope.to_string()),
+                error.code(),
+                error.to_string(),
+            ))
+        })?;
+        // A module is admitted through its owner: the registered object, or
+        // the configuration for its own application modules.
+        let owner = match route.module {
+            None => scope.clone(),
+            Some(_) => {
+                let first = &scope.segments()[0];
+                let owner = match first.name() {
+                    Some(name) if first.kind() != NodeKind::Module => {
+                        format!("{}:{}.{name}", scope.source_set(), first.kind().as_str())
+                    }
+                    _ => format!("{}:Configuration", scope.source_set()),
+                };
+                QualifiedAddress::parse(&owner).expect("a module owner is a canonical address")
+            }
+        };
+        let authority = source
+            .logical_view_read_authority(cancellation)
+            .map_err(|error| {
+                refuse(error_result_detailed(
+                    Some(scope.to_string()),
+                    RefusalDetail::ProviderAbsent,
+                    error,
+                ))
+            })?;
+        let snapshot = authority
+            .snapshot(&owner)
+            .map_err(|error| refuse(view_error_result(Some(scope.to_string()), error)))?;
+        authority
+            .validate_search_scope_owner(&owner, &snapshot)
+            .map_err(|error| refuse(view_error_result(Some(scope.to_string()), error)))?;
+        if owner.segments()[0].kind() == NodeKind::Configuration
+            || owner.segments()[0].name().is_none()
+        {
+            // The root and an unnamed kind branch both depend on the
+            // configuration descriptor, but neither needs its projected
+            // child collection before a text-search page is returned.
+            let root_at = QualifiedAddress::parse(&format!("{}:Configuration", scope.source_set()))
+                .expect("Configuration is a canonical root address");
+            let descriptor = authority
+                .identity_export_path(&root_at)
+                .map_err(|error| refuse(view_error_result(Some(scope.to_string()), error)))?;
+            if let Some(descriptor) = descriptor {
+                if let Err(error) = source
+                    .retained_root()
+                    .read_relative_regular_prefix(std::path::Path::new(&descriptor), 1)
+                {
+                    let message = format!("search scope descriptor is unavailable: {error}");
+                    return Err(refuse(if error.kind() == std::io::ErrorKind::NotFound {
+                        error_result(Some(scope.to_string()), RefusalCode::InvalidState, message)
+                    } else {
+                        error_result_detailed(
+                            Some(scope.to_string()),
+                            RefusalDetail::SourceUnreadable,
+                            message,
+                        )
+                    }));
+                }
+            }
+        }
+        Ok(route)
+    }
+
+    /// One page of a text-search scan: method-narrowed addresses, the byte
+    /// and count bounds, and the continuation after the last delivered hit.
+    #[allow(clippy::too_many_arguments)]
+    fn text_search_page(
+        &self,
+        sources: &[super::server::ActorReadSourceCapability],
+        scan: TextScan,
+        mut binding: SearchCursorBinding,
+        stored: Option<StoredSearchCursor>,
+        offset: usize,
+        mode: &str,
+        cancellation: &CancellationToken,
     ) -> DomainResult {
-        let state = if uncovered > 0 {
+        use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+        use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
+
+        let limit = binding.page_limit;
+        let mut values = scan
+            .hits
+            .iter()
+            .take(limit)
+            .map(|hit| hit.value.clone())
+            .collect::<Vec<_>>();
+        // A page retains its hits, not every full module projection: each
+        // module is parsed once and released before the next one.
+        let mut groups = std::collections::BTreeMap::<(String, String), Vec<usize>>::new();
+        for (index, hit) in scan.hits.iter().take(limit).enumerate() {
+            if let Some(at) = hit.value.get("at").and_then(Value::as_str) {
+                groups
+                    .entry((hit.source_set.clone(), at.to_owned()))
+                    .or_default()
+                    .push(index);
+            }
+        }
+        for ((source_set, raw), indices) in groups {
+            let Ok(module) = QualifiedAddress::parse(&raw) else {
+                continue;
+            };
+            let Some(source) = sources
+                .iter()
+                .find(|source| source.source_set_name() == source_set)
+            else {
+                continue;
+            };
+            let Ok(authority) = source.logical_view_read_authority(cancellation) else {
+                continue;
+            };
+            for index in indices {
+                let hit = &mut values[index];
+                let Some(line) = hit
+                    .get("line")
+                    .and_then(Value::as_u64)
+                    .and_then(|line| usize::try_from(line).ok())
+                else {
+                    continue;
+                };
+                let body = match authority.narrowest_body_for_lines(&module, line, line) {
+                    Ok(body) => body.to_string(),
+                    Err(error) => {
+                        if matches!(
+                            error.code(),
+                            RefusalCode::Cancelled
+                                | RefusalCode::DeadlineExceeded
+                                | RefusalCode::ConcurrentChange
+                        ) {
+                            return view_error_result(Some(module.to_string()), error);
+                        }
+                        hit["limits"] = json!(["Method boundaries could not be established; this address opens the module Body line"]);
+                        format!("{module}.Body")
+                    }
+                };
+                hit["at"] = json!(format!("{body}#L{line}"));
+            }
+        }
+        let scan_complete = scan.end == TextScanEnd::Complete;
+        let state = if scan.uncovered > 0 {
             "partial"
         } else if scan_complete {
             "completed"
         } else {
             "in progress"
         };
-        let summary = format!("{} BSL search {state}", binding.mode);
+        let summary = format!("{mode} BSL search {state}");
         let mut extra_data = Map::new();
         extra_data.insert("dataFreshness".into(), json!("unknown"));
         extra_data.insert("pageConsistency".into(), json!("live"));
         extra_data.insert(
             "fileCoverage".to_owned(),
             json!({
-                "complete": scan_complete && uncovered == 0,
+                "complete": scan_complete && scan.uncovered == 0,
                 "scanComplete": scan_complete,
-                "uncovered": uncovered,
-                "uncoveredIsLowerBound": !scan_complete,
-                "detailsTruncated": uncovered > uncovered_details.len(),
-                "details": uncovered_details,
+                "uncovered": scan.uncovered,
+                "uncoveredIsLowerBound": !scan_complete || scan.uncovered_lower_bound,
+                "detailsTruncated": scan.uncovered > scan.details.len(),
+                "details": scan.details,
             }),
         );
-        self.search_page_with_data(matches, cursor, binding, summary, extra_data)
+        // A cursor also carries the path it re-enters.
+        let resume_bytes = scan
+            .hits
+            .iter()
+            .map(|hit| &hit.next.0)
+            .chain(scan.time_next.as_ref().map(|next| &next.0))
+            .map(|next| match next {
+                TextContinuation::Resume(resume) => 2 * (16 + resume.file.len()),
+                TextContinuation::Start => 0,
+            })
+            .max()
+            .unwrap_or(0);
+        let measured_bytes = |items: &[Value]| {
+            search_page_probe_bytes(mode, items, &summary, &extra_data, None) + resume_bytes
+        };
+        if measured_bytes(&[]) > MAX_CANONICAL_RESULT_BYTES {
+            return error_result(
+                None,
+                RefusalCode::ResultTooLarge,
+                "search page metadata exceeds the transport limit",
+            );
+        }
+        let mut page = Vec::new();
+        let mut byte_stop = false;
+        for item in &values {
+            let mut candidate = page.clone();
+            candidate.push(item.clone());
+            let bytes = measured_bytes(&candidate);
+            if bytes > MAX_CANONICAL_RESULT_BYTES {
+                if page.is_empty() {
+                    return error_result(
+                        None,
+                        RefusalCode::ResultTooLarge,
+                        "one search result exceeds the transport limit",
+                    );
+                }
+                byte_stop = true;
+                break;
+            }
+            if bytes > PREFERRED_PAGE_BYTES && !page.is_empty() {
+                byte_stop = true;
+                break;
+            }
+            page.push(item.clone());
+        }
+        let consumed = page.len();
+        let next = if consumed < scan.hits.len() {
+            Some(scan.hits[consumed - 1].next.clone())
+        } else if scan.end == TextScanEnd::Time {
+            scan.time_next.clone()
+        } else {
+            None
+        };
+        let stopped_by = match &next {
+            None => "complete",
+            Some(_) if byte_stop => "bytes",
+            Some(_) if consumed < scan.hits.len() => "limit",
+            Some(_) => "deadline",
+        };
+        let mut result = DomainResult::success(summary);
+        result.data = Some(search_page_data(mode, &page, &extra_data));
+        result.page = Some(json!({"stoppedBy": stopped_by}));
+        if let Some((continuation, fingerprint)) = next {
+            let next_offset = match SearchCursorStore::next_offset(offset, consumed) {
+                Ok(offset) => offset,
+                Err(error) => return error.into_result(None),
+            };
+            let resume = match continuation {
+                TextContinuation::Resume(resume) => resume,
+                TextContinuation::Start => SearchResume::START,
+            };
+            binding.result_fingerprint = Some(fingerprint);
+            let issued = match stored {
+                Some(stored) => {
+                    self.search_cursors
+                        .insert_next_answer(&stored, &binding, next_offset, &resume)
+                }
+                None => self
+                    .search_cursors
+                    .insert_first_resumable(binding, next_offset, &resume),
+            };
+            match issued {
+                Ok(token) => result.cursor = Some(token),
+                Err(error) => return error.into_result(None),
+            }
+        }
+        result
     }
 
     fn search_page_with_data(
         &self,
         matches: Vec<Value>,
+        cursor: Option<(&str, StoredSearchCursor)>,
+        binding: SearchCursorBinding,
+        summary: String,
+        extra_data: Map<String, Value>,
+    ) -> DomainResult {
+        self.search_page_keyed(
+            matches,
+            None,
+            &SearchCursorStore::token_probe(),
+            cursor,
+            binding,
+            summary,
+            extra_data,
+        )
+    }
+
+    /// One search page. With `keys`, the rank of each match, the next
+    /// continuation resumes after the last match shown instead of at an
+    /// offset into an answer held whole.
+    #[allow(clippy::too_many_arguments)]
+    fn search_page_keyed(
+        &self,
+        matches: Vec<Value>,
+        keys: Option<&[SearchAfter]>,
+        cursor_probe: &str,
         cursor: Option<(&str, StoredSearchCursor)>,
         binding: SearchCursorBinding,
         summary: String,
@@ -1593,7 +1794,14 @@ impl CanonicalV13ReadService {
         let mut page_matches = Vec::new();
         let mut byte_stop = false;
         let measured_bytes = |items: &[Value]| {
-            search_page_probe_bytes(mode, items, &summary, &extra_data, revision.as_deref())
+            search_page_probe_bytes_with(
+                mode,
+                items,
+                &summary,
+                &extra_data,
+                revision.as_deref(),
+                cursor_probe,
+            )
         };
         if measured_bytes(&[]) > MAX_CANONICAL_RESULT_BYTES {
             return error_result(
@@ -1641,9 +1849,16 @@ impl CanonicalV13ReadService {
                 Ok(offset) => offset,
                 Err(error) => return error.into_result(None),
             };
+            let after =
+                keys.and_then(|keys| consumed.checked_sub(1).and_then(|last| keys.get(last)));
             let issued = match cursor {
-                Some((_, stored)) => self.search_cursors.insert_next(&stored, next_offset),
-                None => self.search_cursors.insert_first(binding, next_offset),
+                Some((_, stored)) => {
+                    self.search_cursors
+                        .insert_next_after(&stored, next_offset, after)
+                }
+                None => self
+                    .search_cursors
+                    .insert_first_after(binding, next_offset, after),
             };
             let issued = match issued {
                 Ok(token) => token,
@@ -1663,8 +1878,8 @@ impl CanonicalV13ReadService {
     /// ответе зовёт читать файл мимо адреса.
     /// Поиск по тексту силами провайдера выбранной роли.
     ///
-    /// `lexical` — буквальное совпадение, `symbol` — символьный индекс,
-    /// `semantic` — смысловая близость. Роли и провайдеры под ними построены
+    /// `symbol` — символьный индекс, `semantic` — смысловая близость;
+    /// буквальный поиск роли не имеет. Роли и провайдеры под ними построены
     /// давно; недоставало провода от канонической службы, потому что до
     /// провайдеров ходил лишь legacy-диспетчер, которого на проводе нет.
     fn execute_search_role(
@@ -1677,32 +1892,12 @@ impl CanonicalV13ReadService {
     ) -> DomainResult {
         use crate::application::ports::ApplicationPorts;
 
-        let Some(role) = ProviderRole::ALL
-            .into_iter()
-            .find(|candidate| candidate.as_str() == role)
-        else {
-            let mut refusal = error_result(
-                None,
-                RefusalCode::BadValue,
-                format!(
-                    "search role `{role}` is unknown; use one of {}",
-                    ProviderRole::ALL
-                        .iter()
-                        .map(|role| format!("`{}`", role.as_str()))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            );
-            refusal.next.push(serde_json::json!({
-                "tool": "unica.search",
-                "args": {"query": query},
-                "reason": "буквальный поиск без роли",
-            }));
-            return refusal;
+        let role = match super::v13_search_admission::search_provider_role(arguments, role) {
+            Ok(role) => role,
+            Err(refusal) => return *refusal,
         };
 
         let context = invocation.workspace_context();
-        let unscoped_lexical = role == ProviderRole::Lexical && !arguments.contains_key("scope");
         // Канонический вход — логический адрес; порт разрешения контекста
         // говорит словарём v0.12. Перевод делается здесь и только здесь.
         let mut selector = Map::new();
@@ -1761,7 +1956,6 @@ impl CanonicalV13ReadService {
             Some(_) => {
                 return error_result(None, RefusalCode::BadValue, "search scope must be a string")
             }
-            None if unscoped_lexical => {}
             None => match invocation.admitted_source_set_names().first() {
                 Some(name) => {
                     selector.insert("sourceSet".to_string(), Value::String((*name).to_string()));
@@ -1776,13 +1970,9 @@ impl CanonicalV13ReadService {
             },
         }
 
-        let mut search_context = if unscoped_lexical {
-            None
-        } else {
-            match self.ports.resolve_code_search_context(context, &selector) {
-                Ok((resolved, _)) => Some(resolved),
-                Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
-            }
+        let search_context = match self.ports.resolve_code_search_context(context, &selector) {
+            Ok((resolved, _)) => resolved,
+            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
         };
         let registry = match self.ports.code_intelligence_registry() {
             Ok(registry) => registry,
@@ -1836,7 +2026,7 @@ impl CanonicalV13ReadService {
         };
         // An explicit provider role has no neighboring provider to fall back
         // to. Acquire only the selected engine after validating the request,
-        // before starting the provider. Lexical and role-free search stay local.
+        // before starting the provider.
         let engine = selected_role_engine(role);
         #[cfg(test)]
         let engine = engine.filter(|_| self.search_providers.is_none());
@@ -1847,70 +2037,37 @@ impl CanonicalV13ReadService {
                 return *refusal;
             }
         }
+        let selected_sources = vec![search_context
+            .source_root
+            .source_set
+            .clone()
+            .unwrap_or_default()];
+        let binding = SearchCursorBinding {
+            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
+            query: query.to_owned(),
+            scope: arguments
+                .get("scope")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            mode: role.as_str().to_owned(),
+            kind: None,
+            source_sets: selected_sources.clone(),
+            result_fingerprint: None,
+            page_limit: limit,
+        };
+        // Ranked roles answer one finite window that every page re-reads.
         let request = SearchRequest {
             query: query.to_string(),
             limit: PROVIDER_SEARCH_FETCH_LIMIT,
         };
-        let selected_sources = if unscoped_lexical {
-            invocation
-                .admitted_source_set_names()
-                .into_iter()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        } else {
-            vec![search_context
-                .as_ref()
-                .and_then(|context| context.source_root.source_set.clone())
-                .unwrap_or_default()]
-        };
-        let retained_roots = if role == ProviderRole::Lexical {
-            match invocation.read_sources() {
-                Ok(sources) => sources
-                    .iter()
-                    .map(|source| {
-                        (
-                            source.source_set_name().to_owned(),
-                            source.retained_root().path().to_path_buf(),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-                Err(error) => return error_result(None, RefusalCode::InvalidState, error),
-            }
-        } else {
-            Vec::new()
-        };
-        if role == ProviderRole::Lexical {
-            if let Some(search_context) = search_context.as_mut() {
-                if let Err(error) = bind_lexical_source_scope(search_context, &retained_roots) {
-                    return error_result(None, RefusalCode::InvalidState, error);
-                }
-            }
-        }
-        let execution = match if unscoped_lexical {
-            search_unscoped_lexical(
-                self.ports.as_ref(),
-                context,
-                UnscopedLexicalSources {
-                    names: &selected_sources,
-                    retained_roots: &retained_roots,
-                },
-                registry,
-                &request,
-                cancellation,
-                operational.code_intelligence(),
-            )
-        } else {
-            search_selected_role(
-                registry,
-                role,
-                &request,
-                search_context
-                    .as_ref()
-                    .expect("explicit or default role context"),
-                cancellation,
-                operational.code_intelligence(),
-            )
-        } {
+        let execution = match search_selected_role(
+            registry,
+            role,
+            &request,
+            &search_context,
+            cancellation,
+            operational.code_intelligence(),
+        ) {
             Ok(execution) => execution,
             Err(error) => {
                 if let Some(refusal) = engine.and_then(|engine| {
@@ -1926,19 +2083,6 @@ impl CanonicalV13ReadService {
                 };
                 return error_result(None, code, error);
             }
-        };
-        let binding = SearchCursorBinding {
-            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
-            query: query.to_owned(),
-            scope: arguments
-                .get("scope")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            mode: role.as_str().to_owned(),
-            kind: None,
-            source_sets: selected_sources,
-            result_fingerprint: None,
-            page_limit: limit,
         };
         // Поставщик не ответил: если причина — движок, не прошедший проверку
         // поставки (контрольная сумма), отказ называет движок, а не сбой поиска.
@@ -2085,16 +2229,69 @@ impl CanonicalV13ReadService {
             .iter()
             .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
             .collect::<Vec<_>>();
-        let built = match self
-            .find_builder
-            .build_for_search(&layout, deadline, cancellation)
-        {
+        let scope_binding = scope.as_ref().map(ToString::to_string);
+        let binding_for = |result_fingerprint: Option<String>| SearchCursorBinding {
+            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
+            query: query.to_owned(),
+            scope: scope_binding.clone(),
+            mode: "names".to_owned(),
+            kind: arguments
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            source_sets: selected
+                .iter()
+                .map(|source| source.name().to_owned())
+                .collect(),
+            result_fingerprint,
+            page_limit: limit,
+        };
+        // The question half of a continuation is checked before the walk:
+        // the rank it resumes after decides which names the page keeps.
+        let after = match arguments.get("cursor") {
+            None => None,
+            Some(Value::String(token)) => {
+                match self
+                    .search_cursors
+                    .question_position(token, &binding_for(None))
+                {
+                    Ok((_, Some(after))) => match usize::try_from(after.score) {
+                        Ok(score) => Some((score, after.at)),
+                        Err(_) => return SearchCursorError::Invalid.into_result(None),
+                    },
+                    // A name continuation always carries its rank.
+                    Ok((_, None)) => return SearchCursorError::Invalid.into_result(None),
+                    Err(error) => return error.into_result(None),
+                }
+            }
+            Some(_) => {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search cursor must be a string",
+                )
+            }
+        };
+        // Walking the layout ranks the names and notes whether the scope
+        // exists; only this page's candidates and one more are kept.
+        let ranked_request = match &scope {
+            Some(scope) => request.clone().with_scope(scope.clone()),
+            None => request.clone(),
+        };
+        let watched = scope.as_ref().map(name_scope_witnesses).unwrap_or_default();
+        let built = match self.find_builder.search_names(
+            &layout,
+            NameRanker::new(ranked_request, watched, limit.saturating_add(1), after),
+            deadline,
+            cancellation,
+        ) {
             Ok(built) => built,
             Err(error) => return find_build_error_result(None, error),
         };
-        let scope_binding = scope.as_ref().map(ToString::to_string);
         if let Some(scope) = scope {
-            if let Err((code, message)) = validate_name_scope(&built.index, &scope, first.kind()) {
+            if let Err((code, message)) =
+                validate_name_scope(&|at| built.present.contains(at), &scope, first.kind())
+            {
                 if built.omissions.total != 0
                     && matches!(code, RefusalCode::NotFound | RefusalCode::InvalidState)
                 {
@@ -2106,15 +2303,8 @@ impl CanonicalV13ReadService {
                 }
                 return error_result(Some(scope.to_string()), code, message);
             }
-            request = request.with_scope(scope);
         }
-        let found = match built
-            .index
-            .find_all_checked(request, deadline, cancellation)
-        {
-            Ok(found) => found,
-            Err(error) => return error_result(None, error.code(), error.to_string()),
-        };
+        let found = built.names;
         let summary = if built.omissions.total == 0 {
             "name search completed".to_string()
         } else {
@@ -2134,8 +2324,12 @@ impl CanonicalV13ReadService {
         });
         let mut extra_data = Map::new();
         extra_data.insert("sourceCoverage".to_owned(), coverage.clone());
-        extra_data.insert("approximate".to_owned(), Value::Bool(found.is_nearest()));
-        let empty_page_bytes = search_page_probe_bytes("names", &[], &summary, &extra_data, None);
+        extra_data.insert("approximate".to_owned(), Value::Bool(found.nearest));
+        // A name continuation is keyed by the rank of its last item; the
+        // probe reserves a key as long as the longest address.
+        let cursor_probe = SearchCursorStore::keyed_token_probe(found.largest_address_bytes.max(1));
+        let empty_page_bytes =
+            search_page_probe_bytes_with("names", &[], &summary, &extra_data, None, &cursor_probe);
         if empty_page_bytes > unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES {
             return error_result(
                 None,
@@ -2143,94 +2337,63 @@ impl CanonicalV13ReadService {
                 "name search page metadata exceeds the transport limit",
             );
         }
-        // Names do not have a source revision lease. Rebuild the complete
-        // ranked answer on each page and bind the cursor to the public stream
-        // and coverage instead of claiming a source revision.
-        let mut hasher = Sha256::new();
-        hasher.update(b"unica-v13-names-result-v1\0");
-        for (index, candidate) in found.candidates().iter().enumerate() {
-            if index % 128 == 0 {
-                if let Some(refusal) = name_search_interruption(deadline, cancellation) {
-                    return refusal;
-                }
-            }
-            let public = json!({
-                "at": candidate.at(),
-                "kind": candidate.kind(),
-                "title": candidate.title(),
-                "reason": candidate.reason(),
-            });
-            let bytes = serde_json::to_vec(&public).expect("name match is serializable");
-            // An item after the first page must not receive a continuation
-            // that could never carry it. The empty probe includes every fixed
-            // response field and its cursor; adding one JSON array item adds
-            // exactly its serialized byte length.
-            if empty_page_bytes.saturating_add(bytes.len())
+        // An item after the first page must not receive a continuation that
+        // could never carry it. The empty probe includes every fixed response
+        // field and its cursor; adding one JSON array item adds exactly its
+        // serialized byte length, and the walk kept the largest one.
+        if found.matched != 0
+            && empty_page_bytes.saturating_add(found.largest_item_bytes)
                 > unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
-            {
-                return error_result(
-                    None,
-                    RefusalCode::ResultTooLarge,
-                    "one name search result exceeds the transport limit",
-                );
-            }
-            hasher.update((bytes.len() as u64).to_le_bytes());
-            hasher.update(&bytes);
+        {
+            return error_result(
+                None,
+                RefusalCode::ResultTooLarge,
+                "one name search result exceeds the transport limit",
+            );
         }
-        let evidence =
-            json!({"approximate": found.is_nearest(), "sourceCoverage": coverage.clone()});
+        // Names do not have a source revision lease. Every page walks the
+        // layout again and binds the cursor to the ranked answer — its count
+        // and order-free digest — and coverage instead of a source revision.
+        let mut hasher = Sha256::new();
+        hasher.update(b"unica-v13-names-result-v2\0");
+        hasher.update(found.fingerprint);
+        let evidence = json!({"approximate": found.nearest, "sourceCoverage": coverage.clone()});
         let bytes = serde_json::to_vec(&evidence).expect("name coverage is serializable");
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
         if let Some(refusal) = name_search_interruption(deadline, cancellation) {
             return refusal;
         }
-        let binding = SearchCursorBinding {
-            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
-            query: query.to_owned(),
-            scope: scope_binding,
-            mode: "names".to_owned(),
-            kind: arguments
-                .get("kind")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            source_sets: selected
-                .iter()
-                .map(|source| source.name().to_owned())
-                .collect(),
-            result_fingerprint: Some(format!("names-sha256-v1:{:x}", hasher.finalize())),
-            page_limit: limit,
-        };
-        let cursor = match arguments.get("cursor") {
+        let binding = binding_for(Some(format!("names-sha256-v2:{:x}", hasher.finalize())));
+        let cursor = match arguments.get("cursor").and_then(Value::as_str) {
             None => None,
-            Some(Value::String(token)) => match self.search_cursors.read(token, &binding) {
-                Ok(cursor) => Some((token.as_str(), cursor)),
+            Some(token) => match self.search_cursors.read(token, &binding) {
+                Ok(cursor) => Some((token, cursor)),
                 Err(error) => return error.into_result(None),
             },
-            Some(_) => {
-                return error_result(
-                    None,
-                    RefusalCode::BadValue,
-                    "search cursor must be a string",
-                )
-            }
         };
-        let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
-        let matches = found
-            .candidates()
+        let keys = found
+            .candidates
             .iter()
-            .skip(offset)
-            .take(limit + 1)
-            .map(|candidate| {
-                json!({
-                    "at": candidate.at(),
-                    "kind": candidate.kind(),
-                    "title": candidate.title(),
-                    "reason": candidate.reason(),
-                })
+            .map(|(score, candidate)| SearchAfter {
+                score: *score as u64,
+                at: candidate.at().to_owned(),
             })
+            .collect::<Vec<_>>();
+        let matches = found
+            .candidates
+            .iter()
+            .map(|(_, candidate)| public_name_match(candidate))
             .collect();
-        let result = self.search_page_with_data(matches, cursor, binding, summary, extra_data);
+        let result = self.search_page_keyed(
+            matches,
+            Some(&keys),
+            &cursor_probe,
+            cursor,
+            binding,
+            summary,
+            extra_data,
+        );
         if let Some(refusal) = name_search_interruption(deadline, cancellation) {
             return refusal;
         }
@@ -2255,15 +2418,15 @@ impl CanonicalV13ReadService {
                 return error_result(None, RefusalCode::BadValue, "check at must be a string");
             };
             let limit = match arguments.get("limit") {
-                None => 20,
-                Some(value) => match bounded_usize(value).filter(|limit| *limit <= 50) {
+                None => DEFAULT_CHECK_LIMIT,
+                Some(value) => match bounded_usize(value).filter(|limit| *limit <= MAX_CHECK_LIMIT)
+                {
                     Some(limit) => limit,
                     None => {
-                        return error_result(
-                            Some(at.to_string()),
-                            RefusalCode::BadValue,
-                            "check limit must be an integer from 1 through 50",
-                        )
+                        let message = format!(
+                            "check limit must be an integer from 1 through {MAX_CHECK_LIMIT}"
+                        );
+                        return error_result(Some(at.to_string()), RefusalCode::BadValue, message);
                     }
                 },
             };
@@ -3239,224 +3402,6 @@ fn search_selected_role(
     )
 }
 
-struct UnscopedLexicalSources<'a> {
-    names: &'a [String],
-    retained_roots: &'a [(String, std::path::PathBuf)],
-}
-
-/// Bind every lexical route to the actor's source-root ownership. Nested
-/// source sets own their files even when Git ignores their source export.
-fn bind_lexical_source_scope(
-    context: &mut CodeIntelligenceContext,
-    retained_roots: &[(String, std::path::PathBuf)],
-) -> Result<(), String> {
-    let name = context
-        .source_root
-        .source_set
-        .as_deref()
-        .unwrap_or_default();
-    let root = &context.source_root.path;
-    if !retained_roots
-        .iter()
-        .any(|(retained_name, retained_root)| retained_name == name && retained_root == root)
-    {
-        return Err(format!(
-            "source set `{name}` no longer matches its actor-admitted root"
-        ));
-    }
-    let scope = context
-        .search_scope
-        .as_mut()
-        .ok_or_else(|| "resolved lexical source omitted its scope".to_string())?;
-    for (_, other_root) in retained_roots {
-        if let Ok(relative) = other_root.strip_prefix(root) {
-            if !relative.as_os_str().is_empty() {
-                scope.excluded_subtrees.push(relative.to_path_buf());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn search_unscoped_lexical(
-    ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
-    workspace: &unica_source_contract::workspace::WorkspaceContext,
-    sources: UnscopedLexicalSources<'_>,
-    registry: CodeIntelligenceRegistry,
-    request: &SearchRequest,
-    cancellation: &CancellationToken,
-    deadlines: unica_code_intelligence::deadlines::CodeIntelligenceDeadlines,
-) -> Result<unica_code_intelligence::coordinator::CodeSearchExecution, String> {
-    use crate::application::ports::ApplicationPorts;
-    use unica_code_intelligence::coordinator::CodeSearchExecution;
-    use unica_code_intelligence::model::CodeSearchResult;
-    use unica_code_intelligence::model::ProviderSearchSection;
-    use unica_code_intelligence::model::ProviderSectionStatus;
-    use unica_code_intelligence::model::SearchCoverage;
-    use unica_code_intelligence::model::SearchOrdering;
-    use unica_code_intelligence::model::SearchRanking;
-
-    let source_sets = sources.names;
-    if source_sets.is_empty() {
-        return Err("no admitted source set is available for a role search".to_string());
-    }
-    let started = Instant::now();
-    let budget = deadlines.search_total_timeout();
-    let mut contexts = source_sets
-        .iter()
-        .map(|name| {
-            let selector = Map::from_iter([("sourceSet".to_string(), Value::String(name.clone()))]);
-            ports
-                .resolve_code_search_context(workspace, &selector)
-                .map(|(context, _)| context)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    for context in contexts.iter_mut() {
-        bind_lexical_source_scope(context, sources.retained_roots)?;
-    }
-
-    let provider = registry
-        .search_providers()
-        .find(|candidate| candidate.identity().role == ProviderRole::Lexical)
-        .cloned()
-        .ok_or_else(|| "no search provider is registered for `lexical`".to_string())?;
-    let identity = provider.identity();
-    let mut hits = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut warnings = Vec::new();
-    let mut incomplete = None;
-    for (name, context) in source_sets.iter().zip(contexts.iter()) {
-        if cancellation.is_cancelled() {
-            return Err(unica_work_control::cancellation::cancelled_error(
-                "unscoped lexical search stopped between source sets",
-            ));
-        }
-        let remaining = budget.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            diagnostics.push(format!(
-                "source set `{name}` was not searched before the deadline"
-            ));
-            incomplete = Some(ProviderSectionStatus::TimedOut);
-            break;
-        }
-        let selected = CodeIntelligenceRegistry::new(vec![Arc::clone(&provider)])?;
-        let source_request = SearchRequest {
-            query: request.query.clone(),
-            limit: request.limit.saturating_sub(hits.len()),
-        };
-        let execution = search_selected_role(
-            selected,
-            ProviderRole::Lexical,
-            &source_request,
-            context,
-            cancellation,
-            deadlines.within_search_budget(remaining),
-        )?;
-        let section = execution
-            .result
-            .sections
-            .into_iter()
-            .next()
-            .ok_or_else(|| format!("lexical provider omitted source set `{name}`"))?;
-        warnings.extend(
-            execution
-                .warnings
-                .into_iter()
-                .map(|warning| format!("{name}: {warning}")),
-        );
-        diagnostics.extend(
-            section
-                .diagnostics
-                .into_iter()
-                .map(|diagnostic| format!("{name}: {diagnostic}")),
-        );
-        hits.extend(section.hits);
-        match section.status {
-            ProviderSectionStatus::Ok | ProviderSectionStatus::Empty => {}
-            status => {
-                diagnostics.push(format!(
-                    "source set `{name}` search ended as {}",
-                    status.as_str()
-                ));
-                if incomplete.is_none()
-                    || status == ProviderSectionStatus::TimedOut
-                    || (status == ProviderSectionStatus::Partial
-                        && incomplete != Some(ProviderSectionStatus::TimedOut))
-                {
-                    incomplete = Some(status);
-                }
-            }
-        }
-        if hits.len() >= request.limit {
-            if incomplete.is_some() && incomplete != Some(ProviderSectionStatus::LimitReached) {
-                diagnostics.push("lexical result limit was also reached".to_string());
-            }
-            incomplete.get_or_insert(ProviderSectionStatus::LimitReached);
-            break;
-        }
-    }
-    let section = match incomplete {
-        None => ProviderSearchSection::complete(
-            identity,
-            SearchRanking::None,
-            SearchOrdering::ProviderTraversal,
-            hits,
-            diagnostics,
-        )?,
-        Some(ProviderSectionStatus::LimitReached) => ProviderSearchSection::limit_reached(
-            identity,
-            SearchRanking::None,
-            SearchOrdering::ProviderTraversal,
-            hits,
-            diagnostics,
-        )?,
-        Some(ProviderSectionStatus::TimedOut) => ProviderSearchSection::timed_out(
-            identity,
-            SearchRanking::None,
-            SearchOrdering::ProviderTraversal,
-            hits,
-            diagnostics,
-        )?,
-        Some(_) if hits.is_empty() => {
-            ProviderSearchSection::failed_with_diagnostics(identity, diagnostics)
-        }
-        Some(_) => ProviderSearchSection::partial(
-            identity,
-            SearchRanking::None,
-            SearchOrdering::ProviderTraversal,
-            hits,
-            diagnostics,
-        )?,
-    };
-    let complete = section.search_complete;
-    let reportable = complete
-        || matches!(
-            section.status,
-            ProviderSectionStatus::Partial
-                | ProviderSectionStatus::LimitReached
-                | ProviderSectionStatus::TimedOut
-        ) && (!section.hits.is_empty() || section.status == ProviderSectionStatus::TimedOut);
-    if reportable && section.status == ProviderSectionStatus::Partial {
-        warnings.push("lexical search contains partial source results".to_string());
-    }
-    Ok(CodeSearchExecution {
-        ok: reportable,
-        result: CodeSearchResult {
-            coverage: if complete {
-                SearchCoverage::Complete
-            } else if reportable {
-                SearchCoverage::Partial
-            } else {
-                SearchCoverage::None
-            },
-            elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            sections: vec![section],
-        },
-        warnings,
-        errors: Vec::new(),
-    })
-}
-
 /// Ошибка движка может содержать stderr и физические пути. Причину берём
 /// только из типизированной остановки, а данные отказа собираем явно.
 fn provider_search_failure(
@@ -3601,14 +3546,10 @@ where
     }
     let mut warnings = execution.warnings;
     if section.hits.len() >= PROVIDER_SEARCH_FETCH_LIMIT {
-        let scope_hint = if role == ProviderRole::Lexical {
-            " or scope"
-        } else {
-            ""
-        };
-        warnings.push(format!(
-            "Search returned 200 matches. Ask the user to narrow the query{scope_hint} before searching again."
-        ));
+        warnings.push(
+            "Search returned 200 matches. Ask the user to narrow the query before searching again."
+                .to_string(),
+        );
     }
     let summary = if section.search_complete {
         format!("{} search completed", role.as_str())
@@ -3995,6 +3936,16 @@ fn find_build_error_result(at: Option<String>, error: FindBuildError) -> DomainR
     }
 }
 
+/// The question binding of a text search: its matching mode and whether
+/// case is ignored. Admission must build the same string.
+pub(super) fn text_search_binding_mode(mode: &str, ignore_case: bool) -> String {
+    if ignore_case {
+        format!("{mode}:ignoreCase")
+    } else {
+        mode.to_owned()
+    }
+}
+
 fn search_page_data(mode: &str, matches: &[Value], extra: &Map<String, Value>) -> Value {
     let mut data = extra.clone();
     data.insert("mode".to_owned(), Value::String(mode.to_owned()));
@@ -4009,12 +3960,30 @@ fn search_page_probe_bytes(
     extra_data: &Map<String, Value>,
     revision: Option<&str>,
 ) -> usize {
+    search_page_probe_bytes_with(
+        mode,
+        matches,
+        summary,
+        extra_data,
+        revision,
+        &SearchCursorStore::token_probe(),
+    )
+}
+
+fn search_page_probe_bytes_with(
+    mode: &str,
+    matches: &[Value],
+    summary: &str,
+    extra_data: &Map<String, Value>,
+    revision: Option<&str>,
+    cursor_probe: &str,
+) -> usize {
     let mut probe = DomainResult::success(summary.to_owned());
     probe.data = Some(search_page_data(mode, matches, extra_data));
     // "complete" is the longest terminal reason; a cursor also reserves
     // space even when this turns out to be the final page.
     probe.page = Some(json!({"stoppedBy": "complete"}));
-    probe.cursor = Some(SearchCursorStore::token_probe());
+    probe.cursor = Some(cursor_probe.to_owned());
     probe.rev = revision.map(str::to_owned);
     serde_json::to_vec(&probe).map_or(usize::MAX, |value| value.len())
 }
@@ -5552,8 +5521,25 @@ enum SearchCorpus {
     Names,
 }
 
+/// The addresses whose existence [`validate_name_scope`] asks about.
+fn name_scope_witnesses(scope: &QualifiedAddress) -> Vec<String> {
+    let mut witnesses = vec![
+        format!("{}:Configuration", scope.source_set()),
+        scope.to_string(),
+    ];
+    let first = &scope.segments()[0];
+    if let Some(name) = first.name() {
+        witnesses.push(format!(
+            "{}:{}.{name}",
+            scope.source_set(),
+            first.kind().as_str()
+        ));
+    }
+    witnesses
+}
+
 fn validate_name_scope(
-    directory: &FindIndex,
+    has_address: &dyn Fn(&str) -> bool,
     scope: &QualifiedAddress,
     source_kind: SourceSetKind,
 ) -> Result<(), (RefusalCode, &'static str)> {
@@ -5576,13 +5562,10 @@ fn validate_name_scope(
                 "external source sets have no Configuration root",
             ));
         }
-        return directory
-            .has_address(&scope.to_string())
-            .then_some(())
-            .ok_or((
-                RefusalCode::InvalidState,
-                "name search Configuration descriptor is unavailable",
-            ));
+        return has_address(&scope.to_string()).then_some(()).ok_or((
+            RefusalCode::InvalidState,
+            "name search Configuration descriptor is unavailable",
+        ));
     }
     if !supported_owner || segments.len() > 2 {
         return Err((
@@ -5593,7 +5576,7 @@ fn validate_name_scope(
     if matches!(
         source_kind,
         SourceSetKind::Configuration | SourceSetKind::Extension
-    ) && !directory.has_address(&format!("{}:Configuration", scope.source_set()))
+    ) && !has_address(&format!("{}:Configuration", scope.source_set()))
     {
         return Err((
             RefusalCode::InvalidState,
@@ -5619,7 +5602,7 @@ fn validate_name_scope(
             first.kind().as_str(),
             first.name().expect("checked owner name")
         );
-        if !directory.has_address(&owner) {
+        if !has_address(&owner) {
             return Err((
                 RefusalCode::NotFound,
                 "name search scope owner does not exist",
@@ -5629,7 +5612,7 @@ fn validate_name_scope(
     if segments
         .last()
         .is_some_and(|segment| segment.name().is_some())
-        && !directory.has_address(&scope.to_string())
+        && !has_address(&scope.to_string())
     {
         return Err((
             RefusalCode::NotFound,
@@ -5719,7 +5702,7 @@ mod plan_detail_key_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::UnscopedLexicalSources;
+    use super::TextEngine;
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7072,6 +7055,61 @@ mod tests {
         }
     }
 
+    /// A name search proves its scope only through the addresses it
+    /// watched while walking; a form scope needs its owner among them.
+    #[test]
+    fn name_scope_witnesses_cover_every_address_the_scope_check_asks_for() {
+        use unica_address::address::QualifiedAddress;
+        use unica_refusal::RefusalCode;
+        use unica_source_contract::SourceSetKind;
+
+        let scope = QualifiedAddress::parse("main:Catalog.Валюты.Form.ФормаЭлемента").unwrap();
+        let witnesses = super::name_scope_witnesses(&scope);
+        let mut asked = Vec::new();
+        let recorded = std::cell::RefCell::new(&mut asked);
+        let _ = super::validate_name_scope(
+            &|at| {
+                recorded.borrow_mut().push(at.to_string());
+                true
+            },
+            &scope,
+            SourceSetKind::Configuration,
+        );
+        assert!(!asked.is_empty());
+        for at in &asked {
+            assert!(witnesses.contains(at), "unwatched address {at}");
+        }
+        let present = |missing: &str| {
+            let witnesses = witnesses.clone();
+            let missing = missing.to_string();
+            move |at: &str| witnesses.iter().any(|known| known == at) && at != missing
+        };
+        assert!(
+            super::validate_name_scope(&present("none"), &scope, SourceSetKind::Configuration)
+                .is_ok()
+        );
+        assert_eq!(
+            super::validate_name_scope(
+                &present("main:Catalog.Валюты"),
+                &scope,
+                SourceSetKind::Configuration
+            )
+            .unwrap_err()
+            .0,
+            RefusalCode::NotFound
+        );
+        assert_eq!(
+            super::validate_name_scope(
+                &present("main:Configuration"),
+                &scope,
+                SourceSetKind::Configuration
+            )
+            .unwrap_err()
+            .0,
+            RefusalCode::InvalidState
+        );
+    }
+
     /// Resolving a metadata object by its own place answers exactly what the
     /// full layout directory answers, for every object shape it handles (#1457).
     #[test]
@@ -7537,11 +7575,7 @@ mod tests {
         use unica_source_contract::location::SourceLocation;
         let workspace = resolve_exact_workspace();
         std::fs::write(workspace.path().join("src/CommonModules/Probe/Ext/Module.bsl"), "// outside Needle\n\n// Needle doc\nПроцедура Ping()\n\tСообщить(\"Needle\");\nКонецПроцедуры\n").unwrap();
-        for role in [
-            ProviderRole::Lexical,
-            ProviderRole::Symbol,
-            ProviderRole::Semantic,
-        ] {
+        for role in [ProviderRole::Symbol, ProviderRole::Semantic] {
             let hits = [
                 (1, "// outside Needle"),
                 (3, "// Needle doc"),
@@ -7714,34 +7748,47 @@ mod tests {
             );
             return;
         }
-        let search = || {
-            invoke_exact_read(
+        let search = |engine| {
+            invoke_exact_read_with_service(
                 workspace.path(),
                 ToolIdentity::Search,
                 json!({"query":"needle", "scope":"main:CommonModule.Probe"}),
+                Arc::new(super::CanonicalV13ReadService::with_text_engine_for_test(
+                    engine,
+                )),
             )
         };
-        let found = search();
-        assert!(found.ok, "{found:?}");
-        let matches = found.data.as_ref().unwrap()["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 1, "{found:?}");
-        assert_eq!(
-            matches[0]["at"],
-            "main:CommonModule.Probe.Method.Ping.Body#L2"
-        );
+        for engine in [TextEngine::Walk, TextEngine::Git] {
+            let found = search(engine);
+            assert!(found.ok, "{engine:?}: {found:?}");
+            let matches = found.data.as_ref().unwrap()["matches"].as_array().unwrap();
+            assert_eq!(matches.len(), 1, "{engine:?}: {found:?}");
+            assert_eq!(
+                matches[0]["at"],
+                "main:CommonModule.Probe.Method.Ping.Body#L2"
+            );
+        }
 
         set_unix_mode_for_test(&locked, 0o000).unwrap();
         unlocked.0.push(locked);
-        let refused = search();
-        assert!(!refused.ok, "{refused:?}");
-        assert_eq!(refused.diagnostics[0]["code"], "provider_unavailable");
-        assert!(
-            refused.diagnostics[0]["message"]
-                .as_str()
-                .is_some_and(|message| message
-                    .contains("could not open source entry `CommonModules/Probe/Ext/Locked`")),
-            "{refused:?}"
-        );
+        // Neither engine answers a corpus it could not read in full.
+        for (engine, named) in [
+            (
+                TextEngine::Walk,
+                "could not open source entry `CommonModules/Probe/Ext/Locked`",
+            ),
+            (TextEngine::Git, "Locked"),
+        ] {
+            let refused = search(engine);
+            assert!(!refused.ok, "{engine:?}: {refused:?}");
+            assert_eq!(refused.diagnostics[0]["code"], "provider_unavailable");
+            assert!(
+                refused.diagnostics[0]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(named)),
+                "{engine:?}: {refused:?}"
+            );
+        }
     }
 
     #[test]
@@ -7965,7 +8012,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_lexical_module_scope_searches_only_the_selected_file() {
+    fn literal_module_scope_searches_only_the_selected_module_with_either_engine() {
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
         use unica_execution::clock::TokioClock;
@@ -8000,37 +8047,37 @@ mod tests {
             (
                 "main:Catalog.Items.Module.Object",
                 "Catalogs/Items/Ext/ObjectModule.bsl",
-                "Catalog.Items.ObjectModule",
+                "main:Catalog.Items.Module.Object.Body#L1",
             ),
             (
                 "main:Catalog.Items.Module.Manager",
                 "Catalogs/Items/Ext/ManagerModule.bsl",
-                "Catalog.Items.ManagerModule",
+                "main:Catalog.Items.Module.Manager.Body#L1",
             ),
             (
                 "main:Catalog.Items.Form.Main.Module.Form",
                 "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-                "Catalog.Items.Form.Main.FormModule",
+                "main:Catalog.Items.Form.Main.Module.Form.Body#L1",
             ),
             (
                 "main:Catalog.Items.Command.Act.Module.Command",
                 "Catalogs/Items/Commands/Act/Ext/CommandModule.bsl",
-                "Catalog.Items.Command.Act.CommandModule",
+                "main:Catalog.Items.Command.Act.Module.Command.Body#L1",
             ),
             (
                 "main:CommonModule.Shared",
                 "CommonModules/Shared/Ext/Module.bsl",
-                "CommonModule.Shared.Module",
+                "main:CommonModule.Shared.Body#L1",
             ),
             (
                 "main:Module.Session",
                 "Ext/SessionModule.bsl",
-                "SessionModule",
+                "main:Module.Session.Body#L1",
             ),
             (
                 "main:Catalog.Neighbor.Module.Object",
                 "Catalogs/Neighbor/Ext/ObjectModule.bsl",
-                "Catalog.Neighbor.ObjectModule",
+                "main:Catalog.Neighbor.Module.Object.Body#L1",
             ),
         ];
         for (_, path, _) in modules {
@@ -8044,105 +8091,88 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        let runtime = V5CanonicalInvocationRuntime::new(
-            Arc::new(super::CanonicalV13ReadService::default()),
-            Arc::new(TokioClock),
-        );
-        let search = |scope: &str| {
-            let request = InvocationRequest::new(
-                ToolIdentity::Search,
-                json!({"query":"Needle", "corpus":"text", "role":"lexical", "scope":scope, "limit":50}),
-                std::fs::canonicalize(workspace.path()).unwrap().to_string_lossy(),
-                7_000,
-            ).unwrap();
-            runtime
-                .bind(request)
-                .unwrap()
-                .prepare()
-                .unwrap()
-                .execute(CancellationToken::new())
-                .unwrap()
-        };
-        for (scope, _, metadata_path) in modules {
-            if !scope.starts_with("main:CommonModule.") {
+        for engine in [TextEngine::Walk, TextEngine::Git] {
+            let runtime = V5CanonicalInvocationRuntime::new(
+                Arc::new(super::CanonicalV13ReadService::with_text_engine_for_test(
+                    engine,
+                )),
+                Arc::new(TokioClock),
+            );
+            let search = |scope: &str| {
                 let request = InvocationRequest::new(
                     ToolIdentity::Search,
-                    json!({"query":"Needle", "scope":scope}),
+                    json!({"query":"Needle", "scope":scope, "limit":50}),
                     std::fs::canonicalize(workspace.path())
                         .unwrap()
                         .to_string_lossy(),
                     7_000,
                 )
                 .unwrap();
-                let refused = runtime
+                runtime
                     .bind(request)
                     .unwrap()
                     .prepare()
                     .unwrap()
                     .execute(CancellationToken::new())
-                    .unwrap();
-                assert!(!refused.ok, "default must not change roles: {scope}");
-                let diagnostic = &refused.diagnostics[0];
-                assert_eq!(diagnostic["code"], "unsupported_scope");
-                let message = diagnostic["message"].as_str().unwrap();
-                assert!(message.contains("role: \"lexical\""), "{message}");
-                assert!(message.contains(scope), "{message}");
-            }
-            // Execute the suggested role with exactly the same scope and query.
-            let result = search(scope);
-            assert!(result.ok, "{scope}: {result:?}");
-            assert!(result.diagnostics.is_empty(), "{scope}: {result:?}");
-            let hits = result.data.as_ref().unwrap()["matches"][0]["hits"]
-                .as_array()
-                .unwrap();
-            assert_eq!(
-                hits.len(),
-                1,
-                "{scope} must not include a neighbor: {result:?}"
-            );
-            assert_eq!(
-                hits[0]["location"]["metadataPath"], metadata_path,
-                "{scope}: {result:?}"
-            );
-        }
-        for (scope, count) in [("main:Catalog.Items", 4), ("main:Configuration", 7)] {
-            let result = search(scope);
-            assert!(result.ok, "{scope}: {result:?}");
-            assert_eq!(
-                result.data.as_ref().unwrap()["matches"][0]["hits"]
+                    .unwrap()
+            };
+            let hits = |result: &unica_execution_contract::invocation::DomainResult| {
+                result.data.as_ref().unwrap()["matches"]
                     .as_array()
                     .unwrap()
-                    .len(),
-                count,
-                "{scope}: {result:?}"
+                    .iter()
+                    .map(|hit| hit["at"].as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>()
+            };
+            for (scope, _, at) in modules {
+                let result = search(scope);
+                assert!(result.ok, "{engine:?} {scope}: {result:?}");
+                assert!(
+                    result.diagnostics.is_empty(),
+                    "{engine:?} {scope}: {result:?}"
+                );
+                assert_eq!(
+                    hits(&result),
+                    vec![at],
+                    "{engine:?} {scope} must not include a neighbor"
+                );
+            }
+            for (scope, count) in [("main:Catalog.Items", 4), ("main:Configuration", 7)] {
+                let result = search(scope);
+                assert!(result.ok, "{engine:?} {scope}: {result:?}");
+                assert_eq!(hits(&result).len(), count, "{engine:?} {scope}: {result:?}");
+            }
+            let result = search("main:CommonModule.Empty");
+            assert!(
+                result.ok && hits(&result).is_empty(),
+                "{engine:?}: {result:?}"
+            );
+            let result = search("main:Catalog.Unknown.Module.Object");
+            assert!(
+                !result.ok,
+                "{engine:?}: an unknown owner must not become a source-wide search: {result:?}"
             );
         }
-        for scope in [
-            "main:CommonModule.Empty",
-            "main:Catalog.Items.Module.Manager",
-        ] {
-            if scope.ends_with("Manager") {
-                std::fs::remove_file(source.join("Catalogs/Items/Ext/ManagerModule.bsl")).unwrap();
-            }
-            let result = search(scope);
-            assert!(
-                result.ok,
-                "registered absent module is empty: {scope}: {result:?}"
+        // A registered module without its file is an empty answer.
+        std::fs::remove_file(source.join("Catalogs/Items/Ext/ManagerModule.bsl")).unwrap();
+        for engine in [TextEngine::Walk, TextEngine::Git] {
+            let result = invoke_exact_read_with_service(
+                workspace.path(),
+                ToolIdentity::Search,
+                json!({"query":"Needle", "scope":"main:Catalog.Items.Module.Manager"}),
+                Arc::new(super::CanonicalV13ReadService::with_text_engine_for_test(
+                    engine,
+                )),
             );
-            assert!(result.diagnostics.is_empty(), "{scope}: {result:?}");
+            assert!(result.ok, "{engine:?}: {result:?}");
             assert!(
-                result.data.as_ref().unwrap()["matches"][0]["hits"]
+                result.data.as_ref().unwrap()["matches"]
                     .as_array()
                     .unwrap()
                     .is_empty(),
-                "{scope}: {result:?}"
+                "{engine:?}: {result:?}"
             );
         }
-        let result = search("main:Catalog.Unknown.Module.Object");
-        assert!(
-            !result.ok,
-            "an unknown owner must not become a source-wide search: {result:?}"
-        );
     }
 
     #[test]
@@ -8680,332 +8710,8 @@ mod tests {
         ))
     }
 
-    #[derive(Clone, Copy)]
-    enum SplitLexicalCase {
-        PartialThenLimit,
-        PartialThenFailed,
-        PartialThenTimedOut,
-        EmptyThenTimedOut,
-    }
-
-    struct SplitLexicalProvider(SplitLexicalCase);
-
-    impl CodeIntelligenceProvider for SplitLexicalProvider {
-        fn identity(&self) -> ProviderIdentity {
-            ProviderIdentity::new(ProviderRole::Lexical, "split-lexical")
-        }
-
-        fn capabilities(&self) -> &[ProviderCapability] {
-            &[ProviderCapability::Search]
-        }
-
-        fn search(
-            &self,
-            request: &SearchRequest,
-            context: &CodeIntelligenceContext,
-            _: ProviderDeadline,
-            _: &CancellationToken,
-        ) -> ProviderSearchSection {
-            use unica_code_intelligence::model::ProviderSearchHit;
-            use unica_source_contract::location::SourceLocation;
-
-            let name = context.source_root.source_set.as_deref().unwrap();
-            let count = match (self.0, name) {
-                (SplitLexicalCase::EmptyThenTimedOut, "first") => 0,
-                (_, "first") => 1,
-                (SplitLexicalCase::PartialThenLimit, _) => request.limit,
-                _ => 0,
-            };
-            let hits = (0..count)
-                .map(|line| ProviderSearchHit {
-                    rank: None,
-                    provider_score: None,
-                    location: SourceLocation::Unaddressable {
-                        source_set: name.to_string(),
-                        owner_metadata_path: None,
-                        path: "Module.bsl".to_string(),
-                    },
-                    line: line + 1,
-                    end_line: None,
-                    symbol: None,
-                    kind: None,
-                    snippet: "Needle".to_string(),
-                    attributes: serde_json::Map::new(),
-                })
-                .collect();
-            match (self.0, name) {
-                (SplitLexicalCase::EmptyThenTimedOut, "first") => ProviderSearchSection::complete(
-                    self.identity(),
-                    SearchRanking::None,
-                    SearchOrdering::ProviderTraversal,
-                    hits,
-                    Vec::new(),
-                )
-                .unwrap(),
-                (_, "first") => ProviderSearchSection::partial(
-                    self.identity(),
-                    SearchRanking::None,
-                    SearchOrdering::ProviderTraversal,
-                    hits,
-                    vec!["one record could not be read".to_string()],
-                )
-                .unwrap(),
-                (SplitLexicalCase::PartialThenLimit, _) => ProviderSearchSection::limit_reached(
-                    self.identity(),
-                    SearchRanking::None,
-                    SearchOrdering::ProviderTraversal,
-                    hits,
-                    Vec::new(),
-                )
-                .unwrap(),
-                (SplitLexicalCase::PartialThenFailed, _) => ProviderSearchSection::failed(
-                    self.identity(),
-                    "second source failed".to_string(),
-                ),
-                _ => ProviderSearchSection::timed_out(
-                    self.identity(),
-                    SearchRanking::None,
-                    SearchOrdering::ProviderTraversal,
-                    hits,
-                    vec!["second source deadline exceeded".to_string()],
-                )
-                .unwrap(),
-            }
-        }
-    }
-
-    struct PerSourceDeadlineProvider;
-
-    impl CodeIntelligenceProvider for PerSourceDeadlineProvider {
-        fn identity(&self) -> ProviderIdentity {
-            ProviderIdentity::new(ProviderRole::Lexical, "per-source-deadline")
-        }
-
-        fn capabilities(&self) -> &[ProviderCapability] {
-            &[ProviderCapability::Search]
-        }
-
-        fn search(
-            &self,
-            _: &SearchRequest,
-            context: &CodeIntelligenceContext,
-            deadline: ProviderDeadline,
-            _: &CancellationToken,
-        ) -> ProviderSearchSection {
-            if context.source_root.source_set.as_deref() == Some("first") {
-                std::thread::sleep(Duration::from_secs(1));
-            } else if deadline.remaining().unwrap() < Duration::from_millis(2500) {
-                return ProviderSearchSection::timed_out(
-                    self.identity(),
-                    SearchRanking::None,
-                    SearchOrdering::ProviderTraversal,
-                    Vec::new(),
-                    vec!["the second source lacked its configured provider budget".to_string()],
-                )
-                .unwrap();
-            }
-            ProviderSearchSection::complete(
-                self.identity(),
-                SearchRanking::None,
-                SearchOrdering::ProviderTraversal,
-                Vec::new(),
-                Vec::new(),
-            )
-            .unwrap()
-        }
-    }
-
-    fn two_source_lexical_workspace(
-    ) -> (tempfile::TempDir, WorkspaceContext, Vec<(String, PathBuf)>) {
-        let root = tempfile::tempdir().unwrap();
-        for name in ["first", "second"] {
-            std::fs::create_dir(root.path().join(name)).unwrap();
-        }
-        std::fs::write(
-            root.path().join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: first\n    type: CONFIGURATION\n    path: first\n  - name: second\n    type: CONFIGURATION\n    path: second\n",
-        )
-        .unwrap();
-        let workspace = WorkspaceContext {
-            cwd: root.path().to_path_buf(),
-            workspace_root: root.path().to_path_buf(),
-            cache_root: root.path().join(".build"),
-            workspace_epoch: 1,
-        };
-        let roots = ["first", "second"]
-            .into_iter()
-            .map(|name| {
-                (
-                    name.to_string(),
-                    unica_workspace::paths::normalize_path_identity(&root.path().join(name))
-                        .unwrap(),
-                )
-            })
-            .collect::<Vec<_>>();
-        (root, workspace, roots)
-    }
-
-    #[test]
-    fn unscoped_lexical_keeps_partial_evidence_at_the_global_limit() {
-        let (_root, workspace, roots) = two_source_lexical_workspace();
-        let execution = super::search_unscoped_lexical(
-            &crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
-            &workspace,
-            UnscopedLexicalSources {
-                names: &["first".to_string(), "second".to_string()],
-                retained_roots: &roots,
-            },
-            CodeIntelligenceRegistry::new(vec![Arc::new(SplitLexicalProvider(
-                SplitLexicalCase::PartialThenLimit,
-            ))])
-            .unwrap(),
-            &SearchRequest {
-                query: "Needle".to_string(),
-                limit: 200,
-            },
-            &CancellationToken::new(),
-            CodeIntelligenceDeadlines::for_test(Duration::from_secs(5)),
-        )
-        .unwrap();
-        assert!(execution.ok);
-        let section = &execution.result.sections[0];
-        assert_eq!(
-            section.status,
-            unica_code_intelligence::model::ProviderSectionStatus::Partial
-        );
-        assert!(!section.search_complete);
-        assert_eq!(section.hits.len(), 200);
-        assert!(section
-            .diagnostics
-            .iter()
-            .any(|item| item.contains("one record could not be read")));
-    }
-
-    #[test]
-    fn unscoped_lexical_names_a_later_failed_or_timed_out_source() {
-        use unica_code_intelligence::model::ProviderSectionStatus;
-
-        for (case, expected) in [
-            (
-                SplitLexicalCase::PartialThenFailed,
-                ProviderSectionStatus::Partial,
-            ),
-            (
-                SplitLexicalCase::PartialThenTimedOut,
-                ProviderSectionStatus::TimedOut,
-            ),
-        ] {
-            let (_root, workspace, roots) = two_source_lexical_workspace();
-            let execution = super::search_unscoped_lexical(
-                &crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
-                &workspace,
-                UnscopedLexicalSources {
-                    names: &["first".to_string(), "second".to_string()],
-                    retained_roots: &roots,
-                },
-                CodeIntelligenceRegistry::new(vec![Arc::new(SplitLexicalProvider(case))]).unwrap(),
-                &SearchRequest {
-                    query: "Needle".to_string(),
-                    limit: 200,
-                },
-                &CancellationToken::new(),
-                CodeIntelligenceDeadlines::for_test(Duration::from_secs(5)),
-            )
-            .unwrap();
-            assert!(execution.ok);
-            let section = &execution.result.sections[0];
-            assert_eq!(section.status, expected);
-            assert_eq!(section.hits.len(), 1);
-            assert!(
-                section
-                    .diagnostics
-                    .iter()
-                    .any(|item| item.contains("source set `second` search ended as")),
-                "{section:#?}"
-            );
-        }
-    }
-
-    #[test]
-    fn unscoped_lexical_reports_zero_hit_timeout_without_a_generic_refusal() {
-        let (_root, workspace, roots) = two_source_lexical_workspace();
-        let execution = super::search_unscoped_lexical(
-            &crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
-            &workspace,
-            UnscopedLexicalSources {
-                names: &["first".to_string(), "second".to_string()],
-                retained_roots: &roots,
-            },
-            CodeIntelligenceRegistry::new(vec![Arc::new(SplitLexicalProvider(
-                SplitLexicalCase::EmptyThenTimedOut,
-            ))])
-            .unwrap(),
-            &SearchRequest {
-                query: "Needle".to_string(),
-                limit: 200,
-            },
-            &CancellationToken::new(),
-            CodeIntelligenceDeadlines::for_test(Duration::from_secs(5)),
-        )
-        .unwrap();
-        assert!(execution.ok);
-        let result = super::provider_search_page(
-            &unica_navigation::result_store::SearchCursorStore::default(),
-            ProviderRole::Lexical,
-            execution,
-            provider_search_test_binding(ProviderRole::Lexical, 20),
-            None,
-            &CancellationToken::new(),
-        );
-        let result = serde_json::to_value(result).unwrap();
-        assert_eq!(result["ok"], true, "{result:#}");
-        assert_eq!(result["data"]["matches"][0]["status"], "timedOut");
-        assert_eq!(
-            result["data"]["matches"][0]["termination"]["code"],
-            "deadlineExceeded"
-        );
-        assert!(result["data"]["matches"][0]["diagnostics"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item.as_str().unwrap().contains("source set `second`")));
-    }
-
-    #[test]
-    fn unscoped_lexical_keeps_each_provider_timeout_under_the_shared_total() {
-        let (_root, workspace, roots) = two_source_lexical_workspace();
-        let execution = super::search_unscoped_lexical(
-            &crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
-            &workspace,
-            UnscopedLexicalSources {
-                names: &["first".to_string(), "second".to_string()],
-                retained_roots: &roots,
-            },
-            CodeIntelligenceRegistry::new(vec![Arc::new(PerSourceDeadlineProvider)]).unwrap(),
-            &SearchRequest {
-                query: "Needle".to_string(),
-                limit: 200,
-            },
-            &CancellationToken::new(),
-            CodeIntelligenceDeadlines::for_test_values(
-                Duration::from_secs(10),
-                Duration::from_secs(10),
-                Duration::from_secs(3),
-                Duration::from_secs(10),
-            ),
-        )
-        .unwrap();
-        let section = &execution.result.sections[0];
-        assert!(section.search_complete, "{section:#?}");
-        assert_eq!(
-            section.status,
-            unica_code_intelligence::model::ProviderSectionStatus::Empty
-        );
-    }
-
     #[test]
     fn explicit_search_roles_name_only_the_engine_they_execute() {
-        assert_eq!(super::selected_role_engine(ProviderRole::Lexical), None);
         let lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("plugins/unica/third-party/tools.lock.json");
@@ -9210,5 +8916,587 @@ mod tests {
     #[test]
     fn unfinished_work_outlives_task_handoff_and_completes_once() {
         crate::infrastructure::daemon::server::actor_capacity_tests::assert_unfinished_work_survives_handoff_and_completes_once();
+    }
+
+    /// Every page of a text search, collected through the canonical entry.
+    fn text_search_pages(
+        workspace: &std::path::Path,
+        engine: TextEngine,
+        question: serde_json::Value,
+    ) -> Vec<unica_execution_contract::invocation::DomainResult> {
+        text_search_pages_with(
+            workspace,
+            Arc::new(super::CanonicalV13ReadService::with_text_engine_for_test(
+                engine,
+            )),
+            question,
+        )
+    }
+
+    fn text_search_pages_with(
+        workspace: &std::path::Path,
+        service: Arc<super::CanonicalV13ReadService>,
+        question: serde_json::Value,
+    ) -> Vec<unica_execution_contract::invocation::DomainResult> {
+        use unica_execution::invocation_store::ToolIdentity;
+        let mut pages = Vec::new();
+        let mut arguments = question;
+        loop {
+            let page = invoke_exact_read_with_service(
+                workspace,
+                ToolIdentity::Search,
+                arguments.clone(),
+                service.clone(),
+            );
+            assert!(page.ok, "{arguments} after {} pages: {page:?}", pages.len());
+            let cursor = page.cursor.clone();
+            pages.push(page);
+            match cursor {
+                Some(cursor) => arguments["cursor"] = json!(cursor),
+                None => break pages,
+            }
+        }
+    }
+
+    fn text_search_matches(
+        pages: &[unica_execution_contract::invocation::DomainResult],
+    ) -> Vec<serde_json::Value> {
+        pages
+            .iter()
+            .flat_map(|page| {
+                page.data.as_ref().unwrap()["matches"]
+                    .as_array()
+                    .unwrap()
+                    .clone()
+            })
+            .collect()
+    }
+
+    /// The text-search corpus of the engine tests: modules, files outside
+    /// the module layout, names that Git orders before a same-named
+    /// directory, a byte-order mark, CRLF, several matches on one line and
+    /// Cyrillic case.
+    fn text_engine_workspace() -> tempfile::TempDir {
+        let workspace = resolve_exact_workspace();
+        let source = workspace.path().join("src");
+        for (path, text) in [
+            (
+                "CommonModules/Probe/Ext/Module.bsl",
+                "\u{feff}// Needle at the start\r\nПроцедура Ping()\r\n\tNeedle(Needle); // NEEDLE needle\r\nКонецПроцедуры\r\n",
+            ),
+            ("Catalogs/Items/Ext/ObjectModule.bsl", "// ПРОЦЕДУРА Needle\n// процедура needle\n"),
+            ("Extra.bsl", "Needle outside the layout\n"),
+            ("Extra-b.bsl", "Needle sorts before the dot\n"),
+            ("Extra/inner.bsl", "Needle in a same-named directory\n"),
+            ("Extra/Deep/z.bsl", "Needle deeper\n"),
+        ] {
+            let target = source.join(path);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, text).unwrap();
+        }
+        workspace
+    }
+
+    /// #2095 (regex), the case flag and the seam of the two engines: a first
+    /// page read through Git and its continuation by the walk give the same
+    /// pages, matches, order and addresses as the walk alone, wherever the
+    /// Git page stops.
+    #[test]
+    fn literal_search_engines_agree_on_matches_order_and_addresses() {
+        let workspace = text_engine_workspace();
+        // A user's grep defaults change neither the records nor the paths.
+        for (key, value) in [("grep.column", "true"), ("grep.fullName", "true")] {
+            assert!(std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(workspace.path())
+                .status()
+                .unwrap()
+                .success());
+        }
+        for question in [
+            // One match per page re-enters every file, `Extra.bsl` and
+            // `Extra/` included.
+            json!({"query":"Needle","limit":1}),
+            json!({"query":"Needle","limit":3}),
+            json!({"query":"needle","ignoreCase":true,"limit":2}),
+            json!({"query":"процедура","ignoreCase":true}),
+            // A regular expression is read by the walk in either case.
+            json!({"query":"Need(le|ed)","regex":true,"limit":4}),
+        ] {
+            let walk = text_search_pages(workspace.path(), TextEngine::Walk, question.clone());
+            let git = text_search_pages(workspace.path(), TextEngine::Git, question.clone());
+            let walk_matches = text_search_matches(&walk);
+            assert!(!walk_matches.is_empty(), "{question}: {walk:?}");
+            assert_eq!(
+                walk_matches,
+                text_search_matches(&git),
+                "{question}: both engines give one answer"
+            );
+            assert_eq!(walk.len(), git.len(), "{question}: the same pages");
+            let last = walk.last().unwrap().data.as_ref().unwrap();
+            assert_eq!(last["fileCoverage"]["complete"], true, "{question}");
+            assert_eq!(
+                last["fileCoverage"],
+                git.last().unwrap().data.as_ref().unwrap()["fileCoverage"],
+                "{question}: the same coverage"
+            );
+        }
+        let walk = text_search_matches(&text_search_pages(
+            workspace.path(),
+            TextEngine::Walk,
+            json!({"query":"Needle","limit":50}),
+        ));
+        let places = walk
+            .iter()
+            .map(|hit| {
+                (
+                    hit.get("at").or(hit.get("unaddressed")).cloned().unwrap(),
+                    hit["line"].as_u64().unwrap(),
+                    hit["column"].as_u64().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            places,
+            vec![
+                (json!("main:Catalog.Items.Module.Object.Body#L1"), 1, 14),
+                (json!("main:CommonModule.Probe.Method.Ping.Body#L1"), 1, 4),
+                (json!("main:CommonModule.Probe.Method.Ping.Body#L3"), 3, 2),
+                (json!("main:CommonModule.Probe.Method.Ping.Body#L3"), 3, 9),
+                (json!("outside_module_layout"), 1, 1),
+                (json!("outside_module_layout"), 1, 1),
+                (json!("outside_module_layout"), 1, 1),
+                (json!("outside_module_layout"), 1, 1),
+            ],
+            "Git's path order: `Extra-b.bsl` < `Extra.bsl` < `Extra/` and the BOM is no column"
+        );
+        assert_eq!(walk[4]["snippet"], "Needle sorts before the dot");
+        assert_eq!(walk[5]["snippet"], "Needle outside the layout");
+        assert_eq!(walk[6]["snippet"], "Needle deeper");
+        assert_eq!(walk[7]["snippet"], "Needle in a same-named directory");
+        let case = text_search_matches(&text_search_pages(
+            workspace.path(),
+            TextEngine::Walk,
+            json!({"query":"процедура","ignoreCase":true}),
+        ));
+        assert_eq!(case.len(), 6, "{case:?}");
+    }
+
+    /// `git grep` reads neither a submodule nor an embedded repository. A
+    /// source root holding either is read by the walk: a match there that
+    /// comes first in file order is on the first page, and the answer is
+    /// the walk's own.
+    #[test]
+    fn literal_search_reads_submodules_and_embedded_repositories() {
+        let git = |directory: &std::path::Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.email=probe@example.invalid",
+                    "-c",
+                    "user.name=probe",
+                ])
+                .args(args)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "{args:?}: {status:?}");
+        };
+        for gitlink in [false, true] {
+            let workspace = text_engine_workspace();
+            let nested = workspace.path().join("src/Aaa");
+            std::fs::create_dir_all(&nested).unwrap();
+            std::fs::write(nested.join("first.bsl"), "Needle in a nested work tree\n").unwrap();
+            git(&nested, &["init", "--quiet"]);
+            if gitlink {
+                git(&nested, &["add", "first.bsl"]);
+                git(
+                    &nested,
+                    &["commit", "--quiet", "--no-gpg-sign", "-m", "nested"],
+                );
+                git(workspace.path(), &["add", "src/Aaa"]);
+            }
+            let chosen = text_search_pages_with(
+                workspace.path(),
+                Arc::new(super::CanonicalV13ReadService::default()),
+                json!({"query":"Needle","limit":1}),
+            );
+            let walk = text_search_pages(
+                workspace.path(),
+                TextEngine::Walk,
+                json!({"query":"Needle","limit":1}),
+            );
+            let first = &chosen[0].data.as_ref().unwrap()["matches"][0];
+            assert_eq!(
+                first["snippet"], "Needle in a nested work tree",
+                "gitlink {gitlink}"
+            );
+            assert_eq!(
+                text_search_matches(&chosen),
+                text_search_matches(&walk),
+                "gitlink {gitlink}"
+            );
+            assert_eq!(text_search_matches(&walk).len(), 9, "gitlink {gitlink}");
+        }
+    }
+
+    /// #2096: a match without a proven module names its file by an
+    /// identifier, never by path, in either engine.
+    #[test]
+    fn literal_search_hit_without_an_address_carries_no_path() {
+        let workspace = text_engine_workspace();
+        for engine in [TextEngine::Walk, TextEngine::Git] {
+            let pages = text_search_pages(
+                workspace.path(),
+                engine,
+                json!({"query":"outside the layout"}),
+            );
+            let matches = text_search_matches(&pages);
+            assert_eq!(matches.len(), 1, "{engine:?}: {matches:?}");
+            let hit = &matches[0];
+            assert_eq!(hit["unaddressed"], "outside_module_layout");
+            assert!(hit.get("at").is_none(), "{hit}");
+            let file_id = hit["fileId"].as_str().unwrap();
+            assert!(
+                file_id.len() == 20
+                    && file_id.starts_with("bsl-")
+                    && file_id[4..].chars().all(|c| c.is_ascii_hexdigit()),
+                "{file_id}"
+            );
+            let text = serde_json::to_string(&pages[0]).unwrap();
+            assert!(
+                !text.contains("Extra.bsl") && !text.contains(".bsl\""),
+                "{text}"
+            );
+        }
+    }
+
+    /// #2095: the former `lexical` role is refused with the call that
+    /// answers it; the literal search takes a regular expression itself.
+    #[test]
+    fn retired_lexical_role_is_refused_with_the_search_without_a_role() {
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation_store::ToolIdentity;
+        let workspace = text_engine_workspace();
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(super::CanonicalV13ReadService::default()),
+            Arc::new(TokioClock),
+        );
+        let refused = *runtime
+            .bind(
+                InvocationRequest::new(
+                    ToolIdentity::Search,
+                    json!({"query":"Need(le|ed)","regex":true,"role":"lexical"}),
+                    std::fs::canonicalize(workspace.path())
+                        .unwrap()
+                        .to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .prepare()
+            .err()
+            .expect("admission refuses the retired role");
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+        assert!(
+            refused.summary.contains("omit `role`"),
+            "{}",
+            refused.summary
+        );
+        assert_eq!(refused.next[0]["tool"], "unica.search");
+        assert_eq!(
+            refused.next[0]["args"],
+            json!({"query":"Need(le|ed)","regex":true}),
+            "the same question without the role"
+        );
+        assert!(refused.data.is_none(), "no empty answer: {refused:?}");
+    }
+
+    /// A first page read through Git continues past 200 matches through the
+    /// walk at the same place: a replay repeats the page, an edit after the
+    /// cursor is read, an edit of the delivered part is stale, and a corpus
+    /// that now ends at the cursor ends the search.
+    #[test]
+    fn git_first_page_continues_by_the_walk_to_the_last_match() {
+        use unica_execution::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let module = workspace
+            .path()
+            .join("src/CommonModules/Probe/Ext/Module.bsl");
+        let lines = |count: usize| {
+            (1..=count)
+                .map(|line| format!("// Needle {line}\n"))
+                .collect::<String>()
+        };
+        std::fs::write(&module, lines(450)).unwrap();
+        let service = Arc::new(super::CanonicalV13ReadService::with_text_engine_for_test(
+            TextEngine::Git,
+        ));
+        let search = |cursor: Option<&str>| {
+            let mut arguments =
+                json!({"query":"Needle","scope":"main:CommonModule.Probe","limit":50});
+            if let Some(cursor) = cursor {
+                arguments["cursor"] = json!(cursor);
+            }
+            invoke_exact_read_with_service(
+                workspace.path(),
+                ToolIdentity::Search,
+                arguments,
+                service.clone(),
+            )
+        };
+        let mut cursors = Vec::new();
+        let mut seen = Vec::new();
+        loop {
+            let page = search(cursors.last().map(String::as_str));
+            assert!(page.ok, "{page:?}");
+            seen.extend(
+                page.data.as_ref().unwrap()["matches"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|hit| hit["line"].as_u64().unwrap()),
+            );
+            match page.cursor {
+                Some(cursor) => cursors.push(cursor),
+                None => break,
+            }
+        }
+        assert_eq!(
+            seen,
+            (1..=450).collect::<Vec<_>>(),
+            "past 200, no loss, no repeat"
+        );
+        let page = search(Some(&cursors[4]));
+        let replay = search(Some(&cursors[4]));
+        assert_eq!((&page.data, &page.cursor), (&replay.data, &replay.cursor));
+        assert_eq!(page.data.as_ref().unwrap()["matches"][0]["line"], 251);
+
+        let mut tail = lines(450);
+        tail.push_str("// Needle appended\n");
+        std::fs::write(&module, &tail).unwrap();
+        let after_tail = search(Some(&cursors[4]));
+        assert_eq!(after_tail.data, page.data, "{after_tail:?}");
+
+        std::fs::write(&module, lines(250)).unwrap();
+        let ended = search(Some(&cursors[4]));
+        assert!(ended.ok, "{ended:?}");
+        assert_eq!(ended.data.as_ref().unwrap()["matches"], json!([]));
+        assert_eq!(
+            ended.data.as_ref().unwrap()["fileCoverage"]["scanComplete"],
+            true
+        );
+        assert!(ended.cursor.is_none());
+
+        std::fs::write(
+            &module,
+            lines(450).replacen("// Needle 11\n", "// Needle eleven\n", 1),
+        )
+        .unwrap();
+        let edited = search(Some(&cursors[4]));
+        assert_eq!(edited.diagnostics[0]["code"], "stale_cursor", "{edited:?}");
+        // The cursor the Git page issued is bound the same way.
+        let edited_first = search(Some(&cursors[0]));
+        assert_eq!(
+            edited_first.diagnostics[0]["code"], "stale_cursor",
+            "{edited_first:?}"
+        );
+    }
+
+    /// A continuation resumes at the file of the last delivered match
+    /// instead of reading the corpus again: a replay repeats the page, an
+    /// edit in that file before the cursor or its removal is stale, and
+    /// files passed before it are not read again.
+    #[test]
+    fn walk_literal_continuation_resumes_at_its_file() {
+        use unica_execution::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let source = workspace.path().join("src");
+        for name in ["A", "B", "C"] {
+            let directory = source.join(format!("Loose/{name}"));
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("x.bsl"), "Needle\n".repeat(30)).unwrap();
+        }
+        let walk = Arc::new(super::CanonicalV13ReadService::with_text_engine_for_test(
+            TextEngine::Walk,
+        ));
+        let search = |service: &Arc<super::CanonicalV13ReadService>, cursor: Option<&str>| {
+            let mut arguments = json!({"query":"Needle","limit":20});
+            if let Some(cursor) = cursor {
+                arguments["cursor"] = json!(cursor);
+            }
+            invoke_exact_read_with_service(
+                workspace.path(),
+                ToolIdentity::Search,
+                arguments,
+                service.clone(),
+            )
+        };
+        let all = text_search_matches(&text_search_pages(
+            workspace.path(),
+            TextEngine::Walk,
+            json!({"query":"Needle","limit":20}),
+        ));
+        assert_eq!(all.len(), 90);
+        let first = search(&walk, None);
+        let second = search(&walk, first.cursor.as_deref());
+        let third = search(&walk, second.cursor.as_deref());
+        assert!(third.ok, "{third:?}");
+        let replay = search(&walk, second.cursor.as_deref());
+        assert_eq!((&replay.data, &replay.cursor), (&third.data, &third.cursor));
+        // The second cursor re-enters `Loose/B/x.bsl` after its tenth match.
+        assert_eq!(
+            text_search_matches(&[first.clone(), second.clone(), third.clone()]),
+            all[..60].to_vec()
+        );
+
+        // An edit after the cursor is read by the next page.
+        std::fs::write(source.join("Loose/C/x.bsl"), "Needle\n".repeat(31)).unwrap();
+        let after = search(&walk, second.cursor.as_deref());
+        assert_eq!(after.data, third.data, "{after:?}");
+        // A delivered match of the resumed file changed.
+        std::fs::write(
+            source.join("Loose/B/x.bsl"),
+            format!("Needle!\n{}", "Needle\n".repeat(29)),
+        )
+        .unwrap();
+        let stale = search(&walk, second.cursor.as_deref());
+        assert_eq!(stale.diagnostics[0]["code"], "stale_cursor", "{stale:?}");
+        std::fs::write(source.join("Loose/B/x.bsl"), "Needle\n".repeat(30)).unwrap();
+        // A file before the resumed one is not read again.
+        std::fs::remove_file(source.join("Loose/A/x.bsl")).unwrap();
+        let behind = search(&walk, second.cursor.as_deref());
+        assert_eq!((&behind.data, &behind.cursor), (&third.data, &third.cursor));
+        // The resumed file disappeared with its directory; later files remain.
+        std::fs::remove_dir_all(source.join("Loose/B")).unwrap();
+        let moved = search(&walk, second.cursor.as_deref());
+        assert_eq!(moved.diagnostics[0]["code"], "stale_cursor", "{moved:?}");
+    }
+
+    /// A walk page ends at its time share of the response budget at a
+    /// file boundary, even with no match yet, and the cursor carries the
+    /// walk on from there: every match is reached, none repeats.
+    #[test]
+    fn walk_pages_end_by_time_and_continue_without_loss() {
+        let workspace = resolve_exact_workspace();
+        let source = workspace.path().join("src");
+        for index in 0..40 {
+            let directory = source.join(format!("Loose/F{index:02}"));
+            std::fs::create_dir_all(&directory).unwrap();
+            let text = if index % 13 == 12 {
+                "Needle\n"
+            } else {
+                "// nothing\n"
+            };
+            std::fs::write(directory.join("x.bsl"), text).unwrap();
+        }
+        let service = Arc::new(super::CanonicalV13ReadService {
+            text_engine: Some(TextEngine::Walk),
+            walk_budget: Some(Duration::ZERO),
+            ..super::CanonicalV13ReadService::default()
+        });
+        let pages = text_search_pages_with(workspace.path(), service, json!({"query":"Needle"}));
+        let matches = text_search_matches(&pages);
+        assert_eq!(matches.len(), 3, "{matches:?}");
+        let by_time = pages
+            .iter()
+            .filter(|page| page.page.as_ref().unwrap()["stoppedBy"] == "deadline")
+            .collect::<Vec<_>>();
+        assert!(by_time.len() > 3, "{} pages", pages.len());
+        assert!(by_time.iter().all(|page| page.cursor.is_some()));
+        assert!(by_time
+            .iter()
+            .any(|page| page.data.as_ref().unwrap()["matches"]
+                .as_array()
+                .unwrap()
+                .is_empty()));
+        let last = pages.last().unwrap().data.as_ref().unwrap();
+        assert_eq!(last["fileCoverage"]["scanComplete"], true);
+    }
+
+    /// The former `lexical` deadline key stays accepted in `unica.toml` for
+    /// one release and no longer limits the literal search: even a value the
+    /// configuration would refuse leaves the search whole.
+    #[test]
+    fn literal_search_ignores_the_retired_git_grep_timeout_key() {
+        let workspace = text_engine_workspace();
+        let expected = text_search_matches(&text_search_pages(
+            workspace.path(),
+            TextEngine::Git,
+            json!({"query":"Needle"}),
+        ));
+        for value in ["1", "0"] {
+            std::fs::write(
+                workspace.path().join("unica.toml"),
+                format!(
+                    "[operational.code_intelligence]\nsearch_git_grep_timeout_seconds = {value}\n"
+                ),
+            )
+            .unwrap();
+            for engine in [TextEngine::Git, TextEngine::Walk] {
+                let pages = text_search_pages(workspace.path(), engine, json!({"query":"Needle"}));
+                assert_eq!(text_search_matches(&pages), expected, "{value} {engine:?}");
+            }
+        }
+    }
+
+    /// A line that is not UTF-8 and cannot hold a match is no gap: the
+    /// first page read through Git and the walk that continues it agree on
+    /// the file, and the continuation reaches every later match.
+    #[test]
+    fn unreadable_line_without_a_match_does_not_break_the_continuation() {
+        let workspace = text_engine_workspace();
+        std::fs::write(
+            workspace
+                .path()
+                .join("src/CommonModules/Probe/Ext/Module.bsl"),
+            b"// Mark 1\n\xff\n// Mark 2\n// Mark 3\n",
+        )
+        .unwrap();
+        for engine in [TextEngine::Git, TextEngine::Walk] {
+            let pages =
+                text_search_pages(workspace.path(), engine, json!({"query":"Mark","limit":2}));
+            let lines = text_search_matches(&pages)
+                .iter()
+                .map(|hit| hit["line"].as_u64().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(lines, vec![1, 3, 4], "{engine:?}");
+            let last = pages.last().unwrap().data.as_ref().unwrap();
+            assert_eq!(last["fileCoverage"]["complete"], true, "{engine:?}: {last}");
+        }
+    }
+
+    /// A line too long to read that Git selects names no file; the first
+    /// page then reads its corpus by the walk, so every page counts the same
+    /// uncovered file and no count is lost to the cursor.
+    #[test]
+    fn overlong_candidate_line_keeps_coverage_across_the_continuation() {
+        let workspace = text_engine_workspace();
+        std::fs::write(
+            workspace
+                .path()
+                .join("src/Catalogs/Items/Ext/ManagerModule.bsl"),
+            format!("// {}Needle\n", "x".repeat(8 * 1024 * 1024)),
+        )
+        .unwrap();
+        for engine in [TextEngine::Git, TextEngine::Walk] {
+            let pages = text_search_pages(
+                workspace.path(),
+                engine,
+                json!({"query":"Needle","limit":2}),
+            );
+            assert!(pages.len() > 1, "{engine:?}");
+            for page in &pages {
+                let coverage = &page.data.as_ref().unwrap()["fileCoverage"];
+                assert_eq!(coverage["uncovered"], 1, "{engine:?}: {coverage}");
+            }
+            let last = &pages.last().unwrap().data.as_ref().unwrap()["fileCoverage"];
+            assert_eq!(last["uncoveredIsLowerBound"], false, "{engine:?}: {last}");
+            assert_eq!(last["complete"], false, "{engine:?}: {last}");
+        }
     }
 }

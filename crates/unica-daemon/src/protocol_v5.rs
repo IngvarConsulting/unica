@@ -1164,15 +1164,6 @@ impl DecodedSubmit<V5InvocationRequest> for DecodedSubmitAdapter {
         }
     }
 
-    fn response_budget_ms(&self) -> Option<u64> {
-        match self.decoded.request() {
-            V5ClientRequest::SubmitInvocation { invocation } => {
-                Some(invocation.response_budget_ms())
-            }
-            _ => None,
-        }
-    }
-
     fn into_strict_submit(
         self,
         expected_core: &CoreIdentityDigest,

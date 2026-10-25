@@ -15,7 +15,7 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/type",
+          "pointer": "/data/props/type/raw",
           "contains": "d3p1:СтрокаКода"
         }
       ],
@@ -148,12 +148,12 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/type",
+          "pointer": "/data/props/type/raw",
           "contains": "d3p1:СтрокаКода"
         },
         {
-          "pointer": "/data/props/bounds",
-          "contains": "\"lower\":\"0\""
+          "pointer": "/data/props/bounds/lower",
+          "eq": "0"
         }
       ]
     },

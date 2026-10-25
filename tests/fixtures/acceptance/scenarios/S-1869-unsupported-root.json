@@ -1,0 +1,78 @@
+{
+  "id": "S-1869-unsupported-root",
+  "issue": 1869,
+  "area": "Полная выгрузка",
+  "task": "Отказ полной выгрузки объясняет unsupportedRoot; исходники сохраняются, cleanup и recovery видны отдельно",
+  "profile": "runtime-fault",
+  "driver": "pull-validation-fault",
+  "evaluation": "unsupported-root",
+  "workspace": "tests/fixtures/acceptance/workspace-pull-validation",
+  "wire": [
+    {
+      "tool": "unica.run",
+      "args": {
+        "op": "pull",
+        "args": {
+          "sourceSet": "main",
+          "force": true
+        },
+        "dryRun": true
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.run",
+      "args": {
+        "op": "pull",
+        "args": {
+          "sourceSet": "main",
+          "force": true
+        },
+        "dryRun": false
+      },
+      "expect": [
+        "invalid-result"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_result"
+        },
+        {
+          "pointer": "/data/state",
+          "eq": "notPublished"
+        },
+        {
+          "pointer": "/data/validation/reason",
+          "eq": "unsupportedRoot"
+        },
+        {
+          "pointer": "/data/validation/path",
+          "eq": "Unknown.xml"
+        },
+        {
+          "pointer": "/changed",
+          "absent": true
+        },
+        {
+          "pointer": "/data/validation/qname",
+          "eq": "{http://v8.1c.ru/8.3/xcf/extrnprops}UnregisteredDumpRoot"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "dff8b32f9369a539c840a8cc13de76a47b8b962244d2cdc3cf16b4befd72a6ff"
+        },
+        {
+          "path": "src/keep.bsl",
+          "kind": "sha256",
+          "eq": "76acd0d32b1532a6aeda5d18eeefcb1988c5114b06f4631c79ff5e189f7e08c3"
+        }
+      ]
+    }
+  ]
+}
