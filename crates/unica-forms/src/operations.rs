@@ -57,6 +57,7 @@ form_operations!(
     AttributeAdd => ("attribute.add", Form, Items),
     CommandAdd => ("command.add", Form, Items),
     EventBind => ("event.bind", FormEvent, Values),
+    PropsSet => ("props.set", Form, Values),
 );
 
 impl FormOperation {
@@ -72,7 +73,8 @@ impl FormOperation {
             | Self::ItemMove
             | Self::AttributeAdd
             | Self::CommandAdd
-            | Self::EventBind => Some("Form.xml"),
+            | Self::EventBind
+            | Self::PropsSet => Some("Form.xml"),
         }
     }
 
@@ -85,7 +87,8 @@ impl FormOperation {
             | Self::Remove
             | Self::AttributeAdd
             | Self::CommandAdd
-            | Self::EventBind => true,
+            | Self::EventBind
+            | Self::PropsSet => true,
         }
     }
 }
@@ -216,6 +219,12 @@ mod tests {
                 FormOperation::EventBind,
                 "event.bind",
                 OperationApplicability::FormEvent,
+                OperationSkeleton::Values,
+            ),
+            (
+                FormOperation::PropsSet,
+                "props.set",
+                OperationApplicability::Form,
                 OperationSkeleton::Values,
             ),
         ] {

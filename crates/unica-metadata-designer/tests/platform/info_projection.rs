@@ -1910,3 +1910,105 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
         !crate::info_projection::observed_type_is_strict_but_unmodelled(document.root_element())
     );
 }
+
+/// Голый текст локализуемого свойства стандартного реквизита отвергается
+/// одинаково у справочника, табличной части и стандартной табличной части.
+/// Набор свойств — по выгрузке 8.3.27, где `Format` и `EditFormat` пишутся
+/// `<v8:item>` (#1910).
+#[test]
+fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_owner() {
+    const NS: &str = r#"xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core""#;
+    let localized = "<v8:item><v8:lang>ru</v8:lang><v8:content>ДЛФ=D</v8:content></v8:item>";
+    let attributes = |property: &str, value: &str| {
+        // Голый текст — у второго реквизита: путь ошибки называет его индекс.
+        format!(
+            r#"<StandardAttributes><xr:StandardAttribute name="Ref"><xr:{property}>{localized}</xr:{property}></xr:StandardAttribute><xr:StandardAttribute name="Code"><xr:{property}>{value}</xr:{property}></xr:StandardAttribute></StandardAttributes>"#
+        )
+    };
+    let target = |path| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap();
+    for property in ["Synonym", "ToolTip", "Format", "EditFormat"] {
+        for (value, accepted) in [(localized, true), ("ДЛФ=D", false)] {
+            // Справочник.
+            let xml = format!(
+                "<MetaDataObject {NS}><Catalog><Properties><Name>Items</Name>{}</Properties></Catalog></MetaDataObject>",
+                attributes(property, value)
+            );
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            let object = document.root_element().first_element_child().unwrap();
+            let mut diagnostics = Vec::new();
+            let declarations =
+                serde_json::to_value(crate::info_projection::project_meta_info_declarations(
+                    MetadataKind::Catalog,
+                    unica_xml_format::read::child_element(object, "Properties"),
+                    &target("Catalog.Items"),
+                    &mut diagnostics,
+                ))
+                .unwrap();
+            assert_eq!(
+                declarations["standardAttributes"].is_array(),
+                accepted,
+                "catalog {property} {value}: {diagnostics:?}"
+            );
+            if !accepted {
+                assert_eq!(
+                    serde_json::to_value(&diagnostics).unwrap()[0]["field"],
+                    format!("standardAttributes[1].properties.{property}")
+                );
+            }
+
+            // Стандартная табличная часть.
+            let xml = format!(
+                r#"<MetaDataObject {NS}><ChartOfAccounts><Properties><Name>Accounts</Name><StandardTabularSections><xr:StandardTabularSection name="ExtDimensionTypes"><xr:Synonym/><xr:Comment/><xr:ToolTip/><xr:FillChecking>DontCheck</xr:FillChecking>{}</xr:StandardTabularSection></StandardTabularSections></Properties></ChartOfAccounts></MetaDataObject>"#,
+                attributes(property, value)
+                    .replace("<StandardAttributes>", "<xr:StandardAttributes>")
+                    .replace("</StandardAttributes>", "</xr:StandardAttributes>")
+            );
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            let object = document.root_element().first_element_child().unwrap();
+            let mut diagnostics = Vec::new();
+            let declarations =
+                serde_json::to_value(crate::info_projection::project_meta_info_declarations(
+                    MetadataKind::ChartOfAccounts,
+                    unica_xml_format::read::child_element(object, "Properties"),
+                    &target("ChartOfAccounts.Accounts"),
+                    &mut diagnostics,
+                ))
+                .unwrap();
+            assert_eq!(
+                declarations["standardTabularSections"].is_array(),
+                accepted,
+                "standard tabular section {property} {value}: {diagnostics:?}"
+            );
+            if !accepted {
+                assert_eq!(
+                    serde_json::to_value(&diagnostics).unwrap()[0]["field"],
+                    format!(
+                        "standardTabularSections[0].standardAttributes[1].properties.{property}"
+                    )
+                );
+            }
+
+            // Табличная часть.
+            let xml = format!(
+                "<Properties {NS}>{}</Properties>",
+                attributes(property, value)
+            );
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            let observed = crate::info_projection::observe_tabular_standard_attributes(
+                document.root_element(),
+                "standardAttributes",
+            );
+            assert_eq!(
+                observed.is_ok(),
+                accepted,
+                "tabular section {property} {value}: {observed:?}"
+            );
+            if let Err(error) = observed {
+                assert_eq!(
+                    error.field,
+                    format!("standardAttributes[1].properties.{property}")
+                );
+            }
+        }
+    }
+}

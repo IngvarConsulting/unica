@@ -1,4 +1,5 @@
 mod connections;
+pub use crate::task_observation::{TaskObservation, TaskObservationStage, TaskObservationTimer};
 pub use connections::V5DaemonClient;
 
 use super::identity::{CoreIdentity, DaemonStateDirectory};
@@ -117,7 +118,7 @@ impl fmt::Display for V5TransportError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum V5TaskExchangeError {
     Protocol(V5DaemonErrorCode),
-    Transport,
+    Transport(TaskObservation),
     SessionPoisoned,
     UnexpectedResponse,
     MalformedResponse,
@@ -128,19 +129,12 @@ pub enum V5TaskExchangeError {
 /// response, a Task exchange reports it as a protocol violation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum V5ExchangeFailure {
-    Transport(V5TransportError),
+    Transport {
+        error: V5TransportError,
+        stage: TaskObservationStage,
+        at: Instant,
+    },
     MalformedResponse,
-}
-
-impl From<V5TransportError> for V5TaskExchangeError {
-    fn from(error: V5TransportError) -> Self {
-        match error {
-            V5TransportError::SessionPoisoned => Self::SessionPoisoned,
-            V5TransportError::RequestNotSent(_)
-            | V5TransportError::RequestTooLarge { .. }
-            | V5TransportError::ResponseLost(_) => Self::Transport,
-        }
-    }
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -779,6 +773,7 @@ impl V5DaemonProcessOwner {
         deadline: Instant,
         after_decode: impl FnOnce() -> Instant,
     ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        let timer = TaskObservationTimer::start(deadline);
         match self.exchange_classified(request, stage, Some(deadline), after_decode) {
             Ok(V5ServerResponse::Task { snapshot }) => Ok(snapshot),
             Ok(V5ServerResponse::Error { code }) => Err(V5TaskExchangeError::Protocol(code)),
@@ -789,7 +784,13 @@ impl V5DaemonProcessOwner {
             Err(V5ExchangeFailure::MalformedResponse) => {
                 Err(V5TaskExchangeError::MalformedResponse)
             }
-            Err(V5ExchangeFailure::Transport(error)) => Err(error.into()),
+            Err(V5ExchangeFailure::Transport {
+                error: V5TransportError::SessionPoisoned,
+                ..
+            }) => Err(V5TaskExchangeError::SessionPoisoned),
+            Err(V5ExchangeFailure::Transport { stage, at, .. }) => Err(
+                V5TaskExchangeError::Transport(timer.failed(stage, at, Some(&self.record))),
+            ),
         }
     }
 
@@ -918,7 +919,7 @@ impl V5DaemonProcessOwner {
         // either may hide a receipt the daemon already reserved.
         self.exchange_classified(request, stage, deadline, Instant::now)
             .map_err(|failure| match failure {
-                V5ExchangeFailure::Transport(error) => error,
+                V5ExchangeFailure::Transport { error, .. } => error,
                 V5ExchangeFailure::MalformedResponse => V5TransportError::ResponseLost(format!(
                     "protocol-v5 {stage} response is not strict"
                 )),
@@ -933,21 +934,29 @@ impl V5DaemonProcessOwner {
         after_decode: impl FnOnce() -> Instant,
     ) -> Result<V5ServerResponse, V5ExchangeFailure> {
         if self.poisoned {
-            return Err(V5ExchangeFailure::Transport(
-                V5TransportError::SessionPoisoned,
-            ));
+            return Err(V5ExchangeFailure::Transport {
+                error: V5TransportError::SessionPoisoned,
+                stage: TaskObservationStage::WriteRequest,
+                at: Instant::now(),
+            });
         }
         if let Err(error) = self.write_typed_with_deadline(&request, deadline, stage) {
             self.poison();
-            return Err(V5ExchangeFailure::Transport(error));
+            return Err(V5ExchangeFailure::Transport {
+                error,
+                stage: TaskObservationStage::WriteRequest,
+                at: Instant::now(),
+            });
         }
         let frame = match self.read_with_deadline(deadline, stage) {
             Ok(frame) => frame,
             Err(error) => {
                 self.poison();
-                return Err(V5ExchangeFailure::Transport(
-                    V5TransportError::ResponseLost(error),
-                ));
+                return Err(V5ExchangeFailure::Transport {
+                    error: V5TransportError::ResponseLost(error),
+                    stage: TaskObservationStage::ReadResponse,
+                    at: Instant::now(),
+                });
             }
         };
         let decoded = decode_v5_server_response(&frame);
@@ -955,11 +964,14 @@ impl V5DaemonProcessOwner {
         // cutoff while it was being read or decoded, valid or not: it is not
         // published and the session does not survive it.
         if let Some(deadline) = deadline {
-            if let Err(error) = remaining_at(deadline, after_decode(), stage) {
+            let at = after_decode();
+            if let Err(error) = remaining_at(deadline, at, stage) {
                 self.poison();
-                return Err(V5ExchangeFailure::Transport(
-                    V5TransportError::ResponseLost(error),
-                ));
+                return Err(V5ExchangeFailure::Transport {
+                    error: V5TransportError::ResponseLost(error),
+                    stage: TaskObservationStage::DecodeResponse,
+                    at,
+                });
             }
         }
         match decoded {
@@ -1638,11 +1650,12 @@ mod tests {
             daemon.join().unwrap();
             let reuse = owner.get_task_before(task_id, Instant::now() + Duration::from_secs(5));
 
-            assert_eq!(
-                first,
-                Err(V5TaskExchangeError::Transport),
-                "connection closed after {cut} response bytes"
-            );
+            let Err(V5TaskExchangeError::Transport(observation)) = first else {
+                panic!("connection closed after {cut} response bytes: {first:?}")
+            };
+            assert_eq!(observation.stage, TaskObservationStage::ReadResponse);
+            assert!(!observation.cutoff_expired);
+            assert!(observation.endpoint_generation_hash.is_some());
             assert_eq!(reuse, Err(V5TaskExchangeError::SessionPoisoned));
         }
     }
@@ -1682,13 +1695,19 @@ mod tests {
                     assert!(daemon.join().unwrap().is_empty());
                     continue;
                 }
-                let expected = if expired {
-                    // An expired cutoff wins over the frame, valid or not.
-                    V5TaskExchangeError::Transport
+                if expired {
+                    let Err(V5TaskExchangeError::Transport(observation)) = first else {
+                        panic!("{case}, expired={expired}: {first:?}")
+                    };
+                    assert_eq!(observation.stage, TaskObservationStage::DecodeResponse);
+                    assert!(observation.cutoff_expired);
                 } else {
-                    V5TaskExchangeError::MalformedResponse
-                };
-                assert_eq!(first, Err(expected), "{case}, expired={expired}");
+                    assert_eq!(
+                        first,
+                        Err(V5TaskExchangeError::MalformedResponse),
+                        "{case}, expired={expired}"
+                    );
+                }
                 assert_eq!(
                     owner.get_task_before(task_id, deadline),
                     Err(V5TaskExchangeError::SessionPoisoned),

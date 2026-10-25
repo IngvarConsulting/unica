@@ -60,6 +60,7 @@ allowed-tools:
     "arguments": {
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
+        {"op": "props.set", "args": {"values": {"Title": "Валюта", "AutoTitle": false, "Width": 60}}},
         {"op": "attribute.add", "args": {"items": [{"name": "Объект", "type": "CatalogObject.Валюты", "main": true}]}},
         {"op": "item.add", "args": {"items": [{"name": "Наименование", "type": "InputField", "path": "Объект.Наименование"}]}}
       ]
@@ -67,6 +68,12 @@ allowed-tools:
   }
 }
 ```
+
+Заголовок, размеры и поведение самой формы пишет `props.set` на адресе
+формы. Ключи — имена, которые `unica.view` формы показывает в
+`props.properties`: `Title`, `AutoTitle`, `Width`, `Height`, `Scale`,
+`WindowOpeningMode` и другие из `….Form.<Форма>.Can.props.set`. Заголовок
+без `AutoTitle: false` платформа показывает вместе с представлением объекта.
 
 Элементы внутрь группы добавляет `item.add` на адресе группы
 (`….Form.ФормаЭлемента.Item.<Группа>`), обработчик события — `event.bind`
@@ -102,8 +109,8 @@ allowed-tools:
 }
 ```
 
-- `title` — заголовок формы (multilingual). Можно указать и в `properties`, но лучше на верхнем уровне
-- `properties` — свойства формы: `autoTitle`, `windowOpeningMode`, `commandBarLocation`, `saveDataInSettings`, `width`, `height` и др.
+- `title` — заголовок формы (multilingual). На поверхности его пишет `props.set` формы ключом `Title`
+- `properties` — свойства формы: `autoTitle`, `windowOpeningMode`, `commandBarLocation`, `saveDataInSettings`, `width`, `height` и др. На поверхности их пишет `props.set` формы именами XML: `AutoTitle`, `WindowOpeningMode`, `Width`
 - `events` — обработчики событий формы (ключ: имя события 1С, значение: непустое строковое имя процедуры). Этот формат не поддерживает `callType`.
 - `excludedCommands` — исключённые стандартные команды
 
