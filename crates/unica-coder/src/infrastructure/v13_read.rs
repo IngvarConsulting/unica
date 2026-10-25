@@ -104,7 +104,6 @@ fn observe_completed_view_projection_for_test(at: &QualifiedAddress, revision: &
     });
 }
 
-const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
 /// Logical read adapter over one actor-issued source capability. Its read
 /// identity is fixed at admission; the adapter never snapshots the tree.
 pub(crate) struct LogicalViewReadAuthority<'a> {
@@ -2391,16 +2390,9 @@ impl LogicalViewReadAuthority<'_> {
         parent: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError> {
-        if matches!(
-            parent.segments(),
-            [root] if root.kind() == NodeKind::Configuration
-        ) && matches!(
-            self.read.source_set_kind(),
-            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-        ) {
-            return Ok(projected);
-        }
-        let Some(branch) = module_branch_for_parent(parent, self.profile) else {
+        let Some(branch) =
+            module_branch_for_parent(parent, self.profile, self.read.source_set_kind())
+        else {
             return Ok(projected);
         };
         if let Some(owner) = parent
@@ -2588,11 +2580,21 @@ fn module_owner_address(
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
+/// Ветка `Module` узла, которому профиль платформы даёт модули. Корень
+/// конфигурации и расширения ведёт к модулям приложения; у корня внешней
+/// обработки и отчёта их нет.
 pub(crate) fn module_branch_for_parent(
     parent: &QualifiedAddress,
     profile: PlatformProfile,
+    source_kind: SourceSetKind,
 ) -> Option<BranchRef> {
     let branch = if matches!(parent.segments(), [root] if root.kind() == NodeKind::Configuration) {
+        if matches!(
+            source_kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            return None;
+        }
         QualifiedAddress::parse(&format!("{}:Module", parent.source_set())).ok()
     } else {
         QualifiedAddress::parse(&format!("{parent}.Module")).ok()

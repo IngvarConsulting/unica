@@ -2,7 +2,8 @@
 id: INV.WIRE.DAEMON-RESPONSE-SIZE
 check:
   - crates/unica-daemon/src/client_v5.rs::malformed_v5_response_permanently_poisons_owner_session
-gap: https://github.com/IngvarConsulting/unica/issues/984
+  - crates/unica-daemon/src/client_v5.rs::oversized_or_cut_v5_response_permanently_poisons_owner_session
+  - crates/unica-coder/src/interfaces/daemon_router.rs::submit_answer_at_the_frame_limit_is_read_and_one_byte_over_or_cut_is_recovered
 ---
 
 # Frontend самостоятельно ограничивает размер ответа демона
@@ -12,6 +13,6 @@ gap: https://github.com/IngvarConsulting/unica/issues/984
 некорректный или оборванный ответ закрывают соединение; отправлять следующий запрос
 в это соединение нельзя.
 
-Проверка некорректного ответа подтверждает запрет повторного использования
-соединения. Полная проверка oversized и оборванного ответа
-с последующим запретом повторного использования соединения указана в `gap`.
+Ответ ровно на пределе читается. Как frontend поступает с непрочитанным
+ответом на отправку вызова, задаёт
+[восстановление прямого ответа](direct-response-recovery.md).
