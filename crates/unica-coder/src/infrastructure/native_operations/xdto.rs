@@ -2285,6 +2285,120 @@ pub(crate) mod tests {
         }
     }
 
+    /// A package that already declares the value type `Существующий` and the
+    /// property `Код` of `СоставнойЛюбойОбъект`.
+    fn package_with_declarations() -> String {
+        PACKAGE
+            .replacen(
+                "\t<objectType name=\"ЛюбаяСсылка\">",
+                "\t<valueType name=\"Существующий\" base=\"xs:string\"/>\n\t<objectType name=\"ЛюбаяСсылка\">",
+                1,
+            )
+            .replace(
+                "<objectType name=\"СоставнойЛюбойОбъект\"/>",
+                "<objectType name=\"СоставнойЛюбойОбъект\"><property name=\"Код\" type=\"xs:string\"/></objectType>",
+            )
+    }
+
+    /// INV.SOURCE.XDTO-ORDERED-BATCH: an exact repeat of an addition changes
+    /// nothing — the canonical plan is empty and publication writes neither
+    /// sources nor cache.
+    #[test]
+    fn staged_xdto_exact_repeat_of_an_addition_plans_and_publishes_nothing() {
+        let package = package_with_declarations();
+        for (label, operation) in [
+            (
+                "value type",
+                add_value("main:XDTOPackage.Sample", "Существующий", "xs:string"),
+            ),
+            (
+                "property",
+                add_property(
+                    "main:XDTOPackage.Sample.Type.СоставнойЛюбойОбъект",
+                    "Код",
+                    "xs:string",
+                    None,
+                    None,
+                ),
+            ),
+        ] {
+            let fixture = staged_xdto_fixture(
+                &format!("exact-repeat-{}", label.replace(' ', "-")),
+                package.as_bytes(),
+            );
+            let sources_before = snapshot_tree(&fixture.source);
+            let cache_before = snapshot_tree(&fixture.context.cache_root);
+            let admission = staged_xdto_admission(&fixture, None, false);
+            let (state, effects) = plan_admitted_xdto(&admission, &fixture.binding, &[operation])
+                .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+            assert!(state.planned_changes().is_empty(), "{label}");
+            assert!(effects.events().is_empty(), "{label}");
+            let published = fixture
+                .actor
+                .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+                .unwrap();
+            assert_eq!(published.commit_count_for_test(), 0, "{label}");
+            assert_eq!(snapshot_tree(&fixture.source), sources_before, "{label}");
+            assert_eq!(
+                snapshot_tree(&fixture.context.cache_root),
+                cache_before,
+                "{label}"
+            );
+            fixture.cleanup();
+        }
+    }
+
+    /// INV.SOURCE.XDTO-ORDERED-BATCH: an addition with an existing name and
+    /// other content is refused at its own operation, and nothing of the
+    /// batch is written.
+    #[test]
+    fn staged_xdto_conflicting_duplicate_is_refused_at_its_operation_without_writes() {
+        let package = package_with_declarations();
+        for (label, conflict, path) in [
+            (
+                "value type",
+                add_value("main:XDTOPackage.Sample", "Существующий", "xs:decimal"),
+                "ops[1].args.values.name",
+            ),
+            (
+                "property",
+                add_property(
+                    "main:XDTOPackage.Sample.Type.СоставнойЛюбойОбъект",
+                    "Код",
+                    "xs:decimal",
+                    None,
+                    None,
+                ),
+                "ops[1].args.values.property.name",
+            ),
+        ] {
+            let fixture = staged_xdto_fixture(
+                &format!("conflict-{}", label.replace(' ', "-")),
+                package.as_bytes(),
+            );
+            let sources_before = snapshot_tree(&fixture.source);
+            let cache_before = snapshot_tree(&fixture.context.cache_root);
+            let admission = staged_xdto_admission(&fixture, None, false);
+            let operations = [
+                add_value("main:XDTOPackage.Sample", "Новый", "xs:string"),
+                conflict,
+            ];
+            let error = match plan_admitted_xdto(&admission, &fixture.binding, &operations) {
+                Err(error) => error,
+                Ok(_) => panic!("{label}: a conflicting duplicate is refused"),
+            };
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{label}");
+            assert_eq!(error.path(), Some(path), "{label}");
+            assert_eq!(snapshot_tree(&fixture.source), sources_before, "{label}");
+            assert_eq!(
+                snapshot_tree(&fixture.context.cache_root),
+                cache_before,
+                "{label}"
+            );
+            fixture.cleanup();
+        }
+    }
+
     #[test]
     fn staged_xdto_dry_and_real_share_postimage_effects_and_revision() {
         let fixture = staged_xdto_fixture("dry-real-plan", PACKAGE.as_bytes());

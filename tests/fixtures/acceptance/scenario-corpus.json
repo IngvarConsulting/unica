@@ -3429,7 +3429,7 @@
   },
   {
    "area": "Создание и удаление объектов",
-   "task": "Удалить справочник, на который ссылаются права роли — поверхность отказывает и называет ссылающийся файл",
+   "task": "Удалить справочник, на который ссылаются права роли и состав подсистемы, — план вычищает права роли, состав и командный интерфейс подсистемы и называет их адресами",
    "wire": [
     {
      "tool": "unica.apply",
@@ -3470,9 +3470,39 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_state: `Catalog.Валюты` is still referenced by 1 source file(s): Roles/SalesReader/Ext/Rights.xml; remove the references first"
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "composition_cleaned"
+      },
+      {
+       "pointer": "/warnings/0/entries",
+       "contains": {
+        "at": "main:Role.SalesReader",
+        "property": "Rights"
+       }
+      },
+      {
+       "pointer": "/warnings/0/entries",
+       "contains": {
+        "at": "main:Subsystem.Администрирование",
+        "property": "Content"
+       }
+      },
+      {
+       "pointer": "/warnings/0/entries",
+       "contains": {
+        "at": "main:Subsystem.Администрирование",
+        "property": "CommandInterface"
+       }
+      }
+     ]
     },
     {
      "tool": "unica.view",
@@ -7658,7 +7688,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
     }
    ]
   },
@@ -7687,7 +7717,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
     }
    ]
   },
@@ -7717,7 +7747,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
     }
    ]
   },
@@ -7747,7 +7777,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
     }
    ]
   },
@@ -7770,7 +7800,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; set `off-support` with `supportRule.set` in a separate apply before removal"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; take the object off support with `supportRule.set` and the rule `off-support`"
     }
    ]
   },
@@ -7990,7 +8020,7 @@
   {
    "id": "S293",
    "area": "Объекты метаданных",
-   "task": "Удалить объект, на который ещё ссылаются права роли, с force — план исполним и несёт предупреждение о сохранённых ссылках",
+   "task": "Удалить объект, на который ещё ссылаются права роли, с force — аргумент снят из контракта, поверхность отказывает bad_value до записи",
    "wire": [
     {
      "tool": "unica.apply",
@@ -8034,8 +8064,9 @@
       ]
      },
      "expect": [
-      "ok"
-     ]
+      "refused"
+     ],
+     "refusal": "bad_value: `object.remove` does not accept `force`: remove the references from other metadata first; references only in module code or query text are listed as a warning i"
     }
    ]
   },
@@ -8080,7 +8111,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+     "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
     }
    ]
   },
@@ -17755,7 +17786,15 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Catalog.Items\"}],\"mutationCapability\":\"editable\"}"
+       "eq": {
+        "variants": [
+         {
+          "kind": "reference",
+          "metadataPath": "Catalog.Items"
+         }
+        ],
+        "mutationCapability": "editable"
+       }
       },
       {
        "pointer": "/data/props/incomplete",
@@ -17763,7 +17802,11 @@
       },
       {
        "pointer": "/data/props/fillValue",
-       "eq": "{\"kind\":\"reference\",\"metadataPath\":\"Catalog.Items\",\"item\":\"EmptyRef\"}"
+       "eq": {
+        "kind": "reference",
+        "metadataPath": "Catalog.Items",
+        "item": "EmptyRef"
+       }
       }
      ],
      "fileAssertions": [
@@ -17810,7 +17853,15 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Enum.Flags\"}],\"mutationCapability\":\"editable\"}"
+       "eq": {
+        "variants": [
+         {
+          "kind": "reference",
+          "metadataPath": "Enum.Flags"
+         }
+        ],
+        "mutationCapability": "editable"
+       }
       },
       {
        "pointer": "/data/props/incomplete",
@@ -17818,7 +17869,11 @@
       },
       {
        "pointer": "/data/props/fillValue",
-       "eq": "{\"kind\":\"reference\",\"metadataPath\":\"Enum.Flags\",\"item\":\"EnumValue.Yes\"}"
+       "eq": {
+        "kind": "reference",
+        "metadataPath": "Enum.Flags",
+        "item": "EnumValue.Yes"
+       }
       }
      ],
      "fileAssertions": [
@@ -17865,7 +17920,15 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"variants\":[{\"kind\":\"characteristicTypes\",\"metadataPath\":\"ChartOfCharacteristicTypes.Properties\"}],\"mutationCapability\":\"readOnly\"}"
+       "eq": {
+        "variants": [
+         {
+          "kind": "characteristicTypes",
+          "metadataPath": "ChartOfCharacteristicTypes.Properties"
+         }
+        ],
+        "mutationCapability": "readOnly"
+       }
       },
       {
        "pointer": "/data/props/incomplete",
@@ -33916,7 +33979,15 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"variants\":[{\"kind\":\"typeId\",\"typeId\":\"41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f\"}],\"mutationCapability\":\"readOnly\"}"
+       "eq": {
+        "variants": [
+         {
+          "kind": "typeId",
+          "typeId": "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f"
+         }
+        ],
+        "mutationCapability": "readOnly"
+       }
       },
       {
        "pointer": "/data/props/incomplete",
@@ -38311,11 +38382,22 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"raw\":\"tns:EnterpriseData\",\"prefix\":\"tns\",\"local\":\"EnterpriseData\",\"namespace\":\"http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3\"}"
+       "eq": {
+        "raw": "tns:EnterpriseData",
+        "prefix": "tns",
+        "local": "EnterpriseData",
+        "namespace": "http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3"
+       }
       },
       {
        "pointer": "/data/props/bounds",
-       "eq": "{\"lower\":\"1\",\"upper\":\"1\",\"lowerExplicit\":false,\"upperExplicit\":false,\"unbounded\":false}"
+       "eq": {
+        "lower": "1",
+        "upper": "1",
+        "lowerExplicit": false,
+        "upperExplicit": false,
+        "unbounded": false
+       }
       }
      ]
     },
@@ -38330,11 +38412,22 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"raw\":\"tns:ВерсияФормата\",\"prefix\":\"tns\",\"local\":\"ВерсияФормата\",\"namespace\":\"http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3\"}"
+       "eq": {
+        "raw": "tns:ВерсияФормата",
+        "prefix": "tns",
+        "local": "ВерсияФормата",
+        "namespace": "http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3"
+       }
       },
       {
        "pointer": "/data/props/bounds",
-       "eq": "{\"lower\":\"0\",\"upper\":\"1\",\"lowerExplicit\":true,\"upperExplicit\":false,\"unbounded\":false}"
+       "eq": {
+        "lower": "0",
+        "upper": "1",
+        "lowerExplicit": true,
+        "upperExplicit": false,
+        "unbounded": false
+       }
       }
      ]
     },
@@ -38349,11 +38442,22 @@
      "assertions": [
       {
        "pointer": "/data/props/type",
-       "eq": "{\"raw\":\"v8:UUID\",\"prefix\":\"v8\",\"local\":\"UUID\",\"namespace\":\"http://v8.1c.ru/8.1/data/core\"}"
+       "eq": {
+        "raw": "v8:UUID",
+        "prefix": "v8",
+        "local": "UUID",
+        "namespace": "http://v8.1c.ru/8.1/data/core"
+       }
       },
       {
        "pointer": "/data/props/bounds",
-       "eq": "{\"lower\":\"1\",\"upper\":\"3\",\"lowerExplicit\":true,\"upperExplicit\":true,\"unbounded\":false}"
+       "eq": {
+        "lower": "1",
+        "upper": "3",
+        "lowerExplicit": true,
+        "upperExplicit": true,
+        "unbounded": false
+       }
       }
      ]
     }

@@ -56,9 +56,6 @@ pub enum MetadataPlanKind {
         target: MetadataAddress,
         kind: MetadataKind,
         name: String,
-        /// Remove even when other source files still refer to the object;
-        /// the plan then carries a typed warning naming those files.
-        force: bool,
     },
     HelpCreate {
         target: MetadataAddress,
@@ -794,6 +791,13 @@ pub fn parse_object_remove(
     op_index: usize,
     binding: &MetadataDecodeContext<'_>,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
+    if args.contains_key("force") {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "`object.remove` does not accept `force`: remove the references from other metadata first; references only in module code or query text are listed as a warning in the plan",
+        )
+        .at_path(format!("ops[{op_index}].args.force")));
+    }
     let schema = metadata_object_remove_input_schema();
     reject_unknown_input_args("object.remove", args, schema, op_index, binding.registry)?;
     let target = unica_source_contract::proposal::input::qualified_target(
@@ -806,30 +810,10 @@ pub fn parse_object_remove(
         .name()
         .expect("metadata_owner proved the segment is named")
         .to_string();
-    let force = match args.get("force") {
-        None => false,
-        Some(Value::Bool(force)) => *force,
-        Some(_) => {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::BadValue,
-                "`force` must be a boolean",
-            )
-            .at_path(format!("ops[{op_index}].args.force")));
-        }
-    };
-    if let Some(value) = args.get("force") {
-        check_input_field(
-            ArgumentShape::new(schema),
-            "force",
-            value,
-            &format!("ops[{op_index}].args.force"),
-        )?;
-    }
     Ok(MetadataPlanKind::Remove {
         target: address,
         kind,
         name,
-        force,
     })
 }
 pub fn parse_help_create(
@@ -1692,6 +1676,24 @@ pub fn parse_relation(
     )?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let values = required_object(args, "values", op_index)?;
+    // Чтение показывает состав плана обмена связью `content`, но меняет его
+    // только `content.set`: отказ ведёт туда, а не в тупик (#1923).
+    if kind == MetadataKind::ExchangePlan
+        && values.get("relation").and_then(Value::as_str) == Some("content")
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "`{operation}` does not edit exchange plan content; use `content.set` on `{target}`"
+            ),
+        )
+        .at_path(format!("ops[{op_index}].args.values.relation"))
+        .with_next(serde_json::json!({
+            "tool": "unica.view",
+            "args": {"at": format!("{target}.Can.content.set")},
+            "reason": "exchange plan content is replaced by content.set on the same plan",
+        })));
+    }
     check_input_field(
         shape,
         "values",

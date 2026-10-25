@@ -3369,16 +3369,29 @@ struct CreatedRetainedApplyDirectory {
     published: bool,
 }
 
+/// Every staged copy, preimage and private directory a publication leaves in
+/// the source tree starts with this prefix; it is never a source name.
+pub const PUBLICATION_ARTIFACT_PREFIX: &str = ".unica-apply-";
+
 fn retained_apply_stage_name() -> OsString {
-    OsString::from(format!(".unica-apply-{}", uuid::Uuid::new_v4()))
+    OsString::from(format!(
+        "{PUBLICATION_ARTIFACT_PREFIX}{}",
+        uuid::Uuid::new_v4()
+    ))
 }
 
 fn retained_apply_directory_stage_name() -> OsString {
-    OsString::from(format!(".unica-apply-dir-{}", uuid::Uuid::new_v4()))
+    OsString::from(format!(
+        "{PUBLICATION_ARTIFACT_PREFIX}dir-{}",
+        uuid::Uuid::new_v4()
+    ))
 }
 
 fn retained_apply_directory_cleanup_name() -> OsString {
-    OsString::from(format!(".unica-apply-dir-cleanup-{}", uuid::Uuid::new_v4()))
+    OsString::from(format!(
+        "{PUBLICATION_ARTIFACT_PREFIX}dir-cleanup-{}",
+        uuid::Uuid::new_v4()
+    ))
 }
 
 fn create_retained_apply_parent_chain(

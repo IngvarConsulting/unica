@@ -235,7 +235,11 @@ impl DirectoryImage {
 }
 
 fn private_name() -> OsString {
-    OsString::from(format!(".unica-apply-dir-{}", uuid::Uuid::new_v4()))
+    OsString::from(format!(
+        "{}dir-{}",
+        crate::compile_transaction::PUBLICATION_ARTIFACT_PREFIX,
+        uuid::Uuid::new_v4()
+    ))
 }
 
 impl DirectoryRemoval {

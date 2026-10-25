@@ -1567,6 +1567,9 @@ mod form_lifecycle_tests;
 #[path = "form_move_tests.rs"]
 mod form_move_tests;
 #[cfg(test)]
+#[path = "form_properties_tests.rs"]
+mod form_properties_tests;
+#[cfg(test)]
 #[path = "metadata_can_tests.rs"]
 mod metadata_can_tests;
 #[cfg(test)]
@@ -2238,6 +2241,280 @@ pub(crate) mod actor_capacity_tests {
             expected,
             "команды других групп остаются на своих местах"
         );
+    }
+
+    /// Пустой интерфейс платформа не выгружает: у новой подсистемы нет
+    /// `CommandInterface.xml`, и его создаёт первая правка видимости или
+    /// размещения — тем же пакетом, что `subsystem.create`, или следующим
+    /// вызовом. Предпросмотр ничего не пишет, а файл совпадает с выгрузкой
+    /// 8.3.27 байт в байт.
+    #[test]
+    fn canonical_first_command_edit_creates_interface_of_new_subsystem() {
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let command = "Catalog.Пользователи.StandardCommand.OpenList";
+        let document = |section: &str, value: &str| {
+            format!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<{section}>\r\n\t\t<Command name=\"{command}\">\r\n{value}\t\t</Command>\r\n\t</{section}>\r\n</CommandInterface>"
+            )
+        };
+        let hidden = document(
+            "CommandsVisibility",
+            "\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n",
+        );
+        let placed = document(
+            "CommandsPlacement",
+            "\t\t\t<CommandGroup>NavigationPanelImportant</CommandGroup>\r\n\t\t\t<Placement>Auto</Placement>\r\n",
+        );
+        let create = serde_json::json!({
+            "op": "subsystem.create",
+            "args": {"at": "main:Configuration", "values": {"name": "Новая"}}
+        });
+        let at = "main:Subsystem.Новая.Interface";
+        let visibility = serde_json::json!({
+            "op": "commandVisibility.set",
+            "args": {"at": at, "items": [{"command": command, "visible": false}]}
+        });
+        let placement = serde_json::json!({
+            "op": "commandPlacement.set",
+            "args": {"at": at, "items": [{"command": command, "group": "NavigationPanelImportant"}]}
+        });
+        let interface = "Subsystems/Новая/Ext/CommandInterface.xml";
+        let publish = |workspace: &std::path::Path, at: &str, ops: serde_json::Value| {
+            let preview = interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"at": at, "ops": ops}),
+            );
+            assert!(preview.ok, "{preview:?}");
+            assert!(
+                !workspace.join("src").join(interface).exists(),
+                "предпросмотр не пишет файл"
+            );
+            let applied = interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
+            assert!(applied.ok, "{applied:?}");
+        };
+        let read = |workspace: &std::path::Path| {
+            std::fs::read_to_string(workspace.join("src").join(interface)).unwrap()
+        };
+
+        let workspace = interface_order_workspace();
+        publish(
+            workspace.path(),
+            "main:Configuration",
+            serde_json::json!([create, visibility]),
+        );
+        assert_eq!(read(workspace.path()), hidden, "один пакет");
+
+        for (edit, expected) in [(&visibility, &hidden), (&placement, &placed)] {
+            let workspace = interface_order_workspace();
+            publish(
+                workspace.path(),
+                "main:Configuration",
+                serde_json::json!([create]),
+            );
+            assert!(!workspace.path().join("src").join(interface).exists());
+            publish(workspace.path(), at, serde_json::json!([edit]));
+            assert_eq!(&read(workspace.path()), expected, "два вызова: {edit}");
+        }
+
+        // Вложенная подсистема: владелец — её дескриптор внутри родителя,
+        // одноимённая корневая подсистема не появляется.
+        let workspace = interface_order_workspace();
+        let nested_at = "main:Subsystem.Администрирование.Subsystem.Новая.Interface";
+        publish(
+            workspace.path(),
+            "main:Subsystem.Администрирование",
+            serde_json::json!([
+                {"op": "childSubsystem.add", "args": {"items": [{"name": "Новая"}]}},
+                {"op": "commandVisibility.set", "args": {"at": nested_at, "items": [{"command": command, "visible": false}]}}
+            ]),
+        );
+        let source = workspace.path().join("src");
+        assert_eq!(
+            std::fs::read_to_string(
+                source
+                    .join("Subsystems/Администрирование/Subsystems/Новая/Ext/CommandInterface.xml")
+            )
+            .unwrap(),
+            hidden
+        );
+        assert!(!source.join("Subsystems/Новая").exists());
+
+        // Порядок переставляет хранимый состав: без файла он отказывает
+        // и ничего не создаёт (#2010).
+        let workspace = interface_order_workspace();
+        publish(
+            workspace.path(),
+            "main:Configuration",
+            serde_json::json!([create]),
+        );
+        let refused = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            interface_op(
+                "groupOrder.set",
+                at,
+                serde_json::json!({"groups": ["NavigationPanelImportant"]}),
+            ),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert!(!workspace.path().join("src").join(interface).exists());
+    }
+
+    /// Пока порядок разделов не задан, корневого `CommandInterface.xml` нет.
+    /// Первый порядок, как у платформы, может быть частичным: он называет
+    /// разделы интерфейса — подсистемы верхнего уровня, включённые в него, —
+    /// и создаёт файл в форме выгрузки 8.3.27. Чужое имя, раздел вне
+    /// интерфейса и повтор отклоняются без записи.
+    #[test]
+    fn canonical_first_subsystem_order_creates_root_interface_from_sections() {
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let root_order = |subsystems: serde_json::Value| {
+            serde_json::json!({
+                "op": "subsystemOrder.set",
+                "args": {"at": "main:Configuration", "values": {"subsystems": subsystems}}
+            })
+        };
+        let document = |subsystems: &[&str]| {
+            let items = subsystems
+                .iter()
+                .map(|name| format!("\t\t<Subsystem>{name}</Subsystem>\r\n"))
+                .collect::<String>();
+            format!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<SubsystemsOrder>\r\n{items}\t</SubsystemsOrder>\r\n</CommandInterface>"
+            )
+        };
+        let fresh = || {
+            let workspace = interface_order_workspace();
+            let source = workspace.path().join("src");
+            std::fs::remove_file(source.join(ROOT_INTERFACE)).unwrap();
+            // `Продажи` не показывается в интерфейсе: разделом она не станет.
+            let sales = source.join("Subsystems/Продажи.xml");
+            let text = std::fs::read_to_string(&sales).unwrap().replace(
+                "<IncludeInCommandInterface>true</IncludeInCommandInterface>",
+                "<IncludeInCommandInterface>false</IncludeInCommandInterface>",
+            );
+            std::fs::write(&sales, text).unwrap();
+            workspace
+        };
+        let preview = |workspace: &std::path::Path, ops: serde_json::Value| {
+            interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"at": "main:Configuration", "ops": ops}),
+            )
+        };
+
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([root_order(serde_json::json!([
+                "Subsystem.КонтрольРаботыПользователей"
+            ]))]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        assert!(!root.exists(), "предпросмотр не пишет файл");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            document(&["Subsystem.КонтрольРаботыПользователей"])
+        );
+
+        // Новая подсистема того же пакета уже раздел интерфейса.
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([
+                {"op": "subsystem.create", "args": {"at": "main:Configuration", "values": {"name": "Новая"}}},
+                root_order(serde_json::json!(["Subsystem.Новая", "Subsystem.Администрирование"]))
+            ]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            document(&["Subsystem.Новая", "Subsystem.Администрирование"])
+        );
+
+        // Файл есть, но порядка разделов в нём нет: тот же первый порядок,
+        // соседняя секция остаётся на месте.
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let visibility = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<CommandsVisibility>\r\n\t\t<Command name=\"Catalog.Пользователи.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>\r\n</CommandInterface>";
+        std::fs::write(&root, visibility).unwrap();
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([root_order(serde_json::json!([
+                "Subsystem.Администрирование"
+            ]))]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            visibility.replace(
+                "\t</CommandsVisibility>\r\n",
+                "\t</CommandsVisibility>\r\n\t<SubsystemsOrder>\r\n\t\t<Subsystem>Subsystem.Администрирование</Subsystem>\r\n\t</SubsystemsOrder>\r\n",
+            )
+        );
+
+        for (subsystems, needle) in [
+            (
+                serde_json::json!(["Subsystem.Продажи"]),
+                "not a top-level subsystem shown in the command interface: `Subsystem.Продажи`",
+            ),
+            (
+                serde_json::json!(["Subsystem.Нет", "Subsystem.Нет"]),
+                "not a top-level subsystem shown in the command interface: `Subsystem.Нет`; the sections are",
+            ),
+            // Вложенная подсистема разделом не бывает, даже одноимённая
+            // корневой.
+            (
+                serde_json::json!(["Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей"]),
+                "not a top-level subsystem shown in the command interface",
+            ),
+            (
+                serde_json::json!(["Subsystem.Администрирование", "Subsystem.Администрирование"]),
+                "listed more than once",
+            ),
+        ] {
+            let workspace = fresh();
+            let refused = preview(
+                workspace.path(),
+                serde_json::json!([root_order(subsystems)]),
+            );
+            assert!(!refused.ok, "{refused:?}");
+            assert!(
+                refused.diagnostics[0]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(needle)),
+                "{refused:?}"
+            );
+            assert!(!workspace.path().join("src").join(ROOT_INTERFACE).exists());
+        }
     }
 
     /// Каждая из пяти операций меняет только свою секцию и названные в запросе
@@ -12431,8 +12708,11 @@ struct ActorLogicalReadLease {"#,
                 props.get("Type").is_none(),
                 "type has one public projection: {props}"
             );
-            serde_json::from_str::<serde_json::Value>(props["type"].as_str().expect("compact type"))
-                .unwrap()
+            assert!(
+                props["type"].is_object(),
+                "type is nested JSON, not a string: {props}"
+            );
+            props["type"].clone()
         };
         let assert_xml_type = |expected: &str| {
             let xml = std::fs::read_to_string(source.join("Constants/Enabled.xml")).unwrap();

@@ -139,28 +139,37 @@
           "eq": false
         },
         {
-          "pointer": "/data/items/0/props/type",
-          "contains": "\"length\":10"
+          "pointer": "/data/items/0/props/type/variants/0/length",
+          "eq": 10
         },
         {
-          "pointer": "/data/items/0/props/type",
-          "contains": "\"allowedLength\":\"variable\""
+          "pointer": "/data/items/0/props/type/variants/0/allowedLength",
+          "eq": "variable"
         },
         {
           "pointer": "/data/items/1/props/Indexing",
           "eq": "DontIndex"
         },
         {
-          "pointer": "/data/items/1/props/type",
-          "contains": "\"length\":200"
+          "pointer": "/data/items/1/props/type/variants/0/length",
+          "eq": 200
         },
         {
           "pointer": "/data/items/0/props/ToolTip",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[]}"
+          "absent": true
         },
         {
           "pointer": "/data/items/1/props/ToolTip",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Настройки представления суммы прописью\"},{\"language\":\"en\",\"content\":\"Amount spelling settings & presentation\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Настройки представления суммы прописью"
+            },
+            {
+              "language": "en",
+              "content": "Amount spelling settings & presentation"
+            }
+          ]
         },
         {
           "pointer": "/data/items/0/props/synonym",
@@ -175,8 +184,8 @@
           "eq": false
         },
         {
-          "pointer": "/data/items/1/props/type",
-          "contains": "\"allowedLength\":\"variable\""
+          "pointer": "/data/items/1/props/type/variants/0/allowedLength",
+          "eq": "variable"
         }
       ],
       "fileAssertions": [
@@ -244,12 +253,12 @@
           "eq": "Код языка"
         },
         {
-          "pointer": "/data/props/type",
-          "contains": "\"length\":10"
+          "pointer": "/data/props/type/variants/0/length",
+          "eq": 10
         },
         {
-          "pointer": "/data/props/type",
-          "contains": "\"allowedLength\":\"variable\""
+          "pointer": "/data/props/type/variants/0/allowedLength",
+          "eq": "variable"
         },
         {
           "pointer": "/data/props/Use",
@@ -261,7 +270,7 @@
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[]}"
+          "absent": true
         }
       ],
       "fileAssertions": [
@@ -321,16 +330,25 @@
           "eq": "Параметры прописи"
         },
         {
-          "pointer": "/data/props/type",
-          "contains": "\"length\":200"
+          "pointer": "/data/props/type/variants/0/length",
+          "eq": 200
         },
         {
-          "pointer": "/data/props/type",
-          "contains": "\"allowedLength\":\"variable\""
+          "pointer": "/data/props/type/variants/0/allowedLength",
+          "eq": "variable"
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Настройки представления суммы прописью\"},{\"language\":\"en\",\"content\":\"Amount spelling settings & presentation\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Настройки представления суммы прописью"
+            },
+            {
+              "language": "en",
+              "content": "Amount spelling settings & presentation"
+            }
+          ]
         }
       ],
       "fileAssertions": [
@@ -504,7 +522,7 @@
         },
         {
           "pointer": "/data/items/0/props/ToolTip",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[]}"
+          "absent": true
         },
         {
           "pointer": "/data/items/0/limits",
@@ -531,8 +549,8 @@
           "contains": "collections.tabularSections[0].attributes[1].properties.ToolTip"
         },
         {
-          "pointer": "/data/items/1/props/type",
-          "contains": "\"length\":200"
+          "pointer": "/data/items/1/props/type/variants/0/length",
+          "eq": 200
         },
         {
           "pointer": "/data/items/1/props/required",
@@ -609,8 +627,8 @@
           "eq": "Параметры прописи"
         },
         {
-          "pointer": "/data/props/type",
-          "contains": "\"length\":200"
+          "pointer": "/data/props/type/variants/0/length",
+          "eq": 200
         }
       ],
       "fileAssertions": [

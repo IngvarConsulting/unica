@@ -2388,7 +2388,6 @@ fn role_right_projection_never_serializes_an_unbounded_rights_array_into_props()
 
 #[test]
 fn xdto_anonymous_property_view_returns_recursive_addresses_and_bounds() {
-    use serde_json::Value;
     let fixture = RealReaderFixture::new();
     let package = fixture
         .source
@@ -2422,7 +2421,7 @@ fn xdto_anonymous_property_view_returns_recursive_addresses_and_bounds() {
     };
     let rows = read(root);
     assert_eq!(rows["props"]["anonymousType"], "ObjectType");
-    let bounds: Value = serde_json::from_str(rows["props"]["bounds"].as_str().unwrap()).unwrap();
+    let bounds = rows["props"]["bounds"].clone();
     assert_eq!(bounds["lower"], "0");
     assert_eq!(bounds["upper"], "-1");
     let children = read(rows["branches"][0]["at"].as_str().unwrap());
@@ -2431,14 +2430,13 @@ fn xdto_anonymous_property_view_returns_recursive_addresses_and_bounds() {
     assert_eq!(nested["props"]["anonymousType"], "ObjectType");
     let grandchildren = read(nested["branches"][0]["at"].as_str().unwrap());
     let recipient = read(grandchildren["items"][0]["at"].as_str().unwrap());
-    let type_info: Value =
-        serde_json::from_str(recipient["props"]["type"].as_str().unwrap()).unwrap();
+    let type_info = recipient["props"]["type"].clone();
     assert_eq!(type_info["local"], "decimal");
     let dotted_at = format!("{root}.Property.Nested.Property.Dotted\\.Name");
     assert_eq!(grandchildren["items"][1]["at"], dotted_at);
     let dotted = read(&dotted_at);
     assert_eq!(dotted["props"], grandchildren["items"][1]["props"]);
-    let type_info: Value = serde_json::from_str(dotted["props"]["type"].as_str().unwrap()).unwrap();
+    let type_info = dotted["props"]["type"].clone();
     assert_eq!(type_info["local"], "string");
     assert!(dotted
         .get("limits")
@@ -2470,14 +2468,12 @@ fn xdto_object_view_follows_local_base_to_inherited_property_without_flattening(
         .as_str()
         .expect("local base must be navigable");
     assert_eq!(base, "main:XDTOPackage.EnterpriseData_1_17_3.Type.Основа");
-    let qname: serde_json::Value =
-        serde_json::from_str(data["props"]["base"].as_str().unwrap()).unwrap();
+    let qname = data["props"]["base"].clone();
     assert_eq!(qname["local"], "Основа");
     let inherited = service.view(ViewRequest::new(&format!("{base}.Property.Код")).unwrap());
     assert!(inherited.ok, "{inherited:?}");
     let props = inherited.data.unwrap();
-    let type_info: serde_json::Value =
-        serde_json::from_str(props["props"]["type"].as_str().unwrap()).unwrap();
+    let type_info = props["props"]["type"].clone();
     assert_eq!(type_info["local"], "string");
     let missing = service
         .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.НетОсновы").unwrap());
@@ -2513,14 +2509,12 @@ fn xdto_object_view_follows_dotted_local_base_address() {
         base,
         "main:XDTOPackage.EnterpriseData_1_17_3.Type.Base\\.WithDot"
     );
-    let qname: serde_json::Value =
-        serde_json::from_str(data["props"]["base"].as_str().unwrap()).unwrap();
+    let qname = data["props"]["base"].clone();
     assert_eq!(qname["local"], "Base.WithDot");
     let inherited = service.view(ViewRequest::new(&format!("{base}.Property.Код")).unwrap());
     assert!(inherited.ok, "{inherited:?}");
     let props = inherited.data.unwrap();
-    let type_info: serde_json::Value =
-        serde_json::from_str(props["props"]["type"].as_str().unwrap()).unwrap();
+    let type_info = props["props"]["type"].clone();
     assert_eq!(type_info["local"], "string");
     let missing = service
         .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.НетОсновы").unwrap());
@@ -2558,21 +2552,16 @@ fn xdto_property_view_preserves_type_identity_and_explicit_and_effective_bounds(
         assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
         let data = result.data.unwrap();
         let props = &data["props"];
-        let type_info: serde_json::Value = serde_json::from_str(
-            props["type"]
-                .as_str()
-                .unwrap_or_else(|| panic!("missing type: {data}")),
-        )
-        .unwrap();
+        let type_info = props["type"].clone();
+        assert!(
+            type_info.is_object(),
+            "property type arrives as nested JSON"
+        );
         assert_eq!(type_info["namespace"], "http://www.w3.org/2001/XMLSchema");
         assert_eq!(type_info["local"], local);
         assert_eq!(type_info["raw"], format!("xs:{local}"));
-        let bounds: serde_json::Value = serde_json::from_str(
-            props["bounds"]
-                .as_str()
-                .unwrap_or_else(|| panic!("missing bounds: {data}")),
-        )
-        .unwrap();
+        let bounds = props["bounds"].clone();
+        assert!(bounds.is_object(), "property bounds arrive as nested JSON");
         assert_eq!(
             bounds,
             json!({
@@ -2603,8 +2592,8 @@ fn xdto_property_view_names_facts_that_exceed_the_compact_limit() {
     ).unwrap());
     assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
     let data = result.data.unwrap();
-    assert!(data["props"]["type"].as_str().is_some(), "{data}");
-    assert!(data["props"].get("bounds").is_none(), "{data}");
+    assert!(data["props"]["type"].is_object());
+    assert!(data["props"].get("bounds").is_none());
     assert!(
         data["limits"].as_array().unwrap().iter().any(|limit| limit
             .as_str()
@@ -2914,12 +2903,12 @@ pub(crate) fn typed_readers_never_publish_their_export_path_in_view_props() {
         assert!(result.ok, "{at}: {codes:?}");
         let mut props = result.data.as_ref().unwrap()["props"].clone();
         if at.starts_with("main:XDTOPackage.") {
-            let mut type_info: serde_json::Value =
-                serde_json::from_str(props["type"].as_str().unwrap()).unwrap();
+            let type_info = props["type"]
+                .as_object_mut()
+                .expect("XDTO type arrives as nested JSON");
             // A namespace URI is a type identity, not an exported file path.
             assert_eq!(type_info["namespace"], "http://v8.1c.ru/8.1/data/core");
-            type_info.as_object_mut().unwrap().remove("namespace");
-            props["type"] = json!(serde_json::to_string(&type_info).unwrap());
+            type_info.remove("namespace");
         }
         let props = props.to_string();
         assert!(
@@ -6725,52 +6714,50 @@ fn tabular_sections_expose_source_standard_attributes_without_losing_applied_att
     assert!(detail.ok, "{detail:?}");
     let data = detail.data.unwrap();
     assert_eq!(data["kind"], "StandardAttribute");
-    assert_eq!(data["props"].as_object().unwrap().len(), 25);
+    // Пустые наблюдения (`empty`, `nil`, многоязычная строка без переводов)
+    // свойства не создают; остальные приходят без обёртки наблюдения (#2031).
+    assert_eq!(data["props"].as_object().unwrap().len(), 16);
     for (key, expected) in [
-        ("LinkByType", json!({"kind":"empty"})),
-        ("FillChecking", json!({"kind":"text","value":"DontCheck"})),
-        ("MultiLine", json!({"kind":"boolean","value":false})),
-        (
-            "FillFromFillingValue",
-            json!({"kind":"boolean","value":false}),
-        ),
-        ("CreateOnInput", json!({"kind":"text","value":"Auto"})),
-        (
-            "TypeReductionMode",
-            json!({"kind":"text","value":"TransformValues"}),
-        ),
-        ("MaxValue", json!({"kind":"nil"})),
-        ("ToolTip", json!({"kind":"localizedString","values":[]})),
-        ("ExtendedEdit", json!({"kind":"boolean","value":false})),
-        ("Format", json!({"kind":"localizedString","values":[]})),
-        ("ChoiceForm", json!({"kind":"text","value":""})),
-        ("QuickChoice", json!({"kind":"text","value":"Auto"})),
-        (
-            "ChoiceHistoryOnInput",
-            json!({"kind":"text","value":"Auto"}),
-        ),
-        ("EditFormat", json!({"kind":"localizedString","values":[]})),
-        ("PasswordMode", json!({"kind":"boolean","value":false})),
-        ("DataHistory", json!({"kind":"text","value":"Use"})),
-        ("MarkNegatives", json!({"kind":"boolean","value":false})),
-        ("MinValue", json!({"kind":"nil"})),
+        ("LinkByType", None),
+        ("FillChecking", Some(json!("DontCheck"))),
+        ("MultiLine", Some(json!(false))),
+        ("FillFromFillingValue", Some(json!(false))),
+        ("CreateOnInput", Some(json!("Auto"))),
+        ("TypeReductionMode", Some(json!("TransformValues"))),
+        ("MaxValue", None),
+        ("ToolTip", None),
+        ("ExtendedEdit", Some(json!(false))),
+        ("Format", None),
+        ("ChoiceForm", Some(json!(""))),
+        ("QuickChoice", Some(json!("Auto"))),
+        ("ChoiceHistoryOnInput", Some(json!("Auto"))),
+        ("EditFormat", None),
+        ("PasswordMode", Some(json!(false))),
+        ("DataHistory", Some(json!("Use"))),
+        ("MarkNegatives", Some(json!(false))),
+        ("MinValue", None),
         (
             "Synonym",
-            json!({"kind":"localizedString","values":[{"language":"ru","content":"Номер строки"}]}),
+            Some(json!([{"language":"ru","content":"Номер строки"}])),
         ),
-        ("Comment", json!({"kind":"text","value":"Line-number note"})),
-        ("FullTextSearch", json!({"kind":"text","value":"Use"})),
-        ("ChoiceParameterLinks", json!({"kind":"empty"})),
-        ("FillValue", json!({"kind":"nil"})),
-        ("Mask", json!({"kind":"text","value":""})),
-        ("ChoiceParameters", json!({"kind":"empty"})),
+        ("Comment", Some(json!("Line-number note"))),
+        ("FullTextSearch", Some(json!("Use"))),
+        ("ChoiceParameterLinks", None),
+        ("FillValue", None),
+        ("Mask", Some(json!(""))),
+        ("ChoiceParameters", None),
     ] {
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(data["props"][key].as_str().unwrap())
-                .unwrap(),
-            expected
-        );
-        assert_eq!(data["props"][key], standard[0]["props"][key]);
+        match expected {
+            Some(expected) => assert_eq!(data["props"][key], expected, "{key}"),
+            None => {
+                assert!(data["props"].get(key).is_none(), "{key} must stay absent");
+                assert!(
+                    !data["limits"].to_string().contains(key),
+                    "an empty {key} is not a limit"
+                );
+            }
+        }
+        assert_eq!(data["props"].get(key), standard[0]["props"].get(key));
     }
     assert!(data["props"].get("type").is_none());
     let missing =
@@ -6950,7 +6937,7 @@ fn tabular_standard_attributes_preserve_profiled_member_facts_and_independent_li
                     .as_object()
                     .unwrap()
                     .len(),
-                25
+                16
             );
         }
         let healthy_at = "main:Catalog.Items.TabularSection.Healthy";
@@ -7194,6 +7181,70 @@ fn subsystem_text_properties_preserve_presence_and_damage_at_every_depth() {
     }
 }
 
+/// #1924: заимствованный план обмена без своего `Ext/Content.xml` не знает
+/// состава в расширении — его несёт план родителя. Чтение не выдаёт пустой
+/// список за известный состав.
+#[test]
+fn a_borrowed_exchange_plan_without_its_own_content_does_not_read_as_empty() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+    write(
+        &fixture.source.join("Configuration.xml"),
+        &configuration.replace(
+            "</ChildObjects>",
+            "<ExchangePlan>Узлы</ExchangePlan><ExchangePlan>Собственный</ExchangePlan></ChildObjects>",
+        ),
+    );
+    // Собственный план расширения без `Ext/Content.xml` — доказанно пустой состав.
+    write(
+        &fixture.source.join("ExchangePlans/Собственный.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<ExchangePlan uuid="2f0e0000-0000-4000-8000-000000000302">
+		<Properties>
+			<Name>Собственный</Name>
+			<Comment/>
+		</Properties>
+		<ChildObjects/>
+	</ExchangePlan>
+</MetaDataObject>"#,
+    );
+    write(
+        &fixture.source.join("ExchangePlans/Узлы.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+	<ExchangePlan uuid="2f0e0000-0000-4000-8000-000000000301">
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Узлы</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>1f0e0000-0000-4000-8000-000000000301</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects/>
+	</ExchangePlan>
+</MetaDataObject>"#,
+    );
+    let service = fixture.extension_view_service();
+    let content_limit = "relations.content is absent; the relation list may be incomplete";
+    let limits = |at: &str| {
+        let view = service.view(ViewRequest::new(at).unwrap());
+        assert!(view.ok, "{at}");
+        view.data.unwrap()["limits"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    for at in ["main:ExchangePlan.Узлы", "main:ExchangePlan.Узлы.Relation"] {
+        assert!(limits(at).contains(&json!(content_limit)), "{at}");
+    }
+    for at in [
+        "main:ExchangePlan.Собственный",
+        "main:ExchangePlan.Собственный.Relation",
+    ] {
+        assert!(!limits(at).contains(&json!(content_limit)), "{at}");
+    }
+}
+
 #[test]
 fn xdto_restricted_value_view_returns_named_and_anonymous_facets() {
     let fixture = RealReaderFixture::new();
@@ -7231,12 +7282,9 @@ fn xdto_restricted_value_view_returns_named_and_anonymous_facets() {
         assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
         let data = result.data.unwrap();
         let props = &data["props"];
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(props["facets"].as_str().unwrap()).unwrap(),
-            facets
-        );
-        let actual_base: serde_json::Value =
-            serde_json::from_str(props["base"].as_str().unwrap()).unwrap();
+        assert_eq!(props["facets"], facets);
+        let actual_base = &props["base"];
+        assert!(actual_base.is_object(), "base arrives as nested JSON");
         assert_eq!(actual_base["local"], base);
         assert_eq!(actual_base["namespace"], "http://www.w3.org/2001/XMLSchema");
         if anonymous {

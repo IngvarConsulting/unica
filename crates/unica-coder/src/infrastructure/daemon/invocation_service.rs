@@ -306,6 +306,8 @@ impl ActorReadSourceCapability {
         let vanished = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
         let context =
             |phase: &str, error: std::io::Error| format!("canonical search {phase}: {error}");
+        // The source-set relative path of the entry a phase was reading.
+        let entry = |relative: &std::path::Path| relative.to_string_lossy().replace('\\', "/");
 
         let root = self.binding.retained_root();
         let (start_relative, start_directory) = match scope_prefix {
@@ -397,13 +399,24 @@ impl ActorReadSourceCapability {
                         stack.pop();
                         continue;
                     }
-                    Err(error) => return Err(context("lost a retained directory", error)),
+                    Err(error) => {
+                        return Err(context(
+                            &format!("lost retained directory `{}`", entry(&frame.relative)),
+                            error,
+                        ))
+                    }
                 }
                 frame.names =
                     match ordered_search_names::OrderedNames::collect(directory, checkpoint) {
                         Ok(names) => Some(names),
                         Err(error) => {
-                            return Err(context("could not list a source directory", error))
+                            return Err(context(
+                                &format!(
+                                    "could not list source directory `{}`",
+                                    entry(&frame.relative)
+                                ),
+                                error,
+                            ))
                         }
                     };
             }
@@ -423,20 +436,34 @@ impl ActorReadSourceCapability {
             let relative_directory = &frame.relative;
             let relative = relative_directory.join(&name);
             // Files precede subdirectories in the established scan order.
-            // Unrelated names need opening only in the directory pass.
-            if !directories
-                && !relative
+            // The file pass opens only `.bsl` names. Neither pass opens a
+            // publication artifact: a staged copy or a preimage left beside
+            // the module right after apply is not source, and on Windows it
+            // may still be pending deletion and refuse to open.
+            let wanted = if name
+                .to_string_lossy()
+                .starts_with(unica_workspace::compile_transaction::PUBLICATION_ARTIFACT_PREFIX)
+            {
+                false
+            } else if directories {
+                true
+            } else {
+                relative
                     .extension()
                     .and_then(std::ffi::OsStr::to_str)
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl"))
-            {
+            };
+            if !wanted {
                 continue;
             }
             let child = match directory.retain_immediate_child_nofollow(&name) {
                 Ok(child) => child,
                 Err(error) if vanished(&error) => continue,
                 Err(error) => {
-                    return Err(context("could not open a source directory entry", error))
+                    return Err(context(
+                        &format!("could not open source entry `{}`", entry(&relative)),
+                        error,
+                    ))
                 }
             };
             match child {
@@ -464,7 +491,12 @@ impl ActorReadSourceCapability {
                     let opened = match file.open_named_identity_for_read() {
                         Ok(opened) => opened,
                         Err(error) if vanished(&error) => continue,
-                        Err(error) => return Err(context("lost a retained source file", error)),
+                        Err(error) => {
+                            return Err(context(
+                                &format!("lost retained source file `{}`", entry(&relative)),
+                                error,
+                            ))
+                        }
                     };
                     let mut reader = std::io::BufReader::new(opened);
                     let mut raw_line = Vec::new();
@@ -512,7 +544,10 @@ impl ActorReadSourceCapability {
                                 return Err(error.to_string())
                             }
                             Err(error) => {
-                                return Err(context("could not read a source file", error))
+                                return Err(context(
+                                    &format!("could not read source file `{}`", entry(&relative)),
+                                    error,
+                                ))
                             }
                         };
                         if !has_line {
