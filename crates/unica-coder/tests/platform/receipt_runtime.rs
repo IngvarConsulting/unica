@@ -6428,6 +6428,62 @@ fn materialize_completed_task(
     .reserved_task_id()
 }
 
+/// Elapsed time of each fixture-preparation stage of one Task, so a refusal
+/// names the Task, the stage that refused and where the shared deadline went
+/// (#1786) instead of a bare ledger error.
+struct FixturePreparation<'a> {
+    task: &'a str,
+    started: Instant,
+    budget: Duration,
+    deadline: Instant,
+    stages: Vec<(&'static str, Duration)>,
+}
+
+impl<'a> FixturePreparation<'a> {
+    fn new(task: &'a str, budget: Duration) -> Self {
+        let started = Instant::now();
+        Self {
+            task,
+            started,
+            budget,
+            deadline: started + budget,
+            stages: Vec::new(),
+        }
+    }
+
+    /// Run `stage`, recording its duration; a refusal panics with the trace.
+    fn step<T, E: std::fmt::Debug>(
+        &mut self,
+        stage: &'static str,
+        run: impl FnOnce(Instant) -> Result<T, E>,
+    ) -> T {
+        let begun = Instant::now();
+        let outcome = run(self.deadline);
+        self.stages.push((stage, begun.elapsed()));
+        outcome.unwrap_or_else(|error| {
+            panic!(
+                "fixture preparation of Task `{}` refused at `{stage}`: {error:?}; {}",
+                self.task,
+                self.trace()
+            )
+        })
+    }
+
+    fn trace(&self) -> String {
+        let stages = self
+            .stages
+            .iter()
+            .map(|(stage, spent)| format!("{stage}={}ms", spent.as_millis()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "stages {stages}; {}ms of the {}ms budget elapsed",
+            self.started.elapsed().as_millis(),
+            self.budget.as_millis()
+        )
+    }
+}
+
 /// [`materialize_completed_task`], answering with the call's full key.
 fn materialize_completed_task_key(
     runtime: &V5ReceiptRuntime,
@@ -6449,29 +6505,35 @@ fn materialize_completed_task_key(
             request_scope_hash(workspace).expect("request scope"),
         ),
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let reserved = receipt_actor_for_fixture(runtime)
-        .reserve(
-            key.clone(),
-            OriginalCutoffDescriptor::new(created_epoch_ms, 6_000).expect("valid cutoff"),
-            deadline,
-        )
-        .expect("reserve Task receipt")
-        .into_reservation()
-        .expect("new Task receipt");
-    let actor_bound = receipt_actor_for_fixture(runtime)
-        .bind_reserved_actor(
+    let mut preparation = FixturePreparation::new(summary, Duration::from_secs(5));
+    let reserved = preparation.step("reserve", |deadline| {
+        receipt_actor_for_fixture(runtime)
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(created_epoch_ms, 6_000).expect("valid cutoff"),
+                deadline,
+            )
+            .map_err(|error| format!("{error:?}"))?
+            .into_reservation()
+            .map_err(|existing| format!("the Task receipt already exists: {existing:?}"))
+    });
+    let actor_bound = preparation.step("bind actor", |deadline| {
+        receipt_actor_for_fixture(runtime).bind_reserved_actor(
             key.clone(),
             reserved.record_version(),
             SafeIdentityHash::from_sha256(Sha256::digest(workspace.as_bytes()).into()),
             deadline,
         )
-        .expect("bind Task actor");
-    let begun = receipt_actor_for_fixture(runtime)
-        .mark_reserved_begun(key.clone(), actor_bound.record_version(), deadline)
-        .expect("mark Task attempt begun");
-    let handoff = receipt_actor_for_fixture(runtime)
-        .begin_bound_task_handoff(
+    });
+    let begun = preparation.step("mark begun", |deadline| {
+        receipt_actor_for_fixture(runtime).mark_reserved_begun(
+            key.clone(),
+            actor_bound.record_version(),
+            deadline,
+        )
+    });
+    let handoff = preparation.step("begin handoff", |deadline| {
+        receipt_actor_for_fixture(runtime).begin_bound_task_handoff(
             key.clone(),
             begun.record_version(),
             created_epoch_ms,
@@ -6479,18 +6541,25 @@ fn materialize_completed_task_key(
             V5_TASK_POLL_INTERVAL_MS,
             deadline,
         )
-        .expect("begin Task handoff");
-    let (record, task_bound) = materialize_bound_handoff_for_fixture(
-        runtime,
-        &handoff,
-        created_epoch_ms,
-        deadline,
-        runtime.hooks().as_ref(),
-    )
-    .unwrap_or_else(|failure| panic!("materialize TaskBound: {}", failure.error()));
-    let task_bound = receipt_actor_for_fixture(runtime)
-        .complete_bound_task_handoff(key.clone(), handoff.record_version(), task_bound, deadline)
-        .expect("complete TaskBound ownership");
+    });
+    let (record, task_bound) = preparation.step("materialize TaskBound", |deadline| {
+        materialize_bound_handoff_for_fixture(
+            runtime,
+            &handoff,
+            created_epoch_ms,
+            deadline,
+            runtime.hooks().as_ref(),
+        )
+        .map_err(|failure| failure.error().clone())
+    });
+    let task_bound = preparation.step("complete handoff", |deadline| {
+        receipt_actor_for_fixture(runtime).complete_bound_task_handoff(
+            key.clone(),
+            handoff.record_version(),
+            task_bound,
+            deadline,
+        )
+    });
     clock.set(terminal_epoch_ms);
     let terminal = canonical_v5_terminal(
         &ReceiptTerminalOutcome::Completed {
@@ -6499,16 +6568,18 @@ fn materialize_completed_task_key(
         unica_bootstrap::MAX_RESPONSE_BUDGET,
     )
     .expect("canonical completed terminal");
-    publish_bound_task_terminal_for_fixture(
-        runtime,
-        &task_bound,
-        &record,
-        &terminal,
-        terminal_epoch_ms,
-        deadline,
-        runtime.hooks().as_ref(),
-    )
-    .unwrap_or_else(|failure| panic!("publish completed Task: {}", failure.error()));
+    preparation.step("publish terminal", |deadline| {
+        publish_bound_task_terminal_for_fixture(
+            runtime,
+            &task_bound,
+            &record,
+            &terminal,
+            terminal_epoch_ms,
+            deadline,
+            runtime.hooks().as_ref(),
+        )
+        .map_err(|failure| failure.error().clone())
+    });
     key
 }
 

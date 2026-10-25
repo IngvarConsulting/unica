@@ -27,6 +27,7 @@ use unica_metadata::support_state::{
     ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
     SupportCounts,
 };
+use unica_metadata::validation_subject::MetadataChildProfile;
 use unica_metadata::{MetaPredefinedItemsData, MetaSupportStatus, MetadataKind};
 use unica_metadata_designer::subsystem::{
     build_subsystem_info_result, parse_subsystem_command_interface_data,
@@ -34,7 +35,9 @@ use unica_metadata_designer::subsystem::{
 use unica_metadata_designer::support::{
     support_root_uuid_from_bytes, SupportState, SupportStateStreamParser,
 };
-use unica_metadata_designer::validation::parse_child_profile_from_bytes;
+use unica_metadata_designer::validation::{
+    parse_child_profile_from_bytes, parse_common_template_descriptor_from_bytes,
+};
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_roles_designer::info::parse_role_info_xml;
 use unica_source_contract::read::SourceDirectory;
@@ -94,7 +97,9 @@ pub(crate) struct FormValidationInput {
     pub(crate) format_guard: crate::application::ports::FormatGuardCheck,
 }
 
-const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
+/// Size from which `Configuration.xml` is parsed by the streaming route. It
+/// chooses a parser, not a refusal: every size is read (#1119).
+const CONFIGURATION_STREAMING_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Один разбор дескриптора объекта: свойства и заимствование из тех же байтов.
 pub(crate) struct MetadataLocalRead {
@@ -231,21 +236,12 @@ impl ProviderReadAuthority {
         Ok(self.snapshot_identity.clone())
     }
 
-    pub(crate) fn read_relative(
-        &self,
-        relative: &Path,
-        max_bytes: usize,
-    ) -> Result<Vec<u8>, ViewError> {
-        self.read_relative_with_checkpoint(relative, Some(max_bytes), &mut || Ok(()))
-    }
-
     fn read_relative_with_checkpoint(
         &self,
         relative: &Path,
-        max_bytes: Option<usize>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Vec<u8>, ViewError> {
-        self.read_optional_relative_with_checkpoint(relative, max_bytes, checkpoint)?
+        self.read_optional_relative_with_checkpoint(relative, checkpoint)?
             .ok_or_else(|| {
                 ViewError::detailed(
                     RefusalDetail::SourceUnreadable,
@@ -257,7 +253,6 @@ impl ProviderReadAuthority {
     fn read_optional_relative_with_checkpoint(
         &self,
         relative: &Path,
-        max_bytes: Option<usize>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Option<Vec<u8>>, ViewError> {
         let mut bytes = Vec::new();
@@ -271,15 +266,6 @@ impl ProviderReadAuthority {
                 })
             },
             |chunk| {
-                let total = bytes.len().checked_add(chunk.len()).ok_or_else(|| {
-                    std::io::Error::other("relative source length is not representable")
-                })?;
-                if let Some(limit) = max_bytes.filter(|limit| total > *limit) {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("relative file exceeds the {limit}-byte read limit"),
-                    ));
-                }
                 bytes
                     .try_reserve(chunk.len())
                     .map_err(std::io::Error::other)?;
@@ -306,19 +292,17 @@ impl ProviderReadAuthority {
         }
     }
 
-    pub(crate) fn read_optional_relative(
+    /// The whole source file, whatever its size (#1119).
+    pub(crate) fn read_relative_whole(&self, relative: &Path) -> Result<Vec<u8>, ViewError> {
+        self.read_relative_with_checkpoint(relative, &mut || Ok(()))
+    }
+
+    /// The whole source file when it exists, whatever its size (#1119).
+    pub(crate) fn read_optional_relative_whole(
         &self,
         relative: &Path,
-        max_bytes: usize,
     ) -> Result<Option<Vec<u8>>, ViewError> {
-        match self.root.read_relative_regular_bounded(relative, max_bytes) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                error.to_string(),
-            )),
-        }
+        self.read_optional_relative_with_checkpoint(relative, &mut || Ok(()))
     }
 
     pub(crate) fn configuration_payload_with_checkpoint(
@@ -350,9 +334,7 @@ impl ProviderReadAuthority {
         // этой ветки отсутствие выгрузки протекало наружу текстом `strerror`
         // («No such file or directory»), то есть файловый слой попадал в
         // логический ответ и ничего не говорил о том, что делать дальше.
-        let Some(bytes) =
-            self.read_optional_relative(Path::new("Configuration.xml"), MAX_CONFIGURATION_BYTES)?
-        else {
+        let Some(bytes) = self.read_optional_relative_whole(Path::new("Configuration.xml"))? else {
             let mut refusal = ViewError::new(
                 RefusalCode::InvalidState,
                 "source set is declared but its directory holds no configuration export;                  fill it with a scaffold before reading",
@@ -466,7 +448,7 @@ impl ProviderReadAuthority {
         self.root
             .open_relative_regular_nofollow(Path::new("Configuration.xml"))
             .and_then(|file| file.metadata())
-            .is_ok_and(|metadata| metadata.len() > MAX_CONFIGURATION_BYTES as u64)
+            .is_ok_and(|metadata| metadata.len() > CONFIGURATION_STREAMING_THRESHOLD_BYTES)
     }
 
     fn external_inventory_payload(
@@ -507,7 +489,7 @@ impl ProviderReadAuthority {
                 continue;
             }
             let relative = PathBuf::from(&name);
-            let bytes = self.read_relative_with_checkpoint(&relative, None, checkpoint)?;
+            let bytes = self.read_relative_with_checkpoint(&relative, checkpoint)?;
             checkpoint()?;
             if path
                 .file_name()
@@ -583,11 +565,7 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
-        let bytes = self.metadata_descriptor_with_checkpoint(
-            target,
-            Some(MAX_CONFIGURATION_BYTES),
-            checkpoint,
-        )?;
+        let bytes = self.metadata_descriptor_with_checkpoint(target, checkpoint)?;
         let (mut properties, limits) =
             unica_metadata_designer::form_metadata::parse_form_metadata_properties(&bytes, target)
                 .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
@@ -620,7 +598,7 @@ impl ProviderReadAuthority {
     ) -> Result<FormInfoData, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
         let relative = self.attached_resource_relative(target, "Form.xml")?;
-        let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
+        let bytes = self.read_relative_whole(&relative)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, "Form.xml is not UTF-8")
         })?;
@@ -684,11 +662,7 @@ impl ProviderReadAuthority {
         let wrapper = self.metadata_descriptor(target)?;
         let wrapper_relative = self.metadata_descriptor_relative(target)?;
         let relative = self.attached_resource_relative(target, "Form.xml")?;
-        let bytes = self.read_relative_with_checkpoint(
-            &relative,
-            Some(MAX_CONFIGURATION_BYTES),
-            checkpoint,
-        )?;
+        let bytes = self.read_relative_with_checkpoint(&relative, checkpoint)?;
         let text = String::from_utf8(bytes).map_err(|_| {
             ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
@@ -712,8 +686,7 @@ impl ProviderReadAuthority {
         } else {
             PathBuf::from("Configuration.xml")
         };
-        let source_bytes =
-            self.read_relative_with_checkpoint(&source_relative, None, checkpoint)?;
+        let source_bytes = self.read_relative_with_checkpoint(&source_relative, checkpoint)?;
         let format_guard =
             crate::infrastructure::format_guard::evaluate_retained_template_format_guard(
                 "form-validate",
@@ -739,7 +712,7 @@ impl ProviderReadAuthority {
             let module_target = unica_source_designer::module_layout::form_module_target(target)
                 .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
             let module_relative = self.module_relative(&module_target)?;
-            self.read_optional_relative_with_checkpoint(&module_relative, None, checkpoint)?
+            self.read_optional_relative_with_checkpoint(&module_relative, checkpoint)?
                 .and_then(|bytes| String::from_utf8(bytes).ok())
         } else {
             None
@@ -774,7 +747,7 @@ impl ProviderReadAuthority {
     ) -> Result<(PathBuf, String), ViewError> {
         self.metadata_descriptor(target)?;
         let relative = self.attached_resource_relative(target, "Template.xml")?;
-        let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
+        let bytes = self.read_relative_whole(&relative)?;
         let text = String::from_utf8(bytes).map_err(|_| {
             ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
@@ -791,7 +764,7 @@ impl ProviderReadAuthority {
     ) -> Result<TemplateValidationInput, ViewError> {
         self.metadata_descriptor(target)?;
         let relative = self.attached_resource_relative(target, "Template.xml")?;
-        let bytes = self.read_relative_with_checkpoint(&relative, None, checkpoint)?;
+        let bytes = self.read_relative_with_checkpoint(&relative, checkpoint)?;
         let text = String::from_utf8(bytes).map_err(|_| {
             ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
@@ -817,8 +790,7 @@ impl ProviderReadAuthority {
         };
         // The previous format guard read the complete owner without a size cap.
         // Retaining its authority must not add an 8 MiB rejection for large roots.
-        let source_bytes =
-            self.read_relative_with_checkpoint(&source_relative, None, checkpoint)?;
+        let source_bytes = self.read_relative_with_checkpoint(&source_relative, checkpoint)?;
         let format_guard =
             crate::infrastructure::format_guard::evaluate_retained_template_format_guard(
                 "mxl-validate",
@@ -866,8 +838,7 @@ impl ProviderReadAuthority {
         };
         // The previous format guard read the complete owner without a size cap.
         // Retaining its authority must not add an 8 MiB rejection for large roots.
-        let source_bytes =
-            self.read_relative_with_checkpoint(&source_relative, None, checkpoint)?;
+        let source_bytes = self.read_relative_with_checkpoint(&source_relative, checkpoint)?;
         let format_guard = crate::infrastructure::format_guard::evaluate_retained_dcs_format_guard(
             &artifact,
             &text,
@@ -891,10 +862,8 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
-        let rights = self.read_relative(
-            &self.attached_resource_relative(target, "Rights.xml")?,
-            MAX_CONFIGURATION_BYTES,
-        )?;
+        let rights =
+            self.read_relative_whole(&self.attached_resource_relative(target, "Rights.xml")?)?;
         let rights = std::str::from_utf8(&rights).map_err(|_| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, "Rights.xml is not UTF-8")
         })?;
@@ -972,11 +941,9 @@ impl ProviderReadAuthority {
             let relative = Path::new("ExchangePlans")
                 .join(&info.name)
                 .join("Ext/Content.xml");
-            let observation = match self.read_optional_relative_with_checkpoint(
-                &relative,
-                Some(MAX_CONFIGURATION_BYTES),
-                checkpoint,
-            ) {
+            let observation = match self
+                .read_optional_relative_with_checkpoint(&relative, checkpoint)
+            {
                 Ok(Some(bytes)) => std::str::from_utf8(&bytes)
                     .map_err(|e| e.to_string())
                     .and_then(unica_metadata_designer::exchange_content::read_content)
@@ -1044,11 +1011,7 @@ impl ProviderReadAuthority {
             .join(name)
             .join("Ext")
             .join("Predefined.xml");
-        let Some(bytes) = self.read_optional_relative_with_checkpoint(
-            &relative,
-            Some(MAX_CONFIGURATION_BYTES),
-            checkpoint,
-        )?
+        let Some(bytes) = self.read_optional_relative_with_checkpoint(&relative, checkpoint)?
         else {
             return Ok(Some(MetaPredefinedItemsData {
                 total: 0,
@@ -1109,7 +1072,7 @@ impl ProviderReadAuthority {
                 "external typed metadata target must name its root owner",
             ));
         };
-        let descriptor = self.metadata_descriptor_with_checkpoint(target, None, checkpoint)?;
+        let descriptor = self.metadata_descriptor_with_checkpoint(target, checkpoint)?;
         let relative = self.metadata_descriptor_relative(target)?;
         let evidence =
             prove_already_read_source_set_owner(&relative, &descriptor, self.source_set_kind)
@@ -1153,12 +1116,7 @@ impl ProviderReadAuthority {
     ) -> Result<PlatformXmlSourceSetOwnerEvidence, ViewError> {
         let external_root =
             self.is_external_source_set() && target.as_str().split('.').count() == 2;
-        let limit = if external_root {
-            None
-        } else {
-            Some(MAX_CONFIGURATION_BYTES)
-        };
-        let descriptor = self.metadata_descriptor_with_checkpoint(target, limit, checkpoint)?;
+        let descriptor = self.metadata_descriptor_with_checkpoint(target, checkpoint)?;
         let relative = self.metadata_descriptor_relative(target)?;
         if external_root {
             prove_already_read_source_set_owner(&relative, &descriptor, self.source_set_kind)
@@ -1181,10 +1139,8 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
         self.metadata_descriptor(target)?;
-        let bytes = self.read_relative(
-            &self.attached_resource_relative(target, "Template.xml")?,
-            MAX_CONFIGURATION_BYTES,
-        )?;
+        let bytes =
+            self.read_relative_whole(&self.attached_resource_relative(target, "Template.xml")?)?;
         let name = target.as_str().rsplit('.').next().unwrap_or("Template");
         let data = parse_mxl_info_xml(
             &bytes,
@@ -1206,7 +1162,6 @@ impl ProviderReadAuthority {
         let descriptor = self.metadata_descriptor(target)?;
         let package = self.read_relative_with_checkpoint(
             &self.attached_resource_relative(target, "Package.bin")?,
-            Some(MAX_CONFIGURATION_BYTES),
             checkpoint,
         )?;
         let data = parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, None)
@@ -1223,10 +1178,8 @@ impl ProviderReadAuthority {
         type_name: Option<&str>,
     ) -> Result<Value, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
-        let package = self.read_relative(
-            &self.attached_resource_relative(target, "Package.bin")?,
-            MAX_CONFIGURATION_BYTES,
-        )?;
+        let package =
+            self.read_relative_whole(&self.attached_resource_relative(target, "Package.bin")?)?;
         let data =
             parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, type_name)
                 .map_err(|error| {
@@ -1264,7 +1217,7 @@ impl ProviderReadAuthority {
             nested_subsystem_resource(&descriptor_relative, "CommandInterface.xml")
         };
         let command_interface = self
-            .read_optional_relative(&ci_relative, MAX_CONFIGURATION_BYTES)?
+            .read_optional_relative_whole(&ci_relative)?
             .map(|bytes| {
                 let text = std::str::from_utf8(&bytes).map_err(|_| {
                     ViewError::detailed(
@@ -1356,7 +1309,7 @@ impl ProviderReadAuthority {
             }
             relative = nested_subsystem_descriptor(&relative, name);
             descriptor = self
-                .read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)?
+                .read_optional_relative_whole(&relative)?
                 .ok_or_else(|| {
                     ViewError::new(
                         RefusalCode::NotFound,
@@ -1408,7 +1361,7 @@ impl ProviderReadAuthority {
             ));
         }
         let ci_relative = nested_subsystem_resource(&relative, "CommandInterface.xml");
-        let ci = self.read_optional_relative_with_checkpoint(&ci_relative, None, checkpoint)?;
+        let ci = self.read_optional_relative_with_checkpoint(&ci_relative, checkpoint)?;
         let mut documents = vec![SubsystemInfoFormatDocument {
             path: self.root_path().join(&relative),
             bytes: bytes.clone(),
@@ -1483,15 +1436,12 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
     ) -> Result<Vec<u8>, ViewError> {
-        self.metadata_descriptor_with_checkpoint(target, Some(MAX_CONFIGURATION_BYTES), &mut || {
-            Ok(())
-        })
+        self.metadata_descriptor_with_checkpoint(target, &mut || Ok(()))
     }
 
     fn metadata_descriptor_with_checkpoint(
         &self,
         target: &MetadataAddress,
-        max_bytes: Option<usize>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Vec<u8>, ViewError> {
         #[cfg(test)]
@@ -1504,7 +1454,7 @@ impl ProviderReadAuthority {
                 .or_default() += 1;
         }
         let relative = self.metadata_descriptor_relative(target)?;
-        self.read_optional_relative_with_checkpoint(&relative, max_bytes, checkpoint)?
+        self.read_optional_relative_with_checkpoint(&relative, checkpoint)?
             .ok_or_else(|| {
                 ViewError::new(
                     RefusalCode::NotFound,
@@ -1532,10 +1482,24 @@ impl ProviderReadAuthority {
         path_text(self.module_relative(target)?)
     }
 
+    pub(crate) fn common_template_facts(
+        &self,
+        target: &MetadataAddress,
+    ) -> Result<unica_metadata_designer::validation::CommonTemplateDescriptorFacts, ViewError> {
+        let bytes = self.metadata_descriptor(target)?;
+        parse_common_template_descriptor_from_bytes(&bytes, target)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
     pub(crate) fn metadata_child_profile(
         &self,
         target: &MetadataAddress,
-    ) -> Result<unica_metadata::validation_subject::MetadataChildProfile, ViewError> {
+    ) -> Result<MetadataChildProfile, ViewError> {
+        if target.as_str().starts_with("CommonTemplate.") {
+            return self
+                .common_template_facts(target)
+                .map(|facts| MetadataChildProfile::Template(facts.template_type));
+        }
         let descriptor = self.metadata_descriptor(target)?;
         let owner_text = target
             .as_str()
@@ -1581,7 +1545,7 @@ impl ProviderReadAuthority {
                 .or_default() += 1;
         }
         let relative = self.module_relative(target)?;
-        self.read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)?
+        self.read_optional_relative_whole(&relative)?
             .map(|bytes| {
                 String::from_utf8(bytes)
                     .map(|text| text.trim_start_matches('\u{feff}').to_string())
@@ -1916,10 +1880,8 @@ impl ProviderReadAuthority {
     /// страница: отдельным документом рядом с `Configuration.xml`, и ложится
     /// свойством корня. Отсутствие документа — законное состояние, а не отказ.
     fn command_interface(&self) -> Result<Option<CfInterfaceData>, ViewError> {
-        let Some(bytes) = self.read_optional_relative(
-            Path::new("Ext/CommandInterface.xml"),
-            MAX_CONFIGURATION_BYTES,
-        )?
+        let Some(bytes) =
+            self.read_optional_relative_whole(Path::new("Ext/CommandInterface.xml"))?
         else {
             return Ok(None);
         };
@@ -1935,10 +1897,8 @@ impl ProviderReadAuthority {
     }
 
     fn home_page(&self) -> Result<Option<CfHomePageData>, ViewError> {
-        let Some(bytes) = self.read_optional_relative(
-            Path::new("Ext/HomePageWorkArea.xml"),
-            MAX_CONFIGURATION_BYTES,
-        )?
+        let Some(bytes) =
+            self.read_optional_relative_whole(Path::new("Ext/HomePageWorkArea.xml"))?
         else {
             return Ok(None);
         };
@@ -2023,6 +1983,23 @@ pub(crate) fn companion_owner(
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &path).ok()
 }
 
+/// The whole regular file under `root`, read in chunks without a size limit.
+fn read_whole_relative(root: &SourceDirectory, relative: &Path) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    root.visit_relative_regular_chunks(
+        relative,
+        || Ok(()),
+        |chunk| {
+            bytes
+                .try_reserve(chunk.len())
+                .map_err(std::io::Error::other)?;
+            bytes.extend_from_slice(chunk);
+            Ok(())
+        },
+    )?;
+    Ok(bytes)
+}
+
 /// Заимствование объекта, чей сопутствующий файл расширение не несёт.
 ///
 /// Платформа 8.3.27 импортирует и выгружает заимствованные роль, форму,
@@ -2052,8 +2029,7 @@ pub(crate) fn inherited_companion(
     }
     let descriptor_of = |target: &MetadataAddress| -> Result<Vec<u8>, String> {
         let relative = shared_metadata_descriptor_relative(target, source_kind)?;
-        root.read_relative_regular_bounded(&relative, MAX_CONFIGURATION_BYTES)
-            .map_err(|error| error.to_string())
+        read_whole_relative(root, &relative).map_err(|error| error.to_string())
     };
     let descriptor = descriptor_of(target)?;
     if !unica_metadata_designer::xml_model::descriptor_extends_parent(&descriptor) {

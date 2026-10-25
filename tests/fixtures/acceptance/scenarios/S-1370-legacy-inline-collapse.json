@@ -1,0 +1,103 @@
+{
+  "id": "S-1370-legacy-inline-collapse",
+  "issue": 1370,
+  "area": "Метаданные",
+  "task": "Правка владельца со встроенными Form и Template регистрирует их по имени: предпросмотр предупреждает legacy_inline_registration, публикация пишет ссылки, встроенный Command остаётся, проверка владельца больше не предупреждает",
+  "workspace": "tests/fixtures/acceptance/workspace-legacy-inline",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Editable",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeLength": 10
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "legacy_inline_registration"
+        },
+        {
+          "pointer": "/warnings/0/at",
+          "eq": "main:Catalog.Editable"
+        }
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Editable.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Form",
+          "eq": [
+            "Main"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Editable.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Template",
+          "eq": [
+            "Print"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Editable.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Open"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Editable"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ]
+    }
+  ]
+}

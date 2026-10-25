@@ -5150,8 +5150,10 @@ fn spawn_scenario_operation(
     control.record_operation_event(&label, "spawned");
     let handle = thread::spawn(move || {
         let result = work();
-        control.record_operation_event(&label, "completed");
+        // The exit flag goes first: a runner that sees the event checks the
+        // flag at once and must not find the operation still running.
         worker_completed.store(true, Ordering::Release);
+        control.record_operation_event(&label, "completed");
         result
     });
     ScenarioOperation { completed, handle }

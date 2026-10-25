@@ -8,6 +8,7 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::malformed_direct_receipt_is_recovered_by_key_and_only_the_strict_one_is_acknowledged
   - crates/unica-coder/src/interfaces/daemon_router.rs::direct_terminal_is_projected_before_it_is_acknowledged_with_the_exact_digest
   - crates/unica-coder/src/interfaces/daemon_router.rs::failed_and_cancelled_direct_terminals_answer_closed_errors_after_acknowledgement
+  - crates/unica-coder/src/interfaces/daemon_router.rs::submit_answer_at_the_frame_limit_is_read_and_one_byte_over_or_cut_is_recovered
 gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 
