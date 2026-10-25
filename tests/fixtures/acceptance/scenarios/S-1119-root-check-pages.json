@@ -160,7 +160,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_cursor: check cursor is invalid, evicted or belongs to another question",
+      "refusal": "invalid_cursor: check cursor is invalid, its verdict is no longer held, or it belongs to another question",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",

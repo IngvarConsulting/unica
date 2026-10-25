@@ -1,6 +1,6 @@
 use super::protocol::InvocationRequest;
 use crate::application::v13::check::{
-    page_root_verdict, RootCheckPages, RootCheckQuestion, DEFAULT_CHECK_LIMIT, MAX_CHECK_LIMIT,
+    page_root_verdict, RootCheckQuestion, DEFAULT_CHECK_LIMIT, MAX_CHECK_LIMIT,
 };
 use unica_execution::invocation::{InvocationResponseDeadline, INVOCATION_HANDOFF_WINDOW};
 use unica_execution::invocation_store::ToolIdentity;
@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use unica_address::address::QualifiedAddress;
 use unica_execution_contract::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
+use unica_navigation::result_store::ViewCursorStore;
 use unica_project_health::inspection::{
     inspect_project_health_continued,
     resources::{ResourceContinuation, RootCheckContinuationStore},
@@ -61,7 +62,7 @@ pub(super) struct PreparedWorkspaceInspection {
     response_deadline: InvocationResponseDeadline,
     workspace_identity_hash: SafeIdentityHash,
     continuation: Option<Arc<Mutex<ResourceContinuation>>>,
-    pages: Arc<RootCheckPages>,
+    pages: Arc<ViewCursorStore>,
     limit: usize,
     cursor: Option<String>,
 }
@@ -76,7 +77,7 @@ pub(super) fn prepare(
     request: &InvocationRequest,
     response_deadline: InvocationResponseDeadline,
     continuations: &RootCheckContinuationStore,
-    pages: &Arc<RootCheckPages>,
+    pages: &Arc<ViewCursorStore>,
 ) -> Preparation {
     if request.arguments().contains_key("at") {
         return Preparation::NotApplicable;

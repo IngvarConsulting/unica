@@ -1703,6 +1703,13 @@ pub(crate) trait CanonicalInvocationService: Send + Sync {
         invocation: &ActorBoundExecution,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure>;
+
+    /// The store that keeps this service's check snapshots. The workspace
+    /// verdict saves its pages there too, so one retention budget covers
+    /// every saved check result of the process.
+    fn check_snapshots(&self) -> Option<Arc<unica_navigation::result_store::ViewCursorStore>> {
+        None
+    }
 }
 #[cfg(test)]
 pub(super) fn bind_workspace_invocation(

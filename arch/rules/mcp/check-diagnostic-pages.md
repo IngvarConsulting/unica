@@ -9,7 +9,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_sees_an_error_after_two_hundred_warnings
   - crates/unica-coder/src/infrastructure/daemon/server.rs::root_check_pages_its_groups_by_count_and_bytes_with_the_whole_verdict
   - crates/unica-coder/src/infrastructure/daemon/server.rs::root_check_cursor_answers_only_the_question_that_issued_it
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::an_evicted_root_check_cursor_is_refused_instead_of_ending_the_walk
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::a_root_check_cursor_without_its_saved_verdict_is_refused
   - crates/unica-coder/tests/platform/receipt_runtime.rs::root_check_pages_are_the_same_through_a_task_and_a_direct_call
 ---
 

@@ -518,7 +518,7 @@ pub(super) struct V5CanonicalInvocationRuntime {
     documentation_cursors: Arc<unica_navigation::result_store::SearchCursorStore>,
     root_check_continuations:
         Arc<unica_project_health::inspection::resources::RootCheckContinuationStore>,
-    root_check_pages: Arc<crate::application::v13::check::RootCheckPages>,
+    root_check_pages: Arc<unica_navigation::result_store::ViewCursorStore>,
     workspace_actors: WorkspaceActorRegistry,
     deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
@@ -857,7 +857,7 @@ impl V5CanonicalInvocationRuntime {
     #[cfg(test)]
     pub(crate) fn with_root_check_pages(
         mut self,
-        pages: crate::application::v13::check::RootCheckPages,
+        pages: unica_navigation::result_store::ViewCursorStore,
     ) -> Self {
         self.root_check_pages = Arc::new(pages);
         self
@@ -872,6 +872,9 @@ impl V5CanonicalInvocationRuntime {
         clock: Arc<dyn Clock>,
         workspace_actors: WorkspaceActorRegistry,
     ) -> Self {
+        let root_check_pages = service
+            .check_snapshots()
+            .unwrap_or_else(|| Arc::new(super::v13_service::product_view_cursors()));
         Self {
             service,
             clock,
@@ -881,7 +884,7 @@ impl V5CanonicalInvocationRuntime {
             root_check_continuations: Arc::new(
                 unica_project_health::inspection::resources::RootCheckContinuationStore::default(),
             ),
-            root_check_pages: Arc::default(),
+            root_check_pages,
             workspace_actors,
             deliveries: Arc::new(unica_artifact_delivery::desk::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
@@ -6188,9 +6191,10 @@ fn main() {
             first,
             "a null cursor opens page one"
         );
-        let (prefix, offset) = cursor.rsplit_once('.').unwrap();
-        let flipped = if prefix.ends_with('0') { '1' } else { '0' };
-        let forged = format!("{}{flipped}.{offset}", &prefix[..prefix.len() - 1]);
+        // One flipped character of the authenticated token, and the token
+        // with a character more.
+        let flipped = if cursor.ends_with('0') { '1' } else { '0' };
+        let forged = format!("{}{flipped}", &cursor[..cursor.len() - 1]);
         for (target, arguments) in [
             (
                 workspace.path(),
@@ -6198,7 +6202,7 @@ fn main() {
             ),
             (
                 workspace.path(),
-                serde_json::json!({"limit": 2, "cursor": format!("{prefix}.{}", offset.parse::<usize>().unwrap() + 1)}),
+                serde_json::json!({"limit": 2, "cursor": format!("{cursor}0")}),
             ),
             (
                 workspace.path(),
@@ -6228,29 +6232,40 @@ fn main() {
         assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
     }
 
-    /// #1119 (9c): a full cursor store evicts the oldest saved verdict; its
-    /// cursor is then refused, never answered as a complete page.
+    /// #1119 (9c): a workspace verdict is saved in the check snapshot store.
+    /// A cursor whose verdict that store does not hold — as after a daemon
+    /// restart — is refused, never answered as a complete page; a verdict the
+    /// store cannot hold is refused before any cursor is promised.
     #[test]
-    fn an_evicted_root_check_cursor_is_refused_instead_of_ending_the_walk() {
-        let first = root_check_groups_fixture(3);
-        let second = root_check_groups_fixture(3);
-        let runtime = bootstrap_runtime().with_root_check_pages(
-            crate::application::v13::check::RootCheckPages::with_capacity(1),
-        );
+    fn a_root_check_cursor_without_its_saved_verdict_is_refused() {
+        let workspace = root_check_groups_fixture(3);
         let limited = serde_json::json!({"limit": 2});
-        let page = submit_canonical(&runtime, first.path(), ToolIdentity::Check, limited.clone());
-        let cursor = page.cursor.clone().unwrap();
-        let next = serde_json::json!({"limit": 2, "cursor": cursor});
-        let kept = submit_canonical(&runtime, first.path(), ToolIdentity::Check, next.clone());
-        assert!(kept.ok, "{kept:?}");
-        submit_canonical(&runtime, second.path(), ToolIdentity::Check, limited);
-        let evicted = submit_canonical(&runtime, first.path(), ToolIdentity::Check, next);
-        assert!(!evicted.ok, "{evicted:?}");
-        assert_eq!(evicted.diagnostics[0]["code"], "invalid_cursor");
-        assert!(
-            evicted.page.is_none() && evicted.data.is_none(),
-            "{evicted:?}"
+        let page = submit_canonical(
+            &bootstrap_runtime(),
+            workspace.path(),
+            ToolIdentity::Check,
+            limited.clone(),
         );
+        let cursor = page.cursor.clone().unwrap();
+        let restarted = submit_canonical(
+            &bootstrap_runtime(),
+            workspace.path(),
+            ToolIdentity::Check,
+            serde_json::json!({"limit": 2, "cursor": cursor}),
+        );
+        assert!(!restarted.ok, "{restarted:?}");
+        assert_eq!(restarted.diagnostics[0]["code"], "invalid_cursor");
+        assert!(
+            restarted.page.is_none() && restarted.data.is_none(),
+            "{restarted:?}"
+        );
+
+        let full = bootstrap_runtime()
+            .with_root_check_pages(unica_navigation::result_store::ViewCursorStore::new(400));
+        let refused = submit_canonical(&full, workspace.path(), ToolIdentity::Check, limited);
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
+        assert!(refused.cursor.is_none(), "{refused:?}");
     }
 
     #[test]

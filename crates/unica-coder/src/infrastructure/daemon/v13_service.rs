@@ -97,7 +97,7 @@ pub(crate) struct CanonicalV13ReadService {
 
 /// Снимки продолжений лежат во временном файле: в памяти процесса остаются
 /// узлы и границы элементов.
-fn product_view_cursors() -> ViewCursorStore {
+pub(crate) fn product_view_cursors() -> ViewCursorStore {
     use crate::infrastructure::platform::{TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
     ViewCursorStore::new(VIEW_SNAPSHOT_MAX_RETAINED_BYTES)
         .with_spill(Arc::new(TempFileSpill::default()))
@@ -120,6 +120,10 @@ impl Default for CanonicalV13ReadService {
 }
 
 impl CanonicalInvocationService for CanonicalV13ReadService {
+    fn check_snapshots(&self) -> Option<Arc<ViewCursorStore>> {
+        Some(Arc::clone(&self.cursors))
+    }
+
     fn prepare(
         &self,
         invocation: &ActorBoundInvocation,

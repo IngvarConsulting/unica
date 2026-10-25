@@ -1069,30 +1069,6 @@
       "review": null
     },
     {
-      "id": "check.cursor-store-entries",
-      "class": "retention",
-      "resource": "Число одновременно хранимых вердиктов корневого check с продолжением в процессе.",
-      "unit": "count",
-      "scope": "cache",
-      "source": {
-        "file": "crates/unica-coder/src/application/v13/check.rs",
-        "symbol": "MAX_ROOT_CHECK_CURSOR_ENTRIES"
-      },
-      "expr": "64",
-      "value": 64,
-      "applied": [
-        "crates/unica-coder/src/application/v13/check.rs"
-      ],
-      "status": "unproven",
-      "origin": "#1119 (9c)",
-      "problem": null,
-      "onReach": "тихо: обход хранит один вердикт на все свои страницы; при сохранении нового вердикта вытесняется самый старый, и его продолжение затем отказывает как неизвестный курсор.",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
       "id": "check.page-default-entries",
       "class": "step",
       "resource": "Число диагностик страницы check, когда limit не задан: находок узла или групп корневого вердикта.",
@@ -2051,7 +2027,7 @@
     {
       "id": "view.snapshot-retained-bytes",
       "class": "retention",
-      "resource": "Суммарный объём удерживаемых снимков продолжений view и check: элементы во временном файле, узлы и границы элементов в памяти.",
+      "resource": "Суммарный объём удерживаемых снимков продолжений view и check, включая корневой вердикт check: элементы во временном файле, узлы и границы элементов в памяти.",
       "unit": "bytes",
       "scope": "process",
       "source": {

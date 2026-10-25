@@ -1,22 +1,17 @@
-use crate::application::v13::saved_pages::SavedPages;
 use crate::application::v13::view::PREFERRED_PAGE_BYTES;
 use serde::Serialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::fmt;
-use std::sync::Arc;
 use unica_address::address::QualifiedAddress;
 use unica_execution_contract::invocation::DomainResult;
 use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
-use unica_navigation::result_store::{ViewCursorBinding, ViewCursorStore};
+use unica_navigation::result_store::{ViewCursorBinding, ViewCursorError, ViewCursorStore};
 use unica_refusal::{RefusalCode, RefusalDetail};
 
 /// Diagnostics on one check page when `limit` is omitted.
 pub(crate) const DEFAULT_CHECK_LIMIT: usize = 20;
 /// The largest `limit` a check page accepts.
 pub(crate) const MAX_CHECK_LIMIT: usize = 50;
-/// Saved workspace verdicts whose later pages a cursor still reads.
-const MAX_ROOT_CHECK_CURSOR_ENTRIES: usize = 64;
 
 /// Renders one page of a check result from its diagnostics, continuation
 /// and stop reason.
@@ -114,132 +109,114 @@ impl RootCheckQuestion {
         }
     }
 
-    fn fingerprint(&self) -> String {
-        format!("{}|{}", self.workspace, self.limit)
-    }
-}
-
-/// A workspace verdict saved by its first page: the verdict without its
-/// diagnostic groups, and the groups in their published order.
-#[derive(Debug)]
-struct RootCheckSnapshot {
-    node: Value,
-    items: Vec<Value>,
-}
-
-/// Saved workspace verdicts read by later pages. The entry name is a keyed
-/// digest of the question and the verdict, so the same verdict to the same
-/// question is saved once and gets the same cursor however it was delivered.
-#[derive(Debug)]
-pub(crate) struct RootCheckPages {
-    key: [u8; 32],
-    pages: SavedPages<(String, Arc<RootCheckSnapshot>)>,
-}
-
-impl Default for RootCheckPages {
-    fn default() -> Self {
-        Self::with_capacity(MAX_ROOT_CHECK_CURSOR_ENTRIES)
-    }
-}
-
-impl RootCheckPages {
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
-        let mut key = [0u8; 32];
-        key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-        key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-        Self {
-            key,
-            pages: SavedPages::new("rc1.", capacity),
+    /// A workspace verdict is saved like any check snapshot. Its binding names
+    /// no node: the workspace and the page size are the whole question.
+    fn binding(&self) -> ViewCursorBinding {
+        ViewCursorBinding {
+            canonical_at: String::new(),
+            projection: "check.workspace".to_string(),
+            source_set_identity: self.workspace.clone(),
+            snapshot_id: String::new(),
+            page_limit: self.limit,
         }
-    }
-
-    fn entry_id(&self, fingerprint: &str, node: &Value, items: &[Value]) -> String {
-        let mut digest = Sha256::new();
-        digest.update(self.key);
-        digest.update(fingerprint.as_bytes());
-        digest.update([0]);
-        digest.update(serde_json::to_vec(&(node, items)).expect("a check snapshot serializes"));
-        digest.finalize()[..16]
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
     }
 }
 
 /// Page the diagnostic groups of a workspace verdict. Every page carries the
 /// whole verdict, its checks and the number of groups; groups keep the order
-/// of the first answer. A continuation reads the verdict the first page
-/// saved and does not inspect the workspace again.
+/// of the first answer. The verdict is saved in the check snapshot store, so
+/// a continuation reads it without inspecting the workspace again, and the
+/// same verdict to the same question gets the same cursor however it was
+/// delivered.
 pub(crate) fn page_root_verdict(
-    pages: &RootCheckPages,
+    cursors: &ViewCursorStore,
     question: &RootCheckQuestion,
     fresh: Option<DomainResult>,
     cursor: Option<&str>,
 ) -> DomainResult {
-    let probe = pages.pages.token_probe();
-    let fingerprint = question.fingerprint();
-    let (id, snapshot, offset) = match (cursor, fresh) {
-        (Some(cursor), _) => match pages.pages.read(cursor) {
-            Some((id, (bound, snapshot), offset)) if bound == fingerprint => {
-                (Some(id), snapshot, offset)
+    let probe = ViewCursorStore::token_probe();
+    let binding = question.binding();
+    let render =
+        |node: &Value, items: Vec<Value>, cursor: Option<String>, stopped_by: &'static str| {
+            let mut page = check_page_result(node, items, cursor.clone(), stopped_by);
+            if let Some(cursor) = cursor {
+                page.next.insert(
+                    0,
+                    json!({
+                        "tool": "unica.check",
+                        "args": {"limit": question.limit, "cursor": cursor},
+                        "reason": "остальные группы диагностик того же вердикта",
+                    }),
+                );
             }
-            _ => {
+            page
+        };
+    if let Some(cursor) = cursor {
+        let stored = match cursors.read(cursor, &binding.question()) {
+            Ok(stored) => stored,
+            Err(ViewCursorError::Invalid) => {
                 return DomainResult::canonical_rejection(
                     None,
                     RefusalCode::InvalidCursor,
-                    "check cursor is invalid, evicted or belongs to another question",
+                    "check cursor is invalid, its verdict is no longer held, or it belongs to another question",
                 )
             }
-        },
-        (None, Some(result)) => {
-            if !result.ok {
-                return result;
+            Err(error) => return error.into_result(None),
+        };
+        // One group past the page tells whether a continuation follows.
+        let window = match stored
+            .snapshot
+            .read_items(stored.offset, question.limit.saturating_add(1))
+        {
+            Ok(window) => window,
+            Err(error) => return error.into_result(None),
+        };
+        let node = stored.snapshot.node();
+        let render = |items, cursor, stopped_by| render(node, items, cursor, stopped_by);
+        let page = match prepare_check_page(&render, &window, 0, question.limit, &probe) {
+            Ok(page) => page,
+            Err(message) => return check_page_refusal(None, message),
+        };
+        let next_offset = stored.offset + page.next_offset;
+        let next = if next_offset < stored.snapshot.len() {
+            match cursors.insert_next(&stored, next_offset, cursor) {
+                Ok(next) => Some(next),
+                Err(error) => return error.into_result(None),
             }
-            let Some((node, items)) = split_diagnostics(result.clone()) else {
-                return result;
-            };
-            (None, Arc::new(RootCheckSnapshot { node, items }), 0)
-        }
-        (None, None) => {
-            return DomainResult::canonical_rejection(
-                None,
-                RefusalCode::InvalidState,
-                "a new check page has no workspace verdict",
-            )
-        }
-    };
-    let render = |items, cursor: Option<String>, stopped_by| {
-        let mut page = check_page_result(&snapshot.node, items, cursor.clone(), stopped_by);
-        if let Some(cursor) = cursor {
-            page.next.insert(
-                0,
-                json!({
-                    "tool": "unica.check",
-                    "args": {"limit": question.limit, "cursor": cursor},
-                    "reason": "остальные группы диагностик того же вердикта",
-                }),
-            );
-        }
-        page
-    };
-    if id.is_none() {
-        if let Err(message) = preflight_check_pages(&render, &snapshot.items, &probe) {
-            return check_page_refusal(None, message);
-        }
+        } else {
+            None
+        };
+        return render(page.items, next, page.stopped_by);
     }
-    let page = match prepare_check_page(&render, &snapshot.items, offset, question.limit, &probe) {
+    let Some(result) = fresh else {
+        return DomainResult::canonical_rejection(
+            None,
+            RefusalCode::InvalidState,
+            "a new check page has no workspace verdict",
+        );
+    };
+    if !result.ok {
+        return result;
+    }
+    let Some((node, items)) = split_diagnostics(result.clone()) else {
+        return result;
+    };
+    let render = |items, cursor, stopped_by| render(&node, items, cursor, stopped_by);
+    if let Err(message) = preflight_check_pages(&render, &items, &probe) {
+        return check_page_refusal(None, message);
+    }
+    let page = match prepare_check_page(&render, &items, 0, question.limit, &probe) {
         Ok(page) => page,
         Err(message) => return check_page_refusal(None, message),
     };
-    let next = (page.next_offset < snapshot.items.len()).then(|| {
-        let id =
-            id.unwrap_or_else(|| pages.entry_id(&fingerprint, &snapshot.node, &snapshot.items));
-        pages.pages.issue(
-            &id,
-            || (fingerprint.clone(), Arc::clone(&snapshot)),
-            page.next_offset,
-        )
-    });
+    let next = if page.next_offset < items.len() {
+        match cursors.insert_snapshot(binding, node.clone(), items, page.next_offset) {
+            Ok(next) => Some(next),
+            Err(error) => return error.into_result(None),
+        }
+    } else {
+        None
+    };
     render(page.items, next, page.stopped_by)
 }
 
@@ -766,8 +743,7 @@ fn sanitize_message(message: &str) -> String {
 mod tests {
     use super::{
         normalize_native_outcome, page_diagnostics, page_root_verdict, plan_for_node, CheckStep,
-        CheckValidator, NativeCheckOutcome, NodeFacts, RootCheckPages, RootCheckQuestion,
-        TemplateFlavour,
+        CheckValidator, NativeCheckOutcome, NodeFacts, RootCheckQuestion, TemplateFlavour,
     };
     use serde_json::json;
     use unica_address::address::QualifiedAddress;
@@ -961,7 +937,7 @@ mod tests {
     /// target travels alone and whole; the walk still reads every group.
     #[test]
     fn a_root_group_over_the_page_target_travels_whole() {
-        let pages = RootCheckPages::default();
+        let pages = ViewCursorStore::default();
         let question = RootCheckQuestion::new("workspace", 20);
         let mut page = page_root_verdict(
             &pages,
@@ -997,7 +973,7 @@ mod tests {
     /// it stands.
     #[test]
     fn a_late_root_group_over_the_result_limit_refuses_before_a_cursor() {
-        let pages = RootCheckPages::default();
+        let pages = ViewCursorStore::default();
         let question = RootCheckQuestion::new("workspace", 1);
         let refused = page_root_verdict(
             &pages,
@@ -1015,7 +991,7 @@ mod tests {
     /// page; another question gets another cursor.
     #[test]
     fn the_same_root_verdict_gets_the_same_cursor() {
-        let pages = RootCheckPages::default();
+        let pages = ViewCursorStore::default();
         let question = RootCheckQuestion::new("workspace", 1);
         let first = page_root_verdict(&pages, &question, Some(root_verdict(&[10, 10])), None);
         let again = page_root_verdict(&pages, &question, Some(root_verdict(&[10, 10])), None);
@@ -1028,7 +1004,7 @@ mod tests {
             None,
         );
         assert_ne!(other.cursor, first.cursor);
-        let elsewhere = RootCheckPages::default();
+        let elsewhere = ViewCursorStore::default();
         let foreign = page_root_verdict(&elsewhere, &question, None, first.cursor.as_deref());
         assert_eq!(foreign.diagnostics[0]["code"], "invalid_cursor");
     }
