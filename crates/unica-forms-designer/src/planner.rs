@@ -1062,10 +1062,31 @@ pub fn form_add_owner_image(
     let child_text = &text[child_range.clone()];
     let mut edits = Vec::new();
     if child_text.ends_with("/>") {
-        edits.push((
-            child_range.end - 2..child_range.end,
-            format!(">{entry}</{qname}>"),
-        ));
+        // 8.3.27 expands an empty container on its own line: the entry one
+        // level deeper, the closing tag at the container's indentation, the
+        // observed line ending. Compact XML keeps the inline expansion.
+        let line_start = text[..child_range.start]
+            .rfind(['\r', '\n'])
+            .map_or(0, |index| index + 1);
+        let indentation = &text[line_start..child_range.start];
+        let rest = &text[child_range.end..];
+        let rest = &rest[..rest.find(['\r', '\n']).unwrap_or(rest.len())];
+        let replacement = if line_start > 0
+            && indentation.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+            && rest.trim().is_empty()
+        {
+            let ending = if text[..line_start].ends_with("\r\n") {
+                "\r\n"
+            } else if text[..line_start].ends_with('\r') {
+                "\r"
+            } else {
+                "\n"
+            };
+            format!(">{ending}{indentation}\t{entry}{ending}{indentation}</{qname}>")
+        } else {
+            format!(">{entry}</{qname}>")
+        };
+        edits.push((child_range.end - 2..child_range.end, replacement));
     } else {
         let order = unica_source_designer::registration::platform_child_object_order(object_type);
         let form_slot = order.and_then(|order| order.iter().position(|kind| *kind == "Form"));
@@ -1621,3 +1642,7 @@ pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> Str
     )
     .to_string()
 }
+
+#[cfg(test)]
+#[path = "../tests/platform/dump_parity.rs"]
+mod dump_parity_tests;

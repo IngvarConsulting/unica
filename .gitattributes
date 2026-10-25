@@ -105,3 +105,7 @@ crates/unica-dcs-designer/tests/fixtures/** text eol=lf
 
 # The ExchangePlan composition fixture keeps the platform's BOM and CRLF layout.
 tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/*/Ext/Content.xml -text -whitespace
+
+# #1404: 8.3.27 export pairs; their BOM and CRLF bytes are the asserted parity.
+crates/unica-metadata-designer/tests/platform/dump_parity/*.xml -text -whitespace
+crates/unica-forms-designer/tests/platform/dump_parity/*.xml -text -whitespace

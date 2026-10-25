@@ -3323,3 +3323,7 @@ pub fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut S
 #[cfg(test)]
 #[path = "../tests/platform/edit_empty_child_objects.rs"]
 mod empty_child_objects_tests;
+
+#[cfg(test)]
+#[path = "../tests/platform/dump_parity.rs"]
+mod dump_parity_tests;

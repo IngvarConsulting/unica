@@ -839,6 +839,39 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                 }
             }
         }
+        // 8.3.27 lists a registrar's records in the order of the registers'
+        // UUIDs; the new record moves to its place once every file of the new
+        // register is staged and its UUID can be read.
+        for file in &post_image.files {
+            let Some(crate::template_catalog::MetadataDependencyEdit::AddRegisterRecord(register)) =
+                &file.edit
+            else {
+                continue;
+            };
+            let relative = file.relative_path.clone();
+            let Some(current) = staged.read(&relative).map_err(|error| {
+                ApplyPlanError::staging(error, format!("ops[{op_index}].args.at"))
+            })?
+            else {
+                continue;
+            };
+            let mut uuid_of = |reference: &str| -> Option<String> {
+                let (kind, name) = reference.split_once('.')?;
+                let layout = unica_source_designer::layout::metadata_kind(kind)?;
+                let descriptor = PathBuf::from(layout.directory).join(format!("{name}.xml"));
+                let bytes = staged.read(&descriptor).ok()??;
+                crate::template_catalog::descriptor_object_uuid(&bytes)
+            };
+            if let Some(ordered) =
+                crate::template_catalog::place_register_record(&current, register, &mut uuid_of)
+            {
+                staged
+                    .replace(&relative, &current, ordered)
+                    .map_err(|error| {
+                        ApplyPlanError::staging(error, format!("ops[{op_index}].args.at"))
+                    })?;
+            }
+        }
         let owner_preimage = staged
             .read(&owner_relative)
             .map_err(|error| ApplyPlanError::staging(error, format!("ops[{op_index}].args.at")))?
