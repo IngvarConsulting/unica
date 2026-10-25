@@ -4,9 +4,11 @@ mod network_trust_tests;
 #[cfg(test)]
 mod process_integration_tests;
 mod target;
+mod view_snapshot_spill;
 
 pub use entrypoint::run_platform_main;
 pub(crate) use target::current_target_id;
+pub(crate) use view_snapshot_spill::{TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
 
 #[cfg(test)]
 pub(crate) fn create_runtime_directory_link_for_test(

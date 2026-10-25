@@ -249,16 +249,23 @@ impl<A: ViewReadAuthority> ViewService<A> {
         if let Some(cursor) = request.cursor.as_deref() {
             let question = request.continuation_question(snapshot.source_set_identity.clone());
             let stored = self.cursors.read(cursor, &question).map_err(cursor_error)?;
+            // The window holds one item past the page: its presence alone
+            // tells the page whether a continuation follows.
+            let window = stored
+                .snapshot
+                .read_items(stored.offset, request.limit.saturating_add(1))
+                .map_err(cursor_error)?;
             let page = prepare_page(
                 stored.snapshot.node(),
-                stored.snapshot.items(),
-                stored.offset,
+                &window,
+                0,
                 request.limit,
                 &stored.snapshot.binding,
             )?;
-            let next_cursor = if page.next_offset < stored.snapshot.items().len() {
+            let next_offset = stored.offset + page.next_offset;
+            let next_cursor = if next_offset < stored.snapshot.len() {
                 self.cursors
-                    .insert_next(&stored, page.next_offset, cursor)
+                    .insert_next(&stored, next_offset, cursor)
                     .map_err(cursor_error)?
                     .into()
             } else {

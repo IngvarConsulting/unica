@@ -415,3 +415,126 @@ fn an_unrequested_section_is_absent_rather_than_empty() {
     assert!(found.predefined_items.is_none());
     fs::remove_dir_all(root).unwrap();
 }
+
+/// #1119: a section is not cut at a fixed count of descriptors; every role in a
+/// group larger than the former 8192-entry cap is read.
+#[test]
+fn roles_past_the_former_section_cap_are_all_found() {
+    let root = temp_root("roles-many");
+    let count = 8_200;
+    for index in 0..count {
+        role(&root, &format!("Role{index:05}"), &["Catalog.Goods"]);
+    }
+
+    let found = scan_local_enrichment(
+        &root,
+        MetadataKind::Catalog,
+        "Goods",
+        &[LocalSection::Roles],
+        50,
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(found.usage.roles.as_ref().unwrap().len(), count);
+    assert!(found.diagnostics.is_empty(), "{:?}", found.diagnostics);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// #1119: a descriptor larger than the former 8 MiB read limit is read whole
+/// instead of silently dropped from the section.
+#[test]
+fn a_functional_option_larger_than_eight_mebibytes_is_still_read() {
+    let root = temp_root("functional-option-large");
+    write(
+        &root,
+        "FunctionalOptions/Large.xml",
+        &format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+  <!--{}-->
+  <FunctionalOption><Properties><Location>Constant.UseGoods</Location>
+    <Content><xr:Object>Catalog.Goods</xr:Object></Content>
+  </Properties></FunctionalOption></MetaDataObject>"#,
+            "x".repeat(9 * 1024 * 1024)
+        ),
+    );
+
+    let found = scan_local_enrichment(
+        &root,
+        MetadataKind::Catalog,
+        "Goods",
+        &[LocalSection::FunctionalOptions],
+        50,
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(
+        names(found.usage.functional_options.as_ref().unwrap()),
+        vec!["FunctionalOption.Large"]
+    );
+    assert!(found.diagnostics.is_empty(), "{:?}", found.diagnostics);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// #1119: a descriptor the scan cannot read or parse is named as an error of
+/// its section; the rest of the list is still returned.
+#[test]
+fn an_unreadable_descriptor_is_reported_as_a_gap_of_its_section() {
+    let root = temp_root("roles-gap");
+    role(&root, "Direct", &["Catalog.Goods"]);
+    write(&root, "Roles/Broken/Ext/Rights.xml", "<Rights");
+
+    let found = scan_local_enrichment(
+        &root,
+        MetadataKind::Catalog,
+        "Goods",
+        &[LocalSection::Roles],
+        50,
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(
+        names(found.usage.roles.as_ref().unwrap()),
+        vec!["Role.Direct"]
+    );
+    assert_eq!(found.diagnostics.len(), 1, "{:?}", found.diagnostics);
+    let gap = &found.diagnostics[0];
+    assert_eq!(gap.severity, unica_metadata::MetaDiagnosticSeverity::Error);
+    assert_eq!(
+        gap.code,
+        unica_metadata::MetaDiagnosticCode::ProviderUnavailable
+    );
+    assert_eq!(gap.field.as_deref(), Some("roles"));
+    assert!(
+        gap.message.contains("Roles/Broken/Ext/Rights.xml"),
+        "{}",
+        gap.message
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// An absent group or a role without rights has nothing to say: neither is a
+/// gap of the section.
+#[test]
+fn an_absent_group_or_rights_file_is_not_a_gap() {
+    let root = temp_root("roles-absent");
+    fs::create_dir_all(root.join("Roles/NoRights")).unwrap();
+    role(&root, "Direct", &["Catalog.Goods"]);
+
+    let found = scan_local_enrichment(
+        &root,
+        MetadataKind::Catalog,
+        "Goods",
+        &[LocalSection::Roles, LocalSection::FunctionalOptions],
+        50,
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(
+        names(found.usage.roles.as_ref().unwrap()),
+        vec!["Role.Direct"]
+    );
+    assert!(found.usage.functional_options.as_ref().unwrap().is_empty());
+    assert!(found.diagnostics.is_empty(), "{:?}", found.diagnostics);
+    fs::remove_dir_all(root).unwrap();
+}
