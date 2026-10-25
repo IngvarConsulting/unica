@@ -1,0 +1,23 @@
+{
+  "name": "ut11",
+  "source": "Shape of a Designer dump of 1C:Управление торговлей 11 (8.3.27, format 2.20) measured on 2026-10-25: 12 290 BSL modules, 507 541 624 bytes of BSL, 31 009 XML files, 692 212 180 bytes of XML. Only counts and size quantiles are kept; no source text.",
+  "quantile_points": [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.999, 1],
+  "modules": {
+    "common": {"files": 2711, "bytes": 234235093, "quantiles": [168, 1298, 1979, 3512, 6536, 11601, 19130, 31301, 49163, 89266, 192536, 373408, 727280, 1017948, 1547418, 2874042, 7653791]},
+    "form": {"files": 4374, "bytes": 146032511, "quantiles": [5, 1021, 1340, 2828, 4611, 7170, 10128, 14919, 23511, 38983, 81865, 152153, 258384, 366230, 466272, 728727, 1384887]},
+    "object": {"files": 1173, "bytes": 28015025, "quantiles": [3, 3, 3, 3, 1143, 3336, 5800, 10201, 16065, 28600, 63133, 103438, 178816, 230093, 268963, 787092, 1038422]},
+    "manager": {"files": 2177, "bytes": 86851872, "quantiles": [3, 3, 3, 1222, 1900, 3031, 5211, 9768, 16916, 37702, 109514, 191996, 367271, 518816, 627930, 1156979, 2370706]},
+    "other": {"files": 1855, "bytes": 12407123, "quantiles": [3, 3, 3, 492, 691, 846, 962, 1288, 1783, 4416, 16063, 29383, 59778, 96566, 157520, 307375, 592391]}
+  },
+  "objects": {
+    "CommonModule": 2711,
+    "Catalog": 471,
+    "Document": 280,
+    "InformationRegister": 773,
+    "Report": 312
+  },
+  "notes": [
+    "Form modules of every kind are carried by catalog forms: the fixture templates give forms only to the catalog, so catalogs get about nine forms each instead of UT's two to five, while the number and bytes of form modules match.",
+    "Data processors, common forms, roles, enums and pictures are not generated; XML bytes are therefore well below UT, BSL bytes match it."
+  ]
+}

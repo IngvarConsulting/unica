@@ -250,7 +250,7 @@ pub(crate) mod tests {
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(300));
         assert_eq!(code.search_rlm_timeout(), Duration::from_secs(300));
-        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(2));
+        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(30));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(45));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
@@ -389,7 +389,7 @@ analyze_timeout_seconds = 700
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(100));
         assert_eq!(code.search_rlm_timeout(), Duration::from_secs(35));
-        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(2));
+        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(30));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(30));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),

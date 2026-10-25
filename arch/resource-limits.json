@@ -858,17 +858,21 @@
         "file": "crates/unica-code-intelligence/src/deadlines.rs",
         "symbol": "SEARCH_GIT_GREP_DEFAULT_SECONDS"
       },
-      "expr": "2",
-      "value": 2,
+      "expr": "30",
+      "value": 30,
       "applied": [
         "crates/unica-code-intelligence/src/deadlines.rs"
       ],
       "status": "unproven",
       "origin": "#398",
-      "problem": null,
+      "problem": "Срок 2 с короче полного прохода git grep по конфигурации масштаба УТ: лексический поиск редкой строки по всей конфигурации и глубокие страницы отвечали timed_out без совпадений.",
       "onReach": "поставщик отменяется, его раздел помечается timed_out, остальные разделы поиска отдаются",
-      "issue": null,
-      "evidence": [],
+      "issue": "#2080",
+      "evidence": [
+        "Замер 25.10.2026, Apple M3 Max (14 ядер), git 2.54, кеш ФС тёплый после первого прохода: команда поставщика (-F, --untracked, :(glob)**/*.[bB][sS][lL]) по выгрузке УТ 11 (12 290 модулей BSL, 508 МБ) — 5,67 с холодный проход, затем 2,52–2,94 с; по синтетическому корпусу формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей, 487 МБ) — 2,90 с холодный, затем 1,45–2,07 с.",
+        "Тот же синтетический корпус через публичный unica.search role=lexical со сроком 2 с: 2,5–5,0 с и ответ «lexical search returned incomplete results» на редкой и на отсутствующей строке (scripts/dev/measure-capacity.py).",
+        "30 с — около пятикратного запаса над худшим холодным проходом по УТ на этой машине; общий срок поиска по умолчанию 300 с остаётся старшим ограничением. Частая строка останавливается раньше: поставщик прекращает чтение на limit совпадений."
+      ],
       "decision": null,
       "review": null
     },
