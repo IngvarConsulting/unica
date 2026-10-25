@@ -3370,6 +3370,9 @@ enum StreamFraming {
     Chunks,
 }
 
+/// One read of a byte stream: a step of the stream, not a bound of its size.
+const BYTE_STREAM_CHUNK_BYTES: usize = 64 * 1024;
+
 fn start_chunk_reader<R>(pipe: Option<R>) -> Option<Receiver<LineMessage>>
 where
     R: Read + Send + 'static,
@@ -3377,7 +3380,7 @@ where
     pipe.map(|mut pipe| {
         let (sender, receiver) = mpsc::sync_channel(1);
         thread::spawn(move || {
-            let mut chunk = vec![0_u8; 64 * 1024];
+            let mut chunk = vec![0_u8; BYTE_STREAM_CHUNK_BYTES];
             let mut number = 1_usize;
             loop {
                 match pipe.read(&mut chunk) {
