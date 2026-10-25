@@ -972,7 +972,7 @@ impl CanonicalV13ReadService {
         };
         let mut result = match property.as_deref() {
             Some(name) => property_view(
-                crate::infrastructure::v13_read_projection::with_whole_props(|| {
+                crate::infrastructure::v13_read_projection::with_whole_prop(name, || {
                     service.view_projected(request, &enrich_and_project)
                 }),
                 at,
@@ -8654,13 +8654,17 @@ mod tests {
 }
 
 /// Ответ на `<узел>.Props.<имя>`: одно свойство узла в той же форме, что и
-/// в его `props`. Свойства у узла нет — отказ ведёт к самому узлу.
-fn property_view(mut result: DomainResult, at: &str, name: &str) -> DomainResult {
+/// в его `props`, по каноническому адресу владельца. Свойства у узла нет —
+/// отказ ведёт к самому узлу. Ветви, продолжения и переходы владельца к
+/// ответу о свойстве не относятся.
+fn property_view(result: DomainResult, at: &str, name: &str) -> DomainResult {
     if !result.ok {
+        let mut result = result;
         result.at = Some(at.to_string());
         return result;
     }
     let owner = result.at.clone().unwrap_or_default();
+    let property_at = format!("{owner}.Props.{name}");
     let value = result
         .data
         .as_ref()
@@ -8669,7 +8673,7 @@ fn property_view(mut result: DomainResult, at: &str, name: &str) -> DomainResult
         .cloned();
     let Some(value) = value else {
         let mut refusal = error_result(
-            Some(at.to_string()),
+            Some(property_at),
             RefusalCode::NotFound,
             format!("node `{owner}` has no property `{name}`"),
         );
@@ -8682,12 +8686,14 @@ fn property_view(mut result: DomainResult, at: &str, name: &str) -> DomainResult
     };
     let mut props = Map::new();
     props.insert(name.to_string(), value);
-    result.data = Some(json!({
-        "at": at,
+    let mut answer = DomainResult::success("node property resolved");
+    answer.at = Some(property_at.clone());
+    answer.data = Some(json!({
+        "at": property_at,
         "kind": NodeKind::Props.as_str(),
         "title": name,
         "props": props,
     }));
-    result.at = Some(at.to_string());
-    result
+    answer.rev = result.rev;
+    answer
 }

@@ -1681,7 +1681,7 @@ fn bounded_prop(key: &str, value: &Value) -> Option<Value> {
     match value {
         Value::Object(_) | Value::Array(_) => {
             let rendered = serde_json::to_string(value).ok()?;
-            (rendered.len() <= prop_limit()).then(|| value.clone())
+            (rendered.len() <= prop_limit(key)).then(|| value.clone())
         }
         scalar => safe_prop(key, scalar).then(|| scalar.clone()),
     }
@@ -1728,25 +1728,26 @@ fn compact_limit(subject: &str, owner: &QualifiedAddress, key: &str) -> String {
 }
 
 thread_local! {
-    /// Чтение одного свойства по адресу `<узел>.Props.<имя>` проецирует узел
-    /// без предела размера: предел сжимает обзор узла, а не само свойство.
-    static WHOLE_PROPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Свойство, которое читается по адресу `<узел>.Props.<имя>`: только оно
+    /// проецируется без предела размера. Предел сжимает обзор узла, а не само
+    /// свойство; остальные свойства узла остаются в пределе.
+    static WHOLE_PROP: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Проецирует узел без предела размера свойств на время `read`.
-pub(crate) fn with_whole_props<T>(read: impl FnOnce() -> T) -> T {
-    struct Restore(bool);
+/// Проецирует узел на время `read`, снимая предел размера со свойства `key`.
+pub(crate) fn with_whole_prop<T>(key: &str, read: impl FnOnce() -> T) -> T {
+    struct Restore(Option<String>);
     impl Drop for Restore {
         fn drop(&mut self) {
-            WHOLE_PROPS.with(|whole| whole.set(self.0));
+            WHOLE_PROP.with(|whole| *whole.borrow_mut() = self.0.take());
         }
     }
-    let _restore = Restore(WHOLE_PROPS.with(|whole| whole.replace(true)));
+    let _restore = Restore(WHOLE_PROP.with(|whole| whole.replace(Some(key.to_string()))));
     read()
 }
 
-fn prop_limit() -> usize {
-    if WHOLE_PROPS.with(std::cell::Cell::get) {
+fn prop_limit(key: &str) -> usize {
+    if WHOLE_PROP.with(|whole| whole.borrow().as_deref() == Some(key)) {
         usize::MAX
     } else {
         MAX_COMPACT_PROP_BYTES
@@ -2026,10 +2027,10 @@ fn known_reader_branches(
         .collect()
 }
 
-fn safe_prop(_key: &str, value: &Value) -> bool {
+fn safe_prop(key: &str, value: &Value) -> bool {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => true,
-        Value::String(text) => text.len() <= prop_limit(),
+        Value::String(text) => text.len() <= prop_limit(key),
         Value::Object(_) => false,
         Value::Array(_) => false,
     }
@@ -2404,21 +2405,26 @@ mod composite_prop_tests {
                 "metadata type exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes; read it whole at main:Constant.Limit.Props.type"
             )]
         );
-        // По этому адресу узел проецируется без предела, и свойство на месте.
+        // По этому адресу предел снят только с названного свойства.
         let mut whole = Map::new();
-        with_whole_props(|| {
-            place_prop(
-                &mut whole,
-                &mut Vec::new(),
-                &owner,
-                "type",
-                &oversize,
-                false,
-                "metadata type",
-            )
+        let mut whole_limits = Vec::new();
+        with_whole_prop("type", || {
+            for key in ["type", "fillValue"] {
+                place_prop(
+                    &mut whole,
+                    &mut whole_limits,
+                    &owner,
+                    key,
+                    &oversize,
+                    false,
+                    key,
+                );
+            }
         });
         assert_eq!(whole["type"], oversize);
+        assert!(whole.get("fillValue").is_none());
+        assert_eq!(whole_limits.len(), 1);
         // Режим не переживает чтение.
-        assert_eq!(prop_limit(), MAX_COMPACT_PROP_BYTES);
+        assert_eq!(prop_limit("type"), MAX_COMPACT_PROP_BYTES);
     }
 }

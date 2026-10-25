@@ -701,15 +701,14 @@ impl QualifiedAddress {
                 },
             );
         }
-        // Словарь корня спрашивают адресом `Configuration.Can.<op>`, свойство —
-        // `Configuration.Props.<имя>`: корень остаётся единственным, `Can` и
-        // `Props` — не его потомки, а вопросы к нему.
+        // Словарь корня спрашивают адресом `Configuration.Can.<op>`: корень
+        // остаётся единственным, `Can` — не его потомок, а вопрос к нему.
         let sole_configuration_root = match segments.as_slice() {
             [root] => root.kind == NodeKind::Configuration && root.name.is_none(),
-            [root, question] => {
+            [root, can] => {
                 root.kind == NodeKind::Configuration
                     && root.name.is_none()
-                    && matches!(question.kind, NodeKind::Can | NodeKind::Props)
+                    && can.kind == NodeKind::Can
             }
             _ => false,
         };
@@ -1001,37 +1000,6 @@ mod tests {
     /// забирал `Command` себе под имя, и объявленная узлом ветвь
     /// `...Interface.Command` разрешалась обратно в тот же узел: счёт называл
     /// команды, спуск по названному адресу их не показывал.
-    /// `<узел>.Props.<имя>` называет одно свойство узла: сегмент последний и
-    /// с одним именем, владелец — адрес до него (#2088).
-    #[test]
-    fn a_property_address_names_its_owner_and_one_property() {
-        for (raw, owner) in [
-            (
-                "main:Catalog.Items.Attribute.Code.Props.type",
-                "main:Catalog.Items.Attribute.Code",
-            ),
-            ("main:Constant.Limit.Props.type", "main:Constant.Limit"),
-            ("main:Configuration.Props.panels", "main:Configuration"),
-        ] {
-            let at = QualifiedAddress::parse(raw).unwrap();
-            assert_eq!(at.to_string(), raw);
-            let (parsed_owner, name) = at.property_query().expect(raw);
-            assert_eq!(parsed_owner.to_string(), owner);
-            assert_eq!(name, raw.rsplit('.').next().unwrap());
-            assert!(at.operation_query().is_none());
-        }
-        for raw in [
-            "main:Catalog.Items.Props",
-            "main:Catalog.Items.Props.type.Attribute",
-        ] {
-            assert!(QualifiedAddress::parse(raw).is_err(), "{raw}");
-        }
-        assert!(QualifiedAddress::parse("main:Catalog.Items")
-            .unwrap()
-            .property_query()
-            .is_none());
-    }
-
     #[test]
     fn nameless_kinds_do_not_consume_the_next_segment_as_a_name() {
         let at = QualifiedAddress::parse("main:Subsystem.Администрирование.Interface.Command")
@@ -1054,6 +1022,36 @@ mod tests {
         let root = QualifiedAddress::parse("main:Interface").expect("корневой интерфейс");
         assert_eq!(root.segments().len(), 1);
         assert_eq!(root.segments()[0].name(), None);
+    }
+
+    /// `<узел>.Props.<имя>` называет одно свойство узла: сегмент последний и
+    /// с одним именем, владелец — адрес до него (#2088).
+    #[test]
+    fn a_property_address_names_its_owner_and_one_property() {
+        for (raw, owner) in [
+            (
+                "main:Catalog.Items.Attribute.Code.Props.type",
+                "main:Catalog.Items.Attribute.Code",
+            ),
+            ("main:Constant.Limit.Props.type", "main:Constant.Limit"),
+        ] {
+            let at = QualifiedAddress::parse(raw).unwrap();
+            assert_eq!(at.to_string(), raw);
+            let (parsed_owner, name) = at.property_query().expect(raw);
+            assert_eq!(parsed_owner.to_string(), owner);
+            assert_eq!(name, raw.rsplit('.').next().unwrap());
+            assert!(at.operation_query().is_none());
+        }
+        for raw in [
+            "main:Catalog.Items.Props",
+            "main:Catalog.Items.Props.type.Attribute",
+        ] {
+            assert!(QualifiedAddress::parse(raw).is_err(), "{raw}");
+        }
+        assert!(QualifiedAddress::parse("main:Catalog.Items")
+            .unwrap()
+            .property_query()
+            .is_none());
     }
 
     /// Обратная сторона того же правила: вид, который имя носит, забирает

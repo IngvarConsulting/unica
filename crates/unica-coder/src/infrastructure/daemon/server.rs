@@ -330,21 +330,34 @@ fn operation_address_outside_view(request: &InvocationRequest) -> Option<DomainR
         }
         _ => return None,
     }
-    let (location, address) = candidates.into_iter().find_map(|(location, raw)| {
+    let address = candidates.into_iter().find_map(|(location, raw)| {
         let raw = raw?;
         let parsed = unica_address::address::QualifiedAddress::parse(&raw).ok()?;
-        parsed.operation_query()?;
-        Some((location, raw))
+        let what = if parsed.operation_query().is_some() {
+            "an operation-dictionary"
+        } else if parsed.property_query().is_some() {
+            // Свойство узла (#2088) — не узел исходников: проверять, менять
+            // и искать в нём нечего, его читает view.
+            "a node-property"
+        } else {
+            return None;
+        };
+        Some((location, raw, what))
     })?;
+    let (location, address, what) = (address.0, address.1, address.2);
     let mut result = DomainResult::canonical_rejection(
         Some(location),
         RefusalCode::BadValue,
-        format!("`{address}` is an operation-dictionary address; only unica.view reads it"),
+        format!("`{address}` is {what} address; only unica.view reads it"),
     );
     result.next.push(serde_json::json!({
         "tool": "unica.view",
         "args": {"at": address},
-        "reason": "контракт операции читает view",
+        "reason": if what == "a node-property" {
+            "свойство узла читает view"
+        } else {
+            "контракт операции читает view"
+        },
     }));
     Some(result)
 }

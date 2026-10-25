@@ -3,7 +3,7 @@
   "issue": 2088,
   "area": "Свойства метаданных",
   "workspace": "tests/fixtures/acceptance/workspace-type-size",
-  "task": "Дочитать составной тип реквизита, который не поместился в props: предел в limits называет адрес <узел>.Props.type, view по нему отдаёт тип целиком той же формой, а у малого реквизита то же свойство читается и по адресу. Неизвестное свойство и пагинация одного значения отклоняются.",
+  "task": "Дочитать составной тип реквизита, который не поместился в props: предел в limits называет адрес <узел>.Props.type, view по нему отдаёт тип целиком той же формой, а у малого реквизита то же свойство читается и по адресу. Неизвестное свойство, пагинация одного значения и проверка по адресу свойства отклоняются.",
   "wire": [
     {
       "tool": "unica.view",
@@ -34,6 +34,10 @@
       ],
       "assertions": [
         {
+          "pointer": "/at",
+          "eq": "main:AccumulationRegister.Movements.Attribute.Long.Props.type"
+        },
+        {
           "pointer": "/data/kind",
           "eq": "Props"
         },
@@ -42,12 +46,20 @@
           "eq": "Document.ДокументОснованиеДвиженияНомер01"
         },
         {
-          "pointer": "/data/props/type/variants/8/metadataPath",
-          "eq": "Document.ДокументОснованиеДвиженияНомер09"
+          "pointer": "/data/props/type/variants/19/metadataPath",
+          "eq": "Document.ДокументОснованиеДвиженияНомер20"
+        },
+        {
+          "pointer": "/data/props/type/variants/20",
+          "absent": true
         },
         {
           "pointer": "/data/props/type/mutationCapability",
           "eq": "editable"
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
         }
       ]
     },
@@ -96,6 +108,22 @@
         {
           "pointer": "/data",
           "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Attribute.Long.Props.type"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `main:AccumulationRegister.Movements.Attribute.Long.Props.type` is a node-property address; only unica.view reads it",
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
         }
       ]
     }
