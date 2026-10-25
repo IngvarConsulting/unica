@@ -32,8 +32,6 @@ use unica_source_contract::SourceFormat;
 use unica_work_control::cancellation::CancellationToken;
 use url::Url;
 
-const MAX_METADATA_FOCUS_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
-
 /// Mapping for one module already proved by the actor-owned logical reader.
 /// Provider analysis can cover the source set; only this module acquires an
 /// addressed identity. Other contained resources remain explicitly unproved.
@@ -630,8 +628,7 @@ fn metadata_focus_is_proven(
         return false;
     };
     // Every observation of the same object would otherwise re-resolve the
-    // target and re-read a descriptor of up to
-    // `MAX_METADATA_FOCUS_DESCRIPTOR_BYTES`.
+    // target and re-read its descriptor, which is read whole (#1119).
     let Some(text) = cache.descriptor_text(metadata_path.as_str(), || {
         let target = SourceTarget {
             source_set: context.target.source_set.clone(),
@@ -647,10 +644,6 @@ fn metadata_focus_is_proven(
         .ok()?;
         let evidence =
             platform_xml_resource_evidence(&context.workspace, &resolution.handle).ok()?;
-        let metadata = std::fs::metadata(&evidence.target_path).ok()?;
-        if metadata.len() > MAX_METADATA_FOCUS_DESCRIPTOR_BYTES {
-            return None;
-        }
         let bytes = std::fs::read(&evidence.target_path).ok()?;
         String::from_utf8(bytes).ok()
     }) else {

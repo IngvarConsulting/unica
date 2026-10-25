@@ -1411,28 +1411,28 @@ fn predefined_items_cursor_replays_after_source_removal() {
 }
 
 #[test]
-fn predefined_items_refuse_file_and_snapshot_budget_without_cursor() {
+fn predefined_items_refuse_the_snapshot_budget_and_read_a_large_file_whole() {
     let fixture = predefined_page_fixture();
     let service = ViewService::new(fixture.read_authority(), ViewCursorStore::new(512));
     let result = service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
     assert_eq!(refusal_codes(&result), ["result_too_large"]);
     assert!(result.cursor.is_none());
 
-    write(
-        &fixture.source.join("Catalogs/Items/Ext/Predefined.xml"),
-        &"x".repeat(8 * 1024 * 1024 + 1),
+    // #1119: the file size is no reason to refuse; a correct file larger than
+    // the former 8 MiB read limit lists the same items.
+    let path = fixture.source.join("Catalogs/Items/Ext/Predefined.xml");
+    let original = fs::read_to_string(&path).unwrap();
+    let close = original.rfind("</PredefinedData>").unwrap();
+    let mut large = original.clone();
+    large.insert_str(
+        close,
+        &format!("<!--{}-->", "x".repeat(8 * 1024 * 1024 + 1)),
     );
+    write(&path, &large);
     let result = fixture
         .view_service()
         .view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
-    assert!(!result.ok, "{result:?}");
-    assert!(
-        serde_json::to_string(&result.diagnostics)
-            .unwrap()
-            .contains("8388608-byte read limit"),
-        "{result:?}"
-    );
-    assert!(result.cursor.is_none());
+    assert!(result.ok, "{result:?}");
 }
 
 #[test]
