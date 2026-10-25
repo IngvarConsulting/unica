@@ -36216,7 +36216,7 @@
       },
       {
        "pointer": "/data/props/content",
-       "absent": true
+       "eq": "inherited"
       }
      ]
     },

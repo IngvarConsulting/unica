@@ -855,6 +855,9 @@ fn ordinary_repository_fact_targets_check(
 ) -> bool {
     use crate::ProjectHealthFact;
 
+    if let ProjectHealthFact::Additional { like, .. } = fact {
+        return ordinary_repository_fact_targets_check(like, id);
+    }
     matches!(
         (id, fact),
         (

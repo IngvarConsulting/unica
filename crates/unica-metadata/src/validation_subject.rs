@@ -190,7 +190,6 @@ impl MetadataTemplateType {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub const fn descriptor_value(self) -> &'static str {
         match self {
             Self::HtmlDocument => "HTMLDocument",

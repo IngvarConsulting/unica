@@ -1,5 +1,6 @@
 use crate::cache::CacheAccess;
 use unica_source_contract::events::DomainEvent;
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
 use unica_work_control::shared_work::{
     SharedWork, SharedWorkLease, SharedWorkLifetime, SharedWorkProducer,
@@ -727,7 +728,7 @@ fn validate_source_artifact_paths(
                 ApplyPublicationErrorKind::Invariant,
                 format!(
                     "staged artifact is not part of the supported source profile: {}",
-                    relative.display()
+                    relative.portable()
                 ),
             ));
         }
@@ -1199,7 +1200,7 @@ impl ApplyAdmission {
                     ApplyStagingErrorKind::Invariant,
                     format!(
                         "staged artifact is not part of the supported source profile: {}",
-                        relative.display()
+                        relative.portable()
                     ),
                 ));
             }
@@ -2034,7 +2035,7 @@ impl<R, C> WorkspaceActor<R, C> {
                         format!(
                             "read-only input `{}:{}` changed; the plan was prepared using this source dependency: {error}",
                             dependency.binding.source_set_name(),
-                            path.display(),
+                            path.portable(),
                         ),
                     )
                 })?;
@@ -2044,7 +2045,7 @@ impl<R, C> WorkspaceActor<R, C> {
                         format!(
                             "read-only input `{}:{}` changed; the plan was prepared using this source dependency",
                             dependency.binding.source_set_name(),
-                            path.display(),
+                            path.portable(),
                         ),
                     ));
                 }
