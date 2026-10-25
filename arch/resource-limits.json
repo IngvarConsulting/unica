@@ -1073,6 +1073,60 @@
       "review": null
     },
     {
+      "id": "check.page-default-entries",
+      "class": "step",
+      "resource": "Число диагностик страницы check, когда limit не задан: находок узла или групп корневого вердикта.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/application/v13/check.rs",
+        "symbol": "DEFAULT_CHECK_LIMIT"
+      },
+      "expr": "20",
+      "value": 20,
+      "applied": [
+        "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 (9c)",
+      "problem": null,
+      "onReach": "Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "check.page-max-entries",
+      "class": "step",
+      "resource": "Наибольшее число диагностик одной страницы check.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/application/v13/check.rs",
+        "symbol": "MAX_CHECK_LIMIT"
+      },
+      "expr": "50",
+      "value": 50,
+      "applied": [
+        "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 (9c)",
+      "problem": null,
+      "onReach": "limit больше 50 получает bad_value; остаток доступен по cursor.",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "find.page-default-entries",
       "class": "step",
       "resource": "Число записей страницы find, когда limit не задан.",
@@ -1977,7 +2031,7 @@
     {
       "id": "view.snapshot-retained-bytes",
       "class": "retention",
-      "resource": "Суммарный объём удерживаемых снимков продолжений view и check: элементы во временном файле, узлы и границы элементов в памяти.",
+      "resource": "Суммарный объём удерживаемых снимков продолжений view и check, включая корневой вердикт check: элементы во временном файле, узлы и границы элементов в памяти.",
       "unit": "bytes",
       "scope": "process",
       "source": {
@@ -2027,7 +2081,7 @@
     {
       "id": "find.collection-entries",
       "class": "corpus",
-      "resource": "Число элементов одного каталога коллекции при построении каталога имён find.",
+      "resource": "Число элементов одного каталога коллекции при построении каталога раскладки find (resolve по адресу, callGraph). Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.",
       "unit": "count",
       "scope": "directory",
       "source": {
@@ -2048,7 +2102,7 @@
         "Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольший каталог коллекции — 5 424 элемента на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (общие модули; 8% предела), 5 422 на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ)."
       ],
       "decision": null,
-      "review": "снимается в #1119 PR2"
+      "review": "#1119 PR2 снял предел с поиска имён; каталог раскладки остаётся до снятия своих пределов"
     },
     {
       "id": "find.descriptor-head-bytes",
@@ -2077,7 +2131,7 @@
     {
       "id": "find.directory-documents",
       "class": "corpus",
-      "resource": "Число документов каталога имён find по всему рабочему пространству.",
+      "resource": "Число документов каталога раскладки find (resolve по адресу, callGraph) по всему рабочему пространству. Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.",
       "unit": "count",
       "scope": "workspace",
       "source": {
@@ -2098,12 +2152,12 @@
         "Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольшее число документов каталога имён — 19 607 на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (30% предела), 9 548 на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ)."
       ],
       "decision": null,
-      "review": "снимается в #1119 PR2"
+      "review": "#1119 PR2 снял предел с поиска имён; каталог раскладки остаётся до снятия своих пределов"
     },
     {
       "id": "find.directory-fact-bytes",
       "class": "corpus",
-      "resource": "Оценка суммарного объёма фактов каталога имён find (с псевдонимами путей модулей).",
+      "resource": "Оценка суммарного объёма фактов каталога раскладки find (resolve по адресу, callGraph) (с псевдонимами путей модулей). Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.",
       "unit": "bytes",
       "scope": "workspace",
       "source": {
@@ -2124,7 +2178,7 @@
         "Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольшая оценка объёма фактов каталога имён — 8 834 518 байт на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (52,7% предела), 2 258 617 байт на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ); поиск имён завершился без неполноты."
       ],
       "decision": null,
-      "review": "снимается в #1119 PR2"
+      "review": "#1119 PR2 снял предел с поиска имён; каталог раскладки остаётся до снятия своих пределов"
     },
     {
       "id": "find.omission-details",
@@ -2285,8 +2339,7 @@
       "expr": "2_048",
       "value": 2048,
       "applied": [
-        "crates/unica-coder/src/infrastructure/v13_read_projection.rs",
-        "crates/unica-coder/src/infrastructure/v13_read_projection/metadata.rs"
+        "crates/unica-coder/src/infrastructure/v13_read_projection.rs"
       ],
       "status": "unproven",
       "origin": "cec3ddf7c",
@@ -6150,6 +6203,30 @@
       "origin": "#1772",
       "problem": null,
       "onReach": "ошибка staging UnsupportedProvider «directory removal exceeds namespace depth bound»",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "apply.checked-read-chunk-bytes",
+      "class": "step",
+      "resource": "Размер одной порции чтения или сравнения входа apply между проверками срока и отмены.",
+      "unit": "bytes",
+      "scope": "file",
+      "source": {
+        "file": "crates/unica-workspace/src/platform/filesystem.rs",
+        "symbol": "CHECKED_READ_CHUNK_BYTES"
+      },
+      "expr": "64 * 1024",
+      "value": 65536,
+      "applied": [
+        "crates/unica-workspace/src/platform/filesystem.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119",
+      "problem": null,
+      "onReach": "файл читается следующей порцией после проверки срока и отмены",
       "issue": null,
       "evidence": [],
       "decision": null,

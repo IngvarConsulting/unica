@@ -180,12 +180,12 @@
           "eq": true
         },
         {
-          "pointer": "/data/props/type",
-          "contains": "\"digits\":10"
+          "pointer": "/data/props/type/variants/0/digits",
+          "eq": 10
         },
         {
-          "pointer": "/data/props/type",
-          "contains": "\"fraction\":2"
+          "pointer": "/data/props/type/variants/0/fraction",
+          "eq": 2
         },
         {
           "pointer": "/data/props/Use",

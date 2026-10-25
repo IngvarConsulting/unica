@@ -1489,20 +1489,20 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/type",
-          "contains": "\"namespace\":\"urn:sample\""
+          "pointer": "/data/props/type/namespace",
+          "eq": "urn:sample"
         },
         {
-          "pointer": "/data/props/type",
-          "contains": "\"local\":\"Код\""
+          "pointer": "/data/props/type/local",
+          "eq": "Код"
         },
         {
-          "pointer": "/data/props/bounds",
-          "contains": "\"lower\":\"0\""
+          "pointer": "/data/props/bounds/lower",
+          "eq": "0"
         },
         {
-          "pointer": "/data/props/bounds",
-          "contains": "\"upper\":\"3\""
+          "pointer": "/data/props/bounds/upper",
+          "eq": "3"
         }
       ]
     },
@@ -1554,8 +1554,8 @@
           "eq": "Property"
         },
         {
-          "pointer": "/data/props/type",
-          "contains": "\"local\":\"string\""
+          "pointer": "/data/props/type/local",
+          "eq": "string"
         },
         {
           "pointer": "/data/findings",

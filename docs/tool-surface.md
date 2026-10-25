@@ -45,21 +45,22 @@ Plan typed edits with at and ops without writing; execute that saved plan with e
 
 ### `unica.check`
 
-Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node diagnostics are returned in stable pages.
+Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node findings and workspace diagnostic groups are returned in stable pages; every page repeats the whole verdict.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit to check workspace source-set admission; null is treated as omitted. |
-| `cursor` | string | нет | Continuation cursor from an earlier check of the same node; valid only with at. Omit, or pass an empty string or null, for the first page. |
-| `limit` | integer | нет | Maximum diagnostics in one node-check page, from 1 to 50; valid only with at. Omit for 20; null is treated as omitted. |
+| `cursor` | string | нет | Continue the same check with the same limit: the same node with at, or the same workspace verdict without it; later pages read the result saved by the first page. Omit, or pass an empty string or null, for the first page. |
+| `limit` | integer | нет | Maximum diagnostics in one page, from 1 to 50: node findings, or workspace diagnostic groups without at. Omit for 20; null is treated as omitted. Pages are also bounded by encoded bytes. |
 
-**Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
+**Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. Корневой вердикт, `checks` и `diagnosticCount` приходят целиком на каждой странице, а группы диагностик — страницами до 20 групп по умолчанию (максимум 50) и около 64 КиБ; page.stoppedBy сообщает limit/bytes/complete, группа не режется, cursor привязан к рабочему пространству и limit и читает вердикт, сохранённый первой страницей. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
 **Целевой контракт:** Держать таблицу вид → валидаторы закрытой и доказанной корпусом; на проводе у `check` нет аргумента выбора валидатора
 
 **Сценарии:**
 
 - Проверить, что рабочее пространство и его source set допущены
+- Дочитать все страницы групп диагностик корневого вердикта
 - Проверить один логический узел всеми валидаторами его вида и дочитать все страницы диагностик
 - Проверить читаемость узла без валидаторов
 

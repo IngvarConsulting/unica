@@ -163,7 +163,7 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/type",
+          "pointer": "/data/props/type/raw",
           "contains": "tns:Документ"
         }
       ]

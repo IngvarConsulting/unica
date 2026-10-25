@@ -220,7 +220,10 @@ pub fn plan_typed_child_resources<G>(
         let collection_dir = object_dir.join(profile.directory);
         let resource = profile.resource;
         let mut initial_descriptor = None;
-        let mut initial_payload = Vec::new();
+        // The payload of an existing child is held once, in `initial_files`;
+        // these are its paths relative to `initial_payload_root` (#1119).
+        let mut initial_payload_root = None;
+        let mut initial_payload = Vec::<PathBuf>::new();
         let mut initial_payload_directories = Vec::new();
         if let Origin::Existing(initial_name) = &state.origin {
             let initial_child = typed_child_logical_address(
@@ -237,6 +240,7 @@ pub fn plan_typed_child_resources<G>(
                 initial_files.insert(descriptor, bytes);
             }
             let payload_root = collection_dir.join(initial_name);
+            initial_payload_root = Some(payload_root.clone());
             child_topology_roots.push((payload_root.clone(), initial_child.clone()));
             if unica_source_designer::read::path_exists(reader, &payload_root) {
                 let (files, directories) =
@@ -244,8 +248,8 @@ pub fn plan_typed_child_resources<G>(
                         typed_child_topology_failure(&initial_child, error.public_message())
                     })?;
                 for (relative, bytes) in files {
-                    initial_files.insert(payload_root.join(&relative), bytes.clone());
-                    initial_payload.push((relative, bytes));
+                    initial_files.insert(payload_root.join(&relative), bytes);
+                    initial_payload.push(relative);
                 }
                 for relative in directories {
                     let path = payload_root.join(&relative);
@@ -302,7 +306,17 @@ pub fn plan_typed_child_resources<G>(
             let mut final_payload_directories = Vec::<PathBuf>::new();
             match &state.origin {
                 Origin::Existing(_) => {
-                    final_payload.clone_from(&initial_payload);
+                    if let Some(root) = &initial_payload_root {
+                        final_payload = initial_payload
+                            .iter()
+                            .map(|relative| {
+                                (
+                                    relative.clone(),
+                                    initial_files[&root.join(relative)].clone(),
+                                )
+                            })
+                            .collect();
+                    }
                     final_payload_directories.clone_from(&initial_payload_directories);
                 }
                 Origin::Added => match state.collection {
@@ -348,20 +362,20 @@ pub fn plan_typed_child_resources<G>(
             for relative in &final_payload_directories {
                 final_directories.insert(payload_root.join(relative));
             }
-            for (relative, bytes) in &final_payload {
-                final_files.insert(payload_root.join(relative), bytes.clone());
+            for (relative, bytes) in final_payload {
                 plan.validation_resources.push(
                     unica_metadata::validation_subject::MetadataResourceImage {
                         role: typed_child_payload_role(
                             state.collection,
                             &child_address,
-                            relative,
+                            &relative,
                             template_type,
                             &retained,
                         )?,
                         bytes: bytes.clone(),
                     },
                 );
+                final_files.insert(payload_root.join(relative), bytes);
             }
             Some(bytes)
         } else {

@@ -7,8 +7,9 @@ use super::apply::{
 
 mod collection;
 use crate::platform::filesystem::{
-    portable_permissions, stable_path_identity_bytes, FileIdentity, PortablePermissions,
-    RetainedChildCapability, RetainedDirectoryCapability, RetainedRegularFileCapability,
+    portable_permissions, stable_path_identity_bytes, CheckedReadError, FileIdentity,
+    PortablePermissions, RetainedChildCapability, RetainedDirectoryCapability,
+    RetainedRegularFileCapability,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -104,6 +105,7 @@ fn file_matches(
     file: &RetainedRegularFileCapability,
     identity: FileIdentity,
     image: &RemovedFileImage,
+    stop: &impl Fn() -> Result<(), ApplyStagingError>,
 ) -> Result<(), ApplyStagingError> {
     file.validate_named_identity().map_err(io_error)?;
     if file.identity() != identity || file.hard_link_count().map_err(io_error)? != 1 {
@@ -111,14 +113,13 @@ fn file_matches(
             "directory removal file identity or hard-link count changed",
         ));
     }
-    let bytes = file.read_bounded(image.len).map_err(|error| {
-        if error.kind() == ErrorKind::InvalidData {
-            changed("directory removal file grew beyond its captured preimage")
-        } else {
-            io_error(error)
-        }
+    // #1119: the file is hashed in chunks, within the removal's deadline,
+    // without holding it in memory.
+    let (len, sha256) = file.sha256_checked(stop).map_err(|error| match error {
+        CheckedReadError::Stopped(error) => error,
+        CheckedReadError::Io(error) => io_error(error),
     })?;
-    if bytes.len() != image.len || <[u8; 32]>::from(Sha256::digest(&bytes)) != image.sha256 {
+    if len != image.len || sha256 != image.sha256 {
         return Err(changed("directory removal file preimage changed"));
     }
     file.validate_named_identity().map_err(io_error)
@@ -173,7 +174,7 @@ impl DirectoryImage {
                     image.validate(&child, stop)?
                 }
                 (ChildImage::File(identity, image), RetainedChildCapability::RegularFile(file)) => {
-                    file_matches(&file, *identity, image)?
+                    file_matches(&file, *identity, image, stop)?
                 }
                 _ => return Err(wrong_kind()),
             }
@@ -221,7 +222,8 @@ impl DirectoryImage {
                     image.cleanup(&child)?
                 }
                 (ChildImage::File(identity, image), RetainedChildCapability::RegularFile(file)) => {
-                    file_matches(&file, *identity, image)?;
+                    // Cleanup is not interrupted once destruction began.
+                    file_matches(&file, *identity, image, &|| Ok(()))?;
                     file.remove_named_identity_relative_for_retained_apply(&private_name())
                         .map_err(io_error)?;
                 }
@@ -482,7 +484,9 @@ fn capture_image(
             }
             RetainedChildCapability::RegularFile(file) => {
                 if let Some(image) = files.get(&file.identity()) {
-                    file_matches(&file, file.identity(), image)?;
+                    file_matches(&file, file.identity(), image, &|| {
+                        checkpoint(deadline, cancellation)
+                    })?;
                     children.insert(name, ChildImage::File(file.identity(), image.clone()));
                 } else {
                     complete = false;
