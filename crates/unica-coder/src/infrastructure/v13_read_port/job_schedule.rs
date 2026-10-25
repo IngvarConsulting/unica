@@ -12,8 +12,8 @@ impl ProviderReadAuthority {
     ) -> Result<Value, ViewError> {
         checkpoint()?;
         let relative = self.attached_resource_relative(target, "Schedule.xml")?;
-        let bytes =
-            self.read_optional_relative_with_checkpoint(&relative, Some(256 * 1024), checkpoint)?;
+        // Сопутствующий файл читается целиком, как и прочие (#2104).
+        let bytes = self.read_optional_relative_with_checkpoint(&relative, checkpoint)?;
         let Some(bytes) = bytes else {
             return Ok(json!({"state":"absent"}));
         };

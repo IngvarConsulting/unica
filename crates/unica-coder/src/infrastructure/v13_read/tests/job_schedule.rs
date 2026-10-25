@@ -170,7 +170,7 @@ fn job_schedule_does_not_read_foreign_owners_or_cancelled_sources() {
 }
 
 #[test]
-fn job_schedule_refuses_linked_artifacts_and_bounds_input() {
+fn job_schedule_refuses_linked_artifacts() {
     use unica_workspace::test_support::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
@@ -178,10 +178,8 @@ fn job_schedule_refuses_linked_artifacts_and_bounds_input() {
     let path = fixture
         .source
         .join("ScheduledJobs/MonthClose/Ext/Schedule.xml");
-    write(&path, &"x".repeat(256 * 1024 + 1));
+    write(&path, SCHEDULE);
     let at = "main:ScheduledJob.MonthClose.Schedule";
-    let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
-    assert_eq!(super::refusal_codes(&result), vec!["provider_unavailable"]);
     let foreign = fixture.root.path().join("foreign.xml");
     write(&foreign, SCHEDULE);
     std::fs::remove_file(&path).unwrap();
