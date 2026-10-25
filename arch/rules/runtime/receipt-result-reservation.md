@@ -2,6 +2,7 @@
 id: INV.APP.RECEIPT-RESULT-RESERVATION
 check:
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::promised_and_handoff_states_hold_worst_case_result_quota
+  - crates/unica-execution/src/receipt_store/tests.rs::committed_results_are_not_held_in_catalog_memory_and_recover_exactly
 gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 

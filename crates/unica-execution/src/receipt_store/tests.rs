@@ -7303,3 +7303,81 @@ use unica_workspace::state_fs::test_support::{
     set_before_identity_bound_cleanup_mutation_hook,
     set_before_identity_bound_no_replace_rename_hook,
 };
+
+/// INV.APP.RECEIPT-RESULT-RESERVATION: memory held for committed results does
+/// not grow with their number or size, and a repeat after reopening returns
+/// exactly the committed result (#1119).
+#[test]
+fn committed_results_are_not_held_in_catalog_memory_and_recover_exactly() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let receipts = fs::canonicalize(root.path())
+        .expect("physical temporary root")
+        .join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+    let cutoff =
+        OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original response cutoff");
+    let mut published = Vec::new();
+    for (index, (invocation, task)) in [(INVOCATION_A, TASK_A), (INVOCATION_B, TASK_B)]
+        .into_iter()
+        .enumerate()
+    {
+        let key = receipt_key(invocation, task, "workspace-a");
+        let reserved = store
+            .reserve(key.clone(), cutoff, reserve_deadline())
+            .expect("reserve exact receipt")
+            .into_reservation()
+            .expect("receipt remains reserved");
+        let terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success(
+                    char::from(b'a' + index as u8)
+                        .to_string()
+                        .repeat(4 * 1024 * 1024),
+                )),
+            },
+            73_728,
+        )
+        .expect("canonical direct terminal");
+        let held = Arc::downgrade(&terminal.outcome_shared());
+        let digest = terminal.digest().clone();
+        let committed = store
+            .publish_direct_terminal(
+                &key,
+                reserved.record_version(),
+                2_000,
+                terminal,
+                reserve_deadline(),
+            )
+            .expect("publish exact direct terminal");
+        drop(committed);
+        published.push((key, held, digest));
+    }
+
+    for (_, held, _) in &published {
+        assert!(
+            held.upgrade().is_none(),
+            "the catalog must not keep a committed result body in memory"
+        );
+    }
+    let expect_exact = |store: &ReceiptLedgerStore| {
+        for (key, _, digest) in &published {
+            let ReceiptState::DirectTerminalUnacked(receipt) = store
+                .recover_exact(key, reserve_deadline())
+                .expect("recover committed result")
+            else {
+                panic!("committed Direct terminal must remain recoverable");
+            };
+            assert_eq!(receipt.terminal().digest(), digest);
+            let held = Arc::downgrade(&receipt.terminal().outcome_shared());
+            drop(receipt);
+            assert!(
+                held.upgrade().is_none(),
+                "a repeat reads the body for its answer and keeps none"
+            );
+        }
+    };
+    expect_exact(&store);
+    drop(store);
+    let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen receipt ledger");
+    expect_exact(&reopened);
+}
