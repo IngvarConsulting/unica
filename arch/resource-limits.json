@@ -2247,8 +2247,7 @@
       "expr": "2_048",
       "value": 2048,
       "applied": [
-        "crates/unica-coder/src/infrastructure/v13_read_projection.rs",
-        "crates/unica-coder/src/infrastructure/v13_read_projection/metadata.rs"
+        "crates/unica-coder/src/infrastructure/v13_read_projection.rs"
       ],
       "status": "unproven",
       "origin": "cec3ddf7c",
