@@ -183,10 +183,16 @@ fn job_schedule_refuses_linked_artifacts() {
     let foreign = fixture.root.path().join("foreign.xml");
     write(&foreign, SCHEDULE);
     std::fs::remove_file(&path).unwrap();
-    let outcome = create_file_link_fixture_for_test(&foreign, &path).unwrap();
-    if outcome != FileLinkFixtureOutcome::Created {
-        eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
-        return;
+    match create_file_link_fixture_for_test(&foreign, &path).unwrap() {
+        FileLinkFixtureOutcome::Created => {}
+        FileLinkFixtureOutcome::Unsupported
+        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
+            return;
+        }
     }
     let before = std::fs::read(&foreign).unwrap();
     let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
