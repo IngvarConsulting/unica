@@ -614,6 +614,12 @@ impl StoredActiveReceiptV1 {
         self
     }
 
+    /// Equality of two copies of a record whichever of them holds the body:
+    /// the terminal digest identifies it.
+    fn same_record(&self, other: &Self) -> bool {
+        self.clone().without_result_body() == other.clone().without_result_body()
+    }
+
     fn result_body_is_on_disk(&self) -> bool {
         let mut record = self.clone();
         record
@@ -1952,7 +1958,7 @@ impl ReceiptLedgerStore {
             });
         }
         let committed = match catalog.records.get(&key_digest).cloned() {
-            Some(committed) if committed.record == record => committed,
+            Some(committed) if committed.record.same_record(&record) => committed,
             Some(_) | None => {
                 catalog.unavailable = true;
                 return Err(ReceiptLedgerError::CommitUncertain {
@@ -2109,6 +2115,9 @@ impl ReceiptLedgerStore {
                     actual: expected.record.record_version,
                 });
             }
+            if expected.record.result_body_is_on_disk() {
+                return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
+            }
             let reserved = expected.reservation()?;
             let next_phase = if begun {
                 match reserved.phase() {
@@ -2205,6 +2214,9 @@ impl ReceiptLedgerStore {
                     expected: *expected_version,
                     actual: expected.record.record_version,
                 });
+            }
+            if expected.record.result_body_is_on_disk() {
+                return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
             }
             let reserved = expected.reservation()?;
             let next_version =
@@ -2937,7 +2949,7 @@ impl ReceiptLedgerStore {
             });
         }
         let committed = match catalog.records.get(&key_digest) {
-            Some(committed) if committed.record == record => committed,
+            Some(committed) if committed.record.same_record(&record) => committed,
             Some(_) | None => {
                 catalog.unavailable = true;
                 return Err(ReceiptLedgerError::CommitUncertain {
@@ -3871,7 +3883,7 @@ impl ReceiptLedgerStore {
             .records
             .get(&key_digest)
             .cloned()
-            .and_then(|entry| entry.with_body_from_bytes(&encoded).ok())
+            .map(|entry| entry.with_result_body(&terminal))
             .and_then(|entry| entry.state().ok())
         {
             Some(ReceiptState::TaskHandoffActorBound(committed))
@@ -4438,7 +4450,7 @@ impl ReceiptLedgerStore {
             });
         }
         let committed = match catalog.records.get(&key_digest).cloned() {
-            Some(committed) if committed.record == record => committed,
+            Some(committed) if committed.record.same_record(&record) => committed,
             Some(_) | None => {
                 catalog.unavailable = true;
                 return Err(ReceiptLedgerError::CommitUncertain {
@@ -4761,7 +4773,7 @@ impl ReceiptLedgerStore {
             .ok_or(ReceiptLedgerError::CommitUncertain {
                 receipt_key_digest: key_digest,
             })?
-            .with_body_from_bytes(&encoded)?;
+            .with_result_body(&terminal);
         match committed.state()? {
             ReceiptState::TaskTerminalReceiptBacked(receipt) => Ok(receipt),
             _ => Err(ReceiptLedgerError::Corrupt(
@@ -6640,7 +6652,8 @@ impl ReceiptLedgerStore {
             .ok_or(ReceiptLedgerError::Corrupt(
                 "batch backing does not contain its catalogued receipt row",
             ))?;
-        if row.record != entry.record || row.encoded.len() as u64 != entry.encoded_bytes {
+        if !row.record.same_record(&entry.record) || row.encoded.len() as u64 != entry.encoded_bytes
+        {
             return Err(ReceiptLedgerError::Corrupt(
                 "batch-backed receipt row changed record or encoded size",
             ));

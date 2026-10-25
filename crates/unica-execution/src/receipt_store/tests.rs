@@ -7376,8 +7376,78 @@ fn committed_results_are_not_held_in_catalog_memory_and_recover_exactly() {
             );
         }
     };
+    assert_catalog_holds_no_result_body(&store);
     expect_exact(&store);
     drop(store);
     let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen receipt ledger");
+    assert_catalog_holds_no_result_body(&reopened);
     expect_exact(&reopened);
+}
+
+fn assert_catalog_holds_no_result_body(store: &ReceiptLedgerStore) {
+    let catalog = store.writer.lock().expect("inspect catalog bodies");
+    for entry in catalog.records.values() {
+        let mut record = entry.record.clone();
+        if let Some(terminal) = record.result_body_mut() {
+            assert!(
+                is_result_body_on_disk(terminal),
+                "catalog entry {} keeps its result body in memory",
+                entry.record.key_digest.as_str()
+            );
+        }
+    }
+}
+
+/// A batch-published Direct result is held as its digest alone, and its exact
+/// repeat reads the body from the verified batch frame.
+#[test]
+fn batch_published_results_stay_on_disk_and_repeat_exactly() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let receipts = fs::canonicalize(root.path())
+        .expect("physical temporary root")
+        .join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+    let cutoff =
+        OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original response cutoff");
+    let mut requests = Vec::new();
+    for (invocation, task) in [(INVOCATION_A, TASK_A), (INVOCATION_B, TASK_B)] {
+        let key = receipt_key(invocation, task, "workspace-a");
+        let reserved = store
+            .reserve(key.clone(), cutoff, reserve_deadline())
+            .expect("reserve exact receipt")
+            .into_reservation()
+            .expect("receipt remains reserved");
+        let terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success(format!("batch result {invocation}"))),
+            },
+            73_728,
+        )
+        .expect("canonical direct terminal");
+        requests.push((key, reserved.record_version(), 2_000, terminal));
+    }
+    let expected: Vec<_> = requests
+        .iter()
+        .map(|(key, _, _, terminal)| (key.clone(), terminal.digest().clone()))
+        .collect();
+    store
+        .publish_direct_terminal_batch(requests, reserve_deadline())
+        .expect("publish one Completed batch");
+    assert_catalog_holds_no_result_body(&store);
+
+    let expect_exact = |store: &ReceiptLedgerStore| {
+        for (key, digest) in &expected {
+            let ReceiptState::DirectTerminalUnacked(repeat) = store
+                .recover_exact(key, reserve_deadline())
+                .expect("repeat a batch-backed result")
+            else {
+                panic!("batch-backed Direct terminal must remain recoverable");
+            };
+            assert_eq!(repeat.terminal().digest(), digest);
+        }
+    };
+    // Reopening a Completed Direct batch is a separate pre-existing defect of
+    // this test-support path; the standalone-row test above covers reopening.
+    expect_exact(&store);
+    assert_catalog_holds_no_result_body(&store);
 }
