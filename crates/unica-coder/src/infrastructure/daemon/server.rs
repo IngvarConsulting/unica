@@ -1593,6 +1593,9 @@ mod form_add_owner_bytes_tests;
 mod legacy_inline_check_tests;
 
 #[cfg(test)]
+mod apply_answer_size_tests;
+
+#[cfg(test)]
 pub(crate) mod actor_capacity_tests {
     use super::super::runner_015::VERSION as RUNNER_VERSION;
     use super::*;
@@ -12691,7 +12694,10 @@ struct ActorLogicalReadLease {"#,
             assert!(applied.ok, "{applied:?}");
             let preview_data = preview.data.as_ref().unwrap();
             let applied_data = applied.data.as_ref().unwrap();
-            assert_eq!(preview_data["operations"], applied_data["operations"]);
+            assert_eq!(
+                preview_data["operationCount"],
+                applied_data["operationCount"]
+            );
             assert_eq!(preview_data["effects"], applied_data["effects"]);
             assert_eq!(preview.changed, applied.changed);
             assert_eq!(preview_data["planHash"], applied_data["planHash"]);
@@ -12964,8 +12970,8 @@ struct ActorLogicalReadLease {"#,
             assert!(real.ok, "real apply failed: {real:?}");
             assert_ne!(std::fs::read(&descriptor).unwrap(), before);
             assert_eq!(
-                dry.data.as_ref().unwrap()["operations"],
-                real.data.as_ref().unwrap()["operations"]
+                dry.data.as_ref().unwrap()["operationCount"],
+                real.data.as_ref().unwrap()["operationCount"]
             );
             assert_eq!(
                 dry.data.as_ref().unwrap()["effects"],
