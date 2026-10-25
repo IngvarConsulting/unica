@@ -3272,15 +3272,45 @@ pub fn expand_standalone_children_for_operations(
 /// already describe inline with the platform's by-name registration.
 pub fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut String) {
     let initially_inline = inline_standalone_child_names(pre_image);
+    collapse_children(post_image, &|tag, name, _| {
+        !initially_inline.iter().any(|(inline_tag, inline_name)| {
+            *inline_tag == tag && metadata_name_eq(inline_name, name)
+        })
+    });
+}
+
+/// Legacy inline form and template registrations of an edited owner (#1370):
+/// before #1325 the owner carried the whole description next to the
+/// standalone `Forms/<Name>.xml` or `Templates/<Name>.xml`, and 1C 8.3.27
+/// then imports the configuration endlessly. Each inline registration whose
+/// standalone descriptor `has_descriptor` becomes the by-name reference; the
+/// collapsed `(tag, name)` pairs are returned for the plan's warning.
+pub fn collapse_legacy_inline_children(
+    image: &mut String,
+    has_descriptor: &dyn Fn(&'static str, &str) -> bool,
+) -> Vec<(&'static str, String)> {
+    collapse_children(image, &|tag, name, inline| {
+        inline && has_descriptor(tag, name)
+    })
+}
+
+/// Rewrite to `<Tag>Name</Tag>` each form or template child that `collapse`
+/// selects by tag, name and whether it is described inline; return the
+/// inline ones rewritten.
+fn collapse_children(
+    post_image: &mut String,
+    collapse: &dyn Fn(&'static str, &str, bool) -> bool,
+) -> Vec<(&'static str, String)> {
+    let mut collapsed = Vec::new();
     let replacements = {
         let Ok(document) = Document::parse(post_image.as_str()) else {
-            return;
+            return collapsed;
         };
         let Ok(object) = meta_edit_object_node(&document) else {
-            return;
+            return collapsed;
         };
         let Some(children) = unica_xml_format::read::child_element(object, "ChildObjects") else {
-            return;
+            return collapsed;
         };
         let mut replacements = Vec::new();
         for (_, tag) in STANDALONE_CHILD_TAGS {
@@ -3288,10 +3318,12 @@ pub fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut S
                 let Some(name) = meta_edit_child_object_name(child) else {
                     continue;
                 };
-                if initially_inline.iter().any(|(inline_tag, inline_name)| {
-                    *inline_tag == tag && metadata_name_eq(inline_name, &name)
-                }) {
+                let inline = child.children().any(|node| node.is_element());
+                if !collapse(tag, &name, inline) {
                     continue;
+                }
+                if inline {
+                    collapsed.push((tag, name.clone()));
                 }
                 // Keep the element's own qualified name, so an owner that
                 // spells MDClasses elements with a prefix stays in that
@@ -3318,6 +3350,7 @@ pub fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut S
     for (range, reference) in replacements {
         post_image.replace_range(range, &reference);
     }
+    collapsed
 }
 
 #[cfg(test)]

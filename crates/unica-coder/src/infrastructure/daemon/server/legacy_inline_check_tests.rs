@@ -235,3 +235,69 @@ fn canonical_check_keeps_malformed_form_payload_an_error_with_legacy_registratio
         "a valid separate descriptor cannot hide the malformed form payload: {data}"
     );
 }
+
+/// Any edit of the owner registers its legacy inline forms and templates by
+/// name (#1370): the preview names them in a warning, the publication writes
+/// the references, the inline command stays and check is quiet afterwards.
+#[test]
+fn an_owner_edit_registers_legacy_inline_forms_and_templates_by_name() {
+    for ops in [
+        json!([{"op": "props.set", "args": {"values": {"CodeLength": 10}}}]),
+        json!([{"op": "form.add", "args": {"items": [{"name": "Extra", "type": "ObjectForm"}]}}]),
+    ] {
+        let fixture = Fixture::new(false);
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let call = |tool, args| {
+            direct_v5(
+                &runtime,
+                InvocationRequest::new(tool, args, fixture.workspace.to_string_lossy(), 7_000)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let planned = call(
+            ToolIdentity::Apply,
+            json!({"at": format!("main:{OWNER}"), "ops": ops}),
+        );
+        assert!(planned.ok, "{ops}: {planned:?}");
+        let warnings = planned
+            .warnings
+            .iter()
+            .filter(|warning| warning["code"] == "legacy_inline_registration")
+            .collect::<Vec<_>>();
+        assert_eq!(warnings.len(), 1, "{ops}: {planned:?}");
+        assert_eq!(warnings[0]["at"], format!("main:{OWNER}"));
+        let message = warnings[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("Form.Main") && message.contains("Template.Print"),
+            "{message}"
+        );
+        let token = planned.data.as_ref().unwrap()["executionToken"].clone();
+        let published = call(ToolIdentity::Apply, json!({"executionToken": token}));
+        assert!(published.ok, "{ops}: {published:?}");
+
+        let owner = std::fs::read_to_string(fixture.owner_path()).unwrap();
+        assert!(owner.contains("<Form>Main</Form>"), "{owner}");
+        assert!(owner.contains("<Template>Print</Template>"), "{owner}");
+        assert!(!owner.contains("<Form uuid="), "{owner}");
+        assert!(!owner.contains("<Template uuid="), "{owner}");
+        assert!(owner.contains("<Command uuid="), "{owner}");
+
+        let checked = fixture.check_without_writes();
+        let diagnostics = checked["data"]["diagnostics"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            diagnostics.iter().all(|diagnostic| !diagnostic
+                .to_string()
+                .contains("Legacy inline registration")),
+            "{ops}: {checked}"
+        );
+    }
+}

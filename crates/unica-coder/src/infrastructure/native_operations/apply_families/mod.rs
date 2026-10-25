@@ -61,6 +61,94 @@ fn refuse_targets_outside_writable_profile(
     Ok(())
 }
 
+/// Every edit of an owner registers its forms and templates by name (#1370).
+/// Before #1325 an owner could carry a form's or template's whole description
+/// inline next to its standalone `Forms/<Name>.xml` or `Templates/<Name>.xml`,
+/// and 1C 8.3.27 then imports the configuration endlessly. An owner this plan
+/// changes loses such inline registrations whose standalone descriptor
+/// exists; the plan names them in a `legacy_inline_registration` warning, so
+/// the rewrite of bytes the operation did not ask for is not silent.
+fn collapse_legacy_inline_registrations(
+    staged: &mut ApplyStagedState,
+    binding: &ProviderRootBinding,
+) -> Result<Vec<serde_json::Value>, ApplyPlanError> {
+    let mut warnings = Vec::new();
+    for change in staged.planned_changes() {
+        let unica_source_contract::proposal::StagedFileState::Bytes(current) = &change.current
+        else {
+            continue;
+        };
+        if change.original == change.current {
+            continue;
+        }
+        let parts = change
+            .relative_path
+            .iter()
+            .filter_map(std::ffi::OsStr::to_str)
+            .collect::<Vec<_>>();
+        let [directory, file] = parts.as_slice() else {
+            continue;
+        };
+        let (Some(layout), Some(name)) = (
+            unica_source_designer::layout::metadata_kind_by_directory(directory),
+            file.strip_suffix(".xml"),
+        ) else {
+            continue;
+        };
+        let (bom, text) = match current.strip_prefix(b"\xef\xbb\xbf") {
+            Some(text) => (&b"\xef\xbb\xbf"[..], text),
+            None => (&b""[..], current.as_slice()),
+        };
+        let Ok(text) = std::str::from_utf8(text) else {
+            continue;
+        };
+        let mut image = text.to_string();
+        let owner_dir = std::path::Path::new(directory).join(name);
+        let mut described = std::collections::BTreeSet::new();
+        for (tag, child) in unica_metadata_designer::edit::inline_standalone_child_names(&image) {
+            let collection = if tag == "Form" { "Forms" } else { "Templates" };
+            let descriptor = owner_dir.join(collection).join(format!("{child}.xml"));
+            if staged
+                .read(&descriptor)
+                .map_err(|error| ApplyPlanError::staging(error, "ops"))?
+                .is_some()
+            {
+                described.insert((tag, child));
+            }
+        }
+        let collapsed = unica_metadata_designer::edit::collapse_legacy_inline_children(
+            &mut image,
+            &|tag, child| {
+                described
+                    .iter()
+                    .any(|(known, known_name)| *known == tag && known_name == child)
+            },
+        );
+        if collapsed.is_empty() {
+            continue;
+        }
+        let mut bytes = bom.to_vec();
+        bytes.extend_from_slice(image.as_bytes());
+        staged
+            .replace(&change.relative_path, current, bytes)
+            .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
+        let names = collapsed
+            .iter()
+            .map(|(tag, child)| format!("{tag}.{child}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(serde_json::json!({
+            "code": "legacy_inline_registration",
+            "severity": "warning",
+            "at": format!("{}:{}.{name}", binding.source_set_name(), layout.tag),
+            "message": format!(
+                "the owner registers {names} by name now: the description inline in the owner is an older Unica format that 1C 8.3.27 imports endlessly"
+            ),
+        }));
+    }
+    Ok(warnings)
+}
+
 /// Operations that change the vendor-support state itself: they are the way
 /// to unlock an object, so the lock they edit never refuses them.
 fn changes_support_state(
@@ -1191,9 +1279,13 @@ pub(crate) fn plan_hidden_v13_apply(
             _ => None,
         }),
     )?;
+    let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
     // A plan whose operations cancel out edits nothing protected.
     if let Some(warning) = support_warning.filter(|_| !staged.planned_changes().is_empty()) {
+        effects.push_warning(warning);
+    }
+    for warning in legacy_inline {
         effects.push_warning(warning);
     }
     let detail_error = |error: serde_json::Error| {
