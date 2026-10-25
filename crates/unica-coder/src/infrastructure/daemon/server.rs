@@ -13762,7 +13762,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(
             data["validators"],
             serde_json::json!(["meta", "bsl"]),
-            "{data}"
+            "the provider finding keeps its location"
         );
         let provided = data["diagnostics"]
             .as_array()
@@ -13773,7 +13773,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(
             provided.len(),
             3,
-            "neither the module nor the root finding is the object's: {data}"
+            "neither the module nor the root finding is the object's"
         );
         let addressed = serde_json::json!({
             "kind": "addressed",
@@ -13790,12 +13790,12 @@ struct ActorLogicalReadLease {"#,
                         "property": "Synonym",
                         "language": "ru",
                     })),
-            "{data}"
+            "the provider finding keeps its location"
         );
         assert!(
             provided.iter().any(|item| item["location"] == addressed
                 && item["focus"] == serde_json::json!({"kind": "target"})),
-            "an unproven element weakens to the object: {data}"
+            "an unproven element weakens to the object"
         );
         assert!(
             provided
@@ -13804,15 +13804,19 @@ struct ActorLogicalReadLease {"#,
                     && item["location"]["ownerMetadataPath"] == "Catalog.Items"
                     && item["location"]["path"] == "Catalogs/Items/Ext/Unknown.xml"
                     && item["locationReason"] == "resourceNotAddressable"),
-            "{data}"
+            "the provider finding keeps its location"
         );
         assert!(
             !data.to_string().contains(&*source.to_string_lossy()),
-            "{data}"
+            "the provider finding keeps its location"
         );
 
         let plain = check("main:Catalog.Items", None);
-        assert_eq!(plain["validators"], serde_json::json!(["meta"]), "{plain}");
+        assert_eq!(
+            plain["validators"],
+            serde_json::json!(["meta"]),
+            "no step without a provider"
+        );
 
         // Корень принимает только свою находку: объекты и модули — свои цели.
         let root = check("main:Configuration", Some(provider));
@@ -13822,14 +13826,18 @@ struct ActorLogicalReadLease {"#,
             .iter()
             .filter(|item| item["provider"] == "metadata-provider")
             .collect::<Vec<_>>();
-        assert_eq!(provided.len(), 1, "{root}");
+        assert_eq!(provided.len(), 1, "the root keeps only its own finding");
         assert_eq!(
             provided[0]["location"],
             serde_json::json!({"kind": "addressed", "sourceSet": "main", "targetKind": "sourceRoot"}),
-            "{root}"
+            "the root finding is addressed to the root"
         );
         let plain = check("main:Configuration", None);
-        assert_eq!(plain["validators"], serde_json::json!(["cf"]), "{plain}");
+        assert_eq!(
+            plain["validators"],
+            serde_json::json!(["cf"]),
+            "no step without a provider"
+        );
     }
 
     /// #1460: платформа не компилирует модуль, где `Перем` стоит после
