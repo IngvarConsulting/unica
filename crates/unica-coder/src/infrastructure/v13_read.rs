@@ -737,6 +737,24 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .validate_subsystem(&canonical, &mut || self.read_checkpoint())
     }
 
+    /// Проверка формы использует ту же регистрацию и удержанный корень, что view.
+    pub(crate) fn form_validation_input(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<crate::infrastructure::v13_read_port::FormValidationInput, ViewError> {
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let target = crate::infrastructure::form_composition::typed_form_reader_target(&canonical)
+            .ok_or_else(|| ViewError::new(RefusalCode::BadValue, "Проверка требует адрес формы"))?;
+        self.verify_registered_owner(&target, &admitted)?;
+        self.read_checkpoint()?;
+        let input = self
+            .read
+            .form_validation_input(&target, &mut || self.read_checkpoint())?;
+        self.read_checkpoint()?;
+        Ok(input)
+    }
+
     /// Proves a DCS template through the same registration and descriptor
     /// authority as view, then reads its body through the retained source root.
     pub(crate) fn dcs_validation_input(

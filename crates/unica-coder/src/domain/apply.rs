@@ -676,6 +676,7 @@ operation_descriptors!(
     (FormOperation::AttributeAdd),
     (FormOperation::CommandAdd),
     (FormOperation::EventBind),
+    (FormOperation::PropsSet),
     (RoleOperation::Create),
     (RoleOperation::RightAdd),
     (RoleOperation::RightSet),
@@ -1221,16 +1222,33 @@ mod tests {
         assert_eq!(valid.name(), "props.set");
         assert_eq!(valid.family(), OperationFamily::Properties);
         assert_eq!(valid.skeleton(), OperationSkeleton::Values);
-        let source =
-            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
-        for (raw, expected) in [
-            ("main:CommonModule.Utilities", true),
-            ("main:Role.Reader", true),
-            ("main:Subsystem.Sales", true),
-            ("main:Configuration", false),
-            ("main:Catalog.Items.Attribute.Code", false),
-            ("main:Subsystem.Sales.Subsystem.Child", false),
+        for (kind, raw, expected) in [
+            (
+                SourceSetKind::Configuration,
+                "main:CommonModule.Utilities",
+                true,
+            ),
+            (SourceSetKind::Configuration, "main:Role.Reader", true),
+            (SourceSetKind::Configuration, "main:Subsystem.Sales", true),
+            (SourceSetKind::Configuration, "main:Configuration", true),
+            (SourceSetKind::Extension, "main:Configuration", true),
+            (
+                SourceSetKind::ExternalProcessor,
+                "main:Configuration",
+                false,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Catalog.Items.Attribute.Code",
+                false,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Subsystem.Sales.Subsystem.Child",
+                false,
+            ),
         ] {
+            let source = source_set_traits_for_read(kind, PlatformProfile::v8_3_27());
             let at = QualifiedAddress::parse(raw).unwrap();
             let site = operation_site(&at, source).unwrap();
             assert_eq!(
@@ -1512,6 +1530,7 @@ mod tests {
             "attribute.add",
             "command.add",
             "event.bind",
+            "props.set",
             "role.create",
             "right.add",
             "right.set",
@@ -1592,12 +1611,16 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 123);
+        assert_eq!(expected.len(), 124);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
-        // метаданных (#1465): имя одно, семейство выбирает адрес. Других
-        // повторов в реестре нет.
-        const SHARED_NAMES: &[&str] = &["attribute.add", "command.add"];
+        // метаданных (#1465), свойства формы — как свойства описания (#1984):
+        // имя одно, семейство выбирает адрес. Других повторов в реестре нет.
+        const SHARED_NAMES: &[(&str, OperationFamily)] = &[
+            ("attribute.add", OperationFamily::Metadata),
+            ("command.add", OperationFamily::Metadata),
+            ("props.set", OperationFamily::Properties),
+        ];
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();
         unique.dedup();
@@ -1633,18 +1656,14 @@ mod tests {
                 "every Metadata identity must be registered exactly once: {operation:?}"
             );
         }
-        for name in SHARED_NAMES {
+        for (name, first) in SHARED_NAMES {
             let families = registry
                 .descriptors()
                 .iter()
                 .filter(|descriptor| descriptor.name() == *name)
                 .map(|descriptor| descriptor.family())
                 .collect::<Vec<_>>();
-            assert_eq!(
-                families,
-                [OperationFamily::Metadata, OperationFamily::Form],
-                "{name}"
-            );
+            assert_eq!(families, [*first, OperationFamily::Form], "{name}");
         }
 
         assert_eq!(

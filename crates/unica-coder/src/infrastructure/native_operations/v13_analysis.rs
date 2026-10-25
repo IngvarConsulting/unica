@@ -66,6 +66,20 @@ pub(crate) fn validate_dcs_input(
     })
 }
 
+pub(crate) fn validate_form_input(
+    input: crate::infrastructure::v13_read_port::FormValidationInput,
+) -> NativeCheckOutcome {
+    with_format_guard(Ok(input.format_guard), || {
+        crate::infrastructure::form_composition::validate_form_input(
+            &input.artifact,
+            &input.text,
+            input.module.as_deref(),
+            input.config_context,
+            input.metadata_owner,
+        )
+    })
+}
+
 pub(crate) fn validate_mxl_input(
     input: crate::infrastructure::v13_read_port::TemplateValidationInput,
 ) -> NativeCheckOutcome {

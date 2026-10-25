@@ -331,6 +331,8 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         "Interface" if !facts.subsystem_owned => Vec::new(),
         // Ветвь, перечисляющая модули, и тело области макета — не код модуля.
         "Module" if !facts.named => Vec::new(),
+        // Коллекция форм перечисляет узлы и не владеет отдельным Form.xml.
+        "Form" if !facts.named => Vec::new(),
         "Body" if facts.in_template => Vec::new(),
         "Configuration" if facts.extension => vec![CheckStep::Native(CheckValidator::Cfe)],
         "Configuration" => vec![CheckStep::Native(CheckValidator::Cf)],

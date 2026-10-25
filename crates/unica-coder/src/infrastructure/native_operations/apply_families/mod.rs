@@ -78,8 +78,10 @@ fn changes_support_state(
 /// support with changes disabled, refuses `invalid_state` before any family
 /// stages a byte when the actor's support policy is `deny`; under `warn` it
 /// proceeds and returns the `support_locked` warning the plan carries; `off`
-/// is silent. Under `deny`, removing a vendor object also requires its own
-/// rule to be `off-support`: permission to edit it does not permit removal.
+/// is silent. Removal follows the same policy: an editable vendor object is
+/// removed while staying on support, and only a `locked` rule on the object
+/// or on one of its own child objects refuses under `deny` or warns under
+/// `warn`. The marker is not changed by the removal.
 /// The owner is the top-level metadata object of the addressed node, or the
 /// configuration root for root-level targets; nested forms, templates and
 /// attributes inherit the rule of their owner, as they do in the platform.
@@ -115,6 +117,11 @@ fn refuse_targets_on_locked_vendor_objects(
         })
     };
     let at = request.at().to_string();
+    let source_set = request.at().source_set();
+    let removes = request.ops().iter().any(|operation| {
+        unica_metadata::apply_operations::MetadataOperation::named(operation.name())
+            == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove)
+    });
     let marker_path = std::path::Path::new("Ext/ParentConfigurations.bin");
     let marker = staged
         .read(marker_path)
@@ -129,14 +136,16 @@ fn refuse_targets_on_locked_vendor_objects(
         if !deny {
             let owner = support_owner_relative(request, binding.source_kind())
                 .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
+            let permits = if removes { "its removal" } else { "this edit" };
             return Ok(Some(support_locked(
                 &owner,
-                "the configuration is on vendor support with changes disabled; the project support policy `warn` permits this edit".to_string(),
+                format!("the configuration is on vendor support with changes disabled; the project support policy `warn` permits {permits}"),
             )));
         }
+        let before = if removes { "removal" } else { "ordinary edits" };
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
-            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits",
+            format!("the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before {before}"),
         )
         .at_path(at));
     }
@@ -152,22 +161,43 @@ fn refuse_targets_on_locked_vendor_objects(
     };
     let support_rule =
         support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
-    if deny
-        && matches!(support_rule, Some(0 | 1))
-        && request.ops().iter().any(|operation| {
-            unica_metadata::apply_operations::MetadataOperation::named(operation.name())
-                == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove)
-        })
-    {
-        let rule_name = if support_rule == Some(0) {
-            "locked"
+    if removes {
+        // An editable vendor object is removed without leaving support, as
+        // the configurator does; only a lock on it or on one of its own
+        // child objects stands in the way.
+        // An object taken off support no longer answers for its children.
+        let reason = if support_rule == Some(0) {
+            format!("`{source_set}:{owner}` is a vendor object with the support rule `locked`")
+        } else if support_rule != Some(1) {
+            return Ok(None);
         } else {
-            "editable"
+            let children = locked_vendor_children(
+                &state,
+                source_set,
+                &owner,
+                &owner_relative,
+                &bytes,
+                staged,
+                &at,
+            )?;
+            if children.is_empty() {
+                return Ok(None);
+            }
+            format!(
+                "`{source_set}:{owner}` has vendor child objects with the support rule `locked`: {}",
+                children.join(", ")
+            )
         };
+        if !deny {
+            return Ok(Some(support_locked(
+                &owner,
+                format!("{reason}; the project support policy `warn` permits its removal"),
+            )));
+        }
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             format!(
-                "`{owner}` is a vendor object with the support rule `{rule_name}`; set `off-support` with `supportRule.set` in a separate apply before removal"
+                "{reason}; take the object off support with `supportRule.set` and the rule `off-support` in a separate apply before removal"
             ),
         )
         .at_path(at));
@@ -176,18 +206,80 @@ fn refuse_targets_on_locked_vendor_objects(
         if !deny {
             return Ok(Some(support_locked(
                 &owner,
-                format!("`{owner}` is a vendor object with the support rule `locked`; the project support policy `warn` permits this edit"),
+                format!("`{source_set}:{owner}` is a vendor object with the support rule `locked`; the project support policy `warn` permits this edit"),
             )));
         }
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             format!(
-                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+                "`{source_set}:{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
             ),
         )
         .at_path(at));
     }
     Ok(None)
+}
+
+/// The child objects of a removed vendor object that carry their own
+/// `locked` rule: attributes, tabular sections and other nodes declared in
+/// its descriptor, and forms, templates and commands described in their own
+/// descriptors under its directory.
+fn locked_vendor_children(
+    state: &unica_metadata_designer::support::SupportState,
+    source_set: &str,
+    owner: &str,
+    owner_relative: &std::path::Path,
+    owner_bytes: &[u8],
+    staged: &mut ApplyStagedState,
+    at: &str,
+) -> Result<Vec<String>, ApplyPlanError> {
+    use unica_metadata_designer::remove::{declared_chain, declared_name};
+
+    let mut locked = Vec::new();
+    let mut collect = |base: &str, bytes: &[u8]| {
+        let Some(document) = std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|text| roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).ok())
+        else {
+            return;
+        };
+        for node in document.descendants().filter(|node| node.is_element()) {
+            let Some(uuid) = node.attribute("uuid") else {
+                continue;
+            };
+            if state.object_rule(uuid) != Some(0) || declared_name(node).is_none() {
+                continue;
+            }
+            let chain = declared_chain(node);
+            // The owner's own rule is checked by the caller.
+            if chain.is_empty() && base == owner {
+                continue;
+            }
+            locked.push(format!("`{source_set}:{base}{}`", chain.concat()));
+        }
+    };
+    collect(owner, owner_bytes);
+    let directory = owner_relative.with_extension("");
+    let (files, _) = staged
+        .enumerate_tree_with_root_absence(&directory)
+        .map_err(|error| ApplyPlanError::staging(error, at.to_string()))?;
+    for relative in files {
+        let (base, descriptor) = unica_metadata_designer::remove::meta_remove_referrer(&relative);
+        let is_xml = relative
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"));
+        if !descriptor || !is_xml {
+            continue;
+        }
+        if let Some(bytes) = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, at.to_string()))?
+        {
+            collect(&base, &bytes);
+        }
+    }
+    Ok(locked)
 }
 
 /// The descriptor that carries the support rule of the addressed node: the
@@ -515,6 +607,7 @@ fn parse_family_operation(
                 op_index,
                 &unica_metadata_designer::decode::MetadataDecodeContext {
                     source_set_name: binding.source_set_name(),
+                    source_kind: binding.source_kind(),
                     registry: crate::domain::apply::operation_registry(),
                 },
             )?;
@@ -1682,42 +1775,183 @@ mod tests {
         }
     }
 
-    #[test]
-    fn vendor_object_removal_requires_separate_off_support_apply() {
+    /// Plans the removal of `Document.First` under `policy` over `marker`
+    /// and returns the outcome with the source tree before and after.
+    fn plan_vendor_removal(
+        policy: &str,
+        marker: &str,
+        prepare: impl FnOnce(&std::path::Path),
+    ) -> (
+        Result<Vec<serde_json::Value>, unica_source_contract::proposal::ApplyPlanError>,
+        bool,
+        std::path::PathBuf,
+    ) {
         use unica_workspace::test_support::tree_snapshot;
 
-        for rule in [1, 0] {
-            let fixture = ApplySeamFixture::new();
-            let marker = fixture.source_dir().join("Ext/ParentConfigurations.bin");
-            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-            std::fs::write(&marker, vendor_removal_support_marker(rule, true)).unwrap();
-            let before = tree_snapshot(&fixture.source_dir());
-            if rule == 1 {
-                let ordinary = seam_request(
-                    "main:Document.First",
-                    "props.set",
-                    serde_json::json!({"values": {"Comment": "editable"}}),
+        let fixture = ApplySeamFixture::new();
+        std::fs::write(
+            fixture
+                .source_dir()
+                .parent()
+                .unwrap()
+                .join(".v8-project.json"),
+            serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+        )
+        .unwrap();
+        let path = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, marker).unwrap();
+        prepare(&fixture.source_dir());
+        let before = tree_snapshot(&fixture.source_dir());
+        let request = seam_request(
+            "main:Document.First",
+            "object.remove",
+            serde_json::json!({}),
+        );
+        let outcome = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission()).map(
+            |(mut staged, effects)| {
+                assert!(staged
+                    .read(std::path::Path::new("Documents/First.xml"))
+                    .unwrap()
+                    .is_none());
+                // The removal leaves the support marker as it is.
+                assert_eq!(
+                    staged
+                        .read(std::path::Path::new("Ext/ParentConfigurations.bin"))
+                        .unwrap()
+                        .as_deref(),
+                    Some(marker.as_bytes())
                 );
-                let (staged, _) =
-                    plan_hidden_v13_apply(&ordinary, &fixture.binding, &fixture.admission())
-                        .expect("the editable rule still permits ordinary property edits");
-                assert!(!staged.planned_changes().is_empty());
-            }
-            for force in [false, true] {
-                let request = seam_request(
-                    "main:Document.First",
-                    "object.remove",
-                    serde_json::json!({"force": force}),
-                );
-                let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
-                    .expect_err("a vendor object must be off support before removal");
-                assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
-                assert!(error.to_string().contains("off-support"), "{error}");
-                assert!(error.to_string().contains("supportRule.set"), "{error}");
-                assert!(error.to_string().contains("separate apply"), "{error}");
-                assert_eq!(tree_snapshot(&fixture.source_dir()), before);
-            }
+                effects.warnings().to_vec()
+            },
+        );
+        let unchanged = tree_snapshot(&fixture.source_dir()) == before;
+        (outcome, unchanged, fixture.source_dir())
+    }
+
+    /// An editable vendor object is removed while staying on support, as the
+    /// configurator removes it, under every support policy and silently.
+    #[test]
+    fn vendor_object_removal_keeps_editable_objects_on_support_under_every_policy() {
+        for policy in ["deny", "warn", "off"] {
+            let (outcome, unchanged, _) =
+                plan_vendor_removal(policy, &vendor_removal_support_marker(1, true), |_| {});
+            let warnings =
+                outcome.unwrap_or_else(|error| panic!("editable removal under {policy}: {error}"));
+            assert!(warnings.is_empty(), "{policy}: {warnings:?}");
+            assert!(unchanged, "{policy}");
         }
+    }
+
+    /// A locked vendor object refuses removal under `deny` with the way out,
+    /// is removed with `support_locked` under `warn` and silently under `off`.
+    #[test]
+    fn vendor_object_removal_of_locked_objects_follows_the_support_policy() {
+        let marker = vendor_removal_support_marker(0, true);
+        let (outcome, unchanged, _) = plan_vendor_removal("deny", &marker, |_| {});
+        let error = outcome.expect_err("a locked vendor object is not removed under deny");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+        let message = error.to_string();
+        assert!(message.contains("`main:Document.First`"), "{message}");
+        assert!(message.contains("support rule `locked`"), "{message}");
+        assert!(message.contains("supportRule.set"), "{message}");
+        assert!(message.contains("off-support"), "{message}");
+        assert!(message.contains("separate apply"), "{message}");
+        assert!(unchanged);
+
+        let (outcome, unchanged, _) = plan_vendor_removal("warn", &marker, |_| {});
+        let warnings = outcome.expect("warn removes a locked vendor object");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0]["code"], "support_locked");
+        assert_eq!(warnings[0]["at"], "main:Document.First");
+        assert!(unchanged);
+
+        let (outcome, unchanged, _) = plan_vendor_removal("off", &marker, |_| {});
+        let warnings = outcome.expect("off removes a locked vendor object");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(unchanged);
+    }
+
+    /// With changes disabled for the whole configuration a removal is told
+    /// so in its own words: `deny` refuses before removal, `warn` permits it.
+    #[test]
+    fn vendor_object_removal_with_changes_disabled_names_the_removal() {
+        let marker = vendor_removal_support_marker(1, false);
+        let (outcome, unchanged, _) = plan_vendor_removal("deny", &marker, |_| {});
+        assert_eq!(
+            outcome.unwrap_err().to_string(),
+            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before removal"
+        );
+        assert!(unchanged);
+        let (outcome, _, _) = plan_vendor_removal("warn", &marker, |_| {});
+        let warnings = outcome.expect("warn removes with changes disabled");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            warnings[0]["message"],
+            "the configuration is on vendor support with changes disabled; the project support policy `warn` permits its removal"
+        );
+        assert_eq!(warnings[0]["code"], "support_locked");
+    }
+
+    /// An editable vendor object with a locked child of its own — an
+    /// attribute in its descriptor or a form described next to it — follows
+    /// the policy of a locked object and names that child.
+    #[test]
+    fn vendor_object_removal_with_locked_children_follows_the_support_policy() {
+        // The fixture attribute `Total` carries the uuid 2222….
+        let attribute = vendor_removal_support_marker(1, true).replace(
+            "}",
+            ",0,0,22222222-2222-4222-8222-222222222222,22222222-2222-4222-8222-222222222222}",
+        );
+        let form = vendor_removal_support_marker(1, true).replace(
+            "}",
+            ",0,0,77777777-7777-4777-8777-777777777777,77777777-7777-4777-8777-777777777777}",
+        );
+        let with_form = |source: &std::path::Path| {
+            std::fs::create_dir_all(source.join("Documents/First/Forms")).unwrap();
+            std::fs::write(
+                source.join("Documents/First/Forms/Card.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="77777777-7777-4777-8777-777777777777"><Properties><Name>Card</Name></Properties></Form></MetaDataObject>"#,
+            )
+            .unwrap();
+        };
+        for (marker, child) in [
+            (attribute.as_str(), "`main:Document.First.Attribute.Total`"),
+            (form.as_str(), "`main:Document.First.Form.Card`"),
+        ] {
+            let (outcome, unchanged, _) = plan_vendor_removal("deny", marker, with_form);
+            let error = outcome.expect_err("a locked child keeps its owner under deny");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            let message = error.to_string();
+            assert!(message.contains(child), "{message}");
+            assert!(message.contains("off-support"), "{message}");
+            assert!(unchanged);
+
+            let (outcome, unchanged, _) = plan_vendor_removal("warn", marker, with_form);
+            let warnings = outcome.expect("warn removes an object with a locked child");
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert_eq!(warnings[0]["code"], "support_locked");
+            assert!(
+                warnings[0]["message"].as_str().unwrap().contains(child),
+                "{warnings:?}"
+            );
+            assert!(unchanged);
+
+            let (outcome, _, _) = plan_vendor_removal("off", marker, with_form);
+            assert!(outcome.expect("off removes silently").is_empty());
+        }
+        // Once the object itself is off support its locked children no
+        // longer keep it: this is what the refusal tells the caller to do.
+        let off_support = attribute.replacen(",3,1,0,", ",3,2,0,", 1);
+        assert_ne!(off_support, attribute);
+        let (outcome, _, _) = plan_vendor_removal("deny", &off_support, with_form);
+        assert!(outcome
+            .expect("an object off support is removed")
+            .is_empty());
+        // Without a locked child the same form changes nothing.
+        let (outcome, _, _) =
+            plan_vendor_removal("deny", &vendor_removal_support_marker(1, true), with_form);
+        assert!(outcome.expect("editable children do not block").is_empty());
     }
 
     fn vendor_removal_support_marker(rule: u8, editing_enabled: bool) -> String {
@@ -1735,11 +1969,12 @@ mod tests {
             ("deny", None),
             ("deny", Some(vendor_removal_support_marker(2, true))),
             ("deny", Some("\u{feff}{6,0,0}".to_string())),
+            // A locked object the removed one does not contain does not keep it.
             (
                 "deny",
                 Some(vendor_removal_support_marker(0, true).replace(
                     "11111111-1111-4111-8111-111111111111",
-                    "22222222-2222-4222-8222-222222222222",
+                    "99999999-9999-4999-8999-999999999999",
                 )),
             ),
             ("warn", Some(vendor_removal_support_marker(0, false))),
@@ -2096,19 +2331,41 @@ mod tests {
             .expect("a source without the support marker is editable");
     }
 
-    /// `object.remove` refuses an object other files still refer to; with
-    /// `force` the plan executes and carries a typed warning naming them.
+    /// `object.remove` refuses an object other metadata still refers to
+    /// before staging a byte, and names each referrer by its logical address
+    /// and the property holding the reference, not by its file.
     #[test]
-    fn forced_object_removal_keeps_the_referrers_and_says_so() {
+    fn object_removal_refuses_metadata_references_by_address_and_property() {
+        use unica_workspace::test_support::tree_snapshot;
+
         let fixture = ApplySeamFixture::new();
-        let rights_dir = fixture.source_dir().join("Roles/Reader/Ext");
-        std::fs::create_dir_all(&rights_dir).unwrap();
+        let source = fixture.source_dir();
+        std::fs::create_dir_all(source.join("Roles/Reader/Ext")).unwrap();
         std::fs::write(
-            rights_dir.join("Rights.xml"),
+            source.join("Roles/Reader/Ext/Rights.xml"),
             r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Document.First</name></object></Rights>"#,
         )
         .unwrap();
-        let admission = fixture.admission();
+        std::fs::create_dir_all(source.join("EventSubscriptions")).unwrap();
+        std::fs::write(
+            source.join("EventSubscriptions/OnWrite.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><EventSubscription uuid="44444444-4444-4444-8444-444444444444"><Properties><Name>OnWrite</Name><Source><v8:Type>cfg:DocumentObject.First</v8:Type></Source><Event>OnWrite</Event></Properties></EventSubscription></MetaDataObject>"#,
+        )
+        .unwrap();
+        let second = source.join("Documents/Second.xml");
+        let text = std::fs::read_to_string(&second).unwrap().replace(
+            "<Name>Total</Name>",
+            "<Name>Total</Name><Type><v8:Type>cfg:DocumentRef.First</v8:Type></Type>",
+        );
+        std::fs::write(&second, text).unwrap();
+        // A longer name that merely starts with the removed one is not a reference.
+        std::fs::create_dir_all(source.join("Constants")).unwrap();
+        std::fs::write(
+            source.join("Constants/Other.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Constant uuid="55555555-5555-4555-8555-555555555555"><Properties><Name>Other</Name><Type><v8:Type>cfg:DocumentRef.FirstArchive</v8:Type></Type></Properties></Constant></MetaDataObject>"#,
+        )
+        .unwrap();
+        let before = tree_snapshot(&source);
         let refused = plan_hidden_v13_apply(
             &seam_request(
                 "main:Document.First",
@@ -2116,48 +2373,576 @@ mod tests {
                 serde_json::json!({}),
             ),
             &fixture.binding,
-            &admission,
+            &fixture.admission(),
         )
         .unwrap_err();
         assert_eq!(refused.kind(), ApplyPlanErrorKind::InvalidState);
-        assert!(
-            refused.to_string().contains("still referenced"),
-            "{refused}"
-        );
+        let message = refused.to_string();
+        for referrer in [
+            "`main:Document.Second.Attribute.Total` → Type",
+            "`main:EventSubscription.OnWrite` → Source",
+        ] {
+            assert!(message.contains(referrer), "{referrer}: {message}");
+        }
+        // Role rights are a composition cleaned with the object, not a reference.
+        assert!(!message.contains("Role.Reader"), "{message}");
+        assert!(!message.contains("Constant.Other"), "{message}");
+        assert!(!message.contains(".xml"), "{message}");
+        assert_eq!(tree_snapshot(&source), before);
+    }
 
-        let admission = fixture.admission();
-        let (staged, effects) = plan_hidden_v13_apply(
+    /// Plans the removal of `Document.First` with `composition` written at
+    /// `relative`, and checks that the plan rewrites exactly that file into
+    /// `expected` and names the cleaned referrer.
+    fn assert_removal_cleans_composition(
+        relative: &str,
+        composition: &str,
+        expected: &str,
+        referrer: &str,
+        property: &str,
+    ) {
+        let fixture = ApplySeamFixture::new();
+        let path = fixture.source_dir().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("\u{feff}{composition}")).unwrap();
+        let (mut staged, effects) = plan_hidden_v13_apply(
             &seam_request(
                 "main:Document.First",
                 "object.remove",
-                serde_json::json!({"force": true}),
+                serde_json::json!({}),
             ),
             &fixture.binding,
-            &admission,
+            &fixture.admission(),
         )
-        .expect("a forced removal plans");
-        assert!(!staged.planned_changes().is_empty());
-        assert_eq!(effects.warnings().len(), 1);
-        let warning = &effects.warnings()[0];
-        assert_eq!(warning["code"], "references_kept");
-        assert_eq!(warning["count"], 1);
-        assert!(warning["files"][0]
-            .as_str()
-            .unwrap()
-            .ends_with("Roles/Reader/Ext/Rights.xml"));
+        .unwrap_or_else(|error| panic!("{relative}: {error}"));
+        assert_eq!(
+            String::from_utf8(
+                staged
+                    .read(std::path::Path::new(relative))
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            format!("\u{feff}{expected}"),
+            "{relative}"
+        );
+        let cleaned = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "composition_cleaned")
+            .unwrap_or_else(|| panic!("{relative}: {:?}", effects.warnings()));
+        assert_eq!(
+            cleaned["entries"],
+            serde_json::json!([{"at": referrer, "property": property}]),
+            "{relative}"
+        );
+        let message = cleaned["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("`{referrer}` → {property}")),
+            "{message}"
+        );
+        assert!(!message.contains(".xml"), "{message}");
+    }
 
-        let admission = fixture.admission();
+    /// Role rights to the removed object and its children go with it; the
+    /// rights to other objects stay byte for byte.
+    #[test]
+    fn object_removal_cleans_role_rights() {
+        assert_removal_cleans_composition(
+            "Roles/Reader/Ext/Rights.xml",
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" version=\"2.20\">\n\t<object>\n\t\t<name>Document.First</name>\n\t\t<right><name>Read</name><value>true</value></right>\n\t</object>\n\t<object>\n\t\t<name>Document.FirstArchive</name>\n\t</object>\n\t<object>\n\t\t<name>Document.First.Attribute.Total</name>\n\t\t<right><name>View</name><value>true</value></right>\n\t</object>\n\t<object>\n\t\t<name>Document.Second</name>\n\t</object>\n</Rights>\n",
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" version=\"2.20\">\n\t<object>\n\t\t<name>Document.FirstArchive</name>\n\t</object>\n\t<object>\n\t\t<name>Document.Second</name>\n\t</object>\n</Rights>\n",
+            "main:Role.Reader",
+            "Rights",
+        );
+    }
+
+    /// A command interface loses the commands of the removed object and
+    /// keeps the rest, including the visibility of other commands.
+    #[test]
+    fn object_removal_cleans_command_interfaces() {
+        let before = "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\r\n\t<CommandsVisibility>\r\n\t\t<Command name=\"Document.First.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>true</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t\t<Command name=\"Document.Second.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>\r\n\t<CommandsOrder>\r\n\t\t<Command name=\"Document.First.StandardCommand.OpenList\">\r\n\t\t\t<CommandGroup>NavigationPanelOrdinary</CommandGroup>\r\n\t\t</Command>\r\n\t</CommandsOrder>\r\n</CommandInterface>\r\n";
+        let after = "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\r\n\t<CommandsVisibility>\r\n\t\t<Command name=\"Document.Second.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>\r\n\t<CommandsOrder>\r\n\t</CommandsOrder>\r\n</CommandInterface>\r\n";
+        assert_removal_cleans_composition(
+            "Subsystems/Sales/Ext/CommandInterface.xml",
+            before,
+            after,
+            "main:Subsystem.Sales",
+            "CommandInterface",
+        );
+        assert_removal_cleans_composition(
+            "Ext/CommandInterface.xml",
+            before,
+            after,
+            "main:Configuration",
+            "CommandInterface",
+        );
+    }
+
+    /// The main section command interface loses the commands of the removed object.
+    #[test]
+    fn object_removal_cleans_the_main_section_command_interface() {
+        assert_removal_cleans_composition(
+            "Ext/MainSectionCommandInterface.xml",
+            "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\n\t<CommandsVisibility>\n\t\t<Command name=\"Document.Second.StandardCommand.OpenList\">\n\t\t\t<Visibility>\n\t\t\t\t<xr:Common>true</xr:Common>\n\t\t\t</Visibility>\n\t\t</Command>\n\t\t<Command name=\"Document.First.StandardCommand.OpenList\">\n\t\t\t<Visibility>\n\t\t\t\t<xr:Common>true</xr:Common>\n\t\t\t</Visibility>\n\t\t</Command>\n\t</CommandsVisibility>\n</CommandInterface>\n",
+            "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\n\t<CommandsVisibility>\n\t\t<Command name=\"Document.Second.StandardCommand.OpenList\">\n\t\t\t<Visibility>\n\t\t\t\t<xr:Common>true</xr:Common>\n\t\t\t</Visibility>\n\t\t</Command>\n\t</CommandsVisibility>\n</CommandInterface>\n",
+            "main:Configuration",
+            "MainSectionCommandInterface",
+        );
+    }
+
+    /// Registers a common module `Tools` next to the fixture documents, so it
+    /// can be removed.
+    fn register_common_module(source: &std::path::Path) {
+        let configuration = source.join("Configuration.xml");
+        let text = std::fs::read_to_string(&configuration).unwrap().replace(
+            "<Document>Second</Document>",
+            "<Document>Second</Document><CommonModule>Tools</CommonModule>",
+        );
+        std::fs::write(&configuration, text).unwrap();
+        std::fs::create_dir_all(source.join("CommonModules")).unwrap();
+        std::fs::write(
+            source.join("CommonModules/Tools.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Tools</Name><Server>true</Server></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+    }
+
+    /// A reference held in an attribute value counts like one in text: the
+    /// characteristics of another object that take their types from the
+    /// removed one, `<xr:CharacteristicTypes from="Document.First…">`, refuse
+    /// the removal and name that object and property.
+    #[test]
+    fn object_removal_refuses_references_in_attribute_values() {
+        use unica_workspace::test_support::tree_snapshot;
+
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        let second = source.join("Documents/Second.xml");
+        let text = std::fs::read_to_string(&second).unwrap().replace(
+            "<Synonym/>",
+            r#"<Synonym/><Characteristics xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><xr:Characteristic><xr:CharacteristicTypes from="Document.First.TabularSection.Kinds"/></xr:Characteristic></Characteristics>"#,
+        );
+        std::fs::write(&second, text).unwrap();
+        let before = tree_snapshot(&source);
         let error = plan_hidden_v13_apply(
             &seam_request(
                 "main:Document.First",
                 "object.remove",
-                serde_json::json!({"force": "yes"}),
+                serde_json::json!({}),
             ),
             &fixture.binding,
-            &admission,
+            &fixture.admission(),
         )
         .unwrap_err();
-        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("`main:Document.Second` → Characteristics"),
+            "{message}"
+        );
+        assert_eq!(tree_snapshot(&source), before);
+    }
+
+    /// The bare `Tools.` of a common module is a call only in code: a
+    /// synonym starting with the module name in metadata does not block its
+    /// removal, while `CommonModule.Tools` in metadata still does.
+    #[test]
+    fn common_module_removal_ignores_its_bare_name_in_metadata_text() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        register_common_module(&source);
+        let second = source.join("Documents/Second.xml");
+        let text = std::fs::read_to_string(&second)
+            .unwrap()
+            .replace("<Synonym/>", "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Tools. Печать</v8:content></v8:item></Synonym>");
+        std::fs::write(&second, text).unwrap();
+        let request = seam_request(
+            "main:CommonModule.Tools",
+            "object.remove",
+            serde_json::json!({}),
+        );
+        let (staged, _) = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+            .expect("a synonym is not a reference to the module");
+        assert!(!staged.planned_changes().is_empty());
+
+        std::fs::create_dir_all(source.join("EventSubscriptions")).unwrap();
+        std::fs::write(
+            source.join("EventSubscriptions/OnWrite.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><EventSubscription uuid="44444444-4444-4444-8444-444444444444"><Properties><Name>OnWrite</Name><Handler>CommonModule.Tools.OnWrite</Handler></Properties></EventSubscription></MetaDataObject>"#,
+        )
+        .unwrap();
+        let error =
+            plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("`main:EventSubscription.OnWrite` → Handler"),
+            "{error}"
+        );
+    }
+
+    /// The home page loses the forms of the removed object.
+    #[test]
+    fn object_removal_cleans_home_page_forms() {
+        assert_removal_cleans_composition(
+            "Ext/HomePageWorkArea.xml",
+            "<HomePageWorkArea xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"2.20\">\n\t<LeftColumn>\n\t\t<Item>\n\t\t\t<Form>Document.First.Form.Card</Form>\n\t\t\t<Height>10</Height>\n\t\t</Item>\n\t\t<Item>\n\t\t\t<Form>Document.Second.Form.Card</Form>\n\t\t\t<Height>10</Height>\n\t\t</Item>\n\t</LeftColumn>\n</HomePageWorkArea>\n",
+            "<HomePageWorkArea xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"2.20\">\n\t<LeftColumn>\n\t\t<Item>\n\t\t\t<Form>Document.Second.Form.Card</Form>\n\t\t\t<Height>10</Height>\n\t\t</Item>\n\t</LeftColumn>\n</HomePageWorkArea>\n",
+            "main:Configuration",
+            "HomePageWorkArea",
+        );
+    }
+
+    /// The content of an exchange plan loses the removed object only.
+    #[test]
+    fn object_removal_cleans_exchange_plan_content() {
+        assert_removal_cleans_composition(
+            "ExchangePlans/Sync/Ext/Content.xml",
+            "<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"2.20\">\n\t<Item>\n\t\t<Metadata>Document.Second</Metadata>\n\t\t<AutoRecord>Allow</AutoRecord>\n\t</Item>\n\t<Item>\n\t\t<Metadata>Document.First</Metadata>\n\t\t<AutoRecord>Deny</AutoRecord>\n\t</Item>\n</ExchangePlanContent>\n",
+            "<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"2.20\">\n\t<Item>\n\t\t<Metadata>Document.Second</Metadata>\n\t\t<AutoRecord>Allow</AutoRecord>\n\t</Item>\n</ExchangePlanContent>\n",
+            "main:ExchangePlan.Sync",
+            "Content",
+        );
+    }
+
+    /// The content of a functional option loses the removed object and its
+    /// children; its other properties and entries stay.
+    #[test]
+    fn object_removal_cleans_functional_option_content() {
+        assert_removal_cleans_composition(
+            "FunctionalOptions/UseFirst.xml",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\n\t<FunctionalOption uuid=\"88888888-8888-4888-8888-888888888888\">\n\t\t<Properties>\n\t\t\t<Name>UseFirst</Name>\n\t\t\t<Content>\n\t\t\t\t<xr:Object>Document.First</xr:Object>\n\t\t\t\t<xr:Object>Document.Second</xr:Object>\n\t\t\t\t<xr:Object>Document.First.Attribute.Total</xr:Object>\n\t\t\t</Content>\n\t\t</Properties>\n\t</FunctionalOption>\n</MetaDataObject>\n",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\n\t<FunctionalOption uuid=\"88888888-8888-4888-8888-888888888888\">\n\t\t<Properties>\n\t\t\t<Name>UseFirst</Name>\n\t\t\t<Content>\n\t\t\t\t<xr:Object>Document.Second</xr:Object>\n\t\t\t</Content>\n\t\t</Properties>\n\t</FunctionalOption>\n</MetaDataObject>\n",
+            "main:FunctionalOption.UseFirst",
+            "Content",
+        );
+    }
+
+    /// References in module code — a manager call, a query text in a
+    /// string, a Russian type name — do not block the removal: the plan lists
+    /// each place by module address and line, and stays exact about whole names.
+    #[test]
+    fn object_removal_lists_code_only_references_as_a_plan_warning() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        std::fs::create_dir_all(source.join("CommonModules/Tools/Ext")).unwrap();
+        std::fs::write(
+            source.join("CommonModules/Tools.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="66666666-6666-4666-8666-666666666666"><Properties><Name>Tools</Name><Server>true</Server></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("CommonModules/Tools/Ext/Module.bsl"),
+            "Процедура Сделать() Экспорт\n\tДокументы.FirstArchive.СоздатьДокумент();\n\tДокумент = Документы.First.СоздатьДокумент();\n\tЗапрос.Текст = \"ВЫБРАТЬ * ИЗ Документ.First\";\n\tТипы = Новый ОписаниеТипов(\"ДокументСсылка.First, ДокументСсылка.FirstArchive\");\n\tДругой = Тип(\"ДокументСсылка.FirstArchive\");\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let (staged, effects) = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("references in module code do not block the removal");
+        assert!(!staged.planned_changes().is_empty());
+        assert_eq!(effects.warnings().len(), 1);
+        let warning = &effects.warnings()[0];
+        assert_eq!(warning["code"], "code_references");
+        assert_eq!(warning["count"], 3);
+        // The manager, a query text in a string and a Russian type name are
+        // all code references; `FirstArchive` is another object.
+        assert_eq!(
+            warning["references"],
+            serde_json::json!([
+                {"at": "main:CommonModule.Tools", "line": 3},
+                {"at": "main:CommonModule.Tools", "line": 4},
+                {"at": "main:CommonModule.Tools", "line": 5}
+            ])
+        );
+        assert_eq!(
+            warning["message"],
+            "module code or query text still refers to `main:Document.First`: `main:CommonModule.Tools` line 3, `main:CommonModule.Tools` line 4, `main:CommonModule.Tools` line 5; the removal leaves this text as it is"
+        );
+    }
+
+    /// Lays out two list forms and a data composition template of
+    /// `Document.Second` whose query texts name `Document.First` in Russian
+    /// and in English; `main_table` adds the dynamic list's main table.
+    fn write_query_texts(source: &std::path::Path, main_table: bool) {
+        let form = |query: &str| {
+            let table = if main_table {
+                "<MainTable>Document.First</MainTable>"
+            } else {
+                ""
+            };
+            format!(
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\"><Attributes><Attribute name=\"List\"><Settings xsi:type=\"DynamicList\"><ManualQuery>true</ManualQuery>{table}<QueryText>{query}</QueryText></Settings></Attribute></Attributes></Form>"
+            )
+        };
+        for (name, query) in [
+            (
+                "List",
+                "ВЫБРАТЬ\n\tТ.Ссылка\nИЗ\n\tДокумент.First КАК Т\n\tЛЕВОЕ СОЕДИНЕНИЕ Документ.FirstArchive КАК А",
+            ),
+            ("ListEn", "SELECT\n\tT.Ref FROM Document.First AS T"),
+        ] {
+            let directory = source.join(format!("Documents/Second/Forms/{name}/Ext"));
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("Form.xml"), form(query)).unwrap();
+        }
+        let directory = source.join("Documents/Second/Templates/Data/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Template.xml"),
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\"><dataSet><name>Set</name><query>ВЫБРАТЬ\n\t*\nИЗ\n\tДокумент.First</query></dataSet></DataCompositionSchema>",
+        )
+        .unwrap();
+    }
+
+    /// A query text names a table like code does: a list form or a data
+    /// composition template that selects from the removed object lets the
+    /// removal plan and names the form or template and the line inside the
+    /// query, in either language, leaving the text as it is.
+    #[test]
+    fn object_removal_lists_query_text_references_as_code() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        write_query_texts(&source, false);
+        let (mut staged, effects) = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("a query text does not block the removal");
+        let warning = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .expect("the plan carries the expected warning");
+        assert_eq!(
+            warning["references"],
+            serde_json::json!([
+                {"at": "main:Document.Second.Form.List.Attribute.List", "line": 4},
+                {"at": "main:Document.Second.Form.ListEn.Attribute.List", "line": 2},
+                {"at": "main:Document.Second.Template.Data.DataSet.Set", "line": 4}
+            ])
+        );
+        let message = warning["message"].as_str().unwrap();
+        assert!(
+            message.contains("`main:Document.Second.Template.Data.DataSet.Set` line 4"),
+            "{message}"
+        );
+        assert!(!message.contains(".xml"), "{message}");
+        for relative in [
+            "Documents/Second/Forms/List/Ext/Form.xml",
+            "Documents/Second/Templates/Data/Ext/Template.xml",
+        ] {
+            assert_eq!(
+                staged
+                    .read(std::path::Path::new(relative))
+                    .unwrap()
+                    .unwrap(),
+                std::fs::read(source.join(relative)).unwrap(),
+                "{relative} stays as it is"
+            );
+        }
+    }
+
+    /// Access restriction conditions of another role are query text: they
+    /// name the removed object in either language without blocking it and
+    /// stay as they are, while the role's rights to the object itself go.
+    #[test]
+    fn object_removal_lists_rights_conditions_as_code() {
+        let fixture = ApplySeamFixture::new();
+        let rights = "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" version=\"2.20\">\n\t<object>\n\t\t<name>Document.First</name>\n\t\t<right><name>Read</name><value>true</value></right>\n\t</object>\n\t<object>\n\t\t<name>Document.Second</name>\n\t\t<right>\n\t\t\t<name>Read</name>\n\t\t\t<value>true</value>\n\t\t\t<restrictionByCondition>\n\t\t\t\t<condition>ГДЕ Т.Основание ССЫЛКА Документ.First</condition>\n\t\t\t</restrictionByCondition>\n\t\t</right>\n\t</object>\n\t<object>\n\t\t<name>Document.Second.Attribute.Total</name>\n\t\t<right>\n\t\t\t<name>View</name>\n\t\t\t<value>true</value>\n\t\t\t<restrictionByCondition>\n\t\t\t\t<condition>WHERE T.Base REFS Document.First</condition>\n\t\t\t</restrictionByCondition>\n\t\t</right>\n\t</object>\n\t<restrictionTemplate>\n\t\t<name>ByBase</name>\n\t\t<condition>ГДЕ\n\t#Параметр(1) = Документ.First</condition>\n\t</restrictionTemplate>\n</Rights>\n";
+        let path = fixture.source_dir().join("Roles/Other/Ext/Rights.xml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, rights).unwrap();
+        let (mut staged, effects) = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("a restriction condition does not block the removal");
+        let code = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .expect("the plan carries the expected warning");
+        // Two conditions of different rights on the same line are two places.
+        assert_eq!(
+            code["references"],
+            serde_json::json!([
+                {"at": "main:Role.Other.Right.Document_Second", "line": 1},
+                {"at": r"main:Role.Other.Right.Document_Second\.Attribute\.Total", "line": 1},
+                {"at": "main:Role.Other", "line": 2}
+            ])
+        );
+        assert_eq!(code["count"], 3);
+        assert!(effects
+            .warnings()
+            .iter()
+            .any(|warning| warning["code"] == "composition_cleaned"));
+        let after = String::from_utf8(
+            staged
+                .read(std::path::Path::new("Roles/Other/Ext/Rights.xml"))
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            after,
+            rights.replace(
+                "\t<object>\n\t\t<name>Document.First</name>\n\t\t<right><name>Read</name><value>true</value></right>\n\t</object>\n",
+                ""
+            )
+        );
+    }
+
+    /// The expressions of a data composition schema are query text too:
+    /// `ЗНАЧЕНИЕ(Перечисление.Kinds.Main)` in a calculated field names the
+    /// enumeration without blocking its removal.
+    #[test]
+    fn object_removal_lists_data_composition_expressions_as_code() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        let configuration = source.join("Configuration.xml");
+        let text = std::fs::read_to_string(&configuration).unwrap().replace(
+            "<Document>First</Document>",
+            "<Document>First</Document><Enum>Kinds</Enum>",
+        );
+        std::fs::write(&configuration, text).unwrap();
+        std::fs::create_dir_all(source.join("Enums")).unwrap();
+        std::fs::write(
+            source.join("Enums/Kinds.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Enum uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Kinds</Name></Properties></Enum></MetaDataObject>"#,
+        )
+        .unwrap();
+        let directory = source.join("Documents/Second/Templates/Data/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Template.xml"),
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\"><dataSet><name>Set</name><field><dataPath>Контрагент.ИНН</dataPath><field>Контрагент.ИНН</field><presentationExpression>ВЫБОР КОГДА Вид = ЗНАЧЕНИЕ(Перечисление.Kinds.Main) ТОГДА 1 КОНЕЦ</presentationExpression></field></dataSet><calculatedField><dataPath>Main</dataPath><expression>ВЫБОР КОГДА Вид = ЗНАЧЕНИЕ(Перечисление.Kinds.Main) ТОГДА 1 КОНЕЦ</expression></calculatedField><totalField><dataPath>Main</dataPath><expression>Сумма(Main)</expression></totalField><parameter><name>Kind</name><expression>ЗНАЧЕНИЕ(Enum.Kinds.Main)</expression></parameter></DataCompositionSchema>",
+        )
+        .unwrap();
+        let (_, effects) = plan_hidden_v13_apply(
+            &seam_request("main:Enum.Kinds", "object.remove", serde_json::json!({})),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("an expression does not block the removal");
+        let code = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .expect("the plan carries the expected warning");
+        assert_eq!(
+            code["references"],
+            serde_json::json!([
+                {"at": r"main:Document.Second.Template.Data.DataSet.Set.Field.Контрагент\.ИНН", "line": 1},
+                {"at": "main:Document.Second.Template.Data.CalculatedField.Main", "line": 1},
+                {"at": "main:Document.Second.Template.Data.Parameter.Kind", "line": 1}
+            ])
+        );
+    }
+
+    /// Next to an expression, a reference held in a property of the schema —
+    /// the value type of a parameter — still refuses the removal.
+    #[test]
+    fn object_removal_refuses_a_parameter_type_next_to_an_expression() {
+        let fixture = ApplySeamFixture::new();
+        let directory = fixture
+            .source_dir()
+            .join("Documents/Second/Templates/Data/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Template.xml"),
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"><parameter><name>Base</name><valueType><v8:Type>cfg:DocumentRef.First</v8:Type></valueType><expression>ЗНАЧЕНИЕ(Документ.First.ПустаяСсылка)</expression></parameter></DataCompositionSchema>",
+        )
+        .unwrap();
+        let error = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("`main:Document.Second.Template.Data` → Template"),
+            "{error}"
+        );
+    }
+
+    /// Next to a query text a reference held in a property still refuses:
+    /// the dynamic list's main table is metadata, not code.
+    #[test]
+    fn object_removal_refuses_a_main_table_next_to_a_query_text() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        write_query_texts(&source, true);
+        let error = plan_hidden_v13_apply(
+            &seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("`main:Document.Second.Form.List` → Form"),
+            "{message}"
+        );
+        assert!(!message.contains("Template.Data"), "{message}");
+    }
+
+    /// `force` is no longer part of the `object.remove` contract: passing it
+    /// refuses `bad_value` and explains that the references go first.
+    #[test]
+    fn object_removal_refuses_force_as_bad_value() {
+        let fixture = ApplySeamFixture::new();
+        for force in [
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!("yes"),
+        ] {
+            let error = plan_hidden_v13_apply(
+                &seam_request(
+                    "main:Document.First",
+                    "object.remove",
+                    serde_json::json!({"force": force}),
+                ),
+                &fixture.binding,
+                &fixture.admission(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{force}");
+            assert_eq!(error.path(), Some("ops[0].args.force"));
+            assert!(
+                error.to_string().contains("remove the references"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
