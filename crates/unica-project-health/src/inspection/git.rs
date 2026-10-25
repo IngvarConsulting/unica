@@ -14,6 +14,7 @@ use tempfile::TempDir;
 #[cfg(test)]
 use unica_process::runner::system_process_runner;
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::{SourceFormat, SourceSetKind};
 use unica_source_designer::probe::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
@@ -2495,7 +2496,7 @@ fn materialize_exact_git_directories(
         let Component::Normal(component) = component else {
             return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                 "staged Git ignore path is not repository-relative: {}",
-                relative.display()
+                relative.portable()
             )));
         };
         logical.push(component);
@@ -2508,13 +2509,13 @@ fn materialize_exact_git_directories(
                 let directory = open_read_directory_nofollow(&physical).map_err(|error| {
                     StagedIgnoreMaterializationError::Incomplete(format!(
                         "open staged Git ignore path {} after creation: {error}",
-                        logical.display()
+                        logical.portable()
                     ))
                 })?;
                 let identity = directory.identity().map_err(|error| {
                     StagedIgnoreMaterializationError::Incomplete(format!(
                         "identify staged Git ignore path {}: {error}",
-                        logical.display()
+                        logical.portable()
                     ))
                 })?;
                 if let Some(first) = materialized.identities.insert(identity, subject.clone()) {
@@ -2529,19 +2530,19 @@ fn materialize_exact_git_directories(
                 let directory = open_read_directory_nofollow(&physical).map_err(|error| {
                     StagedIgnoreMaterializationError::Incomplete(format!(
                         "open colliding staged Git ignore path {}: {error}",
-                        logical.display()
+                        logical.portable()
                     ))
                 })?;
                 let identity = directory.identity().map_err(|error| {
                     StagedIgnoreMaterializationError::Incomplete(format!(
                         "identify colliding staged Git ignore path {}: {error}",
-                        logical.display()
+                        logical.portable()
                     ))
                 })?;
                 let Some(first) = materialized.identities.get(&identity).cloned() else {
                     return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                         "staged Git ignore path {} unexpectedly resolves to an untracked host identity",
-                        logical.display()
+                        logical.portable()
                     )));
                 };
                 return Err(StagedIgnoreMaterializationError::PathIdentityCollision {
@@ -2552,7 +2553,7 @@ fn materialize_exact_git_directories(
             Err(error) => {
                 return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                     "create staged Git ignore path {}: {error}",
-                    logical.display()
+                    logical.portable()
                 )));
             }
         }

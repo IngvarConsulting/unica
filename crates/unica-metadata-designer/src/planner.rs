@@ -12,6 +12,7 @@ use unica_metadata::property_input::DescriptorPropertyValue;
 use unica_metadata::{MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetadataKind};
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::proposal::{
     empty_apply_family_batch, ApplyPlanError, ApplyPlanErrorKind, ApplyProposal,
     ApplySourceAuthority, IndexedPlanOperation, ProvisionalApplyEffect, StagedFileState,
@@ -787,7 +788,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                             ApplyPlanErrorKind::InvalidState,
                             format!(
                                 "prerequisite `{}` changed while planning the new object",
-                                relative.display()
+                                relative.portable()
                             ),
                         )
                         .at_path(at_path));
@@ -814,7 +815,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                                     ApplyPlanErrorKind::InvalidState,
                                     format!(
                                     "prerequisite `{}` cannot accept the change of the new object",
-                                    relative.display()
+                                    relative.portable()
                                 ),
                                 )
                                 .at_path(at_path.clone())
@@ -825,7 +826,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                                 ApplyPlanErrorKind::InvalidState,
                                 format!(
                                     "prerequisite `{}` changed while planning the new object",
-                                    relative.display()
+                                    relative.portable()
                                 ),
                             )
                             .at_path(at_path));
@@ -1399,7 +1400,7 @@ fn stage_descriptor_properties(
         ) => {
             // Prove the descriptor before its existing local XML edits. The
             // typed patch changes only the configuration's default language.
-            crate::subsystem::parse_subsystem_edit_model(&source, &relative.display().to_string())
+            crate::subsystem::parse_subsystem_edit_model(&source, &relative.portable().to_string())
                 .map_err(|message| {
                     ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
                         .at_path(at_path.clone())
@@ -1912,7 +1913,7 @@ fn stage_template_add(
             {
                 return Err(ApplyPlanError::new(
                     ApplyPlanErrorKind::InvalidState,
-                    format!("`{}` already exists", relative.display()),
+                    format!("`{}` already exists", relative.portable()),
                 )
                 .at_path(name_path));
             }

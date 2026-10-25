@@ -221,7 +221,10 @@ fn build_router(
     let wait_client = Arc::clone(&client);
     let wait: Arc<CanonicalTaskWaitHandler> =
         Arc::new(move |task_id, wait_ms, deadline, cancellation| {
-            let cutoff = wait_transport_cutoff(wait_ms, deadline);
+            // Connect and exchange spend the frontend's own transport cutoff,
+            // as `get` and `cancel` do; `waitMs` bounds only the daemon wait.
+            let cutoff = deadline.transport_cutoff();
+            let wait_cutoff = daemon_wait_cutoff(wait_ms, deadline);
             let mut peer = task_peer(&wait_client, cutoff)?;
             let control_timer = TaskObservationTimer::start(cutoff);
             let interrupt = peer.observation_interrupt_handle().map_err(|_| {
@@ -245,8 +248,8 @@ fn build_router(
                     ))
                 })?;
             // The daemon wait shrinks by what connect and handshake already spent
-            // and by the response margin; the cutoff itself never moves.
-            let bounded_wait_ms = bounded_wait_ms(wait_ms, cutoff, Instant::now());
+            // and by the response margin; neither cutoff ever moves.
+            let bounded_wait_ms = bounded_wait_ms(wait_ms, wait_cutoff, Instant::now());
             peer.wait_task_before(task_id, bounded_wait_ms, cutoff)
         });
     let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, deadline| {
@@ -283,11 +286,13 @@ fn task_peer(
     })
 }
 
-/// `unica.task.result` gets its own cutoff, derived once from the moment the
-/// frontend received the request: the requested wait plus one response
-/// margin, never beyond the frontend transport cutoff. Time spent before the
-/// router runs is never replenished.
-pub(super) fn wait_transport_cutoff(
+/// The end of the daemon wait of `unica.task.result`, derived once from the
+/// moment the frontend received the request: the requested wait plus one
+/// response margin, never beyond the frontend transport cutoff. Time spent
+/// before the daemon wait starts is never replenished. Connect and exchange
+/// are bounded by the transport cutoff, not by this one: a ready result read
+/// with `waitMs: 0` on a slow host arrives as the result.
+pub(super) fn daemon_wait_cutoff(
     requested_wait_ms: u64,
     deadline: FrontendInvocationDeadline,
 ) -> Instant {

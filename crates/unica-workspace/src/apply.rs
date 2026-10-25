@@ -11,6 +11,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
@@ -298,7 +299,7 @@ impl RetainedNamespaceGuard {
         if actual != expected {
             return Err(ApplyStagingError::new(
                 ApplyStagingErrorKind::ConcurrentRevision,
-                format!("enumerated namespace changed: {}", self.relative.display()),
+                format!("enumerated namespace changed: {}", self.relative.portable()),
             ));
         }
         self.checkpoint()
@@ -665,7 +666,7 @@ impl ApplyStagedState {
         {
             return Err(ApplyStagingError::new(
                 ApplyStagingErrorKind::UnsupportedProvider,
-                format!("staged input exceeds read bound: {}", relative.display()),
+                format!("staged input exceeds read bound: {}", relative.portable()),
             ));
         }
         Ok(self.entries[index].current.as_option())
@@ -726,7 +727,7 @@ impl ApplyStagedState {
                         ApplyStagingErrorKind::ContainmentIdentity,
                         format!(
                             "reference input parent is a link/reparse point: {}",
-                            relative.display()
+                            relative.portable()
                         ),
                     ))
                 }
@@ -735,7 +736,7 @@ impl ApplyStagedState {
                         ApplyStagingErrorKind::AbsentChainOccupied,
                         format!(
                             "reference input parent is not a directory: {}",
-                            relative.display()
+                            relative.portable()
                         ),
                     ))
                 }
@@ -759,7 +760,7 @@ impl ApplyStagedState {
                     ApplyStagingErrorKind::ContainmentIdentity,
                     format!(
                         "reference input is a link/reparse point: {}",
-                        relative.display()
+                        relative.portable()
                     ),
                 ))
             }
@@ -768,7 +769,7 @@ impl ApplyStagedState {
                     ApplyStagingErrorKind::AbsentChainOccupied,
                     format!(
                         "reference input is not a regular file: {}",
-                        relative.display()
+                        relative.portable()
                     ),
                 ))
             }
@@ -785,7 +786,7 @@ impl ApplyStagedState {
                 ApplyStagingErrorKind::ContainmentIdentity,
                 format!(
                     "reference input has a hard-link alias: {}",
-                    relative.display()
+                    relative.portable()
                 ),
             ));
         }
@@ -797,7 +798,7 @@ impl ApplyStagedState {
             if current.as_ref().is_some_and(|bytes| bytes.len() > limit) {
                 return Err(ApplyStagingError::new(
                     ApplyStagingErrorKind::UnsupportedProvider,
-                    format!("staged input exceeds read bound: {}", relative.display()),
+                    format!("staged input exceeds read bound: {}", relative.portable()),
                 ));
             }
             return Ok(current);
@@ -818,7 +819,7 @@ impl ApplyStagedState {
                     ApplyStagingErrorKind::ConcurrentRevision,
                     format!(
                         "reference input changed while planning: {}",
-                        relative.display()
+                        relative.portable()
                     ),
                 ));
             }
@@ -853,7 +854,7 @@ impl ApplyStagedState {
                 ApplyStagingErrorKind::Invariant,
                 format!(
                     "staged create target already exists: {}",
-                    relative.display()
+                    relative.portable()
                 ),
             ));
         }
@@ -876,7 +877,7 @@ impl ApplyStagedState {
         if entry.current != StagedFileState::Bytes(expected_current.as_ref().to_vec()) {
             return Err(ApplyStagingError::new(
                 ApplyStagingErrorKind::Invariant,
-                format!("staged replace preimage changed: {}", relative.display()),
+                format!("staged replace preimage changed: {}", relative.portable()),
             ));
         }
         entry.current = StagedFileState::Bytes(bytes);
@@ -894,7 +895,7 @@ impl ApplyStagedState {
         if entry.current != StagedFileState::Bytes(expected_current.as_ref().to_vec()) {
             return Err(ApplyStagingError::new(
                 ApplyStagingErrorKind::Invariant,
-                format!("staged remove preimage changed: {}", relative.display()),
+                format!("staged remove preimage changed: {}", relative.portable()),
             ));
         }
         entry.current = StagedFileState::Absent;
@@ -1155,7 +1156,7 @@ impl ApplyStagedState {
                     ApplyStagingErrorKind::ContainmentIdentity,
                     format!(
                         "staged target must contain only normal relative components: {}",
-                        relative.display()
+                        relative.portable()
                     ),
                 )),
             })
@@ -1197,7 +1198,7 @@ impl ApplyStagedState {
                         ApplyStagingErrorKind::ContainmentIdentity,
                         format!(
                             "staged target parent is a link/reparse point: {}",
-                            relative.display()
+                            relative.portable()
                         ),
                     ))
                 }
@@ -1208,7 +1209,7 @@ impl ApplyStagedState {
                         ApplyStagingErrorKind::AbsentChainOccupied,
                         format!(
                             "staged target parent is not a directory: {}",
-                            relative.display()
+                            relative.portable()
                         ),
                     ))
                 }
@@ -1240,7 +1241,7 @@ impl ApplyStagedState {
                     ApplyStagingErrorKind::ContainmentIdentity,
                     format!(
                         "staged target has a hard-link alias: {}",
-                        relative.display()
+                        relative.portable()
                     ),
                 ));
             }
@@ -1289,7 +1290,7 @@ impl ApplyStagedState {
                         ApplyStagingErrorKind::ContainmentIdentity,
                         format!(
                             "staged target has a hard-link alias: {}",
-                            relative.display()
+                            relative.portable()
                         ),
                     ));
                 }
@@ -1314,7 +1315,7 @@ impl ApplyStagedState {
                     ApplyStagingErrorKind::ContainmentIdentity,
                     format!(
                         "staged target is a link/reparse point: {}",
-                        relative.display()
+                        relative.portable()
                     ),
                 ))
             }
@@ -1325,7 +1326,7 @@ impl ApplyStagedState {
                     ApplyStagingErrorKind::AbsentChainOccupied,
                     format!(
                         "staged target is not a regular file: {}",
-                        relative.display()
+                        relative.portable()
                     ),
                 ))
             }
@@ -1365,7 +1366,7 @@ impl ApplyStagedState {
                         ApplyStagingErrorKind::ConcurrentRevision,
                         format!(
                             "reference input changed before write staging: {}",
-                            relative.display()
+                            relative.portable()
                         ),
                     ));
                 }
@@ -1379,7 +1380,7 @@ impl ApplyStagedState {
                         ApplyStagingErrorKind::ConcurrentRevision,
                         format!(
                             "reference input changed before write staging: {}",
-                            relative.display()
+                            relative.portable()
                         ),
                     ));
                 }
@@ -1550,7 +1551,7 @@ fn strict_relative(relative: &Path) -> Result<PathBuf, ApplyStagingError> {
             ApplyStagingErrorKind::ContainmentIdentity,
             format!(
                 "staged target must contain only normal relative components: {}",
-                relative.display()
+                relative.portable()
             ),
         ));
     }
