@@ -115,6 +115,10 @@ pub enum V5PausePoint {
     /// A begun attempt has passed its early look for a Task the session
     /// handler materialized and has not claimed the cutoff yet.
     BeforeCutoffClaim,
+    /// The provider has entered its execution. The runtime never holds it:
+    /// a scenario provider does, so the answer that runs ahead of the work
+    /// is observable.
+    ExecuteEntered,
 }
 
 /// An injected workspace admission failure, in place of the real bind.
