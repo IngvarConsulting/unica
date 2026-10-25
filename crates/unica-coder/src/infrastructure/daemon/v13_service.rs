@@ -9261,4 +9261,34 @@ mod tests {
             assert_eq!(last["fileCoverage"]["complete"], true, "{engine:?}: {last}");
         }
     }
+
+    /// A line too long to read that Git selects names no file; the first
+    /// page then reads its corpus by the walk, so every page counts the same
+    /// uncovered file and no count is lost to the cursor.
+    #[test]
+    fn overlong_candidate_line_keeps_coverage_across_the_continuation() {
+        let workspace = text_engine_workspace();
+        std::fs::write(
+            workspace
+                .path()
+                .join("src/Catalogs/Items/Ext/ManagerModule.bsl"),
+            format!("// {}Needle\n", "x".repeat(8 * 1024 * 1024)),
+        )
+        .unwrap();
+        for engine in [TextEngine::Git, TextEngine::Walk] {
+            let pages = text_search_pages(
+                workspace.path(),
+                engine,
+                json!({"query":"Needle","limit":2}),
+            );
+            assert!(pages.len() > 1, "{engine:?}");
+            for page in &pages {
+                let coverage = &page.data.as_ref().unwrap()["fileCoverage"];
+                assert_eq!(coverage["uncovered"], 1, "{engine:?}: {coverage}");
+            }
+            let last = &pages.last().unwrap().data.as_ref().unwrap()["fileCoverage"];
+            assert_eq!(last["uncoveredIsLowerBound"], false, "{engine:?}: {last}");
+            assert_eq!(last["complete"], false, "{engine:?}: {last}");
+        }
+    }
 }

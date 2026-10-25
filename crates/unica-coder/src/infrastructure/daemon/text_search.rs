@@ -52,7 +52,7 @@ pub(in crate::infrastructure::daemon) struct TextQuery {
     pub(in crate::infrastructure::daemon) candidates: Option<CandidatePattern>,
     /// Whether the bytes of a line that is not UTF-8 may hold a match: only
     /// such a line leaves its file uncovered, the line Git would select.
-    candidate_bytes: regex::bytes::Regex,
+    candidate_bytes: CandidateBytes,
 }
 
 impl TextQuery {
@@ -72,13 +72,19 @@ impl TextQuery {
                 .map_err(|error| format!("search regex is not a valid pattern: {error}"))
         };
         let escaped = regex::escape(query);
-        let pattern = if regex { query } else { escaped.as_str() };
-        let candidate_bytes = regex::bytes::RegexBuilder::new(pattern)
-            .case_insensitive(ignore_case)
-            .size_limit(1 << 20)
-            .dfa_size_limit(1 << 20)
-            .build()
-            .map_err(|error| format!("search regex is not a valid pattern: {error}"))?;
+        let candidate_bytes = if !regex && !ignore_case {
+            CandidateBytes::Literal(query.as_bytes().to_vec())
+        } else {
+            let pattern = if regex { query } else { escaped.as_str() };
+            CandidateBytes::Pattern(
+                regex::bytes::RegexBuilder::new(pattern)
+                    .case_insensitive(ignore_case)
+                    .size_limit(1 << 20)
+                    .dfa_size_limit(1 << 20)
+                    .build()
+                    .map_err(|error| format!("search regex is not a valid pattern: {error}"))?,
+            )
+        };
         if regex {
             return Ok(Self {
                 matcher: SearchMatcher::Regex(compile(query)?),
@@ -101,6 +107,21 @@ impl TextQuery {
             mode: "literal",
             candidates: case_folded_candidates(query).map(CandidatePattern::Extended),
         })
+    }
+}
+
+/// The question over the raw bytes of a line that is not UTF-8.
+enum CandidateBytes {
+    Literal(Vec<u8>),
+    Pattern(regex::bytes::Regex),
+}
+
+impl CandidateBytes {
+    fn may_match(&self, raw: &[u8]) -> bool {
+        match self {
+            Self::Literal(needle) => raw.windows(needle.len()).any(|part| part == needle),
+            Self::Pattern(pattern) => pattern.is_match(raw),
+        }
     }
 }
 
@@ -273,7 +294,21 @@ pub(in crate::infrastructure::daemon) fn scan_text_page<'a>(
     request: &'a TextPageRequest<'a>,
     cancellation: &'a CancellationToken,
 ) -> Result<TextScan, TextSearchError> {
-    let mut collector = Collector::new(request, cancellation);
+    let scan = scan_with(request, request.engine, cancellation)?;
+    // A Git record whose file is unknown leaves coverage the walk can name
+    // file by file and a cursor can carry; such a page is read again.
+    if request.engine == TextEngine::Git && scan.uncovered_lower_bound {
+        return scan_with(request, TextEngine::Walk, cancellation);
+    }
+    Ok(scan)
+}
+
+fn scan_with<'a>(
+    request: &'a TextPageRequest<'a>,
+    engine: TextEngine,
+    cancellation: &'a CancellationToken,
+) -> Result<TextScan, TextSearchError> {
+    let mut collector = Collector::new(request, engine, cancellation);
     for source in &request.sources {
         // A resumed walk starts in the source set of the file it re-enters.
         let seek = match request.continuation.resume_target() {
@@ -286,7 +321,7 @@ pub(in crate::infrastructure::daemon) fn scan_text_page<'a>(
             _ => None,
         };
         collector.enter_source(source);
-        let flow = match request.engine {
+        let flow = match engine {
             TextEngine::Git => git_source(request, source, &mut collector, cancellation)?,
             TextEngine::Walk => walk_source(source, seek, &mut collector, cancellation)
                 .map_err(TextSearchError::io)?,
@@ -746,6 +781,7 @@ struct CurrentFile {
 /// The one line consumer both engines feed.
 struct Collector<'a> {
     request: &'a TextPageRequest<'a>,
+    engine: TextEngine,
     cancellation: &'a CancellationToken,
     started: Instant,
     files_read: usize,
@@ -780,9 +816,14 @@ fn hex(bytes: &[u8; 32]) -> String {
 }
 
 impl<'a> Collector<'a> {
-    fn new(request: &'a TextPageRequest<'a>, cancellation: &'a CancellationToken) -> Self {
+    fn new(
+        request: &'a TextPageRequest<'a>,
+        engine: TextEngine,
+        cancellation: &'a CancellationToken,
+    ) -> Self {
         Self {
             request,
+            engine,
             cancellation,
             started: Instant::now(),
             files_read: 0,
@@ -861,7 +902,7 @@ impl<'a> Collector<'a> {
                 }
             }
         }
-        if self.request.engine == TextEngine::Walk && self.files_read > 0 {
+        if self.engine == TextEngine::Walk && self.files_read > 0 {
             if let Some(budget) = self.request.walk_budget {
                 if self.started.elapsed() >= budget {
                     self.end = TextScanEnd::Time;
@@ -1004,7 +1045,7 @@ impl<'a> Collector<'a> {
         };
         let Ok(text) = std::str::from_utf8(raw) else {
             // A line that cannot hold a match is no gap in the answer.
-            if !self.request.query.candidate_bytes.is_match(raw) {
+            if !self.request.query.candidate_bytes.may_match(raw) {
                 return LineStep::Continue;
             }
             self.uncovered("invalid_utf8");
