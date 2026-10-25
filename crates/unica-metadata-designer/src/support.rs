@@ -105,31 +105,30 @@ impl SupportStateStreamParser {
         let mut input = std::mem::take(&mut self.rule_tail);
         input.extend_from_slice(bytes);
         let mut offset = 0;
-        while offset + 40 <= input.len() {
-            let candidate = &input[offset..offset + 40];
-            if matches!(candidate[0], b'0'..=b'2')
-                && &candidate[1..4] == b",0,"
-                && candidate[4..].iter().enumerate().all(|(index, byte)| {
-                    if matches!(index, 8 | 13 | 18 | 23) {
-                        *byte == b'-'
-                    } else {
-                        byte.is_ascii_hexdigit()
-                    }
-                })
-            {
-                let flag = candidate[0] - b'0';
+        while offset + RULE_RECORD_MAX <= input.len() {
+            if let Some((flag, uuid, length)) = object_rule_record(&input[offset..]) {
                 self.counts[flag as usize] += 1;
-                let uuid = std::str::from_utf8(&candidate[4..])
-                    .expect("UUID consists of ASCII bytes")
-                    .to_ascii_lowercase();
                 self.object_rules
-                    .entry(uuid)
+                    .entry(uuid.to_ascii_lowercase())
                     .and_modify(|value| *value = (*value).min(flag))
                     .or_insert(flag);
                 // Legacy matching consumes the complete match, including its last UUID byte.
-                offset += 40;
+                offset += length;
             } else {
                 offset += 1;
+            }
+        }
+        // Короткий хвост ещё может оказаться записью `<правило>,0,<uuid>`.
+        while offset + RULE_RECORD_MIN <= input.len() {
+            if let Some((flag, uuid, length)) = object_rule_record(&input[offset..]) {
+                self.counts[flag as usize] += 1;
+                self.object_rules
+                    .entry(uuid.to_ascii_lowercase())
+                    .and_modify(|value| *value = (*value).min(flag))
+                    .or_insert(flag);
+                offset += length;
+            } else {
+                break;
             }
         }
         self.rule_tail.extend_from_slice(&input[offset..]);
@@ -361,30 +360,46 @@ pub fn parse_support_object_rules(text: &str) -> ([usize; 3], HashMap<String, u8
     let mut object_rules = HashMap::<String, u8>::new();
     let bytes = text.as_bytes();
     let mut i = 0usize;
-    while i + 40 <= bytes.len() {
-        let flag = bytes[i];
-        if matches!(flag, b'0'..=b'2') && bytes.get(i + 1..i + 4) == Some(b",0,") {
-            let uuid_start = i + 4;
-            let uuid_end = uuid_start + 36;
-            if uuid_end <= bytes.len() {
-                let uuid = &text[uuid_start..uuid_end];
-                if is_uuid_text(uuid) {
-                    let flag_value = flag - b'0';
-                    counts[flag_value as usize] += 1;
-                    let entry = object_rules
-                        .entry(uuid.to_ascii_lowercase())
-                        .or_insert(flag_value);
-                    if flag_value < *entry {
-                        *entry = flag_value;
-                    }
-                    i = uuid_end;
-                    continue;
-                }
+    while i + RULE_RECORD_MIN <= bytes.len() {
+        if let Some((flag, uuid, length)) = object_rule_record(&bytes[i..]) {
+            counts[flag as usize] += 1;
+            let entry = object_rules
+                .entry(uuid.to_ascii_lowercase())
+                .or_insert(flag);
+            if flag < *entry {
+                *entry = flag;
             }
+            i += length;
+            continue;
         }
         i += 1;
     }
     (counts, object_rules)
+}
+
+/// Длины записи правила объекта: `<правило>,0,<uuid>` и `<правило>,-1,<uuid>`.
+const RULE_RECORD_MIN: usize = 40;
+const RULE_RECORD_MAX: usize = 41;
+
+/// Запись правила объекта в `ParentConfigurations.bin`: правило (0 — на
+/// замке, 1 — редактируется с сохранением поддержки, 2 — снят с поддержки),
+/// затем отметка поставщика — `0`, если поставщик разрешил изменения, `-1`,
+/// если не рекомендует, — и UUID объекта. Выгрузки 8.3.27 пишут обе отметки
+/// (#1976); запись с `-1` прежде не читалась, и правило объекта терялось.
+pub(crate) fn object_rule_record(bytes: &[u8]) -> Option<(u8, &str, usize)> {
+    let flag = *bytes.first()?;
+    if !matches!(flag, b'0'..=b'2') {
+        return None;
+    }
+    let uuid_start = if bytes.get(1..4) == Some(b",0,") {
+        4
+    } else if bytes.get(1..5) == Some(b",-1,") {
+        5
+    } else {
+        return None;
+    };
+    let uuid = std::str::from_utf8(bytes.get(uuid_start..uuid_start + 36)?).ok()?;
+    is_uuid_text(uuid).then_some((flag - b'0', uuid, uuid_start + 36))
 }
 
 pub fn parse_support_vendors(text: &str) -> Vec<SupportVendor> {
@@ -457,6 +472,89 @@ pub fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
 mod support_stream_tests {
     use super::*;
 
+    /// Маркеры встроены в тест: кодек не читает файлы сам (граница платформы).
+    fn marker(name: &str) -> Vec<u8> {
+        match name {
+            "off" => {
+                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/off.bin")
+                    .as_slice()
+            }
+            "editable" => include_bytes!(
+                "../../../tests/fixtures/platform_8_3_27/support-markers/editable.bin"
+            )
+            .as_slice(),
+            "locked" => {
+                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/locked.bin")
+                    .as_slice()
+            }
+            other => panic!("no support marker fixture `{other}`"),
+        }
+        .to_vec()
+    }
+
+    fn both(bytes: &[u8]) -> [SupportState; 2] {
+        [
+            parse_support_state_compat_bytes(Some(bytes)).unwrap(),
+            parse_support_state_strict_bytes(Some(bytes))
+                .unwrap()
+                .unwrap(),
+        ]
+    }
+
+    /// Маркеры настоящих выгрузок 8.3.27 до и после «Включить возможность
+    /// изменения»: второе поле заголовка `1` — изменения выключены, `0` —
+    /// включены; правило объекта — первое поле его записи (#1976).
+    #[test]
+    fn platform_markers_read_the_capability_and_object_rules() {
+        let objects = [
+            "bf5222b1-a591-40d2-aabf-ea9a296792d6",
+            "00000000-0000-0000-0000-000000000001",
+            "c27da06f-c6f6-4edf-b3d9-6c007fba4b0c",
+            "6abe961f-d2ee-5bbe-b7d9-c8ae558aaa24",
+            "4ee50a0f-cb4a-51e9-b440-81249eb20fb4",
+        ];
+        for (name, editing, rule) in [
+            ("off", false, 1),
+            ("editable", true, 1),
+            ("locked", true, 0),
+        ] {
+            for state in both(&marker(name)) {
+                assert_eq!(state.global_editing_enabled(), editing, "{name}");
+                assert!(!state.removed(), "{name}");
+                for (index, uuid) in objects.into_iter().enumerate() {
+                    assert_eq!(state.object_rule(uuid), Some(rule), "{name} object {index}");
+                }
+            }
+        }
+    }
+
+    /// Поставка типовой 1С отмечает объекты, где поставщик не рекомендует
+    /// изменения, отметкой `-1` вместо `0`. Правило такого объекта читается
+    /// так же: иначе гейт не видел замка.
+    #[test]
+    fn a_not_recommended_object_keeps_its_rule() {
+        let uuid = "c27da06f-c6f6-4edf-b3d9-6c007fba4b0c";
+        let text = String::from_utf8(marker("locked")).unwrap().replacen(
+            &format!("0,0,{uuid},{uuid}"),
+            &format!("0,-1,{uuid},{uuid}"),
+            1,
+        );
+        assert!(text.contains(&format!("0,-1,{uuid}")));
+        for state in both(text.as_bytes()) {
+            assert_eq!(state.object_rule(uuid), Some(0));
+        }
+        for split in 0..=text.len() {
+            let mut parser = SupportStateStreamParser::default();
+            parser.feed(&text.as_bytes()[..split]).unwrap();
+            parser.feed(&text.as_bytes()[split..]).unwrap();
+            assert_eq!(
+                parser.finish().unwrap().object_rule(uuid),
+                Some(0),
+                "split {split}"
+            );
+        }
+    }
+
     #[test]
     fn every_marker_split_preserves_counts_duplicate_minimum_and_quoted_vendors() {
         let uuid = "ABCDEF00-1234-5678-90AB-123456789AB0";
@@ -466,7 +564,7 @@ mod support_stream_tests {
             let mut parser = SupportStateStreamParser::default();
             parser.feed(&text.as_bytes()[..split]).unwrap();
             assert!(parser.utf8_tail.len() <= 3);
-            assert!(parser.rule_tail.len() <= 39);
+            assert!(parser.rule_tail.len() <= 40);
             parser.feed(&text.as_bytes()[split..]).unwrap();
             let state = parser.finish().unwrap();
             assert_eq!(state.counts(), [1, 1, 1], "split {split}");

@@ -333,6 +333,83 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
     }
 }
 
+/// The pending reason of a no-hits answer whose footer names exactly the
+/// lexical and the semantic index, at least one of them still queued or
+/// running, or the lexical one held by its own update so that its state could
+/// not be read (`unknown`; the analyzer reports it only for a busy lock, and
+/// then the semantic state is often unreadable too).
+/// Any other state, a repeated index, a tail after a state other than
+/// `running` or any other line keeps the answer failed.
+fn pending_index_footer(lines: &[&str]) -> Option<&'static str> {
+    let ["No results found.", first, second] = lines else {
+        return None;
+    };
+    fn state<'a>(line: &'a str, kind: &str, allowed: &[&'a str]) -> Option<&'a str> {
+        let rest = line
+            .strip_prefix("Indexing ")?
+            .strip_prefix(kind)?
+            .strip_prefix(": ")?;
+        // Only a running pass carries a phase ` (parsing)` and progress
+        // `: 1/2 chunks`; every other state is the whole line.
+        let state = match rest.strip_prefix("running") {
+            Some(tail) if tail.is_empty() || tail.starts_with(" (") || tail.starts_with(": ") => {
+                "running"
+            }
+            _ => rest,
+        };
+        allowed.iter().copied().find(|allowed| *allowed == state)
+    }
+    const LEXICAL: &[&str] = &["ready", "waiting", "running", "unknown"];
+    const SEMANTIC: &[&str] = &["ready", "disabled", "waiting", "running", "unknown"];
+    let (lexical, semantic) = match (
+        state(first, "lexical", LEXICAL),
+        state(second, "semantic", SEMANTIC),
+    ) {
+        (Some(lexical), Some(semantic)) => (lexical, semantic),
+        _ => (
+            state(second, "lexical", LEXICAL)?,
+            state(first, "semantic", SEMANTIC)?,
+        ),
+    };
+    // A semantic `unknown` can also be lasting (unverified identity or
+    // coverage); it counts as pending only beside a lexical index in flux.
+    match (lexical, semantic) {
+        ("running" | "unknown", _) => Some("updatingIndex"),
+        (_, "unknown") => None,
+        (_, "running") => Some("buildingIndex"),
+        ("waiting", _) | (_, "waiting") => Some("indexQueued"),
+        _ => None,
+    }
+}
+
+/// The pending reason of the analyzer's other no-hits wordings: the overlay
+/// warm-up sentence over a known footer, or the plain sentence followed only
+/// by `Indexing pending: …` lines before any index pass reports a state.
+fn pending_index_sentence(lines: &[&str]) -> Option<&'static str> {
+    let index_state = |line: &&str| {
+        ["Indexing lexical: ", "Indexing semantic: "]
+            .iter()
+            .filter_map(|prefix| line.strip_prefix(prefix))
+            .any(|state| matches!(state, "ready" | "disabled") || state.starts_with("running"))
+    };
+    match lines.split_first()? {
+        (&"No results found (overlay is warming up, only baseline search available).", tail)
+            if tail.iter().all(index_state) =>
+        {
+            Some("updatingIndex")
+        }
+        (&"No results found.", tail)
+            if !tail.is_empty()
+                && tail
+                    .iter()
+                    .all(|line| line.starts_with("Indexing pending: ")) =>
+        {
+            Some("buildingIndex")
+        }
+        _ => None,
+    }
+}
+
 pub fn parse_bsl_analyzer_search(
     text: &str,
     context: &CodeIntelligenceContext,
@@ -369,23 +446,8 @@ pub fn parse_bsl_analyzer_search(
     if trimmed.is_empty() || empty_with_ready_footer {
         return empty_section(ProviderId::BslAnalyzer, SearchRanking::Provider);
     }
-    // A busy or still-indexing analyzer answers in plain text: no hits and
-    // no proof of absence, but a later answer is promised. That is a
-    // retryable wait, not a dead end. Only these whole answers qualify; an
-    // index state outside the known set, a failed one or any other line
-    // keeps the output failed.
-    let index_state = |line: &&str| {
-        line.starts_with("Indexing pending: ")
-            || ["Indexing lexical: ", "Indexing semantic: "]
-                .iter()
-                .filter_map(|prefix| line.strip_prefix(prefix))
-                .any(|state| matches!(state, "ready" | "disabled") || state.starts_with("running"))
-    };
-    let index_waits = |line: &&str| {
-        line.starts_with("Indexing pending: ")
-            || line.starts_with("Indexing lexical: running")
-            || line.starts_with("Indexing semantic: running")
-    };
+    // A busy analyzer answers in a whole plain sentence: a later answer is
+    // promised, but there is no index wait to name, only spent capacity.
     if matches!(
         empty_lines.as_slice(),
         ["Search index is busy (a long operation is holding it); please try again in a moment."]
@@ -396,26 +458,23 @@ pub fn parse_bsl_analyzer_search(
             "bsl-analyzer search index is busy".to_string(),
         );
     }
-    let pending = match empty_lines.split_first() {
-        Some((
-            &"No results found (overlay is warming up, only baseline search available).",
-            tail,
-        )) if tail.iter().all(index_state) => Some("updatingIndex"),
-        Some((&"No results found.", tail))
-            if tail.iter().all(index_state) && tail.iter().any(index_waits) =>
-        {
-            Some("buildingIndex")
-        }
-        _ => None,
-    };
-    if let Some(detail) = pending {
+    if let Some(detail_code) =
+        pending_index_footer(&empty_lines).or_else(|| pending_index_sentence(&empty_lines))
+    {
+        // No hits while the index is still queued or being rewritten — after a
+        // published edit the analyzer serves before its update lands. That is
+        // not proven absence and not a provider failure: the next attempt is
+        // promised to differ, as with the `not_ready` envelope below.
         return ProviderSearchSection::dependency_pending(
             ProviderId::BslAnalyzer.identity(),
             SearchRanking::Provider,
             SearchOrdering::Provider,
             Vec::new(),
-            vec!["bsl-analyzer search index is not ready".to_string()],
-            detail,
+            empty_lines[1..]
+                .iter()
+                .map(|line| line.to_string())
+                .collect(),
+            detail_code,
         )
         .expect("dependency-pending bsl-analyzer section is valid");
     }
