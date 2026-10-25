@@ -7,17 +7,23 @@ check:
   - crates/unica-xdto-designer/src/writer.rs::xdto_writer_preserves_crlf_and_uses_local_eol_in_a_mixed_document
   - crates/unica-xdto-designer/src/writer.rs::xdto_writer_fails_closed_when_mixed_eol_has_no_local_context
   - crates/unica-xdto-designer/src/writer.rs::xdto_writer_removal_matrix_preserves_exact_outer_slices
+  - crates/unica-xdto-designer/src/writer.rs::xdto_writer_sets_only_the_base_of_a_named_type
+  - crates/unica-coder/src/infrastructure/native_operations/xdto.rs::staged_xdto_type_set_changes_only_the_base_and_repeats_the_current_base_as_no_op
   - crates/unica-xdto-designer/src/writer.rs::xdto_writer_renames_only_the_name_value_of_the_selected_property
 ---
 
 # Изменение схемы XDTO сохраняет остальной текст пакета
 
-Добавление и удаление типов и свойств, а также переименование свойства меняют
-только выбранный `XDTOPackages/<Имя>/Ext/Package.bin`. Дескриптор объекта
-метаданных остаётся отдельным ресурсом.
+Добавление и удаление типов и свойств, смена основы типа и переименование
+свойства меняют только выбранный `XDTOPackages/<Имя>/Ext/Package.bin`.
+Дескриптор объекта метаданных остаётся отдельным ресурсом.
 
 Пакет изменяется локально: байты за пределами правки, начальный BOM
-и переводы строк сохраняются. Переименование меняет только значение атрибута
+и переводы строк сохраняются. Смена основы меняет только атрибут `base`
+выбранного типа; если префикс основы не объявлен в области типа, рядом
+с атрибутом повторяется его единственное объявление из пакета. Имя, свойства,
+ограничения, прочие атрибуты типа и его место остаются прежними, прежняя
+основа файла не меняет. Переименование меняет только значение атрибута
 `name` выбранного свойства; его тип, границы, `localName` и место среди соседей
 остаются прежними. Для вставки используется перевод строки рядом с целью;
 при смешанном стиле без такого образца писатель отказывает.
