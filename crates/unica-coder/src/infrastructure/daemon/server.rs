@@ -837,6 +837,14 @@ enum PreparedCanonicalInvocationState {
     },
 }
 
+/// Only a test stand-in service keeps no check snapshots; the workspace
+/// verdict then saves its pages in a store of its own. The product read
+/// service always shares its store, which
+/// `the_root_check_shares_the_read_service_check_snapshots` holds.
+fn detached_check_snapshots() -> Arc<unica_navigation::result_store::ViewCursorStore> {
+    Arc::new(super::v13_service::product_view_cursors())
+}
+
 impl V5CanonicalInvocationRuntime {
     pub(super) fn new(service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
         Self::with_workspace_actors(
@@ -876,15 +884,9 @@ impl V5CanonicalInvocationRuntime {
         clock: Arc<dyn Clock>,
         workspace_actors: WorkspaceActorRegistry,
     ) -> Self {
-        let check_snapshots = match service.check_snapshots() {
-            Some(store) => store,
-            // Only a test stand-in service keeps no check snapshots; the
-            // workspace verdict then saves its pages in a store of its own.
-            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
-            None => Arc::new(super::v13_service::product_view_cursors()),
-            #[cfg(not(any(test, feature = "receipt-ledger-test-support")))]
-            None => unreachable!("the product read service owns the check snapshot store"),
-        };
+        let check_snapshots = service
+            .check_snapshots()
+            .unwrap_or_else(detached_check_snapshots);
         Self {
             service,
             clock,
