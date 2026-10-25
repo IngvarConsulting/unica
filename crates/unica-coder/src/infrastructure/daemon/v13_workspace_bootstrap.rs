@@ -117,6 +117,9 @@ pub(super) fn prepare(
     let mut hasher = Sha256::new();
     hasher.update(b"unica-v13-workspace-inspection-v1\0");
     hasher.update(canonical_root.as_os_str().as_encoded_bytes());
+    let continuation = (question == RootQuestion::Verdict)
+        .then(|| continuations.for_workspace(&canonical_root, &context.cache_root))
+        .flatten();
     Preparation::Ready(Arc::new(PreparedWorkspaceInspection {
         context,
         requested_directory: request.workspace_hint().to_owned(),
@@ -124,9 +127,7 @@ pub(super) fn prepare(
         question,
         response_deadline,
         workspace_identity_hash: SafeIdentityHash::from_sha256(hasher.finalize().into()),
-        continuation: (question == RootQuestion::Verdict)
-            .then(|| continuations.for_workspace(&canonical_root))
-            .flatten(),
+        continuation,
     }))
 }
 
@@ -528,40 +529,6 @@ fn bootstrap_result(
         } else {
             "workspace readiness reported findings"
         });
-        let capacity_limited = readiness_state == "incomplete"
-            && continuation
-                .as_ref()
-                .is_some_and(|state| state.progress().capacity_limited);
-        if capacity_limited {
-            if let Value::Array(items) = &mut diagnostics {
-                items.push(object([
-                    ("code", Value::String("git.eol_checkpoint_capacity".into())),
-                    ("severity", Value::String("error".into())),
-                    ("scope", Value::String("repository".into())),
-                    ("paths", Value::Array(Vec::new())),
-                    ("count", value(1)),
-                    (
-                        "message",
-                        Value::String("The bounded EOL checkpoint cannot retain this resource set; repeating the same check cannot guarantee progress".into()),
-                    ),
-                    ("evidence", Value::Array(Vec::new())),
-                    (
-                        "remediation",
-                        object([
-                            (
-                                "summary",
-                                Value::String("Reduce the number of tracked text resources before checking again".into()),
-                            ),
-                            ("steps", Value::Array(Vec::new())),
-                            ("commands", Value::Array(Vec::new())),
-                        ]),
-                    ),
-                ]));
-                items.sort_by(|left, right| {
-                    root_diagnostic_order(left).cmp(&root_diagnostic_order(right))
-                });
-            }
-        }
         let mut data = object([
             (
                 "status",
@@ -584,7 +551,6 @@ fn bootstrap_result(
                                 ("textResources", value(progress.text_resources)),
                                 ("stagedEolRetained", value(progress.staged_eol_retained)),
                                 ("workingEolRetained", value(progress.working_eol_retained)),
-                                ("capacityLimited", Value::Bool(progress.capacity_limited)),
                             ]),
                         );
                     }
@@ -867,31 +833,6 @@ fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
             .into_iter()
             .map(|(key, value)| (key.to_string(), value))
             .collect(),
-    )
-}
-
-fn root_diagnostic_order(diagnostic: &Value) -> (u8, u8, Option<&str>, &str, Option<&str>) {
-    let severity = match diagnostic["severity"].as_str() {
-        Some("error") => 0,
-        Some("warning") => 1,
-        Some("info") => 2,
-        _ => 3,
-    };
-    let scope = match diagnostic["scope"].as_str() {
-        Some("workspace") => 0,
-        Some("repository") => 1,
-        Some("sourceSet") => 2,
-        _ => 3,
-    };
-    (
-        severity,
-        scope,
-        diagnostic["sourceSet"].as_str(),
-        diagnostic["code"].as_str().unwrap_or_default(),
-        diagnostic["paths"]
-            .as_array()
-            .and_then(|paths| paths.first())
-            .and_then(Value::as_str),
     )
 }
 
@@ -1200,7 +1141,9 @@ mod tests {
             );
             if step < 3 {
                 assert_eq!(data["readinessState"], "incomplete");
-                let state = continuations.for_workspace(&normalized_root).unwrap();
+                let state = continuations
+                    .for_workspace(&normalized_root, &root.join(".build/unica"))
+                    .unwrap();
                 assert_eq!(
                     state
                         .lock()
@@ -1216,14 +1159,13 @@ mod tests {
     }
 
     #[test]
-    fn root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint() {
+    fn root_check_does_not_recommend_repeat_for_a_fixed_failure() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use std::sync::Arc;
         use unica_execution::clock::TokioClock;
         use unica_execution::invocation::InvocationResponseDeadline;
         use unica_execution::invocation_store::ToolIdentity;
-        use unica_project_health::inspection::resources::stop_staged_eol_after_for_test;
         use unica_work_control::cancellation::CancellationToken;
 
         let (_workspace, root) = eol_check_fixture();
@@ -1234,43 +1176,6 @@ mod tests {
             7_000,
         )
         .unwrap();
-        let continuations = RootCheckContinuationStore::default();
-        let normalized_root = super::normalize_path_identity(&root).unwrap();
-        continuations
-            .for_workspace(&normalized_root)
-            .unwrap()
-            .lock()
-            .unwrap()
-            .set_test_evidence_limit(0);
-        stop_staged_eol_after_for_test(1);
-        let Preparation::Ready(inspection) = prepare(
-            &request,
-            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
-            &continuations,
-        ) else {
-            panic!("root check must prepare");
-        };
-        let result = inspection.execute(CancellationToken::new()).unwrap();
-        let data = result.data.unwrap();
-        assert_eq!(data["readinessState"], "incomplete");
-        assert_eq!(data["inspectionProgress"]["capacityLimited"], true);
-        assert!(data["diagnostics"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|diagnostic| { diagnostic["code"] == "git.eol_checkpoint_capacity" }));
-        assert!(data["diagnostics"]
-            .as_array()
-            .unwrap()
-            .windows(2)
-            .all(|pair| {
-                super::root_diagnostic_order(&pair[0]) <= super::root_diagnostic_order(&pair[1])
-            }));
-        assert!(!result
-            .next
-            .iter()
-            .any(|action| action["tool"] == "unica.check"));
-
         // A malformed Git index is static until the repository is repaired.
         std::fs::write(root.join(".git/index"), b"bad index").unwrap();
         let Preparation::Ready(inspection) = prepare(
