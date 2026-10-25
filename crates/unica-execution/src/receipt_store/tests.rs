@@ -1890,9 +1890,11 @@ fn promised_task_terminal_is_exact_idempotent_and_reopens() {
         store.generation().expect("generation after exact repeat"),
         generation
     );
+    assert_catalog_holds_no_result_body(&store);
 
     drop(store);
     let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen receipt ledger");
+    assert_catalog_holds_no_result_body(&reopened);
     assert_eq!(
         reopened
             .recover_exact(&key, reserve_deadline())
