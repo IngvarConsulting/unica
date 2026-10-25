@@ -180,6 +180,10 @@ fn a_connection_secret_from_configuration_and_runner_answer_is_not_stored_or_rea
         }
     }
 
+    // The daemon is stopped before its files are read: on Windows a live
+    // daemon holds mandatory locks on its ledger, and what is stored is
+    // what the stopped daemon left on disk.
+    daemon.stop(owner);
     let state = daemon.state_directory();
     let stored = unica_workspace::test_support::tree_snapshot(&state);
     assert!(
@@ -216,6 +220,5 @@ fn a_connection_secret_from_configuration_and_runner_answer_is_not_stored_or_rea
             ));
         }
     }
-    daemon.finish(owner);
     assert!(leaks.is_empty(), "the connection secret leaked: {leaks:#?}");
 }

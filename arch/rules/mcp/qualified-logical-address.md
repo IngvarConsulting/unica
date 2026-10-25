@@ -19,6 +19,8 @@ check:
   - crates/unica-address/src/address.rs::a_can_segment_takes_the_rest_of_the_address_as_the_operation_name
   - crates/unica-address/src/address.rs::an_escaped_dot_stays_inside_one_name_and_round_trips
   - crates/unica-address/src/address.rs::an_escaped_dot_is_a_name_only_on_document_routes
+  - crates/unica-address/src/address.rs::schedule_is_nameless_and_preserves_its_operation_query
+  - crates/unica-coder/src/infrastructure/v13_read/tests/job_schedule.rs::job_schedule_does_not_read_foreign_owners_or_cancelled_sources
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::names_with_a_dot_are_published_escaped_and_read_back
   - crates/unica-coder/src/domain/apply.rs::retired_names_with_a_dot_route_to_escaped_addresses
   - crates/unica-coder/src/infrastructure/v13_read_projection.rs::dcs_structure_tests::setting_structure_rows_never_fabricate_or_choose_named_addresses
@@ -52,7 +54,7 @@ check:
 так же.
 
 Вид в конце без имени обозначает ветвь, например
-`main:Catalog.Валюты.Attribute`. У `Configuration`, `Interface` и `Metadata` имени
+`main:Catalog.Валюты.Attribute`. У `Configuration`, `Interface`, `Metadata` и `Schedule` имени
 не бывает: следующий сегмент разбирается как вид. Выдуманное имя
 отклоняется с объяснением этой причины. `Configuration` разрешён только
 как самостоятельный корень `main:Configuration` и перед вопросом к его
@@ -65,6 +67,10 @@ check:
 реквизитов, команд, параметров и событий формы не получают промежуточного
 `Metadata`. Этот узел не адресует содержимое формы и не принимает прикладного
 имени или произвольного продолжения.
+
+`Schedule` — терминальный узел описания расписания именованного регламентного
+задания: `main:ScheduledJob.Обмен.Schedule`. Он не адресует расписания других
+видов и не принимает прикладного имени или произвольного продолжения.
 
 Сегмент `Can` спрашивает операцию словаря узла и всегда последний: его имя —
 весь остаток адреса вместе с точками (`main:Catalog.Валюты.Can.query.set`),

@@ -851,7 +851,7 @@
     {
       "id": "search.git-grep-timeout-default",
       "class": "deadline",
-      "resource": "Срок поставщика лексического поиска (git grep) по умолчанию.",
+      "resource": "Срок поставщика git grep прежнего unica.code.search (поверхность v0.12, с провода v0.13 недостижима) по умолчанию. Буквальный поиск без роли этот срок не читает: он идёт без срока операции, а ключ search_git_grep_timeout_seconds один выпуск принимается и не читается.",
       "unit": "s",
       "scope": "request",
       "source": {
@@ -874,7 +874,7 @@
         "30 с — около пятикратного запаса над худшим первым проходом по УТ на этой машине; общий срок поиска по умолчанию 300 с остаётся старшим. Не замерены Windows (NTFS, антивирус), медленные диски, работа под нагрузкой и БП. Частая строка останавливается раньше, на пределе совпадений; страница после первой снова проходит корпус с начала (#2079) и на медленной машине может ждать до срока. Предел временный до снятия сроков поиска (#1254)."
       ],
       "decision": null,
-      "review": null
+      "review": "#1119 PR-B: роль lexical слита с буквальным поиском без роли; срок остаётся только у прежнего code.search и снимается вместе с ним"
     },
     {
       "id": "search.provider-read-timeout-default",
@@ -1442,12 +1442,13 @@
       "expr": "32",
       "value": 32,
       "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs"
+        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs"
       ],
       "status": "unproven",
       "origin": "b6650bc18",
       "problem": null,
-      "onReach": "тихо: каталоги глубже 32 не обходятся, признака неполноты нет.",
+      "onReach": "Обход без Git отказывает provider_unavailable «exceeded its retained depth limit», страницы нет; в рабочем дереве Git глубину ограничивает только Git.",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1466,12 +1467,13 @@
       "expr": "8 * 1024 * 1024",
       "value": 8388608,
       "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs"
+        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs"
       ],
       "status": "unproven",
       "origin": "cd7331929 (#1106)",
       "problem": "Якоря regex и столбцы Unicode требуют полной строки; неделимую единицу держат ограниченной, размер файла и корпуса бюджетом памяти не считается (комментарий в invocation_service.rs).",
-      "onReach": "Неполнота: файл помечается uncovered с деталью, поиск продолжается.",
+      "onReach": "Неполнота: файл помечается uncovered с деталью, его остальные строки читаются. Если такую строку-кандидат встречает первая страница через Git, страница читается заново своим обходом, чтобы назвать файл.",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1490,7 +1492,8 @@
       "expr": "32",
       "value": 32,
       "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs"
+        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs"
       ],
       "status": "unproven",
       "origin": "cd7331929 (#1106)",
@@ -1689,56 +1692,6 @@
       "review": null
     },
     {
-      "id": "search.admission-regex-dfa-bytes",
-      "class": "format",
-      "resource": "Размер DFA регулярного выражения при допуске поиска.",
-      "unit": "bytes",
-      "scope": "request",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_search_admission.rs",
-        "literal": ".dfa_size_limit(1 << 20)",
-        "count": 1
-      },
-      "expr": "1 << 20",
-      "value": 1048576,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/v13_search_admission.rs"
-      ],
-      "status": "unproven",
-      "origin": null,
-      "problem": null,
-      "onReach": "отказ допуска поиска «search regex is not a valid pattern»",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
-      "id": "search.admission-regex-size-bytes",
-      "class": "format",
-      "resource": "Размер скомпилированного регулярного выражения при допуске поиска.",
-      "unit": "bytes",
-      "scope": "request",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_search_admission.rs",
-        "literal": ".size_limit(1 << 20)",
-        "count": 1
-      },
-      "expr": "1 << 20",
-      "value": 1048576,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/v13_search_admission.rs"
-      ],
-      "status": "unproven",
-      "origin": null,
-      "problem": null,
-      "onReach": "отказ допуска поиска «search regex is not a valid pattern»",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
       "id": "search.page-default-entries",
       "class": "step",
       "resource": "Число совпадений страницы search, когда limit не задан.",
@@ -1789,7 +1742,7 @@
     {
       "id": "search.provider-fetch-matches",
       "class": "corpus",
-      "resource": "Число совпадений, которое текстовый и семантический поиск получают от провайдера за запрос без курсора.",
+      "resource": "Окно совпадений, которое ранжирующие роли symbol и semantic получают от поставщика за запрос; буквальный поиск без роли окна не имеет.",
       "unit": "count",
       "scope": "request",
       "source": {
@@ -1804,32 +1757,32 @@
       "status": "unproven",
       "origin": "022636d23 (#1029)",
       "problem": "API провайдера принимает top-N без смещения; окно выборки сохранено от прежней публичной границы (комментарий в v13_service.rs).",
-      "onReach": "Неполнота: предупреждение «Search returned 200 matches. Ask the user to narrow the query…», хвост теряется.",
+      "onReach": "Неполнота: секция сообщает limitReached и нижнюю оценку, предупреждение «Search returned 200 matches. Ask the user to narrow the query…»; хвост окна недоступен, курсор его не обещает.",
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR6"
+      "review": "#1119: окно ролей symbol и semantic без продолжения — их API принимает top-N без смещения; буквальный поиск снят с окна в PR6 (#2079, #2095)"
     },
     {
       "id": "search.provider-regex-dfa-bytes",
       "class": "format",
-      "resource": "Размер DFA регулярного выражения при исполнении поиска.",
+      "resource": "Размер DFA регулярного выражения текстового поиска: одна сборка служит допуску и исполнению; вторая — тот же шаблон над байтами строки, не являющейся UTF-8, для regex и ignoreCase.",
       "unit": "bytes",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "file": "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
         "literal": ".dfa_size_limit(1 << 20)",
-        "count": 1
+        "count": 2
       },
       "expr": "1 << 20",
       "value": 1048576,
       "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs"
       ],
       "status": "unproven",
       "origin": null,
       "problem": "Ограниченная компиляция: шаблон, не умещающийся в бюджет, — ошибка вызывающего, а не сбой поставщика.",
-      "onReach": "отказ bad_value: шаблон не компилируется в пределах размера",
+      "onReach": "отказ bad_value «search regex is not a valid pattern» при допуске и при исполнении: шаблон не компилируется в пределах размера",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1838,27 +1791,107 @@
     {
       "id": "search.provider-regex-size-bytes",
       "class": "format",
-      "resource": "Размер скомпилированного регулярного выражения при исполнении поиска.",
+      "resource": "Размер скомпилированного регулярного выражения текстового поиска: одна сборка служит допуску и исполнению; вторая — тот же шаблон над байтами строки, не являющейся UTF-8, для regex и ignoreCase.",
       "unit": "bytes",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "file": "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
         "literal": ".size_limit(1 << 20)",
-        "count": 1
+        "count": 2
       },
       "expr": "1 << 20",
       "value": 1048576,
       "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs"
       ],
       "status": "unproven",
       "origin": null,
       "problem": "Ограниченная компиляция: шаблон, не умещающийся в бюджет, — ошибка вызывающего, а не сбой поставщика.",
-      "onReach": "отказ bad_value: шаблон не компилируется в пределах размера",
+      "onReach": "отказ bad_value «search regex is not a valid pattern» при допуске и при исполнении: шаблон не компилируется в пределах размера",
       "issue": null,
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "search.cursor-resume-path-bytes",
+      "class": "format",
+      "resource": "Длина пути файла (имя набора и путь от его корня), который несёт курсор буквального поиска для возобновления выдачи.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-navigation/src/result_store.rs",
+        "symbol": "SEARCH_RESUME_PATH_MAX_BYTES"
+      },
+      "expr": "64 * 1024",
+      "value": 65536,
+      "applied": [
+        "crates/unica-navigation/src/result_store.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 PR-B: курсор обхода без Git называет файл возобновления",
+      "problem": "Длина токена курсора растёт с путём; предел отсекает подделанный или ошибочный токен до расшифровки, а не настоящие пути исходников 1С.",
+      "onReach": "Курсор не выдаётся: отказ provider_failed «search continuation offset is not representable»; токен длиннее предела отклоняется как invalid_cursor.",
+      "issue": "#1119",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "search.walk-page-response-share",
+      "class": "deadline",
+      "resource": "Доля оставшегося бюджета прямого ответа, которую продолжение буквального поиска, читающее исходники своим обходом, тратит на обход, прежде чем отдать продолжение курсору. Первая страница считает весь корпус и по времени не заканчивается.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
+        "symbol": "WALK_PAGE_RESPONSE_BUDGET_DIVISOR"
+      },
+      "expr": "2",
+      "value": 2,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 PR-B: собственный обход УТ 11 на отсутствующей строке занимает 31–45 с и уходит в задание",
+      "problem": "Полный обход крупной конфигурации без Git не умещается в бюджет прямого ответа (7 с); страница, закончившаяся раньше рубежа, отдаёт продолжение вместо задания.",
+      "onReach": "Не отказ: страница заканчивается на границе файла с page.stoppedBy deadline и курсором, который продолжает обход с этого файла; совпадения не теряются. Без бюджета ответа (вызов уже стал заданием) страница по времени не заканчивается.",
+      "issue": "#1119",
+      "evidence": [],
+      "decision": null,
+      "review": "Половина оставляет вторую половину бюджета на сужение адресов и сериализацию страницы; замер страницы на УТ 11 — в описании PR."
+    },
+    {
+      "id": "search.totals-leading-modules",
+      "class": "result",
+      "resource": "Число модулей с наибольшим числом совпадений, которые сводка объёма первого ответа буквального поиска называет по адресу; остальные модули сводка сообщает одной строкой счёта.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
+        "symbol": "MAX_TEXT_TOTALS_LEADING_MODULES"
+      },
+      "expr": "20",
+      "value": 20,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
+      ],
+      "status": "justified",
+      "origin": "#1119 PR-C: сводка объёма первого ответа буквального поиска",
+      "problem": "Список всех модулей с совпадениями на широком запросе крупной конфигурации растёт до тысяч строк и вытесняет из ответа первую страницу совпадений; агенту для решения, сужать ли область, нужны лидеры и общий счёт.",
+      "onReach": "Не отказ и не потеря счёта: модули сверх двадцати входят в строку rest (число модулей и их совпадений); общий счёт, раскладка по видам и первая страница остаются точными.",
+      "issue": "#1119",
+      "evidence": [
+        "Клон выгрузки УТ 11 (Sendbox), release, 25.10.2026: первый ответ с двадцатью лидерами — 11,9 КиБ на 411 совпадениях в 231 файле и 12,0 КиБ на 162 307 совпадениях в 10 684 файлах; сама сводка — 2,9 и 3,3 КиБ, около 120–130 байт на модуль. Полный список модулей на «Процедура» занял бы около 1,2 МиБ, больше предела страницы 64 КиБ."
+      ],
+      "decision": {
+        "date": "2026-10-25",
+        "text": "Первый ответ буквального поиска всегда несёт сводку объёма: точный счёт совпадений и файлов, раскладку по видам объектов, до 20 модулей-лидеров с адресами.",
+        "source": "#1119, решение владельца для PR-C"
+      },
+      "review": "Счётчики сводки занимают память по числу модулей с совпадениями, а не по числу совпадений; предела на них нет, число модулей конфигурации конечно."
     },
     {
       "id": "view.call-graph-initial-page",
@@ -2053,30 +2086,6 @@
       "evidence": [],
       "decision": null,
       "review": "временное число без замеров; пересмотр по замерам #1119 PR8"
-    },
-    {
-      "id": "apply.subsystem-info-file-bytes",
-      "class": "corpus",
-      "resource": "Размер одного файла подсистемы при чтении состава подсистем для apply.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/subsystem_composition.rs",
-        "symbol": "SUBSYSTEM_INFO_MAX_FILE_BYTES"
-      },
-      "expr": "64 * 1024 * 1024",
-      "value": 67108864,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/subsystem_composition.rs"
-      ],
-      "status": "unproven",
-      "origin": "0fd6c75f2",
-      "problem": null,
-      "onReach": "Ошибка «failed to open/read … securely»: планирование состава подсистем отказывает.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
     },
     {
       "id": "find.collection-entries",
@@ -4684,78 +4693,6 @@
       "review": null
     },
     {
-      "id": "metadata.registrar-scan-bytes",
-      "class": "corpus",
-      "resource": "Суммарный объём XML-дескрипторов документов, читаемых при поиске регистраторов регистра.",
-      "unit": "bytes",
-      "scope": "directory",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/info_read.rs",
-        "symbol": "REGISTRAR_SCAN_MAX_BYTES"
-      },
-      "expr": "64 * 1024 * 1024",
-      "value": 67108864,
-      "applied": [
-        "crates/unica-metadata-designer/src/info_read.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "неполнота: свидетельство регистраторов Unavailable «registrar evidence cannot be scanned completely»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.registrar-scan-entries",
-      "class": "corpus",
-      "resource": "Число записей каталога Documents при поиске регистраторов регистра.",
-      "unit": "count",
-      "scope": "directory",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/info_read.rs",
-        "symbol": "REGISTRAR_SCAN_MAX_ENTRIES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-metadata-designer/src/info_read.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "неполнота: свидетельство регистраторов Unavailable «registrar evidence cannot be scanned completely»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.registrar-scan-files",
-      "class": "corpus",
-      "resource": "Число XML-дескрипторов документов, читаемых при поиске регистраторов регистра.",
-      "unit": "count",
-      "scope": "directory",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/info_read.rs",
-        "symbol": "REGISTRAR_SCAN_MAX_FILES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-metadata-designer/src/info_read.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "неполнота: свидетельство регистраторов Unavailable «registrar evidence cannot be scanned completely»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
       "id": "metadata.remove-traversal-depth",
       "class": "format",
       "resource": "Глубина обхода корня исходников при поиске ссылок на удаляемый объект.",
@@ -4778,84 +4715,6 @@
       "evidence": [],
       "decision": null,
       "review": null
-    },
-    {
-      "id": "metadata.subsystem-scan-bytes",
-      "class": "corpus",
-      "resource": "Суммарный объём файлов, читаемых при обходе дерева Subsystems.",
-      "unit": "bytes",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/subsystem_topology.rs",
-        "symbol": "SUBSYSTEM_SCAN_MAX_BYTES"
-      },
-      "expr": "64 * 1024 * 1024",
-      "value": 67108864,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/subsystem_composition.rs",
-        "crates/unica-metadata-designer/src/info_read.rs",
-        "crates/unica-metadata-designer/src/subsystem_topology.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 5fd79e6cb (регистр вне подсистем командного интерфейса)",
-      "problem": null,
-      "onReach": "view: неполнота «registered subsystem topology cannot be proved completely»; apply состава подсистем: ошибка",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.subsystem-scan-entries",
-      "class": "corpus",
-      "resource": "Число записей каталога при обходе дерева Subsystems.",
-      "unit": "count",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/subsystem_topology.rs",
-        "symbol": "SUBSYSTEM_SCAN_MAX_ENTRIES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/subsystem_composition.rs",
-        "crates/unica-metadata-designer/src/info_read.rs",
-        "crates/unica-metadata-designer/src/subsystem_topology.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 5fd79e6cb (регистр вне подсистем командного интерфейса)",
-      "problem": null,
-      "onReach": "view: неполнота «registered subsystem topology cannot be proved completely»; apply состава подсистем: ошибка",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.subsystem-scan-files",
-      "class": "corpus",
-      "resource": "Число файлов, читаемых при обходе дерева Subsystems.",
-      "unit": "count",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/subsystem_topology.rs",
-        "symbol": "SUBSYSTEM_SCAN_MAX_FILES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/subsystem_composition.rs",
-        "crates/unica-metadata-designer/src/info_read.rs",
-        "crates/unica-metadata-designer/src/subsystem_topology.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 5fd79e6cb (регистр вне подсистем командного интерфейса)",
-      "problem": null,
-      "onReach": "view: неполнота «registered subsystem topology cannot be proved completely»; apply состава подсистем: ошибка",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
     },
     {
       "id": "support.rule-record-length",
@@ -5625,79 +5484,6 @@
       "review": null
     },
     {
-      "id": "project-health.staged-ignore-batch-metadata-bytes",
-      "class": "corpus",
-      "resource": "Захват вывода `git cat-file --batch-check` по индексированным .gitignore (128 байт на файл).",
-      "unit": "bytes",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/git.rs",
-        "symbol": "MAX_STAGED_IGNORE_BATCH_METADATA_BYTES"
-      },
-      "expr": "MAX_STAGED_IGNORE_FILES * 128",
-      "value": 131072,
-      "derived": true,
-      "applied": [
-        "crates/unica-project-health/src/inspection/git.rs"
-      ],
-      "status": "unproven",
-      "origin": "#1114",
-      "problem": null,
-      "onReach": "вывод сверх предела усекается, проверка политики ignore помечается неполной",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
-    },
-    {
-      "id": "project-health.staged-ignore-bytes",
-      "class": "corpus",
-      "resource": "Суммарный объём индексированных файлов .gitignore, читаемых проверкой здоровья проекта.",
-      "unit": "bytes",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/git.rs",
-        "symbol": "MAX_STAGED_IGNORE_TOTAL_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-project-health/src/inspection/git.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "неполнота: «staged .gitignore policy exceeds 8388608 bytes»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
-    },
-    {
-      "id": "project-health.staged-ignore-files",
-      "class": "corpus",
-      "resource": "Число индексированных файлов .gitignore, разбираемых проверкой здоровья проекта.",
-      "unit": "count",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/git.rs",
-        "symbol": "MAX_STAGED_IGNORE_FILES"
-      },
-      "expr": "1024",
-      "value": 1024,
-      "applied": [
-        "crates/unica-project-health/src/inspection/git.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "неполнота: «staged ignore policy contains N .gitignore files; inspection supports at most 1024»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
-    },
-    {
       "id": "project-health.continuation-ttl",
       "class": "retention",
       "resource": "Срок удержания в памяти незанятого держателя продолжения проверки EOL между вызовами check.",
@@ -5763,7 +5549,7 @@
       "status": "unproven",
       "origin": "#1115",
       "problem": null,
-      "onReach": "порция фиксируется и начинается следующая",
+      "onReach": "порция фиксируется и начинается следующая; блоб больше порции читается потоком git cat-file blob без ls-files --eol",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -5794,30 +5580,6 @@
       "review": null
     },
     {
-      "id": "project-health.index-eol-file-bytes",
-      "class": "corpus",
-      "resource": "Размер одного индексированного текстового файла при проверке окончаний строк.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/resources.rs",
-        "symbol": "MAX_INDEX_EOL_FILE_BYTES"
-      },
-      "expr": "32 * 1024 * 1024",
-      "value": 33554432,
-      "applied": [
-        "crates/unica-project-health/src/inspection/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "неполнота политики текстовых ресурсов: проверка EOL не выполнена",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
-    },
-    {
       "id": "project-health.resource-ownership-reason-bytes",
       "class": "format",
       "resource": "Длина текста причины о неоднозначном владении ресурсом в проверке здоровья проекта.",
@@ -5840,54 +5602,6 @@
       "evidence": [],
       "decision": null,
       "review": null
-    },
-    {
-      "id": "project-health.staged-attributes-bytes",
-      "class": "corpus",
-      "resource": "Суммарный объём индексированных файлов .gitattributes, читаемых проверкой здоровья проекта.",
-      "unit": "bytes",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/resources.rs",
-        "symbol": "MAX_STAGED_POLICY_TOTAL_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-project-health/src/inspection/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "неполнота политики атрибутов: проверка RepositoryAttributes не выполнена",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
-    },
-    {
-      "id": "project-health.staged-attributes-files",
-      "class": "corpus",
-      "resource": "Число индексированных файлов .gitattributes, разбираемых проверкой здоровья проекта.",
-      "unit": "count",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/resources.rs",
-        "symbol": "MAX_STAGED_POLICY_FILES"
-      },
-      "expr": "1024",
-      "value": 1024,
-      "applied": [
-        "crates/unica-project-health/src/inspection/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "неполнота RepositoryAttributes: «staged attribute policy contains N .gitattributes files; inspection supports at most 1024»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
     },
     {
       "id": "project-health.diagnostic-evidence",
@@ -6481,6 +6195,30 @@
       "problem": null,
       "onReach": "тихо: устаревший каталог или файл продолжения удаляется; следующая корневая проверка такого проекта идёт с начала",
       "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "process.byte-stream-chunk-bytes",
+      "class": "step",
+      "resource": "Размер одного чтения потока байтов stdout, который отдаётся потребителю целиком, например сканеру EOL большого staged-блоба.",
+      "unit": "bytes",
+      "scope": "process",
+      "source": {
+        "file": "crates/unica-process/src/platform/process.rs",
+        "symbol": "BYTE_STREAM_CHUNK_BYTES"
+      },
+      "expr": "64 * 1024",
+      "value": 65536,
+      "applied": [
+        "crates/unica-process/src/platform/process.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119",
+      "problem": null,
+      "onReach": "кусок передаётся потребителю и читается следующий; общий объём потока не ограничивается",
+      "issue": "#1119",
       "evidence": [],
       "decision": null,
       "review": null

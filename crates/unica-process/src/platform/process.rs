@@ -1706,12 +1706,31 @@ impl ManagedChild {
         delimiter: u8,
         on_record: &mut dyn FnMut(&[u8]) -> StreamControl,
     ) -> Result<ManagedLineOutput, String> {
+        self.wait_for_stream_output(input, StreamFraming::Records { delimiter }, on_record)
+    }
+
+    /// [`ManagedChild::wait_for_record_output`] for raw bytes: stdout is
+    /// handed over in the pieces it is read in.
+    pub fn wait_for_byte_output(
+        &mut self,
+        input: Vec<u8>,
+        on_chunk: &mut dyn FnMut(&[u8]) -> StreamControl,
+    ) -> Result<ManagedLineOutput, String> {
+        self.wait_for_stream_output(input, StreamFraming::Chunks, on_chunk)
+    }
+
+    fn wait_for_stream_output(
+        &mut self,
+        input: Vec<u8>,
+        framing: StreamFraming,
+        on_record: &mut dyn FnMut(&[u8]) -> StreamControl,
+    ) -> Result<ManagedLineOutput, String> {
         let mut stdin = self
             .take_stdin()
             .ok_or_else(|| "process_failed: process stdin is unavailable".to_string())?;
         let writer = thread::spawn(move || stdin.write_all(&input));
         let output = self.wait_for_line_output_inner(
-            StreamFraming::Records { delimiter },
+            framing,
             &mut |_, bytes| match on_record(bytes) {
                 StreamControl::Continue => ProcessLineReply::Continue,
                 StreamControl::Stop => ProcessLineReply::Stop,
@@ -3347,6 +3366,43 @@ enum StreamFraming {
     /// `delimiter`-terminated records of any length; an unterminated tail is
     /// an error, never a record.
     Records { delimiter: u8 },
+    /// The bytes exactly as read, in pieces of any size.
+    Chunks,
+}
+
+/// One read of a byte stream: a step of the stream, not a bound of its size.
+const BYTE_STREAM_CHUNK_BYTES: usize = 64 * 1024;
+
+fn start_chunk_reader<R>(pipe: Option<R>) -> Option<Receiver<LineMessage>>
+where
+    R: Read + Send + 'static,
+{
+    pipe.map(|mut pipe| {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut chunk = vec![0_u8; BYTE_STREAM_CHUNK_BYTES];
+            let mut number = 1_usize;
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        let message = LineMessage::Line(number, chunk[..count].to_vec());
+                        if sender.send(message).is_err() {
+                            return;
+                        }
+                        number = number.saturating_add(1);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => {
+                        let _ = sender.send(LineMessage::ReadError(number, error.to_string()));
+                        return;
+                    }
+                }
+            }
+            let _ = sender.send(LineMessage::End);
+        });
+        receiver
+    })
 }
 
 fn start_line_reader<R>(pipe: Option<R>, framing: StreamFraming) -> Option<Receiver<LineMessage>>
@@ -3356,6 +3412,7 @@ where
     let (delimiter, max_bytes) = match framing {
         StreamFraming::Lines { max_bytes } => (b'\n', Some(max_bytes)),
         StreamFraming::Records { delimiter } => (delimiter, None),
+        StreamFraming::Chunks => return start_chunk_reader(pipe),
     };
     pipe.map(|mut pipe| {
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -3414,6 +3471,9 @@ where
                 let message = match framing {
                     StreamFraming::Lines { .. } => LineMessage::Line(line_number, line),
                     StreamFraming::Records { .. } => LineMessage::Unterminated(line_number),
+                    StreamFraming::Chunks => {
+                        unreachable!("byte streams are read by start_chunk_reader")
+                    }
                 };
                 let _ = sender.send(message);
             }
@@ -5929,6 +5989,27 @@ mod tests {
             records.last().unwrap(),
             format!("record-{}", short_records - 1).as_bytes()
         );
+    }
+
+    #[test]
+    fn byte_stream_delivers_the_exact_bytes_past_the_capture_limit() {
+        let mut input = vec![0];
+        for number in 0..(3 * super::STDOUT_CAPTURE_LIMIT) {
+            input.push((number % 251) as u8);
+        }
+        let mut received = Vec::new();
+        let output = record_echo_helper()
+            .wait_for_byte_output(input.clone(), &mut |chunk| {
+                received.extend_from_slice(chunk);
+                StreamControl::Continue
+            })
+            .unwrap();
+
+        assert!(output.status_success, "{output:?}");
+        assert_eq!(output.line_error, None);
+        // The harness banner ends at the first NUL of the echoed input.
+        let start = received.len() - input.len();
+        assert_eq!(received[start..], input[..]);
     }
 
     #[test]

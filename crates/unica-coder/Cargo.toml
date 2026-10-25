@@ -103,6 +103,7 @@ roxmltree.workspace = true
 xml.workspace = true
 rust-stemmers.workspace = true
 regex.workspace = true
+regex-syntax.workspace = true
 tempfile.workspace = true
 url.workspace = true
 percent-encoding.workspace = true

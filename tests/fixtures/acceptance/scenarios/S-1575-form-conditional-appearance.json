@@ -1,0 +1,250 @@
+{
+  "id": "S-1575-form-conditional-appearance",
+  "issue": 1575,
+  "area": "Управляемые формы",
+  "task": "Прочитать условное оформление формы по выданным адресам: selection, typed filter, Color и локализованный текст; проверить полные значения, четыре реквизита и неизменность исходников.",
+  "workspace": "tests/fixtures/acceptance/form-conditional-appearance",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Appearance"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        },
+        {
+          "pointer": "/data/branches/3/at",
+          "eq": "main:CommonForm.Appearance.Setting"
+        }
+      ],
+      "captures": {
+        "settings": {
+          "pointer": "/data/branches/3/at"
+        },
+        "attributes": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.settings"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonForm.Appearance.Setting.ConditionalAppearance"
+        }
+      ],
+      "captures": {
+        "setting": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/sourcePath",
+          "eq": "Attributes/ConditionalAppearance"
+        },
+        {
+          "pointer": "/data/props/ruleCount",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:CommonForm.Appearance.Setting.ConditionalAppearance.Item"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ],
+      "captures": {
+        "rules": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rules"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonForm.Appearance.Setting.ConditionalAppearance.Item.Rule1"
+        },
+        {
+          "pointer": "/data/items/0/props",
+          "eq": {
+            "selection": [
+              {
+                "field": "ДополнительныеРеквизитыКонтрагент"
+              }
+            ],
+            "filter": [
+              {
+                "type": "FilterItemComparison",
+                "left": {
+                  "type": "Field",
+                  "value": "ДополнительныеРеквизиты.Контрагент"
+                },
+                "comparisonType": "NotFilled"
+              }
+            ],
+            "appearance": [
+              {
+                "type": "SettingsParameterValue",
+                "parameter": "ЦветТекста",
+                "value": {
+                  "type": "Color",
+                  "value": "win:DisabledText"
+                }
+              },
+              {
+                "type": "SettingsParameterValue",
+                "parameter": "Текст",
+                "value": {
+                  "kind": "localizedString",
+                  "values": [
+                    {
+                      "language": "ru",
+                      "content": "Все контрагенты"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "captures": {
+        "rule": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rule"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Appearance.Setting.ConditionalAppearance.Item.Rule1"
+        },
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "selection": [
+              {
+                "field": "ДополнительныеРеквизитыКонтрагент"
+              }
+            ],
+            "filter": [
+              {
+                "type": "FilterItemComparison",
+                "left": {
+                  "type": "Field",
+                  "value": "ДополнительныеРеквизиты.Контрагент"
+                },
+                "comparisonType": "NotFilled"
+              }
+            ],
+            "appearance": [
+              {
+                "type": "SettingsParameterValue",
+                "parameter": "ЦветТекста",
+                "value": {
+                  "type": "Color",
+                  "value": "win:DisabledText"
+                }
+              },
+              {
+                "type": "SettingsParameterValue",
+                "parameter": "Текст",
+                "value": {
+                  "kind": "localizedString",
+                  "values": [
+                    {
+                      "language": "ru",
+                      "content": "Все контрагенты"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.attributes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/3/at",
+          "eq": "main:CommonForm.Appearance.Attribute.В"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonForms/Appearance/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "031b480691e89f964d7344fb6f9c19c29cabd1bd6e69b7e7983140fce9b6f53c"
+        },
+        {
+          "path": "src/CommonForms/Appearance.xml",
+          "kind": "sha256",
+          "eq": "3f78fa89662eb4b498c5fa6316ec511ee6217cf21dbdfd3f1119ea6455c0be2e"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "6f8fd93dee554d6144a6dcf9c3c1efb509feacf80a097e0192d25c263543f758"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    }
+  ]
+}

@@ -258,7 +258,9 @@ class SizeMatcher:
         try:
             config = tomllib.loads(path.read_text(encoding="utf-8"))
             overrides = config["profile"]["default"].get("overrides", [])
-            medium = next(o["filter"] for o in overrides if "slow-timeout" in o)
+            medium = next(
+                o["filter"] for o in overrides if "slow-timeout" in o and "threads-required" not in o
+            )
             large = config["profile"].get("large", {}).get("default-filter", "")
         except (OSError, KeyError, StopIteration):
             medium, large = "", ""

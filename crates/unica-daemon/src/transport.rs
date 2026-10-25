@@ -664,13 +664,30 @@ fn handle_probe_connection<H: InvocationHost<Request = V5InvocationRequest>>(
                 }
                 Err(V5RequestFrameError::Read(_)) => break,
             };
+        // The call's own deadline is fixed here, at frame receipt, on the
+        // runtime's clock; every later stage of the submit spends it.
+        let call_deadline = match decoded.request() {
+            V5ClientRequest::SubmitInvocation { invocation } => {
+                Some(runtime.capture_submit_deadline(invocation.response_budget_ms()))
+            }
+            _ => None,
+        };
         let deadlines = match runtime.hooks().session_deadline_override() {
             Some(bulk_deadline) => V5RequestDeadlines {
                 operation: bulk_deadline,
                 durable: bulk_deadline,
                 response: bulk_deadline,
             },
-            None => v5_request_deadlines(&decoded, request_received_at)?,
+            None => {
+                let mut deadlines = v5_request_deadlines(&decoded, request_received_at)?;
+                // A submit's answer is due by the call's own window from this
+                // frame's receipt, under the same safety cap as every exchange.
+                if let Some(call_deadline) = &call_deadline {
+                    deadlines.response = (request_received_at + call_deadline.response_window())
+                        .min(request_received_at + OWNER_RESPONSE_WRITE_TIMEOUT);
+                }
+                deadlines
+            }
         };
         runtime.hooks().event(
             V5ReceiptRuntimeEventKind::StrictEnvelopeParsed,
@@ -693,10 +710,13 @@ fn handle_probe_connection<H: InvocationHost<Request = V5InvocationRequest>>(
             ),
             V5ClientRequestKind::SubmitInvocation => {
                 let epoch_ms = runtime.epoch_ms();
+                let call_deadline =
+                    call_deadline.expect("a submit frame captured its call deadline");
                 match runtime.submit_invocation(
                     DecodedSubmitAdapter::new(decoded, record.core_identity().clone()),
                     epoch_ms,
                     deadlines.durable,
+                    call_deadline,
                 ) {
                     Ok(reply) => {
                         if runtime.hooks().submit_response_disconnect() {

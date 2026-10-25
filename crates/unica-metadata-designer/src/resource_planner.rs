@@ -1,4 +1,8 @@
 //! Existing metadata resource parsers and staging algorithms over the caller's source proposal.
+use crate::client_interface::{
+    parse_home_page, parse_panels, render_home_page, render_panels, HomePage, HomePageItem, Panel,
+    PanelEntry, PanelLayout, CLIENT_INTERFACE_RELATIVE, HOME_PAGE_RELATIVE, SIDES,
+};
 use crate::interface::{
     interface_order_membership, interface_text_direct_item_values, interface_text_do_group_order,
     interface_text_do_hide, interface_text_do_order, interface_text_do_place,
@@ -45,6 +49,12 @@ pub enum InterfaceEdit {
 }
 
 #[derive(Debug, Clone)]
+pub enum ClientInterfaceEdit {
+    Panels(PanelLayout),
+    HomePage(HomePage),
+}
+
+#[derive(Debug, Clone)]
 pub enum MetadataResourcePlan {
     /// `subsystem.create`: descriptor and registration.
     CreateSubsystem {
@@ -61,6 +71,8 @@ pub enum MetadataResourcePlan {
         relative: PathBuf,
         edit: InterfaceEdit,
     },
+    /// Замена раскладки панелей или начальной страницы корня целиком.
+    ClientInterface(ClientInterfaceEdit),
     SupportCapability(SupportCapability),
     SupportRule {
         target: MetadataAddress,
@@ -261,6 +273,184 @@ fn parse_command_interface_operation(
     })
 }
 
+fn values_object(
+    args: &Map<String, Value>,
+    op_index: usize,
+) -> Result<&Map<String, Value>, ApplyPlanError> {
+    args.get("values")
+        .and_then(Value::as_object)
+        .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))
+}
+
+fn parse_panels_operation(
+    args: &Map<String, Value>,
+    op_index: usize,
+) -> Result<MetadataResourcePlan, ApplyPlanError> {
+    let values = values_object(args, op_index)?;
+    let mut layout = PanelLayout::default();
+    for (side, key) in SIDES.iter().enumerate() {
+        let Some(entries) = values.get(*key) else {
+            continue;
+        };
+        let entries = entries
+            .as_array()
+            .ok_or_else(|| bad(op_index, &format!("values.{key}"), "an area is an array"))?;
+        for (index, entry) in entries.iter().enumerate() {
+            let path = format!("values.{key}[{index}]");
+            let panel = |value: &Value| {
+                value.as_str().and_then(Panel::from_name).ok_or_else(|| {
+                    bad(
+                        op_index,
+                        &path,
+                        "a panel is one of sections, favorites, history, open, functions, tools",
+                    )
+                })
+            };
+            layout.sides[side].push(match entry {
+                Value::Array(group) if !group.is_empty() => {
+                    PanelEntry::Group(group.iter().map(panel).collect::<Result<_, _>>()?)
+                }
+                value => PanelEntry::Panel(panel(value)?),
+            });
+        }
+    }
+    layout
+        .validate()
+        .map_err(|(entry, message)| bad(op_index, &format!("values.{entry}"), message))?;
+    Ok(MetadataResourcePlan::ClientInterface(
+        ClientInterfaceEdit::Panels(layout),
+    ))
+}
+
+fn parse_home_page_operation(
+    args: &Map<String, Value>,
+    op_index: usize,
+) -> Result<MetadataResourcePlan, ApplyPlanError> {
+    let values = values_object(args, op_index)?;
+    let template = values
+        .get("template")
+        .and_then(Value::as_str)
+        .filter(|template| crate::client_interface::HOME_PAGE_TEMPLATES.contains(template))
+        .ok_or_else(|| {
+            bad(
+                op_index,
+                "values.template",
+                "the template is OneColumn, TwoColumnsEqualWidth or TwoColumnsVariableWidth",
+            )
+        })?;
+    let column = |key: &str| -> Result<Vec<HomePageItem>, ApplyPlanError> {
+        let Some(items) = values.get(key) else {
+            return Ok(Vec::new());
+        };
+        let items = items
+            .as_array()
+            .ok_or_else(|| bad(op_index, &format!("values.{key}"), "a column is an array"))?;
+        items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| home_page_item(item, &format!("values.{key}[{index}]"), op_index))
+            .collect()
+    };
+    let page = HomePage {
+        template: template.to_string(),
+        left: column("left")?,
+        right: column("right")?,
+    };
+    if template == "OneColumn" && !page.right.is_empty() {
+        return Err(bad(
+            op_index,
+            "values.right",
+            "the `OneColumn` template has only the left column",
+        ));
+    }
+    Ok(MetadataResourcePlan::ClientInterface(
+        ClientInterfaceEdit::HomePage(page),
+    ))
+}
+
+fn home_page_item(
+    item: &Value,
+    path: &str,
+    op_index: usize,
+) -> Result<HomePageItem, ApplyPlanError> {
+    let item = item
+        .as_object()
+        .ok_or_else(|| bad(op_index, path, "a home page item is an object"))?;
+    let form = item
+        .get("form")
+        .and_then(Value::as_str)
+        .ok_or_else(|| bad(op_index, &format!("{path}.form"), "`form` is required"))?;
+    let height = match item.get("height") {
+        None => 10,
+        Some(height) => height
+            .as_i64()
+            .filter(|height| *height >= 1)
+            .ok_or_else(|| {
+                bad(
+                    op_index,
+                    &format!("{path}.height"),
+                    "`height` is a positive integer",
+                )
+            })?,
+    };
+    let common = match item.get("common") {
+        None => true,
+        Some(common) => common
+            .as_bool()
+            .ok_or_else(|| bad(op_index, &format!("{path}.common"), "`common` is a boolean"))?,
+    };
+    let mut roles = Vec::new();
+    for (index, role) in item
+        .get("roles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let role_path = format!("{path}.roles[{index}]");
+        let (Some(name), Some(visible)) = (
+            role.get("role").and_then(Value::as_str),
+            role.get("visible").and_then(Value::as_bool),
+        ) else {
+            return Err(bad(
+                op_index,
+                &role_path,
+                "a role entry has `role` and boolean `visible`",
+            ));
+        };
+        roles.push((name.to_string(), visible));
+    }
+    Ok(HomePageItem {
+        form: form.to_string(),
+        height,
+        common,
+        roles,
+    })
+}
+
+/// The descriptor that must exist for a form (`CommonForm.F`,
+/// `Kind.Name.Form.F`) or a role (`Role.R`) the home page names.
+fn home_page_reference(reference: &str, role: bool) -> Option<PathBuf> {
+    let parts = reference.split('.').collect::<Vec<_>>();
+    let fits = match parts.as_slice() {
+        ["Role", name] => role && !name.is_empty(),
+        ["CommonForm", name] => !role && !name.is_empty(),
+        [kind, name, "Form", form] => {
+            !role && *kind != "CommonForm" && !name.is_empty() && !form.is_empty()
+        }
+        _ => false,
+    };
+    if !fits {
+        return None;
+    }
+    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, reference).ok()?;
+    unica_source_designer::layout::metadata_descriptor_relative(
+        &address,
+        unica_source_contract::SourceSetKind::Configuration,
+    )
+    .ok()
+}
+
 fn interface_items(
     args: &Map<String, Value>,
     op_index: usize,
@@ -411,6 +601,7 @@ pub fn parse_subsystem_operation(
     args: &Map<String, Value>,
     op_index: usize,
     source_set_name: &str,
+    source_kind: unica_source_contract::SourceSetKind,
 ) -> Result<MetadataResourcePlan, ApplyPlanError> {
     let target =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
@@ -472,6 +663,44 @@ pub fn parse_subsystem_operation(
         ) || (*section == "subsystemOrder")
     }) {
         return parse_command_interface_operation(section, &target, args, op_index);
+    }
+    if matches!(operation, "panels.set" | "homePage.set") {
+        // Оба документа есть только у корня конфигурации; у расширения их нет.
+        let root = matches!(
+            target.segments(),
+            [root] if root.kind() == NodeKind::Configuration && root.name().is_none()
+        );
+        if !root || source_kind != unica_source_contract::SourceSetKind::Configuration {
+            return Err(bad(
+                op_index,
+                "at",
+                format!("`{operation}` targets the configuration root: `<set>:Configuration`"),
+            ));
+        }
+        let interface = if operation == "panels.set" {
+            unica_metadata::interface_operations::InterfaceOperation::PanelsSet
+        } else {
+            unica_metadata::interface_operations::InterfaceOperation::HomePageSet
+        };
+        // Разбор идёт по тому же контракту, что опубликован в `Can`: чужой
+        // ключ или неверный тип отклоняется, а не теряется молча.
+        let normalized = interface
+            .contract()
+            .normalize(
+                &Value::Object(args.clone()),
+                &format!("ops[{op_index}].args"),
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+            })?;
+        let args = normalized
+            .as_object()
+            .expect("a normalized argument object stays an object");
+        return if operation == "panels.set" {
+            parse_panels_operation(args, op_index)
+        } else {
+            parse_home_page_operation(args, op_index)
+        };
     }
     if operation == "subsystem.create" {
         let values = required_values(args, op_index, &["name"])?;
@@ -788,6 +1017,140 @@ fn stage_support_state(
     Ok(())
 }
 
+/// Replaces the panel layout or the home page of the configuration root. An
+/// unchanged model writes nothing; a home page names only forms and roles
+/// that exist in the staged set, since 8.3.27 refuses to load the rest.
+fn stage_client_interface(
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
+    edit: &ClientInterfaceEdit,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let relative = PathBuf::from(match edit {
+        ClientInterfaceEdit::Panels(_) => CLIENT_INTERFACE_RELATIVE,
+        ClientInterfaceEdit::HomePage(_) => HOME_PAGE_RELATIVE,
+    });
+    let preimage = staged
+        .read(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    let stored_text = preimage
+        .as_ref()
+        .map(|bytes| {
+            String::from_utf8(bytes.clone()).map_err(|_| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidSource,
+                    format!("{} is not UTF-8", relative.portable()),
+                )
+                .at_path(at_path.clone())
+            })
+        })
+        .transpose()?;
+    let invalid = |message: String| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+    };
+    let postimage = match edit {
+        ClientInterfaceEdit::Panels(layout) => {
+            let stored = stored_text
+                .as_deref()
+                .map(parse_panels)
+                .transpose()
+                .map_err(invalid)?;
+            if let Some(unknown) = stored.as_ref().and_then(|stored| stored.unknown.first()) {
+                return Err(invalid(format!(
+                    "the layout holds panel `{unknown}` that `panels.set` cannot place; replacing the layout would drop it"
+                )));
+            }
+            if stored
+                .as_ref()
+                .is_some_and(|stored| &stored.layout == layout)
+            {
+                return Ok(());
+            }
+            render_panels(layout, stored.as_ref())
+        }
+        ClientInterfaceEdit::HomePage(page) => {
+            let stored = stored_text
+                .as_deref()
+                .map(parse_home_page)
+                .transpose()
+                .map_err(invalid)?;
+            if stored.as_ref() == Some(page) {
+                return Ok(());
+            }
+            // A reference the stored page already holds goes back as read:
+            // the platform writes some forms by identifier.
+            let kept = stored
+                .iter()
+                .flat_map(|stored| stored.left.iter().chain(&stored.right))
+                .flat_map(|item| {
+                    std::iter::once(item.form.as_str())
+                        .chain(item.roles.iter().map(|(role, _)| role.as_str()))
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            for (key, items) in [("left", &page.left), ("right", &page.right)] {
+                for (index, item) in items.iter().enumerate() {
+                    let path = format!("ops[{op_index}].args.values.{key}[{index}]");
+                    let mut references = vec![(item.form.as_str(), false, format!("{path}.form"))];
+                    references.extend(item.roles.iter().enumerate().map(|(role, (name, _))| {
+                        (name.as_str(), true, format!("{path}.roles[{role}].role"))
+                    }));
+                    for (reference, role, path) in references {
+                        if kept.contains(reference) {
+                            continue;
+                        }
+                        let what = if role {
+                            "role `Role.R`"
+                        } else {
+                            "form `CommonForm.F` or `Kind.Name.Form.F`"
+                        };
+                        let descriptor = home_page_reference(reference, role).ok_or_else(|| {
+                            ApplyPlanError::new(
+                                ApplyPlanErrorKind::BadValue,
+                                format!("`{reference}` is not a {what}"),
+                            )
+                            .at_path(path.clone())
+                        })?;
+                        let exists = staged
+                            .read(&descriptor)
+                            .map_err(|error| ApplyPlanError::staging(error, path.clone()))?
+                            .is_some();
+                        if !exists {
+                            return Err(ApplyPlanError::new(
+                                ApplyPlanErrorKind::NotFound,
+                                format!("`{reference}` does not exist in the source set"),
+                            )
+                            .at_path(path));
+                        }
+                    }
+                }
+            }
+            render_home_page(page, authority.expected_format())
+        }
+    };
+    match preimage {
+        Some(preimage) => staged
+            .replace(&relative, &preimage, postimage.into_bytes())
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?,
+        None => unica_source_designer::registration::stage_new_file(
+            staged,
+            &relative,
+            postimage.as_bytes(),
+            &at_path,
+        )?,
+    }
+    provisional.push(ProvisionalApplyEffect::single(
+        relative,
+        DomainEvent::new(
+            DomainEventKind::ConfigXmlChanged,
+            "Configuration".to_string(),
+        ),
+        op_index,
+    ));
+    Ok(())
+}
+
 pub fn stage_metadata_resource_plan(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
@@ -1044,6 +1407,9 @@ pub fn stage_metadata_resource_plan(
                     op_index,
                 ));
             }
+        }
+        MetadataResourcePlan::ClientInterface(edit) => {
+            stage_client_interface(staged, authority, edit, op_index, provisional)?;
         }
         MetadataResourcePlan::Subsystem {
             address,
@@ -1346,8 +1712,14 @@ mod tests {
         ] {
             let mut args = retired.as_object().unwrap().clone();
             args.insert("at".into(), json!("main:Subsystem.Parent.Subsystem.Child"));
-            let error =
-                parse_subsystem_operation("childSubsystem.remove", &args, 2, "main").unwrap_err();
+            let error = parse_subsystem_operation(
+                "childSubsystem.remove",
+                &args,
+                2,
+                "main",
+                unica_source_contract::SourceSetKind::Configuration,
+            )
+            .unwrap_err();
             assert_eq!(error.path(), Some(format!("ops[2].args.{key}").as_str()));
             assert!(
                 error
@@ -1363,6 +1735,7 @@ mod tests {
             args.as_object().unwrap(),
             2,
             "main",
+            unica_source_contract::SourceSetKind::Configuration,
         )
         .unwrap_err();
         assert_eq!(error.path(), Some("ops[2].args.values"));

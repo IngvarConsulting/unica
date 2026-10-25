@@ -414,6 +414,8 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "commandOrder.set",
     "groupOrder.set",
     "subsystemOrder.set",
+    "panels.set",
+    "homePage.set",
     "mxl.set",
     "area.add",
     "event.implement",
@@ -761,6 +763,10 @@ operation_descriptors!(
     // маршрута `main:Interface` намеренно нет: корень описывается свойством,
     // а не узлом. Интерфейс подсистемы эту операцию не принимает.
     (InterfaceOperation::SubsystemOrderSet),
+    // Панели и начальная страница — документы корня конфигурации, у
+    // расширения их нет.
+    (InterfaceOperation::PanelsSet),
+    (InterfaceOperation::HomePageSet),
     (CodeOperation::Insert),
     (CodeOperation::Replace),
     (EventOperation::Implement),
@@ -1631,12 +1637,14 @@ mod tests {
             "commandOrder.set",
             "groupOrder.set",
             "subsystemOrder.set",
+            "panels.set",
+            "homePage.set",
             "code.insert",
             "code.replace",
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 126);
+        assert_eq!(expected.len(), 128);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465), свойства формы — как свойства описания (#1984):
@@ -2123,6 +2131,15 @@ mod tests {
             "event.implement",
             "main:Catalog.Items.Module.Object.Event.OnWrite"
         ));
+        // Панели и начальная страница — документы корня конфигурации.
+        for name in ["panels.set", "homePage.set"] {
+            assert!(applies(name, "main:Configuration"), "{name}");
+            assert!(!applies(name, "main:Subsystem.Sales.Interface"), "{name}");
+            assert!(
+                !applies_in(SourceSetKind::Extension, name, "main:Configuration"),
+                "{name}"
+            );
+        }
     }
 
     /// Формат макета — отдельный фильтр с одним владельцем: семейства СКД и

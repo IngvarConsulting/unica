@@ -11,11 +11,13 @@ pub(crate) use self::invocation_service::test_control as admission_test_control;
 use self::invocation_service::{
     actor_read_source_capability_for_test, actor_read_source_metadata_for_test,
     bind_workspace_invocation_with_source_override_for_test, ActorInvocationResourcesForTest,
-    ActorReadSourceCapability,
 };
 use self::invocation_service::{
     bind_workspace_invocation_cancellable, ActorInvocationResources, UnadmittedCause,
     WorkspaceAdmissionError,
+};
+pub(in crate::infrastructure::daemon) use self::invocation_service::{
+    text_search, ActorReadSourceCapability,
 };
 pub(crate) use self::invocation_service::{
     ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,
@@ -1673,6 +1675,8 @@ mod retained_directory_removal_tests;
 #[path = "xdto_can_tests.rs"]
 mod xdto_can_tests;
 
+#[cfg(test)]
+mod client_interface_tests;
 #[cfg(test)]
 mod html_template_tests;
 #[cfg(test)]
@@ -4573,7 +4577,7 @@ pub(crate) mod actor_capacity_tests {
                 );
             }
             for arguments in [
-                serde_json::json!({"query":"Needle","role":"lexical"}),
+                serde_json::json!({"query":"Needle","ignoreCase":true}),
                 serde_json::json!({"query":"Needle"}),
             ] {
                 let result =
@@ -4584,7 +4588,7 @@ pub(crate) mod actor_capacity_tests {
                         .as_ref()
                         .and_then(|data| data.get("delivery"))
                         .is_none(),
-                    "lexical search must not order an external engine: {result:?}"
+                    "literal search must not order an external engine: {result:?}"
                 );
             }
             return;
@@ -6063,7 +6067,10 @@ fn main() {
         std::fs::create_dir(root.join("src")).unwrap();
         std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
         for n in 0..extensions {
-            let path = format!("ext{n:02}{}", "x".repeat(200));
+            // Long set roots make each group heavy enough to stop a page by
+            // bytes; deeper than 150 characters Git for Windows refuses the
+            // paths without `core.longpaths` once the temporary root is added.
+            let path = format!("ext{n:02}{}", "x".repeat(150));
             project.push_str(&format!(
                 "  - name: ext{n:02}\n    type: EXTENSION\n    path: {path}\n"
             ));
@@ -6497,6 +6504,124 @@ fn main() {
         assert_eq!(result.next[0]["args"], serde_json::json!({}));
     }
 
+    /// Audit the text-search walk: it reaches sources only through the
+    /// retained root of the actor capability it receives, checks that
+    /// capability's closed deadline and keeps its bounds.
+    fn audit_text_search_walk(source: &str) -> Result<(), String> {
+        use quote::ToTokens;
+        use syn::visit::Visit;
+        fn tokens(node: &impl ToTokens) -> String {
+            node.to_token_stream().to_string()
+        }
+        fn expression_is(expression: &syn::Expr, expected: &str) -> bool {
+            let expected = syn::parse_str::<syn::Expr>(expected)
+                .expect("the closed authority expression fixture parses");
+            tokens(expression) == tokens(&expected)
+        }
+        let file = syn::parse_file(source).map_err(|error| error.to_string())?;
+        // The walk and the subtree descent it starts from.
+        let walk = ["walk_source", "retained_subtree"].map(|name| {
+            file.items.iter().find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+                _ => None,
+            })
+        });
+        let [Some(walk_source), Some(retained_subtree)] = walk else {
+            return Err("text search has no `walk_source` or `retained_subtree`".to_string());
+        };
+        #[derive(Default)]
+        struct SearchCalls {
+            names: std::collections::BTreeSet<String>,
+            closed_deadline_checked: bool,
+            foreign_deadline_checked: bool,
+        }
+
+        impl<'ast> Visit<'ast> for SearchCalls {
+            fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+                self.names.insert(call.method.to_string());
+                if call.method == "is_elapsed" {
+                    if expression_is(&call.receiver, "source.source.deadline")
+                        && call.args.is_empty()
+                    {
+                        self.closed_deadline_checked = true;
+                    } else {
+                        self.foreign_deadline_checked = true;
+                    }
+                }
+                syn::visit::visit_expr_method_call(self, call);
+            }
+        }
+
+        let mut calls = SearchCalls::default();
+        calls.visit_block(&walk_source.block);
+        calls.visit_block(&retained_subtree.block);
+        for required in [
+            "retained_root",
+            "validate_named_identity",
+            "retain_immediate_child_nofollow",
+            "open_named_identity_for_read",
+            "is_elapsed",
+            "is_cancelled",
+        ] {
+            if !calls.names.contains(required) {
+                return Err(format!(
+                    "literal search must retain closed `{required}` authority; found {:?}",
+                    calls.names
+                ));
+            }
+        }
+        if !calls.closed_deadline_checked || calls.foreign_deadline_checked {
+            return Err(
+                "literal search must check only its exact closed self.deadline authority"
+                    .to_string(),
+            );
+        }
+        for ambient in [
+            "canonicalize",
+            "metadata",
+            "read",
+            "read_dir",
+            "read_to_string",
+            "symlink_metadata",
+        ] {
+            if calls.names.contains(ambient) {
+                return Err(format!(
+                    "literal search must not use ambient filesystem method `{ambient}`"
+                ));
+            }
+        }
+        let body = tokens(&walk_source.block) + &tokens(&retained_subtree.block);
+        for bound in [
+            "CANONICAL_SEARCH_MAX_DEPTH",
+            "CANONICAL_SEARCH_MAX_LINE_BYTES",
+            "read_search_line_bounded",
+        ] {
+            if !body.contains(bound) {
+                return Err(format!("literal search must preserve the `{bound}` bound"));
+            }
+        }
+        if !body.contains(&tokens(
+            &syn::parse_str::<syn::Expr>("source.source.retained_root()")
+                .expect("retained search root expression parses"),
+        )) {
+            return Err(
+                "literal search root must come from the private retained binding".to_string(),
+            );
+        }
+        // Directory width is unbounded: names come only from the retained
+        // directory through the ordered spool audited separately.
+        if !body.contains(&tokens(
+            &syn::parse_str::<syn::Expr>("OrderedNames::collect")
+                .expect("ordered names entry point parses"),
+        )) {
+            return Err(
+                "literal search must enumerate retained directories through OrderedNames"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
     fn audit_actor_read_source_capability_api(source: &str) -> Result<(), String> {
         use quote::ToTokens;
         use syn::visit::Visit;
@@ -6712,98 +6837,6 @@ fn main() {
                     "logical authority must preserve cancellation/read/profile/deadline/actor-cache exactly; found `{}`",
                     tokens(authority)
                 ));
-            }
-            Ok(())
-        }
-
-        fn audit_literal_search_body(method: &syn::ImplItemFn) -> Result<(), String> {
-            #[derive(Default)]
-            struct SearchCalls {
-                names: std::collections::BTreeSet<String>,
-                closed_deadline_checked: bool,
-                foreign_deadline_checked: bool,
-            }
-
-            impl<'ast> Visit<'ast> for SearchCalls {
-                fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-                    self.names.insert(call.method.to_string());
-                    if call.method == "is_elapsed" {
-                        if expression_is(&call.receiver, "self.deadline") && call.args.is_empty() {
-                            self.closed_deadline_checked = true;
-                        } else {
-                            self.foreign_deadline_checked = true;
-                        }
-                    }
-                    syn::visit::visit_expr_method_call(self, call);
-                }
-            }
-
-            let mut calls = SearchCalls::default();
-            calls.visit_block(&method.block);
-            for required in [
-                "retained_root",
-                "validate_named_identity",
-                "retain_immediate_child_nofollow",
-                "open_named_identity_for_read",
-                "is_elapsed",
-                "is_cancelled",
-                "match_starts",
-            ] {
-                if !calls.names.contains(required) {
-                    return Err(format!(
-                        "literal search must retain closed `{required}` authority; found {:?}",
-                        calls.names
-                    ));
-                }
-            }
-            if !calls.closed_deadline_checked || calls.foreign_deadline_checked {
-                return Err(
-                    "literal search must check only its exact closed self.deadline authority"
-                        .to_string(),
-                );
-            }
-            for ambient in [
-                "canonicalize",
-                "metadata",
-                "read",
-                "read_dir",
-                "read_to_string",
-                "symlink_metadata",
-            ] {
-                if calls.names.contains(ambient) {
-                    return Err(format!(
-                        "literal search must not use ambient filesystem method `{ambient}`"
-                    ));
-                }
-            }
-            let body = tokens(&method.block);
-            for bound in [
-                "CANONICAL_SEARCH_MAX_DEPTH",
-                "CANONICAL_SEARCH_MAX_LINE_BYTES",
-                "read_search_line_bounded",
-            ] {
-                if !body.contains(bound) {
-                    return Err(format!("literal search must preserve the `{bound}` bound"));
-                }
-            }
-            if !body.contains(&tokens(
-                &syn::parse_str::<syn::Expr>("self.binding.retained_root()")
-                    .expect("retained search root expression parses"),
-            )) {
-                return Err(
-                    "literal search root must come from the private retained binding".to_string(),
-                );
-            }
-            // Directory width is unbounded: names come only from the retained
-            // directory through the ordered spool audited separately.
-            if !body.contains(&tokens(
-                &syn::parse_str::<syn::Expr>("ordered_search_names::OrderedNames::collect")
-                    .expect("ordered names entry point parses"),
-            )) {
-                return Err(
-                    "literal search must enumerate retained directories through OrderedNames"
-                        .to_string(),
-                );
             }
             Ok(())
         }
@@ -7717,11 +7750,11 @@ fn main() {
                 ),
             ),
             (
-                "search_bsl_literal",
+                "search_hit_owners",
                 (
                     true,
-                    "fn search_bsl_literal(&self, matcher: &super::super::v13_read_modes::SearchMatcher, skip: &mut usize, limit: usize, scope_prefix: Option<&str>, scope_at: &QualifiedAddress, cancellation: &CancellationToken,) -> Result<LiteralSearchScan, String>",
-                    "",
+                    "fn search_hit_owners(&self) -> SearchHitOwners<'_>",
+                    "SearchHitOwners::new(self.binding.retained_root(), self.binding.source_kind(), &self.registration_cache,)",
                 ),
             ),
         ]);
@@ -7751,8 +7784,6 @@ fn main() {
             }
             if name == "logical_view_read_authority" {
                 audit_builder_body(method)?;
-            } else if name == "search_bsl_literal" {
-                audit_literal_search_body(method)?;
             } else {
                 let [syn::Stmt::Expr(expression, None)] = method.block.stmts.as_slice() else {
                     return Err(format!(
@@ -7858,6 +7889,8 @@ fn main() {
         let source = include_str!("invocation_service.rs");
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
         audit_ordered_search_names(include_str!("ordered_search_names.rs"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        audit_text_search_walk(include_str!("text_search.rs"))
             .unwrap_or_else(|error| panic!("{error}"));
         // Проверки независимы и в сумме идут секунды: каждая разбирает
         // исходник заново, часть зовёт rustc. Параллельно, с той же паникой (#1920).
@@ -9221,17 +9254,17 @@ struct ActorLogicalReadLease {"#,
     }
 
     fn actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration() {
-        let source = audited_actor_read_source();
+        let source = include_str!("text_search.rs");
         let unordered = source.replacen(
-            "ordered_search_names::OrderedNames::collect(directory, checkpoint)",
-            "ordered_search_names::OrderedNames::from_listing(directory, checkpoint)",
+            "OrderedNames::collect(&frame.directory, checkpoint)",
+            "OrderedNames::from_listing(&frame.directory, checkpoint)",
             1,
         );
         assert_ne!(unordered, source, "hostile mutation must alter its source");
         syn::parse_file(&unordered)
             .expect("hostile capability source must remain valid Rust syntax");
         assert!(
-            audit_actor_read_source_capability_api(&unordered).is_err(),
+            audit_text_search_walk(&unordered).is_err(),
             "literal search escaped the retained ordered enumeration audit"
         );
     }
@@ -9300,9 +9333,10 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_foreign_search_deadline() {
-        let source = audited_actor_read_source();
+        let source = include_str!("text_search.rs");
+        audit_text_search_walk(source).unwrap();
         let replenished_search = source.replacen(
-            "self.deadline.is_elapsed()",
+            "source.source.deadline.is_elapsed()",
             "ProviderDeadline::from_budget(Duration::from_secs(120)).is_elapsed()",
             1,
         );
@@ -9310,20 +9344,20 @@ struct ActorLogicalReadLease {"#,
         syn::parse_file(&replenished_search)
             .expect("hostile capability source must remain valid Rust syntax");
         assert!(
-            audit_actor_read_source_capability_api(&replenished_search).is_err(),
+            audit_text_search_walk(&replenished_search).is_err(),
             "a fresh search deadline escaped the closed receiver audit while other checks remained"
         );
     }
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_missing_search_deadline() {
-        let source = audited_actor_read_source();
-        let unchecked_search = source.replace("self.deadline.is_elapsed()", "false");
+        let source = include_str!("text_search.rs");
+        let unchecked_search = source.replace("source.source.deadline.is_elapsed()", "false");
         assert_ne!(unchecked_search, source, "the unchecked search must change");
         syn::parse_file(&unchecked_search)
             .expect("hostile capability source must remain valid Rust syntax");
         assert!(
-            audit_actor_read_source_capability_api(&unchecked_search).is_err(),
+            audit_text_search_walk(&unchecked_search).is_err(),
             "literal search lost all checks of its closed deadline authority"
         );
     }

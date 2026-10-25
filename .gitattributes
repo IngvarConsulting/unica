@@ -83,6 +83,8 @@ tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -
 /tests/fixtures/platform_8_3_27/empty_configuration/src/** -text whitespace=cr-at-eol
 # Platform re-exports of configuration and extension roots edited by props.set.
 /tests/fixtures/platform_8_3_27/configuration_root_props/**/*.xml -text whitespace=cr-at-eol
+# Platform re-exports of panel layouts and home pages written by apply.
+/tests/fixtures/platform_8_3_27/client_interface/**/*.xml -text whitespace=cr-at-eol
 # Metadata objects written once by the retained 8.3.27 writer for meta-info tests.
 /tests/fixtures/platform_8_3_27/meta_info_surface/** -text whitespace=cr-at-eol
 # External EPF/ERF hierarchical dumps keep BOM, CRLF, LF inside query text,
@@ -97,9 +99,14 @@ crates/unica-dcs-designer/tests/fixtures/** text eol=lf
 # The ExchangePlan composition fixture keeps the platform's BOM and CRLF layout.
 tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/*/Ext/Content.xml -text -whitespace
 
+# Runtime refusal corpus preserves the native owner seed bytes.
+tests/fixtures/acceptance/workspace-pull-validation/src/Configuration.xml -text whitespace=cr-at-eol
 # #1404: 8.3.27 export pairs; their BOM and CRLF bytes are the asserted parity.
 crates/unica-metadata-designer/tests/platform/dump_parity/*.xml -text -whitespace
 crates/unica-forms-designer/tests/platform/dump_parity/*.xml -text -whitespace
+
+# The job schedule fixture keeps the BOM and CRLF an 8.3.27 dump writes.
+tests/fixtures/platform_8_3_27/job_schedule/*.xml -text -whitespace
 
 # Spliced by tests with newline-prefixed patterns; keep their LF bytes on every host.
 /tests/fixtures/platform_8_3_27/mxl/** -text -whitespace

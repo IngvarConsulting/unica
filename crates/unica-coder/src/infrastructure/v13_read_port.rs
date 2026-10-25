@@ -1,3 +1,4 @@
+mod job_schedule;
 use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
 use unica_execution_contract::view_error::ViewError;
 use unica_metadata::configuration::{CfHomePageData, CfInterfaceData};
@@ -358,6 +359,7 @@ impl ProviderReadAuthority {
             self.configuration_support(checkpoint)?,
             self.home_page()?,
             self.command_interface()?,
+            self.panels()?,
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         let owner = prove_already_read_source_set_owner(
@@ -428,7 +430,8 @@ impl ProviderReadAuthority {
         let interface = serde_json::to_value(self.command_interface()?).map_err(|error| {
             ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
         })?;
-        read_configuration_root(file, support, home_page, interface, checkpoint)
+        let panels = self.panels()?.unwrap_or(Value::Null);
+        read_configuration_root(file, support, home_page, interface, panels, checkpoint)
     }
 
     /// Build root registration evidence from the complete retained XML once.
@@ -1566,7 +1569,17 @@ impl ProviderReadAuthority {
     }
 
     pub(crate) fn form_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
-        self.relative_source_exists(&self.attached_resource_relative(target, "Form.xml")?)
+        self.attached_resource_exists(target, "Form.xml")
+    }
+
+    /// Whether the owner's attached resource is a local regular file. A path
+    /// built from the layout alone does not prove that the file exists.
+    pub(crate) fn attached_resource_exists(
+        &self,
+        target: &MetadataAddress,
+        resource: &str,
+    ) -> Result<bool, ViewError> {
+        self.relative_source_exists(&self.attached_resource_relative(target, resource)?)
     }
 
     fn relative_source_exists(&self, relative: &Path) -> Result<bool, ViewError> {
@@ -1893,6 +1906,25 @@ impl ProviderReadAuthority {
         })?;
         parse_cf_command_interface_xml(text)
             .map(Some)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
+    /// Раскладка панелей корня в форме, которую принимает `panels.set`.
+    fn panels(&self) -> Result<Option<Value>, ViewError> {
+        let Some(bytes) = self.read_optional_relative_whole(Path::new(
+            unica_metadata_designer::client_interface::CLIENT_INTERFACE_RELATIVE,
+        ))?
+        else {
+            return Ok(None);
+        };
+        let text = std::str::from_utf8(&bytes).map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "ClientApplicationInterface.xml is not UTF-8",
+            )
+        })?;
+        unica_metadata_designer::client_interface::parse_panels(text)
+            .map(|stored| Some(stored.to_json()))
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 

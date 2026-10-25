@@ -8,6 +8,7 @@ use unica_address::address::{member_address, AddressSegment, NodeKind, Qualified
 use unica_refusal::{RefusalCode, RefusalDetail};
 
 mod form;
+mod form_appearance;
 mod member_properties;
 mod metadata;
 mod role;
@@ -690,6 +691,9 @@ pub(super) fn project_configuration_with_counts(
         }
         props.insert("interface".to_string(), Value::Object(interface));
     }
+    if let Some(Value::Object(panels)) = payload.get("panels") {
+        props.insert("panels".to_string(), Value::Object(panels.clone()));
+    }
     for key in ["support", "properties", "homePage"] {
         match payload.get(key) {
             Some(Value::Object(object)) => {
@@ -802,6 +806,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "totalObjects",
             "homePage",
             "interface",
+            "panels",
         ],
         LogicalReader::Metadata => metadata::PAYLOAD_KEYS,
         LogicalReader::Form => form::PAYLOAD_KEYS,

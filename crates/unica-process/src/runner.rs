@@ -206,6 +206,42 @@ pub trait ProcessRunner {
         Ok(result)
     }
 
+    /// [`ProcessRunner::run_streaming_records`] for raw bytes: stdout reaches
+    /// `on_chunk` in pieces of any size. A runner without its own streaming
+    /// answers from its captured output, and a truncated or non-UTF-8 capture
+    /// delivers nothing and is reported in `line_error`.
+    fn run_streaming_bytes(
+        &self,
+        command: &ProcessCommand,
+        input: &[u8],
+        on_chunk: &mut dyn FnMut(&[u8]) -> StreamControl,
+    ) -> Result<ProcessStreamOutput, String> {
+        let output = if input.is_empty() {
+            self.run(command)?
+        } else {
+            self.run_with_input(command, input)?
+        };
+        let mut result = ProcessStreamOutput {
+            status_success: output.status_success,
+            status: output.status,
+            stderr: output.stderr,
+            timed_out: output.timed_out,
+            cancelled: output.cancelled,
+            stopped_by_consumer: false,
+            line_error: None,
+        };
+        if output.stdout_truncated || output.stdout_had_invalid_utf8 {
+            result.line_error = Some((0, STREAM_CAPTURE_INCOMPLETE_ERROR.to_string()));
+        } else if !output.stdout.is_empty()
+            && on_chunk(output.stdout.as_bytes()) == StreamControl::Stop
+        {
+            result.status_success = false;
+            result.status = "stopped by consumer".to_string();
+            result.stopped_by_consumer = true;
+        }
+        Ok(result)
+    }
+
     fn run_streaming(
         &self,
         command: &ProcessCommand,
@@ -373,6 +409,19 @@ impl ProcessRunner for SystemProcessRunner {
         process_launch_probe::record(&command.cwd, command.program.as_ref());
         let mut child = ManagedChild::spawn(managed_command(command))?;
         let output = child.wait_for_record_output(input.to_vec(), delimiter, on_record)?;
+        Ok(map_managed_line_output(output))
+    }
+
+    fn run_streaming_bytes(
+        &self,
+        command: &ProcessCommand,
+        input: &[u8],
+        on_chunk: &mut dyn FnMut(&[u8]) -> StreamControl,
+    ) -> Result<ProcessStreamOutput, String> {
+        #[cfg(any(test, feature = "test-support"))]
+        process_launch_probe::record(&command.cwd, command.program.as_ref());
+        let mut child = ManagedChild::spawn(managed_command(command))?;
+        let output = child.wait_for_byte_output(input.to_vec(), on_chunk)?;
         Ok(map_managed_line_output(output))
     }
 

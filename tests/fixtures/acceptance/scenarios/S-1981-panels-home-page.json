@@ -1,0 +1,410 @@
+{
+  "id": "S-1981-panels-home-page",
+  "issue": 1981,
+  "area": "Интерфейс конфигурации",
+  "workspace": "tests/fixtures/acceptance/workspace-borrowed",
+  "task": "Разложить панели клиентского приложения и собрать начальную страницу через panels.set и homePage.set: view корня отдаёт текущую раскладку в panels, план не пишет файлов, публикация даёт байты повторной выгрузки 8.3.27, раскладка и страница читаются обратно и повтор ничего не меняет. Панель инструментов вне верхней области, несуществующая форма и корень расширения отклоняются до записи.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "panels": {
+          "file": "src/cf/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "ext": {
+          "file": "src/ext/Configuration.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/panels",
+          "eq": {
+            "top": [
+              "open"
+            ],
+            "left": [
+              "sections"
+            ]
+          }
+        },
+        {
+          "pointer": "/data/props/homePage",
+          "eq": null
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration.Can.homePage.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/template/enum",
+          "contains": "OneColumn"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "panels.set",
+            "args": {
+              "values": {
+                "top": [
+                  [
+                    "tools",
+                    "open"
+                  ]
+                ],
+                "left": [
+                  "sections"
+                ],
+                "bottom": [
+                  "favorites"
+                ]
+              }
+            }
+          },
+          {
+            "op": "homePage.set",
+            "args": {
+              "values": {
+                "template": "TwoColumnsEqualWidth",
+                "left": [
+                  {
+                    "form": "CommonForm.ОбщаяФорма",
+                    "height": 15,
+                    "common": false,
+                    "roles": [
+                      {
+                        "role": "Role.SalesReader",
+                        "visible": true
+                      }
+                    ]
+                  }
+                ],
+                "right": [
+                  {
+                    "form": "DataProcessor.Обработка.Form.Форма"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.panels"
+        },
+        {
+          "path": "src/cf/Ext/HomePageWorkArea.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.ext"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "d1b4f0b5026b063ac2b45e072bfc96d0160ec30bc69d3d600d2bef5c7d5f3c2f"
+        },
+        {
+          "path": "src/cf/Ext/HomePageWorkArea.xml",
+          "kind": "sha256",
+          "eq": "8c27600b1a2911bb397cdd1f2945ed02bf830ba68608a4395a78f600b3f5122e"
+        },
+        {
+          "path": "src/ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.ext"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "published": {
+          "file": "src/cf/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "page": {
+          "file": "src/cf/Ext/HomePageWorkArea.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/panels",
+          "eq": {
+            "top": [
+              [
+                "tools",
+                "open"
+              ]
+            ],
+            "left": [
+              "sections"
+            ],
+            "bottom": [
+              "favorites"
+            ]
+          }
+        },
+        {
+          "pointer": "/data/props/homePage/template",
+          "eq": "TwoColumnsEqualWidth"
+        },
+        {
+          "pointer": "/data/props/homePage/left/0/roles",
+          "eq": [
+            {
+              "role": "Role.SalesReader",
+              "visible": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "panels.set",
+            "args": {
+              "values": {
+                "top": [
+                  [
+                    "tools",
+                    "open"
+                  ]
+                ],
+                "left": [
+                  "sections"
+                ],
+                "bottom": [
+                  "favorites"
+                ]
+              }
+            }
+          },
+          {
+            "op": "homePage.set",
+            "args": {
+              "values": {
+                "template": "TwoColumnsEqualWidth",
+                "left": [
+                  {
+                    "form": "CommonForm.ОбщаяФорма",
+                    "height": 15,
+                    "common": false,
+                    "roles": [
+                      {
+                        "role": "Role.SalesReader",
+                        "visible": true
+                      }
+                    ]
+                  }
+                ],
+                "right": [
+                  {
+                    "form": "DataProcessor.Обработка.Form.Форма"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "panels.set",
+            "args": {
+              "values": {
+                "left": [
+                  "tools"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: the `tools` panel is placed only in the `top` area",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.left[0]"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "homePage.set",
+            "args": {
+              "values": {
+                "template": "OneColumn",
+                "left": [
+                  {
+                    "form": "CommonForm.НетТакой"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: `CommonForm.НетТакой` does not exist in the source set",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.left[0].form"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Ext/HomePageWorkArea.xml",
+          "kind": "sha256",
+          "eq": "$capture.page"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Configuration",
+        "ops": [
+          {
+            "op": "homePage.set",
+            "args": {
+              "values": {
+                "template": "OneColumn"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `homePage.set` does not apply to Configuration `ext:Configuration`; it addresses `Configuration` of a configuration, not of an extension",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.ext"
+        }
+      ]
+    }
+  ]
+}

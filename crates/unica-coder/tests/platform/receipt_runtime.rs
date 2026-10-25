@@ -65,16 +65,14 @@ fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_rece
         fn reserved_task_id(&self) -> Option<TaskId> {
             self.inner.reserved_task_id()
         }
-        fn response_budget_ms(&self) -> Option<u64> {
-            self.inner.response_budget_ms()
-        }
         fn into_strict_submit(
             self,
             expected_core: &CoreIdentityDigest,
         ) -> Result<StrictSubmit<V5InvocationRequest>, Self::Error> {
-            assert!(
-                self.clock_reads.load(Ordering::SeqCst) > 0,
-                "the actual CanonicalInvocationHost clock must be captured before strict decoding"
+            assert_eq!(
+                self.clock_reads.load(Ordering::SeqCst),
+                0,
+                "the submit must not read the clock again before strict decoding"
             );
             self.entered.store(true, Ordering::SeqCst);
             self.inner.into_strict_submit(expected_core)
@@ -123,6 +121,15 @@ fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_rece
         .expect("read receipt generation before strict refusal");
     let foreign: CoreIdentity = "ab".repeat(32).parse().expect("foreign core identity");
     assert_ne!(foreign, identity);
+    // The transport captures the call's deadline at frame receipt, on the
+    // actual CanonicalInvocationHost clock. From then on the submit spends
+    // that one deadline: it reads no clock of its own before strict decoding.
+    let call_deadline = runtime.capture_submit_deadline(7_000);
+    assert!(
+        clock_reads.load(Ordering::SeqCst) > 0,
+        "the call's deadline is captured on the host clock"
+    );
+    clock_reads.store(0, Ordering::SeqCst);
     let submitted = runtime.submit_invocation(
         ObservedStrictSubmit {
             inner: DecodedSubmitAdapter::new(
@@ -134,6 +141,7 @@ fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_rece
         },
         1_000,
         Instant::now() + TEST_STEP,
+        call_deadline,
     );
     assert!(matches!(
         submitted,
@@ -8654,6 +8662,7 @@ fn exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing() {
         unica_daemon::protocol_v5::DecodedSubmitAdapter::new(decoded, identity.clone()),
         RETIREMENT_TEST_OBSERVED_EPOCH_MS,
         Instant::now() + TEST_STEP,
+        runtime.capture_submit_deadline(7_000),
     );
 
     assert!(
@@ -10122,6 +10131,159 @@ fn direct_terminal_preparation_queue_and_store_share_one_publication_deadline() 
         "the daemon serves after the spent deadline: {submitted:?} / {recovered:?}"
     );
     assert_eq!(hooks.published.load(Ordering::SeqCst), 3);
+
+    stop.store(true, Ordering::SeqCst);
+    drop(owner);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
+
+/// The real canonical read service. It records the handoff moment of the
+/// call's window as the call reached it, then holds the execution.
+struct HeldReadService {
+    inner: crate::infrastructure::daemon::v13_service::CanonicalV13ReadService,
+    handoff_at_prepare: Mutex<Option<Instant>>,
+    release: Mutex<mpsc::Receiver<()>>,
+    executions: AtomicUsize,
+}
+
+impl CanonicalInvocationService for HeldReadService {
+    fn prepare(
+        &self,
+        invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>> {
+        *self.handoff_at_prepare.lock().unwrap() = Some(invocation.handoff_at_for_test());
+        self.inner.prepare(invocation)
+    }
+
+    fn execute(
+        &self,
+        invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+        cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        let _ = self
+            .release
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(30));
+        self.inner.execute(invocation, cancellation)
+    }
+}
+
+/// Holds the accepted frame on its way from the transport to the executor.
+#[derive(Default)]
+struct ExecutorEntryDelayHooks {
+    delay_ms: AtomicU64,
+}
+
+impl V5RuntimeHooks<CanonicalInvocationHost> for ExecutorEntryDelayHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn event(&self, event: V5ReceiptRuntimeEventKind, _epoch_ms: u64) {
+        if event == V5ReceiptRuntimeEventKind::V5ExecutorEntered {
+            thread::sleep(Duration::from_millis(self.delay_ms.load(Ordering::SeqCst)));
+        }
+    }
+}
+
+/// #984: the call's deadline is fixed once, when the daemon accepts the
+/// frame, and every stage measures against it on one clock. A frame that
+/// waits two seconds between the transport and the executor has spent them:
+/// the handoff moment the executor sees is the caller's budget from the
+/// frame, not from the end of that wait. The same attempt then hands off
+/// and completes its Task.
+#[test]
+fn the_deadline_fixed_at_frame_receipt_governs_the_whole_call() {
+    const BUDGET: Duration = Duration::from_millis(7_000);
+    const WAIT: Duration = Duration::from_millis(2_000);
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, workspace_root) = catalog_workspace();
+    let (release_tx, release_rx) = mpsc::channel();
+    let service = Arc::new(HeldReadService {
+        inner: crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+        handoff_at_prepare: Mutex::new(None),
+        release: Mutex::new(release_rx),
+        executions: AtomicUsize::new(0),
+    });
+    // The production clock: no test clock can stand in for the daemon's own.
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        service.clone(),
+        Arc::new(unica_execution::clock::TokioClock),
+    ));
+    let hooks = Arc::new(ExecutorEntryDelayHooks::default());
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(60),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            (config).into_transport_config(),
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect v5 owner");
+    hooks
+        .delay_ms
+        .store(WAIT.as_millis() as u64, Ordering::SeqCst);
+    let task_id = TaskId::new();
+    let invocation = V5InvocationRequest::new(
+        InvocationId::new(),
+        task_id,
+        V5ToolIdentity::View,
+        serde_json::Map::from_iter([(
+            "at".to_owned(),
+            serde_json::Value::String("main:Catalog.Items".to_owned()),
+        )]),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(
+            workspace_root.to_string_lossy().into_owned(),
+        ),
+        BUDGET.as_millis() as u64,
+    )
+    .expect("valid view invocation");
+    // The caller may give up on the handoff answer; the Task is read below.
+    let sent = Instant::now();
+    let _ = owner.submit_invocation(invocation);
+    hooks.delay_ms.store(0, Ordering::SeqCst);
+    let handoff_at = service
+        .handoff_at_prepare
+        .lock()
+        .unwrap()
+        .expect("the call reached the executor");
+    // Half the wait separates a deadline fixed at the frame from one
+    // captured after the wait; local delivery of the frame takes far less,
+    // even on a loaded host.
+    let late = handoff_at.saturating_duration_since(sent + BUDGET);
+    assert!(
+        late < WAIT / 2,
+        "the wait before the executor moved the handoff {late:?} past the caller's budget"
+    );
+    release_tx.send(()).expect("release the held execution");
+    let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
+    assert!(
+        matches!(terminal, V5DaemonTaskSnapshot::Completed { .. }),
+        "the same attempt completes its Task: {terminal:?}"
+    );
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
 
     stop.store(true, Ordering::SeqCst);
     drop(owner);

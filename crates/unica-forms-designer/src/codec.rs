@@ -19,6 +19,9 @@ use unica_source_designer::read::{path_exists, read_string, read_utf8_sig_snapsh
 use unica_source_designer::roots::root_version_literal;
 use unica_xml_format::text::*;
 use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
+
+mod conditional_appearance;
+
 pub const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
 
 pub struct FormValidationReporter {
@@ -1509,6 +1512,7 @@ pub fn parse_form_info_xml(
             .map(form_info_parameters)
             .unwrap_or_default(),
         commands: event_evidence.commands,
+        conditional_appearance: conditional_appearance::read(root),
         event_context: event_evidence.context,
     })
 }

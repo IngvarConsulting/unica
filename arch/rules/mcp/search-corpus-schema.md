@@ -11,6 +11,9 @@ check:
   - crates/unica-coder/tests/v13_search_integration.rs::text_search_refuses_unvisited_depth_instead_of_claiming_complete_coverage
   - crates/unica-coder/tests/v13_search_integration.rs::text_hits_name_their_module_and_view_reads_the_same_line
   - crates/unica-coder/tests/v13_search_integration.rs::broad_text_search_scopes_name_the_module_of_every_hit
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_search_hit_without_an_address_carries_no_path
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::first_literal_page_counts_the_whole_corpus_by_kind_and_module
+  - crates/unica-coder/tests/v13_search_integration.rs::literal_search_pages_past_two_hundred_matches_without_loss
   - crates/unica-coder/tests/platform/event_sources.rs::module_paths_map_to_the_logical_module_view_reads
   - crates/unica-coder/tests/platform/event_sources.rs::files_outside_the_module_layout_have_no_logical_address
 ---
@@ -46,19 +49,31 @@ check:
 области основного текстового поиска через MCP.
 
 Локальный `text`-поиск сообщает `data.fileCoverage` отдельно от страниц
-совпадений. Если обход остановлен до конца корпуса ради следующей страницы,
+совпадений. Если поиск остановлен до конца корпуса ради следующей страницы,
 `scanComplete: false`, а `uncovered` — нижняя граница числа файлов, которые
-не удалось дочитать. На последней странице обход завершён и число точно;
-`complete: true` допустимо только когда `uncovered` равно нулю. Слишком
-длинная строка или неверный UTF-8 оставляют файл непокрытым, но найденные
-совпадения в других файлах и прочитанной части сохраняются. `summary`
+не удалось дочитать. На последней странице поиск завершён и число точно;
+`complete: true` допустимо только когда `uncovered` равно нулю. Строка,
+которая может содержать совпадение, но длиннее предела или не читается как
+UTF-8, оставляет файл непокрытым; найденные совпадения в других файлах и
+прочитанной части сохраняются. `summary`
 называет такой результат частичным, даже если `page.stoppedBy: complete`
-завершает выдачу доступных совпадений. `details` содержат не более 32 файлов;
+завершает выдачу доступных совпадений. `details` перечисляет ограниченное число
+файлов этой страницы, `uncovered` считает и прежние страницы;
 `detailsTruncated` отличает неполный список от полного. `fileId` — устойчивый
-в пределах обхода и области порядковый номер файла в обходе, а не путь и не
-логический адрес.
+идентификатор файла в его наборе исходников, а не путь и не логический
+адрес.
 
-Текстовые страницы повторно читают текущие исходники по курсору и сообщают
+Первая страница `text`-поиска несёт `data.totals` — сводку объёма всего
+корпуса области по [правилу буквального поиска](../analysis/literal-search.md):
+точные `matches` и `files`, `kinds` со счётом совпадений и файлов по виду
+объекта, `unaddressed` для совпадений без доказанного адреса, `modules` —
+ограниченный список модулей-лидеров с адресом `at` и счётом, `rest` — счёт
+остальных модулей и их совпадений, `uncovered` — число файлов с
+непрочитанными строками. Пустые `unaddressed`, `rest` и `uncovered` не
+выдаются. `fileCoverage` описывает выданную часть, `totals` — весь корпус;
+продолжения `totals` не несут.
+
+Текстовые страницы читают текущие исходники с места курсора и сообщают
 `dataFreshness: unknown` и `pageConsistency: live`: при изменении корпуса
 совпадения могут сдвинуться. Общая ревизия не проверяется. Размер страницы
 задаёт [общий контракт](read-page-budget.md).

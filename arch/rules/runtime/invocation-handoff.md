@@ -11,7 +11,6 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::response_lost_at_the_cutoff_is_recovered_into_the_handed_off_task
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_recovered_task_of_another_key_is_refused
   - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_window_closing_answers_the_closed_lost_submit_refusal
-gap: https://github.com/IngvarConsulting/unica/issues/980
 ---
 
 # Затянувшийся прямой вызов продолжается в том же фоновом задании

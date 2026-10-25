@@ -231,7 +231,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             # `corpus` выбирает свод — текст модулей или имена метаданных, —
             # а `kind` сужает поиск по именам до одного вида узла. Оба входа
             # логические: ни один не называет файл.
-            "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "limit", "cursor"},
+            "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "ignoreCase", "limit", "cursor"},
             "unica.check": {"at", "limit", "cursor"},
             # Курсор есть только у чтения сохранённого плана; сравнение
             # left/right по-прежнему не публикует продолжение (#1218).
