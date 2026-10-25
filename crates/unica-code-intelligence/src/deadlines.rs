@@ -3,7 +3,7 @@ use std::time::Duration;
 
 const SEARCH_TOTAL_DEFAULT_SECONDS: u64 = 300;
 const SEARCH_RLM_DEFAULT_SECONDS: u64 = 300;
-const SEARCH_GIT_GREP_DEFAULT_SECONDS: u64 = 2;
+const SEARCH_GIT_GREP_DEFAULT_SECONDS: u64 = 30;
 const PROVIDER_READ_DEFAULT_SECONDS: u64 = 45;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

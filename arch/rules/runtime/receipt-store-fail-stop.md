@@ -12,6 +12,7 @@ check:
   - crates/unica-coder/tests/platform/receipt_runtime.rs::tiny_submit_budget_after_an_early_cancel_keeps_the_daemon
   - crates/unica-execution/src/receipt_ledger_actor.rs::step_begun_late_in_its_deadline_gets_the_running_floor_from_its_start
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::fail_stop_before_the_long_phase_never_enters_the_provider
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::direct_terminal_preparation_queue_and_store_share_one_publication_deadline
 gap: https://github.com/IngvarConsulting/unica/issues/984
 ---
 
