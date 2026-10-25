@@ -553,6 +553,26 @@ pub fn read_root_relative_regular_file_checked(
     root: &Path,
     path: &Path,
     maximum_bytes: usize,
+    checkpoint: impl FnMut() -> io::Result<()>,
+    phase: impl FnMut(SecureReadPhase),
+) -> io::Result<SecureRead> {
+    read_root_relative(root, path, Some(maximum_bytes), checkpoint, phase)
+}
+
+/// The whole regular file, whatever its size (#1119): the same confinement and
+/// identity proofs as the bounded read, without a byte limit.
+pub fn read_root_relative_regular_file_whole(
+    root: &Path,
+    path: &Path,
+    phase: impl FnMut(SecureReadPhase),
+) -> io::Result<SecureRead> {
+    read_root_relative(root, path, None, || Ok(()), phase)
+}
+
+fn read_root_relative(
+    root: &Path,
+    path: &Path,
+    maximum_bytes: Option<usize>,
     mut checkpoint: impl FnMut() -> io::Result<()>,
     mut phase: impl FnMut(SecureReadPhase),
 ) -> io::Result<SecureRead> {
@@ -1093,7 +1113,7 @@ mod imp {
     pub(super) fn read(
         root: &Path,
         path: &Path,
-        maximum_bytes: usize,
+        maximum_bytes: Option<usize>,
         checkpoint: &mut impl FnMut() -> io::Result<()>,
         mut phase: impl FnMut(SecureReadPhase),
     ) -> io::Result<SecureRead> {
@@ -1114,13 +1134,22 @@ mod imp {
         let identity = file_identity(&file)?;
         let opened = file.metadata()?;
         phase(SecureReadPhase::BeforeRead);
-        if usize::try_from(opened.len()).map_or(true, |length| length > maximum_bytes) {
+        let length = usize::try_from(opened.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "resource exceeds addressable memory",
+            )
+        })?;
+        if maximum_bytes.is_some_and(|maximum| length > maximum) {
             return Err(io::Error::new(
                 io::ErrorKind::FileTooLarge,
                 "resource exceeds the snapshot byte limit",
             ));
         }
-        let mut bytes = Vec::with_capacity(opened.len() as usize);
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
             checkpoint()?;
@@ -1129,7 +1158,7 @@ mod imp {
                 break;
             }
             bytes.extend_from_slice(&buffer[..read]);
-            if bytes.len() > maximum_bytes {
+            if maximum_bytes.is_some_and(|maximum| bytes.len() > maximum) {
                 return Err(io::Error::new(
                     io::ErrorKind::FileTooLarge,
                     "resource exceeds the snapshot byte limit",
@@ -2146,7 +2175,7 @@ mod imp {
     pub(super) fn read(
         root: &Path,
         path: &Path,
-        maximum_bytes: usize,
+        maximum_bytes: Option<usize>,
         checkpoint: &mut impl FnMut() -> io::Result<()>,
         mut phase: impl FnMut(SecureReadPhase),
     ) -> io::Result<SecureRead> {
@@ -2181,13 +2210,22 @@ mod imp {
         let identity = windows_file_identity(&file)?;
         let opened = file.metadata()?;
         phase(SecureReadPhase::BeforeRead);
-        if usize::try_from(opened.len()).map_or(true, |length| length > maximum_bytes) {
+        let length = usize::try_from(opened.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "resource exceeds addressable memory",
+            )
+        })?;
+        if maximum_bytes.is_some_and(|maximum| length > maximum) {
             return Err(io::Error::new(
                 io::ErrorKind::FileTooLarge,
                 "resource exceeds the snapshot byte limit",
             ));
         }
-        let mut bytes = Vec::with_capacity(opened.len() as usize);
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
             checkpoint()?;
@@ -2196,7 +2234,7 @@ mod imp {
                 break;
             }
             bytes.extend_from_slice(&buffer[..read]);
-            if bytes.len() > maximum_bytes {
+            if maximum_bytes.is_some_and(|maximum| bytes.len() > maximum) {
                 return Err(io::Error::new(
                     io::ErrorKind::FileTooLarge,
                     "resource exceeds the snapshot byte limit",
@@ -2292,7 +2330,7 @@ mod imp {
     pub(super) fn read(
         _root: &Path,
         _path: &Path,
-        _maximum_bytes: usize,
+        _maximum_bytes: Option<usize>,
         _checkpoint: &mut impl FnMut() -> io::Result<()>,
         _phase: impl FnMut(SecureReadPhase),
     ) -> io::Result<SecureRead> {

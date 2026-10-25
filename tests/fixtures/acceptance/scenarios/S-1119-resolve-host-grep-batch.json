@@ -1,0 +1,69 @@
+{
+  "id": "S-1119-resolve-host-grep-batch",
+  "name": "translate-host-grep-hits-into-addresses-in-one-call",
+  "issue": 1119,
+  "area": "Навигация по исходникам",
+  "task": "Перевести совпадения поиска средствами хоста — пути и пути со строкой — в логические адреса одним вызовом: строка внутри метода даёт метод, строка вне методов — модуль с явным признаком, путь без строки — объект; несуществующая строка и незарегистрированный владелец отказывают только своему элементу, повтор отвечает на своей позиции.",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve-resources",
+  "wire": [
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "paths": [
+          "src/Documents/Invoice/Ext/ObjectModule.bsl:4",
+          "src/Documents/Invoice/Ext/ObjectModule.bsl:70",
+          "src/Documents/Invoice/Ext/ManagerModule.bsl",
+          "src/Documents/Invoice/Ext/ObjectModule.bsl:99",
+          "src/DataProcessors/Orphan/Ext/ManagerModule.bsl:1",
+          "src/Documents/Invoice/Ext/ObjectModule.bsl:4"
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Document.Invoice.Module.Object.Method.Ping"
+        },
+        {
+          "pointer": "/data/items/0/line",
+          "eq": "inMethod"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Document.Invoice.Module.Object"
+        },
+        {
+          "pointer": "/data/items/1/line",
+          "eq": "outsideMethod"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:Document.Invoice.Module.Manager"
+        },
+        {
+          "pointer": "/data/items/3/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data/items/4/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data/items/5/at",
+          "eq": "main:Document.Invoice.Module.Object.Method.Ping"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Invoice.Module.Object.Method.Ping"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 ---
 id: INV.APP.DAEMON-INVOCATION-HANDOFF
 check:
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::zero_budget_call_is_a_durable_task_before_the_provider_runs
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::cutoff_during_admission_projects_exact_unbound_task
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::response_budget_is_not_receipt_identity
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::known_long_answers_its_task_before_the_long_phase_on_an_unmoved_clock

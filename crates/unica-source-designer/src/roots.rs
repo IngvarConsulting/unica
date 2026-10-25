@@ -103,6 +103,13 @@ pub static PLATFORM_XML_ROOTS: &[PlatformXmlRoot] = &[
         publication: PlatformXmlPublicationPolicy::ExactRootVersion,
         owner: PlatformXmlOwnerPolicy::ContainerScoped,
     },
+    // Objects/*/Ext/AdditionalIndexes.xml
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
+        local_name: "AdditionalIndexes",
+        publication: PlatformXmlPublicationPolicy::ExactRootVersion,
+        owner: PlatformXmlOwnerPolicy::ContainerScoped,
+    },
     // ConfigDumpInfo.xml
     PlatformXmlRoot {
         namespace: "http://v8.1c.ru/8.3/xcf/dumpinfo",
@@ -270,6 +277,12 @@ mod tests {
             (
                 "http://v8.1c.ru/8.3/xcf/predef",
                 "PredefinedData",
+                ExactRootVersion,
+                ContainerScoped,
+            ),
+            (
+                "http://v8.1c.ru/8.3/xcf/extrnprops",
+                "AdditionalIndexes",
                 ExactRootVersion,
                 ContainerScoped,
             ),

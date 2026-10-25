@@ -20,8 +20,10 @@ pub struct MetaRemoveTextRead {
     pub raw: Vec<u8>,
 }
 
+// #1119: the reference scan visits the whole source root, however many
+// entries the configuration holds; depth still guards against cycles.
 const META_REMOVE_MAX_TRAVERSAL_DEPTH: usize = 256;
-const META_REMOVE_MAX_TRAVERSAL_ENTRIES: usize = 1_000_000;
+const META_REMOVE_MAX_TRAVERSAL_ENTRIES: usize = usize::MAX;
 
 #[derive(Clone, Copy)]
 pub struct MetaRemoveTraversalLimits {
@@ -504,14 +506,6 @@ pub fn plan_meta_remove_subsystem_replacements_bounded(
     Ok(())
 }
 
-/// Largest single source file the reference scan will read.
-///
-/// The scan decides whether an object may be removed, so it reads every XML and
-/// BSL file under the source root. Without a per-file bound one oversized file
-/// would size the whole operation, and the traversal limits above only bound
-/// how many entries are visited, not how big each one is.
-pub const META_REMOVE_REFERENCE_FILE_MAX_BYTES: usize = 16 * 1024 * 1024;
-
 pub fn meta_remove_should_skip_file(
     file: &Path,
     config_dir: &Path,
@@ -528,6 +522,8 @@ pub fn meta_remove_should_skip_file(
     }
     let relative = file.strip_prefix(config_dir).ok();
     let rel = relative_display(file, config_dir);
+    // Subsystem descriptors are walked separately. The command interface of
+    // a subsystem is a composition: what its rules leave is a reference.
     rel == "Configuration.xml"
         || rel == "ConfigDumpInfo.xml"
         || relative.is_some_and(|path| {
@@ -535,6 +531,7 @@ pub fn meta_remove_should_skip_file(
                 == Some(std::path::Component::Normal(std::ffi::OsStr::new(
                     "Subsystems",
                 )))
+                && !path.ends_with("Ext/CommandInterface.xml")
         })
 }
 
@@ -543,10 +540,10 @@ pub fn meta_remove_search_patterns(
     obj_name: &str,
     type_plural: &str,
 ) -> Vec<String> {
-    let mut patterns = Vec::new();
-    if let Some(ref_names) = meta_remove_type_ref_names(obj_type) {
-        patterns.extend(ref_names.iter().map(|name| format!("{name}.{obj_name}")));
-    }
+    let mut patterns = meta_remove_derived_type_names(obj_type)
+        .into_iter()
+        .map(|name| format!("{name}.{obj_name}"))
+        .collect::<Vec<_>>();
     if let Some(manager) = meta_remove_ru_manager(obj_type) {
         patterns.push(format!("{manager}.{obj_name}"));
     }
@@ -563,25 +560,67 @@ pub fn meta_remove_search_patterns(
     patterns
 }
 
-pub fn meta_remove_type_ref_names(obj_type: &str) -> Option<&'static [&'static str]> {
-    match obj_type {
-        "Catalog" => Some(&["CatalogRef", "CatalogObject"]),
-        "Document" => Some(&["DocumentRef", "DocumentObject"]),
-        "Enum" => Some(&["EnumRef"]),
-        "ExchangePlan" => Some(&["ExchangePlanRef", "ExchangePlanObject"]),
-        "ChartOfAccounts" => Some(&["ChartOfAccountsRef", "ChartOfAccountsObject"]),
-        "ChartOfCharacteristicTypes" => Some(&[
-            "ChartOfCharacteristicTypesRef",
-            "ChartOfCharacteristicTypesObject",
-        ]),
-        "ChartOfCalculationTypes" => Some(&[
-            "ChartOfCalculationTypesRef",
-            "ChartOfCalculationTypesObject",
-        ]),
-        "BusinessProcess" => Some(&["BusinessProcessRef", "BusinessProcessObject"]),
-        "Task" => Some(&["TaskRef", "TaskObject"]),
-        _ => None,
+/// The types the platform derives from an object of the kind, as its own
+/// descriptor declares them in `xr:GeneratedType`: `CatalogRef`,
+/// `InformationRegisterRecordSet`, `Characteristic` and the others, and the
+/// tabular section types `<Kind>TabularSection` and `<Kind>TabularSectionRow`
+/// of a kind with tabular sections.
+pub fn meta_remove_derived_type_names(obj_type: &str) -> Vec<String> {
+    let mut names = crate::template_catalog::metadata_generated_types_8_3_27(obj_type)
+        .unwrap_or_default()
+        .iter()
+        .map(|(name, _)| (*name).to_string())
+        .collect::<Vec<_>>();
+    let tabular = unica_metadata::MetadataKind::parse(obj_type).is_ok_and(|kind| {
+        unica_metadata::metadata_kind_collections(kind)
+            .contains(&unica_metadata::MetaCollection::TabularSections)
+    });
+    if tabular {
+        names.push(format!("{obj_type}TabularSection"));
+        names.push(format!("{obj_type}TabularSectionRow"));
     }
+    names
+}
+
+/// The Russian spelling of a derived type name in module code, from the
+/// Russian spellings of the kind: `CatalogRef` is `СправочникСсылка`,
+/// `InformationRegisterRecordSet` is `РегистрСведенийНаборЗаписей`. Types
+/// whose Russian name does not follow the kind — `Characteristic` is
+/// `Характеристика`, `BusinessProcessRoutePointRef` is
+/// `ТочкаМаршрутаБизнесПроцессаСсылка` — are spelled whole; the rest, whose
+/// Russian names are not known here, have only their English name.
+pub fn meta_remove_ru_derived_type_names(
+    obj_type: &str,
+    derived: &str,
+    ru_kind_spellings: &[&str],
+) -> Vec<String> {
+    match derived {
+        "Characteristic" => return vec!["Характеристика".to_string()],
+        "BusinessProcessRoutePointRef" => {
+            return vec!["ТочкаМаршрутаБизнесПроцессаСсылка".to_string()]
+        }
+        _ => {}
+    }
+    let suffix = match derived.strip_prefix(obj_type) {
+        Some("Ref") => "Ссылка",
+        Some("Object") => "Объект",
+        Some("Selection") => "Выборка",
+        Some("List") => "Список",
+        Some("Manager") => "Менеджер",
+        Some("Record") => "Запись",
+        Some("RecordSet") => "НаборЗаписей",
+        Some("RecordKey") => "КлючЗаписи",
+        Some("RecordManager") => "МенеджерЗаписи",
+        Some("ValueManager") => "МенеджерЗначения",
+        Some("ValueKey") => "КлючЗначения",
+        Some("TabularSection") => "ТабличнаяЧасть",
+        Some("TabularSectionRow") => "ТабличнаяЧастьСтрока",
+        _ => return Vec::new(),
+    };
+    ru_kind_spellings
+        .iter()
+        .map(|spelling| format!("{spelling}{suffix}"))
+        .collect()
 }
 
 pub fn meta_remove_ru_manager(obj_type: &str) -> Option<&'static str> {
