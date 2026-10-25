@@ -3861,16 +3861,17 @@ mod tests {
                 "working",
                 "connect and response past {requested_wait_ms}ms + 125ms must still answer the Task state: {response}"
             );
-            if let Ok(request) = observations.recv_timeout(Duration::from_millis(500)) {
-                assert_eq!(
-                    request,
-                    V5ClientRequest::WaitTask {
-                        task_id,
-                        wait_ms: 0
-                    },
-                    "connect time consumes the wait slice before the 125ms response margin"
-                );
-            }
+            let request = observations
+                .recv_timeout(Duration::from_millis(500))
+                .expect("the answered Task state proves the daemon saw the wait");
+            assert_eq!(
+                request,
+                V5ClientRequest::WaitTask {
+                    task_id,
+                    wait_ms: 0
+                },
+                "connect time consumes the wait slice before the 125ms response margin"
+            );
             mcp.shutdown().await;
         }
     }
