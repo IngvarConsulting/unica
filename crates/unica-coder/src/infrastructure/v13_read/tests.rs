@@ -2552,12 +2552,15 @@ fn xdto_property_view_preserves_type_identity_and_explicit_and_effective_bounds(
         let data = result.data.unwrap();
         let props = &data["props"];
         let type_info = props["type"].clone();
-        assert!(type_info.is_object(), "missing type: {data}");
+        assert!(
+            type_info.is_object(),
+            "property type arrives as nested JSON"
+        );
         assert_eq!(type_info["namespace"], "http://www.w3.org/2001/XMLSchema");
         assert_eq!(type_info["local"], local);
         assert_eq!(type_info["raw"], format!("xs:{local}"));
         let bounds = props["bounds"].clone();
-        assert!(bounds.is_object(), "missing bounds: {data}");
+        assert!(bounds.is_object(), "property bounds arrive as nested JSON");
         assert_eq!(
             bounds,
             json!({
@@ -2588,8 +2591,8 @@ fn xdto_property_view_names_facts_that_exceed_the_compact_limit() {
     ).unwrap());
     assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
     let data = result.data.unwrap();
-    assert!(data["props"]["type"].is_object(), "{data}");
-    assert!(data["props"].get("bounds").is_none(), "{data}");
+    assert!(data["props"]["type"].is_object());
+    assert!(data["props"].get("bounds").is_none());
     assert!(
         data["limits"].as_array().unwrap().iter().any(|limit| limit
             .as_str()
@@ -7280,7 +7283,7 @@ fn xdto_restricted_value_view_returns_named_and_anonymous_facets() {
         let props = &data["props"];
         assert_eq!(props["facets"], facets);
         let actual_base = &props["base"];
-        assert!(actual_base.is_object(), "{actual_base}");
+        assert!(actual_base.is_object(), "base arrives as nested JSON");
         assert_eq!(actual_base["local"], base);
         assert_eq!(actual_base["namespace"], "http://www.w3.org/2001/XMLSchema");
         if anonymous {
