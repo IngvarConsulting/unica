@@ -35,14 +35,11 @@ fn rule(address: &QualifiedAddress, value: &Value) -> NodeView {
     if let Some(enabled) = value.get("use").and_then(Value::as_bool) {
         props.insert("use".into(), json!(enabled));
     }
-    // Facts stay nested JSON, bounded by their serialized size (#2031).
+    // Facts stay nested JSON in the common property bound (#2031): an
+    // oversize fact is named in limits like any other property.
     for key in ["presentation", "selection", "filter", "appearance"] {
         if let Some(value) = value.get(key) {
-            if value.to_string().len() <= MAX_COMPACT_PROP_BYTES {
-                props.insert(key.into(), value.clone());
-            } else {
-                limits.push(format!("{key}: значение превышает 2048 байт UTF-8"));
-            }
+            place_prop(&mut props, &mut limits, key, value, false, key);
         }
     }
     NodeView::new(
@@ -114,4 +111,38 @@ pub(super) fn project(
         .with_limits(limits(value)),
         items,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_oversize_rule_fact_is_named_in_limits_and_the_rest_stays() {
+        let address =
+            QualifiedAddress::parse("main:CommonForm.F.Setting.ConditionalAppearance.Item.Rule1")
+                .unwrap();
+        let node = rule(
+            &address,
+            &json!({
+                "name": "Rule1",
+                "use": true,
+                "filter": {"kind": "group", "items": []},
+                "appearance": {"text": "x".repeat(MAX_COMPACT_PROP_BYTES)},
+            }),
+        );
+        let node = serde_json::to_value(node).unwrap();
+        assert_eq!(node["props"]["use"], true);
+        assert_eq!(
+            node["props"]["filter"],
+            json!({"kind": "group", "items": []})
+        );
+        assert!(node["props"].get("appearance").is_none());
+        assert_eq!(
+            node["limits"],
+            json!([format!(
+                "appearance exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"
+            )])
+        );
+    }
 }
