@@ -325,7 +325,9 @@ def pins_published_file(assertion) -> bool:
         return assertion.get("eq") is False
     if assertion["kind"] == "sha256":
         return isinstance(assertion.get("eq"), str) and not assertion["eq"].startswith("$")
-    return assertion["kind"] in {"xml", "xmlTags"} and ("eq" in assertion or "contains" in assertion)
+    return assertion["kind"] in {"xml", "xmlTags"} and (
+        "eq" in assertion or "contains" in assertion or "sameItems" in assertion
+    )
 
 
 def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str]]:
