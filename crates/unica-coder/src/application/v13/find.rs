@@ -520,8 +520,9 @@ impl FindIndex {
 
 /// One page of the ranked answer of [`FindIndex::find_all_checked`], built
 /// while the layout is walked. Each document is scored as it is read and
-/// dropped; only the `keep` best candidates by rank stay, so memory follows
-/// the requested page, not the corpus. Every match still counts toward the
+/// dropped; only the `keep` best candidates by rank stay — the requested page
+/// and those before it, so a deep page of a broad query keeps up to its
+/// offset. Every match still counts toward the
 /// total and a fingerprint that does not depend on the order it was met in.
 /// Nearest names are scored on a second walk, only when nothing matched
 /// directly.
@@ -532,7 +533,6 @@ pub(crate) struct NameRanker {
     keep: usize,
     nearest_pass: bool,
     best: BinaryHeap<Ranked>,
-    best_addresses: HashSet<String>,
     matched: usize,
     fingerprint: [u64; 4],
     largest_item_bytes: usize,
@@ -608,7 +608,6 @@ impl NameRanker {
             keep,
             nearest_pass: false,
             best: BinaryHeap::new(),
-            best_addresses: HashSet::new(),
             matched: 0,
             fingerprint: [0; 4],
             largest_item_bytes: 0,
@@ -640,13 +639,9 @@ impl NameRanker {
         }
     }
 
+    /// The layout walk offers each address once (the first document of an
+    /// address wins there), so every match counts exactly once.
     fn admit(&mut self, score: usize, candidate: FindCandidate) {
-        // The first document of an address wins while it is ranked here.
-        // Two layout entries reach one address only when their names differ
-        // in letter case alone, which no platform export writes.
-        if self.best_addresses.contains(&candidate.at) {
-            return;
-        }
         let public =
             serde_json::to_vec(&public_name_match(&candidate)).expect("name match is serializable");
         self.largest_item_bytes = self.largest_item_bytes.max(public.len());
@@ -667,11 +662,8 @@ impl NameRanker {
             if self.best.peek().is_some_and(|worst| &ranked >= worst) {
                 return;
             }
-            if let Some(evicted) = self.best.pop() {
-                self.best_addresses.remove(&evicted.candidate.at);
-            }
+            self.best.pop();
         }
-        self.best_addresses.insert(ranked.candidate.at.clone());
         self.best.push(ranked);
     }
 
@@ -686,7 +678,6 @@ impl NameRanker {
         Self {
             nearest_pass: true,
             best: BinaryHeap::new(),
-            best_addresses: HashSet::new(),
             matched: 0,
             fingerprint: [0; 4],
             largest_item_bytes: 0,

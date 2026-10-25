@@ -199,6 +199,10 @@ struct DirectoryBuild {
     /// A name search scores each document as it is read instead of keeping
     /// the directory, so the directory budgets do not apply to it.
     ranker: Option<NameRanker>,
+    /// Addresses already pushed for the kind being walked, kept only when
+    /// two collection directories of the source name that kind (they can
+    /// differ in letter case alone): the first document of an address wins.
+    repeated_kind: Option<HashSet<String>>,
 }
 
 impl DirectoryBuild {
@@ -387,6 +391,7 @@ impl WorkspaceFindDirectoryBuilder {
             omissions: FindOmissions::default(),
             include_module_aliases,
             ranker,
+            repeated_kind: None,
         };
         let result = (|| {
             for source in sources {
@@ -1326,6 +1331,7 @@ impl WorkspaceFindDirectoryBuilder {
             omissions: FindOmissions::default(),
             include_module_aliases: false,
             ranker: None,
+            repeated_kind: None,
         };
         let head = self.read_descriptor_head(
             file,
@@ -1409,13 +1415,21 @@ impl WorkspaceFindDirectoryBuilder {
                 configuration,
             )?;
         }
-        for entry in immediate_names(
+        let collections = immediate_names(
             source.root,
             self.collection_limit(build),
             deadline,
             cancellation,
             self.capacity_observer.as_deref(),
-        )? {
+        )?;
+        let mut kind_directories = HashMap::<&str, usize>::new();
+        for entry in &collections {
+            if let Some(layout) = entry.to_str().and_then(metadata_kind_by_directory) {
+                *kind_directories.entry(layout.tag).or_default() += 1;
+            }
+        }
+        let mut repeated_kinds = HashMap::<&str, HashSet<String>>::new();
+        for entry in collections {
             find_checkpoint(deadline, cancellation)?;
             let Some(directory) = entry.to_str() else {
                 continue;
@@ -1423,6 +1437,8 @@ impl WorkspaceFindDirectoryBuilder {
             let Some(layout) = metadata_kind_by_directory(directory) else {
                 continue;
             };
+            build.repeated_kind = (kind_directories[layout.tag] > 1)
+                .then(|| repeated_kinds.remove(layout.tag).unwrap_or_default());
             let collection =
                 match retain_enumerated_child(source.root, &entry, deadline, cancellation)? {
                     SourceEntry::Directory(collection) => collection,
@@ -1581,6 +1597,9 @@ impl WorkspaceFindDirectoryBuilder {
                     )?;
                 }
             }
+            if let Some(seen) = build.repeated_kind.take() {
+                repeated_kinds.insert(layout.tag, seen);
+            }
         }
         Ok(())
     }
@@ -1690,6 +1709,9 @@ impl WorkspaceFindDirectoryBuilder {
                 Some(_) => return Err(unsafe_layout_entry()),
                 None => continue,
             };
+            // A command is named by its directory and by a stray `.xml`
+            // alike: the first of them in the listing is the command.
+            let mut family_names = HashSet::new();
             for entry in immediate_names(
                 &family,
                 self.collection_limit(build),
@@ -1754,6 +1776,9 @@ impl WorkspaceFindDirectoryBuilder {
                     }
                     descriptor_identity(&head).1
                 };
+                if !family_names.insert(child_name.clone()) {
+                    continue;
+                }
                 self.push(
                     build,
                     source,
@@ -1787,6 +1812,11 @@ impl WorkspaceFindDirectoryBuilder {
             // A directory entry whose name is not addressable is not an
             // object; the layout simply does not describe it.
             return Ok(());
+        }
+        if let Some(seen) = build.repeated_kind.as_mut() {
+            if !seen.insert(at.to_string()) {
+                return Ok(());
+            }
         }
         let _ = source;
         let path = path_text(relative);
@@ -4336,6 +4366,7 @@ mod tests {
             omissions: super::FindOmissions::default(),
             include_module_aliases: false,
             ranker: None,
+            repeated_kind: None,
         };
         for _ in 0..=super::MAX_OMISSION_DETAILS {
             build.record_omission("main", "descriptor_unreadable");
@@ -4517,6 +4548,12 @@ mod tests {
             &fixture.source.join("Catalogs/Валютные.xml"),
             &owner("Валютные", "Catalog", "Валютные счета", ""),
         );
+        // A stray descriptor next to a command directory names the same
+        // command: the layout offers that address once.
+        write(
+            &fixture.source.join("Catalogs/Валюты/Commands/Обновить.xml"),
+            &owner("Обновить", "Command", "Обновить", ""),
+        );
         let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let sources = [LayoutFindSource::new(
             "main",
@@ -4542,6 +4579,7 @@ mod tests {
                 .unwrap(),
             FindRequest::new("Форма").unwrap().with_scope(scope.clone()),
             FindRequest::new("Catalogs/Валюты.xml").unwrap(),
+            FindRequest::new("Обновить").unwrap(),
         ];
         for request in requests {
             let expected = directory

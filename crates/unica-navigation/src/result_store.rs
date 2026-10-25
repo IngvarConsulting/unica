@@ -1489,6 +1489,14 @@ mod tests {
         unanswered.result_fingerprint = None;
         assert_eq!(store.verify_question(&token, &unanswered), Ok(()));
         assert_eq!(store.verify_question(&token, &changed_answer), Ok(()));
+        // The offset of such a token is known before the answer: a search
+        // keeps only the ranks up to it, and `read` still finds it stale.
+        assert_eq!(store.question_offset(&token, &unanswered), Ok(20));
+        assert_eq!(store.question_offset(&token, &changed_answer), Ok(20));
+        assert_eq!(
+            store.question_offset(&token, &other_kind),
+            Err(SearchCursorError::Invalid)
+        );
         assert_eq!(
             store.verify_question(&token, &other_kind),
             Err(SearchCursorError::Invalid)
