@@ -100,17 +100,10 @@ EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
 EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
-# The 5328082f contract is proven on 1C 8.3.27.2074. A full 67-case run on
-# 2026-10-24 (456 commands, report SHA256
-# 460e3e56f5e1126cad9518fc8334d7ca5ee4f829b4f3d12ed31ac18aef243545) passed
-# 66 cases; form-compile-managed was accepted-normalized there and passed
-# after #2043 qualified its types. The canonical form writers then took the
-# platform's default qualifiers and line endings (#1996). A manual comparison
-# of the corpora with UUIDs masked found only form-compile-managed and
-# form-edit-managed changed, and a run of both with form-compile-managed-v012
-# passed (report SHA256
-# 83c7005f6c83e904a6b157c33455911abe88f3a7b7c70d51d7510f7033985dc6).
-# Two corpora generated independently from this change give this contract.
+# Full 67-case gate on 1C 8.3.27.2074 passed on 2026-10-25: 456 commands in
+# two rounds, no accepted-normalized or source-error cases. Two independent
+# corpora generated from this change agree on this contract. Native report
+# SHA256: 91cfabf9c937aed85a850a0117919bab776688d3bfbc47691b6dbece70c8273f.
 # This records semantic retention and stable round trips under the existing
 # comparison policy; it is not whole-tree raw-byte or full-release acceptance.
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
