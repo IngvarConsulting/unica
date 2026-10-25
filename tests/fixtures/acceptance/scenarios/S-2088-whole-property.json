@@ -1,0 +1,103 @@
+{
+  "id": "S-2088-whole-property",
+  "issue": 2088,
+  "area": "Свойства метаданных",
+  "workspace": "tests/fixtures/acceptance/workspace-type-size",
+  "task": "Дочитать составной тип реквизита, который не поместился в props: предел в limits называет адрес <узел>.Props.type, view по нему отдаёт тип целиком той же формой, а у малого реквизита то же свойство читается и по адресу. Неизвестное свойство и пагинация одного значения отклоняются.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/limits/0",
+          "contains": "read it whole at main:AccumulationRegister.Movements.Attribute.Long.Props.type"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Attribute.Long.Props.type"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Props"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/metadataPath",
+          "eq": "Document.ДокументОснованиеДвиженияНомер01"
+        },
+        {
+          "pointer": "/data/props/type/variants/8/metadataPath",
+          "eq": "Document.ДокументОснованиеДвиженияНомер09"
+        },
+        {
+          "pointer": "/data/props/type/mutationCapability",
+          "eq": "editable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Attribute.Long.Props.synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Long"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Attribute.Long.Props.nope"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: node `main:AccumulationRegister.Movements.Attribute.Long` has no property `nope`",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Attribute.Long.Props.type",
+        "limit": 5
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: a node property is one value and has no pages; omit limit",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

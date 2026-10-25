@@ -7,6 +7,7 @@ use unica_metadata::{
 /// Both the XML observer and this transfer consume the same closed profile.
 /// A serialized provider property is not, by itself, permission to publish it.
 pub(super) fn project(
+    address: &unica_address::address::QualifiedAddress,
     profile: MetaMemberReadProfile,
     context: MetaMemberReadContext,
     item: &Value,
@@ -51,7 +52,15 @@ pub(super) fn project(
             _ => None,
         };
         match value {
-            Some(value) => place_prop(&mut props, &mut limits, spec.name, &value, true, spec.name),
+            Some(value) => place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                spec.name,
+                &value,
+                true,
+                spec.name,
+            ),
             None => limits.push(format!(
                 "{} has an invalid or duplicated observed value",
                 spec.name

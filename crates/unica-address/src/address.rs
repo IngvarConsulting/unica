@@ -121,6 +121,10 @@ pub enum NodeKind {
     /// его имя — весь остаток адреса, потому что имя операции само содержит
     /// точку (`query.set`). Узел, чей словарь спрашивают, — адрес до `Can`.
     Can,
+    /// Одно свойство узла целиком: `<узел>.Props.<имя>`. Сегмент
+    /// терминальный; так читается свойство, которое не поместилось в
+    /// `props` узла (#2088). Узел-владелец — адрес до `Props`.
+    Props,
 }
 
 const LEGACY_METADATA_KINDS: &[NodeKind] = &[
@@ -233,6 +237,7 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Callee, &["Вызываемый"]),
     spelling(NodeKind::PredefinedItem, &["ПредопределённыйЭлемент"]),
     spelling(NodeKind::Can, &[]),
+    spelling(NodeKind::Props, &[]),
 ];
 
 /// Сегменты до элемента структуры варианта СКД: `…Setting.V[.Item.I…]` —
@@ -429,6 +434,7 @@ impl NodeKind {
             Self::Callee => "Callee",
             Self::PredefinedItem => "PredefinedItem",
             Self::Can => "Can",
+            Self::Props => "Props",
         }
     }
 
@@ -610,6 +616,20 @@ impl QualifiedAddress {
                 });
                 continue;
             }
+            // Свойство узла — последний сегмент с одним именем.
+            if kind == NodeKind::Props {
+                let [property] = &parts[index..] else {
+                    return Err(AddressError::new(
+                        AddressErrorCode::InvalidName,
+                        "Props names one property and ends the address: `<node>.Props.<name>`",
+                    ));
+                };
+                segments.push(AddressSegment {
+                    kind,
+                    name: Some((*property).to_string()),
+                });
+                break;
+            }
             // Пары вслепую здесь не годятся: безымянный вид забрал бы
             // следующий сегмент себе под имя, и объявленная ветвь перестала бы
             // разрешаться. Имя берётся только у вида, который его носит.
@@ -681,14 +701,15 @@ impl QualifiedAddress {
                 },
             );
         }
-        // Словарь корня спрашивают адресом `Configuration.Can.<op>`: корень
-        // остаётся единственным, `Can` — не его потомок, а вопрос к нему.
+        // Словарь корня спрашивают адресом `Configuration.Can.<op>`, свойство —
+        // `Configuration.Props.<имя>`: корень остаётся единственным, `Can` и
+        // `Props` — не его потомки, а вопросы к нему.
         let sole_configuration_root = match segments.as_slice() {
             [root] => root.kind == NodeKind::Configuration && root.name.is_none(),
-            [root, can] => {
+            [root, question] => {
                 root.kind == NodeKind::Configuration
                     && root.name.is_none()
-                    && can.kind == NodeKind::Can
+                    && matches!(question.kind, NodeKind::Can | NodeKind::Props)
             }
             _ => false,
         };
@@ -784,6 +805,23 @@ impl QualifiedAddress {
     /// имени экранирована. Ошибка — имя не годится в адрес.
     pub fn member(&self, name: &str) -> Result<Self, AddressError> {
         Self::parse(&member_address(self, name))
+    }
+
+    /// Вопрос к одному свойству узла: узел-владелец и имя свойства.
+    /// `None` — адрес не про свойство.
+    pub fn property_query(&self) -> Option<(Self, &str)> {
+        let (last, owner) = self.segments.split_last()?;
+        if last.kind != NodeKind::Props || owner.is_empty() {
+            return None;
+        }
+        Some((
+            Self {
+                line_range: None,
+                source_set: self.source_set.clone(),
+                segments: owner.to_vec(),
+            },
+            last.name()?,
+        ))
     }
 
     /// Вопрос к словарю операций: узел, чей словарь спрашивают, и имя
@@ -963,6 +1001,37 @@ mod tests {
     /// забирал `Command` себе под имя, и объявленная узлом ветвь
     /// `...Interface.Command` разрешалась обратно в тот же узел: счёт называл
     /// команды, спуск по названному адресу их не показывал.
+    /// `<узел>.Props.<имя>` называет одно свойство узла: сегмент последний и
+    /// с одним именем, владелец — адрес до него (#2088).
+    #[test]
+    fn a_property_address_names_its_owner_and_one_property() {
+        for (raw, owner) in [
+            (
+                "main:Catalog.Items.Attribute.Code.Props.type",
+                "main:Catalog.Items.Attribute.Code",
+            ),
+            ("main:Constant.Limit.Props.type", "main:Constant.Limit"),
+            ("main:Configuration.Props.panels", "main:Configuration"),
+        ] {
+            let at = QualifiedAddress::parse(raw).unwrap();
+            assert_eq!(at.to_string(), raw);
+            let (parsed_owner, name) = at.property_query().expect(raw);
+            assert_eq!(parsed_owner.to_string(), owner);
+            assert_eq!(name, raw.rsplit('.').next().unwrap());
+            assert!(at.operation_query().is_none());
+        }
+        for raw in [
+            "main:Catalog.Items.Props",
+            "main:Catalog.Items.Props.type.Attribute",
+        ] {
+            assert!(QualifiedAddress::parse(raw).is_err(), "{raw}");
+        }
+        assert!(QualifiedAddress::parse("main:Catalog.Items")
+            .unwrap()
+            .property_query()
+            .is_none());
+    }
+
     #[test]
     fn nameless_kinds_do_not_consume_the_next_segment_as_a_name() {
         let at = QualifiedAddress::parse("main:Subsystem.Администрирование.Interface.Command")

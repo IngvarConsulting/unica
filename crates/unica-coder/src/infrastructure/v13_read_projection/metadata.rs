@@ -99,8 +99,8 @@ fn project_metadata(
             ],
         );
         let mut limits = metadata_limits(payload);
-        props.extend(metadata_property_props(payload, &mut limits));
-        props.extend(metadata_detail_props(payload, &mut limits));
+        props.extend(metadata_property_props(address, payload, &mut limits));
+        props.extend(metadata_detail_props(address, payload, &mut limits));
         // Счёт предопределённых элементов берётся из ответа читателя, а не из
         // длины страницы: при урезанной странице они расходятся, и ветвь
         // обещала бы меньше, чем есть.
@@ -730,6 +730,7 @@ fn metadata_item_node(
             place_prop(
                 &mut props,
                 &mut limits,
+                address,
                 key,
                 value,
                 true,
@@ -746,7 +747,15 @@ fn metadata_item_node(
     ] {
         if let Some(value) = item.get(key) {
             let subject = format!("metadata {key}");
-            place_prop(&mut props, &mut limits, key, value, false, &subject);
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                key,
+                value,
+                false,
+                &subject,
+            );
         }
     }
     let mut branches = [
@@ -795,7 +804,7 @@ fn metadata_item_node(
                     .collect();
                 (Map::new(), limits)
             },
-            |(profile, context)| member_properties::project(profile, context, item),
+            |(profile, context)| member_properties::project(address, profile, context, item),
         );
     props.extend(member_props);
     limits.extend(member_limits);
@@ -818,7 +827,11 @@ fn metadata_item_node(
 /// не заслуживает ветви: адресовать внутри него нечего. Роль каждого поля
 /// называет ключ, и родительный падеж уходит в имя: `handlerModule`, а не
 /// `method.metadataPath`.
-fn metadata_detail_props(payload: &Value, limits: &mut Vec<String>) -> Map<String, Value> {
+fn metadata_detail_props(
+    address: &QualifiedAddress,
+    payload: &Value,
+    limits: &mut Vec<String>,
+) -> Map<String, Value> {
     let mut props = Map::new();
     let Some(details) = payload
         .get("details")
@@ -849,17 +862,29 @@ fn metadata_detail_props(payload: &Value, limits: &mut Vec<String>) -> Map<Strin
         for (field, role) in roles {
             if let Some(value) = composite.get(field) {
                 let subject = format!("metadata {role}");
-                place_prop(&mut props, limits, role, value, false, &subject);
+                place_prop(&mut props, limits, address, role, value, false, &subject);
             }
         }
     }
     if let Some(value) = details.get("type") {
-        place_prop(&mut props, limits, "type", value, false, "metadata type");
+        place_prop(
+            &mut props,
+            limits,
+            address,
+            "type",
+            value,
+            false,
+            "metadata type",
+        );
     }
     props
 }
 
-fn metadata_property_props(payload: &Value, limits: &mut Vec<String>) -> Map<String, Value> {
+fn metadata_property_props(
+    address: &QualifiedAddress,
+    payload: &Value,
+    limits: &mut Vec<String>,
+) -> Map<String, Value> {
     let mut props = Map::new();
     for property in payload
         .get("properties")
@@ -878,7 +903,7 @@ fn metadata_property_props(payload: &Value, limits: &mut Vec<String>) -> Map<Str
             continue;
         }
         let subject = format!("metadata property {key}");
-        place_prop(&mut props, limits, key, value, true, &subject);
+        place_prop(&mut props, limits, address, key, value, true, &subject);
     }
     props
 }
