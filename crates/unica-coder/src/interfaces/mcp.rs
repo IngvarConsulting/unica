@@ -9,9 +9,11 @@
 
 use super::canonical_cancellation::CanonicalCancellation;
 use super::daemon_router::{
-    canonical_daemon_router, wait_transport_cutoff, CanonicalCallOutcome, CanonicalDaemonRouter,
+    canonical_daemon_router, CanonicalCallOutcome, CanonicalDaemonRouter,
     FrontendInvocationDeadline, TOOL_EXECUTION_ERROR,
 };
+#[cfg(test)]
+use crate::interfaces::daemon_router::daemon_wait_cutoff;
 mod manual_calls;
 mod receive_pump;
 #[cfg(test)]
@@ -490,10 +492,7 @@ fn execute_surface_tool(
                         None,
                     ));
                 }
-                let cutoff = request.as_ref().ok().map(|request| match request.action {
-                    TaskToolAction::Result { wait_ms } => wait_transport_cutoff(wait_ms, deadline),
-                    TaskToolAction::Get | TaskToolAction::Cancel => deadline.transport_cutoff(),
-                });
+                let cutoff = request.as_ref().ok().map(|_| deadline.transport_cutoff());
                 let result =
                     execute_compatibility_task_tool(router, request, deadline, cancellation);
                 return Ok(match cutoff {
@@ -3329,7 +3328,7 @@ mod tests {
     ) -> u64 {
         crate::interfaces::daemon_router::bounded_wait_ms(
             requested,
-            wait_transport_cutoff(requested, deadline),
+            daemon_wait_cutoff(requested, deadline),
             now,
         )
     }
@@ -3360,24 +3359,24 @@ mod tests {
             0
         );
         assert_eq!(
-            wait_transport_cutoff(0, deadline),
+            daemon_wait_cutoff(0, deadline),
             received + Duration::from_millis(125)
         );
         assert_eq!(
-            wait_transport_cutoff(1, deadline),
+            daemon_wait_cutoff(1, deadline),
             received + Duration::from_millis(126)
         );
         assert_eq!(
-            wait_transport_cutoff(7_000, deadline),
+            daemon_wait_cutoff(7_000, deadline),
             received + Duration::from_millis(7_125)
         );
         assert_eq!(
-            wait_transport_cutoff(7_000, deadline),
+            daemon_wait_cutoff(7_000, deadline),
             received + Duration::from_millis(7_125),
             "elapsed frontend time is not replenished by the compatibility wait"
         );
         assert_eq!(
-            wait_transport_cutoff(
+            daemon_wait_cutoff(
                 7_000,
                 FrontendInvocationDeadline::new(received, Some(Duration::from_millis(80)))
             ),
@@ -3835,7 +3834,8 @@ mod tests {
             let task_id = unica_execution_contract::invocation::TaskId::new();
             let (observed, observations) = mpsc::channel();
             // Connect and handshake take longer than the requested wait, and the
-            // daemon answers only after the 125 ms response margin has passed.
+            // daemon answers only after the 125 ms response margin has passed:
+            // that spends the wait slice, not the transport cutoff.
             let fake = working_task_fake(
                 task_id,
                 Duration::from_millis(60),
@@ -3857,13 +3857,10 @@ mod tests {
             .await;
             let response = mcp.receive().await;
             assert_eq!(
-                response["result"]["structuredContent"]["diagnostics"][0]["code"],
-                "task_transport_failed",
-                "connect plus wait response exceeded the single {requested_wait_ms}ms + 125ms operation budget: {response}"
+                response["result"]["structuredContent"]["data"]["task"]["status"],
+                "working",
+                "connect and response past {requested_wait_ms}ms + 125ms must still answer the Task state: {response}"
             );
-            // One budget covers connect, handshake and response: on a loaded
-            // runner the handshake alone may cross it, and then the daemon never
-            // sees the request. When it does, the wait slice is already spent.
             if let Ok(request) = observations.recv_timeout(Duration::from_millis(500)) {
                 assert_eq!(
                     request,
@@ -3879,8 +3876,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compatibility_wait_zero_and_one_share_one_budget_across_connect_and_response() {
+    async fn compatibility_wait_zero_and_one_bound_only_the_daemon_wait() {
         compatibility_wait_single_deadline_case().await;
+    }
+
+    /// A ready result read with `waitMs: 0` on a slow host arrives as the
+    /// result: connect and exchange spend the frontend transport cutoff, not
+    /// `waitMs + 125 ms` (#2063).
+    #[tokio::test]
+    async fn compatibility_ready_result_at_wait_zero_survives_a_slow_connect() {
+        let task_id = unica_execution_contract::invocation::TaskId::new();
+        let fake = FakeDaemon::start_with_handshake_delay(
+            Box::new(move |_, request| {
+                assert_eq!(
+                    request,
+                    &V5ClientRequest::WaitTask {
+                        task_id,
+                        wait_ms: 0
+                    }
+                );
+                std::thread::sleep(Duration::from_millis(200));
+                Step::Reply(unica_daemon::protocol_v5::V5ServerResponse::Task {
+                    snapshot: canonical_snapshot(
+                        task_id,
+                        unica_execution_contract::invocation::InvocationStatus::Completed,
+                        Some(unica_execution_contract::invocation::DomainResult::success(
+                            "ready-result",
+                        )),
+                    ),
+                })
+            }),
+            Duration::from_millis(300),
+        );
+        let (mut mcp, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            fake.owner(),
+            "/workspace".to_string(),
+        ));
+        mcp.send(json!({
+            "jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{
+                "name":"unica.task.result",
+                "arguments":{"taskId":task_id.to_string(), "waitMs":0},
+                "_meta":modern_meta()
+            }
+        }))
+        .await;
+        let response = mcp.receive().await;
+        assert_eq!(
+            response["result"]["structuredContent"]["ok"], true,
+            "{response}"
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["summary"], "ready-result",
+            "{response}"
+        );
+        mcp.shutdown().await;
     }
 
     fn compatibility_wait_frontend_cutoff_is_not_rebased_case() {
@@ -3888,10 +3938,13 @@ mod tests {
         let (observed, observations) = mpsc::channel();
         let fake = working_task_fake(task_id, Duration::ZERO, Duration::ZERO, observed);
         let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
-        // The request was received a second ago and only now reaches the
-        // router: a Duration rebase would open a fresh window here, the
-        // absolute cutoff is already expired.
-        let received = Instant::now() - Duration::from_secs(1);
+        // The request was received past the whole frontend transport window and
+        // only now reaches the router: a Duration rebase would open a fresh
+        // window here, the absolute cutoff is already expired.
+        let received = Instant::now()
+            - unica_execution::invocation::INVOCATION_HANDOFF_WINDOW
+            - unica_execution::invocation::RESPONSE_SERIALIZATION_MARGIN
+            - Duration::from_secs(1);
 
         let outcome = (router.wait)(
             task_id,
@@ -6838,22 +6891,19 @@ mod tests {
         fail_after_prefix: AtomicBool,
         panic_after_prefix: AtomicBool,
         written: Mutex<Vec<u8>>,
-        written_total: AtomicUsize,
-        flushed_total: AtomicUsize,
+        unflushed: AtomicBool,
     }
 
     impl ManualFlushGate {
-        /// Arms the gate once every byte already written has been flushed. A
-        /// client reads a frame before the server's flush of it completes;
-        /// arming in that window would hold the earlier frame and stall the
-        /// transport before the next request is even read (#2063).
-        async fn arm(&self) {
+        /// Waits until no written byte awaits its flush. A client reads a
+        /// frame before the server's flush of it completes; arming or clearing
+        /// the capture in that window would hold or lose the earlier frame
+        /// (#2063). The mark is set before the inner write wakes the reader.
+        async fn quiesce(&self) {
             let quiet = timeout(TEST_STEP, async {
                 loop {
                     let observed = self.observed.notified();
-                    if self.flushed_total.load(Ordering::Acquire)
-                        == self.written_total.load(Ordering::Acquire)
-                    {
+                    if !self.unflushed.load(Ordering::Acquire) {
                         break;
                     }
                     observed.await;
@@ -6861,6 +6911,10 @@ mod tests {
             })
             .await;
             assert!(quiet.is_ok(), "earlier MCP output never finished flushing");
+        }
+
+        async fn arm(&self) {
+            self.quiesce().await;
             self.armed.store(true, Ordering::Release);
         }
 
@@ -6935,6 +6989,8 @@ mod tests {
             } else {
                 bytes
             };
+            // Marked before the inner write: the duplex wakes the reader inside it.
+            self.gate.unflushed.store(true, Ordering::Release);
             let result = std::pin::Pin::new(&mut self.writer).poll_write(cx, bytes);
             if let std::task::Poll::Ready(Ok(count)) = &result {
                 self.gate
@@ -6945,7 +7001,6 @@ mod tests {
                 if partial && *count > 0 {
                     self.gate.prefix_written.store(true, Ordering::Release);
                 }
-                self.gate.written_total.fetch_add(*count, Ordering::AcqRel);
             }
             result
         }
@@ -6968,8 +7023,7 @@ mod tests {
             }
             let result = std::pin::Pin::new(&mut self.writer).poll_flush(cx);
             if matches!(&result, std::task::Poll::Ready(Ok(()))) {
-                let written = self.gate.written_total.load(Ordering::Acquire);
-                self.gate.flushed_total.store(written, Ordering::Release);
+                self.gate.unflushed.store(false, Ordering::Release);
                 self.gate.observed.notify_waiters();
             }
             if initialize_frame_written && matches!(&result, std::task::Poll::Ready(Ok(()))) {
@@ -7752,6 +7806,7 @@ mod tests {
         let output = Arc::new(ManualFlushGate::default());
         let (mut client, in_flight) = spawn_manual_flush_server(server, output.clone());
         client.initialize().await;
+        output.quiesce().await;
         output.written.lock().unwrap().clear();
         send_manual_daemon_call(&mut client, 1, "before-submit").await;
         let key = gate.wait().await;
@@ -7962,6 +8017,7 @@ mod tests {
         let (server, _) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
         let (mut client, in_flight) = spawn_manual_flush_server(server, output.clone());
         client.initialize().await;
+        output.quiesce().await;
         output.written.lock().unwrap().clear();
         output.partial_write.store(true, Ordering::Release);
         output.fail_after_prefix.store(!panic, Ordering::Release);
@@ -8023,6 +8079,7 @@ mod tests {
         send_manual_daemon_call(&mut client, 1, "flush-neighbor").await;
         let neighbor_started = service.wait("flush-neighbor", false).await;
         let neighbor_response = client.receive().await;
+        gate.quiesce().await;
         gate.written.lock().unwrap().clear();
         gate.partial_write.store(partial, Ordering::Release);
         gate.arm().await;
@@ -9158,7 +9215,7 @@ fn main() {
         let observed = Arc::new(Mutex::new(None));
         let captured = Arc::clone(&observed);
         let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, wait_ms, deadline, _| {
-            *captured.lock().unwrap() = Some(wait_transport_cutoff(wait_ms, deadline));
+            *captured.lock().unwrap() = Some(daemon_wait_cutoff(wait_ms, deadline));
             Ok(canonical_snapshot(
                 task_id,
                 unica_execution_contract::invocation::InvocationStatus::Working,
@@ -9401,7 +9458,13 @@ fn main() {
                         "partial" => &complete[..complete.len() / 2],
                         "malformed" => malformed.as_slice(),
                         "late" => {
-                            std::thread::sleep(Duration::from_millis(300));
+                            // `waitMs` bounds only the daemon wait; a frame is
+                            // late once it crosses the frontend transport cutoff.
+                            std::thread::sleep(
+                                unica_execution::invocation::INVOCATION_HANDOFF_WINDOW
+                                    + unica_execution::invocation::RESPONSE_SERIALIZATION_MARGIN
+                                    + Duration::from_millis(300),
+                            );
                             complete.as_slice()
                         }
                         _ => unreachable!(),

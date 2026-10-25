@@ -12,6 +12,7 @@ check:
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_get_and_cancel_share_one_absolute_cutoff_across_connect_and_exchange
   - crates/unica-daemon/src/client_v5.rs::task_exchange_post_parse_expiry_wins_for_valid_and_malformed_frames
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_result_keeps_original_cutoff_after_frontend_admission_delay
+  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_ready_result_at_wait_zero_survives_a_slow_connect
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_final_projection_obeys_cutoff_and_same_result_remains_recoverable
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_final_projection_preserves_exchange_failure_stage_and_generation
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_long_producer_survives_7000_and_100_ms_observations_once
@@ -39,9 +40,12 @@ check:
 Если отмена запрошена, состояние задания содержит `cancelRequested: true`;
 терминальный результат предметной операции от этого не меняется.
 
-Подключение и обмен расходуют один исходный срок frontend. У `result`
-он дополнительно ограничен `waitMs + 125 мс`; более ранний срок хоста
-сильнее. Прошедшее время уменьшает ожидание демона. Поздний ответ
+Подключение и обмен расходуют один исходный срок frontend, у `result`
+тоже. `waitMs + 125 мс` от получения запроса ограничивает только ожидание
+демона; более ранний срок хоста сильнее. Прошедшее время, в том числе
+на подключение, уменьшает это ожидание, но не срок обмена: готовый
+результат при `waitMs: 0` приходит результатом и на загруженной машине,
+где подключение дольше 125 мс. Поздний ответ
 не публикуется, а его соединение закрывается для повторного использования.
 Срок проверяется после разбора ответа: если он истёк при разборе,
 корректность полученных данных уже не меняет причину отказа. Ещё раз срок
