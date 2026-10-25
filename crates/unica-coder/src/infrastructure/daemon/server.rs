@@ -845,6 +845,15 @@ impl V5CanonicalInvocationRuntime {
         )
     }
 
+    /// Root checks continue from files in `store` instead of starting over.
+    fn with_root_check_continuations(
+        mut self,
+        store: Arc<unica_project_health::inspection::resources::RootCheckContinuationStore>,
+    ) -> Self {
+        self.root_check_continuations = store;
+        self
+    }
+
     pub(super) fn has_retained_workspace_work(&self) -> bool {
         self.workspace_actors.has_retained_work()
     }
@@ -1490,6 +1499,9 @@ impl DaemonServerConfig {
     }
 }
 
+/// The private child of the daemon state that holds root check continuations.
+const ROOT_CHECK_CONTINUATIONS: &str = "project-health";
+
 impl DaemonServerConfig {
     pub(crate) fn receipt_runtime_config(
         &self,
@@ -1502,6 +1514,31 @@ impl DaemonServerConfig {
             .runtime_hooks_for_v5()
             .unwrap_or_else(|| Arc::new(unica_execution::receipt_runtime::hooks::NoHooks));
         let source = self.clone();
+        // Continuations live in a private directory of the daemon's own
+        // state, never in a workspace, and age out with the same idle period
+        // as stale daemon state. Without that directory a root check starts
+        // from the beginning each time.
+        let root_check_continuations = Arc::new(
+            match unica_daemon::identity::DaemonStateDirectory::open(
+                &self.state_root,
+                &self.core_identity,
+            )
+            .and_then(|state| {
+                state.create_private_subdirectory(ROOT_CHECK_CONTINUATIONS)?;
+                Ok(state.path().join(ROOT_CHECK_CONTINUATIONS))
+            }) {
+                Ok(directory) => {
+                    unica_project_health::inspection::resources::RootCheckContinuationStore::in_directory(
+                        directory,
+                        unica_daemon::state_collection::STALE_DAEMON_STATE_IDLE,
+                    )
+                }
+                Err(_) => {
+                    eprintln!("root check continuation disabled: daemon state unavailable");
+                    Default::default()
+                }
+            },
+        );
         let factory: Arc<dyn Fn() -> Arc<CanonicalInvocationHost> + Send + Sync> =
             Arc::new(move || {
                 #[cfg(test)]
@@ -1510,10 +1547,13 @@ impl DaemonServerConfig {
                 let preset: Option<Arc<V5CanonicalInvocationRuntime>> = None;
                 let runtime = match preset {
                     Some(runtime) => runtime,
-                    None => Arc::new(V5CanonicalInvocationRuntime::new(
-                        source.invocation_service_for_v5(),
-                        source.invocation_clock_for_v5(),
-                    )),
+                    None => Arc::new(
+                        V5CanonicalInvocationRuntime::new(
+                            source.invocation_service_for_v5(),
+                            source.invocation_clock_for_v5(),
+                        )
+                        .with_root_check_continuations(Arc::clone(&root_check_continuations)),
+                    ),
                 };
                 Arc::new(CanonicalInvocationHost::over(runtime))
             });
@@ -1561,6 +1601,12 @@ impl unica_daemon::transport::ObservationLifecycle for CapacityObservation {
 }
 
 #[cfg(test)]
+#[path = "apply_large_input_tests.rs"]
+mod apply_large_input_tests;
+#[cfg(test)]
+#[path = "code_target_tests.rs"]
+mod code_target_tests;
+#[cfg(test)]
 mod external_cache_apply_tests;
 #[cfg(test)]
 #[path = "form_lifecycle_tests.rs"]
@@ -1596,6 +1642,9 @@ mod form_add_owner_bytes_tests;
 
 #[cfg(test)]
 mod legacy_inline_check_tests;
+
+#[cfg(test)]
+mod apply_answer_size_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
@@ -3791,8 +3840,8 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(one.records, 1);
         assert_eq!(one.unique_payloads, 1);
         assert!(
-            one.payload_bytes > 64 * 1024,
-            "the payload must dominate admission metadata"
+            one.payload_bytes > 16 * one.record_bytes,
+            "the payload must dominate admission metadata: {one:?}"
         );
         let index_slot = std::mem::size_of::<Arc<ViewCollectionSnapshot>>();
         let fixed_bytes = one.retained_bytes
@@ -9461,8 +9510,8 @@ struct ActorLogicalReadLease {"#,
                     "right": "main:Catalog.Items",
                     "cursor": "opaque"
                 }),
-                // Comparison diff publishes no cursor (#1218): an unknown argument.
-                "bad_value",
+                // A cursor no first page issued continues nothing (#977).
+                "invalid_cursor",
             ),
             (
                 ToolIdentity::Diff,
@@ -9637,6 +9686,15 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({"executionToken": token, "limit": 1}),
                 true,
             ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({
+                    "left": "main:Catalog.Items",
+                    "right": "main:Catalog.Other",
+                    "limit": 1
+                }),
+                true,
+            ),
             (ToolIdentity::Check, serde_json::json!({}), false),
             (
                 ToolIdentity::Check,
@@ -9686,17 +9744,6 @@ struct ActorLogicalReadLease {"#,
                 "{name} {arguments}: first page continuation"
             );
         }
-        // Only saved-plan diff publishes a cursor; comparison keeps even an empty one unknown.
-        let diff = call(
-            ToolIdentity::Diff,
-            serde_json::json!({
-                "left": "main:Catalog.Items",
-                "right": "main:Catalog.Other",
-                "cursor": ""
-            }),
-        );
-        assert!(!diff.ok);
-        assert_eq!(diff.diagnostics[0]["code"], "bad_value", "{diff:?}");
     }
 
     #[test]
@@ -9876,11 +9923,168 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
-    /// #1218: diff has no continuation. A truncated answer names the cut and
-    /// how to narrow the question, and issues no cursor; a cursor argument is
-    /// an unknown argument rather than an unimplemented feature.
+    /// #977: a cut left/right comparison continues on the canonical route.
+    /// Pages walk the whole difference once, in order; the cursor answers
+    /// only the same pair and page size and keeps the pair the first page
+    /// read; nothing is published.
     #[test]
-    fn diff_truncation_names_the_cut_and_offers_no_continuation() {
+    fn diff_pages_continue_the_saved_pair_on_the_canonical_route() {
+        let (_state, workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
+        let source = workspace.path().join("src");
+        let call = |arguments| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Diff,
+                arguments,
+                workspace_hint.as_str(),
+                7_000,
+            )
+            .unwrap();
+            direct_v5(&runtime, request).unwrap()
+        };
+        let before = unica_workspace::test_support::tree_snapshot(&source);
+        let pair = serde_json::json!({
+            "left": "main:Catalog.Items",
+            "right": "main:Catalog.Other"
+        });
+        let whole = call(pair.clone());
+        assert!(whole.ok, "{whole:?}");
+        assert_eq!(whole.data.as_ref().unwrap()["truncated"], false);
+        assert!(whole.cursor.is_none(), "{whole:?}");
+        let all = whole.data.as_ref().unwrap()["changes"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(all.len() > 2, "fixture must differ in more than two places");
+
+        let mut first_args = pair.clone();
+        first_args["limit"] = serde_json::json!(1);
+        let first = call(first_args.clone());
+        assert!(first.ok, "{first:?}");
+        assert_eq!(first.data.as_ref().unwrap()["truncated"], true);
+        assert_eq!(first.data.as_ref().unwrap()["equal"], false);
+        assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "limit");
+        let first_cursor = first.cursor.clone().expect("a cut page issues a cursor");
+        assert_eq!(first.next[0]["tool"], "unica.diff");
+        assert_eq!(first.next[0]["arguments"]["cursor"], first_cursor.as_str());
+        assert_eq!(first.next[0]["arguments"]["limit"], 1);
+
+        let mut empty = first_args.clone();
+        empty["cursor"] = serde_json::json!("");
+        let restarted = call(empty);
+        assert_eq!(
+            restarted.data.as_ref().unwrap()["changes"],
+            first.data.as_ref().unwrap()["changes"]
+        );
+
+        let mut paged = Vec::new();
+        let mut cursors = Vec::new();
+        let mut page = first.clone();
+        loop {
+            paged.extend(
+                page.data.as_ref().unwrap()["changes"]
+                    .as_array()
+                    .unwrap()
+                    .clone(),
+            );
+            let Some(cursor) = page.cursor.clone() else {
+                assert_eq!(page.data.as_ref().unwrap()["truncated"], false);
+                assert_eq!(page.page.as_ref().unwrap()["stoppedBy"], "complete");
+                break;
+            };
+            assert!(paged.len() <= all.len(), "pages repeat: {paged:?}");
+            cursors.push(cursor.clone());
+            let mut next = first_args.clone();
+            next["cursor"] = serde_json::json!(cursor);
+            page = call(next);
+            assert!(page.ok, "{page:?}");
+        }
+        assert_eq!(
+            paged, all,
+            "pages must walk the whole difference once, in order"
+        );
+
+        let mut over = pair.clone();
+        over["limit"] = serde_json::json!(51);
+        let refused = call(over);
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+        for forged in ["opaque".to_owned(), format!("{first_cursor}0")] {
+            let mut replay = first_args.clone();
+            replay["cursor"] = serde_json::json!(forged);
+            let refused = call(replay);
+            assert_eq!(
+                refused.diagnostics[0]["code"], "invalid_cursor",
+                "{forged}: {refused:?}"
+            );
+        }
+        for (field, value) in [
+            ("limit", serde_json::json!(2)),
+            ("right", serde_json::json!("main:Catalog.Items")),
+            ("left", serde_json::json!("main:Catalog.Other")),
+        ] {
+            let mut replay = first_args.clone();
+            replay[field] = value;
+            replay["cursor"] = serde_json::json!(first_cursor.as_str());
+            let refused = call(replay);
+            assert!(!refused.ok, "{field}: {refused:?}");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "invalid_cursor",
+                "{field}: {refused:?}"
+            );
+        }
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before,
+            "comparison must not publish source edits"
+        );
+
+        // The continuation into the comment the edit below replaces: one that
+        // read the sources again would answer `edited`.
+        let comment = all
+            .iter()
+            .position(|change| change["path"] == "/props/Comment")
+            .expect("fixture differs in its comment");
+        assert!(comment > 0, "{all:?}");
+        assert_eq!(all[comment]["right"], "second", "{all:?}");
+        let into_comment = cursors[comment - 1].clone();
+        let other = source.join("Catalogs/Other.xml");
+        let edited = std::fs::read_to_string(&other)
+            .unwrap()
+            .replace("<Comment>second</Comment>", "<Comment>edited</Comment>");
+        std::fs::write(&other, edited).unwrap();
+        let mut continued = first_args.clone();
+        continued["cursor"] = serde_json::json!(into_comment);
+        let saved = call(continued);
+        assert!(saved.ok, "{saved:?}");
+        assert_eq!(
+            saved.data.as_ref().unwrap()["changes"],
+            serde_json::json!([all[comment].clone()]),
+            "a continuation reads the pair saved by its first page"
+        );
+        // A cursor answers only the workspace that asked the first page.
+        let (_other_state, _other_workspace, _other_runtime, other_hint) =
+            empty_cursor_and_diff_fixture();
+        let mut elsewhere = first_args.clone();
+        elsewhere["cursor"] = serde_json::json!(first_cursor.as_str());
+        let request =
+            InvocationRequest::new(ToolIdentity::Diff, elsewhere, other_hint.as_str(), 7_000)
+                .unwrap();
+        let foreign = direct_v5(&runtime, request).unwrap();
+        assert_eq!(
+            foreign.diagnostics[0]["code"], "invalid_cursor",
+            "{foreign:?}"
+        );
+        let fresh = call(pair);
+        assert!(fresh.ok, "{fresh:?}");
+        assert!(
+            fresh.data.as_ref().unwrap().to_string().contains("edited"),
+            "a new first page reads the edited source: {fresh:?}"
+        );
+    }
+
+    /// #977: nodes of different kinds are not compared, and an unreadable
+    /// side is a refusal, never an empty node.
+    #[test]
+    fn diff_refuses_incomparable_kinds_and_an_unreadable_side() {
         let (_state, _workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
         let call = |arguments| {
             let request = InvocationRequest::new(
@@ -9892,40 +10096,22 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
             direct_v5(&runtime, request).unwrap()
         };
-        let pair = serde_json::json!({
+        let incomparable = call(serde_json::json!({
             "left": "main:Catalog.Items",
-            "right": "main:Catalog.Other"
-        });
-        let whole = call(pair.clone());
-        assert!(whole.ok, "{whole:?}");
-        let data = whole.data.as_ref().unwrap();
-        assert_eq!(data["truncated"], false);
-        let all = data["changes"].as_array().unwrap();
-        assert!(all.len() > 1, "fixture must differ in more than one place");
-        assert_eq!(whole.summary, "logical nodes compared");
-
-        let mut limited = pair.clone();
-        limited["limit"] = serde_json::json!(1);
-        let cut = call(limited);
-        assert!(cut.ok, "{cut:?}");
-        let data = cut.data.as_ref().unwrap();
-        assert_eq!(data["truncated"], true);
-        assert_eq!(data["equal"], false);
-        assert_eq!(data["changes"], serde_json::json!([all[0].clone()]));
-        assert!(cut.cursor.is_none(), "no continuation exists: {cut:?}");
-        assert!(cut.page.is_none(), "{cut:?}");
-        assert_ne!(cut.summary, whole.summary, "truncation must be named");
-        assert!(
-            !cut.summary.contains("cursor"),
-            "a truncated diff must not promise a cursor: {}",
-            cut.summary
+            "right": "main:Catalog.Items.Module.Object"
+        }));
+        assert!(!incomparable.ok, "{incomparable:?}");
+        assert_eq!(
+            incomparable.diagnostics[0]["code"], "incomparable_nodes",
+            "{incomparable:?}"
         );
-
-        let mut continued = pair;
-        continued["cursor"] = serde_json::json!("opaque");
-        let refused = call(continued);
-        assert!(!refused.ok);
-        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+        let missing = call(serde_json::json!({
+            "left": "main:Catalog.Items",
+            "right": "main:Catalog.Missing"
+        }));
+        assert!(!missing.ok, "{missing:?}");
+        assert!(missing.data.is_none(), "{missing:?}");
+        assert_eq!(missing.diagnostics[0]["code"], "not_found", "{missing:?}");
     }
 
     /// `filter` снят с `view` и `diff` (#1374). Вызов с ним — отказ
@@ -12723,7 +12909,10 @@ struct ActorLogicalReadLease {"#,
             assert!(applied.ok, "{applied:?}");
             let preview_data = preview.data.as_ref().unwrap();
             let applied_data = applied.data.as_ref().unwrap();
-            assert_eq!(preview_data["operations"], applied_data["operations"]);
+            assert_eq!(
+                preview_data["operationCount"],
+                applied_data["operationCount"]
+            );
             assert_eq!(preview_data["effects"], applied_data["effects"]);
             assert_eq!(preview.changed, applied.changed);
             assert_eq!(preview_data["planHash"], applied_data["planHash"]);
@@ -12996,8 +13185,8 @@ struct ActorLogicalReadLease {"#,
             assert!(real.ok, "real apply failed: {real:?}");
             assert_ne!(std::fs::read(&descriptor).unwrap(), before);
             assert_eq!(
-                dry.data.as_ref().unwrap()["operations"],
-                real.data.as_ref().unwrap()["operations"]
+                dry.data.as_ref().unwrap()["operationCount"],
+                real.data.as_ref().unwrap()["operationCount"]
             );
             assert_eq!(
                 dry.data.as_ref().unwrap()["effects"],

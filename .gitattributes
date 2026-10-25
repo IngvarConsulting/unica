@@ -19,6 +19,7 @@ tests/fixtures/unica_mcp_script_parity/cfe-patch-method/base-common-module.bsl -
 
 # Staged-dump root fixtures keep the BOM and CRLF an 8.3.27 dump writes.
 tests/fixtures/platform_8_3_27/staged_dump_roots/** -text -whitespace
+tests/fixtures/platform_8_3_27/exchange_plan/extension-Content.xml -text -whitespace
 tests/fixtures/platform_8_3_27/support-markers/** -text -whitespace
 
 # The native form export keeps the BOM and CRLF 8.3.27 writes.
@@ -94,6 +95,10 @@ crates/unica-dcs-designer/tests/fixtures/** text eol=lf
 
 # The ExchangePlan composition fixture keeps the platform's BOM and CRLF layout.
 tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/*/Ext/Content.xml -text -whitespace
+
+# #1404: 8.3.27 export pairs; their BOM and CRLF bytes are the asserted parity.
+crates/unica-metadata-designer/tests/platform/dump_parity/*.xml -text -whitespace
+crates/unica-forms-designer/tests/platform/dump_parity/*.xml -text -whitespace
 
 # Spliced by tests with newline-prefixed patterns; keep their LF bytes on every host.
 /tests/fixtures/platform_8_3_27/mxl/** -text -whitespace

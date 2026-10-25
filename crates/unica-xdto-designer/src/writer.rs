@@ -165,10 +165,20 @@ pub enum TypedWriterOperation<'a> {
     RemoveType {
         name: &'a str,
     },
+    SetTypeBase {
+        name: &'a str,
+        base: &'a str,
+    },
     RemoveProperty {
         type_name: &'a str,
         name: &'a str,
         property_path: Option<&'a str>,
+    },
+    RenameProperty {
+        type_name: &'a str,
+        name: &'a str,
+        property_path: Option<&'a str>,
+        new_name: &'a str,
     },
 }
 
@@ -406,6 +416,58 @@ pub fn plan_typed(
             )?;
             Some(remove_node(before, node))
         }
+        TypedWriterOperation::SetTypeBase { name, base } => {
+            let node = exactly_one(
+                named_types(root, name),
+                "type",
+                WriterErrorField::TypeTarget,
+            )?;
+            let desired = desired_qname(root, node, base);
+            let current = node
+                .attributes()
+                .find(|attribute| attribute.namespace().is_none() && attribute.name() == "base");
+            if current.is_some_and(|current| {
+                desired.semantic.lexical_valid
+                    && semantic_qname(node, current.value()) == desired.semantic
+            }) {
+                // Прежняя основа, в том числе под другим префиксом, файла не
+                // меняет и не требует доказательств, которые нужны новой основе.
+                None
+            } else {
+                if node.has_tag_name((XDTO_NS, "objectType")) {
+                    prove_local_object_base(root, name, &desired.semantic)?;
+                } else {
+                    prove_value_base(root, node, name, &desired.semantic)?;
+                }
+                // Меняется только атрибут base; повторное объявление префикса
+                // встаёт рядом с ним той же правкой.
+                let declaration = desired.namespace_declaration();
+                let value = escape_attribute(&desired.raw);
+                Some(match current {
+                    Some(current) if declaration.is_empty() => TextEdit {
+                        range: current.range_value(),
+                        replacement: value,
+                    },
+                    Some(current) => TextEdit {
+                        range: current.range(),
+                        replacement: format!("{} base=\"{value}\"", &declaration[1..]),
+                    },
+                    None => {
+                        let name = node
+                            .attributes()
+                            .find(|attribute| {
+                                attribute.namespace().is_none() && attribute.name() == "name"
+                            })
+                            .expect("a named type carries its name");
+                        let end = name.range().end;
+                        TextEdit {
+                            range: end..end,
+                            replacement: format!("{declaration} base=\"{value}\""),
+                        }
+                    }
+                })
+            }
+        }
         TypedWriterOperation::RemoveProperty {
             type_name,
             name,
@@ -418,6 +480,41 @@ pub fn plan_typed(
                 WriterErrorField::PropertyName,
             )?;
             Some(remove_node(before, node))
+        }
+        TypedWriterOperation::RenameProperty {
+            type_name,
+            name,
+            property_path,
+            new_name,
+        } => {
+            let target = property_target(root, type_name, property_path)?;
+            let node = exactly_one(
+                direct_named_properties(target, name),
+                "property",
+                WriterErrorField::PropertyName,
+            )?;
+            if name == new_name {
+                None
+            } else if let Some(existing) = renamed_property_conflict(root, target, node, new_name) {
+                finding = Some(duplicate_finding(
+                    "duplicate_property",
+                    existing,
+                    false,
+                    "property",
+                ));
+                None
+            } else {
+                // Меняется только значение атрибута name: localName, тип,
+                // границы, префиксы и соседние байты остаются прежними.
+                let attribute = node
+                    .attributes()
+                    .find(|attribute| attribute.namespace().is_none() && attribute.name() == "name")
+                    .expect("the selected own property carries its name");
+                Some(TextEdit {
+                    range: attribute.range_value(),
+                    replacement: escape_attribute(new_name),
+                })
+            }
         }
     };
     let edits = edit.into_iter().collect::<Vec<_>>();
@@ -642,8 +739,11 @@ fn prove_local_object_base(
             || current.unresolved_prefix.is_some()
             || current.namespace.as_deref() != root.attribute("targetNamespace")
         {
-            return Err(WriterError::new(WriterErrorCause::BadValue, WriterErrorField::Base,
-                "base must resolve to a local ObjectType; imported inheritance is not supported for this addition"));
+            return Err(WriterError::new(
+                WriterErrorCause::BadValue,
+                WriterErrorField::Base,
+                "base must resolve to a local ObjectType; imported inheritance is not supported",
+            ));
         }
         if !visited.insert(current.local.clone()) {
             return Err(WriterError::new(
@@ -673,6 +773,183 @@ fn prove_local_object_base(
                 return Err(WriterError::new(
                     WriterErrorCause::AmbiguousTarget,
                     WriterErrorField::Base,
+                    "base has multiple declarations",
+                ))
+            }
+        };
+        let Some(next) = parent.attribute("base") else {
+            return Ok(());
+        };
+        current = semantic_qname(parent, next);
+    }
+}
+
+/// Attributes of a value type whose meaning under a new base is proven.
+const VALUE_TYPE_ATTRIBUTES: &[&str] = &[
+    "name",
+    "base",
+    "maxLength",
+    "totalDigits",
+    "fractionDigits",
+    "minInclusive",
+    "maxInclusive",
+];
+
+/// Built-in simple types of XML Schema 1.0 Part 2.
+const XML_SCHEMA_SIMPLE_TYPES: &[&str] = &[
+    "anySimpleType",
+    "string",
+    "boolean",
+    "decimal",
+    "float",
+    "double",
+    "duration",
+    "dateTime",
+    "time",
+    "date",
+    "gYearMonth",
+    "gYear",
+    "gMonthDay",
+    "gDay",
+    "gMonth",
+    "hexBinary",
+    "base64Binary",
+    "anyURI",
+    "QName",
+    "NOTATION",
+    "normalizedString",
+    "token",
+    "language",
+    "NMTOKEN",
+    "NMTOKENS",
+    "Name",
+    "NCName",
+    "ID",
+    "IDREF",
+    "IDREFS",
+    "ENTITY",
+    "ENTITIES",
+    "integer",
+    "nonPositiveInteger",
+    "negativeInteger",
+    "long",
+    "int",
+    "short",
+    "byte",
+    "nonNegativeInteger",
+    "unsignedLong",
+    "unsignedInt",
+    "unsignedShort",
+    "unsignedByte",
+    "positiveInteger",
+];
+
+/// Whether the local value-type chain of `node` passes through `name`.
+fn value_chain_reaches(root: Node<'_, '_>, node: Node<'_, '_>, name: &str) -> bool {
+    let target_namespace = root.attribute("targetNamespace");
+    let mut visited = BTreeSet::new();
+    let mut current = node;
+    while let Some(base) = current.attribute("base") {
+        let base = semantic_qname(current, base);
+        if base.namespace.as_deref() != target_namespace || !visited.insert(base.local.clone()) {
+            return false;
+        }
+        if base.local == name {
+            return true;
+        }
+        match named_types(root, &base.local).as_slice() {
+            [parent] if parent.has_tag_name((XDTO_NS, "valueType")) => current = *parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// A value type's base is an XML Schema type or a local value type whose chain
+/// has no cycle. Its restrictions must stay valid for the new base; nested
+/// enumeration, pattern or member declarations are outside this operation.
+fn prove_value_base(
+    root: Node<'_, '_>,
+    node: Node<'_, '_>,
+    name: &str,
+    base: &SemanticQName,
+) -> Result<(), WriterError> {
+    let refused = |cause, message| WriterError::new(cause, WriterErrorField::Base, message);
+    if !has_exact_compatible_content(node)
+        || !has_only_plain_attributes(node, VALUE_TYPE_ATTRIBUTES)
+    {
+        return Err(refused(
+            WriterErrorCause::BadValue,
+            "the base of a ValueType with restrictions outside the supported facets or with nested declarations such as enumeration or pattern cannot be changed",
+        ));
+    }
+    // Производный тип значения проверял свои ограничения по прежней цепочке.
+    let derived_with_restrictions = root.children().any(|candidate| {
+        candidate.has_tag_name((XDTO_NS, "valueType"))
+            && candidate != node
+            && value_chain_reaches(root, candidate, name)
+            && (!has_exact_compatible_content(candidate)
+                || !has_only_plain_attributes(candidate, &["name", "base"]))
+    });
+    if derived_with_restrictions {
+        return Err(refused(
+            WriterErrorCause::BadValue,
+            "a ValueType derived from this type carries restrictions that depend on its base",
+        ));
+    }
+    let facets = crate::facets::from_node(node)
+        .map_err(|message| refused(WriterErrorCause::InvalidSource, message))?;
+    facets
+        .validate_base(base.namespace.as_deref(), &base.local)
+        .map_err(|message| refused(WriterErrorCause::BadValue, message))?;
+    let mut visited = BTreeSet::from([name.to_string()]);
+    let mut current = base.clone();
+    loop {
+        if !current.lexical_valid || current.unresolved_prefix.is_some() {
+            return Err(refused(
+                WriterErrorCause::BadValue,
+                "base must be a prefixed QName with a declared prefix",
+            ));
+        }
+        if current.namespace.as_deref() == Some(super::model::XML_SCHEMA_NS) {
+            return if XML_SCHEMA_SIMPLE_TYPES.contains(&current.local.as_str()) {
+                Ok(())
+            } else {
+                Err(refused(
+                    WriterErrorCause::NotFound,
+                    "base is not a built-in XML Schema simple type",
+                ))
+            };
+        }
+        if current.namespace.as_deref() != root.attribute("targetNamespace") {
+            return Err(refused(
+                WriterErrorCause::BadValue,
+                "base must be an XML Schema type or a local ValueType; imported bases are not supported",
+            ));
+        }
+        if !visited.insert(current.local.clone()) {
+            return Err(refused(
+                WriterErrorCause::BadValue,
+                "base introduces or reaches an inheritance cycle",
+            ));
+        }
+        let parent = match named_types(root, &current.local).as_slice() {
+            [parent] if parent.has_tag_name((XDTO_NS, "valueType")) => *parent,
+            [] => {
+                return Err(refused(
+                    WriterErrorCause::NotFound,
+                    "base ValueType does not exist",
+                ))
+            }
+            [_] => {
+                return Err(refused(
+                    WriterErrorCause::BadValue,
+                    "base must name a ValueType, not an ObjectType",
+                ))
+            }
+            _ => {
+                return Err(refused(
+                    WriterErrorCause::AmbiguousTarget,
                     "base has multiple declarations",
                 ))
             }
@@ -1434,6 +1711,52 @@ fn strict_property_path(property_path: Option<&str>) -> Result<Vec<String>, Writ
     Ok(segments)
 }
 
+/// The sibling the platform would refuse next to the renamed property. 8.3.27
+/// rejects a repeated property name, where a `ref` is named by the local part
+/// of its global property, and a repeated XML representation: form, namespace
+/// and XML name, which is `localName` when it is written.
+fn renamed_property_conflict<'a>(
+    root: Node<'a, 'a>,
+    target: Node<'a, 'a>,
+    renamed: Node<'a, 'a>,
+    new_name: &str,
+) -> Option<Node<'a, 'a>> {
+    let target_namespace = root.attribute("targetNamespace");
+    let reference = |property: Node<'a, 'a>| {
+        property.attribute("ref").map(|raw| {
+            let (prefix, local) = raw
+                .split_once(':')
+                .map_or((None, raw), |(p, l)| (Some(p), l));
+            (property.lookup_namespace_uri(prefix), local)
+        })
+    };
+    let form = |property: Node<'a, 'a>| property.attribute("form").unwrap_or("Element");
+    let representation = |property: Node<'a, 'a>| match reference(property) {
+        Some((namespace, local)) => (form(property), namespace, local),
+        None => (
+            form(property),
+            target_namespace,
+            property
+                .attribute("localName")
+                .or_else(|| property.attribute("name"))
+                .unwrap_or_default(),
+        ),
+    };
+    let renamed_representation = renamed
+        .attribute("localName")
+        .is_none()
+        .then(|| (form(renamed), target_namespace, new_name));
+    target
+        .children()
+        .filter(|sibling| *sibling != renamed && sibling.has_tag_name((XDTO_NS, "property")))
+        .find(|sibling| {
+            let name = sibling
+                .attribute("name")
+                .or_else(|| reference(*sibling).map(|(_, local)| local));
+            name == Some(new_name) || renamed_representation == Some(representation(*sibling))
+        })
+}
+
 fn named_types<'a>(root: Node<'a, 'a>, name: &str) -> Vec<Node<'a, 'a>> {
     root.children()
         .filter(|node| {
@@ -1823,6 +2146,282 @@ mod tests {
             "Added"
         );
         assert!(super::super::validation::validate(&after_model).is_empty());
+    }
+
+    #[test]
+    fn xdto_writer_renames_only_the_name_value_of_the_selected_property() {
+        let before = package(concat!(
+            "\t<valueType name=\"Строка\" base=\"xs:string\"/>\n",
+            "\t<objectType name=\"Target\">\n",
+            "\t\t<property name=\"Первое\" type=\"xs:string\"/>\n",
+            "\t\t<property xmlns:d3p1=\"urn:test\" name=\"Код\" type=\"d3p1:Строка\" lowerBound=\"0\" upperBound=\"-1\" form=\"Attribute\" localName=\"Code\"/>\n",
+            "\t\t<property name=\"Третье\" type=\"xs:int\"/>\n",
+            "\t</objectType>\n",
+            "\t<objectType name=\"Owner\">\n",
+            "\t\t<property name=\"A.B\">\n",
+            "\t\t\t<typeDef xsi:type=\"ObjectType\">\n",
+            "\t\t\t\t<property name=\"Child\" type=\"xs:string\"/>\n",
+            "\t\t\t</typeDef>\n",
+            "\t\t</property>\n",
+            "\t</objectType>\n",
+        ));
+        let rename = |type_name, property_path, name, new_name| {
+            super::plan_typed(
+                &before,
+                super::TypedWriterOperation::RenameProperty {
+                    type_name,
+                    name,
+                    property_path,
+                    new_name,
+                },
+            )
+        };
+        for (type_name, path, name, new_name, old_attribute, new_attribute) in [
+            // Явное localName остаётся XML-именем свойства.
+            (
+                "Target",
+                None,
+                "Код",
+                "ВнешнийКод",
+                "name=\"Код\"",
+                "name=\"ВнешнийКод\"",
+            ),
+            (
+                "Target",
+                None,
+                "Первое",
+                "Начальное",
+                "name=\"Первое\"",
+                "name=\"Начальное\"",
+            ),
+            (
+                "Owner",
+                Some(r"A\.B"),
+                "Child",
+                "Ребёнок",
+                "name=\"Child\"",
+                "name=\"Ребёнок\"",
+            ),
+            ("Owner", None, "A.B", "A.C", "name=\"A.B\"", "name=\"A.C\""),
+        ] {
+            let planned = rename(type_name, path, name, new_name).unwrap();
+            assert_eq!(
+                planned.after,
+                before.replacen(old_attribute, new_attribute, 1)
+            );
+            assert_eq!(planned.edits.len(), 1);
+            assert_eq!(&before[planned.edits[0].range.clone()], name);
+            assert!(planned.finding.is_none());
+            assert_edit_applies(&before, &planned);
+            // form и localName валидатор пока не поддерживает; переименование
+            // не добавляет и не снимает таких находок.
+            let codes = |text: &str| {
+                let model = super::super::model::PackageModel::parse(text).unwrap();
+                super::super::validation::validate(&model)
+                    .into_iter()
+                    .map(|finding| finding.code)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(codes(&planned.after), codes(&before));
+        }
+        let renamed = rename("Target", None, "Код", "ВнешнийКод").unwrap();
+        let model = super::super::model::PackageModel::parse(&renamed.after).unwrap();
+        assert_eq!(
+            model.types[1]
+                .properties
+                .iter()
+                .map(|property| property.logical_identity())
+                .collect::<Vec<_>>(),
+            ["Первое", "ВнешнийКод", "Третье"]
+        );
+
+        let unchanged = rename("Target", None, "Код", "Код").unwrap();
+        assert!(unchanged.edits.is_empty());
+        assert_eq!(unchanged.after, before);
+        assert!(unchanged.finding.is_none());
+
+        let duplicate = rename("Target", None, "Код", "Третье").unwrap();
+        assert!(duplicate.edits.is_empty());
+        assert_eq!(duplicate.after, before);
+        assert!(duplicate.conflict());
+        assert_eq!(duplicate.duplicate_code(), Some("duplicate_property"));
+
+        // Платформа 8.3.27 отвергает и имя ссылки на глобальное свойство,
+        // и совпавшее XML-представление; иная форма представления допустима.
+        let siblings = package(concat!(
+            "\t<property name=\"Глобальное\" type=\"xs:string\"/>\n",
+            "\t<objectType name=\"Target\">\n",
+            "\t\t<property name=\"Первое\" type=\"xs:string\"/>\n",
+            "\t\t<property ref=\"tns:Глобальное\"/>\n",
+            "\t\t<property name=\"Второе\" type=\"xs:string\" localName=\"code\"/>\n",
+            "\t\t<property name=\"Третье\" type=\"xs:string\" form=\"Attribute\" localName=\"attr\"/>\n",
+            "\t</objectType>\n",
+        ));
+        for (name, new_name, conflict) in [
+            ("Первое", "Глобальное", true),
+            ("Первое", "code", true),
+            ("Первое", "attr", false),
+            ("Второе", "Глобальное", true),
+            ("Второе", "Первое", true),
+            ("Второе", "attr", false),
+        ] {
+            let planned = super::plan_typed(
+                &siblings,
+                super::TypedWriterOperation::RenameProperty {
+                    type_name: "Target",
+                    name,
+                    property_path: None,
+                    new_name,
+                },
+            )
+            .unwrap();
+            assert_eq!(planned.conflict(), conflict, "{name} -> {new_name}");
+            assert_eq!(planned.edits.is_empty(), conflict, "{name} -> {new_name}");
+        }
+
+        let missing = rename("Target", None, "Нет", "Есть").unwrap_err();
+        assert_eq!(missing.cause(), super::WriterErrorCause::NotFound);
+        assert_eq!(missing.field(), super::WriterErrorField::PropertyName);
+    }
+
+    #[test]
+    fn xdto_writer_sets_only_the_base_of_a_named_type() {
+        let before = package(concat!(
+            "\t<valueType name=\"Процент\" base=\"xs:decimal\" totalDigits=\"5\" fractionDigits=\"2\"/>\n",
+            "\t<valueType name=\"Количество\" base=\"xs:decimal\"/>\n",
+            "\t<valueType name=\"Строка10\" base=\"xs:string\" maxLength=\"10\"/>\n",
+            "\t<valueType name=\"Длина\" base=\"xs:string\" length=\"5\"/>\n",
+            "\t<valueType name=\"Основа\" base=\"xs:string\"/>\n",
+            "\t<valueType name=\"Производное\" base=\"tns:Основа\">\n\t\t<enumeration>A</enumeration>\n\t</valueType>\n",
+            "\t<valueType name=\"Код\" base=\"xs:string\">\n\t\t<enumeration>A</enumeration>\n\t</valueType>\n",
+            "\t<objectType name=\"ОсноваА\">\n\t\t<property name=\"А\" type=\"xs:string\"/>\n\t</objectType>\n",
+            "\t<objectType name=\"ОсноваБ\">\n\t\t<property xmlns:t2=\"urn:test\" name=\"Б\" type=\"t2:Количество\"/>\n\t</objectType>\n",
+            "\t<objectType name=\"Производный\" base=\"tns:ОсноваА\" sequenced=\"true\">\n\t\t<property name=\"Своё\" type=\"xs:string\"/>\n\t</objectType>\n",
+            "\t<objectType name=\"Без\"/>\n",
+            "\t<objectType name=\"Потомок\" base=\"tns:Производный\"/>\n",
+        ));
+        let set = |name, base| {
+            super::plan_typed(
+                &before,
+                super::TypedWriterOperation::SetTypeBase { name, base },
+            )
+        };
+        for (name, base, old, new) in [
+            (
+                "Производный",
+                "tns:ОсноваБ",
+                "base=\"tns:ОсноваА\" sequenced",
+                "base=\"tns:ОсноваБ\" sequenced",
+            ),
+            (
+                "Без",
+                "tns:ОсноваА",
+                "name=\"Без\"/>",
+                "name=\"Без\" base=\"tns:ОсноваА\"/>",
+            ),
+            (
+                "Количество",
+                "xs:integer",
+                "\"Количество\" base=\"xs:decimal\"",
+                "\"Количество\" base=\"xs:integer\"",
+            ),
+            (
+                "Количество",
+                "tns:Процент",
+                "\"Количество\" base=\"xs:decimal\"",
+                "\"Количество\" base=\"tns:Процент\"",
+            ),
+            // Префикс, доказанный единственным в пакете, объявляется рядом.
+            (
+                "Производный",
+                "t2:ОсноваБ",
+                "base=\"tns:ОсноваА\" sequenced",
+                "xmlns:t2=\"urn:test\" base=\"t2:ОсноваБ\" sequenced",
+            ),
+        ] {
+            let planned = set(name, base).unwrap();
+            assert_eq!(
+                planned.after,
+                before.replacen(old, new, 1),
+                "{name} -> {base}"
+            );
+            assert_eq!(planned.edits.len(), 1);
+            assert!(planned.finding.is_none());
+            assert_edit_applies(&before, &planned);
+        }
+        // Прежняя основа не меняет файл, даже если такую новую основу
+        // операция бы не приняла.
+        for (name, base) in [
+            ("Производный", "tns:ОсноваА"),
+            ("Процент", "xs:decimal"),
+            ("Код", "xs:string"),
+            ("Длина", "xs:string"),
+        ] {
+            let unchanged = set(name, base).unwrap();
+            assert!(unchanged.edits.is_empty(), "{name} -> {base}");
+            assert_eq!(unchanged.after, before);
+        }
+        for (name, base, cause) in [
+            (
+                "Производный",
+                "tns:Производный",
+                super::WriterErrorCause::BadValue,
+            ),
+            (
+                "Производный",
+                "tns:Потомок",
+                super::WriterErrorCause::BadValue,
+            ),
+            (
+                "Производный",
+                "tns:Количество",
+                super::WriterErrorCause::BadValue,
+            ),
+            ("Производный", "tns:Нет", super::WriterErrorCause::NotFound),
+            (
+                "Производный",
+                "xs:string",
+                super::WriterErrorCause::BadValue,
+            ),
+            (
+                "Количество",
+                "tns:ОсноваА",
+                super::WriterErrorCause::BadValue,
+            ),
+            (
+                "Количество",
+                "tns:Количество",
+                super::WriterErrorCause::BadValue,
+            ),
+            ("Количество", "tns:Нет", super::WriterErrorCause::NotFound),
+            ("Количество", "p:Нет", super::WriterErrorCause::BadValue),
+            ("Процент", "xs:integer", super::WriterErrorCause::BadValue),
+            ("Строка10", "xs:decimal", super::WriterErrorCause::BadValue),
+            ("Код", "xs:token", super::WriterErrorCause::BadValue),
+            (
+                "Количество",
+                "xs:decimel",
+                super::WriterErrorCause::NotFound,
+            ),
+            (
+                "Количество",
+                "xs:anyType",
+                super::WriterErrorCause::NotFound,
+            ),
+            ("Длина", "xs:decimal", super::WriterErrorCause::BadValue),
+            ("Основа", "xs:decimal", super::WriterErrorCause::BadValue),
+        ] {
+            let error = set(name, base).unwrap_err();
+            assert_eq!(error.cause(), cause, "{name} -> {base}");
+            assert_eq!(
+                error.field(),
+                super::WriterErrorField::Base,
+                "{name} -> {base}"
+            );
+        }
+        let missing = set("Нет", "xs:string").unwrap_err();
+        assert_eq!(missing.cause(), super::WriterErrorCause::NotFound);
+        assert_eq!(missing.field(), super::WriterErrorField::TypeTarget);
     }
 
     #[test]

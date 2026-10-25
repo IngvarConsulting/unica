@@ -28,8 +28,14 @@ use super::v13_read_modes::{
 };
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
+use crate::application::v13::diff::{
+    DiffError, DiffHandler, DiffPage, DiffRequest, DiffSource, DEFAULT_DIFF_LIMIT, MAX_DIFF_LIMIT,
+};
 use crate::application::v13::find::{FindIndex, FindRequest};
-use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
+use crate::application::v13::resolve::{
+    LinePlace, ModuleLine, PathLine, ResolveError, ResolveRequest, ResolvedLines, ResolvedPath,
+    ResolvedSource,
+};
 use crate::application::v13::tool_catalog::catalog_for;
 use crate::domain::apply::UNWRITABLE_SOURCE_MESSAGE;
 use unica_execution::receipt_runtime::ports::ExecutionClass;
@@ -46,7 +52,7 @@ use crate::infrastructure::v13_find::{
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_code_intelligence::model::CallGraphState;
@@ -84,6 +90,7 @@ use unica_workspace::apply::ApplyStagedState;
 pub(crate) struct CanonicalV13ReadService {
     cursors: Arc<ViewCursorStore>,
     search_cursors: Arc<SearchCursorStore>,
+    diff: Arc<DiffHandler>,
     find_builder: WorkspaceFindDirectoryBuilder,
     /// Порты приложения живут столько же, сколько служба, а не сколько вызов.
     /// Внутри них стол доставок: он принадлежит серверу и переживает вызов,
@@ -100,11 +107,20 @@ pub(crate) struct CanonicalV13ReadService {
     walk_budget: Option<std::time::Duration>,
 }
 
+/// Снимки продолжений лежат во временном файле: в памяти процесса остаются
+/// узлы и границы элементов.
+fn product_view_cursors() -> ViewCursorStore {
+    use crate::infrastructure::platform::{TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
+    ViewCursorStore::new(VIEW_SNAPSHOT_MAX_RETAINED_BYTES)
+        .with_spill(Arc::new(TempFileSpill::default()))
+}
+
 impl Default for CanonicalV13ReadService {
     fn default() -> Self {
         Self {
-            cursors: Arc::new(ViewCursorStore::default()),
+            cursors: Arc::new(product_view_cursors()),
             search_cursors: Arc::new(SearchCursorStore::default()),
+            diff: Arc::new(DiffHandler::default()),
             find_builder: WorkspaceFindDirectoryBuilder::default(),
             ports: Arc::new(
                 crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
@@ -225,7 +241,9 @@ impl CanonicalV13ReadService {
     #[cfg(test)]
     pub(super) fn with_view_cursor_budget_for_test(max_total_bytes: usize) -> Self {
         Self {
-            cursors: Arc::new(ViewCursorStore::new(max_total_bytes)),
+            cursors: Arc::new(ViewCursorStore::new(max_total_bytes).with_spill(Arc::new(
+                crate::infrastructure::platform::TempFileSpill::default(),
+            ))),
             ..Self::default()
         }
     }
@@ -249,8 +267,7 @@ impl CanonicalV13ReadService {
 
     pub(crate) fn with_capacity_observer(observer: Arc<CapacityObserver>) -> Self {
         let mut service = Self::default();
-        service.cursors =
-            Arc::new(ViewCursorStore::default().with_capacity_observer(observer.clone()));
+        service.cursors = Arc::new(product_view_cursors().with_capacity_observer(observer.clone()));
         service.find_builder = service.find_builder.with_capacity_observer(observer);
         service
     }
@@ -455,18 +472,6 @@ impl CanonicalV13ReadService {
                 )
             }),
         );
-        let operations = request
-            .ops()
-            .iter()
-            .enumerate()
-            .map(|(index, operation)| {
-                serde_json::json!({
-                    "index": index,
-                    "op": operation.name(),
-                    "at": operation.at(),
-                })
-            })
-            .collect::<Vec<_>>();
         let (staged, mut effects) = match plan_hidden_v13_apply(&request, &binding, &admission) {
             Err(error)
                 if error.kind() == ApplyPlanErrorKind::ProviderUnavailable
@@ -499,6 +504,25 @@ impl CanonicalV13ReadService {
             effects = Default::default();
         }
         let plan_warnings = effects.warnings().to_vec();
+        // The answer does not echo the request: only an operation that
+        // attached a warning is named, so the answer does not grow with `ops`.
+        let operations = effects
+            .warned_operations()
+            .iter()
+            .filter_map(|index| {
+                request
+                    .ops()
+                    .get(*index)
+                    .map(|operation| (index, operation))
+            })
+            .map(|(index, operation)| {
+                serde_json::json!({
+                    "index": index,
+                    "op": operation.name(),
+                    "at": operation.at(),
+                })
+            })
+            .collect::<Vec<_>>();
         let plan_hash = apply_plan_hash(&staged, &effects);
         let changed = effects
             .events()
@@ -548,11 +572,15 @@ impl CanonicalV13ReadService {
             "validated": true,
             "mode": disposition,
             "executable": true,
-            "operations": operations,
+            "operationCount": request.ops().len(),
             "planHash": plan_hash,
             "effects": publication.effects().events().len(),
             "cache": publication.effects().cache(),
         }));
+        if !operations.is_empty() {
+            result.data.as_mut().expect("apply data exists")["operations"] =
+                serde_json::Value::Array(operations);
+        }
         if !borrowing.is_empty() {
             result.data.as_mut().expect("apply data exists")["borrowing"] =
                 serde_json::json!(borrowing);
@@ -2529,7 +2557,7 @@ impl CanonicalV13ReadService {
         }
         if let Some(unknown) = arguments
             .keys()
-            .find(|name| !matches!(name.as_str(), "left" | "right" | "limit"))
+            .find(|name| !matches!(name.as_str(), "left" | "right" | "limit" | "cursor"))
         {
             return error_result(
                 None,
@@ -2565,18 +2593,36 @@ impl CanonicalV13ReadService {
             );
         }
         let limit = match arguments.get("limit") {
-            Some(value) => match bounded_usize(value).filter(|limit| *limit <= 1_000) {
+            Some(value) => match bounded_usize(value).filter(|limit| *limit <= MAX_DIFF_LIMIT) {
                 Some(limit) => limit,
                 None => {
                     return error_result(
                         None,
                         RefusalCode::BadValue,
-                        "diff limit must be an integer from 1 through 1000",
+                        format!("diff limit must be an integer from 1 through {MAX_DIFF_LIMIT}"),
                     )
                 }
             },
-            None => 100,
+            None => DEFAULT_DIFF_LIMIT,
         };
+        let cursor = match arguments.get("cursor") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(cursor)) if cursor.is_empty() => None,
+            Some(Value::String(cursor)) => Some(cursor.clone()),
+            Some(_) => {
+                return error_result(None, RefusalCode::BadValue, "diff cursor must be a string")
+            }
+        };
+        if let Some(cursor) = cursor {
+            let request = match DiffRequest::new(left, right) {
+                Ok(request) => request
+                    .with_limit(limit)
+                    .in_workspace(invocation.workspace_identity_hash().as_str())
+                    .with_cursor(cursor),
+                Err(error) => return error_result(None, error.code(), error.to_string()),
+            };
+            return diff_page_result(&request, self.diff.continue_saved(&request));
+        }
         let left_result = self.execute_view_arguments(
             invocation,
             &Map::from_iter([("at".to_string(), Value::String(left.to_string()))]),
@@ -2593,51 +2639,25 @@ impl CanonicalV13ReadService {
         if !right_result.ok {
             return right_result;
         }
-        let mut left_data = left_result
-            .data
-            .as_ref()
-            .expect("successful view has data")
-            .clone();
-        let mut right_data = right_result
-            .data
-            .as_ref()
-            .expect("successful view has data")
-            .clone();
-        source_backed(&mut left_data);
-        source_backed(&mut right_data);
-        if left_data.get("kind") != right_data.get("kind") {
-            return error_result(
-                None,
-                RefusalCode::IncomparableNodes,
-                "diff requires nodes of the same logical kind",
-            );
-        }
-        let mut changes = Vec::new();
-        collect_json_changes("", &left_data, &right_data, limit + 1, &mut changes);
-        let truncated = changes.len() > limit;
-        changes.truncate(limit);
-        let equal = changes.is_empty() && !truncated;
-        // Diff has no continuation yet (#1217): a truncated answer must say
-        // that the rest is missing and how to ask a smaller question.
-        let mut result = if truncated {
-            let narrower = if limit < 1_000 {
-                "compare smaller nodes or call again with a larger limit (at most 1000)"
-            } else {
-                "compare smaller nodes"
-            };
-            DomainResult::success(format!(
-                "logical nodes compared; only the first {limit} differences are returned and the rest are omitted; no continuation exists, so {narrower}"
-            ))
-        } else {
-            DomainResult::success("logical nodes compared")
+        let request = match DiffRequest::new(left, right) {
+            Ok(request) => request
+                .with_limit(limit)
+                .in_workspace(invocation.workspace_identity_hash().as_str()),
+            Err(error) => return error_result(None, error.code(), error.to_string()),
         };
-        result.data = Some(serde_json::json!({
-            "equal": equal,
-            "changes": changes,
-            "truncated": truncated,
-        }));
-
-        result
+        let side = |at: &QualifiedAddress, result: &DomainResult| {
+            let mut data = result.data.clone().expect("successful view has data");
+            source_backed(&mut data);
+            let kind = data
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            DiffSource::new(at.clone(), kind, data)
+        };
+        let left = side(request.left(), &left_result);
+        let right = side(request.right(), &right_result);
+        diff_page_result(&request, self.diff.compare(&request, &left, &right))
     }
 
     fn execute_run(
@@ -2686,7 +2706,7 @@ impl CanonicalV13ReadService {
     ) -> DomainResult {
         let arguments = invocation.arguments();
         for key in arguments.keys() {
-            if !["at", "path"].contains(&key.as_str()) {
+            if !["at", "path", "paths"].contains(&key.as_str()) {
                 return error_result(
                     None,
                     RefusalCode::BadValue,
@@ -2708,52 +2728,200 @@ impl CanonicalV13ReadService {
                 return error_result(None, RefusalCode::BadValue, "resolve path must be a string")
             }
         };
-        let request = match ResolveRequest::new(at, path) {
+        let paths = match arguments.get("paths") {
+            None => None,
+            Some(Value::Array(items)) => {
+                match items.iter().map(Value::as_str).collect::<Option<Vec<_>>>() {
+                    Some(items) => Some(items),
+                    None => {
+                        return error_result(
+                            None,
+                            RefusalCode::BadValue,
+                            "resolve paths must be an array of strings",
+                        )
+                    }
+                }
+            }
+            Some(_) => {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "resolve paths must be an array of strings",
+                )
+            }
+        };
+        let request = match ResolveRequest::new(at, path, paths.as_deref()) {
             Ok(request) => request,
             Err(error) => return error_result(None, error.code(), error.to_string()),
         };
         match request {
-            ResolveRequest::Path(path) => self.resolve_path(invocation, &path, cancellation),
+            ResolveRequest::Path(path) => {
+                match with_resolve_layout(invocation, |layout, deadline| {
+                    self.locate_path(invocation, layout, deadline, &path, cancellation)
+                }) {
+                    Ok(Ok(source)) => resolve_result(source),
+                    Ok(Err(refusal)) | Err(refusal) => *refusal,
+                }
+            }
+            ResolveRequest::Paths(items) => {
+                match with_resolve_layout(invocation, |layout, deadline| {
+                    self.resolve_paths(invocation, layout, deadline, &items, cancellation)
+                }) {
+                    Ok(result) => result,
+                    Err(refusal) => *refusal,
+                }
+            }
             ResolveRequest::Address(address) => {
                 self.resolve_address(invocation, &address, cancellation)
             }
         }
     }
 
-    fn resolve_path(
+    /// Пакет путей и строк: каждый различный путь ищется один раз, каждый
+    /// модуль читается одной проекцией на все его строки. Ответ — по
+    /// элементу на позицию входа, в том же порядке; отказ элемента не
+    /// роняет пакет. Отмена и срок останавливают весь вызов: публикация
+    /// чтения раскладки всё равно заменила бы ими ответ.
+    fn resolve_paths(
         &self,
         invocation: &ActorBoundExecution,
-        path: &str,
+        layout: &[LayoutFindSource<'_>],
+        deadline: ProviderDeadline,
+        items: &[Result<PathLine, ResolveError>],
         cancellation: &CancellationToken,
     ) -> DomainResult {
-        let sources = match invocation.layout_sources() {
-            Ok(sources) => sources,
-            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
-        };
-        let Some(deadline) = sources.first().map(|source| source.deadline()) else {
-            return error_result_detailed(
-                None,
-                RefusalDetail::ProviderAbsent,
-                "resolve has no admitted source sets",
-            );
-        };
-        let layout = sources
+        let mut located = BTreeMap::<String, Result<ResolvedSource, Box<DomainResult>>>::new();
+        let mut lines = BTreeMap::<String, BTreeSet<usize>>::new();
+        for item in items.iter().flatten() {
+            let key = item.key();
+            if !located.contains_key(&key) {
+                let source =
+                    self.locate_path(invocation, layout, deadline, item.path(), cancellation);
+                if let Err(refusal) = &source {
+                    if call_stopping_refusal(refusal) {
+                        return *refusal.clone();
+                    }
+                }
+                located.insert(key.clone(), source);
+            }
+            if let (Some(line), Ok(source)) = (item.line(), &located[&key]) {
+                // Строчный источник — файл BSL; у модуля целиком диапазона
+                // нет, но строки у файла есть.
+                if source.path().to_ascii_lowercase().ends_with(".bsl") {
+                    lines.entry(key).or_default().insert(line);
+                }
+            }
+        }
+        let mut placed =
+            BTreeMap::<String, Result<BTreeMap<usize, ModuleLine>, Box<DomainResult>>>::new();
+        for (key, requested) in lines {
+            let Ok(source) = &located[&key] else {
+                continue;
+            };
+            let requested = requested.into_iter().collect::<Vec<_>>();
+            let module = QualifiedAddress::parse(source.address())
+                .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))
+                .and_then(|module| {
+                    let authority = invocation
+                        .layout_read_source(module.source_set())
+                        .and_then(|read| read.logical_view_read_authority(cancellation))
+                        .map_err(|error| {
+                            ViewError::detailed(RefusalDetail::SourceUnreadable, error)
+                        })?;
+                    authority.module_lines(&module, &requested)
+                });
+            let answer = match module {
+                Ok(found) => Ok(requested.into_iter().zip(found).collect()),
+                Err(error)
+                    if matches!(
+                        error.code(),
+                        RefusalCode::Cancelled | RefusalCode::DeadlineExceeded
+                    ) =>
+                {
+                    return view_error_result(Some(source.address().to_string()), error)
+                }
+                Err(error) => Err(Box::new(view_error_result(
+                    Some(source.address().to_string()),
+                    error,
+                ))),
+            };
+            placed.insert(key, answer);
+        }
+        let mut resolved = 0_usize;
+        let answers = items
             .iter()
-            .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
+            .map(|item| {
+                let item = match item {
+                    Ok(item) => item,
+                    Err(error) => {
+                        return batch_refusal(&error_result(None, error.code(), error.to_string()))
+                    }
+                };
+                let source = match &located[&item.key()] {
+                    Ok(source) => source,
+                    Err(refusal) => return batch_refusal(refusal),
+                };
+                let answer = match (item.line(), placed.get(&item.key())) {
+                    (None, _) => ResolvedPath::new(source.address(), source.kind(), None),
+                    (Some(_), None) => ResolvedPath::new(
+                        source.address(),
+                        source.kind(),
+                        Some(LinePlace::NotLineBased),
+                    ),
+                    (Some(_), Some(Err(refusal))) => return batch_refusal(refusal),
+                    (Some(line), Some(Ok(module))) => match &module[&line] {
+                        ModuleLine::Method(method) => ResolvedPath::new(
+                            method.to_string(),
+                            NodeKind::Method.as_str(),
+                            Some(LinePlace::InMethod),
+                        ),
+                        ModuleLine::OutsideMethod => ResolvedPath::new(
+                            source.address(),
+                            source.kind(),
+                            Some(LinePlace::OutsideMethod),
+                        ),
+                        ModuleLine::PastEnd { lines } => {
+                            return batch_refusal(&error_result(
+                                Some(source.address().to_string()),
+                                RefusalCode::NotFound,
+                                format!(
+                                    "line {line} is past the end of `{}`, which has {lines} lines",
+                                    source.path()
+                                ),
+                            ))
+                        }
+                    },
+                };
+                resolved += 1;
+                serde_json::to_value(answer).expect("the closed resolve model always serializes")
+            })
             .collect::<Vec<_>>();
-        let entry = match self
+        let mut result =
+            DomainResult::success(format!("{resolved} of {} paths resolved", items.len()));
+        result.data = Some(json!({ "items": answers }));
+        result
+    }
+
+    /// Путь пришёл снаружи: точный предмет раскладки или отказ, который
+    /// одиночный `path` отдаёт целиком, а пакет — элементу.
+    fn locate_path(
+        &self,
+        invocation: &ActorBoundExecution,
+        layout: &[LayoutFindSource<'_>],
+        deadline: ProviderDeadline,
+        path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<ResolvedSource, Box<DomainResult>> {
+        let entry = self
             .find_builder
-            .locate_path(&layout, path, deadline, cancellation)
-        {
-            Ok(entry) => entry,
-            Err(error) => return find_build_error_result(None, error),
-        };
+            .locate_path(layout, path, deadline, cancellation)
+            .map_err(|error| Box::new(find_build_error_result(None, error)))?;
         let Some(entry) = entry else {
-            return error_result(
+            return Err(Box::new(error_result(
                 None,
                 RefusalCode::NotFound,
                 format!("no admitted source set places `{path}`"),
-            );
+            )));
         };
         // Кандидаты на присоединённые файлы подтверждаются тем же читателем,
         // что и view: регистрацию владельца и точный ресурс нельзя вывести
@@ -2763,34 +2931,33 @@ impl CanonicalV13ReadService {
                 .placed_path()
                 .is_some_and(|path| path.ends_with("/Ext/Form.xml"))
         {
-            let address = match QualifiedAddress::parse(entry.at()) {
-                Ok(address) => address,
-                Err(error) => return error_result(None, RefusalCode::BadValue, error.to_string()),
-            };
-            let authority = match invocation
+            let address = QualifiedAddress::parse(entry.at()).map_err(|error| {
+                Box::new(error_result(None, RefusalCode::BadValue, error.to_string()))
+            })?;
+            let authority = invocation
                 .layout_read_source(address.source_set())
                 .and_then(|source| source.logical_view_read_authority(cancellation))
-            {
-                Ok(authority) => authority,
-                Err(error) => {
-                    return error_result_detailed(
+                .map_err(|error| {
+                    Box::new(error_result_detailed(
                         Some(entry.at().to_owned()),
                         RefusalDetail::SourceUnreadable,
                         error,
-                    )
-                }
-            };
+                    ))
+                })?;
             return match Self::resolve_with_authority(&authority, &address, entry.placed_path()) {
-                Ok(source) if Some(source.path()) == entry.placed_path() => resolve_result(source),
-                Ok(_) => error_result(
+                Ok(source) if Some(source.path()) == entry.placed_path() => Ok(source),
+                Ok(_) => Err(Box::new(error_result(
                     Some(entry.at().to_owned()),
                     RefusalCode::InvalidSource,
                     "the logical reader does not place the requested resource at this path",
-                ),
-                Err(error) => view_error_result(Some(entry.at().to_owned()), error),
+                ))),
+                Err(error) => Err(Box::new(view_error_result(
+                    Some(entry.at().to_owned()),
+                    error,
+                ))),
             };
         }
-        resolve_result(ResolvedSource::new(
+        Ok(ResolvedSource::new(
             entry.at(),
             entry.kind(),
             entry.placed_path().expect("located path has a place"),
@@ -3504,6 +3671,58 @@ fn provider_search_page_result(
     result
 }
 
+/// Раскладка допущенных наборов для пути, пришедшего снаружи. Её
+/// недоступность — отказ всего вызова, а не каждого элемента пакета.
+fn with_resolve_layout<T>(
+    invocation: &ActorBoundExecution,
+    answer: impl FnOnce(&[LayoutFindSource<'_>], ProviderDeadline) -> T,
+) -> Result<T, Box<DomainResult>> {
+    let sources = invocation
+        .layout_sources()
+        .map_err(|error| Box::new(error_result(None, RefusalCode::ProviderUnavailable, error)))?;
+    let Some(deadline) = sources.first().map(|source| source.deadline()) else {
+        return Err(Box::new(error_result_detailed(
+            None,
+            RefusalDetail::ProviderAbsent,
+            "resolve has no admitted source sets",
+        )));
+    };
+    let layout = sources
+        .iter()
+        .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
+        .collect::<Vec<_>>();
+    Ok(answer(&layout, deadline))
+}
+
+/// Отказ одного элемента пакета: тот же код, уточнение и адрес, что дал бы
+/// одиночный вызов, без исхода, который код и так определяет.
+fn batch_refusal(refusal: &DomainResult) -> Value {
+    let diagnostic = refusal.diagnostics.first().cloned().unwrap_or_default();
+    let mut item = Map::new();
+    for key in ["code", "detailCode", "message"] {
+        if let Some(value) = diagnostic.get(key) {
+            item.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(at) = &refusal.at {
+        item.insert("at".to_string(), json!(at));
+    }
+    Value::Object(item)
+}
+
+/// Отмена и срок относятся ко всему вызову, а не к элементу пакета.
+fn call_stopping_refusal(refusal: &DomainResult) -> bool {
+    refusal
+        .diagnostics
+        .first()
+        .and_then(|diagnostic| diagnostic.get("code"))
+        .and_then(Value::as_str)
+        .is_some_and(|code| {
+            code == RefusalCode::Cancelled.as_str()
+                || code == RefusalCode::DeadlineExceeded.as_str()
+        })
+}
+
 /// Ответ моста: один точный предмет и ничего больше.
 fn resolve_result(resolved: ResolvedSource) -> DomainResult {
     let mut result = DomainResult::success("source location resolved");
@@ -3556,6 +3775,7 @@ const APPLY_DATA_FIELDS: &[&str] = &[
     "validated",
     "mode",
     "executable",
+    "operationCount",
     "operations",
     "planHash",
     "effects",
@@ -3614,47 +3834,40 @@ fn apply_plan_hash(staged: &ApplyStagedState, effects: &PlannedApplyEffects) -> 
     format!("sha256:{:x}", hasher.finalize())
 }
 
-fn collect_json_changes(
-    path: &str,
-    left: &Value,
-    right: &Value,
-    limit: usize,
-    changes: &mut Vec<Value>,
-) {
-    if left == right || changes.len() >= limit {
-        return;
-    }
-    match (left, right) {
-        (Value::Object(left), Value::Object(right)) => {
-            let keys = left
-                .keys()
-                .chain(right.keys())
-                .map(String::as_str)
-                .collect::<BTreeSet<_>>();
-            for key in keys {
-                let escaped = key.replace('~', "~0").replace('/', "~1");
-                let child_path = format!("{path}/{escaped}");
-                match (left.get(key), right.get(key)) {
-                    (Some(left), Some(right)) => {
-                        collect_json_changes(&child_path, left, right, limit, changes)
-                    }
-                    (left, right) => changes.push(serde_json::json!({
-                        "path": child_path,
-                        "left": left,
-                        "right": right,
-                    })),
-                }
-                if changes.len() >= limit {
-                    break;
-                }
-            }
+/// Projects one page of a left/right comparison. A cut page names its
+/// continuation; the cursor answers only the same pair, page size and
+/// workspace.
+fn diff_page_result(request: &DiffRequest, page: Result<DiffPage, DiffError>) -> DomainResult {
+    let page = match page {
+        Ok(page) => page,
+        Err(error @ DiffError::ChangeTooLarge) => {
+            return error_result(
+                Some(request.left().to_string()),
+                error.code(),
+                error.to_string(),
+            )
         }
-        _ => changes.push(serde_json::json!({
-            "path": if path.is_empty() { "/" } else { path },
-            "left": left,
-            "right": right,
-        })),
-    }
+        Err(error) => return error_result(None, error.code(), error.to_string()),
+    };
+    let limit = request.limit();
+    let mut result = if let Some(cursor) = page.cursor() {
+        let mut result = DomainResult::success(
+            "logical nodes compared; more differences remain; continue with cursor",
+        );
+        result.cursor = Some(cursor.to_owned());
+        result.next.push(json!({"tool": "unica.diff", "arguments": {
+            "left": request.left().to_string(),
+            "right": request.right().to_string(),
+            "limit": limit,
+            "cursor": cursor,
+        }}));
+        result
+    } else {
+        DomainResult::success("logical nodes compared")
+    };
+    result.page = Some(json!({"stoppedBy": page.stopped_by()}));
+    result.data = Some(serde_json::to_value(&page).expect("diff page serializes"));
+    result
 }
 
 fn find_build_error_result(at: Option<String>, error: FindBuildError) -> DomainResult {
@@ -4998,11 +5211,26 @@ pub(super) fn preflight_apply_operations_with(
                     .collect::<Vec<_>>()
                     .join(" or ");
                 let message = format!("{refused}; it addresses {shapes}");
-                let refusal = error_result(
+                let mut refusal = error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,
                     message,
                 );
+                // Код пишется в модуль, а не в его владельца: узел с модулями
+                // ведёт к их адресам (#1964).
+                if descriptor.family() == unica_operations::OperationFamily::Code {
+                    if let Some(branch) = crate::infrastructure::v13_read::module_branch_for_parent(
+                        operation.at(),
+                        crate::domain::apply::source_classification_profile(source),
+                        source.kind(),
+                    ) {
+                        refusal.next.push(json!({
+                            "tool": "unica.view",
+                            "args": {"at": branch.at()},
+                            "reason": "адреса модулей этого узла: код пишется по адресу модуля",
+                        }));
+                    }
+                }
                 // Узел, который читается, показывает свой словарь; адрес,
                 // которого нет ни в одном дереве, ведёт к корню набора.
                 let readable = crate::infrastructure::logical_tree::route_logical_address(
@@ -6426,6 +6654,270 @@ mod tests {
         }
     }
 
+    /// Ответ пакета по позиции входа: `items[i]` отвечает на `paths[i]`.
+    fn resolve_paths_items(workspace: &std::path::Path, paths: &[&str]) -> Vec<serde_json::Value> {
+        let result = invoke_exact_read(
+            workspace,
+            unica_execution::invocation_store::ToolIdentity::Resolve,
+            json!({ "paths": paths }),
+        );
+        assert!(result.ok, "{result:?}");
+        assert!(result.rev.is_none(), "{result:?}");
+        let items = result.data.as_ref().unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(items.len(), paths.len(), "{result:?}");
+        items
+    }
+
+    fn single_path(workspace: &std::path::Path, path: &str) -> serde_json::Value {
+        let result = invoke_exact_read(
+            workspace,
+            unica_execution::invocation_store::ToolIdentity::Resolve,
+            json!({ "path": path }),
+        );
+        assert!(result.ok, "{path}: {result:?}");
+        result.data.unwrap()
+    }
+
+    #[test]
+    fn resolve_paths_translates_paths_and_lines_in_input_order() {
+        let workspace = resolve_exact_workspace();
+        let root = workspace.path();
+        let common = "src/CommonModules/Probe/Ext/Module.bsl";
+        let object = "src/Catalogs/Items/Ext/ObjectModule.bsl";
+        let form = "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl";
+        let owner = |path: &str| {
+            let single = single_path(root, path);
+            json!({"at": single["at"], "kind": single["kind"]})
+        };
+        let with_line = |path: &str, line: &str| {
+            let mut item = owner(path);
+            item["line"] = json!(line);
+            item
+        };
+        let method = |at: &str| json!({"at": at, "kind": "Method", "line": "inMethod"});
+        let items = resolve_paths_items(
+            root,
+            &[
+                &format!("{common}:4"),
+                &format!("{}:70", common.replace('/', "\\")),
+                &format!("{object}:3"),
+                &format!("{object}:65"),
+                object,
+                &format!("{form}:10"),
+                "src/Catalogs/Items.xml:3",
+                &format!("{common}:4"),
+                &format!("{object}:1"),
+                "src/Catalogs/Items/Forms/Main/Ext/Form.xml:1",
+                &format!(
+                    "{}:4",
+                    std::fs::canonicalize(root).unwrap().join(object).display()
+                ),
+            ],
+        );
+        assert_eq!(
+            items,
+            vec![
+                method("main:CommonModule.Probe.Method.Ping"),
+                with_line(common, "outsideMethod"),
+                method("main:Catalog.Items.Module.Object.Method.Ping"),
+                method("main:Catalog.Items.Module.Object.Method.Ping"),
+                owner(object),
+                method("main:Catalog.Items.Form.Main.Module.Form.Method.Ping"),
+                with_line("src/Catalogs/Items.xml", "notLineBased"),
+                method("main:CommonModule.Probe.Method.Ping"),
+                with_line(object, "outsideMethod"),
+                with_line("src/Catalogs/Items/Forms/Main/Ext/Form.xml", "notLineBased"),
+                method("main:Catalog.Items.Module.Object.Method.Ping"),
+            ]
+        );
+        assert_eq!(items[9]["at"], "main:Catalog.Items.Form.Main");
+        assert_eq!(items[1]["at"], "main:CommonModule.Probe", "{items:?}");
+        assert_eq!(items[8]["at"], "main:Catalog.Items.Module.Object");
+        assert_eq!(items[6]["at"], "main:Catalog.Items");
+    }
+
+    #[test]
+    fn resolve_paths_refuses_only_the_failing_item() {
+        let workspace = resolve_exact_workspace();
+        let root = workspace.path();
+        let object = "src/Catalogs/Items/Ext/ObjectModule.bsl";
+        let outside = root
+            .parent()
+            .unwrap()
+            .join("Elsewhere/Ext/ObjectModule.bsl");
+        // Дескриптор и модуль есть, но конфигурация каталог не регистрирует.
+        std::fs::write(
+            root.join("src/Catalogs/Orphan.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="f3317000-0000-4000-8000-0000000000aa"><Properties><Name>Orphan</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let orphan = root.join("src/Catalogs/Orphan/Ext");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(
+            orphan.join("ObjectModule.bsl"),
+            "Процедура Ping()\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let items = resolve_paths_items(
+            root,
+            &[
+                &format!("{object}:73"),
+                "src/Catalogs/Missing/Ext/ObjectModule.bsl:1",
+                &format!("{}:1", outside.display()),
+                &format!("{object}:0"),
+                &format!("{object}:3:5"),
+                "",
+                &format!("{object}:3"),
+                "src/Catalogs/Orphan/Ext/ObjectModule.bsl:1",
+            ],
+        );
+        // Владелец не зарегистрирован в конфигурации, хотя файл модуля есть.
+        assert_eq!(items[7]["code"], "not_found", "{items:?}");
+        assert!(
+            items[7]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not registered"),
+            "{items:?}"
+        );
+        let items = &items[..7];
+        let codes = items
+            .iter()
+            .map(|item| item.get("code").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            codes,
+            [
+                Some("not_found"),
+                Some("not_found"),
+                Some("not_found"),
+                Some("bad_value"),
+                Some("bad_value"),
+                Some("bad_value"),
+                None,
+            ],
+            "{items:?}"
+        );
+        assert_eq!(items[0]["at"], "main:Catalog.Items.Module.Object");
+        assert!(
+            items[0]["message"].as_str().unwrap().contains("72 lines"),
+            "{items:?}"
+        );
+        for refused in &items[..6] {
+            assert!(refused.get("kind").is_none(), "{refused:?}");
+            assert!(refused.get("outcome").is_none(), "{refused:?}");
+            assert!(refused["message"].as_str().is_some(), "{refused:?}");
+        }
+        assert_eq!(
+            items[6]["at"],
+            "main:Catalog.Items.Module.Object.Method.Ping"
+        );
+    }
+
+    #[test]
+    fn resolve_paths_places_lines_by_the_method_range_resolve_names() {
+        let workspace = resolve_exact_workspace();
+        let module = concat!(
+            "// Документация.\n\n&НаСервере\n&Перед(\"Ping\")\nПроцедура Annotated(\n",
+            "    Value) Экспорт\n    Сообщить(Value);\nКонецПроцедуры\n\n",
+            "Процедура Empty()\nКонецПроцедуры\nФункция Inline() Возврат 1; КонецФункции\n",
+            "Асинх\nПроцедура Waiting()\nКонецПроцедуры\n",
+            "Async\nProcedure Waiting2()\nEndProcedure\n",
+            "// Doc\n// Параметры:\n&НаСервере\nПроцедура Documented()\n    Сообщить(1);\nКонецПроцедуры\n",
+        );
+        let path = "src/CommonModules/Probe/Ext/Module.bsl";
+        std::fs::write(workspace.path().join(path), module).unwrap();
+        let lines = [1, 3, 8, 9, 12, 13, 19, 20, 21, 24];
+        let items = resolve_paths_items(
+            workspace.path(),
+            &lines
+                .iter()
+                .map(|line| format!("{path}:{line}"))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
+        let placed = items
+            .iter()
+            .map(|item| (item["at"].as_str().unwrap(), item["line"].as_str().unwrap()))
+            .collect::<Vec<_>>();
+        let method = |name: &'static str| -> (&'static str, &'static str) {
+            (
+                Box::leak(format!("main:CommonModule.Probe.Method.{name}").into_boxed_str()),
+                "inMethod",
+            )
+        };
+        let outside = ("main:CommonModule.Probe", "outsideMethod");
+        // Документирующий комментарий входит в `Body`, но не в диапазон
+        // `Method`: строка над методом отвечает модулем, как и `resolve at`.
+        assert_eq!(
+            placed,
+            vec![
+                outside,
+                method("Annotated"),
+                method("Annotated"),
+                outside,
+                method("Inline"),
+                method("Waiting"),
+                outside,
+                outside,
+                method("Documented"),
+                method("Documented"),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_paths_is_exclusive_with_at_and_path_and_takes_only_strings() {
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_execution::receipt_runtime::ports::V5CanonicalPrepareError;
+        let workspace = resolve_exact_workspace();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        for arguments in [
+            json!({"paths": ["src/Catalogs/Items.xml"], "path": "src/Catalogs/Items.xml"}),
+            json!({"paths": ["src/Catalogs/Items.xml"], "at": "main:Catalog.Items"}),
+            json!({"paths": []}),
+            json!({"paths": [1]}),
+            json!({"paths": "src/Catalogs/Items.xml"}),
+        ] {
+            // Форму вызова отклоняет либо проверка схемы на входе, либо сам
+            // мост; исход для вызывающего один — `bad_value` всего вызова.
+            let runtime = V5CanonicalInvocationRuntime::new(
+                Arc::new(super::CanonicalV13ReadService::default()),
+                Arc::new(TokioClock),
+            );
+            let request = InvocationRequest::new(
+                ToolIdentity::Resolve,
+                arguments.clone(),
+                root.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let result = match runtime.bind(request) {
+                Err(V5CanonicalPrepareError::Rejected(result)) => *result,
+                Err(error) => panic!("{arguments}: {error:?}"),
+                Ok(bound) => bound
+                    .prepare()
+                    .unwrap()
+                    .execute(CancellationToken::new())
+                    .unwrap(),
+            };
+            assert!(!result.ok, "{arguments}: {result:?}");
+            assert_eq!(
+                serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                "bad_value",
+                "{arguments}: {result:?}"
+            );
+        }
+    }
+
     #[test]
     fn view_nested_regions_never_substitutes_the_final_name() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -7311,6 +7803,66 @@ mod tests {
             result.data.is_none(),
             "cancelled read returned a location: {result:?}"
         );
+    }
+
+    #[test]
+    fn resolve_paths_cancelled_read_refuses_the_whole_call() {
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_execution::receipt_runtime::ports::ExecutionClass;
+        use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
+        struct CancelRead(super::CanonicalV13ReadService);
+        impl super::CanonicalInvocationService for CancelRead {
+            fn prepare(
+                &self,
+                invocation: &super::ActorBoundInvocation,
+            ) -> Result<ExecutionClass, Box<DomainResult>> {
+                self.0.prepare(invocation)
+            }
+            fn execute(
+                &self,
+                execution: &super::ActorBoundExecution,
+                _: CancellationToken,
+            ) -> Result<DomainResult, InvocationFailure> {
+                let cancellation = CancellationToken::new();
+                cancellation.cancel();
+                self.0.execute(execution, cancellation)
+            }
+        }
+        let workspace = resolve_exact_workspace();
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CancelRead(super::CanonicalV13ReadService::default())),
+            Arc::new(TokioClock),
+        );
+        let result = runtime
+            .bind(
+                InvocationRequest::new(
+                    ToolIdentity::Resolve,
+                    json!({"paths": [
+                        "src/CommonModules/Probe/Ext/Module.bsl:4",
+                        "src/Catalogs/Items.xml",
+                    ]}),
+                    std::fs::canonicalize(workspace.path())
+                        .unwrap()
+                        .to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .prepare()
+            .unwrap()
+            .execute(CancellationToken::new())
+            .unwrap();
+        // Отмена не превращается в отказы элементов внутри успешного пакета.
+        assert!(!result.ok, "cancelled batch claimed answers: {result:?}");
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+            "cancelled"
+        );
+        assert!(result.data.is_none(), "{result:?}");
     }
 
     #[test]

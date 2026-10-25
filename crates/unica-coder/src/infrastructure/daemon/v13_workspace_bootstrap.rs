@@ -117,6 +117,9 @@ pub(super) fn prepare(
     let mut hasher = Sha256::new();
     hasher.update(b"unica-v13-workspace-inspection-v1\0");
     hasher.update(canonical_root.as_os_str().as_encoded_bytes());
+    let continuation = (question == RootQuestion::Verdict)
+        .then(|| continuations.for_workspace(&canonical_root))
+        .flatten();
     Preparation::Ready(Arc::new(PreparedWorkspaceInspection {
         context,
         requested_directory: request.workspace_hint().to_owned(),
@@ -124,9 +127,7 @@ pub(super) fn prepare(
         question,
         response_deadline,
         workspace_identity_hash: SafeIdentityHash::from_sha256(hasher.finalize().into()),
-        continuation: (question == RootQuestion::Verdict)
-            .then(|| continuations.for_workspace(&canonical_root))
-            .flatten(),
+        continuation,
     }))
 }
 
@@ -528,40 +529,6 @@ fn bootstrap_result(
         } else {
             "workspace readiness reported findings"
         });
-        let capacity_limited = readiness_state == "incomplete"
-            && continuation
-                .as_ref()
-                .is_some_and(|state| state.progress().capacity_limited);
-        if capacity_limited {
-            if let Value::Array(items) = &mut diagnostics {
-                items.push(object([
-                    ("code", Value::String("git.eol_checkpoint_capacity".into())),
-                    ("severity", Value::String("error".into())),
-                    ("scope", Value::String("repository".into())),
-                    ("paths", Value::Array(Vec::new())),
-                    ("count", value(1)),
-                    (
-                        "message",
-                        Value::String("The bounded EOL checkpoint cannot retain this resource set; repeating the same check cannot guarantee progress".into()),
-                    ),
-                    ("evidence", Value::Array(Vec::new())),
-                    (
-                        "remediation",
-                        object([
-                            (
-                                "summary",
-                                Value::String("Reduce the number of tracked text resources before checking again".into()),
-                            ),
-                            ("steps", Value::Array(Vec::new())),
-                            ("commands", Value::Array(Vec::new())),
-                        ]),
-                    ),
-                ]));
-                items.sort_by(|left, right| {
-                    root_diagnostic_order(left).cmp(&root_diagnostic_order(right))
-                });
-            }
-        }
         let mut data = object([
             (
                 "status",
@@ -584,7 +551,6 @@ fn bootstrap_result(
                                 ("textResources", value(progress.text_resources)),
                                 ("stagedEolRetained", value(progress.staged_eol_retained)),
                                 ("workingEolRetained", value(progress.working_eol_retained)),
-                                ("capacityLimited", Value::Bool(progress.capacity_limited)),
                             ]),
                         );
                     }
@@ -870,31 +836,6 @@ fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
     )
 }
 
-fn root_diagnostic_order(diagnostic: &Value) -> (u8, u8, Option<&str>, &str, Option<&str>) {
-    let severity = match diagnostic["severity"].as_str() {
-        Some("error") => 0,
-        Some("warning") => 1,
-        Some("info") => 2,
-        _ => 3,
-    };
-    let scope = match diagnostic["scope"].as_str() {
-        Some("workspace") => 0,
-        Some("repository") => 1,
-        Some("sourceSet") => 2,
-        _ => 3,
-    };
-    (
-        severity,
-        scope,
-        diagnostic["sourceSet"].as_str(),
-        diagnostic["code"].as_str().unwrap_or_default(),
-        diagnostic["paths"]
-            .as_array()
-            .and_then(|paths| paths.first())
-            .and_then(Value::as_str),
-    )
-}
-
 fn value<T: Serialize>(value: T) -> Value {
     serde_json::to_value(value).expect("workspace bootstrap value serializes")
 }
@@ -1024,9 +965,201 @@ mod tests {
         (workspace, root)
     }
 
+    /// A store over daemon state outside the workspace, as the daemon keeps it.
+    fn continuation_store() -> (tempfile::TempDir, super::RootCheckContinuationStore) {
+        let state = tempfile::tempdir().unwrap();
+        std::fs::create_dir(state.path().join("project-health")).unwrap();
+        let store = super::RootCheckContinuationStore::in_directory(
+            state.path().join("project-health"),
+            std::time::Duration::from_secs(3600),
+        );
+        (state, store)
+    }
+
+    /// Stage `paths` with one shared blob and no working files, the way a
+    /// large repository looks to the index without writing every file.
+    fn stage_synthetic_paths(root: &std::path::Path, paths: impl Iterator<Item = String>) {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let blob = Command::new("git")
+            .args(["hash-object", "-w", "--stdin"])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        blob.stdin.as_ref().unwrap().write_all(b"x\n").unwrap();
+        let blob = blob.wait_with_output().unwrap();
+        assert!(blob.status.success(), "git hash-object failed");
+        let oid = String::from_utf8(blob.stdout).unwrap().trim().to_owned();
+        let mut input = Vec::new();
+        for path in paths {
+            input.extend_from_slice(format!("100644 {oid}\t{path}\0").as_bytes());
+        }
+        let mut update = Command::new("git")
+            .args(["update-index", "-z", "--index-info"])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        update.stdin.take().unwrap().write_all(&input).unwrap();
+        assert!(update.wait().unwrap().success(), "git update-index failed");
+    }
+
+    fn root_check(root: &std::path::Path) -> serde_json::Value {
+        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use std::sync::Arc;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_work_control::cancellation::CancellationToken;
+
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let Preparation::Ready(inspection) = prepare(
+            &request,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+            &RootCheckContinuationStore::default(),
+        ) else {
+            panic!("root check must prepare");
+        };
+        inspection
+            .execute(CancellationToken::new())
+            .unwrap()
+            .data
+            .unwrap()
+    }
+
+    fn assert_repository_checks_passed(data: &serde_json::Value) {
+        assert_eq!(data["readinessState"], "complete", "{data}");
+        assert_eq!(data["repositoryReady"], true, "{data}");
+        for check in data["checks"].as_array().unwrap() {
+            assert_eq!(check["status"], "passed", "{check}");
+        }
+    }
+
+    #[test]
+    fn root_check_inspects_resources_past_the_former_classification_count() {
+        // 65 537 staged binary resources pass the former 65 536-entry refusal.
+        // Their working files are absent, which the LFS advice reads as no size.
+        let (_workspace, root) = eol_check_fixture();
+        std::fs::write(
+            root.join(".gitattributes"),
+            "*.xml text eol=lf\n*.bin -text\n",
+        )
+        .unwrap();
+        let output = std::process::Command::new("git")
+            .args(["add", ".gitattributes"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        stage_synthetic_paths(
+            &root,
+            (0..65_537).map(|number| format!("src/Blobs/{number:05}.bin")),
+        );
+
+        assert_repository_checks_passed(&root_check(&root));
+    }
+
+    #[test]
+    fn root_check_streams_an_index_past_the_former_capture_limit() {
+        // 200 000 long staged paths make `git ls-files --stage -z` print more
+        // than the former 64 MiB capture of a Git command's output.
+        let (_workspace, root) = eol_check_fixture();
+        let directory = "d".repeat(300);
+        stage_synthetic_paths(
+            &root,
+            (0..200_000).map(|number| format!("other/{directory}/{number:06}.dat")),
+        );
+        let index = std::process::Command::new("git")
+            .args(["ls-files", "--stage", "-z"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(index.stdout.len() > 64 * 1024 * 1024);
+        drop(index);
+
+        assert_repository_checks_passed(&root_check(&root));
+    }
+
+    #[test]
+    fn root_check_keeps_its_continuation_outside_the_workspace_and_a_new_daemon_continues() {
+        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use std::sync::Arc;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_project_health::inspection::resources::stop_staged_eol_after_for_test;
+        use unica_work_control::cancellation::CancellationToken;
+
+        let (_workspace, root) = eol_check_fixture();
+        let state = tempfile::tempdir().unwrap();
+        let directory = state.path().join("project-health");
+        std::fs::create_dir(&directory).unwrap();
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let check = |stop_after: Option<usize>| {
+            // Every call opens its own store over the same state, as a
+            // restarted daemon would.
+            let store = RootCheckContinuationStore::in_directory(
+                directory.clone(),
+                std::time::Duration::from_secs(3600),
+            );
+            if let Some(stop_after) = stop_after {
+                stop_staged_eol_after_for_test(stop_after);
+            }
+            let Preparation::Ready(inspection) = prepare(
+                &request,
+                InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+                &store,
+            ) else {
+                panic!("root check must prepare");
+            };
+            inspection
+                .execute(CancellationToken::new())
+                .unwrap()
+                .data
+                .unwrap()
+        };
+        let workspace_before = unica_workspace::test_support::tree_snapshot(&root);
+
+        let first = check(Some(1));
+        assert_eq!(first["readinessState"], "incomplete");
+        assert_eq!(first["inspectionProgress"]["stagedEolRetained"], 1);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        // The next call proves the path the first one proved without asking
+        // Git again; starting over would retain nothing before its stop.
+        let second = check(Some(0));
+        assert_eq!(second["readinessState"], "incomplete");
+        assert_eq!(second["inspectionProgress"]["stagedEolRetained"], 1);
+        let third = check(None);
+        assert_eq!(third["readinessState"], "complete");
+        assert_eq!(third["repositoryReady"], true);
+
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&root),
+            workspace_before,
+            "a root check leaves the workspace unchanged"
+        );
+    }
+
     #[test]
     fn root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint() {
-        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use super::{prepare, Preparation};
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use std::sync::Arc;
         use unica_execution::clock::TokioClock;
@@ -1043,7 +1176,7 @@ mod tests {
             7_000,
         )
         .unwrap();
-        let continuations = RootCheckContinuationStore::default();
+        let (_state, continuations) = continuation_store();
         stop_staged_eol_after_for_test(1);
         let Preparation::Ready(first) = prepare(
             &request,
@@ -1078,7 +1211,7 @@ mod tests {
 
     #[test]
     fn root_eol_timeout_keeps_earlier_attribute_failure() {
-        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use super::{prepare, Preparation};
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use std::sync::Arc;
         use unica_execution::clock::TokioClock;
@@ -1107,10 +1240,11 @@ mod tests {
         )
         .unwrap();
         stop_staged_eol_after_for_test(0);
+        let (_state, continuations) = continuation_store();
         let Preparation::Ready(inspection) = prepare(
             &request,
             InvocationResponseDeadline::capture(Arc::new(TokioClock)),
-            &RootCheckContinuationStore::default(),
+            &continuations,
         ) else {
             panic!("root check must prepare");
         };
@@ -1134,7 +1268,7 @@ mod tests {
 
     #[test]
     fn root_check_resumes_inside_working_file_without_losing_attribute_failure() {
-        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use super::{prepare, Preparation};
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use std::sync::Arc;
         use unica_execution::clock::TokioClock;
@@ -1170,7 +1304,7 @@ mod tests {
         )
         .unwrap();
         let normalized_root = super::normalize_path_identity(&root).unwrap();
-        let continuations = RootCheckContinuationStore::default();
+        let (_state, continuations) = continuation_store();
         for step in 0..4 {
             if step < 3 {
                 stop_working_eol_after_block_for_test();
@@ -1216,14 +1350,13 @@ mod tests {
     }
 
     #[test]
-    fn root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint() {
+    fn root_check_does_not_recommend_repeat_for_a_fixed_failure() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use std::sync::Arc;
         use unica_execution::clock::TokioClock;
         use unica_execution::invocation::InvocationResponseDeadline;
         use unica_execution::invocation_store::ToolIdentity;
-        use unica_project_health::inspection::resources::stop_staged_eol_after_for_test;
         use unica_work_control::cancellation::CancellationToken;
 
         let (_workspace, root) = eol_check_fixture();
@@ -1234,43 +1367,6 @@ mod tests {
             7_000,
         )
         .unwrap();
-        let continuations = RootCheckContinuationStore::default();
-        let normalized_root = super::normalize_path_identity(&root).unwrap();
-        continuations
-            .for_workspace(&normalized_root)
-            .unwrap()
-            .lock()
-            .unwrap()
-            .set_test_evidence_limit(0);
-        stop_staged_eol_after_for_test(1);
-        let Preparation::Ready(inspection) = prepare(
-            &request,
-            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
-            &continuations,
-        ) else {
-            panic!("root check must prepare");
-        };
-        let result = inspection.execute(CancellationToken::new()).unwrap();
-        let data = result.data.unwrap();
-        assert_eq!(data["readinessState"], "incomplete");
-        assert_eq!(data["inspectionProgress"]["capacityLimited"], true);
-        assert!(data["diagnostics"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|diagnostic| { diagnostic["code"] == "git.eol_checkpoint_capacity" }));
-        assert!(data["diagnostics"]
-            .as_array()
-            .unwrap()
-            .windows(2)
-            .all(|pair| {
-                super::root_diagnostic_order(&pair[0]) <= super::root_diagnostic_order(&pair[1])
-            }));
-        assert!(!result
-            .next
-            .iter()
-            .any(|action| action["tool"] == "unica.check"));
-
         // A malformed Git index is static until the repository is repaired.
         std::fs::write(root.join(".git/index"), b"bad index").unwrap();
         let Preparation::Ready(inspection) = prepare(

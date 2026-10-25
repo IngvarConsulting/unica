@@ -131,10 +131,103 @@ struct ViewCursorState {
     payload_count: usize,
 }
 
-#[derive(Debug)]
 struct ViewCollectionPayload {
     node: Value,
-    items: Vec<Value>,
+    items: Box<dyn SpilledItems>,
+    digest: [u8; 32],
+}
+
+impl std::fmt::Debug for ViewCollectionPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ViewCollectionPayload")
+            .field("node", &self.node)
+            .field("items", &self.items.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Где лежат элементы снимка. Компонент сам файлов не открывает: хранение
+/// на диске подставляет платформенный слой продукта, а по умолчанию элементы
+/// остаются в памяти.
+pub trait SnapshotSpill: Send + Sync {
+    /// Удерживаемые байты снимка с этим узлом и элементами в этом хранилище.
+    #[allow(clippy::ptr_arg)] // the retained charge includes the vector capacity
+    fn payload_charge(&self, node: &Value, items: &Vec<Value>) -> Result<usize, ViewCursorError>;
+    fn store(&self, items: Vec<Value>) -> Result<Box<dyn SpilledItems>, ViewCursorError>;
+}
+
+/// Элементы одного снимка в порядке коллекции.
+pub trait SpilledItems: Send + Sync {
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Не больше `count` элементов, начиная с `start`.
+    fn read(&self, start: usize, count: usize) -> Result<Vec<Value>, ViewCursorError>;
+}
+
+/// Элементы снимка в памяти процесса.
+#[derive(Debug, Default)]
+pub struct MemorySpill;
+
+impl SnapshotSpill for MemorySpill {
+    fn payload_charge(&self, node: &Value, items: &Vec<Value>) -> Result<usize, ViewCursorError> {
+        snapshot_payload_charge(node, items)
+    }
+
+    fn store(&self, items: Vec<Value>) -> Result<Box<dyn SpilledItems>, ViewCursorError> {
+        Ok(Box::new(MemoryItems(items)))
+    }
+}
+
+struct MemoryItems(Vec<Value>);
+
+impl SpilledItems for MemoryItems {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn read(&self, start: usize, count: usize) -> Result<Vec<Value>, ViewCursorError> {
+        let end = start.saturating_add(count).min(self.0.len());
+        Ok(self.0.get(start..end).unwrap_or_default().to_vec())
+    }
+}
+
+/// Удерживаемое снимком, чьи элементы лежат вне памяти: узел и границы
+/// элементов в памяти плюс байты самих элементов в их хранилище.
+pub fn spilled_payload_charge(node: &Value, items: &[Value]) -> Result<usize, ViewCursorError> {
+    let node_json = bounded_json_size_attempt(node, usize::MAX)
+        .map_err(|_| ViewCursorError::OffsetNotRepresentable)?;
+    let node_heap = view_add(
+        std::mem::size_of::<ViewCollectionPayload>(),
+        value_extra_heap_bytes(node)?,
+    )?;
+    let bounds = view_mul(view_add(items.len(), 1)?, std::mem::size_of::<u64>())?;
+    let mut item_bytes = 0usize;
+    for item in items {
+        let bytes = bounded_json_size_attempt(item, usize::MAX)
+            .map_err(|_| ViewCursorError::OffsetNotRepresentable)?;
+        item_bytes = view_add(item_bytes, bytes)?;
+    }
+    view_add(
+        view_add(node_json.max(node_heap), bounds)?,
+        view_add(item_bytes, 2 * std::mem::size_of::<usize>())?,
+    )
+}
+
+/// Цифровой отпечаток элементов: равные снимки делят одно хранилище.
+fn items_digest(items: &[Value]) -> Result<[u8; 32], ViewCursorError> {
+    let mut hasher = Sha256::new();
+    for item in items {
+        // The length prefix keeps item boundaries part of the identity.
+        let bytes =
+            serde_json::to_vec(item).map_err(|_| ViewCursorError::OffsetNotRepresentable)?;
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(&bytes);
+    }
+    hasher.update((items.len() as u64).to_be_bytes());
+    Ok(hasher.finalize().into())
 }
 
 #[derive(Debug)]
@@ -149,8 +242,24 @@ impl ViewCollectionSnapshot {
         &self.payload.node
     }
 
-    pub fn items(&self) -> &[Value] {
-        &self.payload.items
+    /// Число элементов снимка.
+    pub fn len(&self) -> usize {
+        self.payload.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Не больше `count` элементов, начиная с `start`, в порядке снимка.
+    pub fn read_items(&self, start: usize, count: usize) -> Result<Vec<Value>, ViewCursorError> {
+        self.payload.items.read(start, count)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn items(&self) -> Vec<Value> {
+        self.read_items(0, self.len())
+            .expect("snapshot items are readable")
     }
 }
 
@@ -180,6 +289,7 @@ pub enum ViewCursorError {
     TokenUnavailable,
     OffsetNotRepresentable,
     AllocationUnavailable,
+    StorageUnavailable,
 }
 
 impl ViewCursorError {
@@ -189,9 +299,10 @@ impl ViewCursorError {
             Self::CapacityExceeded => RefusalCode::ResultTooLarge,
             Self::OwnerUnavailable => RefusalDetail::CachePoisoned.code(),
             Self::EntropyUnavailable => RefusalDetail::ProviderAbsent.code(),
-            Self::TokenUnavailable | Self::OffsetNotRepresentable | Self::AllocationUnavailable => {
-                RefusalCode::ProviderFailed
-            }
+            Self::TokenUnavailable
+            | Self::OffsetNotRepresentable
+            | Self::AllocationUnavailable
+            | Self::StorageUnavailable => RefusalCode::ProviderFailed,
         }
     }
 
@@ -212,6 +323,7 @@ impl ViewCursorError {
             Self::TokenUnavailable => "view continuation could not be authenticated or issued",
             Self::OffsetNotRepresentable => "view continuation size or offset is not representable",
             Self::AllocationUnavailable => "view snapshot index allocation is unavailable",
+            Self::StorageUnavailable => "view snapshot storage is unavailable",
         }
     }
 
@@ -237,6 +349,7 @@ pub trait ViewCapacityObserver: Send + Sync {
 /// cannot reclaim any snapshot already promised to a caller.
 pub struct ViewCursorStore {
     max_total_bytes: usize,
+    spill: Arc<dyn SnapshotSpill>,
     state: Mutex<ViewCursorState>,
     capacity_observer: Option<Arc<dyn ViewCapacityObserver>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -711,6 +824,7 @@ impl ViewCursorStore {
     pub fn new(max_total_bytes: usize) -> Self {
         Self {
             max_total_bytes,
+            spill: Arc::new(MemorySpill),
             state: Mutex::new(ViewCursorState::default()),
             capacity_observer: None,
             #[cfg(any(test, feature = "test-support"))]
@@ -720,6 +834,12 @@ impl ViewCursorStore {
 
     pub fn with_capacity_observer(mut self, observer: Arc<dyn ViewCapacityObserver>) -> Self {
         self.capacity_observer = Some(observer);
+        self
+    }
+
+    /// Хранилище элементов снимков; по умолчанию — память процесса.
+    pub fn with_spill(mut self, spill: Arc<dyn SnapshotSpill>) -> Self {
+        self.spill = spill;
         self
     }
 
@@ -750,7 +870,7 @@ impl ViewCursorStore {
             .map(compact_view_objects)
             .collect::<Vec<_>>();
         let charges = snapshot_record_charge(&binding).and_then(|record| {
-            let payload = snapshot_payload_charge(&node, &items)?;
+            let payload = self.spill.payload_charge(&node, &items)?;
             Ok((record, payload, view_add(record, payload)?))
         });
         let (record_bytes, payload_bytes, bytes) = match charges {
@@ -780,16 +900,23 @@ impl ViewCursorStore {
         record_bytes: usize,
         payload_bytes: usize,
     ) -> Result<String, ViewCursorError> {
+        // The digest is computed before the owner lock: a large snapshot must
+        // not stall reads and continuations of the others.
+        let digest = items_digest(&items)?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| ViewCursorError::OwnerUnavailable)?;
         // Every caller has already completed a fresh full projection. Preserve
         // each issued binding; only the immutable equal data may share storage.
+        let same_payload = |snapshot: &ViewCollectionSnapshot| {
+            snapshot.node() == &node
+                && snapshot.payload.digest == digest
+                && snapshot.len() == items.len()
+        };
         let mut shared_payload = None;
         for snapshot in &state.snapshots {
-            if snapshot.binding == binding && snapshot.node() == &node && snapshot.items() == items
-            {
+            if snapshot.binding == binding && same_payload(snapshot) {
                 let key = state
                     .key
                     .as_ref()
@@ -798,8 +925,7 @@ impl ViewCursorStore {
             }
             if shared_payload.is_none()
                 && snapshot.binding.has_same_question(&binding)
-                && snapshot.node() == &node
-                && snapshot.items() == items
+                && same_payload(snapshot)
             {
                 shared_payload = Some(Arc::clone(&snapshot.payload));
             }
@@ -871,7 +997,11 @@ impl ViewCursorStore {
         let token = issue_view_cursor(key, id, offset)?;
         let payload = match shared_payload {
             Some(payload) => payload,
-            None => Arc::new(ViewCollectionPayload { node, items }),
+            None => Arc::new(ViewCollectionPayload {
+                node,
+                items: self.spill.store(items)?,
+                digest,
+            }),
         };
         let snapshot = Arc::new(ViewCollectionSnapshot {
             binding,
@@ -944,7 +1074,7 @@ impl ViewCursorStore {
             .lock()
             .map_err(|_| ViewCursorError::OwnerUnavailable)?;
         let snapshot = view_snapshot_by_id(&state, current.snapshot.id)?;
-        if !Arc::ptr_eq(snapshot, &current.snapshot) || offset >= snapshot.items().len() {
+        if !Arc::ptr_eq(snapshot, &current.snapshot) || offset >= snapshot.len() {
             return Err(ViewCursorError::Invalid);
         }
         let key = state.key.as_ref().ok_or(ViewCursorError::Invalid)?;
@@ -990,7 +1120,7 @@ impl ViewCursorStore {
         // Authenticate and parse before consulting the private index.
         let snapshot = view_snapshot_by_id(&state, id)?;
         let binding = &snapshot.binding;
-        if offset >= snapshot.items().len()
+        if offset >= snapshot.len()
             || binding.canonical_at != expected.canonical_at
             || binding.projection != expected.projection
             || binding.source_set_identity != expected.source_set_identity

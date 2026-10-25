@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Template uuid="0f3a6a2e-1995-4a51-9b0e-5d6c2a7e1f02">
+		<Properties>
+			<Name>Отбор</Name>
+			<Synonym/>
+			<Comment/>
+			<TemplateType>DataCompositionSchema</TemplateType>
+		</Properties>
+	</Template>
+</MetaDataObject>

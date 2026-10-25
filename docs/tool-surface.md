@@ -71,15 +71,15 @@ Compare readable logical nodes, or read exact source changes from a saved apply 
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `cursor` | string | только в ветви | Continue the same saved plan with the same limit. Only saved-plan reads support continuation. |
+| `cursor` | string | нет | Continue the same saved plan with the same limit. |
 | `executionToken` | string | по ветви | Token from apply planning; reads stored before/after bytes without executing. |
 | `left` | string | по ветви | Qualified logical address of the left node. |
 | `limit` | integer | нет | Maximum saved source chunks; default 20. Pages are also bounded by encoded bytes. |
 | `right` | string | по ветви | Qualified logical address of the right node. |
 
-**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников и без вычисляемого словаря `can`; сравнение сужается адресами узлов, фильтра нет. Курсора нет: усечённый ответ (`truncated: true`) называет усечение и советует сравнить узлы поменьше или поднять `limit`. Для left/right limit по умолчанию равен 100, максимум — 1000. Альтернатива executionToken читает точные сохранённые диапазоны before/after с контекстом до исполнения плана; страницы по умолчанию содержат до 20 chunks (максимум 50), также ограничены размером; page.stoppedBy сообщает limit/bytes/complete, cursor привязан к плану и limit. Входы плана проверяются без записи. Каждый chunk явно задаёт pathEncoding: utf8 для текста компонентов с /, base64-unix-bytes для точных native Unix bytes или base64-utf16le для точных Windows UTF-16LE units; группировка — (pathEncoding, path, side), кодировка пути независима от encoding содержимого. (отвечают типизированным `data`)
+**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников и без вычисляемого словаря `can`; сравнение сужается адресами узлов, фильтра нет. Усечённый ответ (`truncated: true`) выдаёт cursor: продолжение привязано к обоим адресам, limit и рабочему пространству и читает пару, сохранённую первой страницей. Страница сравнения left/right — до 20 изменений по умолчанию (максимум 50) и около 64 КиБ; page.stoppedBy сообщает limit/bytes/complete, изменение не режется, а одно изменение больше предела ответа даёт result_too_large. Альтернатива executionToken читает точные сохранённые диапазоны before/after с контекстом до исполнения плана; страницы по умолчанию содержат до 20 chunks (максимум 50), также ограничены размером; page.stoppedBy сообщает limit/bytes/complete, cursor привязан к плану и limit. Входы плана проверяются без записи. Каждый chunk явно задаёт pathEncoding: utf8 для текста компонентов с /, base64-unix-bytes для точных native Unix bytes или base64-utf16le для точных Windows UTF-16LE units; группировка — (pathEncoding, path, side), кодировка пути независима от encoding содержимого. (отвечают типизированным `data`)
 
-**Целевой контракт:** Добавить предметные diff-проекции и продолжение сохранённого сравнения
+**Целевой контракт:** Добавить предметные diff-проекции
 
 **Сценарии:**
 
@@ -114,20 +114,22 @@ Search bundled Unica and safe 1C documentation by topic, or open a document loca
 
 ### `unica.resolve`
 
-Emergency bridge between a logical address and the source layout, in both directions. Use it only when a path arrived from outside Unica - a diff, a build log, a stack trace - or when a file has to be opened outside Unica. To find an object by name use search; to read it use view.
+Bridge between a logical address and the source layout, in both directions. Use it when paths arrived from outside Unica - host grep hits, a diff, a build log, a stack trace - or when a file has to be opened outside Unica: `paths` turns many of them into addresses in one call. To find an object by name use search; to read it use view.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address whose source location is needed. |
 | `path` | string | нет | Path to a source file or object directory, absolute or relative to the workspace root. |
+| `paths` | array | нет | Batch of paths, each optionally `path:line` with a 1-based file line as `grep -n` prints it. Answers `data.items` in input order with `at` and `kind`; with a line, `line` is `inMethod` (`at` is the method holding it), `outsideMethod` (`at` is the module) or `notLineBased` (a tree file; `at` is its object). A failed item carries `code` and `message` instead; the others still resolve. |
 
-**Результат сейчас:** `data` несёт один предмет: `at`, `kind`, `path` и закрытый признак `lines`; ответ точный либо `not_found` и не несёт `rev` (отвечают типизированным `data`)
+**Результат сейчас:** `data` несёт один предмет: `at`, `kind`, `path` и закрытый признак `lines`; ответ точный либо `not_found` и не несёт `rev`. Пакет `paths` отвечает `data.items` по позиции входа: `at` и `kind`, у элемента со строкой — закрытый признак `line` (`inMethod`, `outsideMethod`, `notLineBased`); отказ элемента — его `code` и `message` на его позиции (отвечают типизированным `data`)
 
 **Целевой контракт:** Держать путь в одном редком инструменте: в частом ответе он звал бы читать файл мимо адреса
 
 **Сценарии:**
 
 - Узнать, какому объекту принадлежит путь, пришедший из диффа, лога сборки или трассы
+- Перевести совпадения поиска средствами хоста (`путь:строка`) в адреса методов одним вызовом
 - Получить путь к файлу или каталогу объекта, чтобы прочитать или починить его вне Unica
 - Узнать файл и диапазон строк метода, когда его открывают вне Unica
 

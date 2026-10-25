@@ -844,6 +844,39 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                 }
             }
         }
+        // 8.3.27 lists a registrar's records in the order of the registers'
+        // UUIDs; the new record moves to its place once every file of the new
+        // register is staged and its UUID can be read.
+        for file in &post_image.files {
+            let Some(crate::template_catalog::MetadataDependencyEdit::AddRegisterRecord(register)) =
+                &file.edit
+            else {
+                continue;
+            };
+            let relative = file.relative_path.clone();
+            let Some(current) = staged.read(&relative).map_err(|error| {
+                ApplyPlanError::staging(error, format!("ops[{op_index}].args.at"))
+            })?
+            else {
+                continue;
+            };
+            let mut uuid_of = |reference: &str| -> Option<String> {
+                let (kind, name) = reference.split_once('.')?;
+                let layout = unica_source_designer::layout::metadata_kind(kind)?;
+                let descriptor = PathBuf::from(layout.directory).join(format!("{name}.xml"));
+                let bytes = staged.read(&descriptor).ok()??;
+                crate::template_catalog::descriptor_object_uuid(&bytes)
+            };
+            if let Some(ordered) =
+                crate::template_catalog::place_register_record(&current, register, &mut uuid_of)
+            {
+                staged
+                    .replace(&relative, &current, ordered)
+                    .map_err(|error| {
+                        ApplyPlanError::staging(error, format!("ops[{op_index}].args.at"))
+                    })?;
+            }
+        }
         let owner_preimage = staged
             .read(&owner_relative)
             .map_err(|error| ApplyPlanError::staging(error, format!("ops[{op_index}].args.at")))?
@@ -902,7 +935,6 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         meta_remove_composition, meta_remove_composition_image, meta_remove_references,
         meta_remove_referrer, meta_remove_search_patterns, meta_remove_should_skip_file,
         plan_meta_remove_subsystem_replacements, remove_composition_entries, MetaRemoveReference,
-        META_REMOVE_REFERENCE_FILE_MAX_BYTES,
     };
     let at_path = format!("ops[{op_index}].args.at");
     unica_source_designer::registration::require_untouched_staged_state(
@@ -1009,7 +1041,9 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             continue;
         }
         let bytes = staged
-            .read_guarded_bounded(relative, META_REMOVE_REFERENCE_FILE_MAX_BYTES)
+            // #1119: every XML and BSL file of the reference scan is read
+            // whole; a large module must not refuse the removal.
+            .read_guarded_bounded(relative, usize::MAX)
             .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
             .ok_or_else(|| {
                 ApplyPlanError::new(
@@ -1716,16 +1750,27 @@ fn stage_exchange_content(
             .at_path(target_path.clone()));
         }
     }
-    let relative = metadata_descriptor_relative(owner, authority.source_kind())
-        .map_err(|e| ApplyPlanError::new(ApplyPlanErrorKind::BadValue, e).at_path(path.clone()))?
-        .with_extension("")
-        .join("Ext/Content.xml");
+    let descriptor = metadata_descriptor_relative(owner, authority.source_kind())
+        .map_err(|e| ApplyPlanError::new(ApplyPlanErrorKind::BadValue, e).at_path(path.clone()))?;
+    // Заимствованный в расширение план хранит только добавления расширения
+    // в форме платформы, с `ExtensionProperty` после них (#1924).
+    let borrowed = authority.source_kind() == SourceSetKind::Extension
+        && staged
+            .read(&descriptor)
+            .map_err(|e| ApplyPlanError::staging(e, path.clone()))?
+            .and_then(|bytes| crate::xml_model::parse_meta_borrowing(&bytes).ok())
+            .is_some_and(|borrowing| borrowing.extends.is_some());
+    let relative = descriptor.with_extension("").join("Ext/Content.xml");
     // The platform omits Content.xml for an empty composition; the first
     // added item creates the file in the platform layout.
     let before = staged
         .read(&relative)
         .map_err(|e| ApplyPlanError::staging(e, path.clone()))?;
-    let template = crate::exchange_content::EMPTY_CONTENT.as_bytes();
+    let template = if borrowed {
+        crate::exchange_content::EMPTY_EXTENSION_CONTENT.as_bytes()
+    } else {
+        crate::exchange_content::EMPTY_CONTENT.as_bytes()
+    };
     let text = std::str::from_utf8(before.as_deref().unwrap_or(template)).map_err(|_| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidSource,
@@ -1733,7 +1778,7 @@ fn stage_exchange_content(
         )
         .at_path(path.clone())
     })?;
-    let after = crate::exchange_content::update_content(text, items)
+    let after = crate::exchange_content::update_content(text, items, borrowed)
         .map_err(|e| {
             ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, e).at_path(path.clone())
         })?
@@ -2172,7 +2217,11 @@ fn stage_template_remove(
     .map_err(|message| {
         ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
     })?;
-    if !inherited && files.is_empty() {
+    // Макет двоичных данных без содержимого платформа выгружает одним
+    // описанием, без каталога `Ext` (#2027): удалять у него нечего, кроме
+    // описания и регистрации.
+    let empty_binary = payload_absent && identity.template_type.as_deref() == Some("BinaryData");
+    if !inherited && !empty_binary && files.is_empty() {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidSource,
             "template content is missing",
@@ -2192,7 +2241,7 @@ fn stage_template_remove(
                                 .at_path(at_path.clone())
                         })?
                 }
-                None if inherited => {}
+                None if inherited || empty_binary => {}
                 None => {
                     return Err(ApplyPlanError::new(
                         ApplyPlanErrorKind::InvalidSource,

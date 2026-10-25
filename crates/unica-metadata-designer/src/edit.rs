@@ -3401,3 +3401,7 @@ mod legacy_inline_collapse_tests {
 #[cfg(test)]
 #[path = "../tests/platform/edit_empty_child_objects.rs"]
 mod empty_child_objects_tests;
+
+#[cfg(test)]
+#[path = "../tests/platform/dump_parity.rs"]
+mod dump_parity_tests;

@@ -6,6 +6,8 @@ check:
   - crates/unica-coder/src/application/v13/view.rs::snapshot_over_byte_quota_refuses_before_promising_a_continuation
   - crates/unica-coder/src/application/v13/view.rs::a_late_oversized_item_refuses_before_the_first_page
   - crates/unica-coder/src/application/v13/view.rs::supplied_graph_collection_uses_stable_pages_bound_to_its_owner
+  - crates/unica-coder/src/application/v13/diff.rs::diff_page_names_why_it_stopped_and_never_cuts_a_difference
+  - crates/unica-coder/src/application/v13/diff.rs::a_difference_over_the_transport_limit_refuses_before_a_cursor
 ---
 
 # Страница чтения сообщает полноту и сохраняет доступ к элементам
