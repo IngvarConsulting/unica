@@ -14,6 +14,7 @@ use tempfile::TempDir;
 #[cfg(test)]
 use unica_process::runner::system_process_runner;
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
+use unica_process::StreamControl;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::{SourceFormat, SourceSetKind};
 use unica_source_designer::probe::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
@@ -356,141 +357,76 @@ impl<'a> GitRepositoryInspector<'a> {
 
         let mut observations = vec![completed(ProjectCheckId::RepositoryDiscovery)];
         let mut facts = Vec::new();
-        let index = match self.run(
+        let mut entries = Vec::new();
+        let index = read_git_index(
+            self.runner,
             &repository_root,
-            ["ls-files", "--cached", "--stage", "-z"],
             cancellation,
             deadline,
-        ) {
-            Ok(output) => output,
-            Err(_) if cancellation.is_cancelled() => {
-                return Err(ProjectHealthInspectionError::Cancelled)
-            }
-            Err(reason) => {
-                observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
-                facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryIndex,
-                    source_set: None,
-                    reason,
-                });
-                append_not_run_after_index(
-                    &mut observations,
-                    &layout.roots,
-                    "Git index inspection failed",
-                );
-                return Ok(GitRepositoryInspection {
-                    repository_root: Some(repository_root),
-                    entries: Vec::new(),
-                    resource_inspection_blocker: None,
-                    staged_config_dump_info_kinds: BTreeMap::new(),
-                    observations,
-                    facts,
-                });
-            }
-        };
-        if index.cancelled || cancellation.is_cancelled() {
-            return Err(ProjectHealthInspectionError::Cancelled);
-        }
-        if index.timed_out {
-            observations.push(not_run(
-                ProjectCheckId::RepositoryIndex,
-                "Git index inspection timed out",
-            ));
-            facts.push(ProjectHealthFact::GitInspectionTimeout {
-                check: ProjectCheckId::RepositoryIndex,
-                source_set: None,
-            });
-            append_not_run_after_index(
-                &mut observations,
-                &layout.roots,
-                "Git index inspection timed out",
-            );
-            return Ok(GitRepositoryInspection {
-                repository_root: Some(repository_root),
-                entries: Vec::new(),
-                resource_inspection_blocker: None,
-                staged_config_dump_info_kinds: BTreeMap::new(),
-                observations,
-                facts,
-            });
-        }
-        if !index.status_success || output_incomplete(&index) {
-            let reason = if output_incomplete(&index) {
-                completeness_reason(&index)
-            } else {
-                nonzero_reason(&index)
-            };
-            observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
-            facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                check: ProjectCheckId::RepositoryIndex,
-                source_set: None,
-                reason,
-            });
-            append_not_run_after_index(
-                &mut observations,
-                &layout.roots,
-                "Git index output is incomplete",
-            );
-            return Ok(GitRepositoryInspection {
-                repository_root: Some(repository_root),
-                entries: Vec::new(),
-                resource_inspection_blocker: None,
-                staged_config_dump_info_kinds: BTreeMap::new(),
-                observations,
-                facts,
-            });
-        }
-        let entries =
-            match parse_git_index_entries_controlled(&index.stdout, cancellation, deadline) {
-                Ok(entries) => entries,
-                Err(IndexParseError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(IndexParseError::TimedOut) => {
-                    observations.push(not_run(
-                        ProjectCheckId::RepositoryIndex,
-                        "Git index parsing exceeded the inspection deadline",
-                    ));
-                    facts.push(ProjectHealthFact::GitInspectionTimeout {
-                        check: ProjectCheckId::RepositoryIndex,
-                        source_set: None,
-                    });
-                    append_not_run_after_index(
-                        &mut observations,
-                        &layout.roots,
-                        "Git index parsing exceeded the inspection deadline",
-                    );
-                    return Ok(GitRepositoryInspection {
-                        repository_root: Some(repository_root),
-                        entries: Vec::new(),
-                        resource_inspection_blocker: None,
-                        staged_config_dump_info_kinds: BTreeMap::new(),
-                        observations,
-                        facts,
-                    });
-                }
-                Err(IndexParseError::Malformed(reason)) => {
-                    observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
-                    facts.push(ProjectHealthFact::GitInspectionIncomplete {
+            &mut |entry| entries.push(entry),
+        );
+        if let Err(error) = index {
+            let (observation_reason, fact, after_index) = match error {
+                IndexReadError::Cancelled => return Err(ProjectHealthInspectionError::Cancelled),
+                IndexReadError::Failed(reason) => (
+                    reason.clone(),
+                    ProjectHealthFact::GitInspectionIncomplete {
                         check: ProjectCheckId::RepositoryIndex,
                         source_set: None,
                         reason,
-                    });
-                    append_not_run_after_index(
-                        &mut observations,
-                        &layout.roots,
-                        "Git index records are malformed",
-                    );
-                    return Ok(GitRepositoryInspection {
-                        repository_root: Some(repository_root),
-                        entries: Vec::new(),
-                        resource_inspection_blocker: None,
-                        staged_config_dump_info_kinds: BTreeMap::new(),
-                        observations,
-                        facts,
-                    });
-                }
+                    },
+                    "Git index inspection failed",
+                ),
+                IndexReadError::Incomplete(reason) => (
+                    reason.clone(),
+                    ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                        reason,
+                    },
+                    "Git index output is incomplete",
+                ),
+                IndexReadError::ProcessTimedOut => (
+                    "Git index inspection timed out".into(),
+                    ProjectHealthFact::GitInspectionTimeout {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                    },
+                    "Git index inspection timed out",
+                ),
+                IndexReadError::ParseTimedOut => (
+                    "Git index parsing exceeded the inspection deadline".into(),
+                    ProjectHealthFact::GitInspectionTimeout {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                    },
+                    "Git index parsing exceeded the inspection deadline",
+                ),
+                IndexReadError::Malformed(reason) => (
+                    reason.clone(),
+                    ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                        reason,
+                    },
+                    "Git index records are malformed",
+                ),
             };
+            observations.push(not_run(
+                ProjectCheckId::RepositoryIndex,
+                &observation_reason,
+            ));
+            facts.push(fact);
+            append_not_run_after_index(&mut observations, &layout.roots, after_index);
+            return Ok(GitRepositoryInspection {
+                repository_root: Some(repository_root),
+                entries: Vec::new(),
+                resource_inspection_blocker: None,
+                staged_config_dump_info_kinds: BTreeMap::new(),
+                observations,
+                facts,
+            });
+        }
         observations.push(completed(ProjectCheckId::RepositoryIndex));
 
         if !layout.repository_targets_complete && layout.roots.is_empty() {
@@ -1705,15 +1641,7 @@ fn completeness_reason(output: &ProcessOutput) -> String {
 }
 
 fn nonzero_reason(output: &ProcessOutput) -> String {
-    if output.stderr.trim().is_empty() {
-        format!("Git exited with {}", output.status)
-    } else {
-        format!(
-            "Git exited with {}: {}",
-            output.status,
-            output.stderr.trim()
-        )
-    }
+    stream_nonzero_reason(&output.status, &output.stderr)
 }
 
 fn status_is_no_match(output: &ProcessOutput) -> bool {
@@ -1851,95 +1779,241 @@ fn append_not_run_after_index(
 
 #[cfg(test)]
 pub(crate) fn parse_git_index_entries(stdout: &str) -> Result<Vec<GitIndexEntry>, String> {
-    parse_git_index_entries_with_checkpoint(stdout, &mut || Ok(())).map_err(|error| match error {
-        IndexParseError::Malformed(reason) => reason,
-        IndexParseError::Cancelled => "Git index parsing was cancelled".into(),
-        IndexParseError::TimedOut => "Git index parsing timed out".into(),
-    })
+    let Some(records) = stdout
+        .strip_suffix('\0')
+        .or(stdout.is_empty().then_some(""))
+    else {
+        return Err("Git index output is missing its terminal NUL".into());
+    };
+    let mut parser = GitIndexRecords::default();
+    let mut entries = Vec::new();
+    for record in records.split_terminator('\0') {
+        entries.extend(parser.push(record.as_bytes())?);
+    }
+    entries.extend(parser.finish());
+    Ok(entries)
 }
 
-pub(super) enum IndexParseError {
-    Malformed(String),
+/// Why the staged index could not be read completely.
+pub(crate) enum IndexReadError {
     Cancelled,
-    TimedOut,
+    /// Git could not be run.
+    Failed(String),
+    /// Git exited unsuccessfully or its output stream is incomplete.
+    Incomplete(String),
+    /// The Git process exceeded the inspection deadline.
+    ProcessTimedOut,
+    /// Reading the records reached the inspection deadline.
+    ParseTimedOut,
+    Malformed(String),
 }
 
-pub(super) fn parse_git_index_entries_controlled(
-    stdout: &str,
-    cancellation: &CancellationToken,
-    deadline: ProviderDeadline,
-) -> Result<Vec<GitIndexEntry>, IndexParseError> {
-    parse_git_index_entries_with_checkpoint(stdout, &mut || {
-        if cancellation.is_cancelled() {
-            Err(IndexParseError::Cancelled)
-        } else if deadline.is_elapsed() {
-            Err(IndexParseError::TimedOut)
-        } else {
-            Ok(())
-        }
-    })
+/// Merges the stage records of one path from `git ls-files --stage -z` into
+/// one entry. Git lists the index in byte order of paths, so the records of a
+/// path are adjacent and only one pending path is held.
+#[derive(Default)]
+pub(crate) struct GitIndexRecords {
+    pending: Option<PendingIndexPath>,
 }
 
-fn parse_git_index_entries_with_checkpoint(
-    stdout: &str,
-    checkpoint: &mut dyn FnMut() -> Result<(), IndexParseError>,
-) -> Result<Vec<GitIndexEntry>, IndexParseError> {
-    #[derive(Default)]
-    struct State {
-        records: usize,
-        blob_oid: Option<String>,
-        mode: Option<String>,
-    }
-    if !stdout.is_empty() && !stdout.ends_with('\0') {
-        return Err(IndexParseError::Malformed(
-            "Git index output is missing its terminal NUL".into(),
-        ));
-    }
-    let mut entries = BTreeMap::<String, State>::new();
-    checkpoint()?;
-    for (record_index, record) in stdout.split_terminator('\0').enumerate() {
-        if record_index % 256 == 0 {
-            checkpoint()?;
-        }
-        let (metadata, path) = record.split_once('\t').ok_or_else(|| {
-            IndexParseError::Malformed("Git index record has no tab separator".into())
-        })?;
+struct PendingIndexPath {
+    repo_path: String,
+    records: usize,
+    blob: Option<(String, String)>,
+}
+
+impl GitIndexRecords {
+    /// Accept one record; returns the previous path once it is complete.
+    pub(crate) fn push(&mut self, record: &[u8]) -> Result<Option<GitIndexEntry>, String> {
+        let record = std::str::from_utf8(record)
+            .map_err(|_| "Git index output contained invalid UTF-8".to_string())?;
+        let (metadata, path) = record
+            .split_once('\t')
+            .ok_or_else(|| "Git index record has no tab separator".to_string())?;
         if path.is_empty() {
-            return Err(IndexParseError::Malformed(
-                "Git index record has an empty path".into(),
-            ));
+            return Err("Git index record has an empty path".into());
         }
-        let fields = metadata.split_whitespace().collect::<Vec<_>>();
-        if fields.len() != 3 {
-            return Err(IndexParseError::Malformed(
-                "Git index record has invalid metadata".into(),
-            ));
-        }
-        let (mode, oid, stage) = (fields[0], fields[1], fields[2]);
+        let mut fields = metadata.split_whitespace();
+        let (Some(mode), Some(oid), Some(stage), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err("Git index record has invalid metadata".into());
+        };
         let usable = matches!(mode, "100644" | "100755")
             && stage == "0"
             && !oid.is_empty()
             && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
             && oid.bytes().any(|byte| byte != b'0');
-        let state = entries.entry(path.into()).or_default();
-        state.records += 1;
-        if state.records == 1 && usable {
-            state.blob_oid = Some(oid.into());
-            state.mode = Some(mode.into());
-        } else {
-            state.blob_oid = None;
-            state.mode = None;
+        if let Some(pending) = self.pending.as_mut() {
+            match path.cmp(pending.repo_path.as_str()) {
+                std::cmp::Ordering::Equal => {
+                    pending.records += 1;
+                    pending.blob = None;
+                    return Ok(None);
+                }
+                std::cmp::Ordering::Less => {
+                    return Err("Git index records are not in path order".into());
+                }
+                std::cmp::Ordering::Greater => {}
+            }
+        }
+        let next = PendingIndexPath {
+            repo_path: path.to_owned(),
+            records: 1,
+            blob: usable.then(|| (oid.to_owned(), mode.to_owned())),
+        };
+        Ok(self.pending.replace(next).map(PendingIndexPath::into_entry))
+    }
+
+    /// The last path, after the stream ended.
+    pub(crate) fn finish(self) -> Option<GitIndexEntry> {
+        self.pending.map(PendingIndexPath::into_entry)
+    }
+}
+
+impl PendingIndexPath {
+    fn into_entry(self) -> GitIndexEntry {
+        let (blob_oid, mode) = match self.blob.filter(|_| self.records == 1) {
+            Some((oid, mode)) => (Some(oid), Some(mode)),
+            None => (None, None),
+        };
+        GitIndexEntry {
+            repo_path: self.repo_path,
+            blob_oid,
+            mode,
         }
     }
-    checkpoint()?;
-    Ok(entries
-        .into_iter()
-        .map(|(repo_path, state)| GitIndexEntry {
-            repo_path,
-            blob_oid: state.blob_oid,
-            mode: state.mode,
-        })
-        .collect())
+}
+
+/// SHA-256 over parsed index entries in order. Equal digests prove the same
+/// staged index without keeping a second copy of its entries.
+pub(crate) struct GitIndexDigest(sha2::Sha256);
+
+impl Default for GitIndexDigest {
+    fn default() -> Self {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"unica-git-index-entries-v1\0");
+        Self(hasher)
+    }
+}
+
+impl GitIndexDigest {
+    pub(crate) fn update(&mut self, entry: &GitIndexEntry) {
+        use sha2::Digest;
+        for field in [
+            Some(entry.repo_path.as_str()),
+            entry.blob_oid.as_deref(),
+            entry.mode.as_deref(),
+        ] {
+            match field {
+                Some(field) => {
+                    self.0.update([1]);
+                    self.0.update((field.len() as u64).to_be_bytes());
+                    self.0.update(field.as_bytes());
+                }
+                None => self.0.update([0]),
+            }
+        }
+    }
+
+    pub(crate) fn finish(self) -> [u8; 32] {
+        use sha2::Digest;
+        self.0.finalize().into()
+    }
+}
+
+/// Stream the staged index of `repository_root` to `on_entry`, one merged
+/// entry per path in path order. Entries may already have been delivered when
+/// an error is returned; a caller keeps them only after `Ok`.
+pub(crate) fn read_git_index(
+    runner: &dyn ProcessRunner,
+    repository_root: &Path,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+    on_entry: &mut dyn FnMut(GitIndexEntry),
+) -> Result<(), IndexReadError> {
+    if cancellation.is_cancelled() {
+        return Err(IndexReadError::Cancelled);
+    }
+    if deadline.is_elapsed() {
+        return Err(IndexReadError::ProcessTimedOut);
+    }
+    let command = process_command(
+        repository_root,
+        ["ls-files", "--cached", "--stage", "-z"],
+        cancellation,
+        deadline,
+    );
+    let mut parser = GitIndexRecords::default();
+    let mut stopped = None;
+    let mut records = 0_usize;
+    let output = runner.run_streaming_records(&command, &[], 0, &mut |record| {
+        if records.is_multiple_of(256) {
+            if cancellation.is_cancelled() {
+                stopped = Some(IndexReadError::Cancelled);
+                return StreamControl::Stop;
+            }
+            if deadline.is_elapsed() {
+                stopped = Some(IndexReadError::ParseTimedOut);
+                return StreamControl::Stop;
+            }
+        }
+        records += 1;
+        match parser.push(record) {
+            Ok(entry) => {
+                entry.map(&mut *on_entry);
+                StreamControl::Continue
+            }
+            Err(reason) => {
+                stopped = Some(IndexReadError::Malformed(reason));
+                StreamControl::Stop
+            }
+        }
+    });
+    if cancellation.is_cancelled() {
+        return Err(IndexReadError::Cancelled);
+    }
+    let output = output.map_err(IndexReadError::Failed)?;
+    if let Some(error) = stopped {
+        return Err(error);
+    }
+    if output.cancelled {
+        return Err(IndexReadError::Cancelled);
+    }
+    if output.timed_out {
+        return Err(IndexReadError::ProcessTimedOut);
+    }
+    match output.line_error {
+        Some((_, error)) if error == unica_process::STREAM_RECORD_UNTERMINATED_ERROR => {
+            return Err(IndexReadError::Malformed(
+                "Git index output is missing its terminal NUL".into(),
+            ));
+        }
+        Some((_, error)) => return Err(IndexReadError::Incomplete(error)),
+        None => {}
+    }
+    if !output.status_success {
+        return Err(IndexReadError::Incomplete(stream_nonzero_reason(
+            &output.status,
+            &output.stderr,
+        )));
+    }
+    if deadline.is_elapsed() {
+        return Err(IndexReadError::ParseTimedOut);
+    }
+    if let Some(entry) = parser.finish() {
+        on_entry(entry);
+    }
+    Ok(())
+}
+
+fn stream_nonzero_reason(status: &str, stderr: &str) -> String {
+    if stderr.trim().is_empty() {
+        format!("Git exited with {status}")
+    } else {
+        format!("Git exited with {status}: {}", stderr.trim())
+    }
 }
 
 #[cfg(test)]

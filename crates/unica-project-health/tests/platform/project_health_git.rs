@@ -405,12 +405,13 @@ fn equal_root_inconclusive_config_dump_info_reports_every_owner() {
 
 #[test]
 fn project_health_git_index_parser_groups_stages_and_preserves_unusual_paths() {
+    // Git lists the index in byte order of paths, stages of a path adjacent.
     let entries = parse_git_index_entries(concat!(
         "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tconflict/ConfigDumpInfo.xml\0",
         "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2\tconflict/ConfigDumpInfo.xml\0",
+        "100755 dddddddddddddddddddddddddddddddddddddddd 0\tline\nbreak,ok\0",
         "120000 cccccccccccccccccccccccccccccccccccccccc 0\tlinked\0",
         "100644 0000000000000000000000000000000000000000 0\tnew\0",
-        "100755 dddddddddddddddddddddddddddddddddddddddd 0\tline\nbreak,ok\0",
     ))
     .unwrap();
 
@@ -1027,6 +1028,8 @@ fn project_health_git_commands_use_large_but_bounded_capture() {
 fn project_health_git_index_parser_rejects_malformed_nul_record() {
     assert!(parse_git_index_entries("100644 oid 0 without-tab\0").is_err());
     assert!(parse_git_index_entries("100644 abc 0\tpath-without-terminal-nul").is_err());
+    // Out-of-order paths would let a later stage of a path escape the merge.
+    assert!(parse_git_index_entries(concat!("100644 abc 0\tb\0", "100644 abc 0\ta\0")).is_err());
 }
 
 #[test]

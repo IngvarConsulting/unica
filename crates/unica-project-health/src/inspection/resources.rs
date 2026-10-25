@@ -1,4 +1,4 @@
-use crate::inspection::git::{parse_git_index_entries_controlled, GitIndexEntry, IndexParseError};
+use crate::inspection::git::{read_git_index, GitIndexDigest, GitIndexEntry, IndexReadError};
 use crate::inspection::layout::InspectedSourceRoot;
 use crate::inspection::{
     SourceRootOwnerIndex, SourceRootOwnerIndexError, SourceRootOwnerLookupError,
@@ -1638,64 +1638,42 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     ProjectCheckId::RepositoryAttributes,
                 ));
             }
-            let current_index = match self.run(
+            let mut expected_digest = GitIndexDigest::default();
+            for entry in entries {
+                expected_digest.update(entry);
+            }
+            let mut current_digest = GitIndexDigest::default();
+            let current_index = read_git_index(
+                self.runner,
                 repository_root,
-                ["ls-files", "--cached", "--stage", "-z"],
                 cancellation,
                 deadline,
-            ) {
-                Ok(output) if semantic_success(&output) => output,
-                Ok(output) if output.cancelled => {
+                &mut |entry| current_digest.update(&entry),
+            );
+            match current_index {
+                Ok(()) => {}
+                Err(IndexReadError::Cancelled) => {
                     return Err(ProjectHealthInspectionError::Cancelled)
                 }
-                Ok(output) if output.timed_out => {
+                Err(IndexReadError::ProcessTimedOut | IndexReadError::ParseTimedOut) => {
                     return Ok(timeout_policy(
                         observations,
                         ProjectCheckId::RepositoryAttributes,
                     ));
                 }
-                Ok(output) => {
-                    return Ok(incomplete_policy(
-                        observations,
-                        ProjectCheckId::RepositoryAttributes,
-                        output_reason(&output),
-                    ));
-                }
-                Err(_reason) if cancellation.is_cancelled() => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(reason) => {
+                Err(
+                    IndexReadError::Failed(reason)
+                    | IndexReadError::Incomplete(reason)
+                    | IndexReadError::Malformed(reason),
+                ) => {
                     return Ok(incomplete_policy(
                         observations,
                         ProjectCheckId::RepositoryAttributes,
                         reason,
                     ));
                 }
-            };
-            let current_entries = match parse_git_index_entries_controlled(
-                &current_index.stdout,
-                cancellation,
-                deadline,
-            ) {
-                Ok(entries) => entries,
-                Err(IndexParseError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(IndexParseError::TimedOut) => {
-                    return Ok(timeout_policy(
-                        observations,
-                        ProjectCheckId::RepositoryAttributes,
-                    ));
-                }
-                Err(IndexParseError::Malformed(reason)) => {
-                    return Ok(incomplete_policy(
-                        observations,
-                        ProjectCheckId::RepositoryAttributes,
-                        reason,
-                    ));
-                }
-            };
-            if current_entries != entries {
+            }
+            if current_digest.finish() != expected_digest.finish() {
                 return Ok(incomplete_policy(
                     observations,
                     ProjectCheckId::RepositoryAttributes,
