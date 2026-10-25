@@ -6262,6 +6262,16 @@ fn materialize_completed_task(
     .reserved_task_id()
 }
 
+/// Budget for preparing one source Task through the real receipt and Task
+/// stores. Preparation is not under test: the retirement tests assert what
+/// happens after it. Measured on windows-latest (#1786): 141–194 ms alone and
+/// at most 580 ms with four tests in parallel, against the former shared
+/// 5 s. The nightly refusals came from host stalls that expired the deadline
+/// in several independent test processes in the same instant; this budget
+/// keeps such a stall from passing for a defect of the code under test, and
+/// the stage trace still shows where the time went.
+const FIXTURE_PREPARATION_BUDGET: Duration = Duration::from_secs(60);
+
 /// Elapsed time of each fixture-preparation stage of one Task, so a refusal
 /// names the Task, the stage that refused and where the shared deadline went
 /// (#1786) instead of a bare ledger error.
@@ -6337,7 +6347,7 @@ fn materialize_completed_task_key(
             request_scope_hash(workspace).expect("request scope"),
         ),
     );
-    let mut preparation = FixturePreparation::new(summary, Duration::from_secs(5));
+    let mut preparation = FixturePreparation::new(summary, FIXTURE_PREPARATION_BUDGET);
     let reserved = preparation.step("reserve", |deadline| {
         receipt_actor_for_fixture(runtime)
             .reserve(
