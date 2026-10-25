@@ -33446,11 +33446,19 @@
        "kind": "xml",
        "path": "src/Documents/Реализация.xml",
        "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
-       "eq": [
-        "AccumulationRegister.Продажи",
-        "AccumulationRegister.Остатки",
-        "AccumulationRegister.Обороты"
-       ]
+       "contains": "AccumulationRegister.Продажи"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "AccumulationRegister.Остатки"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "AccumulationRegister.Обороты"
       },
       {
        "kind": "xml",
@@ -33549,13 +33557,31 @@
        "kind": "xml",
        "path": "src/Documents/Реализация.xml",
        "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
-       "eq": [
-        "AccumulationRegister.Продажи",
-        "AccumulationRegister.Остатки",
-        "AccumulationRegister.Обороты",
-        "CalculationRegister.Начисления",
-        "CalculationRegister.Премии"
-       ]
+       "contains": "AccumulationRegister.Продажи"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "AccumulationRegister.Остатки"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "AccumulationRegister.Обороты"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "CalculationRegister.Начисления"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "CalculationRegister.Премии"
       },
       {
        "kind": "xml",
@@ -33664,14 +33690,37 @@
        "kind": "xml",
        "path": "src/Documents/Реализация.xml",
        "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
-       "eq": [
-        "AccumulationRegister.Продажи",
-        "AccumulationRegister.Остатки",
-        "AccumulationRegister.Обороты",
-        "CalculationRegister.Начисления",
-        "CalculationRegister.Премии",
-        "AccumulationRegister.Резервы"
-       ]
+       "contains": "AccumulationRegister.Продажи"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "AccumulationRegister.Остатки"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "AccumulationRegister.Обороты"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "CalculationRegister.Начисления"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "CalculationRegister.Премии"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "contains": "AccumulationRegister.Резервы"
       },
       {
        "kind": "exists",
