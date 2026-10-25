@@ -77,7 +77,7 @@ impl InterfaceOperation {
                     schema: object(&[("at", text(true)), ("values", values)], &["values"]),
                     target: "The configuration root `<set>:Configuration`; an extension has no panel layout of its own.",
                     effect: "Replace the panel layout of the client application in `Ext/ClientApplicationInterface.xml`.",
-                    notes: "values lists the areas top, left, right and bottom; an omitted area is left empty, and `{}` removes every panel. Each entry is a panel name or an array of names, a group of panels. A panel is placed once; `tools` only at the top. The layout read from the root's `panels` is accepted back as is. Preview writes nothing; execute only the saved execution token.",
+                    notes: "values lists the areas top, left, right and bottom; an omitted area is left empty, and `{}` removes every panel. Each entry is a panel name or an array of names, a group of panels. A panel is placed once; `tools` only at the top. The layout read from the root's `panels` is accepted back as is, unless it lists `unknown` panels: such a layout is refused rather than replaced, since writing it would drop them. Preview writes nothing; execute only the saved execution token.",
                     example_args: json!({"values":{"top":["open"],"left":["sections"]}}),
                     help: "skills/cf-edit/SKILL.md",
                     format_validators: &[],
