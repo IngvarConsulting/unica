@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Реестр ресурсных ограничений Unica",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "limits",
+    "excluded"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "limits": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/limit"
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/excluded"
+      }
+    }
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "optionalText": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "issue": {
+      "type": "string",
+      "pattern": "^#[0-9]+$"
+    },
+    "limit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "class",
+        "resource",
+        "unit",
+        "scope",
+        "source",
+        "expr",
+        "value",
+        "applied",
+        "status",
+        "origin",
+        "problem",
+        "onReach",
+        "issue",
+        "evidence",
+        "decision",
+        "review"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+        },
+        "class": {
+          "enum": [
+            "corpus",
+            "step",
+            "retention",
+            "concurrency",
+            "retry",
+            "format",
+            "deadline",
+            "result"
+          ]
+        },
+        "resource": {
+          "$ref": "#/$defs/text"
+        },
+        "unit": {
+          "enum": [
+            "bytes",
+            "count",
+            "depth",
+            "ms",
+            "s",
+            "chars"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "request",
+            "file",
+            "line",
+            "directory",
+            "traversal",
+            "source-set",
+            "workspace",
+            "repository",
+            "record",
+            "frame",
+            "process",
+            "daemon",
+            "connection",
+            "session",
+            "cache",
+            "operation"
+          ]
+        },
+        "source": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "file",
+                "symbol"
+              ],
+              "properties": {
+                "file": {
+                  "$ref": "#/$defs/text"
+                },
+                "symbol": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z0-9_]*$"
+                },
+                "within": {
+                  "type": "string",
+                  "pattern": "^(impl|trait|fn) .+$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "file",
+                "literal",
+                "count"
+              ],
+              "properties": {
+                "file": {
+                  "$ref": "#/$defs/text"
+                },
+                "literal": {
+                  "$ref": "#/$defs/text"
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          ]
+        },
+        "expr": {
+          "$ref": "#/$defs/text"
+        },
+        "value": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "derived": {
+          "const": true
+        },
+        "applied": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "status": {
+          "enum": [
+            "unproven",
+            "justified",
+            "external"
+          ]
+        },
+        "origin": {
+          "$ref": "#/$defs/optionalText"
+        },
+        "problem": {
+          "$ref": "#/$defs/optionalText"
+        },
+        "onReach": {
+          "$ref": "#/$defs/text"
+        },
+        "issue": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/issue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "decision": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "date",
+                "text",
+                "source"
+              ],
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+                },
+                "text": {
+                  "$ref": "#/$defs/text"
+                },
+                "source": {
+                  "$ref": "#/$defs/text"
+                }
+              }
+            }
+          ]
+        },
+        "review": {
+          "$ref": "#/$defs/optionalText"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "justified"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "minItems": 1
+              },
+              "decision": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "external"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "origin": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "excluded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file",
+        "symbol",
+        "reason"
+      ],
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/text"
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        },
+        "within": {
+          "type": "string",
+          "pattern": "^(impl|trait|fn) .+$"
+        }
+      }
+    }
+  }
+}

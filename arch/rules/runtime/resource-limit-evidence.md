@@ -1,6 +1,11 @@
 ---
 id: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE
-check: []
+check:
+  - tests/ci/test_resource_limits.py::ResourceLimitRegistryTests.test_repository_registry_matches_product_code
+  - tests/ci/test_resource_limits.py::ResourceLimitRegistryTests.test_rejects_a_value_that_drifts_from_the_code
+  - tests/ci/test_resource_limits.py::ResourceLimitRegistryTests.test_rejects_an_unregistered_limit_constant
+  - tests/ci/test_resource_limits.py::ResourceLimitRegistryTests.test_justified_status_requires_evidence_and_decision
+  - tests/ci/test_resource_limits.py::ResourceLimitRegistryTests.test_scanner_reads_past_an_early_test_module_declaration
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
@@ -42,5 +47,15 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 Неподтверждённые существующие квоты снимаются в #1119; временное
 сохранение предела допустимо на условиях выше. Новое рабочее ограничение
 обосновывается расчётом, измерениями и содержательными проверками
-в изменении, которое его вводит. Запись задаёт целевую гарантию:
-полного аудита и проверок её выполнения пока нет.
+в изменении, которое его вводит. Основание большинства учтённых
+ограничений пока не подтверждено, и сверка реестра с кодом его не доказывает.
+
+Ограничения продукта вносятся в реестр `arch/resource-limits.json`, форму
+записи задаёт `arch/resource-limits.schema.json`. Если происхождение или
+проблема предела неизвестны, запись говорит об этом прямо. Число задаёт код,
+реестр повторяет его выражение и автоматически с ним сверяется. Ошибка
+проверки — расхождение значения, запись без предела в коде и константа
+с именем предела, которой нет в реестре. Предел без такого имени, в том
+числе записанный литералом, проверка сама не находит: он вносится вручную
+и затем сверяется по месту в коде. Перечень литералов пока не полон. Статус «обоснованное» требует свидетельств
+и решения владельца.
