@@ -10,6 +10,8 @@ check:
   - crates/unica-coder/tests/platform/receipt_runtime.rs::daemon_idle_live_task_after_client_release_preserves_attempt_then_retires
   - crates/unica-coder/tests/platform/receipt_runtime.rs::daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires
   - crates/unica-coder/tests/platform/receipt_runtime.rs::daemon_idle_completed_index_lease_preserves_same_result_then_retires
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughout
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retires
   - crates/unica-workspace/src/actor_local_tests.rs::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt
   - crates/unica-workspace/src/actor_local_tests.rs::idle_cleanup_retains_unknown_actor_state_without_rejecting_other_profiles
   - crates/unica-workspace/src/actor_local_tests.rs::idle_listener_retains_unknown_registry_ownership
