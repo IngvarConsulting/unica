@@ -1317,6 +1317,50 @@ fn commit_uncertain_is_returned_before_process_owned_fail_stop_retains_endpoint(
     );
 }
 
+/// A submit's answer is due at its own response budget plus one
+/// serialization margin, computed once from receipt. The largest
+/// budget a submit may carry keeps that deadline under the 10 s safety cap,
+/// so the cap never shortens it.
+#[test]
+fn submit_response_deadline_is_its_budget_plus_one_margin_under_the_safety_cap() {
+    let submit = |budget_ms: u64| {
+        V5InvocationRequest::new(
+            InvocationId::new(),
+            TaskId::new(),
+            V5ToolIdentity::View,
+            serde_json::Map::new(),
+            unica_bootstrap::ResolvedWorkspace::launch_cwd("workspace-a".to_owned()),
+            budget_ms,
+        )
+    };
+    for budget_ms in [0, 100, 7_000] {
+        let decoded = decode_v5_request_frame(
+            serde_json::to_vec(&V5ClientRequest::SubmitInvocation {
+                invocation: submit(budget_ms).unwrap(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let received = Instant::now();
+        let deadlines = v5_request_deadlines(&decoded, received).unwrap();
+        assert_eq!(
+            deadlines.operation().duration_since(received),
+            Duration::from_millis(budget_ms),
+            "{budget_ms}: the operation keeps its budget"
+        );
+        assert_eq!(
+            deadlines.response().duration_since(deadlines.operation()),
+            RESPONSE_SERIALIZATION_MARGIN,
+            "{budget_ms}: the answer gets exactly one margin"
+        );
+        assert!(
+            deadlines.response().duration_since(received) < Duration::from_secs(10),
+            "{budget_ms}: the safety cap does not shorten the answer"
+        );
+    }
+    assert!(submit(7_001).is_err(), "no submit budget reaches the cap");
+}
+
 #[test]
 fn running_mutation_timeout_preserves_response_margin_or_closes_after_it() {
     let root = tempfile::tempdir().expect("temporary timeout fail-stop state root");

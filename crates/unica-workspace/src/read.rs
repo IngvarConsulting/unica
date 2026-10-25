@@ -9,8 +9,9 @@ use std::path::Path;
 pub use crate::platform::secure_read::with_secure_tree_test_hook;
 pub use crate::platform::secure_read::{
     capture_root_relative_regular_files, read_root_relative_regular_file,
-    read_root_relative_regular_file_checked, visit_root_relative_regular_files,
-    RetainedRootSecureRead, SecureRead, SecureReadPhase, SecureTreePhase, SecureTreeVisit,
+    read_root_relative_regular_file_checked, read_root_relative_regular_file_whole,
+    visit_root_relative_regular_files, RetainedRootSecureRead, SecureRead, SecureReadPhase,
+    SecureTreePhase, SecureTreeVisit,
 };
 pub use unica_source_contract::read::{
     FileIdentity, FileStamp, SourceDirectory, SourceEntry, SourceFile, SourceNameComparator,
