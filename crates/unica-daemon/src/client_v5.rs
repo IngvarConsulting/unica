@@ -1370,11 +1370,16 @@ mod tests {
     #[test]
     fn oversized_or_cut_v5_response_permanently_poisons_owner_session() {
         let limit = crate::protocol_v5::MAX_V5_RESPONSE_LINE_BYTES;
-        let mut oversized = vec![b' '; limit];
+        // A valid pong padded inside its JSON: only its size can refuse it.
+        let pong = br#"{"kind":"pong"}"#;
+        let mut oversized = vec![b'{'];
+        oversized.extend(std::iter::repeat_n(b' ', limit + 1 - pong.len() - 1));
+        oversized.extend_from_slice(&pong[1..]);
         oversized.push(b'\n');
-        for (case, answer) in [
-            ("one byte over", oversized),
-            ("cut", b"{\"kind\":\"po".to_vec()),
+        assert_eq!(oversized.len(), limit + 1);
+        for (case, answer, refusal) in [
+            ("one byte over", oversized, "exceeds the byte limit"),
+            ("cut", pong.to_vec(), "missing its terminator"),
         ] {
             let (mut owner, mut peer) = connected_owner();
             let peer_thread = thread::spawn(move || {
@@ -1389,7 +1394,8 @@ mod tests {
                 trailing
             });
 
-            assert!(owner.ping().is_err(), "{case}: the answer was read");
+            let error = owner.ping().unwrap_err();
+            assert!(error.contains(refusal), "{case}: {error}");
             assert_eq!(
                 owner.ping().unwrap_err(),
                 "protocol-v5 owner session is poisoned",
