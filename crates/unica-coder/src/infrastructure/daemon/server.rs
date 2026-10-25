@@ -518,7 +518,9 @@ pub(super) struct V5CanonicalInvocationRuntime {
     documentation_cursors: Arc<unica_navigation::result_store::SearchCursorStore>,
     root_check_continuations:
         Arc<unica_project_health::inspection::resources::RootCheckContinuationStore>,
-    root_check_pages: Arc<unica_navigation::result_store::ViewCursorStore>,
+    /// Saved check results, shared with the read service: one retention
+    /// budget covers node checks and the workspace verdict.
+    check_snapshots: Arc<unica_navigation::result_store::ViewCursorStore>,
     workspace_actors: WorkspaceActorRegistry,
     deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
@@ -853,13 +855,15 @@ impl V5CanonicalInvocationRuntime {
         self
     }
 
-    /// Root check pages saved in `pages`, for a test that bounds the store.
+    /// The workspace verdict saves its pages in `store` instead of the
+    /// service's check snapshots: a test that bounds the store detaches the
+    /// root check from the read service.
     #[cfg(test)]
-    pub(crate) fn with_root_check_pages(
+    pub(crate) fn with_detached_check_snapshots(
         mut self,
-        pages: unica_navigation::result_store::ViewCursorStore,
+        store: unica_navigation::result_store::ViewCursorStore,
     ) -> Self {
-        self.root_check_pages = Arc::new(pages);
+        self.check_snapshots = Arc::new(store);
         self
     }
 
@@ -872,9 +876,15 @@ impl V5CanonicalInvocationRuntime {
         clock: Arc<dyn Clock>,
         workspace_actors: WorkspaceActorRegistry,
     ) -> Self {
-        let root_check_pages = service
-            .check_snapshots()
-            .unwrap_or_else(|| Arc::new(super::v13_service::product_view_cursors()));
+        let check_snapshots = match service.check_snapshots() {
+            Some(store) => store,
+            // Only a test stand-in service keeps no check snapshots; the
+            // workspace verdict then saves its pages in a store of its own.
+            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+            None => Arc::new(super::v13_service::product_view_cursors()),
+            #[cfg(not(any(test, feature = "receipt-ledger-test-support")))]
+            None => unreachable!("the product read service owns the check snapshot store"),
+        };
         Self {
             service,
             clock,
@@ -884,7 +894,7 @@ impl V5CanonicalInvocationRuntime {
             root_check_continuations: Arc::new(
                 unica_project_health::inspection::resources::RootCheckContinuationStore::default(),
             ),
-            root_check_pages,
+            check_snapshots,
             workspace_actors,
             deliveries: Arc::new(unica_artifact_delivery::desk::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
@@ -974,7 +984,7 @@ impl V5CanonicalInvocationRuntime {
             &request,
             response_deadline.clone(),
             &self.root_check_continuations,
-            &self.root_check_pages,
+            &self.check_snapshots,
         ) {
             super::v13_workspace_bootstrap::Preparation::NotApplicable => {}
             super::v13_workspace_bootstrap::Preparation::Rejected(result) => {
@@ -6260,12 +6270,99 @@ fn main() {
             "{restarted:?}"
         );
 
-        let full = bootstrap_runtime()
-            .with_root_check_pages(unica_navigation::result_store::ViewCursorStore::new(400));
+        let full = bootstrap_runtime().with_detached_check_snapshots(
+            unica_navigation::result_store::ViewCursorStore::new(400),
+        );
         let refused = submit_canonical(&full, workspace.path(), ToolIdentity::Check, limited);
         assert!(!refused.ok, "{refused:?}");
         assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
         assert!(refused.cursor.is_none(), "{refused:?}");
+    }
+
+    /// #1119 (9c): the product runtime saves the workspace verdict in the read
+    /// service's check snapshots, so one retention budget covers both.
+    #[test]
+    fn the_root_check_shares_the_read_service_check_snapshots() {
+        let runtime = bootstrap_runtime();
+        let service = runtime
+            .service
+            .check_snapshots()
+            .expect("the read service keeps check snapshots");
+        assert!(
+            Arc::ptr_eq(&runtime.check_snapshots, &service),
+            "the root check must save its pages in the read service store"
+        );
+    }
+
+    /// #1119 (9c): a cursor answers only the check that issued it. A
+    /// workspace verdict cursor does not continue a node check, and a node
+    /// check cursor does not continue the workspace verdict, although both
+    /// live in one store.
+    #[test]
+    fn root_and_node_check_cursors_do_not_continue_each_other() {
+        let workspace = tempfile::tempdir().unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-xdto-check");
+        copy_tree_for_test(&fixture, workspace.path());
+        for args in [&["init", "--quiet"][..], &["add", "."][..]] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .status()
+                .unwrap()
+                .success());
+        }
+        let runtime = bootstrap_runtime();
+        let call = |arguments| {
+            submit_canonical(&runtime, workspace.path(), ToolIdentity::Check, arguments)
+        };
+        let view = |at: &str| {
+            submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::View,
+                serde_json::json!({"at": at}),
+            )
+        };
+        let packages = view("main:Configuration").data.unwrap()["branches"][0]["at"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let node = view(&packages).data.unwrap()["items"][3]["at"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let node_page = call(serde_json::json!({"at": node, "limit": 1}));
+        let node_cursor = node_page.cursor.clone().expect("the node check is cut");
+        let root_page = call(serde_json::json!({"limit": 1}));
+        let root_cursor = root_page
+            .cursor
+            .clone()
+            .expect("the workspace verdict is cut");
+        for arguments in [
+            serde_json::json!({"at": node, "limit": 1, "cursor": root_cursor}),
+            serde_json::json!({"limit": 1, "cursor": node_cursor}),
+        ] {
+            let refused = call(arguments.clone());
+            assert!(!refused.ok, "{arguments}: {refused:?}");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "invalid_cursor",
+                "{arguments}: {refused:?}"
+            );
+        }
+    }
+
+    fn copy_tree_for_test(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree_for_test(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
     }
 
     #[test]
