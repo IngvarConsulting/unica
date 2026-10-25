@@ -6234,6 +6234,30 @@
       "review": null
     },
     {
+      "id": "apply.checked-read-chunk-bytes",
+      "class": "step",
+      "resource": "Размер одной порции чтения или сравнения входа apply между проверками срока и отмены.",
+      "unit": "bytes",
+      "scope": "file",
+      "source": {
+        "file": "crates/unica-workspace/src/platform/filesystem.rs",
+        "symbol": "CHECKED_READ_CHUNK_BYTES"
+      },
+      "expr": "64 * 1024",
+      "value": 65536,
+      "applied": [
+        "crates/unica-workspace/src/platform/filesystem.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119",
+      "problem": null,
+      "onReach": "файл читается следующей порцией после проверки срока и отмены",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "workspace.runtime-dir-retry-delay",
       "class": "retry",
       "resource": "Пауза между попытками подготовить частный каталог исполнения при гонке с другим процессом того же пользователя.",
