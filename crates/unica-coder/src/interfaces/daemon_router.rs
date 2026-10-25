@@ -1582,6 +1582,74 @@ mod tests {
         );
     }
 
+    /// The frontend reads a real answer of exactly the frame limit. One byte
+    /// more, or an answer cut before its line ends, leaves the submit session
+    /// unusable: the frontend recovers that same receipt by key on a fresh
+    /// session and never submits again.
+    #[test]
+    fn submit_answer_at_the_frame_limit_is_read_and_one_byte_over_or_cut_is_recovered() {
+        use std::io::Write as _;
+        let limit = unica_daemon::protocol_v5::MAX_V5_RESPONSE_LINE_BYTES;
+        // A valid answer padded inside its JSON to `line` bytes with the newline.
+        let padded = |line: usize| {
+            let compact = serde_json::to_vec(&V5ServerResponse::Error {
+                code: V5DaemonErrorCode::Overloaded,
+            })
+            .unwrap();
+            let mut frame = vec![b'{'];
+            frame.extend(std::iter::repeat_n(b' ', line - compact.len() - 1));
+            frame.extend_from_slice(&compact[1..]);
+            frame.push(b'\n');
+            assert_eq!(frame.len(), line);
+            frame
+        };
+        for (case, frame, recovered) in [
+            ("at the limit", padded(limit), false),
+            ("one byte over", padded(limit + 1), true),
+            ("cut", padded(limit)[..limit / 2].to_vec(), true),
+        ] {
+            let fake = FakeDaemon::start_with_raw_script(Box::new(move |_, request, writer| {
+                match request {
+                    V5ClientRequest::SubmitInvocation { .. } => {
+                        let _ = writer.write_all(&frame);
+                        let _ = writer.flush();
+                        // An answer that cannot be read closes this session.
+                        !recovered
+                    }
+                    V5ClientRequest::RecoverInvocationReceipt { receipt_key } => {
+                        super::test_support::write_frame(
+                            writer,
+                            &direct_receipt(receipt_key.clone(), completed("recovered")),
+                        );
+                        true
+                    }
+                    V5ClientRequest::AcknowledgeInvocationReceipt { .. } => false,
+                    other => panic!("{case}: unexpected frame {other:?}"),
+                }
+            }));
+            let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+            let outcome = call(&router, None);
+            if recovered {
+                let result = direct_result(outcome);
+                assert_eq!(
+                    result
+                        .structured_content
+                        .as_ref()
+                        .and_then(|value| value["summary"].as_str()),
+                    Some("recovered"),
+                    "{case}"
+                );
+            } else {
+                let refused = outcome.expect_err("the read answer is a rejection");
+                assert!(
+                    refused.message.contains("overloaded"),
+                    "{case}: {refused:?}"
+                );
+            }
+            assert_eq!(fake.submissions(), 1, "{case}: submitted again");
+        }
+    }
+
     #[test]
     fn pending_receipt_is_polled_until_its_original_budget_settles() {
         let recoveries = Arc::new(AtomicUsize::new(0));

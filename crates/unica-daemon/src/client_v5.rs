@@ -1364,6 +1364,46 @@ mod tests {
         }
     }
 
+    /// An answer one byte over the frame limit, or one cut before its line
+    /// ends, poisons the owner session the same way: the next request is
+    /// refused and nothing more is written to that connection.
+    #[test]
+    fn oversized_or_cut_v5_response_permanently_poisons_owner_session() {
+        let limit = crate::protocol_v5::MAX_V5_RESPONSE_LINE_BYTES;
+        let mut oversized = vec![b' '; limit];
+        oversized.push(b'\n');
+        for (case, answer) in [
+            ("one byte over", oversized),
+            ("cut", b"{\"kind\":\"po".to_vec()),
+        ] {
+            let (mut owner, mut peer) = connected_owner();
+            let peer_thread = thread::spawn(move || {
+                let mut request = Vec::new();
+                BufReader::new(&peer)
+                    .read_until(b'\n', &mut request)
+                    .unwrap();
+                let _ = peer.write_all(&answer);
+                peer.shutdown(Shutdown::Write).unwrap();
+                let mut trailing = Vec::new();
+                let _ = peer.read_to_end(&mut trailing);
+                trailing
+            });
+
+            assert!(owner.ping().is_err(), "{case}: the answer was read");
+            assert_eq!(
+                owner.ping().unwrap_err(),
+                "protocol-v5 owner session is poisoned",
+                "{case}"
+            );
+            drop(owner);
+            let trailing = peer_thread.join().unwrap();
+            assert!(
+                trailing.is_empty(),
+                "{case}: poisoned owner wrote another request"
+            );
+        }
+    }
+
     #[test]
     fn malformed_v5_response_permanently_poisons_owner_session() {
         let (mut owner, mut peer) = connected_owner();
