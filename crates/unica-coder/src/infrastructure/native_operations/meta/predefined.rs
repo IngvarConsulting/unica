@@ -18,6 +18,15 @@ impl PredefinedResourceRead for PredefinedResourceReadBinding {
         unica_workspace::read::read_root_relative_regular_file(source_root, path, maximum, |_| {})
             .map(|observed| observed.bytes)
     }
+    fn read_resource(&self, source_root: &Path, path: &Path) -> std::io::Result<Vec<u8>> {
+        unica_workspace::read::read_root_relative_regular_file(
+            source_root,
+            path,
+            unica_workspace::apply::MAX_APPLY_FILE_BYTES,
+            |_| {},
+        )
+        .map(|observed| observed.bytes)
+    }
 }
 #[cfg(test)]
 fn plan_predefined_resource(
@@ -285,6 +294,47 @@ mod tests {
             )
             .unwrap(),
         }
+    }
+
+    /// #1119: корректный `Predefined.xml` больше прежних 8 МиБ читается
+    /// целиком, а не отклоняется по размеру.
+    #[test]
+    fn predefined_plan_reads_a_resource_larger_than_eight_mebibytes() {
+        let root = temp_root("predefined-large");
+        let descriptor = root.join("Catalogs/Items.xml");
+        let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let padding = format!("<!--{}-->", "x".repeat(9 * 1024 * 1024));
+        let image = format!(
+            r#"<PredefinedData xmlns="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xmlns:xs="{XS_NS}" xsi:type="CatalogPredefinedItems" version="2.20">{padding}<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code>643</Code></Item></PredefinedData>"#
+        );
+        assert!(image.len() > 8 * 1024 * 1024);
+        fs::write(&path, &image).unwrap();
+        let descriptor_text = descriptor_image(MetadataKind::Catalog, "String");
+        let update = MetaEditOperation::update_predefined_items(vec![MetaPredefinedItemUpdate {
+            id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+            name: None,
+            fields: MetaPredefinedFields {
+                code: Some("644".to_string()),
+                ..MetaPredefinedFields::default()
+            },
+        }])
+        .unwrap();
+        let planned = plan_predefined_resource_after_descriptor_edit::<ClosedPlatformXmlTarget>(
+            &PredefinedResourceReadBinding,
+            &root,
+            unica_metadata_designer::resource_plan::MetadataDescriptorTarget {
+                path: &descriptor,
+                address: &owner("Catalog"),
+            },
+            MetadataKind::Catalog,
+            &descriptor_text,
+            &descriptor_text,
+            std::slice::from_ref(&update),
+        );
+        assert!(planned.is_ok(), "{:?}", planned.err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), image);
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// #1381: описание без `CodeType` (так платформа выгружает заимствованный

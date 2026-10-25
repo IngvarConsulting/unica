@@ -995,7 +995,7 @@
     {
       "id": "diff.cursor-store-entries",
       "class": "retention",
-      "resource": "Число одновременно хранимых курсоров продолжения diff в процессе.",
+      "resource": "Число одновременно хранимых пар сравнения diff с продолжением в процессе.",
       "unit": "count",
       "scope": "cache",
       "source": {
@@ -1010,7 +1010,7 @@
       "status": "unproven",
       "origin": "781b94962",
       "problem": null,
-      "onReach": "тихо: при выдаче нового курсора вытесняется произвольный прежний (первый ключ HashMap); его продолжение затем отказывает как неизвестный курсор.",
+      "onReach": "тихо: обход хранит одну пару на все свои страницы; при сохранении новой пары вытесняется самая старая, и её продолжение затем отказывает как неизвестный курсор.",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1024,12 +1024,14 @@
       "scope": "request",
       "source": {
         "file": "crates/unica-coder/src/application/v13/diff.rs",
-        "symbol": "DEFAULT_LIMIT"
+        "symbol": "DEFAULT_DIFF_LIMIT"
       },
-      "expr": "100",
-      "value": 100,
+      "expr": "20",
+      "value": 20,
       "applied": [
-        "crates/unica-coder/src/application/v13/diff.rs"
+        "crates/unica-coder/src/application/v13/diff.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
       "status": "unproven",
       "origin": "781b94962",
@@ -1048,17 +1050,19 @@
       "scope": "request",
       "source": {
         "file": "crates/unica-coder/src/application/v13/diff.rs",
-        "symbol": "MAX_LIMIT"
+        "symbol": "MAX_DIFF_LIMIT"
       },
-      "expr": "1_000",
-      "value": 1000,
+      "expr": "50",
+      "value": 50,
       "applied": [
-        "crates/unica-coder/src/application/v13/diff.rs"
+        "crates/unica-coder/src/application/v13/diff.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
       "status": "unproven",
       "origin": "781b94962",
       "problem": null,
-      "onReach": "тихо: больший limit сводится к 1000 (clamp), остаток доступен по cursor.",
+      "onReach": "на проводе limit больше 50 получает bad_value; внутри обработчика больший limit сводится к 50, остаток доступен по cursor.",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1227,6 +1231,7 @@
       "value": 65536,
       "applied": [
         "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/diff.rs",
         "crates/unica-coder/src/application/v13/view.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
@@ -1918,30 +1923,6 @@
       "review": null
     },
     {
-      "id": "check.metadata-focus-descriptor-bytes",
-      "class": "corpus",
-      "resource": "Размер дескриптора объекта, который диагностика читает для фокуса находки на метаданных.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/diagnostics.rs",
-        "symbol": "MAX_METADATA_FOCUS_DESCRIPTOR_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/diagnostics.rs"
-      ],
-      "status": "unproven",
-      "origin": "5fa4c1b02",
-      "problem": null,
-      "onReach": "тихо: фокус метаданных не строится (None), находка остаётся без адреса метаданных.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR4"
-    },
-    {
       "id": "analysis.internal-adapter-process-ms",
       "class": "deadline",
       "resource": "Срок процесса внутреннего адаптера анализа (и bsl-analyzer) по умолчанию.",
@@ -1988,54 +1969,6 @@
       "evidence": [],
       "decision": null,
       "review": null
-    },
-    {
-      "id": "resolve.navigation-descriptor-bytes",
-      "class": "corpus",
-      "resource": "Размер одного дескриптора, читаемого навигационным инвентарём платформенного XML.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
-        "symbol": "MAX_NAVIGATION_DESCRIPTOR_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs"
-      ],
-      "status": "unproven",
-      "origin": "517463e56 (#266)",
-      "problem": null,
-      "onReach": "Неполнота: дескриптор пропускается, ставится только partial = true.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR4"
-    },
-    {
-      "id": "resolve.navigation-inventory-entries",
-      "class": "corpus",
-      "resource": "Число проверяемых дескрипторов одного вида при построении навигационного инвентаря платформенного XML.",
-      "unit": "count",
-      "scope": "directory",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
-        "symbol": "MAX_NAVIGATION_INVENTORY_ENTRIES"
-      },
-      "expr": "4_096",
-      "value": 4096,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs"
-      ],
-      "status": "unproven",
-      "origin": "517463e56 (#266)",
-      "problem": null,
-      "onReach": "Неполнота: partial = true, обход вида прекращается.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR4"
     },
     {
       "id": "apply.subsystem-info-file-bytes",
@@ -2278,38 +2211,14 @@
       "review": null
     },
     {
-      "id": "view.module-bytes",
-      "class": "corpus",
-      "resource": "Размер модуля BSL при чтении через логический адаптер (прежняя граница).",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/v13_read.rs",
-        "symbol": "MAX_MODULE_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/v13_read.rs"
-      ],
-      "status": "unproven",
-      "origin": "cec3ddf7c",
-      "problem": null,
-      "onReach": "Не применяется: мёртвая константа после #1130, модули читаются через удержанный файл и страницы.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR4"
-    },
-    {
-      "id": "view.descriptor-file-bytes",
-      "class": "corpus",
-      "resource": "Размер одного XML-файла при чтении узла: дескриптор объекта, Form.xml, Rights.xml, макет СКД, командный интерфейс, Predefined (около 20 мест).",
+      "id": "view.configuration-streaming-threshold-bytes",
+      "class": "step",
+      "resource": "Размер Configuration.xml, с которого корень разбирается потоковым путём вместо полного дерева.",
       "unit": "bytes",
       "scope": "file",
       "source": {
         "file": "crates/unica-coder/src/infrastructure/v13_read_port.rs",
-        "symbol": "MAX_CONFIGURATION_BYTES"
+        "symbol": "CONFIGURATION_STREAMING_THRESHOLD_BYTES"
       },
       "expr": "8 * 1024 * 1024",
       "value": 8388608,
@@ -2318,12 +2227,12 @@
       ],
       "status": "unproven",
       "origin": "bbf0a901e",
-      "problem": "Configuration.xml больше предела выбирает потоковое чтение (#1130); остальные файлы читаются целиком.",
-      "onReach": "Отказ source_unreadable: «relative file exceeds the 8388608-byte read limit».",
+      "problem": null,
+      "onReach": "Выбор разборщика, а не отказ: больший файл читается потоком (#1130), меньший — полным деревом с кешем корня.",
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR4"
+      "review": null
     },
     {
       "id": "view.compact-property-bytes",
@@ -3398,7 +3307,8 @@
       "expr": "4_096",
       "value": 4096,
       "applied": [
-        "crates/unica-execution-contract/src/result_delivery.rs"
+        "crates/unica-execution-contract/src/result_delivery.rs",
+        "crates/unica-execution/src/receipt_ledger.rs"
       ],
       "status": "unproven",
       "origin": "#1857",
@@ -3427,6 +3337,7 @@
       "value": 8388608,
       "applied": [
         "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/diff.rs",
         "crates/unica-coder/src/application/v13/view.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
@@ -4824,30 +4735,6 @@
       "review": "снимается в #1119 PR5"
     },
     {
-      "id": "metadata.predefined-bytes",
-      "class": "corpus",
-      "resource": "Размер файла Ext/Predefined.xml при планировании изменения предопределённых элементов.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/predefined.rs",
-        "symbol": "MAX_PREDEFINED_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-metadata-designer/src/predefined.rs"
-      ],
-      "status": "unproven",
-      "origin": "#325",
-      "problem": null,
-      "onReach": "отказ плана ProviderUnavailable «predefined data cannot be read through the source-root boundary»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR4"
-    },
-    {
       "id": "metadata.remove-reference-file-bytes",
       "class": "corpus",
       "resource": "Размер одного XML- или BSL-файла, читаемого при поиске ссылок на удаляемый объект.",
@@ -6199,30 +6086,6 @@
       "review": null
     },
     {
-      "id": "source-contract.replacement-bytes",
-      "class": "format",
-      "resource": "Наибольший объём замены содержимого ресурса по контракту источника.",
-      "unit": "bytes",
-      "scope": "request",
-      "source": {
-        "file": "crates/unica-source-contract/src/resources.rs",
-        "symbol": "SOURCE_REPLACEMENT_MAX_BYTES"
-      },
-      "expr": "1024 * 1024",
-      "value": 1048576,
-      "applied": [
-        "crates/unica-source-contract/src/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "517463e56 (#266)",
-      "problem": null,
-      "onReach": "Не применяется: константа в рабочем коде не проверяется (используется только в тестах).",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
       "id": "source-contract.resource-page-entries",
       "class": "step",
       "resource": "Наибольшее число ресурсов одной страницы по контракту источника.",
@@ -6482,7 +6345,8 @@
       "expr": "32 * 1024 * 1024",
       "value": 33554432,
       "applied": [
-        "crates/unica-workspace/src/apply.rs"
+        "crates/unica-workspace/src/apply.rs",
+        "crates/unica-coder/src/infrastructure/native_operations/meta/predefined.rs"
       ],
       "status": "unproven",
       "origin": "коммит 337d12744 (transactional apply foundation)",

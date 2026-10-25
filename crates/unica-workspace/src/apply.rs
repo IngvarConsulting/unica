@@ -15,7 +15,8 @@ use unica_source_contract::portable_path::PortablePathExt;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
-const MAX_APPLY_FILE_BYTES: usize = 32 * 1024 * 1024;
+/// The largest single source file an apply stages; planners never read past it.
+pub const MAX_APPLY_FILE_BYTES: usize = 32 * 1024 * 1024;
 pub(super) const MAX_APPLY_NAMESPACE_ENTRIES: usize = 1_000_000;
 pub(super) const MAX_APPLY_NAMESPACE_DEPTH: usize = 256;
 
