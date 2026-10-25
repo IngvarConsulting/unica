@@ -6,7 +6,8 @@ profile such as ``synthetic-configuration-ut11.json``; the objects are clones
 of the acceptance fixture ``tests/fixtures/acceptance/workspace`` with new
 names and identifiers, and module text is generated. Nothing from the measured
 configuration is copied. The result is a Git repository with a
-``v8project.yaml`` workspace, ready for ``unica`` and ``git grep``.
+``v8project.yaml`` workspace, ready for ``unica`` and ``git grep``; it is not
+meant for loading into the platform (references to absent objects remain).
 
     synthetic-configuration.py --out DIR [--profile FILE] [--scale 1.0] [--seed 1119]
 
@@ -17,7 +18,6 @@ search has hits spread over the whole corpus.
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
 import random
 import re
@@ -30,6 +30,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO / "tests/fixtures/acceptance/workspace/src"
 MARKER = "СинтетическаяМеткаПоиска"
+BOM = "\ufeff"
+# Written into every generated corpus; only such a directory is replaced.
+SENTINEL = ".synthetic-configuration"
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 TEMPLATES = {
     "CommonModule": ("CommonModules", "GoogleПереводчик"),
@@ -55,7 +58,7 @@ WORDS = (
 def sample_size(rng: random.Random, points: list[float], quantiles: list[int]) -> int:
     q = rng.random()
     for (lo_q, hi_q), (lo, hi) in zip(
-        itertools.pairwise(points), itertools.pairwise(quantiles)
+        zip(points, points[1:]), zip(quantiles, quantiles[1:])  # noqa: RUF007 - Python 3.9
     ):
         if q <= hi_q:
             share = 0 if hi_q == lo_q else (q - lo_q) / (hi_q - lo_q)
@@ -63,14 +66,15 @@ def sample_size(rng: random.Random, points: list[float], quantiles: list[int]) -
     return quantiles[-1]
 
 
-def role_sizes(rng, profile, role: str, count: int) -> list[int]:
+def role_sizes(rng, profile, role: str, count: int, scale: float) -> list[int]:
     spec = profile["modules"][role]
     sizes = [
         max(3, sample_size(rng, profile["quantile_points"], spec["quantiles"]))
         for _ in range(count)
     ]
-    # Keep the role's mean: the measured total for the modules generated.
-    target = spec["bytes"] * count / spec["files"]
+    # The role's measured bytes, scaled: when fewer modules of a role are
+    # generated than measured, they are larger, so the corpus keeps its volume.
+    target = spec["bytes"] * scale
     factor = target / max(1, sum(sizes))
     return [max(3, int(size * factor)) for size in sizes]
 
@@ -99,7 +103,8 @@ def module_text(rng: random.Random, size: int, marked: bool) -> bytes:
         body += sum(len(line.encode()) + 1 for line in block)
         index += 1
     lines.append("#КонецОбласти")
-    return ("\ufeff" + "\n".join(lines) + "\n").encode()
+    return (BOM + "\n".join(lines) + "\n").encode()
+
 
 def fresh_uuids(text: str, salt: str) -> str:
     return UUID.sub(lambda m: str(uuid.uuid5(uuid.NAMESPACE_URL, salt + m.group(0))), text)
@@ -115,8 +120,9 @@ def clone(kind: str, name: str, src: Path) -> None:
         target = src / directory / Path(*[part.replace(template, name) for part in relative.parts])
         target.parent.mkdir(parents=True, exist_ok=True)
         text = path.read_text(encoding="utf-8-sig")
-        text = fresh_uuids(text.replace(template, name), name)
-        target.write_text("﻿" + text, encoding="utf-8")
+        # Whole name only: `СпособыУстановкиКурсаВалюты` keeps its name.
+        text = re.sub(rf"(?<!\w){re.escape(template)}(?!\w)", name, text)
+        target.write_text(BOM + fresh_uuids(text, name), encoding="utf-8")
 
 
 def add_forms(src: Path, name: str, forms: int) -> list[Path]:
@@ -132,28 +138,31 @@ def add_forms(src: Path, name: str, forms: int) -> list[Path]:
         if index >= 2:
             form_text = base_form.read_text(encoding="utf-8-sig").replace("ФормаЭлемента", form)
             (root / name / "Forms" / f"{form}.xml").write_text(
-                "﻿" + fresh_uuids(form_text, name + form), encoding="utf-8"
+                BOM + fresh_uuids(form_text, name + form), encoding="utf-8"
             )
             body = root / name / "Forms" / form / "Ext" / "Form.xml"
             body.parent.mkdir(parents=True, exist_ok=True)
             body.write_text(
-                "﻿" + fresh_uuids(base_body.read_text(encoding="utf-8-sig"), name + form),
+                BOM + fresh_uuids(base_body.read_text(encoding="utf-8-sig"), name + form),
                 encoding="utf-8",
             )
             entries.append(f"<Form>{form}</Form>")
         modules.append(root / name / "Forms" / form / "Ext" / "Form" / "Module.bsl")
     if entries:
         text = text.replace("<Form>ФормаСписка</Form>", "<Form>ФормаСписка</Form>" + "".join(entries), 1)
-        descriptor.write_text("﻿" + text, encoding="utf-8")
+        descriptor.write_text(BOM + text, encoding="utf-8")
     return modules
 
 
 def generate(out: Path, profile: dict, scale: float, seed: int) -> dict:
     rng = random.Random(seed)
-    if out.exists():
+    if out.exists() and any(out.iterdir()):
+        if not (out / SENTINEL).is_file():
+            raise SystemExit(f"{out} is not empty and was not made by this script; choose another --out")
         shutil.rmtree(out)
     src = out / "src"
     src.mkdir(parents=True)
+    (out / SENTINEL).write_text(f"{profile['name']} scale={scale} seed={seed}\n", encoding="utf-8")
     (out / "v8project.yaml").write_text(
         "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
         encoding="utf-8",
@@ -190,7 +199,7 @@ def generate(out: Path, profile: dict, scale: float, seed: int) -> dict:
     written = {}
     ordinal = 0
     for role, paths in modules.items():
-        sizes = role_sizes(rng, profile, role, len(paths))
+        sizes = role_sizes(rng, profile, role, len(paths), scale)
         total = 0
         for path, size in zip(paths, sizes):
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -210,7 +219,7 @@ def generate(out: Path, profile: dict, scale: float, seed: int) -> dict:
         count=1,
         flags=re.DOTALL,
     )
-    (src / "Configuration.xml").write_text("﻿" + configuration, encoding="utf-8")
+    (src / "Configuration.xml").write_text(BOM + configuration, encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(out)], check=True)
     subprocess.run(["git", "-C", str(out), "add", "-A"], check=True)
     subprocess.run(

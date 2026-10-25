@@ -18,6 +18,6 @@
   },
   "notes": [
     "Form modules of every kind are carried by catalog forms: the fixture templates give forms only to the catalog, so catalogs get about nine forms each instead of UT's two to five, while the number and bytes of form modules match.",
-    "Data processors, common forms, roles, enums and pictures are not generated; XML bytes are therefore well below UT, BSL bytes match it."
+    "Data processors, common forms, roles, enums and pictures are not generated, so there are fewer object, manager and other modules than in UT; each role keeps its measured BSL bytes, so its modules are larger on average. XML bytes are well below UT."
   ]
 }

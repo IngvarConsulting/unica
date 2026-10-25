@@ -131,6 +131,8 @@ def plan(workspace: Path) -> list[tuple[str, dict]]:
         ("unica.view", {"at": f"main:Catalog.{catalog}"}),
         # A lexical search for an absent string walks the whole corpus.
         ("unica.search", {"query": absent, "role": "lexical"}),
+        # The marker is in about one module in 97: the search stops on its
+        # page limit before the end of the corpus.
         ("unica.search", {"query": MARKER, "role": "lexical", "limit": 50}),
         ("unica.search", {"query": absent}),
         ("unica.search", {"query": MARKER, "limit": 50}),
