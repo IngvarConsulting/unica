@@ -3326,6 +3326,9 @@ enum LineMessage {
     TooLong(usize),
     Unterminated(usize),
     ReadError(usize, String),
+    /// The records completed by one read, handed over together: one
+    /// handover per record would cost a thread switch each.
+    Records(Vec<(usize, Vec<u8>)>),
 }
 
 enum LineDrain {
@@ -3371,6 +3374,7 @@ where
                     }
                 };
                 let mut rest = &chunk[..count];
+                let mut records = Vec::new();
                 while !rest.is_empty() {
                     let end = rest.iter().position(|byte| *byte == delimiter);
                     let part = &rest[..end.unwrap_or(rest.len())];
@@ -3386,6 +3390,10 @@ where
                     rest = &rest[end + 1..];
                     let message = if too_long {
                         LineMessage::TooLong(line_number)
+                    } else if matches!(framing, StreamFraming::Records { .. }) {
+                        records.push((line_number, std::mem::take(&mut line)));
+                        line_number = line_number.saturating_add(1);
+                        continue;
                     } else {
                         LineMessage::Line(line_number, std::mem::take(&mut line))
                     };
@@ -3395,6 +3403,9 @@ where
                     line.clear();
                     too_long = false;
                     line_number = line_number.saturating_add(1);
+                }
+                if !records.is_empty() && sender.send(LineMessage::Records(records)).is_err() {
+                    return;
                 }
             }
             if too_long {
@@ -3516,6 +3527,14 @@ fn drain_replied_line_messages(
                 let reply = on_line(number, &bytes);
                 if reply != ProcessLineReply::Continue {
                     return LineDrain::Reply(reply);
+                }
+            }
+            LineMessage::Records(records) => {
+                for (number, bytes) in records {
+                    let reply = on_line(number, &bytes);
+                    if reply != ProcessLineReply::Continue {
+                        return LineDrain::Reply(reply);
+                    }
                 }
             }
             LineMessage::TooLong(number) => {
