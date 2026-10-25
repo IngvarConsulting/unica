@@ -13688,6 +13688,12 @@ struct ActorLogicalReadLease {"#,
         std::fs::write(source.join("Catalogs/Items/Ext/Unknown.xml"), "<unknown/>").unwrap();
         let provider = MetadataProvider(vec![
             finding(
+                DiagnosticObservationLocation::Logical {
+                    metadata_path: None,
+                },
+                DiagnosticObservationFocus::Target,
+            ),
+            finding(
                 object(),
                 DiagnosticObservationFocus::Metadata(attribute("Номенклатура")),
             ),
@@ -13719,10 +13725,10 @@ struct ActorLogicalReadLease {"#,
         let service =
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
         let cancellation = CancellationToken::new();
-        let check = |override_provider: Option<Arc<dyn DiagnosticProvider>>| {
+        let check = |at: &str, override_provider: Option<Arc<dyn DiagnosticProvider>>| {
             let request = InvocationRequest::new(
                 ToolIdentity::Check,
-                serde_json::json!({"at": "main:Catalog.Items"}),
+                serde_json::json!({"at": at}),
                 std::fs::canonicalize(workspace.path())
                     .unwrap()
                     .to_string_lossy(),
@@ -13751,7 +13757,8 @@ struct ActorLogicalReadLease {"#,
             checked.data.unwrap()
         };
 
-        let data = check(Some(Arc::new(provider)));
+        let provider: Arc<dyn DiagnosticProvider> = Arc::new(provider);
+        let data = check("main:Catalog.Items", Some(Arc::clone(&provider)));
         assert_eq!(
             data["validators"],
             serde_json::json!(["meta", "bsl"]),
@@ -13766,7 +13773,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(
             provided.len(),
             3,
-            "the module finding is not the object's: {data}"
+            "neither the module nor the root finding is the object's: {data}"
         );
         let addressed = serde_json::json!({
             "kind": "addressed",
@@ -13804,8 +13811,25 @@ struct ActorLogicalReadLease {"#,
             "{data}"
         );
 
-        let plain = check(None);
+        let plain = check("main:Catalog.Items", None);
         assert_eq!(plain["validators"], serde_json::json!(["meta"]), "{plain}");
+
+        // Корень принимает только свою находку: объекты и модули — свои цели.
+        let root = check("main:Configuration", Some(provider));
+        let provided = root["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["provider"] == "metadata-provider")
+            .collect::<Vec<_>>();
+        assert_eq!(provided.len(), 1, "{root}");
+        assert_eq!(
+            provided[0]["location"],
+            serde_json::json!({"kind": "addressed", "sourceSet": "main", "targetKind": "sourceRoot"}),
+            "{root}"
+        );
+        let plain = check("main:Configuration", None);
+        assert_eq!(plain["validators"], serde_json::json!(["cf"]), "{plain}");
     }
 
     /// #1460: платформа не компилирует модуль, где `Перем` стоит после

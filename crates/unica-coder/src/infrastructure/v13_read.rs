@@ -667,13 +667,20 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         let (target, kind) = match (route.reader(), canonical.segments()) {
             (LogicalReader::Configuration, [_]) => (None, TargetKind::SourceRoot),
-            (LogicalReader::Metadata, [_]) => (
-                Some(route.reader_metadata_path().cloned().ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
-                        "metadata object route has no metadata path",
+            // Объект любого вида, включая общий модуль, чей маршрут ведёт в
+            // читатель модулей: целью остаётся сам объект.
+            (_, [owner]) if owner.name().is_some() => (
+                Some(
+                    MetadataAddress::parse(
+                        PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        &format!(
+                            "{}.{}",
+                            owner.kind().as_str(),
+                            owner.name().unwrap_or_default()
+                        ),
                     )
-                })?),
+                    .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?,
+                ),
                 TargetKind::MetadataObject,
             ),
             _ => {

@@ -36,9 +36,10 @@ const MAX_METADATA_FOCUS_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Mapping for one target already proved by the actor-owned logical reader:
 /// a module, a metadata object or the source root. Provider analysis can cover
-/// the source set; the proved target keeps its identity, and every other
-/// resource is located the same way as for any diagnostic: a logical target,
-/// or an unaddressable path with its proven owner when there is one.
+/// the source set; the proved target keeps its identity. For an object or the
+/// root every other resource is located like any diagnostic: a logical target,
+/// or an unaddressable path with its proven owner when there is one. A module
+/// keeps only its own file; other resources stay explicitly unproved.
 pub(crate) struct CanonicalDiagnosticMapping {
     context: DiagnosticContext,
     /// The file a module target was proved by; `None` for an object or root.
@@ -135,6 +136,16 @@ impl CanonicalDiagnosticMapping {
                     if relative == *module_relative {
                         return Ok(addressed());
                     }
+                    // A module check keeps only its own module; locating a
+                    // foreign file could fail the section for nothing.
+                    return Ok(MappedDiagnosticLocation {
+                        location: SourceLocation::Unaddressable {
+                            source_set: self.context.target.source_set.clone(),
+                            owner_metadata_path: None,
+                            path: portable_relative(&relative),
+                        },
+                        reason: Some(UnaddressableReason::OwnerUnproven),
+                    });
                 }
                 map_resource_location(&handle, &self.context, cancellation)
             }
@@ -1435,13 +1446,8 @@ mod tests {
                 ..
             }
         ));
-        for (mapping, context) in [
-            (&root, &root_context),
-            (
-                &proven_node_mapping(&fixture, Some("Catalog.Items")).0,
-                &proven_node_mapping(&fixture, Some("Catalog.Items")).1,
-            ),
-        ] {
+        let (object, object_context) = proven_node_mapping(&fixture, Some("Catalog.Items"));
+        for (mapping, context) in [(&root, &root_context), (&object, &object_context)] {
             match map(
                 mapping,
                 context,
@@ -1458,7 +1464,6 @@ mod tests {
             }
         }
         // Модуль объекта адресуется отдельно: его находка — модулю, а не объекту.
-        let (object, object_context) = proven_node_mapping(&fixture, Some("Catalog.Items"));
         for (mapping, context) in [(&root, &root_context), (&object, &object_context)] {
             for (path, expected) in [
                 (&module, "CommonModule.Shared.Module"),
@@ -1510,11 +1515,6 @@ mod tests {
         let mappings = [
             proven_node_mapping(&fixture, None),
             proven_node_mapping(&fixture, Some("Catalog.Items")),
-            proven_module_mapping(
-                &fixture,
-                "CommonModule.Shared.Module",
-                "CommonModules/Shared/Ext/Module.bsl",
-            ),
         ];
         for (mapping, context) in &mappings {
             for (handle, expected_reason, expected_owner) in [
@@ -1561,6 +1561,34 @@ mod tests {
                 }
             }
         }
+        // Модульная проверка не ищет владельца чужого файла: он ей не нужен.
+        let (module, module_context) = proven_module_mapping(
+            &fixture,
+            "CommonModule.Shared.Module",
+            "CommonModules/Shared/Ext/Module.bsl",
+        );
+        let item = module
+            .map_observation(
+                diagnostic(
+                    DiagnosticObservationLocation::Resource {
+                        handle: "Catalogs/Items/Ext/Unknown.xml".to_string(),
+                    },
+                    DiagnosticObservationFocus::Target,
+                ),
+                &module_context,
+                &cancellation,
+            )
+            .unwrap();
+        assert!(matches!(
+            mapped_location(item),
+            (
+                SourceLocation::Unaddressable {
+                    owner_metadata_path: None,
+                    ..
+                },
+                Some(UnaddressableReason::OwnerUnproven)
+            )
+        ));
     }
 
     #[test]

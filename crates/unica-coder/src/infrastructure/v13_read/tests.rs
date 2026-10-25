@@ -4193,6 +4193,55 @@ fn diagnostic_module_scope_refuses_foreign_source_object_and_unregistered_module
     }
 }
 
+/// #1966: объект и корень проверяются как цель целиком — без модульной
+/// области и без выдуманного объекта; общий модуль как объект — тоже объект.
+#[test]
+fn diagnostic_node_mapping_proves_object_common_module_and_root_without_module_scope() {
+    use unica_address::source_target::TargetKind;
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    for (at, metadata_path, kind) in [
+        (
+            "main:Catalog.Items",
+            Some("Catalog.Items"),
+            TargetKind::MetadataObject,
+        ),
+        (
+            "main:CommonModule.РеактивныйСервер",
+            Some("CommonModule.РеактивныйСервер"),
+            TargetKind::MetadataObject,
+        ),
+        ("main:Configuration", None, TargetKind::SourceRoot),
+    ] {
+        let mapping = authority
+            .diagnostic_node_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
+            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
+        assert_eq!(
+            mapping
+                .target()
+                .metadata_path
+                .as_ref()
+                .map(MetadataAddress::as_str),
+            metadata_path,
+            "{at}"
+        );
+        assert_eq!(mapping.target().target_kind, kind, "{at}");
+        assert!(mapping.module_scope().is_none(), "{at}");
+    }
+    for at in [
+        "main:Catalog.Missing",
+        "other:Catalog.Items",
+        "main:CommonModule.РеактивныйСервер.Body",
+    ] {
+        assert!(
+            authority
+                .diagnostic_node_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
+                .is_err(),
+            "invented node target for {at}"
+        );
+    }
+}
+
 #[test]
 fn diagnostic_module_scope_keeps_admitted_source_after_project_remap() {
     let fixture = RealReaderFixture::new();

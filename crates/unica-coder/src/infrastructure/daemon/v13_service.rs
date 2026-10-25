@@ -4016,7 +4016,8 @@ fn run_bsl_diagnostics(
     // как у поиска с ролью: незавершённая поставка отвечает `working`
     // с повтором, неудачная — своим классом и полями движка (#1338), а
     // движок, которого и после поставки нет, — общим отказом (#549).
-    let analyzer_engine = true;
+    // Анализатор BSL судит только модули: ради чужой цели его не доставляют.
+    let analyzer_engine = target_kind == TargetKind::Module;
     #[cfg(test)]
     let analyzer_engine = analyzer_engine
         && crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
