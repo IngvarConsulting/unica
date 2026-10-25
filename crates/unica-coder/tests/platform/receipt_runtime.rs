@@ -7505,12 +7505,14 @@ fn fail_stop_signals_cancellation_to_running_subject_work() {
     let (mut daemon, hooks) = fail_stop_daemon(Arc::clone(&service));
     let invocation = view_catalog_request(TaskId::new(), &workspace);
     let mut owner = daemon.owner();
-    let _task = submitted_task_snapshot(Ok(idle_request_over_tcp(
-        &mut owner,
-        V5ClientRequest::SubmitInvocation {
+    // Only the running attempt matters here, not when its answer arrives.
+    write_json_line(
+        &mut owner.0,
+        &serde_json::to_value(V5ClientRequest::SubmitInvocation {
             invocation: invocation.clone(),
-        },
-    )));
+        })
+        .unwrap(),
+    );
     preparing.recv_timeout(Duration::from_secs(3)).unwrap();
     executing.recv_timeout(Duration::from_secs(3)).unwrap();
     hooks.latch_fail_stop();
