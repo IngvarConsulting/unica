@@ -1432,7 +1432,7 @@ fn predefined_items_refuse_the_snapshot_budget_and_read_a_large_file_whole() {
     let result = fixture
         .view_service()
         .view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
-    assert!(result.ok, "{result:?}");
+    assert!(result.ok, "{:?}", result.diagnostics);
 }
 
 #[test]
