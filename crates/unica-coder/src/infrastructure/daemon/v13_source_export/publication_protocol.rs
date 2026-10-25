@@ -733,7 +733,15 @@ mod tests {
             vec![json!({"kind":"recovery","path":"main/.unica-dump-guard-1/recovery"})]
         );
         assert!(result.warnings.is_empty());
-        for refused in ["main/a\\b", "main/c:d", "main/x\u{7}y", ""] {
+        // Where `\` separates path components it is published as `/`; where it
+        // is an ordinary character it stays inside one name and is refused.
+        let backslash = safe_relative_path(Path::new("main/a\\b"));
+        if std::path::MAIN_SEPARATOR == '\\' {
+            assert_eq!(backslash.as_deref(), Some("main/a/b"));
+        } else {
+            assert_eq!(backslash, None);
+        }
+        for refused in ["main/c:d", "main/x\u{7}y", ""] {
             assert_eq!(safe_relative_path(Path::new(refused)), None, "{refused:?}");
         }
     }
