@@ -28,6 +28,7 @@ use super::v13_read_modes::{
 };
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
+use crate::application::v13::check::{DEFAULT_CHECK_LIMIT, MAX_CHECK_LIMIT};
 use crate::application::v13::diff::{
     DiffError, DiffHandler, DiffPage, DiffRequest, DiffSource, DEFAULT_DIFF_LIMIT, MAX_DIFF_LIMIT,
 };
@@ -109,7 +110,7 @@ pub(crate) struct CanonicalV13ReadService {
 
 /// Снимки продолжений лежат во временном файле: в памяти процесса остаются
 /// узлы и границы элементов.
-fn product_view_cursors() -> ViewCursorStore {
+pub(crate) fn product_view_cursors() -> ViewCursorStore {
     use crate::infrastructure::platform::{TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
     ViewCursorStore::new(VIEW_SNAPSHOT_MAX_RETAINED_BYTES)
         .with_spill(Arc::new(TempFileSpill::default()))
@@ -136,6 +137,10 @@ impl Default for CanonicalV13ReadService {
 }
 
 impl CanonicalInvocationService for CanonicalV13ReadService {
+    fn check_snapshots(&self) -> Option<Arc<ViewCursorStore>> {
+        Some(Arc::clone(&self.cursors))
+    }
+
     fn prepare(
         &self,
         invocation: &ActorBoundInvocation,
@@ -2413,15 +2418,15 @@ impl CanonicalV13ReadService {
                 return error_result(None, RefusalCode::BadValue, "check at must be a string");
             };
             let limit = match arguments.get("limit") {
-                None => 20,
-                Some(value) => match bounded_usize(value).filter(|limit| *limit <= 50) {
+                None => DEFAULT_CHECK_LIMIT,
+                Some(value) => match bounded_usize(value).filter(|limit| *limit <= MAX_CHECK_LIMIT)
+                {
                     Some(limit) => limit,
                     None => {
-                        return error_result(
-                            Some(at.to_string()),
-                            RefusalCode::BadValue,
-                            "check limit must be an integer from 1 through 50",
-                        )
+                        let message = format!(
+                            "check limit must be an integer from 1 through {MAX_CHECK_LIMIT}"
+                        );
+                        return error_result(Some(at.to_string()), RefusalCode::BadValue, message);
                     }
                 },
             };

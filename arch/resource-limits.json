@@ -1073,6 +1073,60 @@
       "review": null
     },
     {
+      "id": "check.page-default-entries",
+      "class": "step",
+      "resource": "Число диагностик страницы check, когда limit не задан: находок узла или групп корневого вердикта.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/application/v13/check.rs",
+        "symbol": "DEFAULT_CHECK_LIMIT"
+      },
+      "expr": "20",
+      "value": 20,
+      "applied": [
+        "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 (9c)",
+      "problem": null,
+      "onReach": "Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "check.page-max-entries",
+      "class": "step",
+      "resource": "Наибольшее число диагностик одной страницы check.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/application/v13/check.rs",
+        "symbol": "MAX_CHECK_LIMIT"
+      },
+      "expr": "50",
+      "value": 50,
+      "applied": [
+        "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 (9c)",
+      "problem": null,
+      "onReach": "limit больше 50 получает bad_value; остаток доступен по cursor.",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "find.page-default-entries",
       "class": "step",
       "resource": "Число записей страницы find, когда limit не задан.",
@@ -1979,7 +2033,7 @@
     {
       "id": "view.snapshot-retained-bytes",
       "class": "retention",
-      "resource": "Суммарный объём удерживаемых снимков продолжений view и check: элементы во временном файле, узлы и границы элементов в памяти.",
+      "resource": "Суммарный объём удерживаемых снимков продолжений view и check, включая корневой вердикт check: элементы во временном файле, узлы и границы элементов в памяти.",
       "unit": "bytes",
       "scope": "process",
       "source": {

@@ -5,8 +5,17 @@ use std::fmt;
 use unica_address::address::QualifiedAddress;
 use unica_execution_contract::invocation::DomainResult;
 use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
-use unica_navigation::result_store::{ViewCursorBinding, ViewCursorStore};
+use unica_navigation::result_store::{ViewCursorBinding, ViewCursorError, ViewCursorStore};
 use unica_refusal::{RefusalCode, RefusalDetail};
+
+/// Diagnostics on one check page when `limit` is omitted.
+pub(crate) const DEFAULT_CHECK_LIMIT: usize = 20;
+/// The largest `limit` a check page accepts.
+pub(crate) const MAX_CHECK_LIMIT: usize = 50;
+
+/// Renders one page of a check result from its diagnostics, continuation
+/// and stop reason.
+type RenderPage<'a> = dyn Fn(Vec<Value>, Option<String>, &'static str) -> DomainResult + 'a;
 
 /// Page the diagnostics of one completed node check. The immutable snapshot
 /// holds the verdict and every finding; no first page is published unless
@@ -19,6 +28,7 @@ pub(crate) fn page_diagnostics(
     cursor: Option<&str>,
 ) -> DomainResult {
     let at = Some(binding.canonical_at.clone());
+    let probe = ViewCursorStore::token_probe();
     if let Some(cursor) = cursor {
         let stored = match cursors.read(cursor, &binding.question()) {
             Ok(stored) => stored,
@@ -32,8 +42,9 @@ pub(crate) fn page_diagnostics(
             Ok(window) => window,
             Err(error) => return error.into_result(at),
         };
-        let page = match prepare_check_page(stored.snapshot.node(), &window, 0, binding.page_limit)
-        {
+        let node = stored.snapshot.node();
+        let render = |items, cursor, stopped_by| check_page_result(node, items, cursor, stopped_by);
+        let page = match prepare_check_page(&render, &window, 0, binding.page_limit, &probe) {
             Ok(page) => page,
             Err(message) => return check_page_refusal(at, message),
         };
@@ -46,36 +57,28 @@ pub(crate) fn page_diagnostics(
         } else {
             None
         };
-        return check_page_result(stored.snapshot.node(), page.items, next, page.stopped_by);
+        return render(page.items, next, page.stopped_by);
     }
 
-    let Some(mut result) = fresh else {
+    let Some(result) = fresh else {
         return DomainResult::canonical_rejection(
             at,
             RefusalCode::InvalidState,
             "a new check page has no validation result",
         );
     };
-    let Some(data) = result.data.as_mut().and_then(Value::as_object_mut) else {
+    let Some((node, items)) = split_diagnostics(result) else {
         return DomainResult::canonical_rejection(
             at,
             RefusalCode::InvalidState,
             "check result has no diagnostic collection",
         );
     };
-    let Some(Value::Array(items)) = data.remove("diagnostics") else {
-        return DomainResult::canonical_rejection(
-            at,
-            RefusalCode::InvalidState,
-            "check result has no diagnostic collection",
-        );
-    };
-    data.insert("diagnosticCount".to_string(), json!(items.len()));
-    let node = serde_json::to_value(&result).expect("a check result serializes");
-    if let Err(message) = preflight_check_pages(&node, &items) {
+    let render = |items, cursor, stopped_by| check_page_result(&node, items, cursor, stopped_by);
+    if let Err(message) = preflight_check_pages(&render, &items, &probe) {
         return check_page_refusal(at, message);
     }
-    let page = match prepare_check_page(&node, &items, 0, binding.page_limit) {
+    let page = match prepare_check_page(&render, &items, 0, binding.page_limit, &probe) {
         Ok(page) => page,
         Err(message) => return check_page_refusal(at, message),
     };
@@ -87,7 +90,146 @@ pub(crate) fn page_diagnostics(
     } else {
         None
     };
-    check_page_result(&node, page.items, next, page.stopped_by)
+    render(page.items, next, page.stopped_by)
+}
+
+/// The question a workspace verdict page answers: the workspace that asked
+/// the first page and its page size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RootCheckQuestion {
+    workspace: String,
+    limit: usize,
+}
+
+impl RootCheckQuestion {
+    pub(crate) fn new(workspace: impl Into<String>, limit: usize) -> Self {
+        Self {
+            workspace: workspace.into(),
+            limit,
+        }
+    }
+
+    /// A workspace verdict is saved like any check snapshot. Its binding names
+    /// no node: the workspace and the page size are the whole question.
+    fn binding(&self) -> ViewCursorBinding {
+        ViewCursorBinding {
+            canonical_at: String::new(),
+            projection: "check.workspace".to_string(),
+            source_set_identity: self.workspace.clone(),
+            snapshot_id: String::new(),
+            page_limit: self.limit,
+        }
+    }
+}
+
+/// Page the diagnostic groups of a workspace verdict. Every page carries the
+/// whole verdict, its checks and the number of groups; groups keep the order
+/// of the first answer. The verdict is saved in the check snapshot store, so
+/// a continuation reads it without inspecting the workspace again, and the
+/// same verdict to the same question gets the same cursor however it was
+/// delivered.
+pub(crate) fn page_root_verdict(
+    cursors: &ViewCursorStore,
+    question: &RootCheckQuestion,
+    fresh: Option<DomainResult>,
+    cursor: Option<&str>,
+) -> DomainResult {
+    let probe = ViewCursorStore::token_probe();
+    let binding = question.binding();
+    let render =
+        |node: &Value, items: Vec<Value>, cursor: Option<String>, stopped_by: &'static str| {
+            let mut page = check_page_result(node, items, cursor.clone(), stopped_by);
+            if let Some(cursor) = cursor {
+                page.next.insert(
+                    0,
+                    json!({
+                        "tool": "unica.check",
+                        "args": {"limit": question.limit, "cursor": cursor},
+                        "reason": "остальные группы диагностик того же вердикта",
+                    }),
+                );
+            }
+            page
+        };
+    if let Some(cursor) = cursor {
+        let stored = match cursors.read(cursor, &binding.question()) {
+            Ok(stored) => stored,
+            Err(ViewCursorError::Invalid) => {
+                return DomainResult::canonical_rejection(
+                    None,
+                    RefusalCode::InvalidCursor,
+                    "check cursor is invalid, its verdict is no longer held, or it belongs to another question",
+                )
+            }
+            Err(error) => return error.into_result(None),
+        };
+        // One group past the page tells whether a continuation follows.
+        let window = match stored
+            .snapshot
+            .read_items(stored.offset, question.limit.saturating_add(1))
+        {
+            Ok(window) => window,
+            Err(error) => return error.into_result(None),
+        };
+        let node = stored.snapshot.node();
+        let render = |items, cursor, stopped_by| render(node, items, cursor, stopped_by);
+        let page = match prepare_check_page(&render, &window, 0, question.limit, &probe) {
+            Ok(page) => page,
+            Err(message) => return check_page_refusal(None, message),
+        };
+        let next_offset = stored.offset + page.next_offset;
+        let next = if next_offset < stored.snapshot.len() {
+            match cursors.insert_next(&stored, next_offset, cursor) {
+                Ok(next) => Some(next),
+                Err(error) => return error.into_result(None),
+            }
+        } else {
+            None
+        };
+        return render(page.items, next, page.stopped_by);
+    }
+    let Some(result) = fresh else {
+        return DomainResult::canonical_rejection(
+            None,
+            RefusalCode::InvalidState,
+            "a new check page has no workspace verdict",
+        );
+    };
+    if !result.ok {
+        return result;
+    }
+    let Some((node, items)) = split_diagnostics(result.clone()) else {
+        return result;
+    };
+    let render = |items, cursor, stopped_by| render(&node, items, cursor, stopped_by);
+    if let Err(message) = preflight_check_pages(&render, &items, &probe) {
+        return check_page_refusal(None, message);
+    }
+    let page = match prepare_check_page(&render, &items, 0, question.limit, &probe) {
+        Ok(page) => page,
+        Err(message) => return check_page_refusal(None, message),
+    };
+    let next = if page.next_offset < items.len() {
+        match cursors.insert_snapshot(binding, node.clone(), items, page.next_offset) {
+            Ok(next) => Some(next),
+            Err(error) => return error.into_result(None),
+        }
+    } else {
+        None
+    };
+    render(page.items, next, page.stopped_by)
+}
+
+/// Splits a check result into the verdict with its diagnostic count and the
+/// diagnostics themselves.
+fn split_diagnostics(mut result: DomainResult) -> Option<(Value, Vec<Value>)> {
+    let data = result.data.as_mut().and_then(Value::as_object_mut)?;
+    let Some(Value::Array(items)) = data.remove("diagnostics") else {
+        return None;
+    };
+    data.insert("diagnosticCount".to_string(), json!(items.len()));
+    let node = serde_json::to_value(&result).expect("a check result serializes");
+    Some((node, items))
 }
 
 struct PreparedCheckPage {
@@ -97,15 +239,16 @@ struct PreparedCheckPage {
 }
 
 fn prepare_check_page(
-    node: &Value,
+    render: &RenderPage<'_>,
     items: &[Value],
     mut offset: usize,
     limit: usize,
+    probe: &str,
 ) -> Result<PreparedCheckPage, &'static str> {
     if offset > items.len() {
         return Err("check cursor offset is invalid");
     }
-    let base = check_page_result(node, Vec::new(), None, "complete");
+    let base = render(Vec::new(), None, "complete");
     let prefer_bytes = serialized_result_size(&base) <= PREFERRED_PAGE_BYTES;
     let mut page_items = Vec::new();
     let stopped_by = loop {
@@ -117,10 +260,9 @@ fn prepare_check_page(
         }
         let mut candidate = page_items.clone();
         candidate.push(items[offset].clone());
-        let probe = check_page_result(
-            node,
+        let probe = render(
             candidate.clone(),
-            (offset + 1 < items.len()).then(ViewCursorStore::token_probe),
+            (offset + 1 < items.len()).then(|| probe.to_owned()),
             "complete",
         );
         let bytes = serialized_result_size(&probe);
@@ -143,17 +285,19 @@ fn prepare_check_page(
     })
 }
 
-fn preflight_check_pages(node: &Value, items: &[Value]) -> Result<(), &'static str> {
-    if serialized_result_size(&check_page_result(node, Vec::new(), None, "complete"))
-        > MAX_CANONICAL_RESULT_BYTES
-    {
+fn preflight_check_pages(
+    render: &RenderPage<'_>,
+    items: &[Value],
+    probe: &str,
+) -> Result<(), &'static str> {
+    if serialized_result_size(&render(Vec::new(), None, "complete")) > MAX_CANONICAL_RESULT_BYTES {
         return Err("check result metadata exceed the transport result limit");
     }
     for (index, item) in items.iter().enumerate() {
-        let cursor = (index + 1 < items.len()).then(ViewCursorStore::token_probe);
+        let cursor = (index + 1 < items.len()).then(|| probe.to_owned());
         // `complete` is the longest stop reason. The last page may be three
         // bytes larger than an intermediate page even without a cursor.
-        let probe = check_page_result(node, vec![item.clone()], cursor, "complete");
+        let probe = render(vec![item.clone()], cursor, "complete");
         if serialized_result_size(&probe) > MAX_CANONICAL_RESULT_BYTES {
             return Err("one check diagnostic exceeds the transport result limit");
         }
@@ -598,8 +742,8 @@ fn sanitize_message(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_native_outcome, page_diagnostics, plan_for_node, CheckStep, CheckValidator,
-        NativeCheckOutcome, NodeFacts, TemplateFlavour,
+        normalize_native_outcome, page_diagnostics, page_root_verdict, plan_for_node, CheckStep,
+        CheckValidator, NativeCheckOutcome, NodeFacts, RootCheckQuestion, TemplateFlavour,
     };
     use serde_json::json;
     use unica_address::address::QualifiedAddress;
@@ -768,6 +912,101 @@ mod tests {
         assert!(!answer.ok, "{answer:?}");
         assert_eq!(answer.diagnostics[0]["code"], "result_too_large");
         assert!(answer.cursor.is_none());
+    }
+
+    fn root_verdict(groups: &[usize]) -> DomainResult {
+        let mut result = DomainResult::success("workspace readiness reported findings");
+        result.data = Some(json!({
+            "status": "failed",
+            "ready": false,
+            "readinessState": "complete",
+            "checks": [{"id": "repository.discovery", "status": "failed"}],
+            "diagnostics": groups.iter().enumerate().map(|(index, bytes)| json!({
+                "code": format!("group-{index}"),
+                "count": 1,
+                "message": "x".repeat(*bytes),
+            })).collect::<Vec<_>>(),
+        }));
+        result
+            .next
+            .push(json!({"tool": "unica.view", "args": {}, "reason": "facts"}));
+        result
+    }
+
+    /// #1119 (9c): a diagnostic group is never cut. One over the 64 KiB page
+    /// target travels alone and whole; the walk still reads every group.
+    #[test]
+    fn a_root_group_over_the_page_target_travels_whole() {
+        let pages = ViewCursorStore::default();
+        let question = RootCheckQuestion::new("workspace", 20);
+        let mut page = page_root_verdict(
+            &pages,
+            &question,
+            Some(root_verdict(&[10, 70_000, 10])),
+            None,
+        );
+        let mut walked = Vec::new();
+        loop {
+            assert!(page.ok, "{page:?}");
+            assert_eq!(page.data.as_ref().unwrap()["diagnosticCount"], 3);
+            assert_eq!(page.next.last().unwrap()["tool"], "unica.view");
+            walked.push(
+                page.data.as_ref().unwrap()["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|group| group["code"].as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>(),
+            );
+            let Some(cursor) = page.cursor.clone() else {
+                assert_eq!(page.page.as_ref().unwrap()["stoppedBy"], "complete");
+                break;
+            };
+            assert_eq!(page.page.as_ref().unwrap()["stoppedBy"], "bytes");
+            page = page_root_verdict(&pages, &question, None, Some(&cursor));
+        }
+        assert_eq!(walked, [vec!["group-0"], vec!["group-1"], vec!["group-2"]]);
+    }
+
+    /// #1119 (9c): a group that cannot pass the 8 MiB result limit with its
+    /// envelope refuses the whole answer before a cursor is promised, wherever
+    /// it stands.
+    #[test]
+    fn a_late_root_group_over_the_result_limit_refuses_before_a_cursor() {
+        let pages = ViewCursorStore::default();
+        let question = RootCheckQuestion::new("workspace", 1);
+        let refused = page_root_verdict(
+            &pages,
+            &question,
+            Some(root_verdict(&[10, 10, 8 * 1024 * 1024])),
+            None,
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
+        assert!(refused.cursor.is_none());
+    }
+
+    /// #1119 (9c): the same verdict to the same question is saved once and
+    /// gets the same cursor, so a Task and a direct call deliver the same
+    /// page; another question gets another cursor.
+    #[test]
+    fn the_same_root_verdict_gets_the_same_cursor() {
+        let pages = ViewCursorStore::default();
+        let question = RootCheckQuestion::new("workspace", 1);
+        let first = page_root_verdict(&pages, &question, Some(root_verdict(&[10, 10])), None);
+        let again = page_root_verdict(&pages, &question, Some(root_verdict(&[10, 10])), None);
+        assert_eq!(first, again);
+        assert!(first.cursor.is_some());
+        let other = page_root_verdict(
+            &pages,
+            &RootCheckQuestion::new("other", 1),
+            Some(root_verdict(&[10, 10])),
+            None,
+        );
+        assert_ne!(other.cursor, first.cursor);
+        let elsewhere = ViewCursorStore::default();
+        let foreign = page_root_verdict(&elsewhere, &question, None, first.cursor.as_deref());
+        assert_eq!(foreign.diagnostics[0]["code"], "invalid_cursor");
     }
 
     #[test]
