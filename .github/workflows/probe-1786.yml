@@ -13,9 +13,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest, ubuntu-latest]
+        runner: [windows-latest]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,21 +27,25 @@ jobs:
         with:
           shared-key: ci-rust-ordinary
           save-if: false
-      - name: Build
-        shell: bash
-        run: cargo test --locked -p unica-coder --lib --no-run
-      - name: Sequential retirement tests
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-nextest@0.9.148
+      - name: Environment
+        shell: pwsh
+        run: |
+          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled | Format-List
+          Get-CimInstance Win32_Processor | Select-Object NumberOfLogicalProcessors | Format-List
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
+          echo "TEMP=$env:TEMP"
+      - name: Large, as the nightly runs it
         shell: bash
         run: |
-          bin=$(ls target/debug/deps/unica_coder-* | grep -v '\.d$' | grep -v '\.pdb$' | grep -v '\.rlib$' | head -1)
+          cargo nextest run --workspace --profile large --no-tests=pass --no-fail-fast --success-output final --failure-output final > large.log 2>&1 || true
+          grep -E "PROBE prep|receipt_runtime_tests::|Summary \[" large.log | grep -vE "^\s+(START|SLOW)" | tail -400
+      - name: Receipt runtime tests alone under nextest
+        shell: bash
+        run: |
           for round in 1 2; do
-            "$bin" receipt_runtime_tests::retirement --test-threads=1 --nocapture 2>&1 | grep -E "PROBE prep|panicked|refused|test result" || true
-            "$bin" receipt_runtime_tests::retirement --test-threads=1 --nocapture 2>&1 | grep -E "^PROBE [a-z_]+:" | tail -12 || true
-          done
-      - name: Parallel receipt runtime tests
-        shell: bash
-        run: |
-          bin=$(ls target/debug/deps/unica_coder-* | grep -v '\.d$' | grep -v '\.pdb$' | grep -v '\.rlib$' | head -1)
-          for round in 1 2 3; do
-            "$bin" receipt_runtime_tests --test-threads=4 --nocapture 2>&1 | grep -E "PROBE prep|panicked|refused|FAILED|test result" || true
+            cargo nextest run -p unica-coder --lib --profile large --no-fail-fast --success-output final -E 'test(/receipt_runtime_tests::/)' > alone.log 2>&1 || true
+            grep -E "PROBE prep|  (PASS|FAIL|TRY|FLAKY) .*retirement|Summary \[" alone.log | tail -80
           done
