@@ -307,11 +307,17 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "resolve",
-                    description: "Emergency bridge between a logical address and the source layout, in both directions. Use it only when a path arrived from outside Unica - a diff, a build log, a stack trace - or when a file has to be opened outside Unica. To find an object by name use search; to read it use view.",
+                    description: "Bridge between a logical address and the source layout, in both directions. Use it when paths arrived from outside Unica - host grep hits, a diff, a build log, a stack trace - or when a file has to be opened outside Unica: `paths` turns many of them into addresses in one call. To find an object by name use search; to read it use view.",
                     input_schema: schema(
                         json!({
                             "at": logical_address_with("Qualified logical address whose source location is needed."),
                             "path": {"type": "string", "description": "Path to a source file or object directory, absolute or relative to the workspace root."},
+                            "paths": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {"type": "string"},
+                                "description": "Batch of paths, each optionally `path:line` with a 1-based file line as `grep -n` prints it. Answers `data.items` in input order with `at` and `kind`; with a line, `line` is `inMethod` (`at` is the method holding it), `outsideMethod` (`at` is the module) or `notLineBased` (a tree file; `at` is its object). A failed item carries `code` and `message` instead; the others still resolve.",
+                            },
                         }),
                         json!([]),
                     ),
@@ -678,7 +684,7 @@ mod tests {
         let forbidden: &[&str] = if name == "resolve" {
             &["jobId", "provider", "providerId"]
         } else {
-            &["jobId", "path", "provider", "providerId"]
+            &["jobId", "path", "paths", "provider", "providerId"]
         };
         for forbidden in forbidden {
             assert!(
@@ -797,7 +803,12 @@ mod tests {
             json!([]),
             &["at", "ops", "executionToken"],
         );
-        assert_schema(&catalog.tools, "resolve", json!([]), &["at", "path"]);
+        assert_schema(
+            &catalog.tools,
+            "resolve",
+            json!([]),
+            &["at", "path", "paths"],
+        );
         assert_schema(
             &catalog.tools,
             "search",
@@ -858,6 +869,10 @@ mod tests {
         ] {
             assert_field_type(&catalog.tools, tool, field, "string");
         }
+        let paths = input_field(&catalog.tools, "resolve", "paths");
+        assert_eq!(paths["type"], "array");
+        assert_eq!(paths["minItems"], 1);
+        assert_eq!(paths["items"], json!({"type": "string"}));
         for (tool, field) in [("apply", "ops"), ("run", "args")] {
             assert_field_type(
                 &catalog.tools,

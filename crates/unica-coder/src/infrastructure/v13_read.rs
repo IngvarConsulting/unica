@@ -1,4 +1,4 @@
-use crate::application::v13::resolve::ResolvedLines;
+use crate::application::v13::resolve::{ModuleLine, ResolvedLines};
 use crate::application::v13::source_text::{admit_text, ModuleText};
 use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
@@ -501,6 +501,30 @@ impl<'a> LogicalViewReadAuthority<'a> {
         to: usize,
         inspect: impl FnOnce(QualifiedAddress, &ModuleProjectionSet) -> T,
     ) -> Result<T, ViewError> {
+        self.with_module_projection(module, |module_at, projections| {
+            let body = projections
+                .methods()
+                .iter()
+                .filter(|method| from >= method.text_from_line && to <= method.to_line)
+                .min_by_key(|method| method.to_line - method.text_from_line)
+                .map_or_else(
+                    || format!("{module_at}.Body"),
+                    |method| format!("{}.Body", method.at),
+                );
+            let body = QualifiedAddress::parse(&body)
+                .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
+            Ok(inspect(body, projections))
+        })
+    }
+
+    /// One retained projection of the module that `module` names, fenced by
+    /// the source identity it was admitted with: a change while `inspect`
+    /// reads it refuses the whole answer instead of mixing two revisions.
+    fn with_module_projection<T>(
+        &self,
+        module: &QualifiedAddress,
+        inspect: impl FnOnce(&QualifiedAddress, &ModuleProjectionSet) -> Result<T, ViewError>,
+    ) -> Result<T, ViewError> {
         self.read_checkpoint()?;
         let admitted = self.snapshot(module)?;
         let route = route_logical_address(module, self.profile)
@@ -508,32 +532,54 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let capability = route.module().ok_or_else(|| {
             ViewError::new(
                 RefusalCode::BadValue,
-                "search hit does not name a BSL module",
+                "the address does not name a BSL module",
             )
         })?;
         let (module_at, _) = module_prefix(module, self.profile, capability)?;
         self.verify_module_owner(&module_at, capability, &admitted)?;
         let projections = self.module_projection(&module_at, capability, &admitted)?;
-        let body = projections
-            .methods()
-            .iter()
-            .filter(|method| from >= method.text_from_line && to <= method.to_line)
-            .min_by_key(|method| method.to_line - method.text_from_line)
-            .map_or_else(
-                || format!("{module_at}.Body"),
-                |method| format!("{}.Body", method.at),
-            );
-        let body = QualifiedAddress::parse(&body)
-            .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
-        let result = inspect(body, &projections);
+        let result = inspect(&module_at, &projections)?;
         self.read_checkpoint()?;
         if self.snapshot(module)? != admitted {
             return Err(ViewError::new(
                 RefusalCode::ConcurrentChange,
-                "source changed while search hit boundaries were read",
+                "source changed while module line boundaries were read",
             ));
         }
         Ok(result)
+    }
+
+    /// Places each physical file line of a BSL module: inside the method
+    /// whose own range holds it — the range `resolve` names for `Method`,
+    /// from its first annotation through the closing line — outside every
+    /// method, or past the end of the file. One projection answers all lines.
+    pub(crate) fn module_lines(
+        &self,
+        module: &QualifiedAddress,
+        lines: &[usize],
+    ) -> Result<Vec<ModuleLine>, ViewError> {
+        self.with_module_projection(module, |_, projections| {
+            let count = projections.source_text().lines().count();
+            lines
+                .iter()
+                .map(|&line| {
+                    if line == 0 || line > count {
+                        return Ok(ModuleLine::PastEnd { lines: count });
+                    }
+                    projections
+                        .methods()
+                        .iter()
+                        .find(|method| method.from_line <= line && line <= method.to_line)
+                        .map_or(Ok(ModuleLine::OutsideMethod), |method| {
+                            QualifiedAddress::parse(&method.at)
+                                .map(ModuleLine::Method)
+                                .map_err(|error| {
+                                    ViewError::new(RefusalCode::BadValue, error.to_string())
+                                })
+                        })
+                })
+                .collect()
+        })
     }
 
     /// Resolves semantic containment from the same projection as Method
