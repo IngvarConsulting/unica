@@ -2,6 +2,7 @@ use crate::owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     EventOwnerDescriptorProof, EventOwnerEvidencePlan, PlatformXmlSourceSetOwnerEvidence,
 };
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind, ApplyProposal};
 use unica_source_contract::SourceSetKind;
 pub fn prove_owner_plan(
@@ -44,7 +45,7 @@ pub fn prove_owner_plan(
                     ApplyPlanErrorKind::ProviderUnavailable,
                     format!(
                         "proved owner descriptor `{}` is absent",
-                        step.relative.display()
+                        step.relative.portable()
                     ),
                 )
             })?;
@@ -77,7 +78,7 @@ pub fn prove_owner_plan(
                 ApplyPlanErrorKind::ProviderUnavailable,
                 format!(
                     "owner descriptor `{}` has inconsistent identity or format",
-                    step.relative.display()
+                    step.relative.portable()
                 ),
             ));
         }

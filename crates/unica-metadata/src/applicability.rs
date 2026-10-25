@@ -15,6 +15,7 @@ pub enum OperationApplicability {
     Interface,
     InterfaceGroup,
     Metadata,
+    MetadataOrCommonTemplate,
     MetadataAttribute,
     MetadataAttributeContainer,
     /// An attribute of a catalog tabular section in a configuration source.
@@ -47,6 +48,7 @@ impl OperationApplicability {
             Self::Configuration => "`Configuration`",
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata => "`Kind.Name`",
+            Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
             Self::SupportRule => "`Kind.Name` or `Kind.Name.Form.F`",
             Self::MetadataOrRoleOrSubsystem => {
                 "`Configuration`, `Kind.Name`, `Role.Name` or `Subsystem.Name`"
@@ -94,6 +96,12 @@ impl OperationApplicability {
                     && site.source().kind() == SourceSetKind::Extension
             }
             Self::Metadata => site.metadata_object().is_some(),
+            // A common template is a top-level object the configurator
+            // removes like any other, though it has no typed metadata kind.
+            Self::MetadataOrCommonTemplate => {
+                site.metadata_object().is_some()
+                    || matches!(segments, [only] if only.kind() == NodeKind::CommonTemplate && only.name().is_some())
+            }
             Self::MetadataOrRoleOrSubsystem => PropertiesSite::from_site(site).is_some(),
             Self::MetadataAttributeContainer => {
                 site.metadata_owner_with(MetaCollection::Attributes)

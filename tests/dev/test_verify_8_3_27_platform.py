@@ -1013,7 +1013,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 66)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 67)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",
@@ -1037,11 +1037,11 @@ class CorpusAdapterTests(unittest.TestCase):
         verifier = load_verifier()
         self.assertEqual(
             verifier.EXPECTED_CASE_CONTRACT_SHA256,
-            "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb",
+            "e4387e953c4f82452b32af8873661db90e26b594d4be8c9fb50fe5e996492400",
         )
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
-            "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb",
+            "e4387e953c4f82452b32af8873661db90e26b594d4be8c9fb50fe5e996492400",
         )
 
         with tempfile.TemporaryDirectory() as tmp:

@@ -56,7 +56,7 @@ macro_rules! metadata_operations {
 metadata_operations!(
     ObjectBorrow => ("object.borrow", ExtensionRoot, From),
     ObjectCreate => ("object.create", Configuration, Values),
-    ObjectRemove => ("object.remove", Metadata, Target),
+    ObjectRemove => ("object.remove", MetadataOrCommonTemplate, Target),
     RelationAdd => ("relation.add", Metadata, Values),
     RelationRemove => ("relation.remove", Metadata, Values),
     RelationReplace => ("relation.replace", Metadata, Values),

@@ -1,3 +1,4 @@
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::{ProjectSourceMap, SourceFormat, SourceSetKind};
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
@@ -833,7 +834,7 @@ impl RetainedSelectionPass {
                 Err(error) => {
                     return Err(format!(
                         "project source-map route {} cannot be inspected: {error}",
-                        relative.display()
+                        relative.portable()
                     ));
                 }
             }
@@ -856,7 +857,7 @@ impl RetainedSelectionPass {
                 file.validate_named_identity().map_err(|error| {
                     format!(
                         "project source-map input {} identity changed before read: {error}",
-                        relative.display()
+                        relative.portable()
                     )
                 })?;
                 let parent = relative_prefix(&components, parents.len());
@@ -895,7 +896,7 @@ impl RetainedSelectionPass {
                             .map_err(|error| {
                                 format!(
                                     "project source-map input {} length cannot be inspected: {error}",
-                                    relative.display()
+                                    relative.portable()
                                 )
                             })?
                             .len(),
@@ -903,7 +904,7 @@ impl RetainedSelectionPass {
                     .map_err(|_| {
                         format!(
                             "project source-map input {} length is not representable",
-                            relative.display()
+                            relative.portable()
                         )
                     })?;
                     self.usage.charge_exact_work(file_bytes)?;
@@ -911,7 +912,7 @@ impl RetainedSelectionPass {
                         file.validate_named_identity().map_err(|error| {
                             format!(
                                 "project source-map input {} identity changed after length probe: {error}",
-                                relative.display()
+                                relative.portable()
                             )
                         })?;
                         drop(file);
@@ -944,7 +945,7 @@ impl RetainedSelectionPass {
                 file.validate_named_identity().map_err(|error| {
                     format!(
                         "project source-map input {} identity changed after read: {error}",
-                        relative.display()
+                        relative.portable()
                     )
                 })?;
                 drop(file);
@@ -990,7 +991,7 @@ impl RetainedSelectionPass {
             }
             Err(error) => Err(format!(
                 "project source-map input {} cannot be inspected: {error}",
-                relative.display()
+                relative.portable()
             )),
         }
     }
@@ -1040,7 +1041,7 @@ impl RetainedSelectionPass {
                 Err(error) => {
                     return Err(format!(
                         "project source-map directory {} cannot be inspected: {error}",
-                        relative.display()
+                        relative.portable()
                     ));
                 }
             }
@@ -1048,7 +1049,7 @@ impl RetainedSelectionPass {
         ancestor.validate_named_identity().map_err(|error| {
             format!(
                 "project source-map directory {} identity changed: {error}",
-                relative.display()
+                relative.portable()
             )
         })?;
         Ok(RetainedDirectoryObservation::Present(ancestor))
@@ -1075,7 +1076,7 @@ impl RetainedSelectionPass {
         directory.validate_named_identity().map_err(|error| {
             format!(
                 "project source-map directory {} identity changed before enumeration: {error}",
-                relative.display()
+                relative.portable()
             )
         })?;
         let new_membership = !self.memberships.contains_key(relative);
@@ -1136,7 +1137,7 @@ impl RetainedSelectionPass {
             }
             format!(
                 "project source-map directory {} cannot be enumerated: {error}",
-                relative.display()
+                relative.portable()
             )
         })?;
         #[cfg(any(test, feature = "test-support"))]
@@ -1200,7 +1201,7 @@ impl RetainedSelectionPass {
                 Err(error) => {
                     return Err(format!(
                         "project source-map directory member {} changed during enumeration: {error}",
-                        Path::new(relative).join(&name).display()
+                        Path::new(relative).join(&name).portable()
                     ));
                 }
             };
@@ -1216,7 +1217,7 @@ impl RetainedSelectionPass {
         directory.validate_named_identity().map_err(|error| {
             format!(
                 "project source-map directory {} identity changed after enumeration: {error}",
-                relative.display()
+                relative.portable()
             )
         })?;
         match self.memberships.get(relative) {
@@ -1514,7 +1515,7 @@ impl RetainedSelectionPass {
 fn observation_changed(relative: &Path) -> String {
     format!(
         "project source-map actor observation changed within one pass: {}",
-        relative.display()
+        relative.portable()
     )
 }
 
@@ -2139,7 +2140,7 @@ fn normal_components(relative: &Path) -> Result<Vec<OsString>, String> {
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 return Err(format!(
                     "project source-map route is not a closed workspace-relative path: {}",
-                    relative.display()
+                    relative.portable()
                 ));
             }
         }

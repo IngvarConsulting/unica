@@ -530,6 +530,7 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "property.add",
     "type.remove",
     "property.remove",
+    "property.rename",
 ];
 
 /// Composition adapters for already-observed family facts. All semantic
@@ -678,6 +679,7 @@ operation_descriptors!(
     (FormOperation::AttributeAdd),
     (FormOperation::CommandAdd),
     (FormOperation::EventBind),
+    (FormOperation::PropsSet),
     (RoleOperation::Create),
     (RoleOperation::RightAdd),
     (RoleOperation::RightSet),
@@ -743,6 +745,7 @@ operation_descriptors!(
     (XdtoOperation::AddProperty),
     (XdtoOperation::RemoveType),
     (XdtoOperation::RemoveProperty),
+    (XdtoOperation::RenameProperty),
     (SubsystemOperation::Create),
     (SubsystemOperation::ContentAdd),
     (SubsystemOperation::ContentRemove),
@@ -1532,6 +1535,7 @@ mod tests {
             "attribute.add",
             "command.add",
             "event.bind",
+            "props.set",
             "role.create",
             "right.add",
             "right.set",
@@ -1595,6 +1599,7 @@ mod tests {
             "property.add",
             "type.remove",
             "property.remove",
+            "property.rename",
             "subsystem.create",
             "content.add",
             "content.remove",
@@ -1612,12 +1617,16 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 124);
+        assert_eq!(expected.len(), 126);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
-        // метаданных (#1465): имя одно, семейство выбирает адрес. Других
-        // повторов в реестре нет.
-        const SHARED_NAMES: &[&str] = &["attribute.add", "command.add"];
+        // метаданных (#1465), свойства формы — как свойства описания (#1984):
+        // имя одно, семейство выбирает адрес. Других повторов в реестре нет.
+        const SHARED_NAMES: &[(&str, OperationFamily)] = &[
+            ("attribute.add", OperationFamily::Metadata),
+            ("command.add", OperationFamily::Metadata),
+            ("props.set", OperationFamily::Properties),
+        ];
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();
         unique.dedup();
@@ -1653,18 +1662,14 @@ mod tests {
                 "every Metadata identity must be registered exactly once: {operation:?}"
             );
         }
-        for name in SHARED_NAMES {
+        for (name, first) in SHARED_NAMES {
             let families = registry
                 .descriptors()
                 .iter()
                 .filter(|descriptor| descriptor.name() == *name)
                 .map(|descriptor| descriptor.family())
                 .collect::<Vec<_>>();
-            assert_eq!(
-                families,
-                [OperationFamily::Metadata, OperationFamily::Form],
-                "{name}"
-            );
+            assert_eq!(families, [*first, OperationFamily::Form], "{name}");
         }
 
         assert_eq!(
@@ -1983,9 +1988,24 @@ mod tests {
                 "main:XDTOPackage.Exchange.Type.Order.Property.Id",
                 false,
             ),
+            (
+                "property.rename",
+                "main:XDTOPackage.Exchange.Type.Order.Property.Lines.Property.Item",
+                true,
+            ),
+            (
+                "property.rename",
+                "main:XDTOPackage.Exchange.Type.Order",
+                false,
+            ),
             // Глобальное свойство пакета — не член типа.
             (
                 "property.remove",
+                "main:XDTOPackage.Exchange.Property.Id",
+                false,
+            ),
+            (
+                "property.rename",
                 "main:XDTOPackage.Exchange.Property.Id",
                 false,
             ),

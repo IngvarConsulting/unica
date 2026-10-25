@@ -131,7 +131,7 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
             pub const fn bind<T: 'static>(_: &'static TypedOperationBundle<T>) -> Self {{ Self }}
         }}
         enum OperationApplicability {{
-            Configuration, ExtensionRoot, Metadata, Role, RoleRight, SupportRule, MetadataAttributeContainer,
+            Configuration, ExtensionRoot, Metadata, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
             CatalogTabularAttribute,
             MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms,
             Form, FormItemContainer, FormItem, FormEvent,
@@ -384,7 +384,12 @@ fn remaining_metadata_registrations_require_their_typed_variants() {
     let operations = [
         ("ObjectBorrow", "object.borrow", "ExtensionRoot", "From"),
         ("ObjectCreate", "object.create", "Configuration", "Values"),
-        ("ObjectRemove", "object.remove", "Metadata", "Target"),
+        (
+            "ObjectRemove",
+            "object.remove",
+            "MetadataOrCommonTemplate",
+            "Target",
+        ),
         ("RelationAdd", "relation.add", "Metadata", "Values"),
         ("RelationRemove", "relation.remove", "Metadata", "Values"),
         ("RelationReplace", "relation.replace", "Metadata", "Values"),
@@ -494,7 +499,12 @@ fn raw_metadata_guards_follow_literals_while_the_form_family_requires_typed_regi
         ),
         ("Metadata", "ExtensionRoot", "ObjectBorrow", "object.borrow"),
         ("Metadata", "Configuration", "ObjectCreate", "object.create"),
-        ("Metadata", "Metadata", "ObjectRemove", "object.remove"),
+        (
+            "Metadata",
+            "MetadataOrCommonTemplate",
+            "ObjectRemove",
+            "object.remove",
+        ),
         ("Metadata", "Metadata", "RelationAdd", "relation.add"),
         ("Metadata", "Metadata", "HelpCreate", "help.create"),
         (
