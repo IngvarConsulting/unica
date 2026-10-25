@@ -7,8 +7,11 @@ use unica_address::address::QualifiedAddress;
 use unica_refusal::RefusalCode;
 use uuid::Uuid;
 
-const DEFAULT_LIMIT: usize = 100;
-const MAX_LIMIT: usize = 1_000;
+use super::view::PREFERRED_PAGE_BYTES;
+use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
+
+pub(crate) const DEFAULT_DIFF_LIMIT: usize = 20;
+pub(crate) const MAX_DIFF_LIMIT: usize = 50;
 const MAX_CURSOR_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,14 +36,14 @@ impl DiffRequest {
         Ok(Self {
             left,
             right,
-            limit: DEFAULT_LIMIT,
+            limit: DEFAULT_DIFF_LIMIT,
             cursor: None,
             workspace: String::new(),
         })
     }
 
     pub(crate) fn with_limit(mut self, limit: usize) -> Self {
-        self.limit = limit.clamp(1, MAX_LIMIT);
+        self.limit = limit.clamp(1, MAX_DIFF_LIMIT);
         self
     }
 
@@ -107,6 +110,8 @@ pub(crate) struct DiffPage {
     /// The continuation travels in the envelope, not in the page data.
     #[serde(skip)]
     cursor: Option<String>,
+    #[serde(skip)]
+    stopped_by: &'static str,
 }
 
 impl DiffPage {
@@ -121,6 +126,11 @@ impl DiffPage {
     pub(crate) fn cursor(&self) -> Option<&str> {
         self.cursor.as_deref()
     }
+
+    /// Why the page ended: `limit`, `bytes` or `complete`.
+    pub(crate) fn stopped_by(&self) -> &'static str {
+        self.stopped_by
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +138,7 @@ pub(crate) enum DiffError {
     BadValue { field: String, message: String },
     IncomparableNodes,
     InvalidCursor,
+    ChangeTooLarge,
 }
 
 impl DiffError {
@@ -136,6 +147,7 @@ impl DiffError {
             Self::BadValue { .. } => RefusalCode::BadValue,
             Self::IncomparableNodes => RefusalCode::IncomparableNodes,
             Self::InvalidCursor => RefusalCode::InvalidCursor,
+            Self::ChangeTooLarge => RefusalCode::ResultTooLarge,
         }
     }
 }
@@ -150,6 +162,9 @@ impl fmt::Display for DiffError {
             Self::InvalidCursor => {
                 formatter.write_str("diff cursor is invalid or belongs to another question")
             }
+            Self::ChangeTooLarge => formatter.write_str(
+                "one difference exceeds the transport result limit; compare smaller nodes",
+            ),
         }
     }
 }
@@ -255,14 +270,14 @@ impl DiffHandler {
         if left_data.get("kind") != right_data.get("kind") {
             return Err(DiffError::IncomparableNodes);
         }
-        Ok(self.page(
+        self.page(
             None,
             request.fingerprint(),
             request.limit,
             std::sync::Arc::new(left_data),
             std::sync::Arc::new(right_data),
             0,
-        ))
+        )
     }
 
     /// Continues the pair saved by the first page. The sources are not read
@@ -274,14 +289,14 @@ impl DiffHandler {
         if entry.fingerprint != fingerprint {
             return Err(DiffError::InvalidCursor);
         }
-        Ok(self.page(
+        self.page(
             Some(&pair),
             fingerprint,
             request.limit,
             entry.left_data,
             entry.right_data,
             offset,
-        ))
+        )
     }
 
     fn page(
@@ -292,7 +307,7 @@ impl DiffHandler {
         left_data: std::sync::Arc<Value>,
         right_data: std::sync::Arc<Value>,
         offset: usize,
-    ) -> DiffPage {
+    ) -> Result<DiffPage, DiffError> {
         let mut skip = offset;
         let mut changes = Vec::with_capacity(limit.saturating_add(1));
         collect_changes(
@@ -303,8 +318,29 @@ impl DiffHandler {
             limit.saturating_add(1),
             &mut changes,
         );
-        let truncated = changes.len() > limit;
-        changes.truncate(limit);
+        // A page ends by count or by encoded size; a difference is never cut,
+        // so one larger than the page target travels alone.
+        let mut kept = 0;
+        let mut bytes = 0_usize;
+        let mut stopped_by = "complete";
+        for change in &changes {
+            if kept == limit {
+                stopped_by = "limit";
+                break;
+            }
+            let size = serde_json::to_vec(change).map_or(usize::MAX, |encoded| encoded.len());
+            if kept == 0 && size > MAX_CANONICAL_RESULT_BYTES {
+                return Err(DiffError::ChangeTooLarge);
+            }
+            if kept > 0 && bytes.saturating_add(size) > PREFERRED_PAGE_BYTES {
+                stopped_by = "bytes";
+                break;
+            }
+            bytes = bytes.saturating_add(size);
+            kept += 1;
+        }
+        let truncated = kept < changes.len();
+        changes.truncate(kept);
         let next_cursor = truncated.then(|| {
             self.cursors.issue(
                 pair,
@@ -317,12 +353,13 @@ impl DiffHandler {
                 offset.saturating_add(changes.len()),
             )
         });
-        DiffPage {
+        Ok(DiffPage {
             equal: changes.is_empty() && !truncated,
             changes,
             truncated,
             cursor: next_cursor,
-        }
+            stopped_by,
+        })
     }
 }
 
@@ -526,6 +563,83 @@ mod tests {
         assert_eq!(first.changes()[0].path, "/items/0/n");
         assert_eq!(second.changes()[0].path, "/items/2/n");
         assert_ne!(first.changes()[0].path, second.changes()[0].path);
+    }
+
+    fn wide(at: &str, fields: usize, bytes: usize, fill: char) -> DiffSource {
+        let props = (0..fields)
+            .map(|n| (format!("f{n:02}"), json!(fill.to_string().repeat(bytes))))
+            .collect::<serde_json::Map<_, _>>();
+        DiffSource::new(
+            QualifiedAddress::parse(at).unwrap(),
+            "Catalog",
+            json!({"kind": "Catalog", "props": props}),
+        )
+    }
+
+    /// A page ends by count, by encoded size or at the end, and says which;
+    /// a difference larger than the page target still travels whole.
+    #[test]
+    fn diff_page_names_why_it_stopped_and_never_cuts_a_difference() {
+        let handler = DiffHandler::default();
+        let at = "main:Catalog.Items";
+        let request = DiffRequest::new(at, at).unwrap();
+        let small = handler
+            .compare(
+                &request.clone().with_limit(2),
+                &wide(at, 3, 8, 'a'),
+                &wide(at, 3, 8, 'b'),
+            )
+            .unwrap();
+        assert_eq!(small.stopped_by(), "limit");
+        assert_eq!(small.changes().len(), 2);
+        let rest = handler
+            .compare(
+                &request
+                    .clone()
+                    .with_limit(2)
+                    .with_cursor(small.cursor().unwrap().to_string()),
+                &wide(at, 3, 8, 'a'),
+                &wide(at, 3, 8, 'b'),
+            )
+            .unwrap();
+        assert_eq!(rest.stopped_by(), "complete");
+        assert_eq!(rest.changes().len(), 1);
+        assert!(rest.cursor().is_none());
+
+        let big = 40 * 1024;
+        let first = handler
+            .compare(&request, &wide(at, 3, big, 'a'), &wide(at, 3, big, 'b'))
+            .unwrap();
+        assert_eq!(first.stopped_by(), "bytes");
+        assert_eq!(first.changes().len(), 1, "two differences exceed 64 KiB");
+        assert!(first.cursor().is_some());
+        let over_target = handler
+            .compare(
+                &request,
+                &wide(at, 1, 100 * 1024, 'a'),
+                &wide(at, 1, 100 * 1024, 'b'),
+            )
+            .unwrap();
+        assert_eq!(over_target.stopped_by(), "complete");
+        assert_eq!(
+            over_target.changes().len(),
+            1,
+            "an indivisible difference travels whole"
+        );
+    }
+
+    /// One difference over the transport limit cannot travel at all: the
+    /// comparison refuses before it promises a continuation.
+    #[test]
+    fn a_difference_over_the_transport_limit_refuses_before_a_cursor() {
+        let handler = DiffHandler::default();
+        let at = "main:Catalog.Items";
+        let request = DiffRequest::new(at, at).unwrap();
+        let huge = 5 * 1024 * 1024;
+        let error = handler
+            .compare(&request, &wide(at, 1, huge, 'a'), &wide(at, 1, huge, 'b'))
+            .unwrap_err();
+        assert_eq!(error.code().as_str(), "result_too_large");
     }
 
     /// `can` и `limits` вычисляются для `view`, а не читаются из исходников:

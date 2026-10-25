@@ -19,7 +19,9 @@ use super::v13_call_graph::{
 use super::v13_read_modes::{attach_can, operation_node_with, search_scope_prefix, source_backed};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
-use crate::application::v13::diff::{DiffError, DiffHandler, DiffPage, DiffRequest, DiffSource};
+use crate::application::v13::diff::{
+    DiffError, DiffHandler, DiffPage, DiffRequest, DiffSource, DEFAULT_DIFF_LIMIT, MAX_DIFF_LIMIT,
+};
 use crate::application::v13::find::{FindIndex, FindRequest};
 use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
 use crate::application::v13::tool_catalog::catalog_for;
@@ -2463,17 +2465,17 @@ impl CanonicalV13ReadService {
             );
         }
         let limit = match arguments.get("limit") {
-            Some(value) => match bounded_usize(value).filter(|limit| *limit <= 1_000) {
+            Some(value) => match bounded_usize(value).filter(|limit| *limit <= MAX_DIFF_LIMIT) {
                 Some(limit) => limit,
                 None => {
                     return error_result(
                         None,
                         RefusalCode::BadValue,
-                        "diff limit must be an integer from 1 through 1000",
+                        format!("diff limit must be an integer from 1 through {MAX_DIFF_LIMIT}"),
                     )
                 }
             },
-            None => 100,
+            None => DEFAULT_DIFF_LIMIT,
         };
         let cursor = match arguments.get("cursor") {
             None | Some(Value::Null) => None,
@@ -3736,9 +3738,9 @@ fn diff_page_result(request: &DiffRequest, page: Result<DiffPage, DiffError>) ->
     };
     let limit = request.limit();
     let mut result = if let Some(cursor) = page.cursor() {
-        let mut result = DomainResult::success(format!(
-            "logical nodes compared; {limit} differences on this page and more remain; continue with cursor"
-        ));
+        let mut result = DomainResult::success(
+            "logical nodes compared; more differences remain; continue with cursor",
+        );
         result.cursor = Some(cursor.to_owned());
         result.next.push(json!({"tool": "unica.diff", "arguments": {
             "left": request.left().to_string(),
@@ -3750,6 +3752,7 @@ fn diff_page_result(request: &DiffRequest, page: Result<DiffPage, DiffError>) ->
     } else {
         DomainResult::success("logical nodes compared")
     };
+    result.page = Some(json!({"stoppedBy": page.stopped_by()}));
     result.data = Some(serde_json::to_value(&page).expect("diff page serializes"));
     result
 }

@@ -9881,6 +9881,7 @@ struct ActorLogicalReadLease {"#,
         assert!(first.ok, "{first:?}");
         assert_eq!(first.data.as_ref().unwrap()["truncated"], true);
         assert_eq!(first.data.as_ref().unwrap()["equal"], false);
+        assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "limit");
         let first_cursor = first.cursor.clone().expect("a cut page issues a cursor");
         assert_eq!(first.next[0]["tool"], "unica.diff");
         assert_eq!(first.next[0]["arguments"]["cursor"], first_cursor.as_str());
@@ -9906,6 +9907,7 @@ struct ActorLogicalReadLease {"#,
             );
             let Some(cursor) = page.cursor.clone() else {
                 assert_eq!(page.data.as_ref().unwrap()["truncated"], false);
+                assert_eq!(page.page.as_ref().unwrap()["stoppedBy"], "complete");
                 break;
             };
             assert!(paged.len() <= all.len(), "pages repeat: {paged:?}");
@@ -9920,6 +9922,10 @@ struct ActorLogicalReadLease {"#,
             "pages must walk the whole difference once, in order"
         );
 
+        let mut over = pair.clone();
+        over["limit"] = serde_json::json!(51);
+        let refused = call(over);
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
         for forged in ["opaque".to_owned(), format!("{first_cursor}0")] {
             let mut replay = first_args.clone();
             replay["cursor"] = serde_json::json!(forged);

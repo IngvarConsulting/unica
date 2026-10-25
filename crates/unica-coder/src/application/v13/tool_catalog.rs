@@ -424,8 +424,8 @@ fn schema_for_saved_apply_plan(properties: Value, required: Value) -> Value {
 }
 
 fn schema_for_plan_diff() -> Value {
-    let limit = json!({"type": "integer", "minimum": 1, "maximum": 1000,
-        "description": "Maximum differences in left/right comparisons; default 100. Saved-plan pages default to 20 chunks, maximum 50, and are also bounded by encoded bytes."});
+    let limit = json!({"type": "integer", "minimum": 1, "maximum": SOURCE_NAVIGATION_LIMIT_MAX,
+        "description": format!("Maximum differences, or saved-plan source chunks, on one page; default {SOURCE_NAVIGATION_LIMIT_DEFAULT}. Pages are also bounded by encoded bytes.")});
     let compare = schema(
         json!({"left": logical_address_with("Qualified logical address of the left node."), "right": logical_address_with("Qualified logical address of the right node."), "limit": limit,
             "cursor": cursor("Continue the same left/right pair with the same limit; later pages read the pair saved by the first page. Omit, or pass an empty string or null, for the first page.")}),
@@ -548,7 +548,7 @@ fn result_envelope_schema() -> Value {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn saved_plan_diff_limits_follow_read_pages_without_restricting_comparisons() {
+    fn diff_limits_follow_read_pages_on_both_branches() {
         let schema = super::schema_for_plan_diff();
         assert_eq!(schema["then"]["properties"]["limit"]["maximum"], 50);
         // #1210: form clients may copy defaults without selecting a branch.
@@ -556,8 +556,8 @@ mod tests {
         assert!(schema["then"]["properties"]["limit"]
             .get("default")
             .is_none());
-        assert_eq!(schema["properties"]["limit"]["maximum"], 1000);
-        assert_eq!(schema["else"]["properties"]["limit"]["maximum"], 1000);
+        assert_eq!(schema["properties"]["limit"]["maximum"], 50);
+        assert_eq!(schema["else"]["properties"]["limit"]["maximum"], 50);
     }
 
     #[test]
@@ -883,10 +883,7 @@ mod tests {
             );
         }
         assert_eq!(input_field(&catalog.tools, "view", "limit")["maximum"], 50);
-        assert_eq!(
-            input_field(&catalog.tools, "diff", "limit")["maximum"],
-            1000
-        );
+        assert_eq!(input_field(&catalog.tools, "diff", "limit")["maximum"], 50);
         assert_eq!(input_field(&catalog.tools, "docs", "limit")["default"], 20);
         assert_eq!(input_field(&catalog.tools, "docs", "limit")["maximum"], 50);
         assert_eq!(

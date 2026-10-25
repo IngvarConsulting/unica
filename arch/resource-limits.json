@@ -1024,12 +1024,13 @@
       "scope": "request",
       "source": {
         "file": "crates/unica-coder/src/application/v13/diff.rs",
-        "symbol": "DEFAULT_LIMIT"
+        "symbol": "DEFAULT_DIFF_LIMIT"
       },
-      "expr": "100",
-      "value": 100,
+      "expr": "20",
+      "value": 20,
       "applied": [
-        "crates/unica-coder/src/application/v13/diff.rs"
+        "crates/unica-coder/src/application/v13/diff.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
       "status": "unproven",
       "origin": "781b94962",
@@ -1048,17 +1049,18 @@
       "scope": "request",
       "source": {
         "file": "crates/unica-coder/src/application/v13/diff.rs",
-        "symbol": "MAX_LIMIT"
+        "symbol": "MAX_DIFF_LIMIT"
       },
-      "expr": "1_000",
-      "value": 1000,
+      "expr": "50",
+      "value": 50,
       "applied": [
-        "crates/unica-coder/src/application/v13/diff.rs"
+        "crates/unica-coder/src/application/v13/diff.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
       "status": "unproven",
       "origin": "781b94962",
       "problem": null,
-      "onReach": "тихо: больший limit сводится к 1000 (clamp), остаток доступен по cursor.",
+      "onReach": "на проводе limit больше 50 получает bad_value; внутри обработчика больший limit сводится к 50, остаток доступен по cursor.",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1227,6 +1229,7 @@
       "value": 65536,
       "applied": [
         "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/diff.rs",
         "crates/unica-coder/src/application/v13/view.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
@@ -3427,6 +3430,7 @@
       "value": 8388608,
       "applied": [
         "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/diff.rs",
         "crates/unica-coder/src/application/v13/view.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
