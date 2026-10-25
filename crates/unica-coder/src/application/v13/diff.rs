@@ -1,6 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::sync::Mutex;
 use unica_address::address::QualifiedAddress;
@@ -154,46 +154,75 @@ impl fmt::Display for DiffError {
     }
 }
 
+/// One saved pair serves every page of its walk. A token names the pair and
+/// an offset this store issued for it, so a walk holds one entry however many
+/// pages it reads.
 #[derive(Debug, Clone)]
 struct CursorEntry {
     fingerprint: String,
     left_data: std::sync::Arc<Value>,
     right_data: std::sync::Arc<Value>,
-    offset: usize,
+    offsets: BTreeSet<usize>,
+}
+
+#[derive(Debug, Default)]
+struct SavedPairs {
+    entries: HashMap<String, CursorEntry>,
+    order: VecDeque<String>,
 }
 
 #[derive(Debug, Default)]
 struct DiffCursorStore {
-    entries: Mutex<HashMap<String, CursorEntry>>,
+    pairs: Mutex<SavedPairs>,
 }
 
 impl DiffCursorStore {
-    fn issue(&self, entry: CursorEntry) -> Option<String> {
-        let mut entries = self.entries.lock().expect("diff cursor store poisoned");
-        if entries.len() >= MAX_CURSOR_ENTRIES {
-            let key = entries.keys().next()?.clone();
-            entries.remove(&key);
+    fn issue(&self, pair: Option<&str>, entry: CursorEntry, offset: usize) -> String {
+        let mut pairs = self.pairs.lock().expect("diff cursor store poisoned");
+        if let Some(saved) = pair.and_then(|pair| pairs.entries.get_mut(pair)) {
+            saved.offsets.insert(offset);
+            return format!("dc1.{}.{offset}", pair.expect("pair named"));
         }
-        let token = format!("dc1.{}", Uuid::new_v4().simple());
-        entries.insert(token.clone(), entry);
-        Some(token)
+        while pairs.entries.len() >= MAX_CURSOR_ENTRIES {
+            let Some(oldest) = pairs.order.pop_front() else {
+                break;
+            };
+            pairs.entries.remove(&oldest);
+        }
+        let id = Uuid::new_v4().simple().to_string();
+        let mut entry = entry;
+        entry.offsets.insert(offset);
+        pairs.entries.insert(id.clone(), entry);
+        pairs.order.push_back(id.clone());
+        format!("dc1.{id}.{offset}")
     }
 
-    fn read(&self, token: &str) -> Result<CursorEntry, DiffError> {
-        if token.len() != 36
-            || !token.starts_with("dc1.")
-            || !token[4..]
+    fn read(&self, token: &str) -> Result<(String, CursorEntry, usize), DiffError> {
+        let (id, offset) = token
+            .strip_prefix("dc1.")
+            .and_then(|rest| rest.split_once('.'))
+            .ok_or(DiffError::InvalidCursor)?;
+        if id.len() != 32
+            || !id
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || offset.is_empty()
+            || !offset.bytes().all(|byte| byte.is_ascii_digit())
+            || (offset.len() > 1 && offset.starts_with('0'))
         {
             return Err(DiffError::InvalidCursor);
         }
-        self.entries
-            .lock()
-            .expect("diff cursor store poisoned")
-            .get(token)
+        let offset = offset
+            .parse::<usize>()
+            .map_err(|_| DiffError::InvalidCursor)?;
+        let pairs = self.pairs.lock().expect("diff cursor store poisoned");
+        let entry = pairs
+            .entries
+            .get(id)
+            .filter(|entry| entry.offsets.contains(&offset))
             .cloned()
-            .ok_or(DiffError::InvalidCursor)
+            .ok_or(DiffError::InvalidCursor)?;
+        Ok((id.to_owned(), entry, offset))
     }
 }
 
@@ -227,6 +256,7 @@ impl DiffHandler {
             return Err(DiffError::IncomparableNodes);
         }
         Ok(self.page(
+            None,
             request.fingerprint(),
             request.limit,
             std::sync::Arc::new(left_data),
@@ -240,21 +270,23 @@ impl DiffHandler {
     pub(crate) fn continue_saved(&self, request: &DiffRequest) -> Result<DiffPage, DiffError> {
         let token = request.cursor.as_deref().ok_or(DiffError::InvalidCursor)?;
         let fingerprint = request.fingerprint();
-        let entry = self.cursors.read(token)?;
+        let (pair, entry, offset) = self.cursors.read(token)?;
         if entry.fingerprint != fingerprint {
             return Err(DiffError::InvalidCursor);
         }
         Ok(self.page(
+            Some(&pair),
             fingerprint,
             request.limit,
             entry.left_data,
             entry.right_data,
-            entry.offset,
+            offset,
         ))
     }
 
     fn page(
         &self,
+        pair: Option<&str>,
         fingerprint: String,
         limit: usize,
         left_data: std::sync::Arc<Value>,
@@ -273,16 +305,18 @@ impl DiffHandler {
         );
         let truncated = changes.len() > limit;
         changes.truncate(limit);
-        let next_cursor = truncated
-            .then(|| {
-                self.cursors.issue(CursorEntry {
+        let next_cursor = truncated.then(|| {
+            self.cursors.issue(
+                pair,
+                CursorEntry {
                     fingerprint,
                     left_data: left_data.clone(),
                     right_data: right_data.clone(),
-                    offset: offset.saturating_add(changes.len()),
-                })
-            })
-            .flatten();
+                    offsets: BTreeSet::new(),
+                },
+                offset.saturating_add(changes.len()),
+            )
+        });
         DiffPage {
             equal: changes.is_empty() && !truncated,
             changes,

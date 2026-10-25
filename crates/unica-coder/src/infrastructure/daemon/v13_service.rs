@@ -3737,7 +3737,7 @@ fn diff_page_result(request: &DiffRequest, page: Result<DiffPage, DiffError>) ->
     let limit = request.limit();
     let mut result = if let Some(cursor) = page.cursor() {
         let mut result = DomainResult::success(format!(
-            "logical nodes compared; this page holds the next {limit} differences; continue with cursor for the rest"
+            "logical nodes compared; {limit} differences on this page and more remain; continue with cursor"
         ));
         result.cursor = Some(cursor.to_owned());
         result.next.push(json!({"tool": "unica.diff", "arguments": {

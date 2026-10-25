@@ -9429,8 +9429,8 @@ struct ActorLogicalReadLease {"#,
                     "right": "main:Catalog.Items",
                     "cursor": "opaque"
                 }),
-                // Comparison diff publishes no cursor (#1218): an unknown argument.
-                "bad_value",
+                // A cursor no first page issued continues nothing (#977).
+                "invalid_cursor",
             ),
             (
                 ToolIdentity::Diff,
@@ -9880,6 +9880,7 @@ struct ActorLogicalReadLease {"#,
         let first = call(first_args.clone());
         assert!(first.ok, "{first:?}");
         assert_eq!(first.data.as_ref().unwrap()["truncated"], true);
+        assert_eq!(first.data.as_ref().unwrap()["equal"], false);
         let first_cursor = first.cursor.clone().expect("a cut page issues a cursor");
         assert_eq!(first.next[0]["tool"], "unica.diff");
         assert_eq!(first.next[0]["arguments"]["cursor"], first_cursor.as_str());
@@ -9894,6 +9895,7 @@ struct ActorLogicalReadLease {"#,
         );
 
         let mut paged = Vec::new();
+        let mut cursors = Vec::new();
         let mut page = first.clone();
         loop {
             paged.extend(
@@ -9907,6 +9909,7 @@ struct ActorLogicalReadLease {"#,
                 break;
             };
             assert!(paged.len() <= all.len(), "pages repeat: {paged:?}");
+            cursors.push(cursor.clone());
             let mut next = first_args.clone();
             next["cursor"] = serde_json::json!(cursor);
             page = call(next);
@@ -9917,6 +9920,15 @@ struct ActorLogicalReadLease {"#,
             "pages must walk the whole difference once, in order"
         );
 
+        for forged in ["opaque".to_owned(), format!("{first_cursor}0")] {
+            let mut replay = first_args.clone();
+            replay["cursor"] = serde_json::json!(forged);
+            let refused = call(replay);
+            assert_eq!(
+                refused.diagnostics[0]["code"], "invalid_cursor",
+                "{forged}: {refused:?}"
+            );
+        }
         for (field, value) in [
             ("limit", serde_json::json!(2)),
             ("right", serde_json::json!("main:Catalog.Items")),
@@ -9938,19 +9950,41 @@ struct ActorLogicalReadLease {"#,
             "comparison must not publish source edits"
         );
 
+        // The continuation into the comment the edit below replaces: one that
+        // read the sources again would answer `edited`.
+        let comment = all
+            .iter()
+            .position(|change| change["path"] == "/props/Comment")
+            .expect("fixture differs in its comment");
+        assert!(comment > 0, "{all:?}");
+        assert_eq!(all[comment]["right"], "second", "{all:?}");
+        let into_comment = cursors[comment - 1].clone();
         let other = source.join("Catalogs/Other.xml");
         let edited = std::fs::read_to_string(&other)
             .unwrap()
             .replace("<Comment>second</Comment>", "<Comment>edited</Comment>");
         std::fs::write(&other, edited).unwrap();
         let mut continued = first_args.clone();
-        continued["cursor"] = serde_json::json!(first_cursor.as_str());
+        continued["cursor"] = serde_json::json!(into_comment);
         let saved = call(continued);
         assert!(saved.ok, "{saved:?}");
         assert_eq!(
             saved.data.as_ref().unwrap()["changes"],
-            serde_json::json!([all[1].clone()]),
+            serde_json::json!([all[comment].clone()]),
             "a continuation reads the pair saved by its first page"
+        );
+        // A cursor answers only the workspace that asked the first page.
+        let (_other_state, _other_workspace, _other_runtime, other_hint) =
+            empty_cursor_and_diff_fixture();
+        let mut elsewhere = first_args.clone();
+        elsewhere["cursor"] = serde_json::json!(first_cursor.as_str());
+        let request =
+            InvocationRequest::new(ToolIdentity::Diff, elsewhere, other_hint.as_str(), 7_000)
+                .unwrap();
+        let foreign = direct_v5(&runtime, request).unwrap();
+        assert_eq!(
+            foreign.diagnostics[0]["code"], "invalid_cursor",
+            "{foreign:?}"
         );
         let fresh = call(pair);
         assert!(fresh.ok, "{fresh:?}");
@@ -9990,6 +10024,7 @@ struct ActorLogicalReadLease {"#,
         }));
         assert!(!missing.ok, "{missing:?}");
         assert!(missing.data.is_none(), "{missing:?}");
+        assert_eq!(missing.diagnostics[0]["code"], "not_found", "{missing:?}");
     }
 
     /// `filter` снят с `view` и `diff` (#1374). Вызов с ним — отказ
