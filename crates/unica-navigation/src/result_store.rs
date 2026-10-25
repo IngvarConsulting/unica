@@ -410,6 +410,21 @@ impl SearchCursorStore {
         self.open_question(token, expected).map(|_| ())
     }
 
+    /// The page offset of an authenticated token whose question matches,
+    /// read before the answer exists so a search can keep only the ranks it
+    /// will show; [`Self::read`] still checks the answer afterwards.
+    pub fn question_offset(
+        &self,
+        token: &str,
+        expected: &SearchCursorBinding,
+    ) -> Result<usize, SearchCursorError> {
+        let (_, plaintext) = self.open_question(token, expected)?;
+        let raw_offset: [u8; 8] = plaintext[98..106]
+            .try_into()
+            .map_err(|_| SearchCursorError::Invalid)?;
+        usize::try_from(u64::from_be_bytes(raw_offset)).map_err(|_| SearchCursorError::Invalid)
+    }
+
     fn open_question(
         &self,
         token: &str,

@@ -22,7 +22,7 @@ use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::diff::{
     DiffError, DiffHandler, DiffPage, DiffRequest, DiffSource, DEFAULT_DIFF_LIMIT, MAX_DIFF_LIMIT,
 };
-use crate::application::v13::find::{FindIndex, FindRequest, NameRanker};
+use crate::application::v13::find::{public_name_match, FindIndex, FindRequest, NameRanker};
 use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
 use crate::application::v13::tool_catalog::catalog_for;
 use crate::domain::apply::UNWRITABLE_SOURCE_MESSAGE;
@@ -2072,23 +2072,61 @@ impl CanonicalV13ReadService {
             .iter()
             .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
             .collect::<Vec<_>>();
-        // One pass over the layout ranks the names and notes whether the
-        // scope exists, instead of building the whole directory first.
+        let scope_binding = scope.as_ref().map(ToString::to_string);
+        let binding_for = |result_fingerprint: Option<String>| SearchCursorBinding {
+            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
+            query: query.to_owned(),
+            scope: scope_binding.clone(),
+            mode: "names".to_owned(),
+            kind: arguments
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            source_sets: selected
+                .iter()
+                .map(|source| source.name().to_owned())
+                .collect(),
+            result_fingerprint,
+            page_limit: limit,
+        };
+        // The question half of a continuation is checked before the walk:
+        // its offset decides how many ranked names the page keeps.
+        let offset = match arguments.get("cursor") {
+            None => 0,
+            Some(Value::String(token)) => {
+                match self
+                    .search_cursors
+                    .question_offset(token, &binding_for(None))
+                {
+                    Ok(offset) => offset,
+                    Err(error) => return error.into_result(None),
+                }
+            }
+            Some(_) => {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search cursor must be a string",
+                )
+            }
+        };
+        // Walking the layout ranks the names and notes whether the scope
+        // exists; only the candidates up to this page and one more are kept.
         let ranked_request = match &scope {
             Some(scope) => request.clone().with_scope(scope.clone()),
             None => request.clone(),
         };
         let watched = scope.as_ref().map(name_scope_witnesses).unwrap_or_default();
+        let keep = offset.saturating_add(limit).saturating_add(1);
         let built = match self.find_builder.search_names(
             &layout,
-            NameRanker::new(ranked_request, watched),
+            NameRanker::new(ranked_request, watched, keep),
             deadline,
             cancellation,
         ) {
             Ok(built) => built,
             Err(error) => return find_build_error_result(None, error),
         };
-        let scope_binding = scope.as_ref().map(ToString::to_string);
         if let Some(scope) = scope {
             if let Err((code, message)) =
                 validate_name_scope(&|at| built.present.contains(at), &scope, first.kind())
@@ -2105,7 +2143,7 @@ impl CanonicalV13ReadService {
                 return error_result(Some(scope.to_string()), code, message);
             }
         }
-        let found = built.result;
+        let found = built.names;
         let summary = if built.omissions.total == 0 {
             "name search completed".to_string()
         } else {
@@ -2125,7 +2163,7 @@ impl CanonicalV13ReadService {
         });
         let mut extra_data = Map::new();
         extra_data.insert("sourceCoverage".to_owned(), coverage.clone());
-        extra_data.insert("approximate".to_owned(), Value::Bool(found.is_nearest()));
+        extra_data.insert("approximate".to_owned(), Value::Bool(found.nearest));
         let empty_page_bytes = search_page_probe_bytes("names", &[], &summary, &extra_data, None);
         if empty_page_bytes > unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES {
             return error_result(
@@ -2134,92 +2172,47 @@ impl CanonicalV13ReadService {
                 "name search page metadata exceeds the transport limit",
             );
         }
-        // Names do not have a source revision lease. Rebuild the complete
-        // ranked answer on each page and bind the cursor to the public stream
-        // and coverage instead of claiming a source revision.
-        let mut hasher = Sha256::new();
-        hasher.update(b"unica-v13-names-result-v1\0");
-        for (index, candidate) in found.candidates().iter().enumerate() {
-            if index % 128 == 0 {
-                if let Some(refusal) = name_search_interruption(deadline, cancellation) {
-                    return refusal;
-                }
-            }
-            let public = json!({
-                "at": candidate.at(),
-                "kind": candidate.kind(),
-                "title": candidate.title(),
-                "reason": candidate.reason(),
-            });
-            let bytes = serde_json::to_vec(&public).expect("name match is serializable");
-            // An item after the first page must not receive a continuation
-            // that could never carry it. The empty probe includes every fixed
-            // response field and its cursor; adding one JSON array item adds
-            // exactly its serialized byte length.
-            if empty_page_bytes.saturating_add(bytes.len())
+        // An item after the first page must not receive a continuation that
+        // could never carry it. The empty probe includes every fixed response
+        // field and its cursor; adding one JSON array item adds exactly its
+        // serialized byte length, and the walk kept the largest one.
+        if found.matched != 0
+            && empty_page_bytes.saturating_add(found.largest_item_bytes)
                 > unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
-            {
-                return error_result(
-                    None,
-                    RefusalCode::ResultTooLarge,
-                    "one name search result exceeds the transport limit",
-                );
-            }
-            hasher.update((bytes.len() as u64).to_le_bytes());
-            hasher.update(&bytes);
+        {
+            return error_result(
+                None,
+                RefusalCode::ResultTooLarge,
+                "one name search result exceeds the transport limit",
+            );
         }
-        let evidence =
-            json!({"approximate": found.is_nearest(), "sourceCoverage": coverage.clone()});
+        // Names do not have a source revision lease. Every page walks the
+        // layout again and binds the cursor to the ranked answer — its count
+        // and order-free digest — and coverage instead of a source revision.
+        let mut hasher = Sha256::new();
+        hasher.update(b"unica-v13-names-result-v2\0");
+        hasher.update(found.fingerprint);
+        let evidence = json!({"approximate": found.nearest, "sourceCoverage": coverage.clone()});
         let bytes = serde_json::to_vec(&evidence).expect("name coverage is serializable");
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
         if let Some(refusal) = name_search_interruption(deadline, cancellation) {
             return refusal;
         }
-        let binding = SearchCursorBinding {
-            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
-            query: query.to_owned(),
-            scope: scope_binding,
-            mode: "names".to_owned(),
-            kind: arguments
-                .get("kind")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            source_sets: selected
-                .iter()
-                .map(|source| source.name().to_owned())
-                .collect(),
-            result_fingerprint: Some(format!("names-sha256-v1:{:x}", hasher.finalize())),
-            page_limit: limit,
-        };
-        let cursor = match arguments.get("cursor") {
+        let binding = binding_for(Some(format!("names-sha256-v2:{:x}", hasher.finalize())));
+        let cursor = match arguments.get("cursor").and_then(Value::as_str) {
             None => None,
-            Some(Value::String(token)) => match self.search_cursors.read(token, &binding) {
-                Ok(cursor) => Some((token.as_str(), cursor)),
+            Some(token) => match self.search_cursors.read(token, &binding) {
+                Ok(cursor) => Some((token, cursor)),
                 Err(error) => return error.into_result(None),
             },
-            Some(_) => {
-                return error_result(
-                    None,
-                    RefusalCode::BadValue,
-                    "search cursor must be a string",
-                )
-            }
         };
-        let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
         let matches = found
-            .candidates()
+            .candidates
             .iter()
             .skip(offset)
             .take(limit + 1)
-            .map(|candidate| {
-                json!({
-                    "at": candidate.at(),
-                    "kind": candidate.kind(),
-                    "title": candidate.title(),
-                    "reason": candidate.reason(),
-                })
-            })
+            .map(public_name_match)
             .collect();
         let result = self.search_page_with_data(matches, cursor, binding, summary, extra_data);
         if let Some(refusal) = name_search_interruption(deadline, cancellation) {

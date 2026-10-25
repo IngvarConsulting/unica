@@ -1,6 +1,6 @@
 use crate::application::v13::find::{
     normalize_layout_path, FindDocument, FindFact, FindFactKind, FindIndex, FindPathAlias,
-    FindResult, NameRanker,
+    NameRanker, RankedNames,
 };
 use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::event_sources::module_address_for_relative;
@@ -159,7 +159,7 @@ enum DescriptorHeadReadError {
 
 /// The ranked names of one search and what its layout walk could not read.
 pub(crate) struct NameSearchOutcome {
-    pub(crate) result: FindResult,
+    pub(crate) names: RankedNames,
     pub(crate) omissions: FindOmissions,
     /// The watched addresses, such as the search scope, that exist.
     pub(crate) present: HashSet<String>,
@@ -321,11 +321,12 @@ impl WorkspaceFindDirectoryBuilder {
             .map(|(outcome, _)| outcome)
     }
 
-    /// Search the names of `sources` in one pass over the layout. Each
-    /// document is scored while it is read, so neither the directory entry
-    /// count nor its facts are budgeted; a collection is listed whole.
-    /// Memory still grows with the corpus (see [`NameRanker`]); pages carry
-    /// no state yet and walk the layout again (#2106).
+    /// Search the names of `sources` by walking the layout: each document is
+    /// scored while it is read and dropped, and only the page's best
+    /// candidates stay (see [`NameRanker`]). Neither the directory entry
+    /// count nor its facts are budgeted. Nearest names take a second walk,
+    /// only when nothing matched directly. Each page walks the layout again
+    /// (#2106).
     pub(crate) fn search_names(
         &self,
         sources: &[LayoutFindSource<'_>],
@@ -333,15 +334,24 @@ impl WorkspaceFindDirectoryBuilder {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<NameSearchOutcome, FindBuildError> {
-        let (outcome, ranker) =
+        let (mut outcome, ranker) =
             self.build_internal(sources, deadline, cancellation, false, Some(ranker))?;
-        let ranker = ranker.expect("a name search keeps its ranker");
+        let mut ranker = ranker.expect("a name search keeps its ranker");
+        if ranker.needs_nearest_pass() {
+            let (second, nearest) = self.build_internal(
+                sources,
+                deadline,
+                cancellation,
+                false,
+                Some(ranker.into_nearest_pass()),
+            )?;
+            outcome = second;
+            ranker = nearest.expect("a name search keeps its ranker");
+        }
         find_checkpoint(deadline, cancellation)?;
-        let present = ranker.watched_presence();
-        let result = ranker.finish(|| find_checkpoint(deadline, cancellation))?;
         Ok(NameSearchOutcome {
-            present,
-            result,
+            present: ranker.watched_presence(),
+            names: ranker.finish(),
             omissions: outcome.omissions,
         })
     }
@@ -4537,15 +4547,37 @@ mod tests {
             let expected = directory
                 .find_all_checked(request.clone(), deadline(), &CancellationToken::new())
                 .unwrap();
-            let searched = WorkspaceFindDirectoryBuilder::default()
-                .search_names(
-                    &sources,
-                    NameRanker::new(request.clone(), [scope.to_string()]),
-                    deadline(),
-                    &CancellationToken::new(),
-                )
-                .unwrap();
-            assert_eq!(searched.result, expected, "{request:?}");
+            let search = |keep| {
+                WorkspaceFindDirectoryBuilder::default()
+                    .search_names(
+                        &sources,
+                        NameRanker::new(request.clone(), [scope.to_string()], keep),
+                        deadline(),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+            };
+            let searched = search(usize::MAX);
+            assert_eq!(
+                searched.names.candidates,
+                expected.candidates(),
+                "{request:?}"
+            );
+            assert_eq!(searched.names.nearest, expected.is_nearest(), "{request:?}");
+            assert_eq!(searched.names.matched, expected.candidates().len());
+            // A page keeps only its best candidates, yet counts and
+            // fingerprints every match as the whole answer does.
+            let page = search(1);
+            assert_eq!(
+                page.names.candidates,
+                expected.candidates()[..expected.candidates().len().min(1)]
+            );
+            assert_eq!(page.names.matched, searched.names.matched);
+            assert_eq!(page.names.fingerprint, searched.names.fingerprint);
+            assert_eq!(
+                page.names.largest_item_bytes,
+                searched.names.largest_item_bytes
+            );
             if request == FindRequest::new("Вылюты").unwrap() {
                 assert!(expected.is_nearest() && !expected.candidates().is_empty());
             }
@@ -4572,12 +4604,12 @@ mod tests {
         let searched = builder
             .search_names(
                 &sources,
-                NameRanker::new(FindRequest::new("Валюты").unwrap(), []),
+                NameRanker::new(FindRequest::new("Валюты").unwrap(), [], 1),
                 ProviderDeadline::from_budget(Duration::from_secs(7)),
                 &CancellationToken::new(),
             )
             .expect("a name search is not bounded by the layout collection limit");
-        assert_eq!(searched.result.candidates()[0].at(), "main:Catalog.Валюты");
+        assert_eq!(searched.names.candidates[0].at(), "main:Catalog.Валюты");
     }
 
     #[test]

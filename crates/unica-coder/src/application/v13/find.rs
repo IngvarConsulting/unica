@@ -1,6 +1,7 @@
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_refusal::RefusalCode;
 #[cfg(test)]
@@ -517,50 +518,108 @@ impl FindIndex {
     }
 }
 
-/// The ranked answer of [`FindIndex::find_all_checked`], built while the
-/// layout is walked: each document is scored as it is read, and no
-/// document keeps its facts beyond what ranking needs. Memory still grows
-/// with the corpus — every address is remembered for deduplication, a broad
-/// query keeps a candidate per document, and a query without a direct match
-/// keeps each eligible document's name and address for nearest scoring — but
-/// no quota refuses the search.
+/// One page of the ranked answer of [`FindIndex::find_all_checked`], built
+/// while the layout is walked. Each document is scored as it is read and
+/// dropped; only the `keep` best candidates by rank stay, so memory follows
+/// the requested page, not the corpus. Every match still counts toward the
+/// total and a fingerprint that does not depend on the order it was met in.
+/// Nearest names are scored on a second walk, only when nothing matched
+/// directly.
 pub(crate) struct NameRanker {
     request: FindRequest,
     query: String,
-    seen: HashSet<String>,
     watched: HashMap<String, bool>,
-    direct: Vec<OwnedCandidate>,
-    /// While nothing matches directly, the eligible documents cut down to
-    /// the facts nearest names are scored on; scored once, at the end.
-    nearest_pool: Vec<FindDocument>,
+    keep: usize,
+    nearest_pass: bool,
+    best: BinaryHeap<Ranked>,
+    best_addresses: HashSet<String>,
+    matched: usize,
+    fingerprint: [u64; 4],
+    largest_item_bytes: usize,
 }
 
-struct OwnedCandidate {
+/// The candidates of one page and what identifies the whole ranked answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RankedNames {
+    /// The `keep` best candidates in rank order.
+    pub(crate) candidates: Vec<FindCandidate>,
+    pub(crate) nearest: bool,
+    pub(crate) matched: usize,
+    /// Count and order-free digest of every ranked match.
+    pub(crate) fingerprint: [u8; 32],
+    /// The largest public match, for the transport check of any page.
+    pub(crate) largest_item_bytes: usize,
+}
+
+struct Ranked {
     score: usize,
     candidate: FindCandidate,
 }
 
+impl Ranked {
+    fn key(&self) -> (usize, &str) {
+        (self.score, &self.candidate.at)
+    }
+}
+
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for Ranked {}
+
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+/// The public shape of one name match, the same on every page.
+pub(crate) fn public_name_match(candidate: &FindCandidate) -> serde_json::Value {
+    serde_json::json!({
+        "at": candidate.at,
+        "kind": candidate.kind,
+        "title": candidate.title,
+        "reason": candidate.reason,
+    })
+}
+
 impl NameRanker {
     /// `watched` are addresses whose presence the caller checks afterwards,
-    /// such as a search scope; nothing else about absent documents is kept.
-    pub(crate) fn new(request: FindRequest, watched: impl IntoIterator<Item = String>) -> Self {
+    /// such as a search scope; `keep` is how many best candidates the page
+    /// needs.
+    pub(crate) fn new(
+        request: FindRequest,
+        watched: impl IntoIterator<Item = String>,
+        keep: usize,
+    ) -> Self {
         Self {
             query: normalize(&request.query),
             request,
-            seen: HashSet::new(),
             watched: watched.into_iter().map(|at| (at, false)).collect(),
-            direct: Vec::new(),
-            nearest_pool: Vec::new(),
+            keep,
+            nearest_pass: false,
+            best: BinaryHeap::new(),
+            best_addresses: HashSet::new(),
+            matched: 0,
+            fingerprint: [0; 4],
+            largest_item_bytes: 0,
         }
     }
 
     pub(crate) fn offer(&mut self, document: FindDocument) {
-        // The first document of an address wins, as in [`FindIndex::new`].
-        if !self.seen.insert(document.at.clone()) {
-            return;
-        }
-        if let Some(present) = self.watched.get_mut(&document.at) {
-            *present = true;
+        if !self.nearest_pass {
+            if let Some(present) = self.watched.get_mut(&document.at) {
+                *present = true;
+            }
         }
         let eligible = self
             .request
@@ -571,17 +630,67 @@ impl NameRanker {
         if !eligible {
             return;
         }
-        if let Some(found) = best_direct_match(&document, &self.query) {
-            // Nearest names are an answer only when nothing matches directly.
-            self.nearest_pool = Vec::new();
-            self.direct.push(OwnedCandidate::from(found));
-        } else if self.direct.is_empty() {
-            let mut document = document;
-            document
-                .facts
-                .retain(|fact| matches!(fact.kind, FindFactKind::Name | FindFactKind::Address));
-            document.path_alias = None;
-            self.nearest_pool.push(document);
+        let found = if self.nearest_pass {
+            nearest_match(&document, &self.query)
+        } else {
+            best_direct_match(&document, &self.query)
+        };
+        if let Some(found) = found {
+            self.admit(found.score, found.into_candidate());
+        }
+    }
+
+    fn admit(&mut self, score: usize, candidate: FindCandidate) {
+        // The first document of an address wins while it is ranked here.
+        // Two layout entries reach one address only when their names differ
+        // in letter case alone, which no platform export writes.
+        if self.best_addresses.contains(&candidate.at) {
+            return;
+        }
+        let public =
+            serde_json::to_vec(&public_name_match(&candidate)).expect("name match is serializable");
+        self.largest_item_bytes = self.largest_item_bytes.max(public.len());
+        let mut item = Sha256::new();
+        item.update((score as u64).to_le_bytes());
+        item.update(&public);
+        let digest = item.finalize();
+        let (chunks, _) = digest.as_chunks::<8>();
+        for (lane, chunk) in self.fingerprint.iter_mut().zip(chunks) {
+            *lane = lane.wrapping_add(u64::from_le_bytes(*chunk));
+        }
+        self.matched = self.matched.saturating_add(1);
+        if self.keep == 0 {
+            return;
+        }
+        let ranked = Ranked { score, candidate };
+        if self.best.len() == self.keep {
+            if self.best.peek().is_some_and(|worst| &ranked >= worst) {
+                return;
+            }
+            if let Some(evicted) = self.best.pop() {
+                self.best_addresses.remove(&evicted.candidate.at);
+            }
+        }
+        self.best_addresses.insert(ranked.candidate.at.clone());
+        self.best.push(ranked);
+    }
+
+    /// Whether a second walk for nearest names is the answer.
+    pub(crate) fn needs_nearest_pass(&self) -> bool {
+        !self.nearest_pass && self.matched == 0
+    }
+
+    /// The same question for the second walk; watched addresses keep what
+    /// the first walk saw.
+    pub(crate) fn into_nearest_pass(self) -> Self {
+        Self {
+            nearest_pass: true,
+            best: BinaryHeap::new(),
+            best_addresses: HashSet::new(),
+            matched: 0,
+            fingerprint: [0; 4],
+            largest_item_bytes: 0,
+            ..self
         }
     }
 
@@ -594,49 +703,24 @@ impl NameRanker {
             .collect()
     }
 
-    /// `checkpoint` runs every 128 documents of nearest scoring, as in
-    /// [`FindIndex::find_all_checked`].
-    pub(crate) fn finish<E>(
-        self,
-        mut checkpoint: impl FnMut() -> Result<(), E>,
-    ) -> Result<FindResult, E> {
-        let nearest = self.direct.is_empty();
-        let mut candidates = if nearest {
-            let mut scored = Vec::new();
-            for (index, document) in self.nearest_pool.iter().enumerate() {
-                if index % 128 == 0 {
-                    checkpoint()?;
-                }
-                if let Some(found) = nearest_match(document, &self.query) {
-                    scored.push(OwnedCandidate::from(found));
-                }
-            }
-            scored
-        } else {
-            self.direct
-        };
-        checkpoint()?;
-        candidates.sort_by(|left, right| {
-            left.score
-                .cmp(&right.score)
-                .then_with(|| left.candidate.at.cmp(&right.candidate.at))
-        });
-        candidates.dedup_by(|left, right| left.candidate.at == right.candidate.at);
-        Ok(FindResult {
-            nearest: nearest && !candidates.is_empty(),
-            candidates: candidates
+    pub(crate) fn finish(self) -> RankedNames {
+        let mut fingerprint = Sha256::new();
+        fingerprint.update(b"unica-v13-names-ranked-v2\0");
+        fingerprint.update((self.matched as u64).to_le_bytes());
+        for lane in self.fingerprint {
+            fingerprint.update(lane.to_le_bytes());
+        }
+        RankedNames {
+            candidates: self
+                .best
+                .into_sorted_vec()
                 .into_iter()
-                .map(|owned| owned.candidate)
+                .map(|ranked| ranked.candidate)
                 .collect(),
-        })
-    }
-}
-
-impl From<ScoredCandidate<'_>> for OwnedCandidate {
-    fn from(scored: ScoredCandidate<'_>) -> Self {
-        Self {
-            score: scored.score,
-            candidate: scored.into_candidate(),
+            nearest: self.nearest_pass && self.matched > 0,
+            matched: self.matched,
+            fingerprint: fingerprint.finalize().into(),
+            largest_item_bytes: self.largest_item_bytes,
         }
     }
 }
