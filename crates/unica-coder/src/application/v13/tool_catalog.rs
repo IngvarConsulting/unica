@@ -318,7 +318,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "search",
-                    description: "Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Results use pages; provider roles report whether their finite search window is complete. Names report descriptor-read coverage separately from approximate name matching.",
+                    description: "Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Results use pages; `symbol` and `semantic` report whether their finite search window is complete. Names report descriptor-read coverage separately from approximate name matching.",
                     input_schema: schema(
                         json!({
                             "query": {"type": "string", "description": "Literal BSL text, symbol, or metadata name to search for."},
@@ -328,7 +328,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "scope": logical_subtree_address(),
                             "regex": {"type": "boolean", "description": "Use a regular expression for local text search.", "default": false},
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20,
-                                "description": "Maximum matches per page, from 1 to 50. Provider roles may stop after their first 200 retrieved matches and mark the search incomplete."},
+                                "description": "Maximum matches per page, from 1 to 50. `symbol` and `semantic` may stop after their first 200 retrieved matches and mark the search incomplete; `lexical` pages continue to the last match."},
                             "cursor": cursor("Continue a previous search page. Bound to the question, source sets and page limit. Text search reads live sources; indexed providers report freshness and the build generation when known."),
                         }),
                         json!(["query"]),

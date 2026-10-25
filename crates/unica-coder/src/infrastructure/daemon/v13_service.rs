@@ -7,8 +7,11 @@ use crate::domain::engine::MissingEngineRefusal;
 use unica_work_control::provider_deadline::ProviderDeadline;
 /// Потолок страницы ветви графа: объявленный максимум поверхности.
 const CALL_GRAPH_PAGE_LIMIT: usize = 50;
-/// Provider APIs accept a top-N request, but no offset. Keep their existing
-/// public bound as the fetch window and page the returned evidence separately.
+/// Ranked providers (`symbol`, `semantic`) accept a top-N request, but no
+/// offset, and a larger N is another answer rather than a longer one (RLM
+/// splits N into per-category quotas). Keep their
+/// public bound as the fetch window and page the returned evidence
+/// separately. `lexical` continues its traversal instead and has no window.
 const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
 
 use super::v13_call_graph::{
@@ -46,10 +49,12 @@ use unica_code_intelligence::model::CodeIntelligenceContext;
 use unica_code_intelligence::model::CodeIntelligenceRegistry;
 use unica_code_intelligence::model::ProviderRole;
 use unica_code_intelligence::model::SearchRequest;
+use unica_code_intelligence::model::{SearchHitChain, SearchSkip};
 use unica_execution::invocation_store::ToolIdentity;
 use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
 use unica_navigation::result_store::{
-    SearchCursorBinding, SearchCursorStore, StoredSearchCursor, ViewCursorBinding, ViewCursorStore,
+    SearchCursorBinding, SearchCursorError, SearchCursorStore, StoredSearchCursor,
+    ViewCursorBinding, ViewCursorStore,
 };
 use unica_navigation::source_navigation::{
     SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
@@ -1819,10 +1824,6 @@ impl CanonicalV13ReadService {
                 return *refusal;
             }
         }
-        let request = SearchRequest {
-            query: query.to_string(),
-            limit: PROVIDER_SEARCH_FETCH_LIMIT,
-        };
         let selected_sources = if unscoped_lexical {
             invocation
                 .admitted_source_set_names()
@@ -1834,6 +1835,46 @@ impl CanonicalV13ReadService {
                 .as_ref()
                 .and_then(|context| context.source_root.source_set.clone())
                 .unwrap_or_default()]
+        };
+        let binding = SearchCursorBinding {
+            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
+            query: query.to_owned(),
+            scope: arguments
+                .get("scope")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            mode: role.as_str().to_owned(),
+            kind: None,
+            source_sets: selected_sources.clone(),
+            result_fingerprint: None,
+            page_limit: limit,
+        };
+        // Lexical hits come in traversal order, so a page continues the
+        // traversal: the provider passes over what earlier pages delivered
+        // and fetches one hit past the page to know whether another follows.
+        // Ranked roles answer one finite window that every page re-reads.
+        let request = if role == ProviderRole::Lexical {
+            let delivered = match cursor {
+                None => 0,
+                Some(token) => match self.search_cursors.verify_question(token, &binding) {
+                    Ok(offset) => offset,
+                    Err(error) => return error.into_result(None),
+                },
+            };
+            SearchRequest {
+                query: query.to_string(),
+                limit: limit + 1,
+                skip: Some(SearchSkip {
+                    count: delivered,
+                    chain: SearchHitChain::EMPTY,
+                }),
+            }
+        } else {
+            SearchRequest {
+                query: query.to_string(),
+                limit: PROVIDER_SEARCH_FETCH_LIMIT,
+                skip: None,
+            }
         };
         let retained_roots = if role == ProviderRole::Lexical {
             match invocation.read_sources() {
@@ -1898,19 +1939,6 @@ impl CanonicalV13ReadService {
                 };
                 return error_result(None, code, error);
             }
-        };
-        let binding = SearchCursorBinding {
-            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
-            query: query.to_owned(),
-            scope: arguments
-                .get("scope")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            mode: role.as_str().to_owned(),
-            kind: None,
-            source_sets: selected_sources,
-            result_fingerprint: None,
-            page_limit: limit,
         };
         // Поставщик не ответил: если причина — движок, не прошедший проверку
         // поставки (контрольная сумма), отказ называет движок, а не сбой поиска.
@@ -3158,6 +3186,15 @@ fn search_unscoped_lexical(
     let mut diagnostics = Vec::new();
     let mut warnings = Vec::new();
     let mut incomplete = None;
+    // One traversal over the sets in order: a continuation passes over the
+    // delivered hits of earlier sets first and carries their chain on.
+    let wanted = request.skip.map_or(0, |skip| skip.count);
+    let mut skipped = SearchSkip {
+        count: 0,
+        chain: request
+            .skip
+            .map_or(SearchHitChain::EMPTY, |skip| skip.chain),
+    };
     for (name, context) in source_sets.iter().zip(contexts.iter()) {
         if cancellation.is_cancelled() {
             return Err(unica_work_control::cancellation::cancelled_error(
@@ -3176,6 +3213,10 @@ fn search_unscoped_lexical(
         let source_request = SearchRequest {
             query: request.query.clone(),
             limit: request.limit.saturating_sub(hits.len()),
+            skip: request.skip.map(|_| SearchSkip {
+                count: wanted - skipped.count,
+                chain: skipped.chain,
+            }),
         };
         let execution = search_selected_role(
             selected,
@@ -3191,6 +3232,18 @@ fn search_unscoped_lexical(
             .into_iter()
             .next()
             .ok_or_else(|| format!("lexical provider omitted source set `{name}`"))?;
+        if let Some(passed) = section.skipped {
+            if passed.count > wanted - skipped.count {
+                return Err(format!(
+                    "lexical provider passed over more matches than requested in source set `{name}`"
+                ));
+            }
+            skipped = SearchSkip {
+                count: skipped.count + passed.count,
+                chain: passed.chain,
+            };
+        }
+        let status = section.status;
         warnings.extend(
             execution
                 .warnings
@@ -3220,6 +3273,18 @@ fn search_unscoped_lexical(
                 }
             }
         }
+        // A set that stopped before the cursor position leaves the later
+        // sets misaligned: nothing after it continues the same traversal.
+        if skipped.count < wanted
+            && !matches!(
+                status,
+                ProviderSectionStatus::Ok
+                    | ProviderSectionStatus::Empty
+                    | ProviderSectionStatus::Partial
+            )
+        {
+            break;
+        }
         if hits.len() >= request.limit {
             if incomplete.is_some() && incomplete != Some(ProviderSectionStatus::LimitReached) {
                 diagnostics.push("lexical result limit was also reached".to_string());
@@ -3228,7 +3293,7 @@ fn search_unscoped_lexical(
             break;
         }
     }
-    let section = match incomplete {
+    let mut section = match incomplete {
         None => ProviderSearchSection::complete(
             identity,
             SearchRanking::None,
@@ -3261,6 +3326,9 @@ fn search_unscoped_lexical(
             diagnostics,
         )?,
     };
+    if request.skip.is_some() {
+        section.skipped = Some(skipped);
+    }
     let complete = section.search_complete;
     let reportable = complete
         || matches!(
@@ -3432,27 +3500,70 @@ where
         // Пустой неуспешный ответ не доказывает отсутствие совпадений.
         return provider_search_failure(section);
     }
-    let mut warnings = execution.warnings;
-    if section.hits.len() >= PROVIDER_SEARCH_FETCH_LIMIT {
-        let scope_hint = if role == ProviderRole::Lexical {
-            " or scope"
-        } else {
-            ""
+    // A lexical page continues one traversal. The provider passed over the
+    // hits earlier pages delivered; it must have passed over exactly as many
+    // as the cursor names before the page can follow them.
+    let delivered = if role == ProviderRole::Lexical {
+        let expected = match cursor_token {
+            None => 0,
+            Some(token) => match cursors.verify_question(token, &binding) {
+                Ok(offset) => offset,
+                Err(error) => return error.into_result(None),
+            },
         };
-        warnings.push(format!(
-            "Search returned 200 matches. Ask the user to narrow the query{scope_hint} before searching again."
-        ));
+        let passed = section.skipped.unwrap_or(SearchSkip::START);
+        if passed.count > expected {
+            return error_result(
+                None,
+                RefusalCode::ProviderFailed,
+                "search provider passed over more matches than the cursor delivered",
+            );
+        }
+        // A cursor promises at least one more match. Reaching no match past
+        // it is either a deadline, worth a retry, or a changed answer: the
+        // traversal ended at or before the position, never an empty search.
+        if passed.count < expected || (expected > 0 && section.hits.is_empty()) {
+            if section.status == unica_code_intelligence::model::ProviderSectionStatus::TimedOut {
+                return error_result(
+                    None,
+                    RefusalCode::DeadlineExceeded,
+                    "search provider deadline exceeded before the cursor position",
+                );
+            }
+            return SearchCursorError::Stale.into_result(None);
+        }
+        Some(passed)
+    } else {
+        None
+    };
+    let mut warnings = execution.warnings;
+    if delivered.is_none() && section.hits.len() >= PROVIDER_SEARCH_FETCH_LIMIT {
+        warnings.push(
+            "Search returned 200 matches. Ask the user to narrow the query before searching again."
+                .to_string(),
+        );
     }
     let summary = if section.search_complete {
         format!("{} search completed", role.as_str())
+    } else if delivered.is_some()
+        && section.status == unica_code_intelligence::model::ProviderSectionStatus::LimitReached
+    {
+        // Only the page lookahead stops a lexical traversal at a limit.
+        format!(
+            "{} search returned a page; the cursor continues it",
+            role.as_str()
+        )
     } else {
         format!("{} search returned incomplete results", role.as_str())
     };
-    // Providers expose top-N only. Re-query the same finite window on a later
-    // page and bind the cursor to every fact returned by that provider; an
-    // index refresh must make the old cursor stale instead of moving hits.
     let mut section_value =
         serde_json::to_value(&section).expect("provider search section is serializable");
+    if let Some(delivered) = delivered {
+        // The count describes the whole traversal, not the fetched slice.
+        if let Some(total) = section.matches.total {
+            section_value["matches"]["total"] = json!(delivered.count + total);
+        }
+    }
     let projections = match project_hits(&section.hits) {
         Ok(projections) if projections.len() == section.hits.len() => projections,
         Ok(_) => {
@@ -3474,20 +3585,31 @@ where
             .expect("provider hit object")
             .extend(extra);
     }
-    let fingerprint_bytes = serde_json::to_vec(&(&section_value, &warnings))
-        .expect("provider search evidence is serializable");
-    let mut hasher = Sha256::new();
-    hasher.update(b"unica-v13-provider-search-v1\0");
-    hasher.update(&fingerprint_bytes);
-    binding.result_fingerprint = Some(format!("provider-sha256-v1:{:x}", hasher.finalize()));
+    binding.result_fingerprint = Some(match delivered {
+        // A lexical cursor binds the delivered prefix: an edit before it
+        // makes the cursor stale, an edit after it is read by the next page.
+        Some(delivered) => delivered.chain.fingerprint(),
+        // Ranked providers expose top-N only. Re-query the same finite window
+        // on a later page and bind the cursor to every fact returned by that
+        // provider; an index refresh must make the old cursor stale instead
+        // of moving hits.
+        None => {
+            let fingerprint_bytes = serde_json::to_vec(&(&section_value, &warnings))
+                .expect("provider search evidence is serializable");
+            let mut hasher = Sha256::new();
+            hasher.update(b"unica-v13-provider-search-v1\0");
+            hasher.update(&fingerprint_bytes);
+            format!("provider-sha256-v1:{:x}", hasher.finalize())
+        }
+    });
     let hits = std::mem::take(
         section_value["hits"]
             .as_array_mut()
             .expect("provider search hits serialize as an array"),
     );
-    // The cursor names the previous complete provider answer. Verify that
-    // identity before inspecting sizes in a different answer; changed late
-    // results must report stale_cursor after pages were already published.
+    // The cursor names the previous provider answer. Verify that identity
+    // before inspecting sizes in a different answer; changed late results
+    // must report stale_cursor after pages were already published.
     let cursor = match cursor_token {
         None => None,
         Some(token) => match cursors.read(token, &binding) {
@@ -3532,17 +3654,25 @@ where
             );
         }
     }
-    let offset = cursor.as_ref().map_or(0, |(_, stored)| stored.offset);
-    if offset >= hits.len() && cursor.is_some() {
-        return error_result(
-            None,
-            RefusalCode::InvalidCursor,
-            "provider search cursor is invalid",
-        );
-    }
+    // A ranked window is re-read whole and paged from the cursor offset; a
+    // lexical answer already starts at the cursor position.
+    let (offset, start) = match delivered {
+        Some(delivered) => (delivered.count, 0),
+        None => {
+            let offset = cursor.as_ref().map_or(0, |(_, stored)| stored.offset);
+            if offset >= hits.len() && cursor.is_some() {
+                return error_result(
+                    None,
+                    RefusalCode::InvalidCursor,
+                    "provider search cursor is invalid",
+                );
+            }
+            (offset, offset)
+        }
+    };
     let mut page_hits = Vec::new();
     let mut byte_stop = false;
-    for hit in hits.iter().skip(offset).take(binding.page_limit) {
+    for hit in hits.iter().skip(start).take(binding.page_limit) {
         let mut candidate = page_hits.clone();
         candidate.push(hit.clone());
         let bytes = probe(&candidate);
@@ -3560,7 +3690,7 @@ where
         Ok(offset) => offset,
         Err(error) => return error.into_result(None),
     };
-    let more = next_offset < hits.len();
+    let more = start + page_hits.len() < hits.len();
     let stopped_by = if !more {
         "complete"
     } else if byte_stop {
@@ -3585,9 +3715,19 @@ where
         None,
     );
     if more {
-        let issued = match cursor {
-            Some((_, stored)) => cursors.insert_next(&stored, next_offset),
-            None => cursors.insert_first(binding, next_offset),
+        let issued = match (delivered, cursor) {
+            (Some(delivered), cursor) => {
+                let next = section.hits[..page_hits.len()]
+                    .iter()
+                    .fold(delivered, |prefix, hit| prefix.push(hit));
+                binding.result_fingerprint = Some(next.chain.fingerprint());
+                match cursor {
+                    Some((_, stored)) => cursors.insert_next_answer(&stored, &binding, next_offset),
+                    None => cursors.insert_first(binding, next_offset),
+                }
+            }
+            (None, Some((_, stored))) => cursors.insert_next(&stored, next_offset),
+            (None, None) => cursors.insert_first(binding, next_offset),
         };
         let issued = match issued {
             Ok(token) => token,
@@ -8275,6 +8415,7 @@ mod tests {
             &SearchRequest {
                 query: "Needle".to_string(),
                 limit: 200,
+                skip: None,
             },
             &CancellationToken::new(),
             CodeIntelligenceDeadlines::for_test(Duration::from_secs(5)),
@@ -8320,6 +8461,7 @@ mod tests {
                 &SearchRequest {
                     query: "Needle".to_string(),
                     limit: 200,
+                    skip: None,
                 },
                 &CancellationToken::new(),
                 CodeIntelligenceDeadlines::for_test(Duration::from_secs(5)),
@@ -8356,6 +8498,7 @@ mod tests {
             &SearchRequest {
                 query: "Needle".to_string(),
                 limit: 200,
+                skip: None,
             },
             &CancellationToken::new(),
             CodeIntelligenceDeadlines::for_test(Duration::from_secs(5)),
@@ -8398,6 +8541,7 @@ mod tests {
             &SearchRequest {
                 query: "Needle".to_string(),
                 limit: 200,
+                skip: None,
             },
             &CancellationToken::new(),
             CodeIntelligenceDeadlines::for_test_values(
@@ -8463,6 +8607,7 @@ mod tests {
                     &SearchRequest {
                         query: "Needle".into(),
                         limit: 7,
+                        skip: None,
                     },
                     &selected_role_test_context(),
                     &CancellationToken::new(),
@@ -8563,6 +8708,7 @@ mod tests {
             &SearchRequest {
                 query: "Needle".into(),
                 limit: 7,
+                skip: None,
             },
             &selected_role_test_context(),
             &cancellation,
@@ -8623,5 +8769,359 @@ mod tests {
     #[test]
     fn unfinished_work_outlives_task_handoff_and_completes_once() {
         crate::infrastructure::daemon::server::actor_capacity_tests::assert_unfinished_work_survives_handoff_and_completes_once();
+    }
+
+    /// A traversal-ordered lexical provider over editable per-set lines. It
+    /// honours `skip` like `git-grep`: it streams from the start, folds the
+    /// passed-over hits into the chain and keeps only the requested slice.
+    struct TraversalLexicalProvider {
+        lines: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<String>>>>,
+        requests: Arc<std::sync::Mutex<Vec<(usize, usize)>>>,
+        deadline_after: Arc<std::sync::Mutex<Option<usize>>>,
+    }
+
+    impl TraversalLexicalProvider {
+        fn hit(
+            set: &str,
+            line: usize,
+            snippet: &str,
+        ) -> unica_code_intelligence::model::ProviderSearchHit {
+            unica_code_intelligence::model::ProviderSearchHit {
+                rank: None,
+                provider_score: None,
+                location: unica_source_contract::location::SourceLocation::Unaddressable {
+                    source_set: set.to_string(),
+                    owner_metadata_path: None,
+                    path: "Module.bsl".to_string(),
+                },
+                line,
+                end_line: None,
+                symbol: None,
+                kind: None,
+                snippet: snippet.to_string(),
+                attributes: serde_json::Map::new(),
+            }
+        }
+    }
+
+    impl CodeIntelligenceProvider for TraversalLexicalProvider {
+        fn identity(&self) -> ProviderIdentity {
+            ProviderIdentity::new(ProviderRole::Lexical, "traversal")
+        }
+
+        fn capabilities(&self) -> &[ProviderCapability] {
+            &[ProviderCapability::Search]
+        }
+
+        fn search(
+            &self,
+            request: &SearchRequest,
+            context: &CodeIntelligenceContext,
+            _: ProviderDeadline,
+            _: &CancellationToken,
+        ) -> ProviderSearchSection {
+            use unica_code_intelligence::model::SearchSkip;
+            let set = context.source_root.source_set.clone().unwrap();
+            let skip = request
+                .skip
+                .expect("a lexical page continues its traversal");
+            self.requests
+                .lock()
+                .unwrap()
+                .push((skip.count, request.limit));
+            let lines = self
+                .lines
+                .lock()
+                .unwrap()
+                .get(&set)
+                .cloned()
+                .unwrap_or_default();
+            let mut passed = SearchSkip { count: 0, ..skip };
+            let mut hits = Vec::new();
+            for (index, snippet) in lines.iter().enumerate() {
+                if *self.deadline_after.lock().unwrap() == Some(passed.count) {
+                    let mut section = ProviderSearchSection::timed_out(
+                        self.identity(),
+                        SearchRanking::None,
+                        SearchOrdering::ProviderTraversal,
+                        hits,
+                        vec!["deadline".to_string()],
+                    )
+                    .unwrap();
+                    section.skipped = Some(passed);
+                    return section;
+                }
+                let hit = Self::hit(&set, index + 1, snippet);
+                if passed.count < skip.count {
+                    passed = passed.push(&hit);
+                } else if hits.len() == request.limit {
+                    let mut section = ProviderSearchSection::limit_reached(
+                        self.identity(),
+                        SearchRanking::None,
+                        SearchOrdering::ProviderTraversal,
+                        hits,
+                        Vec::new(),
+                    )
+                    .unwrap();
+                    section.skipped = Some(passed);
+                    return section;
+                } else {
+                    hits.push(hit);
+                }
+            }
+            let mut section = ProviderSearchSection::complete(
+                self.identity(),
+                SearchRanking::None,
+                SearchOrdering::ProviderTraversal,
+                hits,
+                Vec::new(),
+            )
+            .unwrap();
+            section.skipped = Some(passed);
+            section
+        }
+    }
+
+    /// #1119: past the former 200-match window every lexical match stays
+    /// reachable, each page fetches only itself plus one lookahead hit, a
+    /// cursor replays while the delivered prefix holds, and an edit before
+    /// the cursor makes it stale while an edit after it is simply read.
+    #[test]
+    fn lexical_role_search_continues_past_the_former_window_through_the_public_entry() {
+        use unica_execution::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let lines = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::from([(
+            "main".to_string(),
+            (1..=450)
+                .map(|line| format!("Needle {line}"))
+                .collect::<Vec<_>>(),
+        )])));
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let deadline_after = Arc::new(std::sync::Mutex::new(None));
+        let service = Arc::new(
+            super::CanonicalV13ReadService::with_search_providers_for_test(vec![Arc::new(
+                TraversalLexicalProvider {
+                    lines: lines.clone(),
+                    requests: requests.clone(),
+                    deadline_after: deadline_after.clone(),
+                },
+            )]),
+        );
+        let question =
+            json!({"query":"Needle","role":"lexical","scope":"main:CommonModule.Probe","limit":50});
+        let search = |cursor: Option<&str>| {
+            let mut arguments = question.clone();
+            if let Some(cursor) = cursor {
+                arguments["cursor"] = json!(cursor);
+            }
+            invoke_exact_read_with_service(
+                workspace.path(),
+                ToolIdentity::Search,
+                arguments,
+                service.clone(),
+            )
+        };
+        let mut cursors = Vec::new();
+        let mut seen = Vec::new();
+        let last = loop {
+            let page = search(cursors.last().map(String::as_str));
+            assert!(page.ok, "{page:?}");
+            let data = page.data.clone().unwrap();
+            let section = &data["matches"][0];
+            seen.extend(
+                section["hits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|hit| hit["line"].as_u64().unwrap()),
+            );
+            let Some(cursor) = page.cursor.clone() else {
+                break page;
+            };
+            assert_eq!(section["status"], "limitReached");
+            assert_eq!(section["searchComplete"], false);
+            assert_eq!(section["matches"]["relation"], "lowerBound");
+            assert_eq!(section["matches"]["total"], seen.len() + 1);
+            assert!(
+                page.summary.contains("cursor continues"),
+                "{}",
+                page.summary
+            );
+            assert!(page.warnings.is_empty(), "{:?}", page.warnings);
+            cursors.push(cursor);
+        };
+        assert_eq!(seen, (1..=450).collect::<Vec<_>>());
+        assert_eq!(cursors.len(), 8);
+        let data = last.data.clone().unwrap();
+        assert_eq!(data["matches"][0]["searchComplete"], true);
+        assert_eq!(data["matches"][0]["matches"]["total"], 450);
+        assert_eq!(data["matches"][0]["matches"]["relation"], "exact");
+        assert_eq!(
+            *requests.lock().unwrap(),
+            (0..9).map(|page| (page * 50, 51)).collect::<Vec<_>>(),
+            "each page fetches itself and one lookahead hit"
+        );
+
+        let page = search(Some(&cursors[4]));
+        let replay = search(Some(&cursors[4]));
+        assert_eq!(page.data, replay.data);
+        assert_eq!(
+            page.cursor, replay.cursor,
+            "a replay issues the same continuation"
+        );
+        assert_eq!(
+            page.data.as_ref().unwrap()["matches"][0]["hits"][0]["line"],
+            251
+        );
+
+        lines.lock().unwrap().get_mut("main").unwrap()[449] = "Needle changed tail".into();
+        let after_tail = search(Some(&cursors[4]));
+        assert!(after_tail.ok, "{after_tail:?}");
+        assert_eq!(after_tail.data, page.data);
+        assert_eq!(after_tail.cursor, page.cursor);
+
+        *deadline_after.lock().unwrap() = Some(100);
+        let late = search(Some(&cursors[4]));
+        assert!(!late.ok);
+        assert_eq!(late.diagnostics[0]["code"], "deadline_exceeded");
+        *deadline_after.lock().unwrap() = None;
+
+        // The traversal now ends exactly at the cursor: the promised next
+        // match vanished, which is a changed answer, not an empty search.
+        let original = lines.lock().unwrap()["main"].clone();
+        lines.lock().unwrap().get_mut("main").unwrap().truncate(250);
+        let ended = search(Some(&cursors[4]));
+        assert_eq!(ended.diagnostics[0]["code"], "stale_cursor", "{ended:?}");
+        lines.lock().unwrap().insert("main".into(), original);
+
+        lines.lock().unwrap().get_mut("main").unwrap()[10] = "Needle changed head".into();
+        let stale = search(Some(&cursors[4]));
+        assert!(!stale.ok);
+        assert_eq!(stale.diagnostics[0]["code"], "stale_cursor");
+        lines.lock().unwrap().get_mut("main").unwrap().truncate(100);
+        let shrunk = search(Some(&cursors[4]));
+        assert_eq!(shrunk.diagnostics[0]["code"], "stale_cursor");
+
+        // Unscoped lexical search reports a partial traversal instead of
+        // failing; a deadline before the cursor is still a retryable refusal.
+        let unscoped = invoke_exact_read_with_service(
+            workspace.path(),
+            ToolIdentity::Search,
+            json!({"query":"Needle","role":"lexical","limit":50}),
+            service.clone(),
+        );
+        assert!(unscoped.ok, "{unscoped:?}");
+        *deadline_after.lock().unwrap() = Some(10);
+        let late = invoke_exact_read_with_service(
+            workspace.path(),
+            ToolIdentity::Search,
+            json!({"query":"Needle","role":"lexical","limit":50,"cursor":unscoped.cursor.unwrap()}),
+            service.clone(),
+        );
+        assert_eq!(late.diagnostics[0]["code"], "deadline_exceeded", "{late:?}");
+    }
+
+    /// A lexical page that stops by bytes continues right after its last
+    /// delivered match: the next cursor names fewer matches than the limit.
+    #[test]
+    fn lexical_role_search_continues_after_a_byte_stopped_page() {
+        use unica_execution::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let service = Arc::new(
+            super::CanonicalV13ReadService::with_search_providers_for_test(vec![Arc::new(
+                TraversalLexicalProvider {
+                    lines: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::from([(
+                        "main".to_string(),
+                        (1..=60)
+                            .map(|line| format!("Needle {line} {}", "x".repeat(4096)))
+                            .collect::<Vec<_>>(),
+                    )]))),
+                    requests: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    deadline_after: Arc::new(std::sync::Mutex::new(None)),
+                },
+            )]),
+        );
+        let mut arguments =
+            json!({"query":"Needle","role":"lexical","scope":"main:CommonModule.Probe","limit":50});
+        let mut seen = Vec::new();
+        let mut byte_pages = 0;
+        loop {
+            let page = invoke_exact_read_with_service(
+                workspace.path(),
+                ToolIdentity::Search,
+                arguments.clone(),
+                service.clone(),
+            );
+            assert!(page.ok, "{page:?}");
+            let data = page.data.unwrap();
+            seen.extend(
+                data["matches"][0]["hits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|hit| hit["line"].as_u64().unwrap()),
+            );
+            if page.page.as_ref().unwrap()["stoppedBy"] == "bytes" {
+                byte_pages += 1;
+            }
+            match page.cursor {
+                Some(cursor) => arguments["cursor"] = json!(cursor),
+                None => break,
+            }
+        }
+        assert!(byte_pages > 0);
+        assert_eq!(seen, (1..=60).collect::<Vec<_>>());
+    }
+
+    /// An unscoped lexical continuation is one traversal over the admitted
+    /// sets: the passed-over prefix may end inside a later set, and its
+    /// chain equals the one a caller folds over the delivered hits.
+    #[test]
+    fn unscoped_lexical_continuation_crosses_source_sets_as_one_traversal() {
+        use unica_code_intelligence::model::{SearchHitChain, SearchSkip};
+        let (_root, workspace, roots) = two_source_lexical_workspace();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let delivered = (1..=3)
+            .map(|line| TraversalLexicalProvider::hit("first", line, "Needle a"))
+            .chain(std::iter::once(TraversalLexicalProvider::hit(
+                "second", 1, "Needle b",
+            )))
+            .fold(SearchSkip::START, |prefix, hit| prefix.push(&hit));
+        let execution = super::search_unscoped_lexical(
+            &crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
+            &workspace,
+            UnscopedLexicalSources {
+                names: &["first".to_string(), "second".to_string()],
+                retained_roots: &roots,
+            },
+            CodeIntelligenceRegistry::new(vec![Arc::new(TraversalLexicalProvider {
+                lines: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::from([
+                    ("first".to_string(), vec!["Needle a".to_string(); 3]),
+                    ("second".to_string(), vec!["Needle b".to_string(); 5]),
+                ]))),
+                requests: requests.clone(),
+                deadline_after: Arc::new(std::sync::Mutex::new(None)),
+            })])
+            .unwrap(),
+            &SearchRequest {
+                query: "Needle".to_string(),
+                limit: 10,
+                skip: Some(SearchSkip {
+                    count: 4,
+                    chain: SearchHitChain::EMPTY,
+                }),
+            },
+            &CancellationToken::new(),
+            CodeIntelligenceDeadlines::for_test(Duration::from_secs(5)),
+        )
+        .unwrap();
+        let section = &execution.result.sections[0];
+        assert!(section.search_complete, "{section:#?}");
+        assert_eq!(
+            section.hits.iter().map(|hit| hit.line).collect::<Vec<_>>(),
+            vec![2, 3, 4, 5]
+        );
+        assert_eq!(section.skipped, Some(delivered));
+        assert_eq!(*requests.lock().unwrap(), vec![(4, 10), (1, 10)]);
     }
 }

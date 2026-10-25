@@ -229,6 +229,70 @@ pub enum ProviderCapability {
 pub struct SearchRequest {
     pub query: String,
     pub limit: usize,
+    /// Continue a provider traversal after the hits a caller already
+    /// delivered. Only a traversal-ordered provider can honour it; one that
+    /// passes nothing over reports no [`ProviderSearchSection::skipped`].
+    pub skip: Option<SearchSkip>,
+}
+
+/// The leading hits of a provider traversal and the digest of their order.
+/// In a request it names how many hits to pass over and the digest to
+/// extend; in a section it reports what the provider actually passed over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchSkip {
+    pub count: usize,
+    pub chain: SearchHitChain,
+}
+
+impl SearchSkip {
+    pub const START: Self = Self {
+        count: 0,
+        chain: SearchHitChain::EMPTY,
+    };
+
+    /// The same prefix extended by the next hit of the traversal.
+    #[must_use]
+    pub fn push(self, hit: &ProviderSearchHit) -> Self {
+        Self {
+            count: self.count + 1,
+            chain: self.chain.push(hit),
+        }
+    }
+}
+
+/// A running digest of hits in provider order. Extending it one hit at a
+/// time gives the same value however the sequence is split between calls,
+/// so a later call proves it passed over exactly the hits delivered before.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SearchHitChain([u8; 32]);
+
+impl SearchHitChain {
+    pub const EMPTY: Self = Self([0; 32]);
+
+    #[must_use]
+    pub fn push(self, hit: &ProviderSearchHit) -> Self {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"unica-search-hit-chain-v1\0");
+        hasher.update(self.0);
+        hasher.update(serde_json::to_vec(hit).expect("a provider search hit serializes"));
+        Self(hasher.finalize().into())
+    }
+
+    pub fn fingerprint(self) -> String {
+        let mut text = String::with_capacity(16 + 64);
+        text.push_str("search-chain-v1:");
+        for byte in self.0 {
+            text.push_str(&format!("{byte:02x}"));
+        }
+        text
+    }
+}
+
+impl std::fmt::Debug for SearchHitChain {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.fingerprint())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -595,6 +659,10 @@ pub struct ProviderSearchSection {
     pub index_maintenance: Option<IndexMaintenanceEvidence>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<String>,
+    /// What the provider passed over for [`SearchRequest::skip`]; `None`
+    /// when it passed over nothing. Internal proof, never published.
+    #[serde(skip)]
+    pub skipped: Option<SearchSkip>,
 }
 
 impl ProviderSearchSection {
@@ -707,6 +775,7 @@ impl ProviderSearchSection {
             index_build_id: None,
             index_maintenance: None,
             artifacts: Vec::new(),
+            skipped: None,
         })
     }
 

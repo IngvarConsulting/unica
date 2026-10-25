@@ -384,11 +384,7 @@ impl SearchCursorStore {
         if plaintext[33] != present || plaintext[34..66] != digest {
             return Err(SearchCursorError::Stale);
         }
-        let raw_offset: [u8; 8] = plaintext[98..106]
-            .try_into()
-            .map_err(|_| SearchCursorError::Invalid)?;
-        let offset = usize::try_from(u64::from_be_bytes(raw_offset))
-            .map_err(|_| SearchCursorError::Invalid)?;
+        let offset = search_payload_offset(&plaintext)?;
         let mut payload = zeroize::Zeroizing::new([0u8; SEARCH_CURSOR_PAYLOAD_BYTES]);
         payload.copy_from_slice(&plaintext);
         Ok(StoredSearchCursor {
@@ -400,14 +396,16 @@ impl SearchCursorStore {
 
     /// Authenticates a token and its question before any answer exists: the
     /// format, this owner and the question binding (query, scope, mode,
-    /// kind, source sets, page limit). The answer half — whether the result
-    /// or coverage changed — needs the answer and stays with [`Self::read`].
+    /// kind, source sets, page limit), and returns the continuation offset.
+    /// The answer half — whether the result or coverage changed — needs the
+    /// answer and stays with [`Self::read`].
     pub fn verify_question(
         &self,
         token: &str,
         expected: &SearchCursorBinding,
-    ) -> Result<(), SearchCursorError> {
-        self.open_question(token, expected).map(|_| ())
+    ) -> Result<usize, SearchCursorError> {
+        let (_, plaintext) = self.open_question(token, expected)?;
+        search_payload_offset(&plaintext)
     }
 
     fn open_question(
@@ -464,6 +462,36 @@ impl SearchCursorStore {
         issue_search_cursor(&owner, &payload)
     }
 
+    /// The successor of `current` whose answer half names a different
+    /// answer: a continuation bound to what the caller has received so far
+    /// rather than to one fixed answer. Like [`Self::insert_next`], a
+    /// replay of the same page issues the same token.
+    pub fn insert_next_answer(
+        &self,
+        current: &StoredSearchCursor,
+        answer: &SearchCursorBinding,
+        offset: usize,
+    ) -> Result<String, SearchCursorError> {
+        let owner = self
+            .owner
+            .lock()
+            .map_err(|_| SearchCursorError::OwnerUnavailable)?
+            .as_ref()
+            .cloned()
+            .ok_or(SearchCursorError::Invalid)?;
+        if !Arc::ptr_eq(&owner, &current.owner)
+            || current.payload[1..33] != search_question_digest(answer)?
+        {
+            return Err(SearchCursorError::Invalid);
+        }
+        let mut payload = current.payload.clone();
+        let (present, digest) = search_answer_digest(answer);
+        payload[33] = present;
+        payload[34..66].copy_from_slice(&digest);
+        payload[98..106].copy_from_slice(&search_offset_bytes(offset)?);
+        issue_search_cursor(&owner, &payload)
+    }
+
     pub fn token_probe() -> String {
         encode_search_cursor(&[0u8; SEARCH_CURSOR_CIPHERTEXT_BYTES])
     }
@@ -481,6 +509,13 @@ impl SearchCursorStore {
         }
         getrandom::fill(bytes).map_err(|_| SearchCursorError::EntropyUnavailable)
     }
+}
+
+fn search_payload_offset(plaintext: &[u8]) -> Result<usize, SearchCursorError> {
+    let raw_offset: [u8; 8] = plaintext[98..106]
+        .try_into()
+        .map_err(|_| SearchCursorError::Invalid)?;
+    usize::try_from(u64::from_be_bytes(raw_offset)).map_err(|_| SearchCursorError::Invalid)
 }
 
 fn search_offset_bytes(offset: usize) -> Result<[u8; 8], SearchCursorError> {
@@ -1472,8 +1507,8 @@ mod tests {
         // yet known and stays for `read` to report as stale.
         let mut unanswered = changed_answer.clone();
         unanswered.result_fingerprint = None;
-        assert_eq!(store.verify_question(&token, &unanswered), Ok(()));
-        assert_eq!(store.verify_question(&token, &changed_answer), Ok(()));
+        assert_eq!(store.verify_question(&token, &unanswered), Ok(20));
+        assert_eq!(store.verify_question(&token, &changed_answer), Ok(20));
         assert_eq!(
             store.verify_question(&token, &other_kind),
             Err(SearchCursorError::Invalid)
@@ -1665,6 +1700,42 @@ mod tests {
         assert_eq!(
             SearchCursorStore::next_offset(usize::MAX - 1, 1),
             Ok(usize::MAX)
+        );
+    }
+
+    #[test]
+    fn search_next_answer_rebinds_only_the_answer_and_replays_its_token() {
+        let store = SearchCursorStore::default();
+        let mut binding = search_binding("needle", "unused");
+        binding.result_fingerprint = Some("prefix-50".into());
+        let token = store.insert_first(binding.clone(), 50).unwrap();
+        let stored = store.read(&token, &binding).unwrap();
+        let mut next = binding.clone();
+        next.result_fingerprint = Some("prefix-100".into());
+        let successor = store.insert_next_answer(&stored, &next, 100).unwrap();
+        assert_eq!(
+            store.insert_next_answer(&stored, &next, 100).unwrap(),
+            successor,
+            "a replayed page issues the same continuation"
+        );
+        assert_eq!(store.read(&successor, &next).unwrap().offset, 100);
+        assert_eq!(
+            store.read(&successor, &binding).err(),
+            Some(SearchCursorError::Stale)
+        );
+        let mut other_question = next.clone();
+        other_question.query.push('x');
+        assert_eq!(
+            store
+                .insert_next_answer(&stored, &other_question, 100)
+                .err(),
+            Some(SearchCursorError::Invalid)
+        );
+        let foreign = SearchCursorStore::default();
+        foreign.insert_first(binding.clone(), 0).unwrap();
+        assert_eq!(
+            foreign.insert_next_answer(&stored, &next, 100).err(),
+            Some(SearchCursorError::Invalid)
         );
     }
 

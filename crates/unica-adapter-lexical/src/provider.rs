@@ -108,10 +108,24 @@ impl<'a> GitGrepProvider<'a> {
         let mut hits = Vec::new();
         let mut diagnostics = Vec::new();
         let mut fatal = None;
+        // A continuation streams from the start of the traversal and folds
+        // the hits it passes over into the caller's chain: only the page is
+        // retained, however far the cursor reached.
+        let wanted = request.skip.map_or(0, |skip| skip.count);
+        let mut skipped = SearchSkip {
+            count: 0,
+            chain: request
+                .skip
+                .map_or(SearchHitChain::EMPTY, |skip| skip.chain),
+        };
         let mut locations =
             SearchLocationProjector::with_resolver(context, cancellation, self.bindings.resolver);
         let mut consume =
             |line_number: usize, bytes: &[u8]| match parse_git_grep_record(bytes, &mut locations) {
+                Ok(hit) if skipped.count < wanted => {
+                    skipped = skipped.push(&hit);
+                    StreamControl::Continue
+                }
                 Ok(hit) => {
                     hits.push(hit);
                     if hits.len() >= request.limit {
@@ -146,7 +160,11 @@ impl<'a> GitGrepProvider<'a> {
         if let Some((line, error)) = &output.line_error {
             fatal = Some(format!("git-grep record #{line}: {error}"));
         }
-        git_grep_stream_section(output, hits, diagnostics, fatal)
+        let mut section = git_grep_stream_section(output, hits, diagnostics, fatal);
+        if request.skip.is_some() {
+            section.skipped = Some(skipped);
+        }
+        section
     }
 }
 

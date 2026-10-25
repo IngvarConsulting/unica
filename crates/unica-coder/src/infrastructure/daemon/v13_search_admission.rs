@@ -56,6 +56,7 @@ pub(super) fn admit_search_call(
     };
     cursors
         .verify_question(cursor, &question)
+        .map(drop)
         .map_err(|error| Box::new(error.into_result(None)))
 }
 

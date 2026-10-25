@@ -2356,3 +2356,77 @@ fn text_search_keeps_nested_module_order_across_pages() {
     }
     mcp.finish();
 }
+
+/// #1119: a lexical role search is not a window of its first 200 matches.
+/// Every match stays reachable through cursors in traversal order, a cursor
+/// replays its page while the delivered prefix is unchanged, and an edit
+/// before the cursor makes it stale instead of shifting matches.
+#[test]
+fn lexical_role_search_pages_past_two_hundred_matches_without_loss() {
+    let root = tempfile::tempdir().unwrap();
+    body_workspace(root.path(), "// WideNeedle\n".repeat(450).as_bytes());
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let question = json!({"query": "WideNeedle", "role": "lexical", "scope": "main:CommonModule.Main", "limit": 50});
+    let mut arguments = question.clone();
+    let mut lines = Vec::new();
+    let mut cursors = Vec::new();
+    let last = loop {
+        let page = mcp.completed_tool_call(call_tool(
+            2 + cursors.len() as u64,
+            "unica.search",
+            arguments.clone(),
+        ));
+        assert_eq!(page["ok"], true, "{page:#}");
+        let section = &page["data"]["matches"][0];
+        lines.extend(
+            section["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|hit| hit["line"].as_u64().unwrap()),
+        );
+        let Some(cursor) = page["cursor"].as_str() else {
+            break page;
+        };
+        cursors.push(cursor.to_string());
+        arguments["cursor"] = json!(cursor);
+    };
+    assert_eq!(lines, (1..=450).collect::<Vec<_>>());
+    assert_eq!(cursors.len(), 8);
+    assert_eq!(last["page"]["stoppedBy"], "complete");
+    let section = &last["data"]["matches"][0];
+    assert_eq!(section["searchComplete"], true, "{last:#}");
+    assert_eq!(section["matches"]["total"], 450);
+    assert_eq!(section["matches"]["relation"], "exact");
+    assert!(
+        last["warnings"].as_array().is_none_or(Vec::is_empty),
+        "{last:#}"
+    );
+
+    // The fifth cursor continues at offset 250, past the former window.
+    let mut past_window = question.clone();
+    past_window["cursor"] = json!(cursors[4]);
+    let page = mcp.completed_tool_call(call_tool(20, "unica.search", past_window.clone()));
+    let replay = mcp.completed_tool_call(call_tool(21, "unica.search", past_window.clone()));
+    assert_eq!(page, replay, "a cursor replays its page and continuation");
+    assert_eq!(page["data"]["matches"][0]["hits"][0]["line"], 251);
+
+    // An edit after the delivered prefix is read by the next page.
+    let module = root.path().join("CommonModules/Main/Ext/Module.bsl");
+    let mut tail = "// WideNeedle\n".repeat(449);
+    tail.push_str("// WideNeedle tail\n");
+    std::fs::write(&module, tail).unwrap();
+    let after_tail = mcp.completed_tool_call(call_tool(22, "unica.search", past_window.clone()));
+    assert_eq!(after_tail["ok"], true, "{after_tail:#}");
+    assert_eq!(after_tail["data"], page["data"]);
+
+    // An edit inside the delivered prefix makes the cursor stale.
+    let mut prefix = String::from("// WideNeedle head\n");
+    prefix.push_str(&"// WideNeedle\n".repeat(450));
+    std::fs::write(&module, prefix).unwrap();
+    let stale = mcp.completed_tool_call(call_tool(23, "unica.search", past_window));
+    assert_eq!(stale["ok"], false, "{stale:#}");
+    assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
+    mcp.finish();
+}
