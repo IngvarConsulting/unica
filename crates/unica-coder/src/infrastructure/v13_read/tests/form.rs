@@ -570,6 +570,17 @@ fn production_form_command_execute_has_one_semantic_identity_across_view_and_fin
         if state == "missing" {
             assert!(items[0]["props"]["implementationAt"].is_null());
         }
+        // Two Action elements conflict: both are named, neither is the
+        // handler, and the catalog name does not stand in for them.
+        if command == "Duplicate" {
+            assert!(items[0]["props"]["handler"].is_null(), "{}", items[0]);
+            assert_eq!(
+                items[0]["props"]["handlers"],
+                json!([{"handler": "FirstAction"}, {"handler": "SecondAction"}])
+            );
+        } else {
+            assert!(items[0]["props"].get("handlers").is_none(), "{}", items[0]);
+        }
         if state == "implemented" {
             assert_eq!(
                 items[0]["props"]["implementationAt"],

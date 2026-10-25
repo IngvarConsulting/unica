@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::ops::Range;
+use unica_xdto::facets::ValueFacets;
 use unica_xdto::operations::{XdtoPropertyDefinition, XdtoPropertySpec};
 use unica_xml_format::text::{resolve_line_ending, EolPolicy, LineEnding, SourceTextSnapshot};
 
@@ -93,6 +94,10 @@ pub enum WriterErrorField {
     Base,
     Before,
     After,
+    /// Facets that the named value type's base cannot carry.
+    Facets,
+    /// An anonymous ValueType whose base or facets are not supported.
+    ValueType,
 }
 
 #[derive(Debug)]
@@ -137,6 +142,7 @@ pub enum TypedWriterOperation<'a> {
     AddValueType {
         name: &'a str,
         base: &'a str,
+        facets: Option<&'a ValueFacets>,
     },
     AddObjectType {
         name: &'a str,
@@ -164,6 +170,12 @@ pub enum TypedWriterOperation<'a> {
         name: &'a str,
         property_path: Option<&'a str>,
     },
+    RenameProperty {
+        type_name: &'a str,
+        name: &'a str,
+        property_path: Option<&'a str>,
+        new_name: &'a str,
+    },
 }
 
 pub fn plan_typed(
@@ -180,12 +192,26 @@ pub fn plan_typed(
     let root = document.root_element();
     let mut finding = None;
     let edit = match operation {
-        TypedWriterOperation::AddValueType { name, base } => {
+        TypedWriterOperation::AddValueType { name, base, facets } => {
             let desired_base = desired_qname(root, root, base);
+            let empty_facets = ValueFacets::default();
+            let facets = facets.unwrap_or(&empty_facets);
+            facets
+                .validate_base(
+                    desired_base.semantic.namespace.as_deref(),
+                    &desired_base.semantic.local,
+                )
+                .map_err(|message| {
+                    WriterError::new(
+                        WriterErrorCause::BadValue,
+                        WriterErrorField::Facets,
+                        message,
+                    )
+                })?;
             let existing = named_types(root, name);
             if !existing.is_empty() {
                 let exact = existing.len() == 1
-                    && compatible_value_type(existing[0], &desired_base.semantic);
+                    && compatible_value_type(existing[0], &desired_base.semantic, facets);
                 finding = Some(duplicate_finding(
                     "duplicate_type",
                     existing[0],
@@ -197,10 +223,11 @@ pub fn plan_typed(
                 let element_name = lexical_xdto_child_name(before, root, "valueType")
                     .map_err(writer_invalid_source)?;
                 let fragment = format!(
-                    "<{element_name}{} name=\"{}\" base=\"{}\"/>",
+                    "<{element_name}{} name=\"{}\" base=\"{}\"{}/>",
                     desired_base.namespace_declaration(),
                     escape_attribute(name),
-                    escape_attribute(&desired_base.raw)
+                    escape_attribute(&desired_base.raw),
+                    facet_attributes(facets)
                 );
                 Some(
                     insert_top_level(before, root, TopLevelInsert::ValueType, &fragment)
@@ -310,6 +337,7 @@ pub fn plan_typed(
             property_path,
         } => {
             let target = property_target(root, type_name, property_path)?;
+            validate_property_tree_bases(root, target, property)?;
             let existing = direct_named_properties(target, property.name.as_str());
             if !existing.is_empty() {
                 let exact = existing.len() == 1
@@ -324,10 +352,26 @@ pub fn plan_typed(
             } else {
                 let property_name = lexical_xdto_child_name(before, target, "property")
                     .map_err(writer_invalid_source)?;
-                let fragment = if matches!(property.definition, XdtoPropertyDefinition::Named(_)) {
+                let fragment = if matches!(
+                    property.definition,
+                    XdtoPropertyDefinition::Named(_) | XdtoPropertyDefinition::Value { .. }
+                ) {
                     // A leaf property needs only the existing insertion layout.
                     // Requiring a multiline ObjectType layout here rejects legacy inputs.
-                    render_property_tree(root, target, property, &property_name, "", "", "", "")
+                    {
+                        let definition_name = lexical_xdto_child_name(before, target, "typeDef")
+                            .map_err(writer_invalid_source)?;
+                        render_property_tree(
+                            root,
+                            target,
+                            property,
+                            &property_name,
+                            &definition_name,
+                            "",
+                            "",
+                            "",
+                        )
+                    }
                 } else {
                     let indent =
                         infer_child_indent(before, target).map_err(writer_invalid_source)?;
@@ -381,6 +425,41 @@ pub fn plan_typed(
             )?;
             Some(remove_node(before, node))
         }
+        TypedWriterOperation::RenameProperty {
+            type_name,
+            name,
+            property_path,
+            new_name,
+        } => {
+            let target = property_target(root, type_name, property_path)?;
+            let node = exactly_one(
+                direct_named_properties(target, name),
+                "property",
+                WriterErrorField::PropertyName,
+            )?;
+            if name == new_name {
+                None
+            } else if let Some(existing) = renamed_property_conflict(root, target, node, new_name) {
+                finding = Some(duplicate_finding(
+                    "duplicate_property",
+                    existing,
+                    false,
+                    "property",
+                ));
+                None
+            } else {
+                // Меняется только значение атрибута name: localName, тип,
+                // границы, префиксы и соседние байты остаются прежними.
+                let attribute = node
+                    .attributes()
+                    .find(|attribute| attribute.namespace().is_none() && attribute.name() == "name")
+                    .expect("the selected own property carries its name");
+                Some(TextEdit {
+                    range: attribute.range_value(),
+                    replacement: escape_attribute(new_name),
+                })
+            }
+        }
     };
     let edits = edit.into_iter().collect::<Vec<_>>();
     let after = apply_edits(before, &edits).map_err(writer_postcondition)?;
@@ -400,7 +479,7 @@ pub fn plan(
         "add-value-type" => {
             let name = super::required(args, "name")?;
             let base = super::required(args, "base")?;
-            TypedWriterOperation::AddValueType { name, base }
+            TypedWriterOperation::AddValueType { name, base, facets: None }
         }
         "add-object-type" => {
             let name = super::required(args, "name")?;
@@ -562,9 +641,29 @@ fn semantic_qname(node: Node<'_, '_>, raw: &str) -> SemanticQName {
     }
 }
 
-fn compatible_value_type(node: Node<'_, '_>, base: &SemanticQName) -> bool {
+fn facet_attributes(facets: &ValueFacets) -> String {
+    facets
+        .attributes()
+        .into_iter()
+        .map(|(name, value)| format!(" {name}=\"{}\"", escape_attribute(&value)))
+        .collect()
+}
+
+fn compatible_value_type(node: Node<'_, '_>, base: &SemanticQName, facets: &ValueFacets) -> bool {
     node.has_tag_name((XDTO_NS, "valueType"))
-        && has_only_plain_attributes(node, &["name", "base"])
+        && has_only_plain_attributes(
+            node,
+            &[
+                "name",
+                "base",
+                "maxLength",
+                "totalDigits",
+                "fractionDigits",
+                "minInclusive",
+                "maxInclusive",
+            ],
+        )
+        && crate::facets::from_node(node).is_ok_and(|existing| existing.equivalent(facets))
         && has_exact_compatible_content(node)
         && node.attribute("base").is_some_and(|existing| {
             let existing = semantic_qname(node, existing);
@@ -737,6 +836,30 @@ fn compatible_property_tree(
                     .attribute("type")
                     .is_some_and(|raw| semantic_qname(node, raw) == desired.semantic)
         }
+        XdtoPropertyDefinition::Value { base, facets } => {
+            if node.attribute("type").is_some() {
+                return false;
+            }
+            let definitions = node.children().filter(Node::is_element).collect::<Vec<_>>();
+            let [definition] = definitions.as_slice() else {
+                return false;
+            };
+            let desired = desired_qname(root, context, base.as_str());
+            definition.has_tag_name((XDTO_NS, "typeDef"))
+                && definition.attribute((XSI_NS, "type")) == Some("ValueType")
+                && definition.attributes().all(|attribute| {
+                    (attribute.namespace() == Some(XSI_NS) && attribute.name() == "type")
+                        || (attribute.namespace().is_none()
+                            && (attribute.name() == "base"
+                                || crate::facets::NAMES.contains(&attribute.name())))
+                })
+                && has_exact_compatible_content(*definition)
+                && definition
+                    .attribute("base")
+                    .is_some_and(|raw| semantic_qname(*definition, raw) == desired.semantic)
+                && crate::facets::from_node(*definition)
+                    .is_ok_and(|actual| actual.equivalent(facets))
+        }
         XdtoPropertyDefinition::Object(properties) => {
             if node.attribute("type").is_some() {
                 return false;
@@ -767,6 +890,34 @@ fn compatible_property_tree(
     }
 }
 
+fn validate_property_tree_bases(
+    root: Node<'_, '_>,
+    context: Node<'_, '_>,
+    spec: &XdtoPropertySpec,
+) -> Result<(), WriterError> {
+    match &spec.definition {
+        XdtoPropertyDefinition::Named(_) => Ok(()),
+        XdtoPropertyDefinition::Object(children) => children
+            .iter()
+            .try_for_each(|child| validate_property_tree_bases(root, context, child)),
+        XdtoPropertyDefinition::Value { base, facets } => {
+            let desired = desired_qname(root, context, base.as_str());
+            facets
+                .validate_anonymous_base(
+                    desired.semantic.namespace.as_deref(),
+                    &desired.semantic.local,
+                )
+                .map_err(|message| {
+                    WriterError::new(
+                        WriterErrorCause::BadValue,
+                        WriterErrorField::ValueType,
+                        message,
+                    )
+                })
+        }
+    }
+}
+
 fn whitespace_character_data(node: Node<'_, '_>) -> bool {
     node.children()
         .filter(Node::is_text)
@@ -776,6 +927,10 @@ fn whitespace_character_data(node: Node<'_, '_>) -> bool {
 fn property_requests_prefix(spec: &XdtoPropertySpec, prefix: &str) -> bool {
     match &spec.definition {
         XdtoPropertyDefinition::Named(name) => name
+            .as_str()
+            .split_once(':')
+            .is_some_and(|(used, _)| used == prefix),
+        XdtoPropertyDefinition::Value { base, .. } => base
             .as_str()
             .split_once(':')
             .is_some_and(|(used, _)| used == prefix),
@@ -838,6 +993,16 @@ fn render_property_tree(
                 escape_attribute(spec.name.as_str()),
                 escape_attribute(&desired.raw)
             )
+        }
+        XdtoPropertyDefinition::Value { base, facets } => {
+            let desired = desired_qname(root, context, base.as_str());
+            let (prefix, declaration) = xsi_binding(root, context, spec);
+            let default_namespace = if context.lookup_namespace_uri(None) == Some(XDTO_NS) {
+                String::new()
+            } else {
+                format!(" xmlns=\"{XDTO_NS}\"")
+            };
+            format!("<{property_name} name=\"{}\"{bounds}><{definition_name}{declaration}{default_namespace} {prefix}:type=\"ValueType\"{} base=\"{}\"{}/></{property_name}>", escape_attribute(spec.name.as_str()), desired.namespace_declaration(), escape_attribute(&desired.raw), facet_attributes(facets))
         }
         XdtoPropertyDefinition::Object(properties) => {
             let (prefix, declaration) = xsi_binding(root, context, spec);
@@ -1310,6 +1475,52 @@ fn strict_property_path(property_path: Option<&str>) -> Result<Vec<String>, Writ
     Ok(segments)
 }
 
+/// The sibling the platform would refuse next to the renamed property. 8.3.27
+/// rejects a repeated property name, where a `ref` is named by the local part
+/// of its global property, and a repeated XML representation: form, namespace
+/// and XML name, which is `localName` when it is written.
+fn renamed_property_conflict<'a>(
+    root: Node<'a, 'a>,
+    target: Node<'a, 'a>,
+    renamed: Node<'a, 'a>,
+    new_name: &str,
+) -> Option<Node<'a, 'a>> {
+    let target_namespace = root.attribute("targetNamespace");
+    let reference = |property: Node<'a, 'a>| {
+        property.attribute("ref").map(|raw| {
+            let (prefix, local) = raw
+                .split_once(':')
+                .map_or((None, raw), |(p, l)| (Some(p), l));
+            (property.lookup_namespace_uri(prefix), local)
+        })
+    };
+    let form = |property: Node<'a, 'a>| property.attribute("form").unwrap_or("Element");
+    let representation = |property: Node<'a, 'a>| match reference(property) {
+        Some((namespace, local)) => (form(property), namespace, local),
+        None => (
+            form(property),
+            target_namespace,
+            property
+                .attribute("localName")
+                .or_else(|| property.attribute("name"))
+                .unwrap_or_default(),
+        ),
+    };
+    let renamed_representation = renamed
+        .attribute("localName")
+        .is_none()
+        .then(|| (form(renamed), target_namespace, new_name));
+    target
+        .children()
+        .filter(|sibling| *sibling != renamed && sibling.has_tag_name((XDTO_NS, "property")))
+        .find(|sibling| {
+            let name = sibling
+                .attribute("name")
+                .or_else(|| reference(*sibling).map(|(_, local)| local));
+            name == Some(new_name) || renamed_representation == Some(representation(*sibling))
+        })
+}
+
 fn named_types<'a>(root: Node<'a, 'a>, name: &str) -> Vec<Node<'a, 'a>> {
     root.children()
         .filter(|node| {
@@ -1699,6 +1910,142 @@ mod tests {
             "Added"
         );
         assert!(super::super::validation::validate(&after_model).is_empty());
+    }
+
+    #[test]
+    fn xdto_writer_renames_only_the_name_value_of_the_selected_property() {
+        let before = package(concat!(
+            "\t<valueType name=\"Строка\" base=\"xs:string\"/>\n",
+            "\t<objectType name=\"Target\">\n",
+            "\t\t<property name=\"Первое\" type=\"xs:string\"/>\n",
+            "\t\t<property xmlns:d3p1=\"urn:test\" name=\"Код\" type=\"d3p1:Строка\" lowerBound=\"0\" upperBound=\"-1\" form=\"Attribute\" localName=\"Code\"/>\n",
+            "\t\t<property name=\"Третье\" type=\"xs:int\"/>\n",
+            "\t</objectType>\n",
+            "\t<objectType name=\"Owner\">\n",
+            "\t\t<property name=\"A.B\">\n",
+            "\t\t\t<typeDef xsi:type=\"ObjectType\">\n",
+            "\t\t\t\t<property name=\"Child\" type=\"xs:string\"/>\n",
+            "\t\t\t</typeDef>\n",
+            "\t\t</property>\n",
+            "\t</objectType>\n",
+        ));
+        let rename = |type_name, property_path, name, new_name| {
+            super::plan_typed(
+                &before,
+                super::TypedWriterOperation::RenameProperty {
+                    type_name,
+                    name,
+                    property_path,
+                    new_name,
+                },
+            )
+        };
+        for (type_name, path, name, new_name, old_attribute, new_attribute) in [
+            // Явное localName остаётся XML-именем свойства.
+            (
+                "Target",
+                None,
+                "Код",
+                "ВнешнийКод",
+                "name=\"Код\"",
+                "name=\"ВнешнийКод\"",
+            ),
+            (
+                "Target",
+                None,
+                "Первое",
+                "Начальное",
+                "name=\"Первое\"",
+                "name=\"Начальное\"",
+            ),
+            (
+                "Owner",
+                Some(r"A\.B"),
+                "Child",
+                "Ребёнок",
+                "name=\"Child\"",
+                "name=\"Ребёнок\"",
+            ),
+            ("Owner", None, "A.B", "A.C", "name=\"A.B\"", "name=\"A.C\""),
+        ] {
+            let planned = rename(type_name, path, name, new_name).unwrap();
+            assert_eq!(
+                planned.after,
+                before.replacen(old_attribute, new_attribute, 1)
+            );
+            assert_eq!(planned.edits.len(), 1);
+            assert_eq!(&before[planned.edits[0].range.clone()], name);
+            assert!(planned.finding.is_none());
+            assert_edit_applies(&before, &planned);
+            // form и localName валидатор пока не поддерживает; переименование
+            // не добавляет и не снимает таких находок.
+            let codes = |text: &str| {
+                let model = super::super::model::PackageModel::parse(text).unwrap();
+                super::super::validation::validate(&model)
+                    .into_iter()
+                    .map(|finding| finding.code)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(codes(&planned.after), codes(&before));
+        }
+        let renamed = rename("Target", None, "Код", "ВнешнийКод").unwrap();
+        let model = super::super::model::PackageModel::parse(&renamed.after).unwrap();
+        assert_eq!(
+            model.types[1]
+                .properties
+                .iter()
+                .map(|property| property.logical_identity())
+                .collect::<Vec<_>>(),
+            ["Первое", "ВнешнийКод", "Третье"]
+        );
+
+        let unchanged = rename("Target", None, "Код", "Код").unwrap();
+        assert!(unchanged.edits.is_empty());
+        assert_eq!(unchanged.after, before);
+        assert!(unchanged.finding.is_none());
+
+        let duplicate = rename("Target", None, "Код", "Третье").unwrap();
+        assert!(duplicate.edits.is_empty());
+        assert_eq!(duplicate.after, before);
+        assert!(duplicate.conflict());
+        assert_eq!(duplicate.duplicate_code(), Some("duplicate_property"));
+
+        // Платформа 8.3.27 отвергает и имя ссылки на глобальное свойство,
+        // и совпавшее XML-представление; иная форма представления допустима.
+        let siblings = package(concat!(
+            "\t<property name=\"Глобальное\" type=\"xs:string\"/>\n",
+            "\t<objectType name=\"Target\">\n",
+            "\t\t<property name=\"Первое\" type=\"xs:string\"/>\n",
+            "\t\t<property ref=\"tns:Глобальное\"/>\n",
+            "\t\t<property name=\"Второе\" type=\"xs:string\" localName=\"code\"/>\n",
+            "\t\t<property name=\"Третье\" type=\"xs:string\" form=\"Attribute\" localName=\"attr\"/>\n",
+            "\t</objectType>\n",
+        ));
+        for (name, new_name, conflict) in [
+            ("Первое", "Глобальное", true),
+            ("Первое", "code", true),
+            ("Первое", "attr", false),
+            ("Второе", "Глобальное", true),
+            ("Второе", "Первое", true),
+            ("Второе", "attr", false),
+        ] {
+            let planned = super::plan_typed(
+                &siblings,
+                super::TypedWriterOperation::RenameProperty {
+                    type_name: "Target",
+                    name,
+                    property_path: None,
+                    new_name,
+                },
+            )
+            .unwrap();
+            assert_eq!(planned.conflict(), conflict, "{name} -> {new_name}");
+            assert_eq!(planned.edits.is_empty(), conflict, "{name} -> {new_name}");
+        }
+
+        let missing = rename("Target", None, "Нет", "Есть").unwrap_err();
+        assert_eq!(missing.cause(), super::WriterErrorCause::NotFound);
+        assert_eq!(missing.field(), super::WriterErrorField::PropertyName);
     }
 
     #[test]

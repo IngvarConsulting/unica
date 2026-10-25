@@ -67,6 +67,13 @@ const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
 
 const REGISTRAR_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 
+/// The source set the descriptor belongs to: its name for dependency reads
+/// and its kind for the member property profile.
+pub struct MetadataInfoSourceSet<'a> {
+    pub name: &'a str,
+    pub kind: unica_source_contract::SourceSetKind,
+}
+
 /// The exact controls supplied for this read, without additional policy/checkpoints.
 pub struct MetadataInfoControl<'a> {
     pub deadline: ProviderDeadline,
@@ -80,7 +87,7 @@ pub fn read_typed_meta_info<G>(
     reader: &dyn MetadataInfoRead<Guard = G>,
     resolved: &ResolvedMetadataObject<G>,
     descriptor_preimage: &[u8],
-    source_set: &str,
+    source_set: MetadataInfoSourceSet<'_>,
     target: &MetadataAddress,
     control: MetadataInfoControl<'_>,
     support_reader: &dyn SupportStateReader,
@@ -99,10 +106,14 @@ pub fn read_typed_meta_info<G>(
     // The local typed projection is shared with capability-bound readers. V12
     // computes support from its resolved target after the descriptor has been
     // proved, preserving the previous error precedence for malformed images.
-    let mut local = crate::info::parse_typed_meta_local_info(
+    // The source set kind selects the member property profile exactly as the
+    // canonical view does; without it `check` missed damaged member
+    // properties (#1941).
+    let mut local = crate::info::parse_typed_meta_local_info_for_source(
         descriptor_preimage,
         target,
         MetaSupportStatus::Supported,
+        source_set.kind,
     )?;
     local.support = typed_support_status(support_reader, &resolved.resolved_target)?;
 
@@ -154,7 +165,7 @@ pub fn read_typed_meta_info<G>(
     let (event_source_resources, event_source_diagnostics) = typed_event_source_dependency_images(
         reader,
         resolved,
-        source_set,
+        source_set.name,
         &local.relations.source,
         deadline,
         cancellation,

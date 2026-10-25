@@ -4154,7 +4154,11 @@ fn diagnostic_module_scope_preserves_exact_common_module_and_catalog_roles() {
         let before = fs::read(&expected).unwrap();
         let scope = authority
             .diagnostic_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
-            .map(|mapping| mapping.module_scope())
+            .map(|mapping| {
+                mapping
+                    .module_scope()
+                    .expect("a module mapping has its scope")
+            })
             .unwrap();
         assert_eq!(scope.source_set, "main", "{at}");
         assert_eq!(scope.source_root, fixture.source, "{at}");
@@ -4180,9 +4184,60 @@ fn diagnostic_module_scope_refuses_foreign_source_object_and_unregistered_module
         assert!(
             authority
                 .diagnostic_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
-                .map(|mapping| mapping.module_scope())
+                .map(|mapping| mapping
+                    .module_scope()
+                    .expect("a module mapping has its scope"))
                 .is_err(),
             "invented module scope for {at}"
+        );
+    }
+}
+
+/// #1966: объект и корень проверяются как цель целиком — без модульной
+/// области и без выдуманного объекта; общий модуль как объект — тоже объект.
+#[test]
+fn diagnostic_node_mapping_proves_object_common_module_and_root_without_module_scope() {
+    use unica_address::source_target::TargetKind;
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    for (at, metadata_path, kind) in [
+        (
+            "main:Catalog.Items",
+            Some("Catalog.Items"),
+            TargetKind::MetadataObject,
+        ),
+        (
+            "main:CommonModule.РеактивныйСервер",
+            Some("CommonModule.РеактивныйСервер"),
+            TargetKind::MetadataObject,
+        ),
+        ("main:Configuration", None, TargetKind::SourceRoot),
+    ] {
+        let mapping = authority
+            .diagnostic_node_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
+            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
+        assert_eq!(
+            mapping
+                .target()
+                .metadata_path
+                .as_ref()
+                .map(MetadataAddress::as_str),
+            metadata_path,
+            "{at}"
+        );
+        assert_eq!(mapping.target().target_kind, kind, "{at}");
+        assert!(mapping.module_scope().is_none(), "{at}");
+    }
+    for at in [
+        "main:Catalog.Missing",
+        "other:Catalog.Items",
+        "main:CommonModule.РеактивныйСервер.Body",
+    ] {
+        assert!(
+            authority
+                .diagnostic_node_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
+                .is_err(),
+            "invented node target for {at}"
         );
     }
 }
@@ -4194,7 +4249,11 @@ fn diagnostic_module_scope_keeps_admitted_source_after_project_remap() {
     let at = QualifiedAddress::parse("main:CommonModule.РеактивныйСервер.Body").unwrap();
     let admitted = authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| {
+            mapping
+                .module_scope()
+                .expect("a module mapping has its scope")
+        })
         .unwrap();
     let replacement = fixture.root.path().join("replacement");
     write(
@@ -4204,7 +4263,11 @@ fn diagnostic_module_scope_keeps_admitted_source_after_project_remap() {
     fs::write(fixture.root.path().join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: replacement\n").unwrap();
     let retained = authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| {
+            mapping
+                .module_scope()
+                .expect("a module mapping has its scope")
+        })
         .unwrap();
     assert_eq!(retained.source_root, admitted.source_root);
     assert_eq!(retained.module_path, admitted.module_path);
@@ -4225,13 +4288,17 @@ fn diagnostic_module_scope_refuses_replaced_retained_root() {
     let at = QualifiedAddress::parse("main:CommonModule.РеактивныйСервер").unwrap();
     assert!(authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| mapping
+            .module_scope()
+            .expect("a module mapping has its scope"))
         .is_ok());
     fs::rename(&fixture.source, fixture.root.path().join("saved-source")).unwrap();
     fs::create_dir(&fixture.source).unwrap();
     assert!(authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| mapping
+            .module_scope()
+            .expect("a module mapping has its scope"))
         .is_err());
 }
 
@@ -4245,7 +4312,11 @@ fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
     let at = QualifiedAddress::parse("main:CommonModule.РеактивныйСервер").unwrap();
     let module = authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| {
+            mapping
+                .module_scope()
+                .expect("a module mapping has its scope")
+        })
         .unwrap()
         .module_path;
     let foreign = fixture.root.path().join("foreign.bsl");
@@ -4262,14 +4333,16 @@ fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
     }
     assert!(authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| mapping
+            .module_scope()
+            .expect("a module mapping has its scope"))
         .is_err());
     assert_eq!(fs::read_to_string(foreign).unwrap(), "// foreign module\n");
 }
 
 mod canonical_module_diagnostics {
     use super::*;
-    use crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping;
+    use crate::infrastructure::diagnostics::CanonicalDiagnosticMapping;
     use std::time::Duration;
     use unica_address::source_target::TargetKind;
     use unica_diagnostics::coordinator::DiagnosticCoordinator;
@@ -4277,7 +4350,7 @@ mod canonical_module_diagnostics {
     use unica_diagnostics::model::*;
     use unica_source_contract::location::SourceLocation;
 
-    fn request(mapping: &CanonicalModuleDiagnosticMapping) -> DiagnosticRequest {
+    fn request(mapping: &CanonicalDiagnosticMapping) -> DiagnosticRequest {
         DiagnosticRequest {
             action: DiagnosticAction::Analyze,
             source_set: mapping.target().source_set.clone(),
@@ -4588,6 +4661,234 @@ mod canonical_module_diagnostics {
             .err()
             .expect("changed named root must not acquire diagnostic authority");
         assert_eq!(error.code(), RefusalCode::ProviderUnavailable);
+    }
+}
+
+#[test]
+fn form_validation_input_keeps_the_authority_cancellation_and_deadline() {
+    let fixture = RealReaderFixture::new();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Form.MainForm").unwrap();
+    let mut authority = fixture.read_authority();
+    authority.deadline = ProviderDeadline::from_budget(std::time::Duration::ZERO);
+    assert_eq!(
+        authority
+            .form_validation_input(&address)
+            .err()
+            .unwrap()
+            .code(),
+        RefusalCode::DeadlineExceeded
+    );
+    let authority = fixture.read_authority();
+    fixture.cancellation.cancel();
+    assert_eq!(
+        authority
+            .form_validation_input(&address)
+            .err()
+            .unwrap()
+            .code(),
+        RefusalCode::Cancelled
+    );
+}
+
+#[test]
+fn form_validation_input_does_not_read_a_module_without_checkable_bindings() {
+    let fixture = RealExternalReaderFixture::new();
+    let address =
+        QualifiedAddress::parse("artifact_processor:ExternalDataProcessor.Import.Form.Main")
+            .unwrap();
+    let body = fixture.processor.join("Import/Forms/Main/Ext/Form.xml");
+    let module = fixture
+        .processor
+        .join("Import/Forms/Main/Ext/Form/Module.bsl");
+    if module.exists() {
+        fs::remove_file(&module).unwrap();
+    }
+    // Каталог вместо файла доказывает отсутствие обращения к ненужному модулю.
+    fs::create_dir_all(&module).unwrap();
+    for text in [
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="Панель" id="-1"/><ChildItems/></Form>"#,
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Events><Event name="UnknownEvent">Обработчик</Event></Events></Form>"#,
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Events><Event name="OnOpen" callType="Before">ПриОткрытии</Event></Events></Form>"#,
+        "<Form>",
+    ] {
+        write(&body, text);
+        let input = fixture
+            .read_authority("artifact_processor", SourceSetKind::ExternalProcessor)
+            .form_validation_input(&address)
+            .unwrap();
+        assert!(input.module.is_none());
+    }
+}
+
+#[test]
+fn form_validation_input_refuses_linked_form_and_needed_module() {
+    use unica_workspace::test_support::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+    for linked in ["Form.xml", "Form/Module.bsl"] {
+        let fixture = RealExternalReaderFixture::new();
+        let address =
+            QualifiedAddress::parse("artifact_processor:ExternalDataProcessor.Import.Form.Main")
+                .unwrap();
+        let ext = fixture.processor.join("Import/Forms/Main/Ext");
+        write(
+            &ext.join("Form.xml"),
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Events><Event name="OnOpen">ПриОткрытии</Event></Events></Form>"#,
+        );
+        write(
+            &ext.join("Form/Module.bsl"),
+            "&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n",
+        );
+        let path = ext.join(linked);
+        let foreign = fixture.context.cwd.join("foreign");
+        fs::rename(&path, &foreign).unwrap();
+        let before = fs::read(&foreign).unwrap();
+        let outcome = create_file_link_fixture_for_test(&foreign, &path)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
+            return;
+        }
+        assert!(
+            fixture
+                .read_authority("artifact_processor", SourceSetKind::ExternalProcessor)
+                .form_validation_input(&address)
+                .is_err(),
+            "{linked}"
+        );
+        assert_eq!(fs::read(&foreign).unwrap(), before);
+    }
+}
+
+#[test]
+fn canonical_form_validation_reports_captured_malformed_xml() {
+    let fixture = RealExternalReaderFixture::new();
+    let address =
+        QualifiedAddress::parse("artifact_processor:ExternalDataProcessor.Import.Form.Main")
+            .unwrap();
+    write(
+        &fixture.processor.join("Import/Forms/Main/Ext/Form.xml"),
+        "<Form>",
+    );
+    let input = fixture
+        .read_authority("artifact_processor", SourceSetKind::ExternalProcessor)
+        .form_validation_input(&address)
+        .unwrap();
+    let checked = crate::application::v13::check::normalize_native_outcome(
+        &address,
+        "Form",
+        crate::application::v13::check::CheckValidator::Form,
+        crate::infrastructure::native_operations::v13_analysis::validate_form_input(input),
+    )
+    .unwrap();
+    assert!(!checked.ok());
+    assert!(checked
+        .diagnostics()
+        .iter()
+        .any(|diagnostic| diagnostic.severity() == "error"
+            && diagnostic.message().contains("XML parse error")));
+}
+
+#[test]
+fn retained_form_check_ignores_source_set_remapping() {
+    let fixture = RealExternalReaderFixture::new();
+    let address =
+        QualifiedAddress::parse("artifact_processor:ExternalDataProcessor.Import.Form.Main")
+            .unwrap();
+    let body = fixture.processor.join("Import/Forms/Main/Ext/Form.xml");
+    let original = fs::read_to_string(&body).unwrap();
+    let authority = fixture.read_authority("artifact_processor", SourceSetKind::ExternalProcessor);
+    let admitted = authority.form_validation_input(&address).unwrap();
+    assert_eq!(admitted.text, original);
+
+    // Новый корень содержит отличающуюся форму; право чтения остаётся прежним.
+    let replacement = fixture.context.cwd.join("replacement");
+    write(
+        &replacement.join("Import.xml"),
+        &fs::read_to_string(fixture.processor.join("Import.xml")).unwrap(),
+    );
+    write(
+        &replacement.join("Import/Forms/Main.xml"),
+        &fs::read_to_string(fixture.processor.join("Import/Forms/Main.xml")).unwrap(),
+    );
+    write(
+        &replacement.join("Import/Forms/Main/Ext/Form.xml"),
+        "<Form/>",
+    );
+    fs::write(
+        fixture.context.cwd.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: artifact_processor\n    type: EXTERNAL_DATA_PROCESSORS\n    path: replacement\n",
+    )
+    .unwrap();
+    let retained = authority.form_validation_input(&address).unwrap();
+    assert_eq!(retained.text, original);
+    assert_eq!(retained.artifact, admitted.artifact);
+    assert!(!retained.config_context);
+}
+
+#[test]
+fn canonical_form_validation_keeps_captured_xml_module_and_owner() {
+    let fixture = RealExternalReaderFixture::new();
+    for (source_set, kind, root, owner) in [
+        (
+            "artifact_processor",
+            SourceSetKind::ExternalProcessor,
+            &fixture.processor,
+            "ExternalDataProcessor.Import",
+        ),
+        (
+            "artifact_report",
+            SourceSetKind::ExternalReport,
+            &fixture.report,
+            "ExternalReport.Sales",
+        ),
+    ] {
+        let name = owner.split('.').nth(1).unwrap();
+        let body = root.join(format!("{name}/Forms/Main/Ext/Form.xml"));
+        let module = root.join(format!("{name}/Forms/Main/Ext/Form/Module.bsl"));
+        write(
+            &body,
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="КоманднаяПанель" id="-1"/><Events><Event name="OnOpen">ПриОткрытии</Event></Events><ChildItems/></Form>"#,
+        );
+        // Предел выдачи текста не ограничивает вход проверки: обработчик
+        // после этого предела всё равно должен участвовать в диагностике.
+        let padding =
+            "// Заполнение\n".repeat(crate::application::v13::source_text::MAX_SOURCE_TEXT_BYTES);
+        write(&module, &format!("{padding}&НаКлиенте\nПроцедура ПриОткрытии(Отказ, Лишний, ЕщёОдин)\nКонецПроцедуры\n"));
+        let address = QualifiedAddress::parse(&format!("{source_set}:{owner}.Form.Main")).unwrap();
+        let input = fixture
+            .read_authority(source_set, kind)
+            .form_validation_input(&address)
+            .unwrap();
+
+        // Валидатор обязан использовать захваченные байты даже после замены всех входов.
+        write(&body, "это уже не XML");
+        write(
+            &module,
+            "&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n",
+        );
+        write(&root.join(format!("{name}.xml")), "описание заменено");
+        write(
+            &root.join(format!("{name}/Forms/Main.xml")),
+            "описание формы заменено",
+        );
+        let checked = crate::application::v13::check::normalize_native_outcome(
+            &address,
+            "Form",
+            crate::application::v13::check::CheckValidator::Form,
+            crate::infrastructure::native_operations::v13_analysis::validate_form_input(input),
+        )
+        .unwrap();
+        assert!(checked.ok());
+        assert!(checked
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.severity() == "warning"
+                && diagnostic.message().contains("ПриОткрытии")));
+        assert_eq!(fs::read_to_string(&body).unwrap(), "это уже не XML");
     }
 }
 
@@ -6963,4 +7264,467 @@ fn subsystem_text_properties_preserve_presence_and_damage_at_every_depth() {
             assert_eq!(fs::read(fixture.source.join(path)).unwrap(), before);
         }
     }
+}
+
+fn install_common_template_fixture(fixture: &RealReaderFixture) {
+    let config_path = fixture.source.join("Configuration.xml");
+    let config = fs::read_to_string(&config_path).unwrap().replace("</ChildObjects>", "<CommonTemplate>Print</CommonTemplate><CommonTemplate>Schema</CommonTemplate><CommonTemplate>Html</CommonTemplate></ChildObjects>");
+    write(&config_path, &config);
+    for name in ["Print", "Schema", "Html"] {
+        for suffix in [".xml", "/Ext/Template.xml"] {
+            let relative = format!("CommonTemplates/{name}{suffix}");
+            write(
+                &fixture.source.join(&relative),
+                &fixture_text(&format!(
+                    "acceptance/workspace-common-template/src/{relative}"
+                )),
+            );
+        }
+    }
+}
+
+#[test]
+fn common_template_empty_synonyms_have_no_value_like_other_metadata() {
+    for synonym in [
+        "",
+        "<Synonym/>",
+        "<Synonym>   </Synonym>",
+        "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></Synonym>",
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_common_template_fixture(&fixture);
+        let descriptor = fixture.source.join("CommonTemplates/Print.xml");
+        let original = fs::read_to_string(&descriptor).unwrap();
+        let start = original.find("<Synonym>").unwrap();
+        let end = original.find("</Synonym>").unwrap() + "</Synonym>".len();
+        let mut modified = original;
+        modified.replace_range(start..end, synonym);
+        write(&descriptor, &modified);
+        let result = fixture
+            .view_service()
+            .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
+        assert!(result.ok, "{synonym:?}: {result:?}");
+        let data = result.data.unwrap();
+        assert!(data["props"]["synonym"].is_null(), "{synonym:?}: {data}");
+        assert_eq!(data["props"]["format"], "SpreadsheetDocument");
+    }
+}
+
+#[test]
+fn common_template_damaged_synonym_keeps_independent_template_facts() {
+    for synonym in [
+        "<Synonym><Bad/></Synonym>",
+        "<Synonym>broken</Synonym>",
+        "<Synonym xmlns=\"urn:foreign\"/>",
+        "<Synonym/><Synonym/>",
+        "<Synonym unexpected=\"yes\"/>",
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_common_template_fixture(&fixture);
+        let descriptor = fixture.source.join("CommonTemplates/Print.xml");
+        let mut xml = fs::read_to_string(&descriptor).unwrap();
+        let start = xml.find("<Synonym>").unwrap();
+        let end = xml.find("</Synonym>").unwrap() + "</Synonym>".len();
+        xml.replace_range(start..end, synonym);
+        write(&descriptor, &xml);
+        let service = fixture.view_service();
+        let result = service.view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
+        assert!(result.ok, "{synonym}: {result:?}");
+        let data = result.data.unwrap();
+        assert_eq!(data["title"], "Print");
+        assert!(data["props"]["synonym"].is_null(), "{synonym}: {data}");
+        assert_eq!(data["props"]["format"], "SpreadsheetDocument");
+        assert!(
+            data["limits"].to_string().contains("properties.Synonym"),
+            "{synonym}: {data}"
+        );
+        assert!(
+            service
+                .view(ViewRequest::new("main:CommonTemplate.Print.Area.A.Body").unwrap())
+                .ok
+        );
+        assert_eq!(fs::read_to_string(&descriptor).unwrap(), xml);
+    }
+}
+
+#[test]
+fn common_template_exposes_mxl_areas_body_and_parameters_through_public_view() {
+    let fixture = RealReaderFixture::new();
+    install_common_template_fixture(&fixture);
+    let service = fixture.view_service();
+    let at = "main:CommonTemplate.Print";
+    let template = service.view(ViewRequest::new(at).unwrap());
+    assert!(template.ok, "{template:?}");
+    let data = template.data.unwrap();
+    assert_eq!(data["props"]["format"], "SpreadsheetDocument");
+    assert_eq!(data["props"]["synonym"], "Общий Print");
+    assert!(data["branches"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"at":format!("{at}.Area"),"count":2})));
+    let area = service.view(ViewRequest::new(&format!("{at}.Area.A")).unwrap());
+    assert!(area.ok, "{area:?}");
+    let body = service.view(ViewRequest::new(&format!("{at}.Area.A.Body")).unwrap());
+    assert!(body.ok, "{body:?}");
+    assert_eq!(body.data.as_ref().unwrap()["items"][0]["text"], "Changed");
+    let parameter =
+        service.view(ViewRequest::new(&format!("{at}.Area.A.Parameter.Probe")).unwrap());
+    assert!(parameter.ok, "{parameter:?}");
+}
+
+#[test]
+fn common_templates_share_mxl_and_dcs_readers_and_validation_inputs() {
+    let fixture = RealReaderFixture::new();
+    install_common_template_fixture(&fixture);
+    for (common, nested) in [("Print", "Print"), ("Schema", "MainSchema")] {
+        let bytes = fs::read(
+            fixture
+                .source
+                .join(format!("CommonTemplates/{common}/Ext/Template.xml")),
+        )
+        .unwrap();
+        fs::write(
+            fixture.source.join(format!(
+                "Reports/ParityReport/Templates/{nested}/Ext/Template.xml"
+            )),
+            bytes,
+        )
+        .unwrap();
+    }
+    let service = fixture.view_service();
+    for (common, nested, suffix) in [
+        ("Print", "Print", ".Area"),
+        ("Print", "Print", ".Area.A"),
+        ("Print", "Print", ".Area.A.Body"),
+        ("Print", "Print", ".Area.A.Parameter"),
+        ("Print", "Print", ".Area.A.Parameter.Probe"),
+        ("Schema", "MainSchema", ".DataSet.MainData"),
+        ("Schema", "MainSchema", ".DataSet.MainData.Query"),
+        ("Schema", "MainSchema", ".Parameter"),
+        ("Schema", "MainSchema", ".Parameter.Period"),
+        ("Schema", "MainSchema", ".Item"),
+        ("Schema", "MainSchema", ".Setting.Основной.Item"),
+    ] {
+        let a = service
+            .view(ViewRequest::new(&format!("main:CommonTemplate.{common}{suffix}")).unwrap());
+        let b = service.view(
+            ViewRequest::new(&format!(
+                "main:Report.ParityReport.Template.{nested}{suffix}"
+            ))
+            .unwrap(),
+        );
+        assert!(a.ok && b.ok, "{suffix}: {a:?} / {b:?}");
+        let normalize = |data: &Option<serde_json::Value>| {
+            serde_json::to_string(data)
+                .unwrap()
+                .replace(&format!("main:CommonTemplate.{common}"), "OWNER")
+                .replace(
+                    &format!("main:Report.ParityReport.Template.{nested}"),
+                    "OWNER",
+                )
+        };
+        assert_eq!(normalize(&a.data), normalize(&b.data), "{suffix}");
+    }
+    let authority = fixture.read_authority();
+    let at = QualifiedAddress::parse("main:CommonTemplate.Print").unwrap();
+    let input = authority.mxl_validation_input(&at).unwrap();
+    assert!(
+        crate::infrastructure::native_operations::mxl_composition::validate_mxl_input(
+            &serde_json::Map::new(),
+            &input.text,
+            input.artifact
+        )
+        .ok
+    );
+    let schema = QualifiedAddress::parse("main:CommonTemplate.Schema").unwrap();
+    assert!(authority.dcs_validation_input(&schema).is_ok());
+    assert!(authority.dcs_validation_input(&at).is_err());
+    assert!(authority.mxl_validation_input(&schema).is_err());
+}
+
+#[test]
+fn common_template_descriptor_and_registration_boundaries_fail_closed() {
+    let fixture = RealReaderFixture::new();
+    install_common_template_fixture(&fixture);
+    let descriptor = fixture.source.join("CommonTemplates/Print.xml");
+    let original = fs::read_to_string(&descriptor).unwrap();
+    for variant in [
+        "root-qname",
+        "artifact-qname",
+        "wrong-name",
+        "missing-type",
+        "unknown-type",
+        "duplicate-type",
+        "nested-type",
+        "missing-properties",
+    ] {
+        let text = match variant {
+            "root-qname" => original
+                .replace(
+                    "<MetaDataObject ",
+                    "<MetaDataObject xmlns:x=\"urn:foreign\" ",
+                )
+                .replace("<MetaDataObject ", "<x:MetaDataObject ")
+                .replace("</MetaDataObject>", "</x:MetaDataObject>"),
+            "artifact-qname" => {
+                original.replace("<CommonTemplate ", "<CommonTemplate xmlns=\"urn:foreign\" ")
+            }
+            "wrong-name" => original.replace("<Name>Print</Name>", "<Name>Other</Name>"),
+            "missing-type" => {
+                original.replace("<TemplateType>SpreadsheetDocument</TemplateType>", "")
+            }
+            "unknown-type" => original.replace("SpreadsheetDocument", "FutureFormat"),
+            "duplicate-type" => original.replace(
+                "</TemplateType>",
+                "</TemplateType><TemplateType>SpreadsheetDocument</TemplateType>",
+            ),
+            "nested-type" => {
+                original.replace("SpreadsheetDocument", "<Value>SpreadsheetDocument</Value>")
+            }
+            "missing-properties" => original
+                .replace("<Properties>", "<Other>")
+                .replace("</Properties>", "</Other>"),
+            _ => unreachable!(),
+        };
+        fs::write(&descriptor, text).unwrap();
+        let view = fixture
+            .view_service()
+            .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
+        assert!(!view.ok, "{variant}: {view:?}");
+        assert_eq!(
+            view.diagnostics[0]["code"], "provider_unavailable",
+            "{variant}"
+        );
+    }
+    fs::write(&descriptor, &original).unwrap();
+    let config_path = fixture.source.join("Configuration.xml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        &config_path,
+        config.replace("<CommonTemplate>Print</CommonTemplate>", ""),
+    )
+    .unwrap();
+    for at in [
+        "main:CommonTemplate.Print",
+        "main:CommonTemplate.Print.Area.A",
+        "main:CommonTemplate.Print.Area.A.Body",
+    ] {
+        let view = fixture.view_service().view(ViewRequest::new(at).unwrap());
+        assert!(!view.ok, "{at}: {view:?}");
+        assert_eq!(view.diagnostics[0]["code"], "not_found");
+    }
+    fs::write(&config_path, config).unwrap();
+    fs::remove_file(&descriptor).unwrap();
+    for at in ["main:CommonTemplate.Print", "main:CommonTemplate"] {
+        let view = fixture.view_service().view(ViewRequest::new(at).unwrap());
+        assert!(!view.ok, "{at}: {view:?}");
+        assert_eq!(view.diagnostics[0]["code"], "provider_unavailable");
+    }
+}
+
+#[test]
+fn common_opaque_and_inherited_templates_do_not_open_a_body() {
+    let fixture = RealReaderFixture::new();
+    install_common_template_fixture(&fixture);
+    let html = fixture
+        .view_service()
+        .view(ViewRequest::new("main:CommonTemplate.Html").unwrap());
+    assert!(html.ok, "{html:?}");
+    let data = html.data.unwrap();
+    assert_eq!(data["props"]["format"], "HTMLDocument");
+    assert_eq!(data["props"]["synonym"], "Общий Html");
+    assert!(data.get("branches").is_none());
+    for suffix in [".Area", ".DataSet", ".Parameter", ".Item", ".Area.A.Body"] {
+        let view = fixture
+            .view_service()
+            .view(ViewRequest::new(&format!("main:CommonTemplate.Html{suffix}")).unwrap());
+        assert!(!view.ok, "{suffix}: {view:?}");
+        assert_eq!(view.diagnostics[0]["code"], "not_found");
+    }
+    let descriptor = fixture.source.join("CommonTemplates/Print.xml");
+    let original = fs::read_to_string(&descriptor).unwrap();
+    let payload = fixture
+        .source
+        .join("CommonTemplates/Print/Ext/Template.xml");
+    let original_payload = fs::read(&payload).unwrap();
+    for format in [
+        "SpreadsheetDocument",
+        "HTMLDocument",
+        "DataCompositionAppearanceTemplate",
+    ] {
+        fs::write(&descriptor, original.replace("SpreadsheetDocument", format).replace("</Properties>", "<ExtendedConfigurationObject>99999999-9999-4999-8999-999999999999</ExtendedConfigurationObject></Properties>")).unwrap();
+        fs::write(&payload, &original_payload).unwrap();
+        let local = fixture
+            .extension_view_service()
+            .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
+        assert!(local.ok, "{format}: {local:?}");
+        let data = local.data.unwrap();
+        assert_eq!(data["props"]["format"], format);
+        if format != "SpreadsheetDocument" {
+            assert!(data.get("branches").is_none(), "opaque {format}: {data:?}");
+        }
+        fs::remove_file(&payload).unwrap();
+        let view = fixture
+            .extension_view_service()
+            .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
+        assert!(view.ok, "{format}: {view:?}");
+        let data = view.data.unwrap();
+        assert_eq!(data["props"]["content"], "inherited", "{format}: {data:?}");
+        assert!(data["props"]["format"].is_null(), "{format}: {data:?}");
+        assert!(data.get("branches").is_none());
+    }
+}
+
+/// #1924: заимствованный план обмена без своего `Ext/Content.xml` не знает
+/// состава в расширении — его несёт план родителя. Чтение не выдаёт пустой
+/// список за известный состав.
+#[test]
+fn a_borrowed_exchange_plan_without_its_own_content_does_not_read_as_empty() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+    write(
+        &fixture.source.join("Configuration.xml"),
+        &configuration.replace(
+            "</ChildObjects>",
+            "<ExchangePlan>Узлы</ExchangePlan><ExchangePlan>Собственный</ExchangePlan></ChildObjects>",
+        ),
+    );
+    // Собственный план расширения без `Ext/Content.xml` — доказанно пустой состав.
+    write(
+        &fixture.source.join("ExchangePlans/Собственный.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<ExchangePlan uuid="2f0e0000-0000-4000-8000-000000000302">
+		<Properties>
+			<Name>Собственный</Name>
+			<Comment/>
+		</Properties>
+		<ChildObjects/>
+	</ExchangePlan>
+</MetaDataObject>"#,
+    );
+    write(
+        &fixture.source.join("ExchangePlans/Узлы.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+	<ExchangePlan uuid="2f0e0000-0000-4000-8000-000000000301">
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Узлы</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>1f0e0000-0000-4000-8000-000000000301</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects/>
+	</ExchangePlan>
+</MetaDataObject>"#,
+    );
+    let service = fixture.extension_view_service();
+    let content_limit = "relations.content is absent; the relation list may be incomplete";
+    let limits = |at: &str| {
+        let view = service.view(ViewRequest::new(at).unwrap());
+        assert!(view.ok, "{at}");
+        view.data.unwrap()["limits"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    for at in ["main:ExchangePlan.Узлы", "main:ExchangePlan.Узлы.Relation"] {
+        assert!(limits(at).contains(&json!(content_limit)), "{at}");
+    }
+    for at in [
+        "main:ExchangePlan.Собственный",
+        "main:ExchangePlan.Собственный.Relation",
+    ] {
+        assert!(!limits(at).contains(&json!(content_limit)), "{at}");
+    }
+}
+
+#[test]
+fn xdto_restricted_value_view_returns_named_and_anonymous_facets() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let document = roxmltree::Document::parse(original.trim_start_matches('\u{feff}')).unwrap();
+    let namespace = document
+        .root_element()
+        .attribute("targetNamespace")
+        .unwrap();
+    let source = include_str!("../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
+        .replace("urn:unica:anonymous", namespace);
+    fs::write(&package, source.as_bytes()).unwrap();
+    let service = fixture.view_service();
+    for (suffix, facets, anonymous, base) in [
+        ("Type.КодПримера", json!({"maxLength":10}), false, "string"),
+        (
+            "Type.СуммаПримера",
+            json!({"totalDigits":5,"fractionDigits":2,"minInclusive":"0","maxInclusive":"999.99"}),
+            false,
+            "decimal",
+        ),
+        (
+            "Type.Пример.Property.АнонимныйКод",
+            json!({"maxLength":10}),
+            true,
+            "string",
+        ),
+    ] {
+        let result = service.view(
+            ViewRequest::new(&format!("main:XDTOPackage.EnterpriseData_1_17_3.{suffix}")).unwrap(),
+        );
+        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        let data = result.data.unwrap();
+        let props = &data["props"];
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(props["facets"].as_str().unwrap()).unwrap(),
+            facets
+        );
+        let actual_base: serde_json::Value =
+            serde_json::from_str(props["base"].as_str().unwrap()).unwrap();
+        assert_eq!(actual_base["local"], base);
+        assert_eq!(actual_base["namespace"], "http://www.w3.org/2001/XMLSchema");
+        if anonymous {
+            assert_eq!(props["anonymousType"], "ValueType");
+        }
+    }
+    assert_eq!(fs::read(&package).unwrap(), source.as_bytes());
+}
+
+#[test]
+fn xdto_restricted_value_view_reports_oversized_facets() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let document = roxmltree::Document::parse(original.trim_start_matches('\u{feff}')).unwrap();
+    let namespace = document
+        .root_element()
+        .attribute("targetNamespace")
+        .unwrap();
+    let source = include_str!("../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
+        .replace("urn:unica:anonymous", namespace)
+        .replace("999.99", &"9".repeat(3000))
+        .replace(
+            "base=\"xs:string\" maxLength=\"10\"",
+            &format!("base=\"xs:decimal\" maxInclusive=\"{}\"", "9".repeat(3000)),
+        );
+    fs::write(&package, source.as_bytes()).unwrap();
+    let service = fixture.view_service();
+    for suffix in ["Type.СуммаПримера", "Type.Пример.Property.АнонимныйКод"]
+    {
+        let result = service.view(
+            ViewRequest::new(&format!("main:XDTOPackage.EnterpriseData_1_17_3.{suffix}")).unwrap(),
+        );
+        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        let data = result.data.unwrap();
+        assert!(data["props"].get("facets").is_none());
+        assert!(data["limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().is_some_and(|s| s.contains("facets"))));
+    }
+    assert_eq!(fs::read(&package).unwrap(), source.as_bytes());
 }

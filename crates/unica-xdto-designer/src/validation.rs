@@ -292,6 +292,20 @@ fn validate_named_type(
             findings,
         );
     }
+    if let Err(message) = named.facets.validate_base(
+        named
+            .base
+            .as_ref()
+            .and_then(|base| base.namespace.as_deref()),
+        named.base.as_ref().map_or("", |base| base.local.as_str()),
+    ) {
+        findings.push(Finding::error(
+            "unsupported_node",
+            format!("{}/facets", named.key),
+            &named.span,
+            message.to_owned(),
+        ));
+    }
     if named.kind == TypeKind::Object {
         validate_property_list(
             &named.key,
@@ -431,6 +445,45 @@ fn validate_type_def(
     global_properties: &HashSet<&str>,
     findings: &mut Vec<Finding>,
 ) {
+    if type_def
+        .discriminator
+        .as_ref()
+        .is_some_and(|value| value.value == "ValueType")
+    {
+        if let Some(base) = &type_def.base {
+            validate_qname(
+                base,
+                ReferenceSite {
+                    kind: ReferenceKind::Type,
+                    key: &format!("{}/@base", type_def.key),
+                },
+                target_namespace,
+                imports,
+                local_types,
+                global_properties,
+                findings,
+            );
+            if let Err(message) = type_def
+                .facets
+                .validate_anonymous_base(base.namespace.as_deref(), &base.local)
+            {
+                findings.push(Finding::error(
+                    "unsupported_node",
+                    format!("{}/facets", type_def.key),
+                    &type_def.span,
+                    message.to_owned(),
+                ));
+            }
+        } else {
+            findings.push(Finding::error(
+                "unsupported_node",
+                format!("{}/@base", type_def.key),
+                &type_def.span,
+                "anonymous ValueType requires base".to_owned(),
+            ));
+        }
+        return;
+    }
     if type_def
         .discriminator
         .as_ref()

@@ -566,6 +566,12 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
             if namespace != CURRENT_CONFIG_NAMESPACE {
                 return false;
             }
+            // Набор типов платформы (`AnyIBRef`, `CatalogRef`, `DocumentObject`,
+            // `ConstantValueManager`…) синтаксически допустим, но не моделируется.
+            if platform_type_set(&local) {
+                saw_unknown = true;
+                continue;
+            }
             let Ok(address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &local)
             else {
                 return false;
@@ -617,6 +623,42 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
         && saw_unknown
         && !(saw_value_storage && variant_count != 1)
         && seen_qualifiers.is_subset(&expected_qualifiers)
+}
+
+/// Наборы типов платформы без имени объекта, сверенные с выгрузкой 8.3.27:
+/// все ссылки базы, ссылки, объекты или наборы записей одного вида, менеджер
+/// значения константы.
+const PLATFORM_TYPE_SETS: &[&str] = &[
+    "AnyRef",
+    "AnyIBRef",
+    "CatalogRef",
+    "DocumentRef",
+    "EnumRef",
+    "ExchangePlanRef",
+    "ChartOfCharacteristicTypesRef",
+    "ChartOfAccountsRef",
+    "ChartOfCalculationTypesRef",
+    "BusinessProcessRef",
+    "TaskRef",
+    "CatalogObject",
+    "DocumentObject",
+    "ExchangePlanObject",
+    "ChartOfCharacteristicTypesObject",
+    "ChartOfAccountsObject",
+    "ChartOfCalculationTypesObject",
+    "BusinessProcessObject",
+    "TaskObject",
+    "InformationRegisterRecordSet",
+    "AccumulationRegisterRecordSet",
+    "AccountingRegisterRecordSet",
+    "CalculationRegisterRecordSet",
+    "SequenceRecordSet",
+    "RecalculationRecordSet",
+    "ConstantValueManager",
+];
+
+fn platform_type_set(local: &str) -> bool {
+    PLATFORM_TYPE_SETS.contains(&local)
 }
 
 pub fn expand_observed_type_qname(
@@ -911,7 +953,7 @@ pub fn project_meta_info_declarations(
             properties,
             "StandardAttributes",
             "standardAttributes",
-            parse_standard_attributes_for_public_properties,
+            parse_standard_attributes,
             target,
             diagnostics,
         ))
@@ -2002,30 +2044,6 @@ pub fn node_is_empty_placeholder(node: roxmltree::Node<'_, '_>) -> bool {
         .any(|child| child.is_element() || child.text().is_some_and(|text| !text.trim().is_empty()))
 }
 
-fn parse_standard_attributes_for_public_properties(
-    container: roxmltree::Node<'_, '_>,
-) -> Result<Vec<MetaStandardAttribute>, ProjectionError> {
-    let attributes = parse_standard_attributes(container)?;
-    for (index, attribute) in container
-        .children()
-        .filter(roxmltree::Node::is_element)
-        .enumerate()
-    {
-        for property in attribute.children().filter(roxmltree::Node::is_element) {
-            let name = property.tag_name().name();
-            if matches!(name, "Synonym" | "ToolTip")
-                && !direct_text_content(property).trim().is_empty()
-            {
-                return Err(ProjectionError::malformed(
-                    format!("standardAttributes[{index}].properties.{name}"),
-                    "localized standard attribute property must contain localized items",
-                ));
-            }
-        }
-    }
-    Ok(attributes)
-}
-
 pub fn observe_tabular_standard_attributes(
     properties: roxmltree::Node<'_, '_>,
     field: &str,
@@ -2064,6 +2082,25 @@ pub fn observe_tabular_standard_attributes(
             ));
         }
     }
+    Ok(Some(attributes))
+}
+
+/// Стандартные реквизиты любого владельца — справочника, табличной части,
+/// стандартной табличной части — читаются одинаково: локализуемое свойство,
+/// записанное голым текстом, отвергается (#1910). Набор локализуемых свойств
+/// — по выгрузке 8.3.27, где `Format` и `EditFormat` пишутся `<v8:item>`.
+pub fn parse_standard_attributes(
+    container: roxmltree::Node<'_, '_>,
+) -> Result<Vec<MetaStandardAttribute>, ProjectionError> {
+    ensure_container_shape(container, "standardAttributes")?;
+    let attributes = container
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .enumerate()
+        .map(|(index, node)| {
+            parse_standard_attribute(node, &format!("standardAttributes[{index}]"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     for (index, attribute) in container
         .children()
         .filter(roxmltree::Node::is_element)
@@ -2075,27 +2112,13 @@ pub fn observe_tabular_standard_attributes(
                 && !direct_text_content(property).trim().is_empty()
             {
                 return Err(ProjectionError::malformed(
-                    format!("{field}[{index}].properties.{name}"),
+                    format!("standardAttributes[{index}].properties.{name}"),
                     "localized standard attribute property must contain localized items",
                 ));
             }
         }
     }
-    Ok(Some(attributes))
-}
-
-pub fn parse_standard_attributes(
-    container: roxmltree::Node<'_, '_>,
-) -> Result<Vec<MetaStandardAttribute>, ProjectionError> {
-    ensure_container_shape(container, "standardAttributes")?;
-    container
-        .children()
-        .filter(roxmltree::Node::is_element)
-        .enumerate()
-        .map(|(index, node)| {
-            parse_standard_attribute(node, &format!("standardAttributes[{index}]"))
-        })
-        .collect()
+    Ok(attributes)
 }
 
 pub fn parse_standard_attribute(
@@ -2193,11 +2216,17 @@ pub fn parse_standard_attribute_property(
         name,
         "LinkByType" | "ChoiceParameterLinks" | "ChoiceParameters"
     ) {
-        if node.attributes().len() != 0 || !node_is_empty_placeholder(node) {
+        if node.attributes().len() != 0 {
             return Err(ProjectionError::malformed(
                 field.to_string(),
-                "closed format profile requires this declaration to be empty".to_string(),
+                "declaration element must not carry attributes".to_string(),
             ));
+        }
+        // Непустая декларация — допустимая выгрузка платформы, которую этот
+        // профиль не моделирует, а не повреждённый исходник: чтение соседних
+        // свойств продолжается, а читатель называет её предупреждением.
+        if !node_is_empty_placeholder(node) {
+            return Ok(MetaObservedPropertyValue::Unmodelled {});
         }
         return Ok(MetaObservedPropertyValue::Empty {});
     }
