@@ -83,6 +83,16 @@ pub(crate) struct TemplateValidationInput {
     pub(crate) format_guard: crate::application::ports::FormatGuardCheck,
 }
 
+/// Сохранённые входы проверки формы; пути не дают права повторного чтения.
+pub(crate) struct FormValidationInput {
+    pub(crate) artifact: PathBuf,
+    pub(crate) text: String,
+    pub(crate) module: Option<String>,
+    pub(crate) config_context: bool,
+    pub(crate) metadata_owner: Option<NodeKind>,
+    pub(crate) format_guard: crate::application::ports::FormatGuardCheck,
+}
+
 const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
 
 /// Один разбор дескриптора объекта: свойства и заимствование из тех же байтов.
@@ -665,6 +675,84 @@ impl ProviderReadAuthority {
         Ok(data)
     }
 
+    pub(crate) fn form_validation_input(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<FormValidationInput, ViewError> {
+        let wrapper = self.metadata_descriptor(target)?;
+        let wrapper_relative = self.metadata_descriptor_relative(target)?;
+        let relative = self.attached_resource_relative(target, "Form.xml")?;
+        let bytes = self.read_relative_with_checkpoint(
+            &relative,
+            Some(MAX_CONFIGURATION_BYTES),
+            checkpoint,
+        )?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "Form.xml не является UTF-8",
+            )
+        })?;
+        let artifact = self.root_path().join(&relative);
+        let parts = target.as_str().split('.').collect::<Vec<_>>();
+        let metadata_owner = if parts[0] == "CommonForm" {
+            None
+        } else {
+            NodeKind::parse(parts[0]).ok()
+        };
+        let source_relative = if self.is_external_source_set() {
+            let owner =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
+                    .map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+            self.metadata_descriptor_relative(&owner)?
+        } else {
+            PathBuf::from("Configuration.xml")
+        };
+        let source_bytes =
+            self.read_relative_with_checkpoint(&source_relative, None, checkpoint)?;
+        let format_guard =
+            crate::infrastructure::format_guard::evaluate_retained_template_format_guard(
+                "form-validate",
+                unica_source_designer::owner::MANAGED_FORM_ROOT,
+                &artifact,
+                &text,
+                (self.root_path().join(wrapper_relative), wrapper),
+                (
+                    self.root_path().join(source_relative),
+                    source_bytes,
+                    self.source_set_kind,
+                ),
+            )
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        // Отсутствующий или неразбираемый модуль не задаёт сигнатур. Ошибка
+        // доступа и отмена сохраняются: ссылка не становится необязательным файлом.
+        let module = if crate::infrastructure::form_composition::form_validation_requires_module(
+            &text,
+            metadata_owner,
+        ) {
+            let module_target = unica_source_designer::module_layout::form_module_target(target)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+            let module_relative = self.module_relative(&module_target)?;
+            self.read_optional_relative_with_checkpoint(&module_relative, None, checkpoint)?
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+        } else {
+            None
+        };
+        Ok(FormValidationInput {
+            artifact,
+            text,
+            module,
+            config_context: !self.is_external_source_set(),
+            metadata_owner,
+            format_guard,
+        })
+    }
+
     pub(crate) fn dcs_payload(
         &self,
         target: &MetadataAddress,
@@ -902,6 +990,12 @@ impl ProviderReadAuthority {
                 Ok(Some(observation)) => {
                     info.relations.content = Some(Some(observation.items));
                     observation.errors
+                }
+                // Заимствованный план без своего `Ext/Content.xml` несёт состав
+                // плана родителя: здесь он неизвестен, а не пуст (#1924).
+                Ok(None) if borrowing.as_ref().is_some_and(|b| b.extends.is_some()) => {
+                    info.relations.content = Some(None);
+                    Vec::new()
                 }
                 // The platform omits Content.xml for an empty composition.
                 Ok(None) => {

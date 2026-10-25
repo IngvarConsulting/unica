@@ -26,15 +26,7 @@ pub fn metadata_object_create_input_schema() -> &'static Value {
 
 pub fn metadata_object_remove_input_schema() -> &'static Value {
     static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        object(
-            &[
-                ("at", text(true)),
-                ("force", json!({"type":"boolean","default":false})),
-            ],
-            &[],
-        )
-    })
+    SCHEMA.get_or_init(|| object(&[("at", text(true))], &[]))
 }
 
 pub fn metadata_borrow_input_schema() -> &'static Value {
@@ -420,7 +412,7 @@ pub fn metadata_object_remove() -> OperationContract {
         schema: metadata_object_remove_input_schema().clone(),
         target: "The existing metadata object: <source-set>:<Kind>.<Name>.",
         effect: "Remove the object descriptor, its resource directory and its registration; update subsystem membership.",
-        notes: "References from other objects are checked. force=true keeps those references and reports references_kept; it does not repair them. Under the deny support policy, a vendor object must be taken off support in a separate apply call first.",
+        notes: "References from other metadata refuse the removal and are listed by the referring address and property; remove them first. References only in module code or in query-language text (form and data composition queries, data composition expressions, role access restriction conditions; English or Russian kind names) are listed by address and line in the code_references warning of the plan; that text is left as it is, and executing its token confirms the removal. Compositions that list the object — subsystem content, role rights, command interfaces, the home page, exchange plan and functional option content — lose its entries in the same apply, named in the composition_cleaned warning of the plan. An editable vendor object is removed while staying on support; a locked vendor object, or one with a locked child, refuses under the deny support policy until a separate supportRule.set apply takes it off support, warns support_locked under warn and is removed silently under off. The support marker is not changed.",
         example_args: json!({}),
         help: METADATA_HELP,
         format_validators: &[],

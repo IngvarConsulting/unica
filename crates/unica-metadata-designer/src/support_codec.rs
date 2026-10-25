@@ -345,18 +345,23 @@ fn vendor_flag_span(text: &str, start: usize) -> Option<(usize, usize)> {
     Some((flag_start, flag_end))
 }
 
-fn replace_all_object_rule_flags(text: &mut String, target: u8) -> usize {
+/// Записи правил объектов — те же, что читает [`crate::support::object_rule_record`]:
+/// с отметкой поставщика `0` и `-1` (#1976). Меняется только цифра правила.
+fn rewrite_object_rule_flags(
+    text: &mut String,
+    target: u8,
+    mut selects: impl FnMut(&str) -> bool,
+) -> usize {
     let mut bytes = text.as_bytes().to_vec();
     let mut count = 0usize;
     let mut i = 0usize;
-    while i + 40 <= bytes.len() {
-        if matches!(bytes[i], b'0'..=b'2')
-            && bytes.get(i + 1..i + 4) == Some(b",0,")
-            && text.get(i + 4..i + 40).is_some_and(is_uuid_text)
-        {
-            bytes[i] = b'0' + target;
-            count += 1;
-            i += 40;
+    while i < bytes.len() {
+        if let Some((_, uuid, length)) = crate::support::object_rule_record(&text.as_bytes()[i..]) {
+            if selects(uuid) {
+                bytes[i] = b'0' + target;
+                count += 1;
+            }
+            i += length;
             continue;
         }
         i += 1;
@@ -367,32 +372,12 @@ fn replace_all_object_rule_flags(text: &mut String, target: u8) -> usize {
     count
 }
 
+fn replace_all_object_rule_flags(text: &mut String, target: u8) -> usize {
+    rewrite_object_rule_flags(text, target, |_| true)
+}
+
 fn replace_object_rule_flags(text: &mut String, object_uuid: &str, target: u8) -> usize {
-    let target_uuid = object_uuid.to_ascii_lowercase();
-    let mut bytes = text.as_bytes().to_vec();
-    let mut count = 0usize;
-    let mut i = 0usize;
-    while i + 40 <= bytes.len() {
-        if matches!(bytes[i], b'0'..=b'2') && bytes.get(i + 1..i + 4) == Some(b",0,") {
-            let uuid_start = i + 4;
-            let uuid_end = uuid_start + 36;
-            if let Some(uuid) = text.get(uuid_start..uuid_end) {
-                if is_uuid_text(uuid)
-                    && uuid.as_bytes().eq_ignore_ascii_case(target_uuid.as_bytes())
-                {
-                    bytes[i] = b'0' + target;
-                    count += 1;
-                    i = uuid_end;
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    if count > 0 {
-        *text = String::from_utf8(bytes).expect("single-byte digit replacement preserves UTF-8");
-    }
-    count
+    rewrite_object_rule_flags(text, target, |uuid| uuid.eq_ignore_ascii_case(object_uuid))
 }
 
 pub fn noop_support_data(action: &str, message: impl Into<String>) -> SupportEditData {
@@ -407,5 +392,86 @@ pub fn noop_support_data(action: &str, message: impl Into<String>) -> SupportEdi
         records_changed: 0,
         object_rules_reset: 0,
         mutation: unica_execution_contract::mutation::MutationData::default(),
+    }
+}
+
+#[cfg(test)]
+mod platform_marker_tests {
+    use super::*;
+
+    /// Текст маркера без BOM — так его получают писатели.
+    fn marker(name: &str) -> String {
+        let bytes: &[u8] = match name {
+            "off" => {
+                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/off.bin")
+                    .as_slice()
+            }
+            "editable" => include_bytes!(
+                "../../../tests/fixtures/platform_8_3_27/support-markers/editable.bin"
+            )
+            .as_slice(),
+            "locked" => {
+                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/locked.bin")
+                    .as_slice()
+            }
+            other => panic!("no support marker fixture `{other}`"),
+        };
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        text.strip_prefix('\u{feff}').unwrap().to_owned()
+    }
+
+    /// Включение изменений пишет тот же маркер, что платформа 8.3.27 после
+    /// «Включить возможность изменения» с правилом «на замке» (#1976).
+    #[test]
+    fn enabling_changes_writes_the_platform_marker() {
+        let (written, data) = plan_capability_data(
+            Path::new("ParentConfigurations.bin"),
+            &marker("off"),
+            SupportCapability::On,
+        )
+        .unwrap();
+        assert_eq!(written, marker("locked"));
+        assert_eq!(data.object_rules_reset, 5);
+    }
+
+    /// Правило объекта с отметкой поставщика «не рекомендуется» (`-1`)
+    /// меняется так же, как с `0`; отметка сохраняется.
+    #[test]
+    fn an_object_rule_is_written_for_both_vendor_marks() {
+        let uuid = "c27da06f-c6f6-4edf-b3d9-6c007fba4b0c";
+        for mark in ["0", "-1"] {
+            let text = marker("locked").replacen(
+                &format!("0,0,{uuid},{uuid}"),
+                &format!("0,{mark},{uuid},{uuid}"),
+                1,
+            );
+            let (written, data) = plan_object_rule_data(
+                Path::new("ParentConfigurations.bin"),
+                &text,
+                uuid,
+                SupportObjectRule::Editable,
+            )
+            .unwrap();
+            assert!(data.applied, "{mark}");
+            assert!(
+                written.contains(&format!("1,{mark},{uuid},{uuid}")),
+                "{mark}"
+            );
+            assert_eq!(written.len(), text.len(), "{mark}");
+        }
+        // Включение изменений сбрасывает на замок и записи с `-1`.
+        let text = marker("off").replacen(
+            &format!("1,0,{uuid},{uuid}"),
+            &format!("1,-1,{uuid},{uuid}"),
+            1,
+        );
+        let (written, data) = plan_capability_data(
+            Path::new("ParentConfigurations.bin"),
+            &text,
+            SupportCapability::On,
+        )
+        .unwrap();
+        assert_eq!(data.object_rules_reset, 5);
+        assert!(written.contains(&format!("0,-1,{uuid},{uuid}")));
     }
 }

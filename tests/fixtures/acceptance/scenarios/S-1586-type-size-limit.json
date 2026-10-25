@@ -128,7 +128,47 @@
       "assertions": [
         {
           "pointer": "/data/items/0/props/type",
-          "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер01\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер02\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер03\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер04\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер05\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер06\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер07\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер08\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер09\"}],\"mutationCapability\":\"editable\"}"
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер01"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер02"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер03"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер04"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер05"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер06"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер07"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер08"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер09"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
         },
         {
           "pointer": "/data/items/0/limits",
@@ -154,7 +194,47 @@
       "assertions": [
         {
           "pointer": "/data/props/type",
-          "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер01\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер02\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер03\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер04\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер05\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер06\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер07\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер08\"},{\"kind\":\"reference\",\"metadataPath\":\"Document.ДокументОснованиеДвиженияНомер09\"}],\"mutationCapability\":\"editable\"}"
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер01"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер02"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер03"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер04"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер05"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер06"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер07"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер08"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Document.ДокументОснованиеДвиженияНомер09"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
         },
         {
           "pointer": "/data/limits",

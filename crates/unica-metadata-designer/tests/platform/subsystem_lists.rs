@@ -69,3 +69,51 @@ fn subsystem_list_patch_refuses_ambiguous_direct_containers() {
             .contains("ambiguous"));
     }
 }
+
+/// Выгрузка 8.3.27 (BOM, CRLF, табуляции): удалённый элемент уходит вместе со
+/// строкой, добавленный встаёт своей строкой с отступом соседей, опустевший
+/// список становится пустым тегом, как пишет платформа (#1889).
+#[test]
+fn subsystem_list_patch_keeps_the_platform_layout_of_a_dump() {
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/acceptance/workspace/src/Subsystems/Администрирование.xml"
+    ))
+    .unwrap();
+    assert!(source.starts_with('\u{feff}') && source.contains("\r\n"));
+    let valuta = "\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">Catalog.Валюты</xr:Item>\r\n";
+    let child = "\t\t<ChildObjects>\r\n\t\t\t<Subsystem>КонтрольРаботыПользователей</Subsystem>\r\n\t\t</ChildObjects>\r\n";
+    assert!(source.contains(valuta) && source.contains(child));
+
+    let mut model = parse_subsystem_edit_model(&source, "test").unwrap();
+    model.content.retain(|item| item != "Catalog.Валюты");
+    let actual = patch_subsystem_lists(&source, &model, None).unwrap();
+    assert_eq!(actual, source.replacen(valuta, "", 1));
+
+    let mut model = parse_subsystem_edit_model(&source, "test").unwrap();
+    model.children.push("НастройкиПользователей".into());
+    let actual = patch_subsystem_lists(&source, &model, None).unwrap();
+    assert_eq!(
+        actual,
+        source.replacen(
+            child,
+            "\t\t<ChildObjects>\r\n\t\t\t<Subsystem>КонтрольРаботыПользователей</Subsystem>\r\n\t\t\t<Subsystem>НастройкиПользователей</Subsystem>\r\n\t\t</ChildObjects>\r\n",
+            1
+        )
+    );
+
+    let mut model = parse_subsystem_edit_model(&source, "test").unwrap();
+    model.children.clear();
+    let actual = patch_subsystem_lists(&source, &model, None).unwrap();
+    assert_eq!(actual, source.replacen(child, "\t\t<ChildObjects/>\r\n", 1));
+
+    // Пустой тег раскрывается в многострочный список, а обратное удаление
+    // возвращает исходные байты.
+    let emptied = actual;
+    let mut model = parse_subsystem_edit_model(&emptied, "test").unwrap();
+    model.children.push("КонтрольРаботыПользователей".into());
+    assert_eq!(
+        patch_subsystem_lists(&emptied, &model, None).unwrap(),
+        source
+    );
+}

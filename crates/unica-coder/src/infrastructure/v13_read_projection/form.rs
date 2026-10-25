@@ -34,6 +34,30 @@ pub(super) const BRANCH_KINDS: &[NodeKind] = &[
     NodeKind::Event,
 ];
 
+/// Свойства корня формы под теми же именами и с теми же типами, что
+/// принимает `props.set` на форме; заданы только отличные от умолчания.
+fn root_properties(payload: &Value) -> Option<Value> {
+    use unica_forms::root_properties::{root_property, RootValue};
+    let properties = payload
+        .get("properties")?
+        .as_array()?
+        .iter()
+        .filter_map(|property| {
+            let name = property.get("name")?.as_str()?;
+            let text = property.get("value")?.as_str()?;
+            let value = match root_property(name).map(|(_, property)| property.value) {
+                Some(RootValue::Flag) => Value::Bool(text == "true"),
+                Some(RootValue::Size) => text
+                    .parse::<u64>()
+                    .map_or_else(|_| Value::String(text.to_string()), Value::from),
+                _ => Value::String(text.to_string()),
+            };
+            Some((name.to_string(), value))
+        })
+        .collect::<Map<String, Value>>();
+    (!properties.is_empty()).then_some(Value::Object(properties))
+}
+
 pub(super) fn project_form(
     address: &QualifiedAddress,
     payload: &Value,
@@ -64,6 +88,9 @@ pub(super) fn project_form(
                 "commandBarLocation",
             ],
         );
+        if let Some(properties) = root_properties(payload) {
+            props.insert("properties".to_string(), properties);
+        }
         if let Some(support) = payload
             .get("support")
             .and_then(|support| support.get("state"))

@@ -2388,7 +2388,6 @@ fn role_right_projection_never_serializes_an_unbounded_rights_array_into_props()
 
 #[test]
 fn xdto_anonymous_property_view_returns_recursive_addresses_and_bounds() {
-    use serde_json::Value;
     let fixture = RealReaderFixture::new();
     let package = fixture
         .source
@@ -2422,7 +2421,7 @@ fn xdto_anonymous_property_view_returns_recursive_addresses_and_bounds() {
     };
     let rows = read(root);
     assert_eq!(rows["props"]["anonymousType"], "ObjectType");
-    let bounds: Value = serde_json::from_str(rows["props"]["bounds"].as_str().unwrap()).unwrap();
+    let bounds = rows["props"]["bounds"].clone();
     assert_eq!(bounds["lower"], "0");
     assert_eq!(bounds["upper"], "-1");
     let children = read(rows["branches"][0]["at"].as_str().unwrap());
@@ -2431,14 +2430,13 @@ fn xdto_anonymous_property_view_returns_recursive_addresses_and_bounds() {
     assert_eq!(nested["props"]["anonymousType"], "ObjectType");
     let grandchildren = read(nested["branches"][0]["at"].as_str().unwrap());
     let recipient = read(grandchildren["items"][0]["at"].as_str().unwrap());
-    let type_info: Value =
-        serde_json::from_str(recipient["props"]["type"].as_str().unwrap()).unwrap();
+    let type_info = recipient["props"]["type"].clone();
     assert_eq!(type_info["local"], "decimal");
     let dotted_at = format!("{root}.Property.Nested.Property.Dotted\\.Name");
     assert_eq!(grandchildren["items"][1]["at"], dotted_at);
     let dotted = read(&dotted_at);
     assert_eq!(dotted["props"], grandchildren["items"][1]["props"]);
-    let type_info: Value = serde_json::from_str(dotted["props"]["type"].as_str().unwrap()).unwrap();
+    let type_info = dotted["props"]["type"].clone();
     assert_eq!(type_info["local"], "string");
     assert!(dotted
         .get("limits")
@@ -2470,14 +2468,12 @@ fn xdto_object_view_follows_local_base_to_inherited_property_without_flattening(
         .as_str()
         .expect("local base must be navigable");
     assert_eq!(base, "main:XDTOPackage.EnterpriseData_1_17_3.Type.Основа");
-    let qname: serde_json::Value =
-        serde_json::from_str(data["props"]["base"].as_str().unwrap()).unwrap();
+    let qname = data["props"]["base"].clone();
     assert_eq!(qname["local"], "Основа");
     let inherited = service.view(ViewRequest::new(&format!("{base}.Property.Код")).unwrap());
     assert!(inherited.ok, "{inherited:?}");
     let props = inherited.data.unwrap();
-    let type_info: serde_json::Value =
-        serde_json::from_str(props["props"]["type"].as_str().unwrap()).unwrap();
+    let type_info = props["props"]["type"].clone();
     assert_eq!(type_info["local"], "string");
     let missing = service
         .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.НетОсновы").unwrap());
@@ -2513,14 +2509,12 @@ fn xdto_object_view_follows_dotted_local_base_address() {
         base,
         "main:XDTOPackage.EnterpriseData_1_17_3.Type.Base\\.WithDot"
     );
-    let qname: serde_json::Value =
-        serde_json::from_str(data["props"]["base"].as_str().unwrap()).unwrap();
+    let qname = data["props"]["base"].clone();
     assert_eq!(qname["local"], "Base.WithDot");
     let inherited = service.view(ViewRequest::new(&format!("{base}.Property.Код")).unwrap());
     assert!(inherited.ok, "{inherited:?}");
     let props = inherited.data.unwrap();
-    let type_info: serde_json::Value =
-        serde_json::from_str(props["props"]["type"].as_str().unwrap()).unwrap();
+    let type_info = props["props"]["type"].clone();
     assert_eq!(type_info["local"], "string");
     let missing = service
         .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.НетОсновы").unwrap());
@@ -2558,21 +2552,16 @@ fn xdto_property_view_preserves_type_identity_and_explicit_and_effective_bounds(
         assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
         let data = result.data.unwrap();
         let props = &data["props"];
-        let type_info: serde_json::Value = serde_json::from_str(
-            props["type"]
-                .as_str()
-                .unwrap_or_else(|| panic!("missing type: {data}")),
-        )
-        .unwrap();
+        let type_info = props["type"].clone();
+        assert!(
+            type_info.is_object(),
+            "property type arrives as nested JSON"
+        );
         assert_eq!(type_info["namespace"], "http://www.w3.org/2001/XMLSchema");
         assert_eq!(type_info["local"], local);
         assert_eq!(type_info["raw"], format!("xs:{local}"));
-        let bounds: serde_json::Value = serde_json::from_str(
-            props["bounds"]
-                .as_str()
-                .unwrap_or_else(|| panic!("missing bounds: {data}")),
-        )
-        .unwrap();
+        let bounds = props["bounds"].clone();
+        assert!(bounds.is_object(), "property bounds arrive as nested JSON");
         assert_eq!(
             bounds,
             json!({
@@ -2603,8 +2592,8 @@ fn xdto_property_view_names_facts_that_exceed_the_compact_limit() {
     ).unwrap());
     assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
     let data = result.data.unwrap();
-    assert!(data["props"]["type"].as_str().is_some(), "{data}");
-    assert!(data["props"].get("bounds").is_none(), "{data}");
+    assert!(data["props"]["type"].is_object());
+    assert!(data["props"].get("bounds").is_none());
     assert!(
         data["limits"].as_array().unwrap().iter().any(|limit| limit
             .as_str()
@@ -2914,12 +2903,12 @@ pub(crate) fn typed_readers_never_publish_their_export_path_in_view_props() {
         assert!(result.ok, "{at}: {codes:?}");
         let mut props = result.data.as_ref().unwrap()["props"].clone();
         if at.starts_with("main:XDTOPackage.") {
-            let mut type_info: serde_json::Value =
-                serde_json::from_str(props["type"].as_str().unwrap()).unwrap();
+            let type_info = props["type"]
+                .as_object_mut()
+                .expect("XDTO type arrives as nested JSON");
             // A namespace URI is a type identity, not an exported file path.
             assert_eq!(type_info["namespace"], "http://v8.1c.ru/8.1/data/core");
-            type_info.as_object_mut().unwrap().remove("namespace");
-            props["type"] = json!(serde_json::to_string(&type_info).unwrap());
+            type_info.remove("namespace");
         }
         let props = props.to_string();
         assert!(
@@ -4589,6 +4578,234 @@ mod canonical_module_diagnostics {
             .err()
             .expect("changed named root must not acquire diagnostic authority");
         assert_eq!(error.code(), RefusalCode::ProviderUnavailable);
+    }
+}
+
+#[test]
+fn form_validation_input_keeps_the_authority_cancellation_and_deadline() {
+    let fixture = RealReaderFixture::new();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Form.MainForm").unwrap();
+    let mut authority = fixture.read_authority();
+    authority.deadline = ProviderDeadline::from_budget(std::time::Duration::ZERO);
+    assert_eq!(
+        authority
+            .form_validation_input(&address)
+            .err()
+            .unwrap()
+            .code(),
+        RefusalCode::DeadlineExceeded
+    );
+    let authority = fixture.read_authority();
+    fixture.cancellation.cancel();
+    assert_eq!(
+        authority
+            .form_validation_input(&address)
+            .err()
+            .unwrap()
+            .code(),
+        RefusalCode::Cancelled
+    );
+}
+
+#[test]
+fn form_validation_input_does_not_read_a_module_without_checkable_bindings() {
+    let fixture = RealExternalReaderFixture::new();
+    let address =
+        QualifiedAddress::parse("artifact_processor:ExternalDataProcessor.Import.Form.Main")
+            .unwrap();
+    let body = fixture.processor.join("Import/Forms/Main/Ext/Form.xml");
+    let module = fixture
+        .processor
+        .join("Import/Forms/Main/Ext/Form/Module.bsl");
+    if module.exists() {
+        fs::remove_file(&module).unwrap();
+    }
+    // Каталог вместо файла доказывает отсутствие обращения к ненужному модулю.
+    fs::create_dir_all(&module).unwrap();
+    for text in [
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="Панель" id="-1"/><ChildItems/></Form>"#,
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Events><Event name="UnknownEvent">Обработчик</Event></Events></Form>"#,
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Events><Event name="OnOpen" callType="Before">ПриОткрытии</Event></Events></Form>"#,
+        "<Form>",
+    ] {
+        write(&body, text);
+        let input = fixture
+            .read_authority("artifact_processor", SourceSetKind::ExternalProcessor)
+            .form_validation_input(&address)
+            .unwrap();
+        assert!(input.module.is_none());
+    }
+}
+
+#[test]
+fn form_validation_input_refuses_linked_form_and_needed_module() {
+    use unica_workspace::test_support::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+    for linked in ["Form.xml", "Form/Module.bsl"] {
+        let fixture = RealExternalReaderFixture::new();
+        let address =
+            QualifiedAddress::parse("artifact_processor:ExternalDataProcessor.Import.Form.Main")
+                .unwrap();
+        let ext = fixture.processor.join("Import/Forms/Main/Ext");
+        write(
+            &ext.join("Form.xml"),
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Events><Event name="OnOpen">ПриОткрытии</Event></Events></Form>"#,
+        );
+        write(
+            &ext.join("Form/Module.bsl"),
+            "&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n",
+        );
+        let path = ext.join(linked);
+        let foreign = fixture.context.cwd.join("foreign");
+        fs::rename(&path, &foreign).unwrap();
+        let before = fs::read(&foreign).unwrap();
+        let outcome = create_file_link_fixture_for_test(&foreign, &path)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
+            return;
+        }
+        assert!(
+            fixture
+                .read_authority("artifact_processor", SourceSetKind::ExternalProcessor)
+                .form_validation_input(&address)
+                .is_err(),
+            "{linked}"
+        );
+        assert_eq!(fs::read(&foreign).unwrap(), before);
+    }
+}
+
+#[test]
+fn canonical_form_validation_reports_captured_malformed_xml() {
+    let fixture = RealExternalReaderFixture::new();
+    let address =
+        QualifiedAddress::parse("artifact_processor:ExternalDataProcessor.Import.Form.Main")
+            .unwrap();
+    write(
+        &fixture.processor.join("Import/Forms/Main/Ext/Form.xml"),
+        "<Form>",
+    );
+    let input = fixture
+        .read_authority("artifact_processor", SourceSetKind::ExternalProcessor)
+        .form_validation_input(&address)
+        .unwrap();
+    let checked = crate::application::v13::check::normalize_native_outcome(
+        &address,
+        "Form",
+        crate::application::v13::check::CheckValidator::Form,
+        crate::infrastructure::native_operations::v13_analysis::validate_form_input(input),
+    )
+    .unwrap();
+    assert!(!checked.ok());
+    assert!(checked
+        .diagnostics()
+        .iter()
+        .any(|diagnostic| diagnostic.severity() == "error"
+            && diagnostic.message().contains("XML parse error")));
+}
+
+#[test]
+fn retained_form_check_ignores_source_set_remapping() {
+    let fixture = RealExternalReaderFixture::new();
+    let address =
+        QualifiedAddress::parse("artifact_processor:ExternalDataProcessor.Import.Form.Main")
+            .unwrap();
+    let body = fixture.processor.join("Import/Forms/Main/Ext/Form.xml");
+    let original = fs::read_to_string(&body).unwrap();
+    let authority = fixture.read_authority("artifact_processor", SourceSetKind::ExternalProcessor);
+    let admitted = authority.form_validation_input(&address).unwrap();
+    assert_eq!(admitted.text, original);
+
+    // Новый корень содержит отличающуюся форму; право чтения остаётся прежним.
+    let replacement = fixture.context.cwd.join("replacement");
+    write(
+        &replacement.join("Import.xml"),
+        &fs::read_to_string(fixture.processor.join("Import.xml")).unwrap(),
+    );
+    write(
+        &replacement.join("Import/Forms/Main.xml"),
+        &fs::read_to_string(fixture.processor.join("Import/Forms/Main.xml")).unwrap(),
+    );
+    write(
+        &replacement.join("Import/Forms/Main/Ext/Form.xml"),
+        "<Form/>",
+    );
+    fs::write(
+        fixture.context.cwd.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: artifact_processor\n    type: EXTERNAL_DATA_PROCESSORS\n    path: replacement\n",
+    )
+    .unwrap();
+    let retained = authority.form_validation_input(&address).unwrap();
+    assert_eq!(retained.text, original);
+    assert_eq!(retained.artifact, admitted.artifact);
+    assert!(!retained.config_context);
+}
+
+#[test]
+fn canonical_form_validation_keeps_captured_xml_module_and_owner() {
+    let fixture = RealExternalReaderFixture::new();
+    for (source_set, kind, root, owner) in [
+        (
+            "artifact_processor",
+            SourceSetKind::ExternalProcessor,
+            &fixture.processor,
+            "ExternalDataProcessor.Import",
+        ),
+        (
+            "artifact_report",
+            SourceSetKind::ExternalReport,
+            &fixture.report,
+            "ExternalReport.Sales",
+        ),
+    ] {
+        let name = owner.split('.').nth(1).unwrap();
+        let body = root.join(format!("{name}/Forms/Main/Ext/Form.xml"));
+        let module = root.join(format!("{name}/Forms/Main/Ext/Form/Module.bsl"));
+        write(
+            &body,
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="КоманднаяПанель" id="-1"/><Events><Event name="OnOpen">ПриОткрытии</Event></Events><ChildItems/></Form>"#,
+        );
+        // Предел выдачи текста не ограничивает вход проверки: обработчик
+        // после этого предела всё равно должен участвовать в диагностике.
+        let padding =
+            "// Заполнение\n".repeat(crate::application::v13::source_text::MAX_SOURCE_TEXT_BYTES);
+        write(&module, &format!("{padding}&НаКлиенте\nПроцедура ПриОткрытии(Отказ, Лишний, ЕщёОдин)\nКонецПроцедуры\n"));
+        let address = QualifiedAddress::parse(&format!("{source_set}:{owner}.Form.Main")).unwrap();
+        let input = fixture
+            .read_authority(source_set, kind)
+            .form_validation_input(&address)
+            .unwrap();
+
+        // Валидатор обязан использовать захваченные байты даже после замены всех входов.
+        write(&body, "это уже не XML");
+        write(
+            &module,
+            "&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n",
+        );
+        write(&root.join(format!("{name}.xml")), "описание заменено");
+        write(
+            &root.join(format!("{name}/Forms/Main.xml")),
+            "описание формы заменено",
+        );
+        let checked = crate::application::v13::check::normalize_native_outcome(
+            &address,
+            "Form",
+            crate::application::v13::check::CheckValidator::Form,
+            crate::infrastructure::native_operations::v13_analysis::validate_form_input(input),
+        )
+        .unwrap();
+        assert!(checked.ok());
+        assert!(checked
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.severity() == "warning"
+                && diagnostic.message().contains("ПриОткрытии")));
+        assert_eq!(fs::read_to_string(&body).unwrap(), "это уже не XML");
     }
 }
 
@@ -6497,52 +6714,50 @@ fn tabular_sections_expose_source_standard_attributes_without_losing_applied_att
     assert!(detail.ok, "{detail:?}");
     let data = detail.data.unwrap();
     assert_eq!(data["kind"], "StandardAttribute");
-    assert_eq!(data["props"].as_object().unwrap().len(), 25);
+    // Пустые наблюдения (`empty`, `nil`, многоязычная строка без переводов)
+    // свойства не создают; остальные приходят без обёртки наблюдения (#2031).
+    assert_eq!(data["props"].as_object().unwrap().len(), 16);
     for (key, expected) in [
-        ("LinkByType", json!({"kind":"empty"})),
-        ("FillChecking", json!({"kind":"text","value":"DontCheck"})),
-        ("MultiLine", json!({"kind":"boolean","value":false})),
-        (
-            "FillFromFillingValue",
-            json!({"kind":"boolean","value":false}),
-        ),
-        ("CreateOnInput", json!({"kind":"text","value":"Auto"})),
-        (
-            "TypeReductionMode",
-            json!({"kind":"text","value":"TransformValues"}),
-        ),
-        ("MaxValue", json!({"kind":"nil"})),
-        ("ToolTip", json!({"kind":"localizedString","values":[]})),
-        ("ExtendedEdit", json!({"kind":"boolean","value":false})),
-        ("Format", json!({"kind":"localizedString","values":[]})),
-        ("ChoiceForm", json!({"kind":"text","value":""})),
-        ("QuickChoice", json!({"kind":"text","value":"Auto"})),
-        (
-            "ChoiceHistoryOnInput",
-            json!({"kind":"text","value":"Auto"}),
-        ),
-        ("EditFormat", json!({"kind":"localizedString","values":[]})),
-        ("PasswordMode", json!({"kind":"boolean","value":false})),
-        ("DataHistory", json!({"kind":"text","value":"Use"})),
-        ("MarkNegatives", json!({"kind":"boolean","value":false})),
-        ("MinValue", json!({"kind":"nil"})),
+        ("LinkByType", None),
+        ("FillChecking", Some(json!("DontCheck"))),
+        ("MultiLine", Some(json!(false))),
+        ("FillFromFillingValue", Some(json!(false))),
+        ("CreateOnInput", Some(json!("Auto"))),
+        ("TypeReductionMode", Some(json!("TransformValues"))),
+        ("MaxValue", None),
+        ("ToolTip", None),
+        ("ExtendedEdit", Some(json!(false))),
+        ("Format", None),
+        ("ChoiceForm", Some(json!(""))),
+        ("QuickChoice", Some(json!("Auto"))),
+        ("ChoiceHistoryOnInput", Some(json!("Auto"))),
+        ("EditFormat", None),
+        ("PasswordMode", Some(json!(false))),
+        ("DataHistory", Some(json!("Use"))),
+        ("MarkNegatives", Some(json!(false))),
+        ("MinValue", None),
         (
             "Synonym",
-            json!({"kind":"localizedString","values":[{"language":"ru","content":"Номер строки"}]}),
+            Some(json!([{"language":"ru","content":"Номер строки"}])),
         ),
-        ("Comment", json!({"kind":"text","value":"Line-number note"})),
-        ("FullTextSearch", json!({"kind":"text","value":"Use"})),
-        ("ChoiceParameterLinks", json!({"kind":"empty"})),
-        ("FillValue", json!({"kind":"nil"})),
-        ("Mask", json!({"kind":"text","value":""})),
-        ("ChoiceParameters", json!({"kind":"empty"})),
+        ("Comment", Some(json!("Line-number note"))),
+        ("FullTextSearch", Some(json!("Use"))),
+        ("ChoiceParameterLinks", None),
+        ("FillValue", None),
+        ("Mask", Some(json!(""))),
+        ("ChoiceParameters", None),
     ] {
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(data["props"][key].as_str().unwrap())
-                .unwrap(),
-            expected
-        );
-        assert_eq!(data["props"][key], standard[0]["props"][key]);
+        match expected {
+            Some(expected) => assert_eq!(data["props"][key], expected, "{key}"),
+            None => {
+                assert!(data["props"].get(key).is_none(), "{key} must stay absent");
+                assert!(
+                    !data["limits"].to_string().contains(key),
+                    "an empty {key} is not a limit"
+                );
+            }
+        }
+        assert_eq!(data["props"].get(key), standard[0]["props"].get(key));
     }
     assert!(data["props"].get("type").is_none());
     let missing =
@@ -6722,7 +6937,7 @@ fn tabular_standard_attributes_preserve_profiled_member_facts_and_independent_li
                     .as_object()
                     .unwrap()
                     .len(),
-                25
+                16
             );
         }
         let healthy_at = "main:Catalog.Items.TabularSection.Healthy";
@@ -6964,4 +7179,155 @@ fn subsystem_text_properties_preserve_presence_and_damage_at_every_depth() {
             assert_eq!(fs::read(fixture.source.join(path)).unwrap(), before);
         }
     }
+}
+
+/// #1924: заимствованный план обмена без своего `Ext/Content.xml` не знает
+/// состава в расширении — его несёт план родителя. Чтение не выдаёт пустой
+/// список за известный состав.
+#[test]
+fn a_borrowed_exchange_plan_without_its_own_content_does_not_read_as_empty() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+    write(
+        &fixture.source.join("Configuration.xml"),
+        &configuration.replace(
+            "</ChildObjects>",
+            "<ExchangePlan>Узлы</ExchangePlan><ExchangePlan>Собственный</ExchangePlan></ChildObjects>",
+        ),
+    );
+    // Собственный план расширения без `Ext/Content.xml` — доказанно пустой состав.
+    write(
+        &fixture.source.join("ExchangePlans/Собственный.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<ExchangePlan uuid="2f0e0000-0000-4000-8000-000000000302">
+		<Properties>
+			<Name>Собственный</Name>
+			<Comment/>
+		</Properties>
+		<ChildObjects/>
+	</ExchangePlan>
+</MetaDataObject>"#,
+    );
+    write(
+        &fixture.source.join("ExchangePlans/Узлы.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+	<ExchangePlan uuid="2f0e0000-0000-4000-8000-000000000301">
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Узлы</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>1f0e0000-0000-4000-8000-000000000301</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects/>
+	</ExchangePlan>
+</MetaDataObject>"#,
+    );
+    let service = fixture.extension_view_service();
+    let content_limit = "relations.content is absent; the relation list may be incomplete";
+    let limits = |at: &str| {
+        let view = service.view(ViewRequest::new(at).unwrap());
+        assert!(view.ok, "{at}");
+        view.data.unwrap()["limits"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    for at in ["main:ExchangePlan.Узлы", "main:ExchangePlan.Узлы.Relation"] {
+        assert!(limits(at).contains(&json!(content_limit)), "{at}");
+    }
+    for at in [
+        "main:ExchangePlan.Собственный",
+        "main:ExchangePlan.Собственный.Relation",
+    ] {
+        assert!(!limits(at).contains(&json!(content_limit)), "{at}");
+    }
+}
+
+#[test]
+fn xdto_restricted_value_view_returns_named_and_anonymous_facets() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let document = roxmltree::Document::parse(original.trim_start_matches('\u{feff}')).unwrap();
+    let namespace = document
+        .root_element()
+        .attribute("targetNamespace")
+        .unwrap();
+    let source = include_str!("../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
+        .replace("urn:unica:anonymous", namespace);
+    fs::write(&package, source.as_bytes()).unwrap();
+    let service = fixture.view_service();
+    for (suffix, facets, anonymous, base) in [
+        ("Type.КодПримера", json!({"maxLength":10}), false, "string"),
+        (
+            "Type.СуммаПримера",
+            json!({"totalDigits":5,"fractionDigits":2,"minInclusive":"0","maxInclusive":"999.99"}),
+            false,
+            "decimal",
+        ),
+        (
+            "Type.Пример.Property.АнонимныйКод",
+            json!({"maxLength":10}),
+            true,
+            "string",
+        ),
+    ] {
+        let result = service.view(
+            ViewRequest::new(&format!("main:XDTOPackage.EnterpriseData_1_17_3.{suffix}")).unwrap(),
+        );
+        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        let data = result.data.unwrap();
+        let props = &data["props"];
+        assert_eq!(props["facets"], facets);
+        let actual_base = &props["base"];
+        assert!(actual_base.is_object(), "base arrives as nested JSON");
+        assert_eq!(actual_base["local"], base);
+        assert_eq!(actual_base["namespace"], "http://www.w3.org/2001/XMLSchema");
+        if anonymous {
+            assert_eq!(props["anonymousType"], "ValueType");
+        }
+    }
+    assert_eq!(fs::read(&package).unwrap(), source.as_bytes());
+}
+
+#[test]
+fn xdto_restricted_value_view_reports_oversized_facets() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let document = roxmltree::Document::parse(original.trim_start_matches('\u{feff}')).unwrap();
+    let namespace = document
+        .root_element()
+        .attribute("targetNamespace")
+        .unwrap();
+    let source = include_str!("../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
+        .replace("urn:unica:anonymous", namespace)
+        .replace("999.99", &"9".repeat(3000))
+        .replace(
+            "base=\"xs:string\" maxLength=\"10\"",
+            &format!("base=\"xs:decimal\" maxInclusive=\"{}\"", "9".repeat(3000)),
+        );
+    fs::write(&package, source.as_bytes()).unwrap();
+    let service = fixture.view_service();
+    for suffix in ["Type.СуммаПримера", "Type.Пример.Property.АнонимныйКод"]
+    {
+        let result = service.view(
+            ViewRequest::new(&format!("main:XDTOPackage.EnterpriseData_1_17_3.{suffix}")).unwrap(),
+        );
+        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        let data = result.data.unwrap();
+        assert!(data["props"].get("facets").is_none());
+        assert!(data["limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().is_some_and(|s| s.contains("facets"))));
+    }
+    assert_eq!(fs::read(&package).unwrap(), source.as_bytes());
 }

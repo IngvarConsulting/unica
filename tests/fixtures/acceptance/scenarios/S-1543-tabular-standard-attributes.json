@@ -169,23 +169,28 @@
         },
         {
           "pointer": "/data/props/Synonym",
-          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Номер строки\"}]}"
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Номер строки"
+            }
+          ]
         },
         {
           "pointer": "/data/props/FillChecking",
-          "eq": "{\"kind\":\"text\",\"value\":\"DontCheck\"}"
+          "eq": "DontCheck"
         },
         {
           "pointer": "/data/props/Comment",
-          "eq": "{\"kind\":\"text\",\"value\":\"Line-number note\"}"
+          "eq": "Line-number note"
         },
         {
           "pointer": "/data/props/MultiLine",
-          "eq": "{\"kind\":\"boolean\",\"value\":false}"
+          "eq": false
         },
         {
           "pointer": "/data/props/MaxValue",
-          "eq": "{\"kind\":\"nil\"}"
+          "absent": true
         }
       ]
     },

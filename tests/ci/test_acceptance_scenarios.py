@@ -621,6 +621,21 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.corpus = load_acceptance_corpus()
 
+    def test_the_packed_json_guard_sees_nested_strings_and_has_view_steps_to_check(self) -> None:
+        answer = {"data": {"items": [{"props": {
+            "type": '{"variants":[]}',
+            "bounds": ' [1, 2]',
+            "text": "{not json",
+            "nested": {"kind": "reference"},
+        }}]}}
+        self.assertEqual(
+            [finding.split(" packs")[0] for finding in packed_json_strings(answer)],
+            ["/data/items/0/props/type", "/data/items/0/props/bounds"],
+        )
+        views = [step for scenario in self.corpus["scenarios"] for step in scenario["wire"]
+                 if step["tool"] == "unica.view"]
+        self.assertGreater(len(views), 0, "the guard runs on `unica.view` steps")
+
     def test_corpus_ids_are_stable_and_the_manifest_freezes_every_step(self) -> None:
         storage = corpus_storage()
         scenarios = self.corpus["scenarios"]
@@ -821,6 +836,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("AttributeAdd", "attribute.add", "Form", "Items"),
         ("CommandAdd", "command.add", "Form", "Items"),
         ("EventBind", "event.bind", "FormEvent", "Values"),
+        ("PropsSet", "props.set", "Form", "Values"),
     ]
     CONTEXT_ROWS = [
         (name, "Metadata", applicability, skeleton)
@@ -993,9 +1009,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         for family, rows in expected.items():
             with self.subTest(family=family):
                 self.assertEqual([row for row in registry if row[1] == family], rows)
-        self.assertEqual(registry[108:113], expected["Subsystem"])
-        self.assertEqual(registry[115:120], expected["Interface"])
-        self.assertEqual(registry[120:122], expected["Code"])
+        self.assertEqual(registry[109:114], expected["Subsystem"])
+        self.assertEqual(registry[116:121], expected["Interface"])
+        self.assertEqual(registry[121:123], expected["Code"])
 
     def test_every_registered_apply_operation_has_a_published_integration_case(self) -> None:
         # The inventory is the closed `apply` registry of all typed families
@@ -1096,7 +1112,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 [row for row in registry if row[1] == "Metadata"],
                 [row for row in self.CONTEXT_ROWS if row[1] == "Metadata"],
             )
-            self.assertEqual(len(registry), 123)
+            self.assertEqual(len(registry), 124)
             self.assertEqual(len({row[0] for row in registry}), 121)
             registration = f"({operation}::ObjectBorrow),"
             self.assertEqual(original.count(registration), 1)
@@ -1158,7 +1174,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         table = roles + self.XDTO_REGISTRATIONS
         registry, implemented = self.renderer().load_apply_registry()
         self.assertEqual([entry for entry in registry if entry[1] == "Xdto"], self.XDTO_ROWS)
-        self.assertEqual(registry[103:108], self.XDTO_ROWS)
+        self.assertEqual(registry[104:109], self.XDTO_ROWS)
         self.assertLessEqual({entry[0] for entry in self.XDTO_ROWS}, implemented)
         row = 'AddValueType => ("valueType.add", XdtoPackage, Values)'
         self.assertIn(row, metadata)
@@ -1267,7 +1283,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             '(unica_metadata::apply_operations::MetadataOperation::CommandSet), (unica_metadata::apply_operations::MetadataOperation::CommandRemove),\n'
             '(FormOperation::ItemAdd),\n'
             '(FormOperation::CommandAdd),\n'
-            '(FormOperation::ItemRemove), (FormOperation::ItemMove), (FormOperation::EventBind),',
+            '(FormOperation::ItemRemove), (FormOperation::ItemMove), (FormOperation::EventBind),\n'
+            '(FormOperation::PropsSet),',
             metadata,
             {
                 "metadata_operation.rs": '''metadata_operations!(
@@ -1303,6 +1320,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("item.remove", "Form", "FormItem", "Target"),
             ("item.move", "Form", "FormItem", "Values"),
             ("event.bind", "Form", "FormEvent", "Values"),
+            ("props.set", "Form", "Form", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
         ] + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS)
@@ -1322,7 +1340,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertLessEqual(migrated_names, implemented)
         self.assertIn(("content.set", "Metadata", "ExchangePlan", "Items"), registry)
         self.assertIn("content.set", implemented)
-        self.assertEqual(len(registry), 123)
+        self.assertEqual(len(registry), 124)
         self.assertEqual(len({entry[0] for entry in registry}), 121)
 
     def test_dcs_rows_keep_all_53_metadata_and_original_registry_positions(self) -> None:
@@ -1386,10 +1404,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 ("dataSetLink.remove", "DcsSchema", "Values"),
             ]
         ]
-        self.assertEqual(registry[48:101], expected)
+        self.assertEqual(registry[49:102], expected)
         self.assertEqual([row for row in registry if row[1] == "Dcs"], expected)
-        self.assertEqual(registry[47][0], "right.set")
-        self.assertEqual(registry[101][0], "mxl.set")
+        self.assertEqual(registry[48][0], "right.set")
+        self.assertEqual(registry[102][0], "mxl.set")
         self.assertLessEqual({row[0] for row in expected}, implemented)
 
     def test_typed_dcs_rows_keep_payload_metadata_and_raw_registry_neighbors(self) -> None:
@@ -1578,11 +1596,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                     with self.subTest(family=family, variant=variant, case=case), self.assertRaises(RuntimeError):
                         self.registration_fixture(source, role_source, {filename: changed_metadata}, complete_mxl_event=False)
         registry, _ = self.renderer().load_apply_registry()
-        self.assertEqual(registry[101:103], self.MXL_EVENT_ROWS[:2])
-        self.assertEqual(registry[122], self.MXL_EVENT_ROWS[2])
-        self.assertEqual(registry[100][0], "dataSetLink.remove")
-        self.assertEqual(registry[103][0], "valueType.add")
-        self.assertEqual(registry[121][0], "code.replace")
+        self.assertEqual(registry[102:104], self.MXL_EVENT_ROWS[:2])
+        self.assertEqual(registry[123], self.MXL_EVENT_ROWS[2])
+        self.assertEqual(registry[101][0], "dataSetLink.remove")
+        self.assertEqual(registry[104][0], "valueType.add")
+        self.assertEqual(registry[122][0], "code.replace")
 
     def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
@@ -2086,6 +2104,25 @@ def corpus_workers(plugin, scenario_driver=None) -> int:
     return int(raw)
 
 
+def packed_json_strings(value, path=""):
+    """Strings of a `view` answer that hold a JSON object or array.
+
+    A composite value travels as nested JSON (#2031): a string the agent has
+    to parse a second time costs tokens on every escaped quote."""
+    if isinstance(value, dict):
+        return [found for key, item in value.items() for found in packed_json_strings(item, f"{path}/{key}")]
+    if isinstance(value, list):
+        return [found for index, item in enumerate(value) for found in packed_json_strings(item, f"{path}/{index}")]
+    if isinstance(value, str) and value.lstrip()[:1] in "{[":
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return []
+        if isinstance(parsed, (dict, list)):
+            return [f"{path or '/'} packs JSON into a string: {value[:80]}"]
+    return []
+
+
 def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cleanup=None):
     from concurrent.futures import ThreadPoolExecutor
     from tests.ci.private_provider_failure_evidence import before_call, emit_failure_evidence
@@ -2185,6 +2222,8 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                     structured = tool_result(response) or {}
                     verification.append({"tool": step["tool"], "args": arguments, "result": structured})
                     failures = content_mismatches(step, structured, actual, note, server.workspace, context)
+                    if step["tool"] == "unica.view":
+                        failures.extend(packed_json_strings(structured))
                     if not failures:
                         try:
                             candidate["captures"] = capture_values(step, structured, server.workspace, context)
