@@ -113,6 +113,9 @@ enum Action {
         disconnect: DisconnectPoint,
         label: String,
     },
+    AwaitResponse {
+        label: String,
+    },
     SendOuterEnvelope {
         envelope: EnvelopeCase,
         label: String,
@@ -312,6 +315,7 @@ enum BarrierPoint {
     AfterTaskStoreReadbackBeforeTaskBound,
     BeforeMarkReservedBegunGateAcquire,
     BeforeCancelGateAcquire,
+    ExecuteEntered,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -6519,6 +6523,69 @@ fn production_known_long_task_executes_after_the_initial_working_projection() {
     assert_eq!(only_task(snapshot).status, TaskStatus::Completed);
     assert_eq!(snapshot.callbacks.prepare, 1);
     assert_eq!(snapshot.callbacks.execute, 1);
+}
+
+/// The Task answer precedes the long phase: the handoff, the TaskStore record
+/// and the bound Task are committed and the answer is written while the
+/// provider is still held inside its work, on a clock that never moved. No
+/// cutoff is waited for. Released, the same attempt finishes once.
+#[test]
+fn known_long_answers_its_task_before_the_long_phase_on_an_unmoved_clock() {
+    let report = execute(Scenario::fake(vec![
+        known_long_provider(),
+        Action::InstallBarrier {
+            point: BarrierPoint::ExecuteEntered,
+        },
+        submit("submit"),
+        // The scenario clock never moves, and the answer is collected while
+        // the work is still held: it waited neither for the cutoff nor for
+        // the work. The harness gives up sooner than the 7000 ms cutoff, so
+        // either wait would time out here.
+        Action::AwaitResponse {
+            label: "submit".to_string(),
+        },
+        Action::WaitForEvent {
+            event: EventKind::ExecuteEntered,
+        },
+        checkpoint_action("answered-while-executing"),
+        Action::ReleaseBarrier {
+            point: BarrierPoint::ExecuteEntered,
+        },
+        Action::WaitForEvent {
+            event: EventKind::TaskTerminalBoundCommitted,
+        },
+        checkpoint_action("after-release"),
+    ]));
+
+    let answered = response(&report, "submit");
+    assert_eq!(answered.kind, ResponseKind::Task);
+    let projected = answered
+        .task
+        .as_ref()
+        .expect("a KnownLong answer carries its Task");
+    let held = checkpoint(&report, "answered-while-executing");
+    assert_eq!(
+        held.callbacks.execute, 1,
+        "the work has entered and is held"
+    );
+    assert_eq!(projected.task_id, only_task(held).task_id);
+    assert_eq!(only_task(held).status, TaskStatus::Working);
+    assert_event_order(
+        &report,
+        &[
+            EventKind::BoundHandoffCommitted,
+            EventKind::TaskStoreCreated,
+            EventKind::TaskBoundCommitted,
+            EventKind::ExecuteEntered,
+        ],
+    );
+    assert_eq!(count_event(&report, EventKind::UnboundPromiseCommitted), 0);
+
+    let finished = checkpoint(&report, "after-release");
+    assert_eq!(only_task(finished).status, TaskStatus::Completed);
+    assert_eq!(only_task(finished).task_id, projected.task_id);
+    assert_eq!(finished.callbacks.prepare, 1);
+    assert_eq!(finished.callbacks.execute, 1);
 }
 
 fn submit(label: &str) -> Action {

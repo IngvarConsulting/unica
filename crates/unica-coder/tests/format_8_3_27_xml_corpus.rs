@@ -2183,7 +2183,7 @@ fn target_args(case: &ExecutableCase, workspace: &Path) -> Result<Map<String, Va
         }
         "meta-remove-object" => args(
             "main:Catalog.CorpusCatalog",
-            vec![json!({"op": "object.remove", "args": {"force": true}})],
+            vec![json!({"op": "object.remove"})],
         ),
         "help-add-object" => args(
             "main:Catalog.CorpusCatalog",
@@ -2262,12 +2262,10 @@ fn form_compose_ops() -> Vec<Value> {
             "Height": 4_294_967_294_u64,
             "Scale": 98
         }}}),
-        // Квалифицированные типы: attribute.add пока не пишет квалификаторы
-        // по умолчанию у голых String и Number (#1996).
         json!({"op": "attribute.add", "args": {"items": [
-            {"name": "Value", "type": "string(100)"},
+            {"name": "Value", "type": "String"},
             {"name": "Enabled", "type": "Boolean"},
-            {"name": "Picture", "type": "decimal(10,0)"},
+            {"name": "Picture", "type": "Number"},
             {"name": "Rows", "type": "ValueTable", "columns": [
                 {"name": "Value", "type": "String"},
                 {"name": "Presentation", "type": "String"},

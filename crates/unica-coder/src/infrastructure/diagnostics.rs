@@ -34,15 +34,19 @@ use url::Url;
 
 const MAX_METADATA_FOCUS_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Mapping for one module already proved by the actor-owned logical reader.
-/// Provider analysis can cover the source set; only this module acquires an
-/// addressed identity. Other contained resources remain explicitly unproved.
-pub(crate) struct CanonicalModuleDiagnosticMapping {
+/// Mapping for one target already proved by the actor-owned logical reader:
+/// a module, a metadata object or the source root. Provider analysis can cover
+/// the source set; the proved target keeps its identity. For an object or the
+/// root every other resource is located like any diagnostic: a logical target,
+/// or an unaddressable path with its proven owner when there is one. A module
+/// keeps only its own file; other resources stay explicitly unproved.
+pub(crate) struct CanonicalDiagnosticMapping {
     context: DiagnosticContext,
-    module_relative: PathBuf,
+    /// The file a module target was proved by; `None` for an object or root.
+    module_relative: Option<PathBuf>,
 }
 
-impl CanonicalModuleDiagnosticMapping {
+impl CanonicalDiagnosticMapping {
     pub(crate) fn from_proven_module(
         context: DiagnosticContext,
         module_relative: PathBuf,
@@ -57,7 +61,18 @@ impl CanonicalModuleDiagnosticMapping {
         })?;
         Ok(Self {
             context,
-            module_relative,
+            module_relative: Some(module_relative),
+        })
+    }
+
+    /// A metadata object or the source root proved by the logical reader.
+    pub(crate) fn from_proven_node(context: DiagnosticContext) -> Result<Self, String> {
+        if context.target.target_kind == TargetKind::Module {
+            return Err("a module target is proved by its module file".to_owned());
+        }
+        Ok(Self {
+            context,
+            module_relative: None,
         })
     }
 
@@ -65,68 +80,80 @@ impl CanonicalModuleDiagnosticMapping {
         &self.context.target
     }
 
-    pub(crate) fn module_scope(&self) -> unica_diagnostics::model::DiagnosticModuleScope {
-        unica_diagnostics::model::DiagnosticModuleScope {
-            source_set: self.context.target.source_set.clone(),
-            source_root: self.context.source_root.path.clone(),
-            module_path: self.context.source_root.path.join(&self.module_relative),
-        }
+    /// The analysis scope of a module target; an object or root has none.
+    pub(crate) fn module_scope(&self) -> Option<unica_diagnostics::model::DiagnosticModuleScope> {
+        self.module_relative.as_ref().map(|relative| {
+            unica_diagnostics::model::DiagnosticModuleScope {
+                source_set: self.context.target.source_set.clone(),
+                source_root: self.context.source_root.path.clone(),
+                module_path: self.context.source_root.path.join(relative),
+            }
+        })
     }
 
     fn map_location(
         &self,
         location: DiagnosticObservationLocation,
+        cancellation: &CancellationToken,
     ) -> Result<MappedDiagnosticLocation, DiagnosticMapError> {
         let addressed = || MappedDiagnosticLocation {
             location: SourceLocation::Addressed {
                 source_set: self.context.target.source_set.clone(),
                 metadata_path: self.context.target.metadata_path.clone(),
-                target_kind: TargetKind::Module,
+                target_kind: self.context.target.target_kind,
             },
             reason: None,
         };
         match location {
-            DiagnosticObservationLocation::Logical { metadata_path } => {
-                if metadata_path == self.context.target.metadata_path {
-                    Ok(addressed())
-                } else {
-                    Err(map_error(
-                        "location_mapping_failed",
-                        "provider logical target was not proved by this module read",
-                    ))
-                }
+            DiagnosticObservationLocation::Logical { metadata_path }
+                if metadata_path == self.context.target.metadata_path =>
+            {
+                Ok(addressed())
+            }
+            DiagnosticObservationLocation::Logical { .. } if self.module_relative.is_some() => {
+                Err(map_error(
+                    "location_mapping_failed",
+                    "provider logical target was not proved by this module read",
+                ))
+            }
+            logical @ DiagnosticObservationLocation::Logical { .. } => {
+                map_location(logical, &self.context, cancellation)
             }
             DiagnosticObservationLocation::Resource { handle } => {
-                let path = provider_resource_path(&handle)?;
-                let relative = source_set_relative_path(
-                    &self.context.workspace,
-                    &self.context.source_root.path,
-                    &path,
-                )
-                .ok_or_else(|| {
-                    map_error(
-                        "location_outside_source_set",
-                        "provider resource is outside the selected sourceSet",
+                if let Some(module_relative) = &self.module_relative {
+                    let path = provider_resource_path(&handle)?;
+                    let relative = source_set_relative_path(
+                        &self.context.workspace,
+                        &self.context.source_root.path,
+                        &path,
                     )
-                })?;
-                if relative == self.module_relative {
-                    Ok(addressed())
-                } else {
-                    Ok(MappedDiagnosticLocation {
+                    .ok_or_else(|| {
+                        map_error(
+                            "location_outside_source_set",
+                            "provider resource is outside the selected sourceSet",
+                        )
+                    })?;
+                    if relative == *module_relative {
+                        return Ok(addressed());
+                    }
+                    // A module check keeps only its own module; locating a
+                    // foreign file could fail the section for nothing.
+                    return Ok(MappedDiagnosticLocation {
                         location: SourceLocation::Unaddressable {
                             source_set: self.context.target.source_set.clone(),
                             owner_metadata_path: None,
                             path: portable_relative(&relative),
                         },
                         reason: Some(UnaddressableReason::OwnerUnproven),
-                    })
+                    });
                 }
+                map_resource_location(&handle, &self.context, cancellation)
             }
         }
     }
 }
 
-impl unica_diagnostics::coordinator::DiagnosticMapping for CanonicalModuleDiagnosticMapping {
+impl unica_diagnostics::coordinator::DiagnosticMapping for CanonicalDiagnosticMapping {
     fn resolve_context(
         &self,
         request: &DiagnosticRequest,
@@ -137,7 +164,7 @@ impl unica_diagnostics::coordinator::DiagnosticMapping for CanonicalModuleDiagno
             return Err(request_error(
                 "cancelled",
                 None,
-                "module diagnostics was cancelled",
+                "diagnostics was cancelled",
             ));
         }
         if request.source_set != self.context.target.source_set
@@ -146,7 +173,7 @@ impl unica_diagnostics::coordinator::DiagnosticMapping for CanonicalModuleDiagno
             return Err(request_error(
                 "target_kind_mismatch",
                 None,
-                "diagnostics request differs from the proved module",
+                "diagnostics request differs from the proved target",
             ));
         }
         Ok(self.context.clone())
@@ -180,7 +207,7 @@ impl unica_diagnostics::coordinator::DiagnosticMapping for CanonicalModuleDiagno
     }
 }
 
-impl CanonicalModuleDiagnosticMapping {
+impl CanonicalDiagnosticMapping {
     fn map_cached(
         &self,
         observation: DiagnosticObservation,
@@ -202,9 +229,9 @@ impl CanonicalModuleDiagnosticMapping {
             DiagnosticObservationLocation::Resource { ref handle } => cache
                 .resource_locations
                 .entry(handle.clone())
-                .or_insert_with(|| self.map_location(location))
+                .or_insert_with(|| self.map_location(location, cancellation))
                 .clone()?,
-            logical => self.map_location(logical)?,
+            logical => self.map_location(logical, cancellation)?,
         };
         Ok(assemble_diagnostic_observation(
             observation,
@@ -772,7 +799,7 @@ fn map_error(code: &'static str, message: impl Into<String>) -> DiagnosticMapErr
 #[cfg(test)]
 mod tests {
     use super::{
-        map_diagnostic_observation, resolve_diagnostic_context, CanonicalModuleDiagnosticMapping,
+        map_diagnostic_observation, resolve_diagnostic_context, CanonicalDiagnosticMapping,
     };
     use std::fs;
     use std::path::Path;
@@ -933,7 +960,7 @@ mod tests {
         fixture: &Fixture,
         module_address: &str,
         module_relative: &str,
-    ) -> (CanonicalModuleDiagnosticMapping, DiagnosticContext) {
+    ) -> (CanonicalDiagnosticMapping, DiagnosticContext) {
         let source_root = fixture.source();
         let context = DiagnosticContext::new(
             fixture.context.clone(),
@@ -957,11 +984,54 @@ mod tests {
             },
         );
         let mapping =
-            CanonicalModuleDiagnosticMapping::from_proven_module(context, module_relative.into())
+            CanonicalDiagnosticMapping::from_proven_module(context, module_relative.into())
                 .unwrap();
         let context = mapping
             .resolve_context(
                 &request(Some(module_address)),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        (mapping, context)
+    }
+
+    /// Отображение объекта или корня, как его строит живой
+    /// `LogicalViewReadAuthority::diagnostic_node_mapping` после чтения узла.
+    fn proven_node_mapping(
+        fixture: &Fixture,
+        metadata_path: Option<&str>,
+    ) -> (CanonicalDiagnosticMapping, DiagnosticContext) {
+        let source_root = fixture.source();
+        let context = DiagnosticContext::new(
+            fixture.context.clone(),
+            ProjectSourceSet {
+                name: "main".to_string(),
+                kind: SourceSetKind::Configuration,
+                path: source_root.to_string_lossy().into_owned(),
+                source_format: SourceFormat::PlatformXml,
+                source_state: SourceSetState::Supported,
+                format_evidence: Vec::new(),
+                format_probe_error: None,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+            ResolvedTarget {
+                source_set: "main".to_string(),
+                metadata_path: metadata_path.map(address),
+                target_kind: if metadata_path.is_some() {
+                    TargetKind::MetadataObject
+                } else {
+                    TargetKind::SourceRoot
+                },
+            },
+        );
+        let mapping = CanonicalDiagnosticMapping::from_proven_node(context).unwrap();
+        let context = mapping
+            .resolve_context(
+                &request(metadata_path),
                 &fixture.context,
                 &CancellationToken::new(),
             )
@@ -1335,6 +1405,319 @@ mod tests {
         assert!(matches!(
             location,
             SourceLocation::Unaddressable { path, .. }
+                if path == "CommonModules/Any/Ext/Module.bsl"
+        ));
+    }
+
+    #[test]
+    fn canonical_diagnostic_location_maps_root_object_module_and_nested_form_module() {
+        let fixture = Fixture::platform_xml();
+        fixture.write_catalog("Items");
+        let module = fixture.write_common_module("Shared");
+        let form_module = fixture.write_form_module("Items", "Card");
+        let cancellation = CancellationToken::new();
+        let (root, root_context) = proven_node_mapping(&fixture, None);
+        let map = |mapping: &CanonicalDiagnosticMapping,
+                   context: &DiagnosticContext,
+                   location: DiagnosticObservationLocation| {
+            mapped_location(
+                mapping
+                    .map_observation(
+                        diagnostic(location, DiagnosticObservationFocus::Target),
+                        context,
+                        &cancellation,
+                    )
+                    .unwrap(),
+            )
+            .0
+        };
+
+        assert!(matches!(
+            map(
+                &root,
+                &root_context,
+                DiagnosticObservationLocation::Logical {
+                    metadata_path: None
+                }
+            ),
+            SourceLocation::Addressed {
+                metadata_path: None,
+                target_kind: TargetKind::SourceRoot,
+                ..
+            }
+        ));
+        let (object, object_context) = proven_node_mapping(&fixture, Some("Catalog.Items"));
+        for (mapping, context) in [(&root, &root_context), (&object, &object_context)] {
+            match map(
+                mapping,
+                context,
+                DiagnosticObservationLocation::Logical {
+                    metadata_path: Some(address("Catalog.Items")),
+                },
+            ) {
+                SourceLocation::Addressed {
+                    metadata_path: Some(actual),
+                    target_kind: TargetKind::MetadataObject,
+                    ..
+                } => assert_eq!(actual.as_str(), "Catalog.Items"),
+                location => panic!("unexpected object location: {location:?}"),
+            }
+        }
+        // Модуль объекта адресуется отдельно: его находка — модулю, а не объекту.
+        for (mapping, context) in [(&root, &root_context), (&object, &object_context)] {
+            for (path, expected) in [
+                (&module, "CommonModule.Shared.Module"),
+                (&form_module, "Catalog.Items.Form.Card.FormModule"),
+            ] {
+                match map(
+                    mapping,
+                    context,
+                    DiagnosticObservationLocation::Resource {
+                        handle: path.to_string_lossy().into_owned(),
+                    },
+                ) {
+                    SourceLocation::Addressed {
+                        metadata_path: Some(actual),
+                        target_kind: TargetKind::Module,
+                        ..
+                    } => assert_eq!(actual.as_str(), expected),
+                    location => panic!("unexpected module location: {location:?}"),
+                }
+            }
+        }
+        assert!(CanonicalDiagnosticMapping::from_proven_node(root_context.clone()).is_ok());
+        let mut module_context = root_context;
+        module_context.target.target_kind = TargetKind::Module;
+        assert!(
+            CanonicalDiagnosticMapping::from_proven_node(module_context).is_err(),
+            "a module is proved by its file, not as a node"
+        );
+    }
+
+    #[test]
+    fn canonical_diagnostic_location_distinguishes_unaddressable_owner_and_unproven_owner() {
+        let fixture = Fixture::platform_xml();
+        fixture.write_catalog("Items");
+        fixture.write_common_module("Shared");
+        fs::create_dir_all(fixture.source().join("Catalogs/Items/Ext")).unwrap();
+        fs::write(
+            fixture.source().join("Catalogs/Items/Ext/Unknown.xml"),
+            "<unknown/>",
+        )
+        .unwrap();
+        fs::create_dir_all(fixture.source().join("CommonModules/Ghost/Ext")).unwrap();
+        fs::write(
+            fixture.source().join("CommonModules/Ghost/Ext/Module.bsl"),
+            "Procedure Run()\nEndProcedure",
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let mappings = [
+            proven_node_mapping(&fixture, None),
+            proven_node_mapping(&fixture, Some("Catalog.Items")),
+        ];
+        for (mapping, context) in &mappings {
+            for (handle, expected_reason, expected_owner) in [
+                (
+                    "Catalogs/Items/Ext/Unknown.xml",
+                    UnaddressableReason::ResourceNotAddressable,
+                    Some("Catalog.Items"),
+                ),
+                (
+                    "CommonModules/Ghost/Ext/Module.bsl",
+                    UnaddressableReason::OwnerUnproven,
+                    None,
+                ),
+            ] {
+                let item = mapping
+                    .map_observation(
+                        diagnostic(
+                            DiagnosticObservationLocation::Resource {
+                                handle: handle.to_string(),
+                            },
+                            DiagnosticObservationFocus::Target,
+                        ),
+                        context,
+                        &cancellation,
+                    )
+                    .unwrap();
+                let (location, reason) = mapped_location(item);
+                match location {
+                    SourceLocation::Unaddressable {
+                        owner_metadata_path,
+                        path,
+                        ..
+                    } => {
+                        assert_eq!(reason, Some(expected_reason), "{handle}");
+                        assert_eq!(
+                            owner_metadata_path.as_ref().map(MetadataAddress::as_str),
+                            expected_owner,
+                            "{handle}"
+                        );
+                        assert_eq!(path, handle);
+                        assert!(!Path::new(&path).is_absolute());
+                    }
+                    location => panic!("unexpected unaddressable location: {location:?}"),
+                }
+            }
+        }
+        // Модульная проверка не ищет владельца чужого файла: он ей не нужен.
+        let (module, module_context) = proven_module_mapping(
+            &fixture,
+            "CommonModule.Shared.Module",
+            "CommonModules/Shared/Ext/Module.bsl",
+        );
+        let item = module
+            .map_observation(
+                diagnostic(
+                    DiagnosticObservationLocation::Resource {
+                        handle: "Catalogs/Items/Ext/Unknown.xml".to_string(),
+                    },
+                    DiagnosticObservationFocus::Target,
+                ),
+                &module_context,
+                &cancellation,
+            )
+            .unwrap();
+        assert!(matches!(
+            mapped_location(item),
+            (
+                SourceLocation::Unaddressable {
+                    owner_metadata_path: None,
+                    ..
+                },
+                Some(UnaddressableReason::OwnerUnproven)
+            )
+        ));
+    }
+
+    #[test]
+    fn canonical_diagnostic_location_preserves_exact_metadata_focus_and_weakens_unknown_elements() {
+        let fixture = Fixture::platform_xml();
+        fixture.write_catalog("Items");
+        let cancellation = CancellationToken::new();
+        let (mapping, context) = proven_node_mapping(&fixture, Some("Catalog.Items"));
+        let map = |focus: MetadataFocus| {
+            mapping
+                .map_observation(
+                    diagnostic(
+                        DiagnosticObservationLocation::Logical {
+                            metadata_path: Some(address("Catalog.Items")),
+                        },
+                        DiagnosticObservationFocus::Metadata(focus),
+                    ),
+                    &context,
+                    &cancellation,
+                )
+                .unwrap()
+        };
+        let element = |collection: &str, name: &str| MetadataElement {
+            collection: collection.to_string(),
+            name: name.to_string(),
+        };
+        for expected in [
+            MetadataFocus {
+                element_path: Vec::new(),
+                property: Some("Synonym".to_string()),
+                language: Some("ru".to_string()),
+            },
+            MetadataFocus {
+                element_path: vec![element("attributes", "Code")],
+                property: Some("Type".to_string()),
+                language: None,
+            },
+            MetadataFocus {
+                element_path: vec![
+                    element("tabularSections", "Lines"),
+                    element("attributes", "Price"),
+                ],
+                property: Some("Type".to_string()),
+                language: None,
+            },
+        ] {
+            match map(expected.clone()) {
+                DiagnosticItem::Diagnostic {
+                    location:
+                        SourceLocation::Addressed {
+                            target_kind: TargetKind::MetadataObject,
+                            ..
+                        },
+                    focus:
+                        DiagnosticFocus::Metadata {
+                            element_path,
+                            property,
+                            language,
+                        },
+                    ..
+                } => {
+                    assert_eq!(element_path, expected.element_path);
+                    assert_eq!(property, expected.property);
+                    assert_eq!(language, expected.language);
+                }
+                item => panic!("expected exact metadata focus, got {item:?}"),
+            }
+        }
+        // Недоказанный элемент, язык или частное поле XML — находка объекта целиком.
+        for weakened in [
+            MetadataFocus {
+                element_path: vec![element("attributes", "Missing")],
+                property: Some("Type".to_string()),
+                language: None,
+            },
+            MetadataFocus {
+                element_path: Vec::new(),
+                property: Some("Synonym".to_string()),
+                language: Some("en".to_string()),
+            },
+            MetadataFocus {
+                element_path: Vec::new(),
+                property: Some("InternalField".to_string()),
+                language: None,
+            },
+        ] {
+            assert!(
+                matches!(
+                    map(weakened.clone()),
+                    DiagnosticItem::Diagnostic {
+                        focus: DiagnosticFocus::Target,
+                        location: SourceLocation::Addressed {
+                            target_kind: TargetKind::MetadataObject,
+                            ..
+                        },
+                        ..
+                    }
+                ),
+                "{weakened:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_diagnostic_location_reports_unsupported_source_format_without_a_physical_path() {
+        let fixture = Fixture::platform_xml();
+        let cancellation = CancellationToken::new();
+        let (_, context) = proven_node_mapping(&fixture, None);
+        let mut context = context;
+        context.source_set.source_format = SourceFormat::Edt;
+        let mapping = CanonicalDiagnosticMapping::from_proven_node(context.clone()).unwrap();
+        let item = mapping
+            .map_observation(
+                diagnostic(
+                    DiagnosticObservationLocation::Resource {
+                        handle: "src/CommonModules/Any/Ext/Module.bsl".to_string(),
+                    },
+                    DiagnosticObservationFocus::Target,
+                ),
+                &context,
+                &cancellation,
+            )
+            .unwrap();
+
+        let (location, reason) = mapped_location(item);
+        assert_eq!(reason, Some(UnaddressableReason::SourceFormatUnsupported));
+        assert!(matches!(
+            location,
+            SourceLocation::Unaddressable { owner_metadata_path: None, path, .. }
                 if path == "CommonModules/Any/Ext/Module.bsl"
         ));
     }
