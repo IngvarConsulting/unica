@@ -4,7 +4,7 @@ use crate::inspection::{
 };
 use crate::{
     ProjectCheckId, ProjectCheckObservation, ProjectCheckOutcome, ProjectHealthFact,
-    ProjectHealthInspectionError,
+    ProjectHealthFacts, ProjectHealthInspectionError,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -34,8 +34,6 @@ pub(crate) struct GitIndexEntry {
 const MAX_STAGED_IGNORE_FILES: usize = 1024;
 const MAX_STAGED_IGNORE_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_STAGED_IGNORE_BATCH_METADATA_BYTES: usize = MAX_STAGED_IGNORE_FILES * 128;
-const MAX_EXPANDED_REPOSITORY_FACTS: usize = 4096;
-const MAX_EXPANDED_REPOSITORY_FACT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AMBIGUOUS_OWNER_REASON_BYTES: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1017,242 +1015,12 @@ impl<'a> GitRepositoryInspector<'a> {
             }
             Err(error) => return Ok(Err(error)),
         };
-        let mut facts = Vec::new();
-        let mut fact_bytes = 0_usize;
-        let ConfigDumpInfoIndexInspection {
-            runtime_paths,
-            inconclusive_paths,
-            classifications,
-        } = inspection;
-        for (path, classification) in &classifications {
-            let descriptor_kind = match classification {
-                ConfigDumpInfoXmlKind::ExternalProcessor => SourceSetKind::ExternalProcessor,
-                ConfigDumpInfoXmlKind::ExternalReport => SourceSetKind::ExternalReport,
-                ConfigDumpInfoXmlKind::RuntimeSidecar
-                | ConfigDumpInfoXmlKind::MetadataDescriptor
-                | ConfigDumpInfoXmlKind::Other => continue,
-            };
-            let owners = match source_owners.owners_for_repo_path(path, cancellation, deadline) {
-                Ok(owners) => owners,
-                Err(GeneratedPathInspectionError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(GeneratedPathInspectionError::TimedOut) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
-                }
-                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            let Some(owners) = owners else {
-                continue;
-            };
-            for (owner_index, root) in owners.iter().enumerate() {
-                if owner_index.is_multiple_of(256) {
-                    if cancellation.is_cancelled() {
-                        return Err(ProjectHealthInspectionError::Cancelled);
-                    }
-                    if deadline.is_elapsed() {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
-                    }
-                }
-                if !matches!(
-                    root.source_set.kind,
-                    SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-                ) || root.source_set.kind == descriptor_kind
-                {
-                    continue;
-                }
-                let reason = format!(
-                    "staged {} descriptor does not match declared {} source-set kind",
-                    source_set_kind_label(descriptor_kind),
-                    source_set_kind_label(root.source_set.kind)
-                );
-                fact_bytes = match reserve_expanded_repository_fact_budget(
-                    facts.len(),
-                    fact_bytes,
-                    1,
-                    path.len()
-                        .saturating_add(root.source_set.name.len())
-                        .saturating_add(reason.len()),
-                    "ConfigDumpInfo",
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                    }
-                };
-                facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: Some(root.source_set.name.clone()),
-                    path: path.clone(),
-                    reason,
-                });
+        match config_dump_info_facts(inspection, source_owners, cancellation, deadline) {
+            Err(ConfigDumpInfoIndexInspectionError::Cancelled) => {
+                Err(ProjectHealthInspectionError::Cancelled)
             }
+            evaluation => Ok(evaluation),
         }
-        for path in runtime_paths {
-            let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
-                Ok(owners) => owners,
-                Err(GeneratedPathInspectionError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(GeneratedPathInspectionError::TimedOut) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
-                }
-                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            if let Some([root]) = owners {
-                fact_bytes = match reserve_expanded_repository_fact_budget(
-                    facts.len(),
-                    fact_bytes,
-                    1,
-                    path.len().saturating_add(root.source_set.name.len()),
-                    "ConfigDumpInfo",
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                    }
-                };
-                facts.push(ProjectHealthFact::RuntimeSidecarTracked {
-                    source_set: root.source_set.name.clone(),
-                    path,
-                });
-            } else {
-                let ambiguous_owners = owners.filter(|owners| owners.len() > 1);
-                let reason = ambiguous_owners
-                    .map(ambiguous_owner_reason)
-                    .unwrap_or_else(|| "runtime sidecar is outside a proven source root".into());
-                let additional_count =
-                    1_usize.saturating_add(ambiguous_owners.map_or(0, |owners| owners.len()));
-                let additional_bytes = path.len().saturating_add(reason.len()).saturating_add(
-                    ambiguous_owners.map_or(0, |owners| {
-                        owners.iter().fold(0_usize, |total, root| {
-                            total
-                                .saturating_add(path.len())
-                                .saturating_add(reason.len())
-                                .saturating_add(root.source_set.name.len())
-                        })
-                    }),
-                );
-                fact_bytes = match reserve_expanded_repository_fact_budget(
-                    facts.len(),
-                    fact_bytes,
-                    additional_count,
-                    additional_bytes,
-                    "ConfigDumpInfo",
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                    }
-                };
-                facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: None,
-                    path: path.clone(),
-                    reason: reason.clone(),
-                });
-                if let Some(owners) = ambiguous_owners {
-                    for (owner_index, root) in owners.iter().enumerate() {
-                        if owner_index.is_multiple_of(256) {
-                            if cancellation.is_cancelled() {
-                                return Err(ProjectHealthInspectionError::Cancelled);
-                            }
-                            if deadline.is_elapsed() {
-                                return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
-                            }
-                        }
-                        facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                            source_set: Some(root.source_set.name.clone()),
-                            path: path.clone(),
-                            reason: reason.clone(),
-                        });
-                    }
-                }
-            }
-        }
-        for path in inconclusive_paths {
-            let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
-                Ok(owners) => owners,
-                Err(GeneratedPathInspectionError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(GeneratedPathInspectionError::TimedOut) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
-                }
-                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            let reason = "staged blob classification is inconclusive";
-            let additional_count = match owners {
-                Some([_]) | None => 1,
-                Some(owners) => 1_usize.saturating_add(owners.len()),
-            };
-            let owner_bytes = match owners {
-                Some([root]) => root.source_set.name.len(),
-                Some(owners) => owners.iter().fold(0_usize, |total, root| {
-                    total
-                        .saturating_add(path.len())
-                        .saturating_add(reason.len())
-                        .saturating_add(root.source_set.name.len())
-                }),
-                None => 0,
-            };
-            fact_bytes = match reserve_expanded_repository_fact_budget(
-                facts.len(),
-                fact_bytes,
-                additional_count,
-                path.len()
-                    .saturating_add(reason.len())
-                    .saturating_add(owner_bytes),
-                "ConfigDumpInfo",
-            ) {
-                Ok(bytes) => bytes,
-                Err(reason) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            match owners {
-                Some([root]) => facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: Some(root.source_set.name.clone()),
-                    path,
-                    reason: reason.into(),
-                }),
-                Some(owners) => {
-                    facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                        source_set: None,
-                        path: path.clone(),
-                        reason: reason.into(),
-                    });
-                    for (owner_index, root) in owners.iter().enumerate() {
-                        if owner_index.is_multiple_of(256) {
-                            if cancellation.is_cancelled() {
-                                return Err(ProjectHealthInspectionError::Cancelled);
-                            }
-                            if deadline.is_elapsed() {
-                                return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
-                            }
-                        }
-                        facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                            source_set: Some(root.source_set.name.clone()),
-                            path: path.clone(),
-                            reason: reason.into(),
-                        });
-                    }
-                }
-                None => facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: None,
-                    path,
-                    reason: reason.into(),
-                }),
-            }
-        }
-        Ok(Ok(ConfigDumpInfoEvaluation {
-            facts,
-            classifications,
-        }))
     }
 
     fn run<const N: usize>(
@@ -1273,6 +1041,187 @@ impl<'a> GitRepositoryInspector<'a> {
             .run(&process_command(cwd, args, cancellation, deadline));
         sticky_process_result(result, cancellation)
     }
+}
+
+fn config_dump_info_facts(
+    inspection: ConfigDumpInfoIndexInspection,
+    source_owners: &SourceRootOwners<'_>,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<ConfigDumpInfoEvaluation, ConfigDumpInfoIndexInspectionError> {
+    let mut facts = ProjectHealthFacts::default();
+    let ConfigDumpInfoIndexInspection {
+        runtime_paths,
+        inconclusive_paths,
+        classifications,
+    } = inspection;
+    for (path, classification) in &classifications {
+        let descriptor_kind = match classification {
+            ConfigDumpInfoXmlKind::ExternalProcessor => SourceSetKind::ExternalProcessor,
+            ConfigDumpInfoXmlKind::ExternalReport => SourceSetKind::ExternalReport,
+            ConfigDumpInfoXmlKind::RuntimeSidecar
+            | ConfigDumpInfoXmlKind::MetadataDescriptor
+            | ConfigDumpInfoXmlKind::Other => continue,
+        };
+        let owners = match source_owners.owners_for_repo_path(path, cancellation, deadline) {
+            Ok(owners) => owners,
+            Err(GeneratedPathInspectionError::Cancelled) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Cancelled)
+            }
+            Err(GeneratedPathInspectionError::TimedOut) => {
+                return Err(ConfigDumpInfoIndexInspectionError::TimedOut)
+            }
+            Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason))
+            }
+        };
+        let Some(owners) = owners else {
+            continue;
+        };
+        for (owner_index, root) in owners.iter().enumerate() {
+            if owner_index.is_multiple_of(256) {
+                if cancellation.is_cancelled() {
+                    return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
+                }
+                if deadline.is_elapsed() {
+                    return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
+                }
+            }
+            if !matches!(
+                root.source_set.kind,
+                SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+            ) || root.source_set.kind == descriptor_kind
+            {
+                continue;
+            }
+            let reason = format!(
+                "staged {} descriptor does not match declared {} source-set kind",
+                source_set_kind_label(descriptor_kind),
+                source_set_kind_label(root.source_set.kind)
+            );
+            facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: Some(root.source_set.name.clone()),
+                    path: path.clone(),
+                    reason,
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+        }
+    }
+    for path in runtime_paths {
+        let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
+            Ok(owners) => owners,
+            Err(GeneratedPathInspectionError::Cancelled) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Cancelled)
+            }
+            Err(GeneratedPathInspectionError::TimedOut) => {
+                return Err(ConfigDumpInfoIndexInspectionError::TimedOut)
+            }
+            Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason))
+            }
+        };
+        if let Some([root]) = owners {
+            facts
+                .push(ProjectHealthFact::RuntimeSidecarTracked {
+                    source_set: root.source_set.name.clone(),
+                    path,
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+        } else {
+            let ambiguous_owners = owners.filter(|owners| owners.len() > 1);
+            let reason = ambiguous_owners
+                .map(ambiguous_owner_reason)
+                .unwrap_or_else(|| "runtime sidecar is outside a proven source root".into());
+            facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: None,
+                    path: path.clone(),
+                    reason: reason.clone(),
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+            if let Some(owners) = ambiguous_owners {
+                for (owner_index, root) in owners.iter().enumerate() {
+                    if owner_index.is_multiple_of(256) {
+                        if cancellation.is_cancelled() {
+                            return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
+                        }
+                        if deadline.is_elapsed() {
+                            return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
+                        }
+                    }
+                    facts
+                        .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                            source_set: Some(root.source_set.name.clone()),
+                            path: path.clone(),
+                            reason: reason.clone(),
+                        })
+                        .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+                }
+            }
+        }
+    }
+    for path in inconclusive_paths {
+        let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
+            Ok(owners) => owners,
+            Err(GeneratedPathInspectionError::Cancelled) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Cancelled)
+            }
+            Err(GeneratedPathInspectionError::TimedOut) => {
+                return Err(ConfigDumpInfoIndexInspectionError::TimedOut)
+            }
+            Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason))
+            }
+        };
+        let reason = "staged blob classification is inconclusive";
+        match owners {
+            Some([root]) => facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: Some(root.source_set.name.clone()),
+                    path,
+                    reason: reason.into(),
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?,
+            Some(owners) => {
+                facts
+                    .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                        source_set: None,
+                        path: path.clone(),
+                        reason: reason.into(),
+                    })
+                    .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+                for (owner_index, root) in owners.iter().enumerate() {
+                    if owner_index.is_multiple_of(256) {
+                        if cancellation.is_cancelled() {
+                            return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
+                        }
+                        if deadline.is_elapsed() {
+                            return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
+                        }
+                    }
+                    facts
+                        .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                            source_set: Some(root.source_set.name.clone()),
+                            path: path.clone(),
+                            reason: reason.into(),
+                        })
+                        .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+                }
+            }
+            None => facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: None,
+                    path,
+                    reason: reason.into(),
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?,
+        }
+    }
+    Ok(ConfigDumpInfoEvaluation {
+        facts: facts.into_facts(),
+        classifications,
+    })
 }
 
 fn sticky_process_result(
@@ -2715,8 +2664,7 @@ fn tracked_generated_facts(
     deadline: ProviderDeadline,
 ) -> Result<Vec<ProjectHealthFact>, GeneratedPathInspectionError> {
     let cache = repo_path(repository_root, &context.cache_root);
-    let mut facts = Vec::new();
-    let mut fact_bytes = 0_usize;
+    let mut facts = ProjectHealthFacts::default();
     for (entry_index, entry) in entries.iter().enumerate() {
         if entry_index % 256 == 0 {
             if cancellation.is_cancelled() {
@@ -2752,19 +2700,6 @@ fn tracked_generated_facts(
         if generated {
             match source_owners.owners_for_repo_path(&entry.repo_path, cancellation, deadline)? {
                 Some(owners) if !owners.is_empty() => {
-                    let additional_bytes = owners.iter().fold(0_usize, |total, root| {
-                        total
-                            .saturating_add(entry.repo_path.len())
-                            .saturating_add(root.source_set.name.len())
-                    });
-                    fact_bytes = reserve_expanded_repository_fact_budget(
-                        facts.len(),
-                        fact_bytes,
-                        owners.len(),
-                        additional_bytes,
-                        "generated path",
-                    )
-                    .map_err(GeneratedPathInspectionError::Incomplete)?;
                     for (owner_index, root) in owners.iter().enumerate() {
                         if owner_index.is_multiple_of(256) {
                             if cancellation.is_cancelled() {
@@ -2774,48 +2709,24 @@ fn tracked_generated_facts(
                                 return Err(GeneratedPathInspectionError::TimedOut);
                             }
                         }
-                        facts.push(ProjectHealthFact::GeneratedPathTracked {
-                            source_set: Some(root.source_set.name.clone()),
-                            path: entry.repo_path.clone(),
-                        });
+                        facts
+                            .push(ProjectHealthFact::GeneratedPathTracked {
+                                source_set: Some(root.source_set.name.clone()),
+                                path: entry.repo_path.clone(),
+                            })
+                            .map_err(GeneratedPathInspectionError::Incomplete)?;
                     }
                 }
-                _ => {
-                    fact_bytes = reserve_expanded_repository_fact_budget(
-                        facts.len(),
-                        fact_bytes,
-                        1,
-                        entry.repo_path.len(),
-                        "generated path",
-                    )
-                    .map_err(GeneratedPathInspectionError::Incomplete)?;
-                    facts.push(ProjectHealthFact::GeneratedPathTracked {
+                _ => facts
+                    .push(ProjectHealthFact::GeneratedPathTracked {
                         source_set: None,
                         path: entry.repo_path.clone(),
-                    });
-                }
+                    })
+                    .map_err(GeneratedPathInspectionError::Incomplete)?,
             }
         }
     }
-    Ok(facts)
-}
-
-fn reserve_expanded_repository_fact_budget(
-    current_count: usize,
-    current_bytes: usize,
-    additional_count: usize,
-    additional_bytes: usize,
-    fact_kind: &str,
-) -> Result<usize, String> {
-    let next_count = current_count.saturating_add(additional_count);
-    let next_bytes = current_bytes.saturating_add(additional_bytes);
-    if next_count > MAX_EXPANDED_REPOSITORY_FACTS || next_bytes > MAX_EXPANDED_REPOSITORY_FACT_BYTES
-    {
-        return Err(format!(
-            "{fact_kind} fact budget exceeded while expanding source-set ownership"
-        ));
-    }
-    Ok(next_bytes)
+    Ok(facts.into_facts())
 }
 
 fn ambiguous_owner_reason(owners: &[&InspectedSourceRoot]) -> String {

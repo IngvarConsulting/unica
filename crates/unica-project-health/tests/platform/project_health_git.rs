@@ -229,20 +229,36 @@ fn generated_equal_root_fact_expansion_is_bounded() {
         })
         .collect::<Vec<_>>();
 
-    let result = super::tracked_generated_facts(
+    // 820 paths with five equal owners are 4100 facts, past the former
+    // 4096-fact refusal. Each owner keeps a sample and an exact count.
+    let facts = match super::tracked_generated_facts(
         &entries,
         fixture.context.workspace_root.as_path(),
         &fixture.context,
         &owners,
         &cancellation,
-        ProviderDeadline::from_budget(Duration::from_secs(1)),
-    );
+        ProviderDeadline::from_budget(Duration::from_secs(10)),
+    ) {
+        Ok(facts) => facts,
+        Err(_) => panic!("generated paths past the former fact budget are inspected"),
+    };
 
-    assert!(matches!(
-        result,
-        Err(super::GeneratedPathInspectionError::Incomplete(reason))
-            if reason.contains("fact budget")
-    ));
+    assert_eq!(facts.len(), 5 * (crate::MAX_PROJECT_DIAGNOSTIC_PATHS + 1));
+    for index in 0..5 {
+        let source_set = Some(format!("owner-{index}"));
+        let kept = facts
+            .iter()
+            .filter(|fact| {
+                matches!(fact, ProjectHealthFact::GeneratedPathTracked { source_set: owner, .. } if *owner == source_set)
+            })
+            .count();
+        assert_eq!(kept, crate::MAX_PROJECT_DIAGNOSTIC_PATHS);
+        assert!(facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::Additional { like, count: 800, .. }
+                if matches!(like.as_ref(), ProjectHealthFact::GeneratedPathTracked { source_set: owner, .. } if *owner == source_set)
+        )));
+    }
 }
 
 #[test]

@@ -327,6 +327,111 @@ pub enum ProjectHealthFact {
         aggregate_threshold_bytes: u64,
         paths: Vec<String>,
     },
+    /// `count` more facts of the same diagnostic as `like`, beyond the facts
+    /// with the smallest paths that [`ProjectHealthFacts`] keeps. `evidence`
+    /// holds the smallest evidence of the whole group.
+    Additional {
+        like: Box<ProjectHealthFact>,
+        count: usize,
+        evidence: Vec<String>,
+    },
+}
+
+/// Facts grouped by their diagnostic and held in bounded memory: per group a
+/// checked count, the facts with the [`MAX_PROJECT_DIAGNOSTIC_PATHS`] smallest
+/// distinct paths and the [`MAX_PROJECT_DIAGNOSTIC_EVIDENCE`] smallest
+/// evidence. The report built from [`ProjectHealthFacts::into_facts`] equals
+/// the report built from every pushed fact.
+#[derive(Debug, Default)]
+pub struct ProjectHealthFacts {
+    groups: BTreeMap<DiagnosticGroupKey, FactGroup>,
+}
+
+#[derive(Debug)]
+struct FactGroup {
+    kept: BTreeMap<Vec<String>, ProjectHealthFact>,
+    additional: usize,
+    evidence: BTreeSet<String>,
+}
+
+impl ProjectHealthFacts {
+    /// Add one fact. A count that no longer fits `usize` is an error.
+    pub fn push(&mut self, fact: ProjectHealthFact) -> Result<(), String> {
+        let seed = diagnostic_seed(&fact);
+        let group = self
+            .groups
+            .entry(DiagnosticGroupKey::of(&seed))
+            .or_insert_with(|| FactGroup {
+                kept: BTreeMap::new(),
+                additional: 0,
+                evidence: BTreeSet::new(),
+            });
+        for evidence in seed.evidence {
+            group.evidence.insert(evidence);
+            if group.evidence.len() > MAX_PROJECT_DIAGNOSTIC_EVIDENCE {
+                group.evidence.pop_last();
+            }
+        }
+        let mut paths = seed.paths;
+        paths.sort();
+        paths.dedup();
+        let dropped = if matches!(fact, ProjectHealthFact::Additional { .. })
+            || group.kept.contains_key(&paths)
+        {
+            Some(seed.count)
+        } else {
+            group.kept.insert(paths, fact);
+            if group.kept.len() > MAX_PROJECT_DIAGNOSTIC_PATHS {
+                group
+                    .kept
+                    .pop_last()
+                    .map(|(_, fact)| diagnostic_seed(&fact).count)
+            } else {
+                None
+            }
+        };
+        if let Some(count) = dropped {
+            group.additional = group
+                .additional
+                .checked_add(count)
+                .ok_or("project health fact count overflow")?;
+        }
+        Ok(())
+    }
+
+    pub fn extend(
+        &mut self,
+        facts: impl IntoIterator<Item = ProjectHealthFact>,
+    ) -> Result<(), String> {
+        facts.into_iter().try_for_each(|fact| self.push(fact))
+    }
+
+    /// Keep only the groups whose source set `keep` accepts.
+    pub fn retain_source_sets(&mut self, keep: impl Fn(Option<&str>) -> bool) {
+        self.groups.retain(|key, _| keep(key.source_set.as_deref()));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    pub fn into_facts(self) -> Vec<ProjectHealthFact> {
+        let mut facts = Vec::new();
+        for group in self.groups.into_values() {
+            let like = group.kept.values().next().cloned();
+            facts.extend(group.kept.into_values());
+            if group.additional > 0 {
+                if let Some(like) = like {
+                    facts.push(ProjectHealthFact::Additional {
+                        like: Box::new(like),
+                        count: group.additional,
+                        evidence: group.evidence.into_iter().collect(),
+                    });
+                }
+            }
+        }
+        facts
+    }
 }
 
 pub fn evaluate_project_health(
@@ -341,22 +446,30 @@ pub fn evaluate_project_health(
     let mut failed_checks = BTreeMap::<CheckKey, String>::new();
     for fact in &snapshot.facts {
         let seed = diagnostic_seed(fact);
-        let key = DiagnosticGroupKey {
-            code: seed.code,
-            severity: seed.severity,
-            scope: seed.check.scope,
-            source_set: seed.check.source_set.clone(),
-            message: seed.message.clone(),
-        };
-        let group = groups.entry(key).or_insert_with(|| DiagnosticGroup {
-            paths: Vec::new(),
-            count: 0,
-            evidence: Vec::new(),
-            remediation_kind: seed.remediation_kind,
-        });
-        group.count = group.count.saturating_add(seed.count);
-        group.paths.extend(seed.paths);
-        group.evidence.extend(seed.evidence);
+        let group = groups
+            .entry(DiagnosticGroupKey::of(&seed))
+            .or_insert_with(|| DiagnosticGroup {
+                paths: BTreeSet::new(),
+                count: 0,
+                evidence: BTreeSet::new(),
+                remediation_kind: seed.remediation_kind,
+            });
+        group.count = group
+            .count
+            .checked_add(seed.count)
+            .ok_or("project_health_snapshot_invalid: diagnostic count overflow")?;
+        for path in seed.paths {
+            group.paths.insert(path);
+            if group.paths.len() > MAX_PROJECT_DIAGNOSTIC_PATHS {
+                group.paths.pop_last();
+            }
+        }
+        for evidence in seed.evidence {
+            group.evidence.insert(evidence);
+            if group.evidence.len() > MAX_PROJECT_DIAGNOSTIC_EVIDENCE {
+                group.evidence.pop_last();
+            }
+        }
         if seed.severity == DiagnosticSeverity::Error {
             failed_checks
                 .entry(seed.check)
@@ -365,28 +478,23 @@ pub fn evaluate_project_health(
     }
     let mut diagnostics = groups
         .into_iter()
-        .map(|(key, mut group)| {
-            group.paths.sort();
-            group.paths.dedup();
-            group.evidence.sort();
-            group.evidence.dedup();
+        .map(|(key, group)| {
+            let paths = group.paths.into_iter().collect::<Vec<_>>();
             let remediation = remediation_for(
                 group.remediation_kind,
                 group.count,
-                &group.paths,
+                &paths,
                 snapshot.repository_root.as_deref(),
             );
-            group.paths.truncate(MAX_PROJECT_DIAGNOSTIC_PATHS);
-            group.evidence.truncate(MAX_PROJECT_DIAGNOSTIC_EVIDENCE);
             ProjectDiagnostic {
                 code: key.code.into(),
                 severity: key.severity,
                 scope: key.scope,
                 source_set: key.source_set,
-                paths: group.paths,
+                paths,
                 count: group.count,
                 message: key.message,
-                evidence: group.evidence,
+                evidence: group.evidence.into_iter().collect(),
                 remediation,
             }
         })
@@ -484,6 +592,7 @@ pub fn evaluate_project_health(
 
 fn incomplete_fact_reason(fact: &ProjectHealthFact) -> Option<&str> {
     match fact {
+        ProjectHealthFact::Additional { like, .. } => incomplete_fact_reason(like),
         ProjectHealthFact::GitInspectionTimeout { .. } => Some("Git inspection timed out"),
         ProjectHealthFact::GitInspectionIncomplete { reason, .. }
         | ProjectHealthFact::GitInspectionIncompleteCounted { reason, .. }
@@ -519,10 +628,22 @@ struct DiagnosticGroupKey {
     message: String,
 }
 
+impl DiagnosticGroupKey {
+    fn of(seed: &DiagnosticSeed) -> Self {
+        Self {
+            code: seed.code,
+            severity: seed.severity,
+            scope: seed.check.scope,
+            source_set: seed.check.source_set.clone(),
+            message: seed.message.clone(),
+        }
+    }
+}
+
 struct DiagnosticGroup {
-    paths: Vec<String>,
+    paths: BTreeSet<String>,
     count: usize,
-    evidence: Vec<String>,
+    evidence: BTreeSet<String>,
     remediation_kind: RemediationKind,
 }
 
@@ -660,6 +781,10 @@ fn validate_snapshot(snapshot: &ProjectHealthSnapshot) -> Result<(), String> {
         }
     }
     for fact in &snapshot.facts {
+        let fact = match fact {
+            ProjectHealthFact::Additional { like, .. } => like.as_ref(),
+            fact => fact,
+        };
         if let ProjectHealthFact::GitInspectionTimeout { check, .. }
         | ProjectHealthFact::GitInspectionIncomplete { check, .. }
         | ProjectHealthFact::GitInspectionIncompleteCounted { check, .. }
@@ -714,6 +839,16 @@ fn snapshot_error<T>(reason: String) -> Result<T, String> {
 fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
     use ProjectHealthFact::*;
     match fact {
+        Additional {
+            like,
+            count,
+            evidence,
+        } => DiagnosticSeed {
+            paths: Vec::new(),
+            count: *count,
+            evidence: evidence.clone(),
+            ..diagnostic_seed(like)
+        },
         SourceInspectionIncomplete { reason } => seed(
             "source_set.inspection_incomplete",
             DiagnosticSeverity::Error,
@@ -1937,6 +2072,56 @@ pub mod tests {
         assert_eq!(diagnostic.count, 21);
         assert_eq!(diagnostic.paths.len(), MAX_PROJECT_DIAGNOSTIC_PATHS);
         assert!(diagnostic.remediation.commands.is_empty());
+    }
+
+    #[test]
+    fn aggregated_facts_publish_the_same_report_as_every_fact() {
+        // The largest path carries the only `mixed` evidence: a sample of the
+        // smallest paths alone would lose it.
+        let mut facts = (0..45)
+            .map(|index| ProjectHealthFact::IndexEolNotLf {
+                source_set: "main".into(),
+                path: format!("src/Module{index:02}.bsl"),
+                observed: if index == 44 { "mixed" } else { "crlf" }.into(),
+            })
+            .collect::<Vec<_>>();
+        facts.extend((0..3).map(|index| ProjectHealthFact::IgnoreRuleMissing {
+            source_set: Some("main".into()),
+            path: format!("src/.build/probe-{index}"),
+        }));
+        let mut aggregated = ProjectHealthFacts::default();
+        aggregated.extend(facts.iter().rev().cloned()).unwrap();
+        let aggregated = aggregated.into_facts();
+        assert!(aggregated.len() < facts.len());
+
+        let every = evaluate_project_health(snapshot_with(facts, Vec::new())).unwrap();
+        let bounded = evaluate_project_health(snapshot_with(aggregated, Vec::new())).unwrap();
+        assert_eq!(bounded.diagnostics, every.diagnostics);
+        let eol = every
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "git.index_eol_not_lf")
+            .unwrap();
+        assert_eq!(eol.count, 45);
+        assert_eq!(eol.evidence, ["observed: crlf", "observed: mixed"]);
+    }
+
+    #[test]
+    fn aggregated_fact_count_overflow_is_an_error() {
+        let like = ProjectHealthFact::IgnoreRuleMissing {
+            source_set: None,
+            path: "probe".into(),
+        };
+        let mut facts = ProjectHealthFacts::default();
+        facts.push(like.clone()).unwrap();
+        facts
+            .push(ProjectHealthFact::Additional {
+                like: Box::new(like.clone()),
+                count: usize::MAX,
+                evidence: Vec::new(),
+            })
+            .unwrap();
+        assert!(facts.push(like).is_err());
     }
 
     #[test]
