@@ -879,9 +879,11 @@ impl ProcessRunner for OldPartialCloneRunner {
                 &format!("{}\ntrue\n", self.repository_root.display()),
             )),
             Some("ls-files") if command.args.iter().any(|arg| arg == "--stage") => {
-                let stdout = self
-                    .index_paths
-                    .iter()
+                // Git lists the index in byte order of paths.
+                let mut paths = self.index_paths.iter().collect::<Vec<_>>();
+                paths.sort();
+                let stdout = paths
+                    .into_iter()
                     .map(|path| format!("100644 {} 0\t{path}\0", "a".repeat(40)))
                     .collect::<String>();
                 Ok(output(true, &stdout))

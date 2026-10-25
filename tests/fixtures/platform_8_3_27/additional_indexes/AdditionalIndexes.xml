@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<AdditionalIndexes xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<AdditionalIndex id="be2a2b3e-f44b-48f5-bb7d-87a77f4db80b">
+		<Name>ByReferenceWithName</Name>
+		<Table>Catalog.CorpusCatalog</Table>
+		<IndexedFields>
+			<Field>Ref</Field>
+		</IndexedFields>
+		<AdditionalFields>
+			<Field>Description</Field>
+		</AdditionalFields>
+	</AdditionalIndex>
+</AdditionalIndexes>

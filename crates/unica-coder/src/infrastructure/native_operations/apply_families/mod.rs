@@ -2661,6 +2661,29 @@ mod tests {
         );
     }
 
+    /// The command interface of a subsystem is searched like any other source
+    /// once its composition is cleaned: a mention its rules do not clean
+    /// refuses the removal and names the subsystem, instead of being left
+    /// dangling.
+    #[test]
+    fn object_removal_refuses_what_a_subsystem_command_interface_keeps() {
+        let fixture = ApplySeamFixture::new();
+        let path = fixture
+            .source_dir()
+            .join("Subsystems/Sales/Subsystems/Retail/Ext/CommandInterface.xml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"2.20\"><CommandsVisibility><Command name=\"Document.First.StandardCommand.OpenList\"/></CommandsVisibility><Unknown>Document.First</Unknown></CommandInterface>",
+        )
+        .unwrap();
+        let message = refused_removal(&fixture, "main:Document.First");
+        assert!(
+            message.contains("`main:Subsystem.Sales.Subsystem.Retail` → CommandInterface"),
+            "a mention left in the subsystem interface refuses the removal"
+        );
+    }
+
     /// The main section command interface loses the commands of the removed object.
     #[test]
     fn object_removal_cleans_the_main_section_command_interface() {
@@ -3150,6 +3173,124 @@ mod tests {
             message.contains("`main:Document.Second.Form.List.Attribute.List` → Filter"),
             "the filter value next to the calculated field refuses the removal"
         );
+    }
+
+    /// A type the platform derives from the removed object — the record set
+    /// of a register, the characteristic of a chart of characteristic types —
+    /// in another object's attribute type refers to it in metadata: the
+    /// removal refuses naming the attribute and the property. The same type
+    /// of an object with a longer name is not a reference.
+    #[test]
+    fn object_removal_refuses_derived_types_in_attribute_types() {
+        for (kind, directory, name, derived) in [
+            (
+                "InformationRegister",
+                "InformationRegisters",
+                "Prices",
+                "InformationRegisterRecordSet",
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                "ChartsOfCharacteristicTypes",
+                "Props",
+                "Characteristic",
+            ),
+        ] {
+            let fixture = ApplySeamFixture::new();
+            let source = fixture.source_dir();
+            add_removable_object(&source, kind, directory, name);
+            let second = source.join("Documents/Second.xml");
+            let text = std::fs::read_to_string(&second).unwrap().replace(
+                "<Name>Total</Name>",
+                &format!("<Name>Total</Name><Type><v8:Type>cfg:{derived}.{name}</v8:Type></Type>"),
+            );
+            std::fs::write(&second, text).unwrap();
+            let message = refused_removal(&fixture, &format!("main:{kind}.{name}"));
+            assert!(
+                message.contains("`main:Document.Second.Attribute.Total` → Type"),
+                "the derived type in the attribute type refuses the removal"
+            );
+
+            let fixture = ApplySeamFixture::new();
+            let source = fixture.source_dir();
+            add_removable_object(&source, kind, directory, name);
+            let second = source.join("Documents/Second.xml");
+            let text = std::fs::read_to_string(&second).unwrap().replace(
+                "<Name>Total</Name>",
+                &format!(
+                    "<Name>Total</Name><Type><v8:Type>cfg:{derived}.{name}Archive</v8:Type></Type>"
+                ),
+            );
+            std::fs::write(&second, text).unwrap();
+            plan_hidden_v13_apply(
+                &seam_request(
+                    &format!("main:{kind}.{name}"),
+                    "object.remove",
+                    serde_json::json!({}),
+                ),
+                &fixture.binding,
+                &fixture.admission(),
+            )
+            .expect("the derived type of an object with a longer name is not a reference");
+        }
+    }
+
+    /// Module code names derived types in Russian too:
+    /// `РегистрСведенийНаборЗаписей.Prices` and `Характеристика.Props` are
+    /// code references, the same types of `PricesArchive` are not.
+    #[test]
+    fn object_removal_lists_russian_derived_types_in_code() {
+        for (kind, directory, name, line) in [
+            (
+                "InformationRegister",
+                "InformationRegisters",
+                "Prices",
+                "\tНабор = Новый ОписаниеТипов(\"РегистрСведенийНаборЗаписей.Prices\");",
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                "ChartsOfCharacteristicTypes",
+                "Props",
+                "\t// Значение - Характеристика.Props - значение свойства.",
+            ),
+        ] {
+            let fixture = ApplySeamFixture::new();
+            let source = fixture.source_dir();
+            add_removable_object(&source, kind, directory, name);
+            std::fs::create_dir_all(source.join("CommonModules/Tools/Ext")).unwrap();
+            std::fs::write(
+                source.join("CommonModules/Tools.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="66666666-6666-4666-8666-666666666666"><Properties><Name>Tools</Name><Server>true</Server></Properties></CommonModule></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("CommonModules/Tools/Ext/Module.bsl"),
+                format!(
+                    "Процедура Сделать() Экспорт\n{}\n{line}\nКонецПроцедуры\n",
+                    line.replace(&format!(".{name}"), &format!(".{name}Archive"))
+                ),
+            )
+            .unwrap();
+            let (_, effects) = plan_hidden_v13_apply(
+                &seam_request(
+                    &format!("main:{kind}.{name}"),
+                    "object.remove",
+                    serde_json::json!({}),
+                ),
+                &fixture.binding,
+                &fixture.admission(),
+            )
+            .expect("references in module code do not block the removal");
+            let code = effects
+                .warnings()
+                .iter()
+                .find(|warning| warning["code"] == "code_references")
+                .expect("the plan carries the expected warning");
+            assert_eq!(
+                code["references"],
+                serde_json::json!([{"at": "main:CommonModule.Tools", "line": 3}])
+            );
+        }
     }
 
     /// Next to an expression, a reference held in a property of the schema —

@@ -250,7 +250,7 @@ pub(crate) mod tests {
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(300));
         assert_eq!(code.search_rlm_timeout(), Duration::from_secs(300));
-        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(2));
+        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(30));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(45));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
@@ -339,7 +339,7 @@ pub(crate) mod tests {
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 100
 search_rlm_timeout_seconds = 40
-search_git_grep_timeout_seconds = 30
+search_git_grep_timeout_seconds = 45
 provider_read_timeout_seconds = 35
 
 [operational.code_diagnostics]
@@ -352,7 +352,7 @@ analyze_timeout_seconds = 900
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(100));
         assert_eq!(code.search_rlm_timeout(), Duration::from_secs(40));
-        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(30));
+        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(45));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(35));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
@@ -389,7 +389,7 @@ analyze_timeout_seconds = 700
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(100));
         assert_eq!(code.search_rlm_timeout(), Duration::from_secs(35));
-        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(2));
+        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(30));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(30));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),

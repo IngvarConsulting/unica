@@ -6,6 +6,10 @@ check:
   - crates/unica-coder/src/application/v13/view.rs::snapshot_over_byte_quota_refuses_before_promising_a_continuation
   - crates/unica-coder/src/application/v13/view.rs::a_late_oversized_item_refuses_before_the_first_page
   - crates/unica-coder/src/application/v13/view.rs::supplied_graph_collection_uses_stable_pages_bound_to_its_owner
+  - crates/unica-coder/src/application/v13/diff.rs::diff_page_names_why_it_stopped_and_never_cuts_a_difference
+  - crates/unica-coder/src/application/v13/diff.rs::a_difference_over_the_transport_limit_refuses_before_a_cursor
+  - crates/unica-coder/src/application/v13/check.rs::a_root_group_over_the_page_target_travels_whole
+  - crates/unica-coder/src/application/v13/check.rs::a_late_root_group_over_the_result_limit_refuses_before_a_cursor
 ---
 
 # Страница чтения сообщает полноту и сохраняет доступ к элементам
@@ -17,7 +21,8 @@ check:
 Конец полученного окна поставщика отличается от конца всего корпуса:
 неполнота сообщается отдельно, курсор за пределы окна не обещается.
 
-Для адресной коллекции `view` 64 КиБ — целевой размер страницы. Неделимый
+Для адресной коллекции `view`, диагностик `check` и сравнения `diff` 64 КиБ —
+целевой размер страницы вместе с конвертом ответа. Неделимый
 элемент или метаданные узла возвращаются целиком, даже если страница больше
 цели. Если сохранённый результат или неделимый элемент не проходят
 применимую техническую границу, отказ приходит до первого курсора, включая

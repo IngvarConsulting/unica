@@ -6,7 +6,8 @@ check:
   - crates/unica-coder/src/application/v13/diff.rs::diff_cursor_replays_the_saved_comparison_after_sources_change
   - crates/unica-coder/src/application/v13/diff.rs::diff_cursor_cannot_be_replayed_for_another_question
   - crates/unica-coder/src/application/v13/diff.rs::diff_cursor_continues_from_the_bounded_change_offset
-gap: https://github.com/IngvarConsulting/unica/issues/977
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::diff_pages_continue_the_saved_pair_on_the_canonical_route
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::diff_refuses_incomparable_kinds_and_an_unreadable_side
 ---
 
 # Продолжение сравнения сохраняет прочитанную пару
@@ -15,10 +16,6 @@ gap: https://github.com/IngvarConsulting/unica/issues/977
 ограничивает накопление изменений при обходе. Продолжение возвращает
 следующие изменения сохранённой пары в устойчивом порядке.
 
-Курсор связан с обоими адресами и размером страницы. Изменение
-исходников не заменяет сохранённую пару; подмена вопроса даёт отказ.
+Курсор связан с обоими адресами, размером страницы и рабочим пространством.
+Изменение исходников не заменяет сохранённую пару; подмена вопроса даёт отказ.
 Общие ревизии исходников не собираются и не проверяются.
-
-Проверки проходят внутренний обработчик. Публичная схема сравнения
-`left`/`right` курсора не публикует, вызов с ним получает `bad_value`;
-подключение и сквозная проверка описаны в `gap`.

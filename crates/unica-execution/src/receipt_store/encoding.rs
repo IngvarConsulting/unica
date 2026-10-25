@@ -20,6 +20,11 @@ pub(super) fn serialize_reserved_record(
             "Direct terminal rows must use the sole v5 terminal codec",
         ));
     }
+    if record.result_body_is_on_disk() {
+        return Err(ReceiptLedgerError::Corrupt(
+            "a catalog record without its result body cannot be written",
+        ));
+    }
     let encoded = match &record.lifecycle {
         StoredActiveLifecycleV1::AcknowledgedTombstone {
             terminal_digest,

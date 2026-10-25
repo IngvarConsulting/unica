@@ -1275,7 +1275,7 @@ mod tests {
         let providers = [
             (ProviderId::Rlm, Duration::from_secs(300)),
             (ProviderId::BslAnalyzer, Duration::from_secs(300)),
-            (ProviderId::GitGrep, Duration::from_secs(2)),
+            (ProviderId::GitGrep, Duration::from_secs(30)),
         ]
         .into_iter()
         .map(|(id, maximum)| {
