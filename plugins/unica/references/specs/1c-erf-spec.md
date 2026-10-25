@@ -636,6 +636,7 @@
    - `GeneratedType name="ExternalReportObject.<Имя>"`
    - Корректными путями в `MainDataCompositionSchema`, `DefaultForm` и др.
    - Правильным порядком элементов в `ChildObjects`
+   - `InternalInfo` у отчёта и у каждой ТЧ: без него загрузка отвергается (разделы 2.1 и 4)
 4. Создать СКД-макет (раздел 8.1):
    - Метаданные с `TemplateType=DataCompositionSchema`
    - Тело СКД по [спецификации СКД](1c-dcs-spec.md)
