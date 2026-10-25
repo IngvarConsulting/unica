@@ -2038,30 +2038,6 @@
       "review": "снимается в #1119 PR4"
     },
     {
-      "id": "apply.subsystem-info-file-bytes",
-      "class": "corpus",
-      "resource": "Размер одного файла подсистемы при чтении состава подсистем для apply.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/subsystem_composition.rs",
-        "symbol": "SUBSYSTEM_INFO_MAX_FILE_BYTES"
-      },
-      "expr": "64 * 1024 * 1024",
-      "value": 67108864,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/subsystem_composition.rs"
-      ],
-      "status": "unproven",
-      "origin": "0fd6c75f2",
-      "problem": null,
-      "onReach": "Ошибка «failed to open/read … securely»: планирование состава подсистем отказывает.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
       "id": "find.collection-entries",
       "class": "corpus",
       "resource": "Число элементов одного каталога коллекции при построении каталога имён find.",
@@ -4752,78 +4728,6 @@
       "review": "снимается в #1119 PR5"
     },
     {
-      "id": "metadata.registrar-scan-bytes",
-      "class": "corpus",
-      "resource": "Суммарный объём XML-дескрипторов документов, читаемых при поиске регистраторов регистра.",
-      "unit": "bytes",
-      "scope": "directory",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/info_read.rs",
-        "symbol": "REGISTRAR_SCAN_MAX_BYTES"
-      },
-      "expr": "64 * 1024 * 1024",
-      "value": 67108864,
-      "applied": [
-        "crates/unica-metadata-designer/src/info_read.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "неполнота: свидетельство регистраторов Unavailable «registrar evidence cannot be scanned completely»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.registrar-scan-entries",
-      "class": "corpus",
-      "resource": "Число записей каталога Documents при поиске регистраторов регистра.",
-      "unit": "count",
-      "scope": "directory",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/info_read.rs",
-        "symbol": "REGISTRAR_SCAN_MAX_ENTRIES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-metadata-designer/src/info_read.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "неполнота: свидетельство регистраторов Unavailable «registrar evidence cannot be scanned completely»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.registrar-scan-files",
-      "class": "corpus",
-      "resource": "Число XML-дескрипторов документов, читаемых при поиске регистраторов регистра.",
-      "unit": "count",
-      "scope": "directory",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/info_read.rs",
-        "symbol": "REGISTRAR_SCAN_MAX_FILES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-metadata-designer/src/info_read.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "неполнота: свидетельство регистраторов Unavailable «registrar evidence cannot be scanned completely»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
       "id": "metadata.predefined-bytes",
       "class": "corpus",
       "resource": "Размер файла Ext/Predefined.xml при планировании изменения предопределённых элементов.",
@@ -4919,84 +4823,6 @@
       "evidence": [],
       "decision": null,
       "review": "снимается в #1119 PR7"
-    },
-    {
-      "id": "metadata.subsystem-scan-bytes",
-      "class": "corpus",
-      "resource": "Суммарный объём файлов, читаемых при обходе дерева Subsystems.",
-      "unit": "bytes",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/subsystem_topology.rs",
-        "symbol": "SUBSYSTEM_SCAN_MAX_BYTES"
-      },
-      "expr": "64 * 1024 * 1024",
-      "value": 67108864,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/subsystem_composition.rs",
-        "crates/unica-metadata-designer/src/info_read.rs",
-        "crates/unica-metadata-designer/src/subsystem_topology.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 5fd79e6cb (регистр вне подсистем командного интерфейса)",
-      "problem": null,
-      "onReach": "view: неполнота «registered subsystem topology cannot be proved completely»; apply состава подсистем: ошибка",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.subsystem-scan-entries",
-      "class": "corpus",
-      "resource": "Число записей каталога при обходе дерева Subsystems.",
-      "unit": "count",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/subsystem_topology.rs",
-        "symbol": "SUBSYSTEM_SCAN_MAX_ENTRIES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/subsystem_composition.rs",
-        "crates/unica-metadata-designer/src/info_read.rs",
-        "crates/unica-metadata-designer/src/subsystem_topology.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 5fd79e6cb (регистр вне подсистем командного интерфейса)",
-      "problem": null,
-      "onReach": "view: неполнота «registered subsystem topology cannot be proved completely»; apply состава подсистем: ошибка",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.subsystem-scan-files",
-      "class": "corpus",
-      "resource": "Число файлов, читаемых при обходе дерева Subsystems.",
-      "unit": "count",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/subsystem_topology.rs",
-        "symbol": "SUBSYSTEM_SCAN_MAX_FILES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/subsystem_composition.rs",
-        "crates/unica-metadata-designer/src/info_read.rs",
-        "crates/unica-metadata-designer/src/subsystem_topology.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 5fd79e6cb (регистр вне подсистем командного интерфейса)",
-      "problem": null,
-      "onReach": "view: неполнота «registered subsystem topology cannot be proved completely»; apply состава подсистем: ошибка",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
     },
     {
       "id": "support.rule-record-length",

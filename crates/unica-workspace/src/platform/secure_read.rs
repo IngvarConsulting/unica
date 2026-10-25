@@ -1,8 +1,9 @@
 use crate::platform::filesystem::{
     file_identity, open_any_child_nofollow, open_child_for_secure_tree_use,
     open_directory_child_nofollow, open_regular_child_nofollow, read_directory_names_bounded,
-    FileIdentity, OpenedChildKind,
+    read_directory_names_with_limit, FileIdentity, OpenedChildKind,
 };
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
@@ -37,13 +38,13 @@ pub enum SecureTreePhase {
     AfterFinalIdentityProofs,
 }
 
+/// A retained read keeps, for each file it handed out, only the identity and
+/// the fingerprint of its bytes: the terminal proof re-reads and compares them,
+/// so the bytes of the files read are not retained (#1119).
 #[derive(Debug)]
 pub struct RetainedRootSecureRead {
     root: RetainedDirectoryPath,
     limits: SecureTreeCaptureLimits,
-    entry_count: usize,
-    file_count: usize,
-    total_bytes: usize,
     directories: HashMap<PathBuf, FileIdentity>,
     files: Vec<RetainedRegisteredFile>,
     file_indexes: HashMap<PathBuf, usize>,
@@ -54,7 +55,23 @@ pub struct RetainedRootSecureRead {
 struct RetainedRegisteredFile {
     logical_path: PathBuf,
     identity: FileIdentity,
-    bytes: Vec<u8>,
+    fingerprint: FileFingerprint,
+}
+
+/// Length and SHA-256 of bytes already handed to a caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFingerprint {
+    length: u64,
+    digest: [u8; 32],
+}
+
+impl FileFingerprint {
+    fn of(bytes: &[u8]) -> Self {
+        Self {
+            length: bytes.len() as u64,
+            digest: Sha256::digest(bytes).into(),
+        }
+    }
 }
 
 impl RetainedRootSecureRead {
@@ -70,9 +87,6 @@ impl RetainedRootSecureRead {
         Ok(Self {
             root,
             limits,
-            entry_count: 0,
-            file_count: 0,
-            total_bytes: 0,
             directories: HashMap::new(),
             files: Vec::new(),
             file_indexes: HashMap::new(),
@@ -103,12 +117,7 @@ impl RetainedRootSecureRead {
         checkpoint()?;
         let components = normal_relative_file_components(logical_path)?;
         let logical_path = components.iter().collect::<PathBuf>();
-        if let Some(index) = self.file_indexes.get(&logical_path).copied() {
-            checkpoint()?;
-            return Ok(SecureRead {
-                bytes: self.files[index].bytes.clone(),
-            });
-        }
+        let registered = self.file_indexes.get(&logical_path).copied();
         let directory_depth = components.len() - 1;
         if directory_depth > self.limits.maximum_depth {
             return Err(io::Error::new(
@@ -123,9 +132,6 @@ impl RetainedRootSecureRead {
             checkpoint()?;
             logical_directory.push(name);
             let first_open = !self.directories.contains_key(&logical_directory);
-            if first_open {
-                self.reserve_entry()?;
-            }
             emit_tree_phase(SecureTreePhase::BeforeOpenEntry(logical_directory.clone()));
             let child = open_directory_child_nofollow(&parent, name)?;
             let identity = file_identity(&child)?;
@@ -158,46 +164,37 @@ impl RetainedRootSecureRead {
         let name = components
             .last()
             .expect("relative file has a final component");
-        self.reserve_entry()?;
-        self.reserve_file()?;
         checkpoint()?;
         emit_tree_phase(SecureTreePhase::BeforeOpenEntry(logical_path.clone()));
         let mut file = open_regular_child_nofollow(&parent, name)?;
         let identity = file_identity(&file)?;
-        let remaining_bytes = self
-            .limits
-            .maximum_bytes
-            .checked_sub(self.total_bytes)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::FileTooLarge,
-                    "retained secure read exceeds the cumulative byte limit",
-                )
-            })?;
         emit_tree_phase(SecureTreePhase::BeforeReadEntry(logical_path.clone()));
-        let bytes = read_open_regular_file(
-            &mut file,
-            remaining_bytes.min(self.limits.maximum_bytes),
-            checkpoint,
-        )?;
+        let bytes = read_open_regular_file(&mut file, checkpoint)?;
         checkpoint()?;
         emit_tree_phase(SecureTreePhase::BeforeRebindEntry(logical_path.clone()));
         prove_regular_file_binding(&parent, name, identity)?;
         emit_tree_phase(SecureTreePhase::AfterRebindEntry(logical_path.clone()));
 
-        self.total_bytes = self.total_bytes.checked_add(bytes.len()).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "retained secure read byte count overflowed",
-            )
-        })?;
-        let index = self.files.len();
-        self.files.push(RetainedRegisteredFile {
-            logical_path: logical_path.clone(),
-            identity,
-            bytes: bytes.clone(),
-        });
-        self.file_indexes.insert(logical_path, index);
+        let fingerprint = FileFingerprint::of(&bytes);
+        match registered {
+            Some(index) => {
+                let retained = &self.files[index];
+                if retained.identity != identity || retained.fingerprint != fingerprint {
+                    return Err(io::Error::other(
+                        "registered file changed between retained reads",
+                    ));
+                }
+            }
+            None => {
+                let index = self.files.len();
+                self.files.push(RetainedRegisteredFile {
+                    logical_path: logical_path.clone(),
+                    identity,
+                    fingerprint,
+                });
+                self.file_indexes.insert(logical_path, index);
+            }
+        }
         Ok(SecureRead { bytes })
     }
 
@@ -218,38 +215,6 @@ impl RetainedRootSecureRead {
         prove_directory_path(&self.root, &mut checkpoint)?;
         emit_tree_phase(SecureTreePhase::AfterFinalIdentityProofs);
         checkpoint()
-    }
-
-    fn reserve_entry(&mut self) -> io::Result<()> {
-        if self.entry_count >= self.limits.maximum_entries {
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "retained secure read exceeds the entry-count limit",
-            ));
-        }
-        self.entry_count = self.entry_count.checked_add(1).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "retained secure read entry count overflowed",
-            )
-        })?;
-        Ok(())
-    }
-
-    fn reserve_file(&mut self) -> io::Result<()> {
-        if self.file_count >= self.limits.maximum_files {
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "retained secure read exceeds the file-count limit",
-            ));
-        }
-        self.file_count = self.file_count.checked_add(1).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "retained secure read file count overflowed",
-            )
-        })?;
-        Ok(())
     }
 }
 
@@ -320,7 +285,7 @@ fn prove_registered_file(
             "registered file identity changed before terminal proof",
         ));
     }
-    verify_open_regular_file(&mut file, &retained.bytes, checkpoint)?;
+    verify_open_regular_file(&mut file, &retained.fingerprint, checkpoint)?;
     prove_regular_file_binding(&parent, name, retained.identity)
 }
 
@@ -404,10 +369,11 @@ enum RetainedChildKind {
     Unsupported,
 }
 
-struct CaptureState {
-    entry_count: usize,
-    total_bytes: usize,
-    files: Vec<SecureFileSnapshotEntry>,
+/// What the final proof of a visited tree needs: each selected file's
+/// fingerprint, by visit order. The bytes went to the visitor (#1119).
+struct CaptureState<'visit> {
+    files: Vec<FileFingerprint>,
+    visit: &'visit mut dyn FnMut(SecureFileSnapshotEntry) -> io::Result<()>,
 }
 
 struct TraversalDirectory {
@@ -572,19 +538,59 @@ pub fn read_root_relative_regular_file_checked(
     })
 }
 
+/// Every selected regular file under `start`, collected and sorted by path.
 pub fn capture_root_relative_regular_files(
+    root: &Path,
+    start: &Path,
+    limits: SecureTreeCaptureLimits,
+    descend: impl FnMut(&Path) -> bool,
+    select: impl FnMut(&Path) -> bool,
+    checkpoint: impl FnMut() -> io::Result<()>,
+) -> io::Result<SecureFileSnapshot> {
+    let mut files = Vec::new();
+    let visited = visit_root_relative_regular_files(
+        root,
+        start,
+        limits,
+        descend,
+        select,
+        |entry| {
+            files.push(entry);
+            Ok(())
+        },
+        checkpoint,
+    )?;
+    files.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+    Ok(SecureFileSnapshot {
+        files,
+        start_missing: visited.start_missing,
+    })
+}
+
+/// Whether the visited start was absent; nothing was visited then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecureTreeVisit {
+    pub start_missing: bool,
+}
+
+/// Hand each selected regular file under `start` to `visit`, one at a time,
+/// in path order within each directory. Names and fingerprints stay for the
+/// final proof, the bytes do not (#1119). An error from the
+/// final proof means the files already visited do not describe one state of
+/// the tree; the caller discards what it built from them.
+pub fn visit_root_relative_regular_files(
     root: &Path,
     start: &Path,
     limits: SecureTreeCaptureLimits,
     mut descend: impl FnMut(&Path) -> bool,
     mut select: impl FnMut(&Path) -> bool,
+    mut visit: impl FnMut(SecureFileSnapshotEntry) -> io::Result<()>,
     mut checkpoint: impl FnMut() -> io::Result<()>,
-) -> io::Result<SecureFileSnapshot> {
+) -> io::Result<SecureTreeVisit> {
     checkpoint()?;
     let mut retained_path = imp::open_absolute_directory_path(root)?;
     emit_tree_phase(SecureTreePhase::RootOpened);
     let mut logical_start = PathBuf::new();
-    let entry_count = 0usize;
     for component in start.components() {
         use std::path::Component;
         let Component::Normal(name) = component else {
@@ -602,13 +608,7 @@ pub fn capture_root_relative_regular_files(
         match open_directory_child_nofollow(retained_path.current(), name) {
             Ok(child) => retained_path.push(name.to_os_string(), child)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return prove_missing_start(
-                    retained_path,
-                    name,
-                    limits.maximum_entries,
-                    entry_count,
-                    &mut checkpoint,
-                )
+                return prove_missing_start(retained_path, name, &mut checkpoint)
             }
             Err(error) => return Err(error),
         }
@@ -617,9 +617,8 @@ pub fn capture_root_relative_regular_files(
 
     let start_handle = TraversalDirectory::new(retained_path.current().try_clone()?)?;
     let mut state = CaptureState {
-        entry_count,
-        total_bytes: 0,
         files: Vec::new(),
+        visit: &mut visit,
     };
     let tree = capture_directory(
         start_handle,
@@ -634,11 +633,7 @@ pub fn capture_root_relative_regular_files(
     let proof_root = TraversalDirectory::new(retained_path.current().try_clone()?)?;
     prove_tree(&proof_root, &tree, &state.files, &mut checkpoint)?;
     prove_directory_path(&retained_path, &mut checkpoint)?;
-    state
-        .files
-        .sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
-    Ok(SecureFileSnapshot {
-        files: state.files,
+    Ok(SecureTreeVisit {
         start_missing: false,
     })
 }
@@ -646,18 +641,10 @@ pub fn capture_root_relative_regular_files(
 fn prove_missing_start(
     retained_path: RetainedDirectoryPath,
     missing_name: &std::ffi::OsStr,
-    maximum_entries: usize,
-    entry_count: usize,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
-) -> io::Result<SecureFileSnapshot> {
-    let remaining = maximum_entries.checked_sub(entry_count).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::FileTooLarge,
-            "secure tree exceeds the entry-count limit",
-        )
-    })?;
+) -> io::Result<SecureTreeVisit> {
     let initial_names =
-        read_directory_names_bounded(retained_path.current(), remaining, &mut *checkpoint)?;
+        read_directory_names_with_limit(retained_path.current(), None, &mut *checkpoint)?;
     if initial_names.iter().any(|name| name == missing_name) {
         return Err(io::Error::other(
             "secure tree start changed while proving absence",
@@ -683,8 +670,7 @@ fn prove_missing_start(
         ));
     }
     prove_directory_path(&retained_path, checkpoint)?;
-    Ok(SecureFileSnapshot {
-        files: Vec::new(),
+    Ok(SecureTreeVisit {
         start_missing: true,
     })
 }
@@ -698,30 +684,11 @@ fn capture_directory(
     descend: &mut impl FnMut(&Path) -> bool,
     select: &mut impl FnMut(&Path) -> bool,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
-    state: &mut CaptureState,
+    state: &mut CaptureState<'_>,
 ) -> io::Result<RetainedTree> {
     checkpoint()?;
     let directory_identity = file_identity(directory.file())?;
-    let remaining_entries = limits
-        .maximum_entries
-        .checked_sub(state.entry_count)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "secure tree exceeds the entry-count limit",
-            )
-        })?;
-    let initial_names =
-        read_directory_names_bounded(directory.file(), remaining_entries, &mut *checkpoint)?;
-    state.entry_count = state
-        .entry_count
-        .checked_add(initial_names.len())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "secure-tree entry count overflowed",
-            )
-        })?;
+    let initial_names = read_directory_names_with_limit(directory.file(), None, &mut *checkpoint)?;
     emit_tree_phase(SecureTreePhase::AfterDirectoryListed(
         logical_directory.to_path_buf(),
     ));
@@ -766,21 +733,6 @@ fn capture_directory(
             }
             OpenedChildKind::RegularFile => {
                 let captured_index = if select(&logical_path) {
-                    if state.files.len() >= limits.maximum_files {
-                        return Err(io::Error::new(
-                            io::ErrorKind::FileTooLarge,
-                            "secure tree exceeds the selected-file limit",
-                        ));
-                    }
-                    let remaining_bytes = limits
-                        .maximum_bytes
-                        .checked_sub(state.total_bytes)
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::FileTooLarge,
-                                "secure tree exceeds the captured-byte limit",
-                            )
-                        })?;
                     emit_tree_phase(SecureTreePhase::BeforeReadEntry(logical_path.clone()));
                     let mut typed = open_child_for_secure_tree_use(
                         directory.file(),
@@ -788,20 +740,14 @@ fn capture_directory(
                         classification_anchor,
                         kind,
                     )?;
-                    let bytes = read_open_regular_file(&mut typed, remaining_bytes, checkpoint)?;
-                    state.total_bytes =
-                        state.total_bytes.checked_add(bytes.len()).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::FileTooLarge,
-                                "secure-tree captured byte count overflowed",
-                            )
-                        })?;
+                    let bytes = read_open_regular_file(&mut typed, checkpoint)?;
                     let logical_name = logical_utf8_path(&logical_path)?;
                     let index = state.files.len();
-                    state.files.push(SecureFileSnapshotEntry {
+                    state.files.push(FileFingerprint::of(&bytes));
+                    (state.visit)(SecureFileSnapshotEntry {
                         logical_path: logical_name,
                         bytes,
-                    });
+                    })?;
                     Some(index)
                 } else {
                     drop(classification_anchor);
@@ -846,7 +792,7 @@ fn capture_directory(
 fn prove_tree(
     directory: &TraversalDirectory,
     tree: &RetainedTree,
-    captured: &[SecureFileSnapshotEntry],
+    captured: &[FileFingerprint],
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     checkpoint()?;
@@ -902,7 +848,7 @@ fn prove_tree(
                     classification_anchor,
                     kind,
                 )?;
-                verify_open_regular_file(&mut typed, &expected.bytes, checkpoint)?;
+                verify_open_regular_file(&mut typed, expected, checkpoint)?;
                 prove_child_binding(
                     directory.file(),
                     &child.name,
@@ -944,7 +890,6 @@ fn prove_directory_path(
 
 fn read_open_regular_file(
     file: &mut File,
-    maximum_bytes: usize,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<Vec<u8>> {
     let opened = file.metadata()?;
@@ -954,13 +899,16 @@ fn read_open_regular_file(
             "secure-tree entry is not a regular file",
         ));
     }
-    if usize::try_from(opened.len()).map_or(true, |length| length > maximum_bytes) {
-        return Err(io::Error::new(
-            io::ErrorKind::FileTooLarge,
-            "secure tree exceeds the captured-byte limit",
-        ));
-    }
-    let mut bytes = Vec::with_capacity(opened.len() as usize);
+    let length = usize::try_from(opened.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            "secure-tree file exceeds addressable memory",
+        )
+    })?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         checkpoint()?;
@@ -968,13 +916,14 @@ fn read_open_regular_file(
         if read == 0 {
             break;
         }
-        bytes.extend_from_slice(&buffer[..read]);
-        if bytes.len() > maximum_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "secure tree exceeds the captured-byte limit",
+        // A file that grows past its opened length is changing under the
+        // read; stop instead of following the writer.
+        if bytes.len() + read > length {
+            return Err(io::Error::other(
+                "secure-tree file changed while capturing bytes",
             ));
         }
+        bytes.extend_from_slice(&buffer[..read]);
     }
     let after = file.metadata()?;
     if opened.len() != after.len() || opened.modified().ok() != after.modified().ok() {
@@ -985,18 +934,21 @@ fn read_open_regular_file(
     Ok(bytes)
 }
 
+/// Re-read an open file and compare it with the fingerprint taken when its
+/// bytes were handed out.
 fn verify_open_regular_file(
     file: &mut File,
-    expected: &[u8],
+    expected: &FileFingerprint,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     let opened = file.metadata()?;
-    if !opened.is_file() || opened.len() != expected.len() as u64 {
+    if !opened.is_file() || opened.len() != expected.length {
         return Err(io::Error::other(
             "secure-tree file bytes changed before final proof",
         ));
     }
-    let mut offset = 0usize;
+    let mut hasher = Sha256::new();
+    let mut length = 0u64;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         checkpoint()?;
@@ -1004,24 +956,21 @@ fn verify_open_regular_file(
         if read == 0 {
             break;
         }
-        let end = offset.checked_add(read).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "secure-tree byte offset overflowed",
-            )
-        })?;
-        if expected.get(offset..end) != Some(&buffer[..read]) {
+        length += read as u64;
+        if length > expected.length {
             return Err(io::Error::other(
                 "secure-tree file bytes changed before final proof",
             ));
         }
-        offset = end;
+        hasher.update(&buffer[..read]);
     }
     let after = file.metadata()?;
-    if offset != expected.len()
-        || opened.len() != after.len()
-        || opened.modified().ok() != after.modified().ok()
-    {
+    if length != expected.length || <[u8; 32]>::from(hasher.finalize()) != expected.digest {
+        return Err(io::Error::other(
+            "secure-tree file bytes changed before final proof",
+        ));
+    }
+    if opened.len() != after.len() || opened.modified().ok() != after.modified().ok() {
         return Err(io::Error::other(
             "secure-tree file changed during final proof",
         ));
@@ -1438,17 +1387,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a.xml", "parent/resource.xml", "z.xml"]
         );
-        let mut entry_cap = capture_limits();
-        entry_cap.maximum_entries = 2;
-        let cap = capture_root_relative_regular_files(
-            &fixture.root,
-            Path::new(""),
-            entry_cap,
-            |_| true,
-            |_| true,
-            || Ok(()),
-        );
-        assert_eq!(cap.unwrap_err().kind(), io::ErrorKind::FileTooLarge);
         let mut depth_limits = capture_limits();
         depth_limits.maximum_depth = 0;
         let depth_cap = capture_root_relative_regular_files(
@@ -1536,12 +1474,7 @@ mod tests {
     }
 
     fn capture_limits() -> SecureTreeCaptureLimits {
-        SecureTreeCaptureLimits {
-            maximum_depth: 8,
-            maximum_entries: 100,
-            maximum_files: 100,
-            maximum_bytes: 1024,
-        }
+        SecureTreeCaptureLimits { maximum_depth: 8 }
     }
 
     #[test]
@@ -1787,7 +1720,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_registration_session_spends_budgets_only_on_requested_files() {
+    fn retained_registration_session_opens_only_requested_files() {
         let fixture = Fixture::new();
         fs::write(fixture.root.join("unrelated.xml"), vec![b'x'; 2_048]).unwrap();
         symlink(
@@ -1795,79 +1728,27 @@ mod tests {
             fixture.root.join("unrelated-link.xml"),
         )
         .unwrap();
-        let limits = SecureTreeCaptureLimits {
-            maximum_depth: 1,
-            maximum_entries: 2,
-            maximum_files: 1,
-            maximum_bytes: b"trusted".len(),
-        };
+        let limits = SecureTreeCaptureLimits { maximum_depth: 1 };
         let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
 
         let read = session
             .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
-            .expect("unrequested files and links must not spend registration budgets");
+            .expect("unrequested files and links are never opened");
 
         assert_eq!(read.bytes, b"trusted");
         session.complete(|| Ok(())).unwrap();
     }
 
     #[test]
-    fn retained_registration_session_counts_each_new_directory_and_file_path() {
-        let fixture = Fixture::new();
-        let limits = SecureTreeCaptureLimits {
-            maximum_depth: 1,
-            maximum_entries: 1,
-            maximum_files: 1,
-            maximum_bytes: b"trusted".len(),
-        };
-        let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
-
-        let error = session
-            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
-            .expect_err("the parent directory and file must spend two entry slots");
-
-        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
-        assert!(error.to_string().contains("entry-count"), "{error}");
-    }
-
-    #[test]
-    fn retained_registration_session_counts_new_files_cumulatively_under_a_retained_directory() {
-        let fixture = Fixture::new();
-        fs::write(fixture.root.join("parent/second.xml"), b"second").unwrap();
-        let limits = SecureTreeCaptureLimits {
-            maximum_depth: 1,
-            maximum_entries: 2,
-            maximum_files: 2,
-            maximum_bytes: b"trusted".len() + b"second".len(),
-        };
-        let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
-        session
-            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
-            .unwrap();
-
-        let error = session
-            .read_regular_file(Path::new("parent/second.xml"), || Ok(()))
-            .expect_err("a second file must spend a third cumulative entry slot");
-
-        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
-        assert!(error.to_string().contains("entry-count"), "{error}");
-    }
-
-    #[test]
     fn retained_registration_session_is_poisoned_after_a_failed_read() {
         let fixture = Fixture::new();
         fs::write(fixture.root.join("small.xml"), b"x").unwrap();
-        let limits = SecureTreeCaptureLimits {
-            maximum_depth: 1,
-            maximum_entries: 4,
-            maximum_files: 2,
-            maximum_bytes: b"trusted".len() - 1,
-        };
+        let limits = SecureTreeCaptureLimits { maximum_depth: 1 };
         let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
         let first = session
-            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
-            .expect_err("the first registered file exceeds the byte budget");
-        assert_eq!(first.kind(), io::ErrorKind::FileTooLarge);
+            .read_regular_file(Path::new("parent/missing.xml"), || Ok(()))
+            .expect_err("the first registered file is absent");
+        assert_eq!(first.kind(), io::ErrorKind::NotFound);
 
         let second = session
             .read_regular_file(Path::new("small.xml"), || Ok(()))
@@ -1912,22 +1793,11 @@ mod tests {
     }
 
     #[test]
-    fn captured_tree_enforces_total_bytes_and_cancels_during_entry_enumeration() {
+    fn captured_tree_cancels_during_entry_enumeration() {
         let fixture = Fixture::new();
         for index in 0..32 {
             fs::write(fixture.root.join(format!("{index:02}.xml")), b"payload").unwrap();
         }
-        let mut tiny = capture_limits();
-        tiny.maximum_bytes = 8;
-        let oversized = capture_root_relative_regular_files(
-            &fixture.root,
-            Path::new(""),
-            tiny,
-            |_| true,
-            |_| true,
-            || Ok(()),
-        );
-        assert_eq!(oversized.unwrap_err().kind(), io::ErrorKind::FileTooLarge);
 
         let checkpoints = std::cell::Cell::new(0usize);
         let cancelled = capture_root_relative_regular_files(
@@ -1950,18 +1820,71 @@ mod tests {
         assert_eq!(checkpoints.get(), 6);
     }
 
+    /// #1119: the visit keeps only fingerprints, so bytes changed in place
+    /// after their visit still fail the final proof.
+    #[test]
+    fn visited_tree_proof_rejects_bytes_changed_after_their_visit() {
+        let fixture = Fixture::new();
+        let candidate = fixture.root.join("candidate.xml");
+        fs::write(&candidate, b"trusted").unwrap();
+        let mut visited = Vec::new();
+        let result = visit_root_relative_regular_files(
+            &fixture.root,
+            Path::new(""),
+            capture_limits(),
+            |_| true,
+            |path| path == Path::new("candidate.xml"),
+            |entry| {
+                visited.push(entry.logical_path);
+                let mut file = fs::OpenOptions::new().write(true).open(&candidate)?;
+                std::io::Write::write_all(&mut file, b"altered")
+            },
+            || Ok(()),
+        );
+
+        assert_eq!(visited, ["candidate.xml"]);
+        assert!(
+            result.unwrap_err().to_string().contains("changed"),
+            "same-length bytes changed after the visit must fail the proof"
+        );
+    }
+
+    /// #1119: a retained read keeps a fingerprint, not the bytes; reading the
+    /// same file again re-reads it and must find the same content.
+    #[test]
+    fn retained_session_rereads_a_registered_file_and_rejects_changed_bytes() {
+        let fixture = Fixture::new();
+        let limits = SecureTreeCaptureLimits { maximum_depth: 1 };
+        let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
+        let path = Path::new("parent/resource.xml");
+        assert_eq!(
+            session.read_regular_file(path, || Ok(())).unwrap().bytes,
+            b"trusted"
+        );
+        assert_eq!(
+            session.read_regular_file(path, || Ok(())).unwrap().bytes,
+            b"trusted"
+        );
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(fixture.root.join(path))
+            .unwrap();
+        std::io::Write::write_all(&mut file, b"altered").unwrap();
+        let error = session
+            .read_regular_file(path, || Ok(()))
+            .expect_err("changed bytes of a registered file must be refused");
+        assert!(error.to_string().contains("changed"), "{error}");
+        assert!(session.complete(|| Ok(())).is_err());
+    }
+
     #[test]
     fn captured_wide_tree_uses_only_depth_bounded_directory_handles() {
         let fixture = Fixture::new();
         for index in 0..1_024 {
             fs::create_dir(fixture.root.join(format!("wide-{index:04}"))).unwrap();
         }
-        let limits = SecureTreeCaptureLimits {
-            maximum_depth: 1,
-            maximum_entries: 2_048,
-            maximum_files: 0,
-            maximum_bytes: 0,
-        };
+        let limits = SecureTreeCaptureLimits { maximum_depth: 1 };
 
         let captured = with_secure_tree_directory_handle_limit(8, || {
             capture_root_relative_regular_files(
@@ -2054,12 +1977,7 @@ mod windows_tests {
         let captured = capture_root_relative_regular_files(
             &fixture.root,
             Path::new(""),
-            SecureTreeCaptureLimits {
-                maximum_depth: 4,
-                maximum_entries: 16,
-                maximum_files: 4,
-                maximum_bytes: 1_024,
-            },
+            SecureTreeCaptureLimits { maximum_depth: 4 },
             |_| true,
             |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
             || Ok(()),
