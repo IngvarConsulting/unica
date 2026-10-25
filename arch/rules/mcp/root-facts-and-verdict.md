@@ -20,6 +20,10 @@ check:
   - crates/unica-project-health/tests/platform/project_health_resources.rs::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_inspects_resources_past_the_former_classification_count
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_streams_an_index_past_the_former_capture_limit
+  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_keeps_its_continuation_outside_the_workspace_and_a_new_daemon_continues
+  - crates/unica-coder/tests/platform/project_health.rs::project_health_full_portable_repository_is_ready
+  - crates/unica-coder/tests/platform/project_health.rs::portable_git_readiness_contract_is_a_closed_positive_and_negative_matrix
+  - crates/unica-coder/tests/platform/project_health.rs::project_health_full_portable_linked_worktree_is_ready_and_read_only
 ---
 
 # Факты о рабочем пространстве и его готовность запрашиваются отдельно
@@ -48,10 +52,9 @@ preview-вызовы `download` и `dump`, затем корневой `check`.
 не требуются для завершения такой проверки.
 
 Неполный обход не объявляется полной проверкой: ответ отмечает
-`readinessState: incomplete`. Сохранённое состояние позволяет продолжить
-незавершённый обход с ограниченной памятью. При исчерпании его ёмкости ответ
-сообщает об этом диагностикой и не обещает прогресс от повторения того же
-вызова. Статический сбой также не получает рекомендации повтора.
+`readinessState: incomplete`, и повторный вызов продолжает незавершённый обход.
+Статический сбой не получает рекомендации повтора.
+Проверка не изменяет рабочее пространство.
 До полного вердикта проверка заново сверяет Git index, атрибуты и изменяемые
 рабочие файлы; утрата или устаревание сохранённого состояния не означает
 готовности репозитория.
