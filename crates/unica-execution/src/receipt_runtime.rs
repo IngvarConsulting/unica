@@ -6973,7 +6973,7 @@ impl ReceiptReply {
 }
 
 /// Pre-execution refusals have the same delivery limit as executed outcomes.
-/// An oversized recovery route is a closed size failure, not store corruption.
+/// An oversized recovery route becomes a size refusal, not store corruption.
 fn rejection_terminal(
     outcome: &ReceiptTerminalOutcome,
     max_supported_body_response_bytes: usize,
