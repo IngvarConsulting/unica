@@ -6617,6 +6617,73 @@ fn known_long_answers_its_task_before_the_long_phase_on_an_unmoved_clock() {
     assert_eq!(finished.callbacks.execute, 1);
 }
 
+/// #984: the call's deadline is fixed once, before validation, on the
+/// runtime's own clock. Validation that takes all but one millisecond of the
+/// budget leaves exactly that millisecond: the begun work passes into its
+/// Task at the original cutoff, not a fresh budget after validation. Only
+/// the scenario clock moves, so another time source could not end the window.
+#[test]
+fn validation_spends_the_original_deadline_and_the_cutoff_keeps_its_clock() {
+    let report = execute(Scenario::fake(vec![
+        direct_provider(),
+        Action::InstallBarrier {
+            point: BarrierPoint::ValidationEntered,
+        },
+        Action::InstallBarrier {
+            point: BarrierPoint::ExecuteEntered,
+        },
+        submit("submit"),
+        Action::WaitForEvent {
+            event: EventKind::ValidationEntered,
+        },
+        Action::AdvanceMonotonic {
+            millis: CUTOFF_MS - 1,
+        },
+        Action::ReleaseBarrier {
+            point: BarrierPoint::ValidationEntered,
+        },
+        Action::WaitForEvent {
+            event: EventKind::ExecuteEntered,
+        },
+        checkpoint_action("one-ms-left"),
+        Action::AdvanceMonotonic { millis: 1 },
+        Action::AwaitResponse {
+            label: "submit".to_string(),
+        },
+        checkpoint_action("at-original-cutoff"),
+        Action::ReleaseBarrier {
+            point: BarrierPoint::ExecuteEntered,
+        },
+        Action::WaitForEvent {
+            event: EventKind::TaskTerminalBoundCommitted,
+        },
+        checkpoint_action("after-release"),
+    ]));
+
+    let one_ms_left = checkpoint(&report, "one-ms-left");
+    assert!(
+        one_ms_left.tasks.is_empty(),
+        "the window has not closed one millisecond before the original cutoff"
+    );
+    assert_eq!(one_ms_left.callbacks.execute, 1);
+    let answered = response(&report, "submit");
+    assert_eq!(
+        answered.kind,
+        ResponseKind::Task,
+        "validation must not renew the call's deadline"
+    );
+    let projected = answered
+        .task
+        .as_ref()
+        .expect("the cutoff answer carries its Task");
+    let at_cutoff = checkpoint(&report, "at-original-cutoff");
+    assert_eq!(only_task(at_cutoff).task_id, projected.task_id);
+    let finished = checkpoint(&report, "after-release");
+    assert_eq!(only_task(finished).status, TaskStatus::Completed);
+    assert_eq!(finished.callbacks.validation, 1);
+    assert_eq!(finished.callbacks.execute, 1);
+}
+
 fn submit(label: &str) -> Action {
     Action::Submit {
         request: RequestCase::Canonical,
