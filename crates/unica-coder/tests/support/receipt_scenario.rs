@@ -2664,6 +2664,15 @@ impl CanonicalInvocationService for ScenarioInvocationService {
         _invocation: &ActorBoundExecution,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
+        // A scenario may hold the work itself, past any response it allows.
+        let life = self.control.process_life();
+        if life.is_barrier_installed(ScenarioBarrierPoint::ExecuteEntered) {
+            life.pause(
+                ScenarioBarrierPoint::ExecuteEntered,
+                Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+            )
+            .map_err(|_| InvocationFailure::new("invalid_fixture", "execute barrier failed"))?;
+        }
         if self.provider.cooperative_cancel && cancellation.is_cancelled() {
             return Err(InvocationFailure::new(
                 "cancelled",
@@ -5141,8 +5150,10 @@ fn spawn_scenario_operation(
     control.record_operation_event(&label, "spawned");
     let handle = thread::spawn(move || {
         let result = work();
-        control.record_operation_event(&label, "completed");
+        // The exit flag goes first: a runner that sees the event checks the
+        // flag at once and must not find the operation still running.
         worker_completed.store(true, Ordering::Release);
+        control.record_operation_event(&label, "completed");
         result
     });
     ScenarioOperation { completed, handle }

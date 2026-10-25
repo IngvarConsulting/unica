@@ -81,6 +81,11 @@ pub enum ReceiptScenarioAction {
         disconnect: ScenarioDisconnect,
         label: String,
     },
+    /// Collects the answer of the submit still running behind a barrier,
+    /// without moving the clock; the barrier stays installed.
+    AwaitResponse {
+        label: String,
+    },
     SpawnSubmit {
         request: ScenarioRequest,
         response_budget_ms: u64,

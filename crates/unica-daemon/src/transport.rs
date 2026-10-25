@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use unica_execution::invocation::{RESPONSE_SERIALIZATION_MARGIN, TASK_RECONCILIATION_BUDGET};
 use unica_execution::receipt_ledger::ReceiptLedgerError;
 use unica_execution::receipt_runtime::authority::state_io_error;
-use unica_execution::receipt_runtime::hooks::V5ReceiptRuntimeEventKind;
+use unica_execution::receipt_runtime::hooks::{V5ListenerOwners, V5ReceiptRuntimeEventKind};
 use unica_execution::receipt_runtime::ports::{InvocationHost, ReceiptRuntimeConfig};
 use unica_execution::receipt_runtime::{
     ReceiptReply, ReceiptResponse, V5ReceiptRuntime, DURABLE_STEP_BUDGET,
@@ -338,6 +338,16 @@ fn run_daemon_configured_until<
             && handshakes_empty
             && runtime.active_cancellations_empty()
             && !runtime.has_retained_workspace_work();
+        // Reading every owner is an observer's question: the decision above
+        // stops at the first owner that holds.
+        if runtime.hooks().observes_listener_owners() {
+            runtime.hooks().listener_owners_observed(V5ListenerOwners {
+                client_leases: !owners_empty,
+                handshakes: !handshakes_empty,
+                task_cancellations: !runtime.active_cancellations_empty(),
+                retained_workspace_work: runtime.has_retained_workspace_work(),
+            });
+        }
         runtime.hooks().listener_ownership_observed(no_active_work);
         if no_active_work {
             if idle_since.elapsed() >= config.idle_grace {

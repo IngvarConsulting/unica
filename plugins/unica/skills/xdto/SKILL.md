@@ -37,7 +37,8 @@ allowed-tools:
 
 Операции семейства XDTO в `ops` — закрытое объединение с тегом `op`, а их
 аргументы добавления едут только внутри `args.values`: `valueType.add`
-(`name`, `base`, необязательный `facets`), `objectType.add` (`name`, необязательные `base` и одно из `before` / `after`), `property.add` (`property`).
+(`name`, `base`, необязательный `facets`), `objectType.add` (`name`, необязательные `base` и одно из `before` / `after`), `property.add` (`property`),
+`property.rename` (`newName`).
 `type.remove` и `property.remove` не принимают payload, включая пустой
 `values`. Плоские поля добавления и `values.at` отклоняются с `bad_value`.
 Необязательный `property.minOccurs` принимает целое JSON-значение `0` или `1`,
@@ -47,7 +48,8 @@ allowed-tools:
 вложенный анонимный тип которого добавляется новое
 (`…Type.ЛюбаяСсылка.Property.СсылкаНаОбъект`); `property.remove` — на самом
 удаляемом свойстве. Прежние `propertyPath` и `name` у `property.remove`
-отклоняются с `bad_value`, `next` ведёт к адресу свойства. Writer сохраняет BOM и наблюдённые
+отклоняются с `bad_value`, `next` ведёт к адресу свойства. `property.rename`
+адресует само переименуемое свойство. Writer сохраняет BOM и наблюдённые
 переводы строк, а повтор того же добавления возвращает no-op. QName в `base` и
 `property.type` передавай с существующим префиксом. Если префикс не виден в
 области вставки, writer повторит его объявление локально только при
@@ -190,6 +192,31 @@ preview.
   }
 }
 ```
+
+## Переименовать свойство
+
+`property.rename` меняет только имя собственного свойства: тип, границы,
+`localName` и место среди соседей остаются. Несколько переименований одного
+типа идут одним планом; общий `at` — тип, у каждой операции свой `args.at`.
+Аргументы preview из сценария `S-1703-xdto-property-rename`:
+
+```json
+{
+  "at": "main:XDTOPackage.Пример.Type.Товар",
+  "ops": [
+    {"op": "property.rename", "args": {"at": "main:XDTOPackage.Пример.Type.Товар.Property.Наименование", "values": {"newName": "Название"}}},
+    {"op": "property.rename", "args": {"at": "main:XDTOPackage.Пример.Type.Товар.Property.Код", "values": {"newName": "ВнешнийКод"}}},
+    {"op": "property.rename", "args": {"at": "main:XDTOPackage.Пример.Type.Товар.Property.Цена", "values": {"newName": "Цена.Розничная"}}}
+  ]
+}
+```
+
+После исполнения читай свойство по новому адресу: последний сегмент заменён
+новым именем, точка экранируется (`…Property.Цена\.Розничная`). Старый адрес
+отвечает `not_found`. Текущее имя ничего не записывает. Имя соседа, в том числе `ref`, и совпадение
+XML-представления с соседом отклоняются `invalid_state` по `values.newName`. Явный `localName` остаётся XML-именем,
+поэтому формат обмена не меняется; без него меняется и XML-элемент.
+BSL-обращения к свойству по имени правь отдельно.
 
 ## Создать анонимный тип в свойстве
 

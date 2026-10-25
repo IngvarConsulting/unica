@@ -19,6 +19,11 @@ tests/fixtures/unica_mcp_script_parity/cfe-patch-method/base-common-module.bsl -
 
 # Staged-dump root fixtures keep the BOM and CRLF an 8.3.27 dump writes.
 tests/fixtures/platform_8_3_27/staged_dump_roots/** -text -whitespace
+tests/fixtures/platform_8_3_27/exchange_plan/extension-Content.xml -text -whitespace
+tests/fixtures/platform_8_3_27/support-markers/** -text -whitespace
+
+# The native form export keeps the BOM and CRLF 8.3.27 writes.
+tests/fixtures/platform_8_3_27/form-native-profile/*.xml -text -whitespace
 
 # The native HTML oracle retains its exact BOM and internal line ending.
 tests/fixtures/platform_8_3_27/html-template/native-ru.html -text
@@ -35,29 +40,15 @@ plugins/unica/references/specs/*.md whitespace=cr-at-eol
 # This prompt-visible skill intentionally retains its CRLF source formatting.
 plugins/unica/skills/form-patterns/SKILL.md whitespace=cr-at-eol
 
-# The code acceptance corpus asserts raw source bytes, including BOM and CRLF.
-tests/fixtures/acceptance/workspace-code/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-diagnostics/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-metadata-warning/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-legacy-inline/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-external/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-external-missing/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-external-invalid/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-external-linked/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-metadata-values/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-metadata-commands/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-borrowed/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/metadata-declaration-diagnostics/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-event-defined-type/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-event-source-order/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-command-interface/** -text whitespace=cr-at-eol
-
-tests/fixtures/acceptance/workspace/** -text whitespace=cr-at-eol
+# Acceptance fixtures are byte evidence on every host: tests read, splice and
+# hash them, and BOM or CRLF in a fixture is part of what they assert. One rule
+# covers every fixture directory, so a new one cannot inherit Git-for-Windows
+# CRLF conversion (#1970, #1988); tests/ci/test_checkout_eol_contract.py guards it.
+# Narrower rules below that also drop whitespace checks override it.
+tests/fixtures/acceptance/** -text whitespace=cr-at-eol
 
 # Incomplete borrowed descriptors and MCP checks preserve platform-export bytes.
 tests/fixtures/platform_8_3_27/incomplete_borrowed/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-incomplete-borrowed/** -text whitespace=cr-at-eol
-tests/fixtures/acceptance/workspace-invalid-borrowing/** -text whitespace=cr-at-eol
 
 # Borrowing evidence is 8.3.27 export bytes; tests compare BOM and CRLF.
 tests/fixtures/platform_8_3_27/cfe_borrow/*.xml -text whitespace=cr-at-eol
@@ -106,3 +97,7 @@ crates/unica-dcs-designer/tests/fixtures/** text eol=lf
 
 # The ExchangePlan composition fixture keeps the platform's BOM and CRLF layout.
 tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/*/Ext/Content.xml -text -whitespace
+
+# Spliced by tests with newline-prefixed patterns; keep their LF bytes on every host.
+/tests/fixtures/platform_8_3_27/mxl/** -text -whitespace
+/tests/fixtures/unica_mcp_script_parity/dcs-validate/** -text -whitespace
