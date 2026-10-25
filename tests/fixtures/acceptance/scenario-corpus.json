@@ -33446,7 +33446,7 @@
        "kind": "xml",
        "path": "src/Documents/Реализация.xml",
        "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
-       "eq": [
+       "sameItems": [
         "AccumulationRegister.Продажи",
         "AccumulationRegister.Остатки",
         "AccumulationRegister.Обороты"
@@ -33549,7 +33549,7 @@
        "kind": "xml",
        "path": "src/Documents/Реализация.xml",
        "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
-       "eq": [
+       "sameItems": [
         "AccumulationRegister.Продажи",
         "AccumulationRegister.Остатки",
         "AccumulationRegister.Обороты",
@@ -33664,7 +33664,7 @@
        "kind": "xml",
        "path": "src/Documents/Реализация.xml",
        "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
-       "eq": [
+       "sameItems": [
         "AccumulationRegister.Продажи",
         "AccumulationRegister.Остатки",
         "AccumulationRegister.Обороты",
@@ -36216,7 +36216,7 @@
       },
       {
        "pointer": "/data/props/content",
-       "absent": true
+       "eq": "inherited"
       }
      ]
     },

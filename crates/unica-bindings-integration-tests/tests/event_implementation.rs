@@ -32,6 +32,7 @@ fn shape(
             handler_en: String::new(),
             implementation_at: None,
             call_type: None,
+            handlers: Vec::new(),
             can: Vec::new(),
         },
         owner,

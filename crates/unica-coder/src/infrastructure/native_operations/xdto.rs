@@ -850,6 +850,8 @@ pub(crate) mod tests {
     use crate::application::SupportGuardRequirement;
     use unica_source_contract::events::DomainEventKind;
     use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+    use unica_xdto::operations::XdtoRenamePropertyArgs;
+    use unica_xdto::operations::XdtoSetTypeArgs;
     use unica_xdto_designer::test_support::{args, PACKAGE};
 
     use crate::infrastructure::native_operations::common::support_guard_violation;
@@ -1888,6 +1890,27 @@ pub(crate) mod tests {
             at: qaddr(at),
             name: ncname(name),
             property_path: property_path.map(XdtoPropertyPath::for_test),
+        })
+    }
+
+    fn rename_property(
+        at: &str,
+        name: &str,
+        property_path: Option<&str>,
+        new_name: &str,
+    ) -> XdtoPlanOperation {
+        XdtoPlanOperation::RenameProperty(XdtoRenamePropertyArgs {
+            at: qaddr(at),
+            name: ncname(name),
+            property_path: property_path.map(XdtoPropertyPath::for_test),
+            new_name: ncname(new_name),
+        })
+    }
+
+    fn set_type(at: &str, base: &str) -> XdtoPlanOperation {
+        XdtoPlanOperation::SetType(XdtoSetTypeArgs {
+            at: qaddr(at),
+            base: qname(base),
         })
     }
 
@@ -3202,6 +3225,278 @@ pub(crate) mod tests {
             fs::read(&fixture.package).unwrap(),
             REFERENCED_PACKAGE.as_bytes()
         );
+        fixture.cleanup();
+    }
+
+    /// Три соседних свойства; у среднего явное XML-имя и форма атрибута,
+    /// которые валидатор Unica пока относит к неподдержанным находкам.
+    const RENAMED_PACKAGE: &str = "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n\t<objectType name=\"Товар\">\r\n\t\t<property name=\"Наименование\" type=\"xs:string\"/>\r\n\t\t<property name=\"Код\" type=\"xs:string\" lowerBound=\"0\" form=\"Attribute\" localName=\"code\"/>\r\n\t\t<property name=\"Цена\" type=\"xs:decimal\" lowerBound=\"0\" upperBound=\"-1\"/>\r\n\t</objectType>\r\n</package>";
+    const RENAMED_TYPE: &str = "main:XDTOPackage.Sample.Type.Товар";
+
+    #[test]
+    fn staged_xdto_rename_changes_only_names_and_keeps_pre_existing_findings() {
+        let fixture = staged_xdto_fixture("rename", RENAMED_PACKAGE.as_bytes());
+        let admission = staged_xdto_admission(&fixture, None, false);
+        let (state, effects) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[
+                rename_property(RENAMED_TYPE, "Код", None, "Промежуточный"),
+                rename_property(RENAMED_TYPE, "Промежуточный", None, "ВнешнийКод"),
+                rename_property(RENAMED_TYPE, "Наименование", None, "Имя"),
+            ],
+        )
+        .expect("findings of the renamed declaration stay pre-existing");
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        assert_eq!(result.commit_count_for_test(), 1);
+        assert_eq!(result.effects().events().len(), 1);
+        let expected = RENAMED_PACKAGE
+            .replacen("name=\"Код\"", "name=\"ВнешнийКод\"", 1)
+            .replacen("name=\"Наименование\"", "name=\"Имя\"", 1);
+        let after = fs::read(&fixture.package).unwrap();
+        assert_eq!(after, expected.as_bytes());
+        let text = decode(&after).unwrap();
+        let model = model::PackageModel::parse(&text).unwrap();
+        assert_eq!(
+            model.types[0]
+                .properties
+                .iter()
+                .map(|property| property.logical_identity())
+                .collect::<Vec<_>>(),
+            ["Имя", "ВнешнийКод", "Цена"]
+        );
+        let findings = |model: &model::PackageModel| {
+            super::validate(model)
+                .into_iter()
+                .map(|finding| (finding.code, finding.location.key))
+                .collect::<Vec<_>>()
+        };
+        let before = findings(
+            &model::PackageModel::parse(&decode(RENAMED_PACKAGE.as_bytes()).unwrap()).unwrap(),
+        );
+        assert_eq!(
+            before.len(),
+            2,
+            "form and localName stay unsupported findings"
+        );
+        assert_eq!(
+            findings(&model),
+            before
+                .into_iter()
+                .map(|(code, key)| (code, key.replace("property:Код", "property:ВнешнийКод")))
+                .collect::<Vec<_>>()
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_nested_rename_moves_descendant_findings_and_frees_the_old_name() {
+        let package = concat!(
+            "<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\n",
+            "\t<objectType name=\"Заказ\">\n",
+            "\t\t<property name=\"Строки\" upperBound=\"-1\">\n",
+            "\t\t\t<typeDef xsi:type=\"ObjectType\">\n",
+            "\t\t\t\t<property name=\"Товар\" type=\"xs:string\" localName=\"item\"/>\n",
+            "\t\t\t</typeDef>\n",
+            "\t\t</property>\n",
+            "\t</objectType>\n",
+            "</package>"
+        );
+        let fixture = staged_xdto_fixture("rename-nested", package.as_bytes());
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let order = "main:XDTOPackage.Sample.Type.Заказ";
+        let (mut state, _) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[
+                rename_property(order, "Строки", None, "Позиции"),
+                rename_property(order, "Товар", Some("Позиции"), "Номенклатура"),
+                add_property(order, "Строки", "xs:string", Some(0), None),
+            ],
+        )
+        .expect("the parent rename carries its descendants' pre-existing findings");
+        let after = state
+            .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+            .unwrap()
+            .unwrap();
+        let text = decode(&after).unwrap();
+        // Переименования меняют только имена; новое свойство встаёт после них.
+        let renamed = package
+            .replacen("name=\"Строки\"", "name=\"Позиции\"", 1)
+            .replacen("name=\"Товар\"", "name=\"Номенклатура\"", 1);
+        let head = &renamed[..renamed.find("\t</objectType>").unwrap()];
+        assert!(text.starts_with(head), "{text}");
+        let model = model::PackageModel::parse(&text).unwrap();
+        let properties = &model.types[0].properties;
+        assert_eq!(
+            properties
+                .iter()
+                .map(|property| property.logical_identity())
+                .collect::<Vec<_>>(),
+            ["Позиции", "Строки"]
+        );
+        assert_eq!(
+            properties[0].type_defs[0].properties[0].logical_identity(),
+            "Номенклатура"
+        );
+        assert_eq!(fs::read(&fixture.package).unwrap(), package.as_bytes());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_rename_refuses_duplicates_and_missing_targets_and_repeats_the_name_as_no_op() {
+        let fixture = staged_xdto_fixture("rename-refusals", RENAMED_PACKAGE.as_bytes());
+        let source = snapshot_tree(&fixture.source);
+        let cache = snapshot_tree(&fixture.context.cache_root);
+
+        let admission = staged_xdto_admission(&fixture, None, false);
+        let (state, effects) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[rename_property(RENAMED_TYPE, "Код", None, "Код")],
+        )
+        .unwrap();
+        assert!(state.planned_changes().is_empty());
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        assert_eq!(result.commit_count_for_test(), 0);
+
+        for (operations, kind, path) in [
+            (
+                vec![
+                    rename_property(RENAMED_TYPE, "Наименование", None, "Имя"),
+                    rename_property(RENAMED_TYPE, "Код", None, "Цена"),
+                ],
+                ApplyPlanErrorKind::InvalidState,
+                "ops[1].args.values.newName",
+            ),
+            (
+                vec![rename_property(RENAMED_TYPE, "Нет", None, "Есть")],
+                ApplyPlanErrorKind::NotFound,
+                "ops[0].args.at",
+            ),
+            (
+                vec![rename_property(
+                    "main:XDTOPackage.Sample.Type.Нет",
+                    "Код",
+                    None,
+                    "Есть",
+                )],
+                ApplyPlanErrorKind::NotFound,
+                "ops[0].args.at",
+            ),
+        ] {
+            let admission = staged_xdto_admission(&fixture, None, false);
+            let error = plan_admitted_xdto(&admission, &fixture.binding, &operations).unwrap_err();
+            assert_eq!(error.kind(), kind, "{path}");
+            assert_eq!(error.path(), Some(path));
+        }
+        assert_eq!(snapshot_tree(&fixture.source), source);
+        assert_eq!(snapshot_tree(&fixture.context.cache_root), cache);
+        fixture.cleanup();
+    }
+
+    const BASED_PACKAGE: &str = "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n\t<valueType name=\"Процент\" base=\"xs:decimal\" totalDigits=\"5\" fractionDigits=\"2\"/>\r\n\t<valueType name=\"Количество\" base=\"xs:decimal\"/>\r\n\t<objectType name=\"ОсноваА\">\r\n\t\t<property name=\"А\" type=\"xs:string\"/>\r\n\t</objectType>\r\n\t<objectType name=\"ОсноваБ\">\r\n\t\t<property name=\"Б\" type=\"tns:Количество\"/>\r\n\t</objectType>\r\n\t<objectType name=\"Производный\" base=\"tns:ОсноваА\" sequenced=\"true\">\r\n\t\t<property name=\"Своё\" type=\"tns:Процент\"/>\r\n\t</objectType>\r\n\t<objectType name=\"Ссылка\">\r\n\t\t<property name=\"Цель\" type=\"tns:Производный\"/>\r\n\t</objectType>\r\n</package>";
+
+    #[test]
+    fn staged_xdto_type_set_changes_only_the_base_and_repeats_the_current_base_as_no_op() {
+        let fixture = staged_xdto_fixture("type-set", BASED_PACKAGE.as_bytes());
+        let admission = staged_xdto_admission(&fixture, None, false);
+        let (state, effects) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[
+                set_type("main:XDTOPackage.Sample.Type.Производный", "tns:ОсноваБ"),
+                set_type("main:XDTOPackage.Sample.Type.Количество", "xs:integer"),
+                set_type("main:XDTOPackage.Sample.Type.Количество", "xs:decimal"),
+                set_type("main:XDTOPackage.Sample.Type.Процент", "xs:decimal"),
+            ],
+        )
+        .unwrap();
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        assert_eq!(result.commit_count_for_test(), 1);
+        let expected = BASED_PACKAGE.replacen(
+            "\"Производный\" base=\"tns:ОсноваА\"",
+            "\"Производный\" base=\"tns:ОсноваБ\"",
+            1,
+        );
+        assert_eq!(fs::read(&fixture.package).unwrap(), expected.as_bytes());
+        // sequenced валидатор пока не поддерживает; смена основы находок не добавляет.
+        let findings = |bytes: &[u8]| {
+            super::validate(&model::PackageModel::parse(&decode(bytes).unwrap()).unwrap())
+                .into_iter()
+                .map(|finding| (finding.code, finding.location.key))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            findings(expected.as_bytes()),
+            findings(BASED_PACKAGE.as_bytes())
+        );
+
+        let admission = staged_xdto_admission(&fixture, None, false);
+        let (state, _) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[set_type(
+                "main:XDTOPackage.Sample.Type.Производный",
+                "tns:ОсноваБ",
+            )],
+        )
+        .unwrap();
+        assert!(state.planned_changes().is_empty());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_type_set_refuses_cycles_families_and_restrictions_without_writes() {
+        let fixture = staged_xdto_fixture("type-set-refusals", BASED_PACKAGE.as_bytes());
+        let source = snapshot_tree(&fixture.source);
+        let cache = snapshot_tree(&fixture.context.cache_root);
+        for (operations, kind) in [
+            (
+                vec![
+                    set_type("main:XDTOPackage.Sample.Type.Количество", "xs:integer"),
+                    set_type("main:XDTOPackage.Sample.Type.Процент", "xs:integer"),
+                ],
+                ApplyPlanErrorKind::BadValue,
+            ),
+            (
+                vec![
+                    add_object("main:XDTOPackage.Sample", "Новый"),
+                    set_type("main:XDTOPackage.Sample.Type.ОсноваА", "tns:Производный"),
+                ],
+                ApplyPlanErrorKind::BadValue,
+            ),
+            (
+                vec![
+                    add_value("main:XDTOPackage.Sample", "Новое", "xs:string"),
+                    set_type("main:XDTOPackage.Sample.Type.Производный", "tns:Количество"),
+                ],
+                ApplyPlanErrorKind::BadValue,
+            ),
+            (
+                vec![
+                    add_value("main:XDTOPackage.Sample", "Новое", "xs:string"),
+                    set_type("main:XDTOPackage.Sample.Type.Производный", "tns:Нет"),
+                ],
+                ApplyPlanErrorKind::NotFound,
+            ),
+        ] {
+            let admission = staged_xdto_admission(&fixture, None, false);
+            let error = plan_admitted_xdto(&admission, &fixture.binding, &operations).unwrap_err();
+            assert_eq!(error.kind(), kind, "{operations:?}");
+            assert_eq!(error.path(), Some("ops[1].args.values.base"));
+        }
+        assert_eq!(snapshot_tree(&fixture.source), source);
+        assert_eq!(snapshot_tree(&fixture.context.cache_root), cache);
         fixture.cleanup();
     }
 
