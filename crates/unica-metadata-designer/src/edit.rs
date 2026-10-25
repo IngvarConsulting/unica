@@ -3309,15 +3309,45 @@ pub fn expand_standalone_children_for_operations(
 /// already describe inline with the platform's by-name registration.
 pub fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut String) {
     let initially_inline = inline_standalone_child_names(pre_image);
+    collapse_children(post_image, &|tag, name, _| {
+        !initially_inline.iter().any(|(inline_tag, inline_name)| {
+            *inline_tag == tag && metadata_name_eq(inline_name, name)
+        })
+    });
+}
+
+/// Legacy inline form and template registrations of an edited owner (#1370):
+/// before #1325 the owner carried the whole description next to the
+/// standalone `Forms/<Name>.xml` or `Templates/<Name>.xml`, and 1C 8.3.27
+/// then imports the configuration endlessly. Each inline registration whose
+/// standalone descriptor `has_descriptor` becomes the by-name reference; the
+/// collapsed `(tag, name)` pairs are returned for the plan's warning.
+pub fn collapse_legacy_inline_children(
+    image: &mut String,
+    has_descriptor: &dyn Fn(&'static str, &str) -> bool,
+) -> Vec<(&'static str, String)> {
+    collapse_children(image, &|tag, name, inline| {
+        inline && has_descriptor(tag, name)
+    })
+}
+
+/// Rewrite to `<Tag>Name</Tag>` each form or template child that `collapse`
+/// selects by tag, name and whether it is described inline; return the
+/// inline ones rewritten.
+fn collapse_children(
+    post_image: &mut String,
+    collapse: &dyn Fn(&'static str, &str, bool) -> bool,
+) -> Vec<(&'static str, String)> {
+    let mut collapsed = Vec::new();
     let replacements = {
         let Ok(document) = Document::parse(post_image.as_str()) else {
-            return;
+            return collapsed;
         };
         let Ok(object) = meta_edit_object_node(&document) else {
-            return;
+            return collapsed;
         };
         let Some(children) = unica_xml_format::read::child_element(object, "ChildObjects") else {
-            return;
+            return collapsed;
         };
         let mut replacements = Vec::new();
         for (_, tag) in STANDALONE_CHILD_TAGS {
@@ -3325,10 +3355,12 @@ pub fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut S
                 let Some(name) = meta_edit_child_object_name(child) else {
                     continue;
                 };
-                if initially_inline.iter().any(|(inline_tag, inline_name)| {
-                    *inline_tag == tag && metadata_name_eq(inline_name, &name)
-                }) {
+                let inline = child.children().any(|node| node.is_element());
+                if !collapse(tag, &name, inline) {
                     continue;
+                }
+                if inline {
+                    collapsed.push((tag, name.clone()));
                 }
                 // Keep the element's own qualified name, so an owner that
                 // spells MDClasses elements with a prefix stays in that
@@ -3355,11 +3387,61 @@ pub fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut S
     for (range, reference) in replacements {
         post_image.replace_range(range, &reference);
     }
+    collapsed
+}
+
+#[cfg(test)]
+mod legacy_inline_collapse_tests {
+    use super::collapse_legacy_inline_children;
+
+    /// An inline form or template with a standalone descriptor becomes the
+    /// by-name reference in the owner's own namespace prefix; one without a
+    /// descriptor, a by-name reference and an inline command stay (#1370).
+    #[test]
+    fn only_described_inline_forms_and_templates_are_collapsed() {
+        let owner = concat!(
+            "<md:MetaDataObject xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">",
+            "<md:Catalog uuid=\"1\"><md:Properties><md:Name>Items</md:Name></md:Properties>",
+            "<md:ChildObjects>",
+            "<md:Form uuid=\"2\"><md:Properties><md:Name>Main</md:Name></md:Properties></md:Form>",
+            "<md:Form uuid=\"3\"><md:Properties><md:Name>Orphan</md:Name></md:Properties></md:Form>",
+            "<md:Form>List</md:Form>",
+            "<md:Template uuid=\"4\"><md:Properties><md:Name>Print</md:Name></md:Properties></md:Template>",
+            "<md:Command uuid=\"5\"><md:Properties><md:Name>Open</md:Name></md:Properties></md:Command>",
+            "</md:ChildObjects></md:Catalog></md:MetaDataObject>"
+        );
+        let mut image = owner.to_string();
+        let collapsed = collapse_legacy_inline_children(&mut image, &|tag, name| {
+            matches!(
+                (tag, name),
+                ("Form", "Main") | ("Form", "List") | ("Template", "Print")
+            )
+        });
+        assert_eq!(
+            collapsed,
+            vec![
+                ("Form", "Main".to_string()),
+                ("Template", "Print".to_string())
+            ]
+        );
+        assert!(image.contains("<md:Form>Main</md:Form>"), "{image}");
+        assert!(
+            image.contains("<md:Template>Print</md:Template>"),
+            "{image}"
+        );
+        assert!(image.contains("<md:Name>Orphan</md:Name>"), "{image}");
+        assert!(image.contains("<md:Form>List</md:Form>"), "{image}");
+        assert!(image.contains("<md:Name>Open</md:Name>"), "{image}");
+    }
 }
 
 #[cfg(test)]
 #[path = "../tests/platform/edit_empty_child_objects.rs"]
 mod empty_child_objects_tests;
+
+#[cfg(test)]
+#[path = "../tests/platform/dump_parity.rs"]
+mod dump_parity_tests;
 
 #[cfg(test)]
 #[path = "../tests/platform/edit_dimension_deny.rs"]

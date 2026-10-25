@@ -810,3 +810,134 @@ fn canonical_template_remove_restores_its_directories_on_each_publication_failur
         assert!(!templates.exists(), "{failpoint:?}");
     }
 }
+
+fn common_template_fixture(report_schema: bool) -> (tempfile::TempDir, std::path::PathBuf) {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = std::fs::canonicalize(workspace.path()).unwrap().join("src");
+    let payload = source.join("CommonTemplates/Print");
+    std::fs::create_dir_all(payload.join("Ext")).unwrap();
+    std::fs::create_dir_all(source.join("Subsystems")).unwrap();
+    std::fs::create_dir_all(source.join("CommonModules/Printing/Ext")).unwrap();
+    std::fs::write(
+        workspace.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    let report = if report_schema {
+        "<Report>Sales</Report>"
+    } else {
+        ""
+    };
+    std::fs::write(
+        source.join("Configuration.xml"),
+        format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem><CommonTemplate>Print</CommonTemplate><CommonModule>Printing</CommonModule>{report}</ChildObjects></Configuration></MetaDataObject>"#),
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("CommonTemplates/Print.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><CommonTemplate uuid="1f0e0000-0000-4000-8000-000000000107"><Properties><Name>Print</Name><Synonym/><Comment/><TemplateType>SpreadsheetDocument</TemplateType></Properties></CommonTemplate></MetaDataObject>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        payload.join("Ext/Template.xml"),
+        r#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet"/>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("Subsystems/Sales.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Subsystem uuid="00000000-0000-4000-8000-000000001832"><Properties><Name>Sales</Name><Synonym/><Comment/><IncludeHelpInContents>false</IncludeHelpInContents><IncludeInCommandInterface>true</IncludeInCommandInterface><UseOneCommand>false</UseOneCommand><Explanation/><Picture/><Content><xr:Item xsi:type="xr:MDObjectRef">CommonTemplate.Print</xr:Item></Content></Properties><ChildObjects/></Subsystem></MetaDataObject>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("CommonModules/Printing.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Printing</Name><Synonym/><Comment/><Server>true</Server></Properties></CommonModule></MetaDataObject>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("CommonModules/Printing/Ext/Module.bsl"),
+        "Function Layout() Export\n\tReturn ПолучитьОбщийМакет(\"Print\");\nEndFunction\n",
+    )
+    .unwrap();
+    if report_schema {
+        std::fs::create_dir_all(source.join("Reports")).unwrap();
+        std::fs::write(
+            source.join("Reports/Sales.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Report uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Sales</Name><Synonym/><Comment/><MainDataCompositionSchema>CommonTemplate.Print</MainDataCompositionSchema></Properties><ChildObjects/></Report></MetaDataObject>"#,
+        )
+        .unwrap();
+    }
+    (workspace, source)
+}
+
+#[test]
+fn canonical_object_remove_takes_a_common_template_with_its_payload_and_registrations() {
+    let (workspace, source) = common_template_fixture(false);
+    let before = unica_workspace::test_support::tree_snapshot(&source);
+    let runtime = runtime();
+    let preview = invoke_apply(
+        &runtime,
+        workspace.path(),
+        serde_json::json!({"at":"main:CommonTemplate.Print","ops":[{"op":"object.remove","args":{}}]}),
+    );
+    assert!(preview.ok, "{preview:?}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        before
+    );
+    let code = preview
+        .warnings
+        .iter()
+        .find(|warning| warning["code"] == "code_references")
+        .expect("the plan names the code that takes the template");
+    assert_eq!(code["references"][0]["at"], "main:CommonModule.Printing");
+    assert_eq!(code["references"][0]["line"], 2);
+    let cleaned = preview
+        .warnings
+        .iter()
+        .find(|warning| warning["code"] == "composition_cleaned")
+        .expect("the plan names the subsystem it cleans");
+    assert_eq!(cleaned["entries"][0]["at"], "main:Subsystem.Sales");
+    let token = preview.data.as_ref().unwrap()["executionToken"]
+        .as_str()
+        .unwrap();
+    let published = invoke_apply(
+        &runtime,
+        workspace.path(),
+        serde_json::json!({"executionToken":token}),
+    );
+    assert!(published.ok, "{published:?}");
+    assert!(!source.join("CommonTemplates").exists());
+    let configuration = std::fs::read_to_string(source.join("Configuration.xml")).unwrap();
+    assert!(!configuration.contains("<CommonTemplate>"));
+    assert!(configuration.contains("<CommonModule>Printing</CommonModule>"));
+    let subsystem = std::fs::read_to_string(source.join("Subsystems/Sales.xml")).unwrap();
+    assert!(!subsystem.contains("CommonTemplate.Print"));
+    // Code that took the template by name is left as it is.
+    assert!(
+        std::fs::read_to_string(source.join("CommonModules/Printing/Ext/Module.bsl"))
+            .unwrap()
+            .contains("ПолучитьОбщийМакет(\"Print\")")
+    );
+}
+
+#[test]
+fn canonical_object_remove_refuses_a_common_template_other_metadata_names() {
+    let (workspace, source) = common_template_fixture(true);
+    let before = unica_workspace::test_support::tree_snapshot(&source);
+    let refused = invoke_apply(
+        &runtime(),
+        workspace.path(),
+        serde_json::json!({"at":"main:CommonTemplate.Print","ops":[{"op":"object.remove","args":{}}]}),
+    );
+    assert!(!refused.ok);
+    assert_eq!(refused.diagnostics[0]["code"], "invalid_state");
+    let message = refused.diagnostics[0]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(message.contains("referenced by other metadata"));
+    assert!(message.contains("`main:Report.Sales`"));
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        before
+    );
+}

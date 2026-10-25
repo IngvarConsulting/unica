@@ -61,6 +61,104 @@ fn refuse_targets_outside_writable_profile(
     Ok(())
 }
 
+/// Every edit of an owner registers its forms and templates by name (#1370).
+/// Before #1325 an owner could carry a form's or template's whole description
+/// inline next to its standalone `Forms/<Name>.xml` or `Templates/<Name>.xml`,
+/// and 1C 8.3.27 then imports the configuration endlessly. An owner this plan
+/// changes loses such inline registrations whose standalone descriptor
+/// exists; the plan names them in a `legacy_inline_registration` warning, so
+/// the rewrite of bytes the operation did not ask for is not silent.
+fn collapse_legacy_inline_registrations(
+    staged: &mut ApplyStagedState,
+    binding: &ProviderRootBinding,
+) -> Result<Vec<serde_json::Value>, ApplyPlanError> {
+    let mut warnings = Vec::new();
+    for change in staged.planned_changes() {
+        let unica_source_contract::proposal::StagedFileState::Bytes(current) = &change.current
+        else {
+            continue;
+        };
+        let parts = change
+            .relative_path
+            .iter()
+            .filter_map(std::ffi::OsStr::to_str)
+            .collect::<Vec<_>>();
+        // An object of a configuration or extension is `<Kind dir>/<Name>.xml`;
+        // an external data processor or report is `<Name>.xml` at the root.
+        let (kind, owner_dir, file) = match (parts.as_slice(), binding.source_kind()) {
+            ([directory, file], _) => {
+                let Some(layout) =
+                    unica_source_designer::layout::metadata_kind_by_directory(directory)
+                else {
+                    continue;
+                };
+                (layout.tag, std::path::PathBuf::from(directory), *file)
+            }
+            ([file], SourceSetKind::ExternalProcessor) => {
+                ("ExternalDataProcessor", std::path::PathBuf::new(), *file)
+            }
+            ([file], SourceSetKind::ExternalReport) => {
+                ("ExternalReport", std::path::PathBuf::new(), *file)
+            }
+            _ => continue,
+        };
+        let Some(name) = file.strip_suffix(".xml") else {
+            continue;
+        };
+        let (bom, text) = match current.strip_prefix(b"\xef\xbb\xbf") {
+            Some(text) => (&b"\xef\xbb\xbf"[..], text),
+            None => (&b""[..], current.as_slice()),
+        };
+        let Ok(text) = std::str::from_utf8(text) else {
+            continue;
+        };
+        let mut image = text.to_string();
+        let owner_dir = owner_dir.join(name);
+        let mut described = std::collections::BTreeSet::new();
+        for (tag, child) in unica_metadata_designer::edit::inline_standalone_child_names(&image) {
+            let collection = if tag == "Form" { "Forms" } else { "Templates" };
+            let descriptor = owner_dir.join(collection).join(format!("{child}.xml"));
+            if staged
+                .read(&descriptor)
+                .map_err(|error| ApplyPlanError::staging(error, "ops"))?
+                .is_some()
+            {
+                described.insert((tag, child));
+            }
+        }
+        let collapsed = unica_metadata_designer::edit::collapse_legacy_inline_children(
+            &mut image,
+            &|tag, child| {
+                described
+                    .iter()
+                    .any(|(known, known_name)| *known == tag && known_name == child)
+            },
+        );
+        if collapsed.is_empty() {
+            continue;
+        }
+        let mut bytes = bom.to_vec();
+        bytes.extend_from_slice(image.as_bytes());
+        staged
+            .replace(&change.relative_path, current, bytes)
+            .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
+        let names = collapsed
+            .iter()
+            .map(|(tag, child)| format!("{tag}.{child}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(serde_json::json!({
+            "code": "legacy_inline_registration",
+            "severity": "warning",
+            "at": format!("{}:{kind}.{name}", binding.source_set_name()),
+            "message": format!(
+                "the owner registers {names} by name now: the description inline in the owner is an older Unica format that 1C 8.3.27 imports endlessly"
+            ),
+        }));
+    }
+    Ok(warnings)
+}
+
 /// Operations that change the vendor-support state itself: they are the way
 /// to unlock an object, so the lock they edit never refuses them.
 fn changes_support_state(
@@ -1191,9 +1289,13 @@ pub(crate) fn plan_hidden_v13_apply(
             _ => None,
         }),
     )?;
+    let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
     // A plan whose operations cancel out edits nothing protected.
     if let Some(warning) = support_warning.filter(|_| !staged.planned_changes().is_empty()) {
+        effects.push_warning(warning);
+    }
+    for warning in legacy_inline {
         effects.push_warning(warning);
     }
     let detail_error = |error: serde_json::Error| {
@@ -1872,6 +1974,84 @@ mod tests {
         assert!(unchanged);
     }
 
+    /// A common template on support follows the same rules as any vendor
+    /// object: locked, it refuses under `deny` and warns under `warn`.
+    #[test]
+    fn vendor_common_template_removal_follows_its_support_rule() {
+        use unica_workspace::test_support::tree_snapshot;
+
+        let template = "44444444-4444-4444-8444-444444444444";
+        for (rule, policy) in [(0, "deny"), (0, "warn"), (1, "deny")] {
+            let fixture = ApplySeamFixture::new();
+            let source = fixture.source_dir();
+            std::fs::write(
+                source.parent().unwrap().join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            std::fs::create_dir_all(source.join("Ext")).unwrap();
+            std::fs::write(
+                source.join("Ext/ParentConfigurations.bin"),
+                format!(
+                    "\u{feff}{{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,33333333-3333-4333-8333-333333333333,\"1.0\",\"Vendor\",\"VendorConf\",3,{rule},0,{template},{template}}}"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Document>First</Document><Document>Second</Document><CommonTemplate>Print</CommonTemplate></ChildObjects></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::create_dir_all(source.join("CommonTemplates/Print/Ext")).unwrap();
+            std::fs::write(
+                source.join("CommonTemplates/Print.xml"),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonTemplate uuid="{template}"><Properties><Name>Print</Name><Synonym/><Comment/><TemplateType>SpreadsheetDocument</TemplateType></Properties></CommonTemplate></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("CommonTemplates/Print/Ext/Template.xml"),
+                r#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet"/>"#,
+            )
+            .unwrap();
+            let before = tree_snapshot(&source);
+            let request = seam_request(
+                "main:CommonTemplate.Print",
+                "object.remove",
+                serde_json::json!({}),
+            );
+            let outcome = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                .map(|(mut staged, effects)| {
+                    assert!(staged
+                        .read(std::path::Path::new("CommonTemplates/Print.xml"))
+                        .unwrap()
+                        .is_none());
+                    effects.warnings().to_vec()
+                });
+            assert_eq!(tree_snapshot(&source), before);
+            match (rule, policy) {
+                (0, "deny") => {
+                    let error = outcome.expect_err("a locked common template stays under deny");
+                    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+                    let message = error.to_string();
+                    assert!(message.contains("`main:CommonTemplate.Print`"));
+                    assert!(message.contains("support rule `locked`"));
+                }
+                (0, _) => {
+                    let warnings = outcome.expect("warn removes a locked common template");
+                    assert_eq!(warnings.len(), 1);
+                    assert_eq!(warnings[0]["code"], "support_locked");
+                    assert_eq!(warnings[0]["at"], "main:CommonTemplate.Print");
+                }
+                _ => {
+                    let warnings = outcome.expect("an editable common template is removed");
+                    assert!(warnings.is_empty());
+                }
+            }
+        }
+    }
+
     /// With changes disabled for the whole configuration a removal is told
     /// so in its own words: `deny` refuses before removal, `warn` permits it.
     #[test]
@@ -2136,10 +2316,12 @@ mod tests {
             )
             .unwrap();
         }
-        // Both fixture documents carry uuid 1111…; the marker locks it.
+        // Both fixture documents carry uuid 1111…; the marker locks it. The
+        // vendor marks it "changes not recommended" (`-1`), as 1C deliveries
+        // do: the lock still holds (#1976).
         std::fs::write(
             ext.join("ParentConfigurations.bin"),
-            "\u{feff}{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,11111111-1111-4111-8111-111111111111,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,44444444-4444-4444-8444-444444444444,44444444-4444-4444-8444-444444444444,0,0,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111}",
+            "\u{feff}{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,11111111-1111-4111-8111-111111111111,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,44444444-4444-4444-8444-444444444444,44444444-4444-4444-8444-444444444444,0,-1,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111}",
         )
         .unwrap();
         let snapshot = || {
@@ -2857,6 +3039,119 @@ mod tests {
         );
     }
 
+    /// Every expression of data composition is code, not only those of fields
+    /// and parameters: the expressions of a data set link, the total and
+    /// detail expressions of a user field in a settings variant, the
+    /// expression of an output template parameter. They are listed by the
+    /// template or the variant and the line, in either language.
+    #[test]
+    fn object_removal_lists_every_data_composition_expression_as_code() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        add_removable_object(&source, "Enum", "Enums", "Kinds");
+        let directory = source.join("Documents/Second/Templates/Data/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Template.xml"),
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:dcsat=\"http://v8.1c.ru/8.1/data-composition-system/area-template\"><dataSetLink><sourceDataSet>A</sourceDataSet><destinationDataSet>B</destinationDataSet><sourceExpression>Вид</sourceExpression><destinationExpression>ЗНАЧЕНИЕ(Enum.Kinds.Main)</destinationExpression></dataSetLink><template><name>Out</name><template xsi:type=\"dcsat:AreaTemplate\"/><parameter xsi:type=\"dcsat:ExpressionAreaTemplateParameter\"><dcsat:name>Kind</dcsat:name><dcsat:expression>Вид\n= ЗНАЧЕНИЕ(Перечисление.Kinds.Main)</dcsat:expression></parameter></template><settingsVariant><dcsset:name>Основной</dcsset:name><dcsset:settings><dcsset:userFields><dcsset:item xsi:type=\"dcsset:UserFieldExpression\"><dcsset:dataPath>ПользовательскиеПоля.Поле1</dcsset:dataPath><dcsset:detailExpression>Вид</dcsset:detailExpression><dcsset:totalExpression>Сумма(\nВЫБОР КОГДА Вид = ЗНАЧЕНИЕ(Перечисление.Kinds.Main) ТОГДА 1 КОНЕЦ)</dcsset:totalExpression></dcsset:item></dcsset:userFields></dcsset:settings></settingsVariant></DataCompositionSchema>",
+        )
+        .unwrap();
+        let (_, effects) = plan_hidden_v13_apply(
+            &seam_request("main:Enum.Kinds", "object.remove", serde_json::json!({})),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("expressions of data composition do not block the removal");
+        let code = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .expect("the plan carries the expected warning");
+        assert_eq!(
+            code["references"],
+            serde_json::json!([
+                {"at": "main:Document.Second.Template.Data", "line": 1},
+                {"at": "main:Document.Second.Template.Data", "line": 2},
+                {"at": "main:Document.Second.Template.Data.Setting.Основной", "line": 2}
+            ])
+        );
+    }
+
+    /// Only an element of a data composition namespace is an expression: an
+    /// `expression` of another namespace in a template, or the `field` next to
+    /// the expression inside `dcsat:fieldExpression`, is a property and
+    /// refuses the removal.
+    #[test]
+    fn object_removal_refuses_references_next_to_data_composition_expressions() {
+        for template in [
+            "<Root xmlns=\"urn:example:other\"><expression>Enum.Kinds.Main</expression></Root>",
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\" xmlns:dcsat=\"http://v8.1c.ru/8.1/data-composition-system/area-template\"><dataSet><name>Set</name><field><dataPath>Kind</dataPath><orderExpression><dcscom:expression>ЗНАЧЕНИЕ(Перечисление.Kinds.Main)</dcscom:expression><dcscom:orderType>Asc</dcscom:orderType></orderExpression></field></dataSet><template><name>Out</name><parameter xsi:type=\"dcsat:DetailsAreaTemplateParameter\"><dcsat:name>Details</dcsat:name><dcsat:fieldExpression><dcsat:field>Enum.Kinds.Main</dcsat:field><dcsat:expression>Вид</dcsat:expression></dcsat:fieldExpression></parameter></template></DataCompositionSchema>",
+        ] {
+            let fixture = ApplySeamFixture::new();
+            let source = fixture.source_dir();
+            add_removable_object(&source, "Enum", "Enums", "Kinds");
+            let directory = source.join("Documents/Second/Templates/Data/Ext");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("Template.xml"), template).unwrap();
+            let message = refused_removal(&fixture, "main:Enum.Kinds");
+            assert!(
+                message.contains("`main:Document.Second.Template.Data` → Template"),
+                "a reference outside an expression refuses the removal"
+            );
+        }
+    }
+
+    /// A calculated field of a form's dynamic list is code too: it is listed
+    /// by the list attribute and the line, while a filter value of the same
+    /// list still refuses the removal.
+    #[test]
+    fn object_removal_lists_dynamic_list_calculated_fields_as_code() {
+        let form = |settings: &str| {
+            format!("<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcssch=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" version=\"2.20\"><Attributes><Attribute name=\"List\"><Settings xsi:type=\"DynamicList\"><CalculatedField><dcssch:dataPath>Main</dcssch:dataPath><dcssch:expression>ВЫБОР КОГДА Вид = ЗНАЧЕНИЕ(Перечисление.Kinds.Main) ТОГДА 1 КОНЕЦ</dcssch:expression><dcssch:presentationExpression>\nВЫБОР КОГДА Вид = ЗНАЧЕНИЕ(Enum.Kinds.Main) ТОГДА \"\" КОНЕЦ</dcssch:presentationExpression></CalculatedField>{settings}</Settings></Attribute></Attributes></Form>")
+        };
+        let write = |fixture: &ApplySeamFixture, settings: &str| {
+            let source = fixture.source_dir();
+            add_removable_object(&source, "Enum", "Enums", "Kinds");
+            let directory = source.join("Documents/Second/Forms/List/Ext");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("Form.xml"), form(settings)).unwrap();
+        };
+        let fixture = ApplySeamFixture::new();
+        write(&fixture, "");
+        let (_, effects) = plan_hidden_v13_apply(
+            &seam_request("main:Enum.Kinds", "object.remove", serde_json::json!({})),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("a calculated field does not block the removal");
+        let code = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .expect("the plan carries the expected warning");
+        assert_eq!(
+            code["references"],
+            serde_json::json!([
+                {"at": "main:Document.Second.Form.List.Attribute.List", "line": 1},
+                {"at": "main:Document.Second.Form.List.Attribute.List", "line": 2}
+            ])
+        );
+
+        let fixture = ApplySeamFixture::new();
+        write(
+            &fixture,
+            &format!(
+                "<ListSettings>{}</ListSettings>",
+                design_time_filter("Перечисление.Kinds.Main")
+            ),
+        );
+        let message = refused_removal(&fixture, "main:Enum.Kinds");
+        assert!(
+            message.contains("`main:Document.Second.Form.List.Attribute.List` → Filter"),
+            "the filter value next to the calculated field refuses the removal"
+        );
+    }
+
     /// Next to an expression, a reference held in a property of the schema —
     /// the value type of a parameter — still refuses the removal.
     #[test]
@@ -2914,6 +3209,224 @@ mod tests {
             "{message}"
         );
         assert!(!message.contains("Template.Data"), "{message}");
+    }
+
+    /// Registers `<Kind>` `name` in the fixture configuration and writes its
+    /// descriptor, so that the object can be removed.
+    fn add_removable_object(source: &std::path::Path, kind: &str, directory: &str, name: &str) {
+        let configuration = source.join("Configuration.xml");
+        let text = std::fs::read_to_string(&configuration).unwrap().replace(
+            "<Document>First</Document>",
+            &format!("<Document>First</Document><{kind}>{name}</{kind}>"),
+        );
+        std::fs::write(&configuration, text).unwrap();
+        std::fs::create_dir_all(source.join(directory)).unwrap();
+        std::fs::write(
+            source.join(format!("{directory}/{name}.xml")),
+            format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><{kind} uuid=\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\"><Properties><Name>{name}</Name></Properties></{kind}></MetaDataObject>"),
+        )
+        .unwrap();
+    }
+
+    /// A data composition filter whose right value is `dcscor:DesignTimeValue`.
+    fn design_time_filter(value: &str) -> String {
+        format!("<dcsset:filter><dcsset:item xsi:type=\"dcsset:FilterItemComparison\"><dcsset:left xsi:type=\"dcscor:Field\">Kind</dcsset:left><dcsset:comparisonType>Equal</dcsset:comparisonType><dcsset:right xsi:type=\"dcscor:DesignTimeValue\">{value}</dcsset:right></dcsset:item></dcsset:filter>")
+    }
+
+    /// Plans the removal of `at` and returns the refusal text.
+    fn refused_removal(fixture: &ApplySeamFixture, at: &str) -> String {
+        let error = plan_hidden_v13_apply(
+            &seam_request(at, "object.remove", serde_json::json!({})),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+        error.to_string()
+    }
+
+    /// A dynamic list of another object's form filtering by a predefined
+    /// item refers to the catalog in metadata: 8.3.27 writes the filter value
+    /// in Russian, `Справочник.Units.Piece`, and the removal refuses naming
+    /// the form attribute and the filter.
+    #[test]
+    fn object_removal_refuses_a_russian_filter_value_in_list_settings() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        add_removable_object(&source, "Catalog", "Catalogs", "Units");
+        let directory = source.join("Documents/Second/Forms/List/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Form.xml"),
+            format!(
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" version=\"2.20\"><Attributes><Attribute name=\"List\"><Settings xsi:type=\"DynamicList\"><ListSettings>{}</ListSettings></Settings></Attribute></Attributes></Form>",
+                design_time_filter("Справочник.Units.Piece")
+            ),
+        )
+        .unwrap();
+        let message = refused_removal(&fixture, "main:Catalog.Units");
+        assert!(
+            message.contains("`main:Document.Second.Form.List.Attribute.List` → Filter"),
+            "the refusal names the form attribute and the filter"
+        );
+        assert!(
+            !message.contains("→ Form"),
+            "the filter is not reported as the whole form"
+        );
+    }
+
+    /// A settings variant of a data composition template filtering by an
+    /// enum value refers to the enumeration, written in Russian or in English:
+    /// the refusal names the variant or the parameter and the property.
+    #[test]
+    fn object_removal_refuses_filter_values_in_a_settings_variant() {
+        for (value, referrer) in [
+            (
+                "Перечисление.Kinds.Main",
+                "`main:Document.Second.Template.Data.Setting.Основной` → Filter",
+            ),
+            (
+                "Enum.Kinds.Main",
+                "`main:Document.Second.Template.Data.Setting.Основной` → Filter",
+            ),
+        ] {
+            let fixture = ApplySeamFixture::new();
+            let source = fixture.source_dir();
+            add_removable_object(&source, "Enum", "Enums", "Kinds");
+            let directory = source.join("Documents/Second/Templates/Data/Ext");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join("Template.xml"),
+                format!(
+                    "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"><parameter><name>Kind</name><value xsi:type=\"dcscor:DesignTimeValue\">Перечисление.Kinds.Other</value></parameter><settingsVariant><dcsset:name>Основной</dcsset:name><dcsset:settings>{}</dcsset:settings></settingsVariant></DataCompositionSchema>",
+                    design_time_filter(value)
+                ),
+            )
+            .unwrap();
+            let message = refused_removal(&fixture, "main:Enum.Kinds");
+            for referrer in [
+                referrer,
+                "`main:Document.Second.Template.Data.Parameter.Kind` → Value",
+            ] {
+                assert!(
+                    message.contains(referrer),
+                    "the refusal names the variant filter and the parameter value"
+                );
+            }
+        }
+    }
+
+    /// The conditional appearance of a whole form — `ConditionalAppearance`
+    /// outside any dynamic list — filtering by a predefined item refers to the
+    /// catalog: the refusal names the form and the conditional appearance.
+    #[test]
+    fn object_removal_refuses_a_filter_value_in_form_conditional_appearance() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        add_removable_object(&source, "Catalog", "Catalogs", "Units");
+        let directory = source.join("Documents/Second/Forms/List/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Form.xml"),
+            format!(
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" version=\"2.20\"><Attributes><ConditionalAppearance><dcsset:item>{}</dcsset:item></ConditionalAppearance></Attributes></Form>",
+                design_time_filter("Справочник.Units.Piece")
+            ),
+        )
+        .unwrap();
+        let message = refused_removal(&fixture, "main:Catalog.Units");
+        assert!(
+            message.contains("`main:Document.Second.Form.List` → ConditionalAppearance"),
+            "the refusal names the form and its conditional appearance"
+        );
+    }
+
+    /// The address grammar has no node for a nested schema: a design-time
+    /// value or a query inside one is addressed by the template, not by a
+    /// parameter, variant or data set of the outer schema.
+    #[test]
+    fn object_removal_addresses_a_nested_schema_by_its_template() {
+        let template = |body: &str| {
+            format!("<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"><nestedSchema><name>Inner</name><schema>{body}</schema></nestedSchema></DataCompositionSchema>")
+        };
+        let write = |fixture: &ApplySeamFixture, body: &str| {
+            let source = fixture.source_dir();
+            add_removable_object(&source, "Enum", "Enums", "Kinds");
+            let directory = source.join("Documents/Second/Templates/Data/Ext");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("Template.xml"), template(body)).unwrap();
+        };
+        let fixture = ApplySeamFixture::new();
+        write(
+            &fixture,
+            &format!(
+                "<parameter><name>Kind</name><value xsi:type=\"dcscor:DesignTimeValue\">Перечисление.Kinds.Main</value></parameter><settingsVariant><dcsset:name>Основной</dcsset:name><dcsset:settings>{}</dcsset:settings></settingsVariant>",
+                design_time_filter("Перечисление.Kinds.Main")
+            ),
+        );
+        let message = refused_removal(&fixture, "main:Enum.Kinds");
+        for referrer in [
+            "`main:Document.Second.Template.Data` → Value",
+            "`main:Document.Second.Template.Data` → Filter",
+        ] {
+            assert!(
+                message.contains(referrer),
+                "the refusal names the template holding the nested schema"
+            );
+        }
+        assert!(
+            !message.contains("Parameter.Kind") && !message.contains("Setting."),
+            "a nested node is not addressed as a node of the outer schema"
+        );
+
+        let fixture = ApplySeamFixture::new();
+        write(
+            &fixture,
+            "<dataSet><name>Set</name><query>ВЫБРАТЬ * ИЗ Перечисление.Kinds</query></dataSet>",
+        );
+        let (_, effects) = plan_hidden_v13_apply(
+            &seam_request("main:Enum.Kinds", "object.remove", serde_json::json!({})),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("a query in a nested schema does not block the removal");
+        let code = effects
+            .warnings()
+            .iter()
+            .find(|warning| warning["code"] == "code_references")
+            .expect("the plan lists the query of the nested schema");
+        assert_eq!(
+            code["references"],
+            serde_json::json!([{"at": "main:Document.Second.Template.Data", "line": 1}])
+        );
+    }
+
+    /// Russian kind names are searched only in design-time values: a synonym
+    /// or a title reading «Справочник.Units» is text, not a reference.
+    #[test]
+    fn object_removal_ignores_russian_kind_names_in_synonyms() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        add_removable_object(&source, "Catalog", "Catalogs", "Units");
+        let second = source.join("Documents/Second.xml");
+        let text = std::fs::read_to_string(&second).unwrap().replace(
+            "<Name>Total</Name>",
+            "<Name>Total</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Справочник.Units</v8:content></v8:item></Synonym>",
+        );
+        std::fs::write(&second, text).unwrap();
+        let directory = source.join("Documents/Second/Forms/List/Ext");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("Form.xml"),
+            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" version=\"2.20\"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Справочник.Units.Piece</v8:content></v8:item></Title></Form>",
+        )
+        .unwrap();
+        plan_hidden_v13_apply(
+            &seam_request("main:Catalog.Units", "object.remove", serde_json::json!({})),
+            &fixture.binding,
+            &fixture.admission(),
+        )
+        .expect("a synonym naming the kind in Russian does not block the removal");
     }
 
     /// `force` is no longer part of the `object.remove` contract: passing it

@@ -843,6 +843,15 @@ impl V5CanonicalInvocationRuntime {
         )
     }
 
+    /// Root checks continue from files in `store` instead of starting over.
+    fn with_root_check_continuations(
+        mut self,
+        store: Arc<unica_project_health::inspection::resources::RootCheckContinuationStore>,
+    ) -> Self {
+        self.root_check_continuations = store;
+        self
+    }
+
     pub(super) fn has_retained_workspace_work(&self) -> bool {
         self.workspace_actors.has_retained_work()
     }
@@ -1488,6 +1497,9 @@ impl DaemonServerConfig {
     }
 }
 
+/// The private child of the daemon state that holds root check continuations.
+const ROOT_CHECK_CONTINUATIONS: &str = "project-health";
+
 impl DaemonServerConfig {
     pub(crate) fn receipt_runtime_config(
         &self,
@@ -1500,6 +1512,31 @@ impl DaemonServerConfig {
             .runtime_hooks_for_v5()
             .unwrap_or_else(|| Arc::new(unica_execution::receipt_runtime::hooks::NoHooks));
         let source = self.clone();
+        // Continuations live in a private directory of the daemon's own
+        // state, never in a workspace, and age out with the same idle period
+        // as stale daemon state. Without that directory a root check starts
+        // from the beginning each time.
+        let root_check_continuations = Arc::new(
+            match unica_daemon::identity::DaemonStateDirectory::open(
+                &self.state_root,
+                &self.core_identity,
+            )
+            .and_then(|state| {
+                state.create_private_subdirectory(ROOT_CHECK_CONTINUATIONS)?;
+                Ok(state.path().join(ROOT_CHECK_CONTINUATIONS))
+            }) {
+                Ok(directory) => {
+                    unica_project_health::inspection::resources::RootCheckContinuationStore::in_directory(
+                        directory,
+                        unica_daemon::state_collection::STALE_DAEMON_STATE_IDLE,
+                    )
+                }
+                Err(_) => {
+                    eprintln!("root check continuation disabled: daemon state unavailable");
+                    Default::default()
+                }
+            },
+        );
         let factory: Arc<dyn Fn() -> Arc<CanonicalInvocationHost> + Send + Sync> =
             Arc::new(move || {
                 #[cfg(test)]
@@ -1508,10 +1545,13 @@ impl DaemonServerConfig {
                 let preset: Option<Arc<V5CanonicalInvocationRuntime>> = None;
                 let runtime = match preset {
                     Some(runtime) => runtime,
-                    None => Arc::new(V5CanonicalInvocationRuntime::new(
-                        source.invocation_service_for_v5(),
-                        source.invocation_clock_for_v5(),
-                    )),
+                    None => Arc::new(
+                        V5CanonicalInvocationRuntime::new(
+                            source.invocation_service_for_v5(),
+                            source.invocation_clock_for_v5(),
+                        )
+                        .with_root_check_continuations(Arc::clone(&root_check_continuations)),
+                    ),
                 };
                 Arc::new(CanonicalInvocationHost::over(runtime))
             });
@@ -1559,6 +1599,9 @@ impl unica_daemon::transport::ObservationLifecycle for CapacityObservation {
 }
 
 #[cfg(test)]
+#[path = "code_target_tests.rs"]
+mod code_target_tests;
+#[cfg(test)]
 mod external_cache_apply_tests;
 #[cfg(test)]
 #[path = "form_lifecycle_tests.rs"]
@@ -1566,6 +1609,12 @@ mod form_lifecycle_tests;
 #[cfg(test)]
 #[path = "form_move_tests.rs"]
 mod form_move_tests;
+#[cfg(test)]
+#[path = "form_native_profile_tests.rs"]
+mod form_native_profile_tests;
+#[cfg(test)]
+#[path = "form_properties_tests.rs"]
+mod form_properties_tests;
 #[cfg(test)]
 #[path = "metadata_can_tests.rs"]
 mod metadata_can_tests;
@@ -1588,6 +1637,9 @@ mod form_add_owner_bytes_tests;
 
 #[cfg(test)]
 mod legacy_inline_check_tests;
+
+#[cfg(test)]
+mod apply_answer_size_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
@@ -2361,6 +2413,157 @@ pub(crate) mod actor_capacity_tests {
         );
         assert!(!refused.ok, "{refused:?}");
         assert!(!workspace.path().join("src").join(interface).exists());
+    }
+
+    /// Пока порядок разделов не задан, корневого `CommandInterface.xml` нет.
+    /// Первый порядок, как у платформы, может быть частичным: он называет
+    /// разделы интерфейса — подсистемы верхнего уровня, включённые в него, —
+    /// и создаёт файл в форме выгрузки 8.3.27. Чужое имя, раздел вне
+    /// интерфейса и повтор отклоняются без записи.
+    #[test]
+    fn canonical_first_subsystem_order_creates_root_interface_from_sections() {
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let root_order = |subsystems: serde_json::Value| {
+            serde_json::json!({
+                "op": "subsystemOrder.set",
+                "args": {"at": "main:Configuration", "values": {"subsystems": subsystems}}
+            })
+        };
+        let document = |subsystems: &[&str]| {
+            let items = subsystems
+                .iter()
+                .map(|name| format!("\t\t<Subsystem>{name}</Subsystem>\r\n"))
+                .collect::<String>();
+            format!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<SubsystemsOrder>\r\n{items}\t</SubsystemsOrder>\r\n</CommandInterface>"
+            )
+        };
+        let fresh = || {
+            let workspace = interface_order_workspace();
+            let source = workspace.path().join("src");
+            std::fs::remove_file(source.join(ROOT_INTERFACE)).unwrap();
+            // `Продажи` не показывается в интерфейсе: разделом она не станет.
+            let sales = source.join("Subsystems/Продажи.xml");
+            let text = std::fs::read_to_string(&sales).unwrap().replace(
+                "<IncludeInCommandInterface>true</IncludeInCommandInterface>",
+                "<IncludeInCommandInterface>false</IncludeInCommandInterface>",
+            );
+            std::fs::write(&sales, text).unwrap();
+            workspace
+        };
+        let preview = |workspace: &std::path::Path, ops: serde_json::Value| {
+            interface_apply_call(
+                &runtime,
+                workspace,
+                serde_json::json!({"at": "main:Configuration", "ops": ops}),
+            )
+        };
+
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([root_order(serde_json::json!([
+                "Subsystem.КонтрольРаботыПользователей"
+            ]))]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        assert!(!root.exists(), "предпросмотр не пишет файл");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            document(&["Subsystem.КонтрольРаботыПользователей"])
+        );
+
+        // Новая подсистема того же пакета уже раздел интерфейса.
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([
+                {"op": "subsystem.create", "args": {"at": "main:Configuration", "values": {"name": "Новая"}}},
+                root_order(serde_json::json!(["Subsystem.Новая", "Subsystem.Администрирование"]))
+            ]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            document(&["Subsystem.Новая", "Subsystem.Администрирование"])
+        );
+
+        // Файл есть, но порядка разделов в нём нет: тот же первый порядок,
+        // соседняя секция остаётся на месте.
+        let workspace = fresh();
+        let root = workspace.path().join("src").join(ROOT_INTERFACE);
+        let visibility = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<CommandsVisibility>\r\n\t\t<Command name=\"Catalog.Пользователи.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>false</xr:Common>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>\r\n</CommandInterface>";
+        std::fs::write(&root, visibility).unwrap();
+        let planned = preview(
+            workspace.path(),
+            serde_json::json!([root_order(serde_json::json!([
+                "Subsystem.Администрирование"
+            ]))]),
+        );
+        assert!(planned.ok, "{planned:?}");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(&root).unwrap(),
+            visibility.replace(
+                "\t</CommandsVisibility>\r\n",
+                "\t</CommandsVisibility>\r\n\t<SubsystemsOrder>\r\n\t\t<Subsystem>Subsystem.Администрирование</Subsystem>\r\n\t</SubsystemsOrder>\r\n",
+            )
+        );
+
+        for (subsystems, needle) in [
+            (
+                serde_json::json!(["Subsystem.Продажи"]),
+                "not a top-level subsystem shown in the command interface: `Subsystem.Продажи`",
+            ),
+            (
+                serde_json::json!(["Subsystem.Нет", "Subsystem.Нет"]),
+                "not a top-level subsystem shown in the command interface: `Subsystem.Нет`; the sections are",
+            ),
+            // Вложенная подсистема разделом не бывает, даже одноимённая
+            // корневой.
+            (
+                serde_json::json!(["Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей"]),
+                "not a top-level subsystem shown in the command interface",
+            ),
+            (
+                serde_json::json!(["Subsystem.Администрирование", "Subsystem.Администрирование"]),
+                "listed more than once",
+            ),
+        ] {
+            let workspace = fresh();
+            let refused = preview(
+                workspace.path(),
+                serde_json::json!([root_order(subsystems)]),
+            );
+            assert!(!refused.ok, "{refused:?}");
+            assert!(
+                refused.diagnostics[0]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(needle)),
+                "{refused:?}"
+            );
+            assert!(!workspace.path().join("src").join(ROOT_INTERFACE).exists());
+        }
     }
 
     /// Каждая из пяти операций меняет только свою секцию и названные в запросе
@@ -9275,8 +9478,8 @@ struct ActorLogicalReadLease {"#,
                     "right": "main:Catalog.Items",
                     "cursor": "opaque"
                 }),
-                // Comparison diff publishes no cursor (#1218): an unknown argument.
-                "bad_value",
+                // A cursor no first page issued continues nothing (#977).
+                "invalid_cursor",
             ),
             (
                 ToolIdentity::Diff,
@@ -9451,6 +9654,15 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({"executionToken": token, "limit": 1}),
                 true,
             ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({
+                    "left": "main:Catalog.Items",
+                    "right": "main:Catalog.Other",
+                    "limit": 1
+                }),
+                true,
+            ),
             (ToolIdentity::Check, serde_json::json!({}), false),
             (
                 ToolIdentity::Check,
@@ -9500,17 +9712,6 @@ struct ActorLogicalReadLease {"#,
                 "{name} {arguments}: first page continuation"
             );
         }
-        // Only saved-plan diff publishes a cursor; comparison keeps even an empty one unknown.
-        let diff = call(
-            ToolIdentity::Diff,
-            serde_json::json!({
-                "left": "main:Catalog.Items",
-                "right": "main:Catalog.Other",
-                "cursor": ""
-            }),
-        );
-        assert!(!diff.ok);
-        assert_eq!(diff.diagnostics[0]["code"], "bad_value", "{diff:?}");
     }
 
     #[test]
@@ -9690,11 +9891,168 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
-    /// #1218: diff has no continuation. A truncated answer names the cut and
-    /// how to narrow the question, and issues no cursor; a cursor argument is
-    /// an unknown argument rather than an unimplemented feature.
+    /// #977: a cut left/right comparison continues on the canonical route.
+    /// Pages walk the whole difference once, in order; the cursor answers
+    /// only the same pair and page size and keeps the pair the first page
+    /// read; nothing is published.
     #[test]
-    fn diff_truncation_names_the_cut_and_offers_no_continuation() {
+    fn diff_pages_continue_the_saved_pair_on_the_canonical_route() {
+        let (_state, workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
+        let source = workspace.path().join("src");
+        let call = |arguments| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Diff,
+                arguments,
+                workspace_hint.as_str(),
+                7_000,
+            )
+            .unwrap();
+            direct_v5(&runtime, request).unwrap()
+        };
+        let before = unica_workspace::test_support::tree_snapshot(&source);
+        let pair = serde_json::json!({
+            "left": "main:Catalog.Items",
+            "right": "main:Catalog.Other"
+        });
+        let whole = call(pair.clone());
+        assert!(whole.ok, "{whole:?}");
+        assert_eq!(whole.data.as_ref().unwrap()["truncated"], false);
+        assert!(whole.cursor.is_none(), "{whole:?}");
+        let all = whole.data.as_ref().unwrap()["changes"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(all.len() > 2, "fixture must differ in more than two places");
+
+        let mut first_args = pair.clone();
+        first_args["limit"] = serde_json::json!(1);
+        let first = call(first_args.clone());
+        assert!(first.ok, "{first:?}");
+        assert_eq!(first.data.as_ref().unwrap()["truncated"], true);
+        assert_eq!(first.data.as_ref().unwrap()["equal"], false);
+        assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "limit");
+        let first_cursor = first.cursor.clone().expect("a cut page issues a cursor");
+        assert_eq!(first.next[0]["tool"], "unica.diff");
+        assert_eq!(first.next[0]["arguments"]["cursor"], first_cursor.as_str());
+        assert_eq!(first.next[0]["arguments"]["limit"], 1);
+
+        let mut empty = first_args.clone();
+        empty["cursor"] = serde_json::json!("");
+        let restarted = call(empty);
+        assert_eq!(
+            restarted.data.as_ref().unwrap()["changes"],
+            first.data.as_ref().unwrap()["changes"]
+        );
+
+        let mut paged = Vec::new();
+        let mut cursors = Vec::new();
+        let mut page = first.clone();
+        loop {
+            paged.extend(
+                page.data.as_ref().unwrap()["changes"]
+                    .as_array()
+                    .unwrap()
+                    .clone(),
+            );
+            let Some(cursor) = page.cursor.clone() else {
+                assert_eq!(page.data.as_ref().unwrap()["truncated"], false);
+                assert_eq!(page.page.as_ref().unwrap()["stoppedBy"], "complete");
+                break;
+            };
+            assert!(paged.len() <= all.len(), "pages repeat: {paged:?}");
+            cursors.push(cursor.clone());
+            let mut next = first_args.clone();
+            next["cursor"] = serde_json::json!(cursor);
+            page = call(next);
+            assert!(page.ok, "{page:?}");
+        }
+        assert_eq!(
+            paged, all,
+            "pages must walk the whole difference once, in order"
+        );
+
+        let mut over = pair.clone();
+        over["limit"] = serde_json::json!(51);
+        let refused = call(over);
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+        for forged in ["opaque".to_owned(), format!("{first_cursor}0")] {
+            let mut replay = first_args.clone();
+            replay["cursor"] = serde_json::json!(forged);
+            let refused = call(replay);
+            assert_eq!(
+                refused.diagnostics[0]["code"], "invalid_cursor",
+                "{forged}: {refused:?}"
+            );
+        }
+        for (field, value) in [
+            ("limit", serde_json::json!(2)),
+            ("right", serde_json::json!("main:Catalog.Items")),
+            ("left", serde_json::json!("main:Catalog.Other")),
+        ] {
+            let mut replay = first_args.clone();
+            replay[field] = value;
+            replay["cursor"] = serde_json::json!(first_cursor.as_str());
+            let refused = call(replay);
+            assert!(!refused.ok, "{field}: {refused:?}");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "invalid_cursor",
+                "{field}: {refused:?}"
+            );
+        }
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before,
+            "comparison must not publish source edits"
+        );
+
+        // The continuation into the comment the edit below replaces: one that
+        // read the sources again would answer `edited`.
+        let comment = all
+            .iter()
+            .position(|change| change["path"] == "/props/Comment")
+            .expect("fixture differs in its comment");
+        assert!(comment > 0, "{all:?}");
+        assert_eq!(all[comment]["right"], "second", "{all:?}");
+        let into_comment = cursors[comment - 1].clone();
+        let other = source.join("Catalogs/Other.xml");
+        let edited = std::fs::read_to_string(&other)
+            .unwrap()
+            .replace("<Comment>second</Comment>", "<Comment>edited</Comment>");
+        std::fs::write(&other, edited).unwrap();
+        let mut continued = first_args.clone();
+        continued["cursor"] = serde_json::json!(into_comment);
+        let saved = call(continued);
+        assert!(saved.ok, "{saved:?}");
+        assert_eq!(
+            saved.data.as_ref().unwrap()["changes"],
+            serde_json::json!([all[comment].clone()]),
+            "a continuation reads the pair saved by its first page"
+        );
+        // A cursor answers only the workspace that asked the first page.
+        let (_other_state, _other_workspace, _other_runtime, other_hint) =
+            empty_cursor_and_diff_fixture();
+        let mut elsewhere = first_args.clone();
+        elsewhere["cursor"] = serde_json::json!(first_cursor.as_str());
+        let request =
+            InvocationRequest::new(ToolIdentity::Diff, elsewhere, other_hint.as_str(), 7_000)
+                .unwrap();
+        let foreign = direct_v5(&runtime, request).unwrap();
+        assert_eq!(
+            foreign.diagnostics[0]["code"], "invalid_cursor",
+            "{foreign:?}"
+        );
+        let fresh = call(pair);
+        assert!(fresh.ok, "{fresh:?}");
+        assert!(
+            fresh.data.as_ref().unwrap().to_string().contains("edited"),
+            "a new first page reads the edited source: {fresh:?}"
+        );
+    }
+
+    /// #977: nodes of different kinds are not compared, and an unreadable
+    /// side is a refusal, never an empty node.
+    #[test]
+    fn diff_refuses_incomparable_kinds_and_an_unreadable_side() {
         let (_state, _workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
         let call = |arguments| {
             let request = InvocationRequest::new(
@@ -9706,40 +10064,22 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
             direct_v5(&runtime, request).unwrap()
         };
-        let pair = serde_json::json!({
+        let incomparable = call(serde_json::json!({
             "left": "main:Catalog.Items",
-            "right": "main:Catalog.Other"
-        });
-        let whole = call(pair.clone());
-        assert!(whole.ok, "{whole:?}");
-        let data = whole.data.as_ref().unwrap();
-        assert_eq!(data["truncated"], false);
-        let all = data["changes"].as_array().unwrap();
-        assert!(all.len() > 1, "fixture must differ in more than one place");
-        assert_eq!(whole.summary, "logical nodes compared");
-
-        let mut limited = pair.clone();
-        limited["limit"] = serde_json::json!(1);
-        let cut = call(limited);
-        assert!(cut.ok, "{cut:?}");
-        let data = cut.data.as_ref().unwrap();
-        assert_eq!(data["truncated"], true);
-        assert_eq!(data["equal"], false);
-        assert_eq!(data["changes"], serde_json::json!([all[0].clone()]));
-        assert!(cut.cursor.is_none(), "no continuation exists: {cut:?}");
-        assert!(cut.page.is_none(), "{cut:?}");
-        assert_ne!(cut.summary, whole.summary, "truncation must be named");
-        assert!(
-            !cut.summary.contains("cursor"),
-            "a truncated diff must not promise a cursor: {}",
-            cut.summary
+            "right": "main:Catalog.Items.Module.Object"
+        }));
+        assert!(!incomparable.ok, "{incomparable:?}");
+        assert_eq!(
+            incomparable.diagnostics[0]["code"], "incomparable_nodes",
+            "{incomparable:?}"
         );
-
-        let mut continued = pair;
-        continued["cursor"] = serde_json::json!("opaque");
-        let refused = call(continued);
-        assert!(!refused.ok);
-        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+        let missing = call(serde_json::json!({
+            "left": "main:Catalog.Items",
+            "right": "main:Catalog.Missing"
+        }));
+        assert!(!missing.ok, "{missing:?}");
+        assert!(missing.data.is_none(), "{missing:?}");
+        assert_eq!(missing.diagnostics[0]["code"], "not_found", "{missing:?}");
     }
 
     /// `filter` снят с `view` и `diff` (#1374). Вызов с ним — отказ
@@ -12537,7 +12877,10 @@ struct ActorLogicalReadLease {"#,
             assert!(applied.ok, "{applied:?}");
             let preview_data = preview.data.as_ref().unwrap();
             let applied_data = applied.data.as_ref().unwrap();
-            assert_eq!(preview_data["operations"], applied_data["operations"]);
+            assert_eq!(
+                preview_data["operationCount"],
+                applied_data["operationCount"]
+            );
             assert_eq!(preview_data["effects"], applied_data["effects"]);
             assert_eq!(preview.changed, applied.changed);
             assert_eq!(preview_data["planHash"], applied_data["planHash"]);
@@ -12810,8 +13153,8 @@ struct ActorLogicalReadLease {"#,
             assert!(real.ok, "real apply failed: {real:?}");
             assert_ne!(std::fs::read(&descriptor).unwrap(), before);
             assert_eq!(
-                dry.data.as_ref().unwrap()["operations"],
-                real.data.as_ref().unwrap()["operations"]
+                dry.data.as_ref().unwrap()["operationCount"],
+                real.data.as_ref().unwrap()["operationCount"]
             );
             assert_eq!(
                 dry.data.as_ref().unwrap()["effects"],
@@ -13599,6 +13942,242 @@ struct ActorLogicalReadLease {"#,
             assert!(message.contains(cause), "{kind:?}");
             assert!(!checked_text_leaks(&checked), "{kind:?}");
         }
+    }
+
+    /// #1966, INV.APP.DIAGNOSTIC-FOCUS, INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY:
+    /// `check` справочника спрашивает находки у поставщика, который объявил цель
+    /// «объект метаданных». Находка на свойстве реквизита приходит цепочкой
+    /// коллекция → элемент → свойство и язык; недоказанный элемент — находкой
+    /// объекта целиком; файл внутри объекта без логического адреса — путём
+    /// с причиной и владельцем; находка модуля объекту не принадлежит.
+    /// Анализатор модулей такой цели не объявляет, и без подмены шага нет.
+    #[test]
+    fn object_check_shows_the_metadata_focus_chain_of_a_provider_finding() {
+        use unica_diagnostics::model::{
+            DiagnosticAction, DiagnosticContext, DiagnosticFocusKind, DiagnosticObservation,
+            DiagnosticObservationFocus, DiagnosticObservationLocation, DiagnosticProvider,
+            DiagnosticProviderDescriptor, DiagnosticProviderId, DiagnosticProviderOutcome,
+            DiagnosticProviderRequest, DiagnosticProviderStatus, DiagnosticSeverity, MetadataFocus,
+        };
+        use unica_metadata::MetadataElement;
+        use unica_work_control::provider_deadline::ProviderDeadline;
+
+        static DESCRIPTOR: DiagnosticProviderDescriptor = DiagnosticProviderDescriptor {
+            id: DiagnosticProviderId::new_const("metadata-provider"),
+            actions: &[DiagnosticAction::Findings],
+            findings_target_kinds: &[
+                unica_address::source_target::TargetKind::MetadataObject,
+                unica_address::source_target::TargetKind::SourceRoot,
+            ],
+            emits_focus_kinds: &[DiagnosticFocusKind::Target, DiagnosticFocusKind::Metadata],
+        };
+        struct MetadataProvider(Vec<DiagnosticObservation>);
+        impl DiagnosticProvider for MetadataProvider {
+            fn descriptor(&self) -> &'static DiagnosticProviderDescriptor {
+                &DESCRIPTOR
+            }
+            fn execute(
+                &self,
+                _request: &DiagnosticProviderRequest,
+                _context: &DiagnosticContext,
+                _deadline: ProviderDeadline,
+                _cancellation: &CancellationToken,
+            ) -> DiagnosticProviderOutcome {
+                DiagnosticProviderOutcome {
+                    observations: self.0.clone(),
+                    ..DiagnosticProviderOutcome::empty(DiagnosticProviderStatus::Completed)
+                }
+            }
+        }
+        let finding = |location, focus| DiagnosticObservation::Diagnostic {
+            provider: DESCRIPTOR.id,
+            location,
+            focus,
+            code: "MetadataRule".to_string(),
+            severity: DiagnosticSeverity::Warning,
+            message: "finding".to_string(),
+            tags: Vec::new(),
+        };
+        let object = || DiagnosticObservationLocation::Logical {
+            metadata_path: Some(
+                unica_address::source_target::MetadataAddress::parse(
+                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "Catalog.Items",
+                )
+                .unwrap(),
+            ),
+        };
+        let attribute = |name: &str| MetadataFocus {
+            element_path: vec![MetadataElement {
+                collection: "attributes".to_string(),
+                name: name.to_string(),
+            }],
+            property: Some("Synonym".to_string()),
+            language: Some("ru".to_string()),
+        };
+
+        let workspace =
+            scheduled_handler_workspace("CONFIGURATION", "Procedure Run()\nEndProcedure\n");
+        let source = workspace.path().join("src");
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name></Properties><ChildObjects><Attribute uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Номенклатура</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item></Synonym></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join("Catalogs/Items/Ext")).unwrap();
+        std::fs::write(source.join("Catalogs/Items/Ext/Unknown.xml"), "<unknown/>").unwrap();
+        let provider = MetadataProvider(vec![
+            finding(
+                DiagnosticObservationLocation::Logical {
+                    metadata_path: None,
+                },
+                DiagnosticObservationFocus::Target,
+            ),
+            finding(
+                object(),
+                DiagnosticObservationFocus::Metadata(attribute("Номенклатура")),
+            ),
+            finding(
+                object(),
+                DiagnosticObservationFocus::Metadata(attribute("Missing")),
+            ),
+            finding(
+                DiagnosticObservationLocation::Resource {
+                    handle: source
+                        .join("Catalogs/Items/Ext/Unknown.xml")
+                        .to_string_lossy()
+                        .into_owned(),
+                },
+                DiagnosticObservationFocus::Target,
+            ),
+            finding(
+                DiagnosticObservationLocation::Resource {
+                    handle: source
+                        .join("CommonModules/Handlers/Ext/Module.bsl")
+                        .to_string_lossy()
+                        .into_owned(),
+                },
+                DiagnosticObservationFocus::Target,
+            ),
+        ]);
+
+        let runtime = bootstrap_runtime();
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let cancellation = CancellationToken::new();
+        let check = |at: &str, override_provider: Option<Arc<dyn DiagnosticProvider>>| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Check,
+                serde_json::json!({"at": at}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let check = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = override_provider);
+            let checked = service.execute(&check, cancellation.clone());
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = None);
+            let checked = checked.unwrap();
+            assert!(checked.ok, "object check must answer a verdict");
+            checked.data.unwrap()
+        };
+
+        let provider: Arc<dyn DiagnosticProvider> = Arc::new(provider);
+        let data = check("main:Catalog.Items", Some(Arc::clone(&provider)));
+        assert_eq!(
+            data["validators"],
+            serde_json::json!(["meta", "bsl"]),
+            "the provider finding keeps its location"
+        );
+        let provided = data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["provider"] == "metadata-provider")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            provided.len(),
+            3,
+            "neither the module nor the root finding is the object's"
+        );
+        let addressed = serde_json::json!({
+            "kind": "addressed",
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Items",
+            "targetKind": "metadataObject",
+        });
+        assert!(
+            provided.iter().any(|item| item["location"] == addressed
+                && item["focus"]
+                    == serde_json::json!({
+                        "kind": "metadata",
+                        "elementPath": [{"collection": "attributes", "name": "Номенклатура"}],
+                        "property": "Synonym",
+                        "language": "ru",
+                    })),
+            "the provider finding keeps its location"
+        );
+        assert!(
+            provided.iter().any(|item| item["location"] == addressed
+                && item["focus"] == serde_json::json!({"kind": "target"})),
+            "an unproven element weakens to the object"
+        );
+        assert!(
+            provided
+                .iter()
+                .any(|item| item["location"]["kind"] == "unaddressable"
+                    && item["location"]["ownerMetadataPath"] == "Catalog.Items"
+                    && item["location"]["path"] == "Catalogs/Items/Ext/Unknown.xml"
+                    && item["locationReason"] == "resourceNotAddressable"),
+            "the provider finding keeps its location"
+        );
+        assert!(
+            !data.to_string().contains(&*source.to_string_lossy()),
+            "the provider finding keeps its location"
+        );
+
+        let plain = check("main:Catalog.Items", None);
+        assert_eq!(
+            plain["validators"],
+            serde_json::json!(["meta"]),
+            "no step without a provider"
+        );
+
+        // Корень принимает только свою находку: объекты и модули — свои цели.
+        let root = check("main:Configuration", Some(provider));
+        let provided = root["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["provider"] == "metadata-provider")
+            .collect::<Vec<_>>();
+        assert_eq!(provided.len(), 1, "the root keeps only its own finding");
+        assert_eq!(
+            provided[0]["location"],
+            serde_json::json!({"kind": "addressed", "sourceSet": "main", "targetKind": "sourceRoot"}),
+            "the root finding is addressed to the root"
+        );
+        let plain = check("main:Configuration", None);
+        assert_eq!(
+            plain["validators"],
+            serde_json::json!(["cf"]),
+            "no step without a provider"
+        );
     }
 
     /// #1460: платформа не компилирует модуль, где `Перем` стоит после

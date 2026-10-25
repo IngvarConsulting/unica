@@ -19,6 +19,9 @@ use super::v13_call_graph::{
 use super::v13_read_modes::{attach_can, operation_node_with, search_scope_prefix, source_backed};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
+use crate::application::v13::diff::{
+    DiffError, DiffHandler, DiffPage, DiffRequest, DiffSource, DEFAULT_DIFF_LIMIT, MAX_DIFF_LIMIT,
+};
 use crate::application::v13::find::{FindIndex, FindRequest};
 use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
 use crate::application::v13::tool_catalog::catalog_for;
@@ -37,7 +40,6 @@ use crate::infrastructure::v13_find::{
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
 use unica_address::address::{NodeKind, QualifiedAddress};
@@ -75,6 +77,7 @@ use unica_workspace::apply::ApplyStagedState;
 pub(crate) struct CanonicalV13ReadService {
     cursors: Arc<ViewCursorStore>,
     search_cursors: Arc<SearchCursorStore>,
+    diff: Arc<DiffHandler>,
     find_builder: WorkspaceFindDirectoryBuilder,
     /// Порты приложения живут столько же, сколько служба, а не сколько вызов.
     /// Внутри них стол доставок: он принадлежит серверу и переживает вызов,
@@ -92,6 +95,7 @@ impl Default for CanonicalV13ReadService {
         Self {
             cursors: Arc::new(ViewCursorStore::default()),
             search_cursors: Arc::new(SearchCursorStore::default()),
+            diff: Arc::new(DiffHandler::default()),
             find_builder: WorkspaceFindDirectoryBuilder::default(),
             ports: Arc::new(
                 crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
@@ -430,18 +434,6 @@ impl CanonicalV13ReadService {
                 )
             }),
         );
-        let operations = request
-            .ops()
-            .iter()
-            .enumerate()
-            .map(|(index, operation)| {
-                serde_json::json!({
-                    "index": index,
-                    "op": operation.name(),
-                    "at": operation.at(),
-                })
-            })
-            .collect::<Vec<_>>();
         let (staged, mut effects) = match plan_hidden_v13_apply(&request, &binding, &admission) {
             Err(error)
                 if error.kind() == ApplyPlanErrorKind::ProviderUnavailable
@@ -474,6 +466,25 @@ impl CanonicalV13ReadService {
             effects = Default::default();
         }
         let plan_warnings = effects.warnings().to_vec();
+        // The answer does not echo the request: only an operation that
+        // attached a warning is named, so the answer does not grow with `ops`.
+        let operations = effects
+            .warned_operations()
+            .iter()
+            .filter_map(|index| {
+                request
+                    .ops()
+                    .get(*index)
+                    .map(|operation| (index, operation))
+            })
+            .map(|(index, operation)| {
+                serde_json::json!({
+                    "index": index,
+                    "op": operation.name(),
+                    "at": operation.at(),
+                })
+            })
+            .collect::<Vec<_>>();
         let plan_hash = apply_plan_hash(&staged, &effects);
         let changed = effects
             .events()
@@ -523,11 +534,15 @@ impl CanonicalV13ReadService {
             "validated": true,
             "mode": disposition,
             "executable": true,
-            "operations": operations,
+            "operationCount": request.ops().len(),
             "planHash": plan_hash,
             "effects": publication.effects().events().len(),
             "cache": publication.effects().cache(),
         }));
+        if !operations.is_empty() {
+            result.data.as_mut().expect("apply data exists")["operations"] =
+                serde_json::Value::Array(operations);
+        }
         if !borrowing.is_empty() {
             result.data.as_mut().expect("apply data exists")["borrowing"] =
                 serde_json::json!(borrowing);
@@ -2425,7 +2440,7 @@ impl CanonicalV13ReadService {
         }
         if let Some(unknown) = arguments
             .keys()
-            .find(|name| !matches!(name.as_str(), "left" | "right" | "limit"))
+            .find(|name| !matches!(name.as_str(), "left" | "right" | "limit" | "cursor"))
         {
             return error_result(
                 None,
@@ -2461,18 +2476,36 @@ impl CanonicalV13ReadService {
             );
         }
         let limit = match arguments.get("limit") {
-            Some(value) => match bounded_usize(value).filter(|limit| *limit <= 1_000) {
+            Some(value) => match bounded_usize(value).filter(|limit| *limit <= MAX_DIFF_LIMIT) {
                 Some(limit) => limit,
                 None => {
                     return error_result(
                         None,
                         RefusalCode::BadValue,
-                        "diff limit must be an integer from 1 through 1000",
+                        format!("diff limit must be an integer from 1 through {MAX_DIFF_LIMIT}"),
                     )
                 }
             },
-            None => 100,
+            None => DEFAULT_DIFF_LIMIT,
         };
+        let cursor = match arguments.get("cursor") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(cursor)) if cursor.is_empty() => None,
+            Some(Value::String(cursor)) => Some(cursor.clone()),
+            Some(_) => {
+                return error_result(None, RefusalCode::BadValue, "diff cursor must be a string")
+            }
+        };
+        if let Some(cursor) = cursor {
+            let request = match DiffRequest::new(left, right) {
+                Ok(request) => request
+                    .with_limit(limit)
+                    .in_workspace(invocation.workspace_identity_hash().as_str())
+                    .with_cursor(cursor),
+                Err(error) => return error_result(None, error.code(), error.to_string()),
+            };
+            return diff_page_result(&request, self.diff.continue_saved(&request));
+        }
         let left_result = self.execute_view_arguments(
             invocation,
             &Map::from_iter([("at".to_string(), Value::String(left.to_string()))]),
@@ -2489,51 +2522,25 @@ impl CanonicalV13ReadService {
         if !right_result.ok {
             return right_result;
         }
-        let mut left_data = left_result
-            .data
-            .as_ref()
-            .expect("successful view has data")
-            .clone();
-        let mut right_data = right_result
-            .data
-            .as_ref()
-            .expect("successful view has data")
-            .clone();
-        source_backed(&mut left_data);
-        source_backed(&mut right_data);
-        if left_data.get("kind") != right_data.get("kind") {
-            return error_result(
-                None,
-                RefusalCode::IncomparableNodes,
-                "diff requires nodes of the same logical kind",
-            );
-        }
-        let mut changes = Vec::new();
-        collect_json_changes("", &left_data, &right_data, limit + 1, &mut changes);
-        let truncated = changes.len() > limit;
-        changes.truncate(limit);
-        let equal = changes.is_empty() && !truncated;
-        // Diff has no continuation yet (#1217): a truncated answer must say
-        // that the rest is missing and how to ask a smaller question.
-        let mut result = if truncated {
-            let narrower = if limit < 1_000 {
-                "compare smaller nodes or call again with a larger limit (at most 1000)"
-            } else {
-                "compare smaller nodes"
-            };
-            DomainResult::success(format!(
-                "logical nodes compared; only the first {limit} differences are returned and the rest are omitted; no continuation exists, so {narrower}"
-            ))
-        } else {
-            DomainResult::success("logical nodes compared")
+        let request = match DiffRequest::new(left, right) {
+            Ok(request) => request
+                .with_limit(limit)
+                .in_workspace(invocation.workspace_identity_hash().as_str()),
+            Err(error) => return error_result(None, error.code(), error.to_string()),
         };
-        result.data = Some(serde_json::json!({
-            "equal": equal,
-            "changes": changes,
-            "truncated": truncated,
-        }));
-
-        result
+        let side = |at: &QualifiedAddress, result: &DomainResult| {
+            let mut data = result.data.clone().expect("successful view has data");
+            source_backed(&mut data);
+            let kind = data
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            DiffSource::new(at.clone(), kind, data)
+        };
+        let left = side(request.left(), &left_result);
+        let right = side(request.right(), &right_result);
+        diff_page_result(&request, self.diff.compare(&request, &left, &right))
     }
 
     fn execute_run(
@@ -3674,6 +3681,7 @@ const APPLY_DATA_FIELDS: &[&str] = &[
     "validated",
     "mode",
     "executable",
+    "operationCount",
     "operations",
     "planHash",
     "effects",
@@ -3732,47 +3740,40 @@ fn apply_plan_hash(staged: &ApplyStagedState, effects: &PlannedApplyEffects) -> 
     format!("sha256:{:x}", hasher.finalize())
 }
 
-fn collect_json_changes(
-    path: &str,
-    left: &Value,
-    right: &Value,
-    limit: usize,
-    changes: &mut Vec<Value>,
-) {
-    if left == right || changes.len() >= limit {
-        return;
-    }
-    match (left, right) {
-        (Value::Object(left), Value::Object(right)) => {
-            let keys = left
-                .keys()
-                .chain(right.keys())
-                .map(String::as_str)
-                .collect::<BTreeSet<_>>();
-            for key in keys {
-                let escaped = key.replace('~', "~0").replace('/', "~1");
-                let child_path = format!("{path}/{escaped}");
-                match (left.get(key), right.get(key)) {
-                    (Some(left), Some(right)) => {
-                        collect_json_changes(&child_path, left, right, limit, changes)
-                    }
-                    (left, right) => changes.push(serde_json::json!({
-                        "path": child_path,
-                        "left": left,
-                        "right": right,
-                    })),
-                }
-                if changes.len() >= limit {
-                    break;
-                }
-            }
+/// Projects one page of a left/right comparison. A cut page names its
+/// continuation; the cursor answers only the same pair, page size and
+/// workspace.
+fn diff_page_result(request: &DiffRequest, page: Result<DiffPage, DiffError>) -> DomainResult {
+    let page = match page {
+        Ok(page) => page,
+        Err(error @ DiffError::ChangeTooLarge) => {
+            return error_result(
+                Some(request.left().to_string()),
+                error.code(),
+                error.to_string(),
+            )
         }
-        _ => changes.push(serde_json::json!({
-            "path": if path.is_empty() { "/" } else { path },
-            "left": left,
-            "right": right,
-        })),
-    }
+        Err(error) => return error_result(None, error.code(), error.to_string()),
+    };
+    let limit = request.limit();
+    let mut result = if let Some(cursor) = page.cursor() {
+        let mut result = DomainResult::success(
+            "logical nodes compared; more differences remain; continue with cursor",
+        );
+        result.cursor = Some(cursor.to_owned());
+        result.next.push(json!({"tool": "unica.diff", "arguments": {
+            "left": request.left().to_string(),
+            "right": request.right().to_string(),
+            "limit": limit,
+            "cursor": cursor,
+        }}));
+        result
+    } else {
+        DomainResult::success("logical nodes compared")
+    };
+    result.page = Some(json!({"stoppedBy": page.stopped_by()}));
+    result.data = Some(serde_json::to_value(&page).expect("diff page serializes"));
+    result
 }
 
 fn find_build_error_result(at: Option<String>, error: FindBuildError) -> DomainResult {
@@ -3933,18 +3934,52 @@ fn bounded_usize(value: &Value) -> Option<usize> {
 /// которых его и зовут. Порты здесь строятся свои, а недоставленный
 /// анализатор доставляется через стол доставок демона до запуска анализа,
 /// как у поиска с ролью.
+///
+/// На объекте метаданных и корне конфигурации шаг спрашивает находки только
+/// у поставщиков, которые объявили такую цель. Анализатор BSL судит модули,
+/// поэтому без такого поставщика шага нет (`None`): весь набор исходников
+/// ради объекта не анализируется.
 fn run_bsl_diagnostics(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     address: &QualifiedAddress,
+    kind: &str,
     invocation: &ActorBoundExecution,
     cancellation: &CancellationToken,
-) -> Result<CheckStepVerdict, Box<DomainResult>> {
+) -> Result<Option<CheckStepVerdict>, Box<DomainResult>> {
     use crate::application::ports::ApplicationPorts;
+    use unica_address::source_target::TargetKind;
     use unica_diagnostics::coordinator::DiagnosticCoordinator;
     use unica_diagnostics::model::DiagnosticAction;
     use unica_diagnostics::model::DiagnosticFilter;
     use unica_diagnostics::model::DiagnosticRequest;
 
+    let target_kind = match kind {
+        "Module" | "Body" => TargetKind::Module,
+        "Configuration" => TargetKind::SourceRoot,
+        _ => TargetKind::MetadataObject,
+    };
+    let registry = match ports.diagnostic_provider_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            return Err(Box::new(error_result(
+                Some(address.to_string()),
+                RefusalCode::ProviderUnavailable,
+                error,
+            )))
+        }
+    };
+    let action = if target_kind == TargetKind::Module {
+        DiagnosticAction::Analyze
+    } else {
+        DiagnosticAction::Findings
+    };
+    if target_kind != TargetKind::Module
+        && !registry.descriptors().any(|descriptor| {
+            descriptor.supports_action(action) && descriptor.supports_findings_target(target_kind)
+        })
+    {
+        return Ok(None);
+    }
     let context = invocation.workspace_context();
     let sources = invocation.read_sources().map_err(|error| {
         Box::new(error_result_detailed(
@@ -3972,24 +4007,18 @@ fn run_bsl_diagnostics(
                 error,
             ))
         })?;
-    let mapping = authority
-        .diagnostic_mapping(address, context)
-        .map_err(|error| Box::new(view_error_result(Some(address.to_string()), error)))?;
-    let registry = match ports.diagnostic_provider_registry() {
-        Ok(registry) => registry,
-        Err(error) => {
-            return Err(Box::new(error_result(
-                Some(address.to_string()),
-                RefusalCode::ProviderUnavailable,
-                error,
-            )))
-        }
-    };
+    let mapping = if target_kind == TargetKind::Module {
+        authority.diagnostic_mapping(address, context)
+    } else {
+        authority.diagnostic_node_mapping(address, context)
+    }
+    .map_err(|error| Box::new(view_error_result(Some(address.to_string()), error)))?;
     // Анализатор, которого ещё нет на машине, доставляется этим же вызовом,
     // как у поиска с ролью: незавершённая поставка отвечает `working`
     // с повтором, неудачная — своим классом и полями движка (#1338), а
     // движок, которого и после поставки нет, — общим отказом (#549).
-    let analyzer_engine = true;
+    // Анализатор BSL судит только модули: ради чужой цели его не доставляют.
+    let analyzer_engine = target_kind == TargetKind::Module;
     #[cfg(test)]
     let analyzer_engine = analyzer_engine
         && crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
@@ -4005,7 +4034,7 @@ fn run_bsl_diagnostics(
     }
     let metadata_path = mapping.target().metadata_path.clone();
     let request = DiagnosticRequest {
-        action: DiagnosticAction::Analyze,
+        action,
         source_set: address.source_set().to_string(),
         metadata_path,
         filter: DiagnosticFilter::default(),
@@ -4034,7 +4063,9 @@ fn run_bsl_diagnostics(
         &request,
         context,
         cancellation,
-        Some((mapping.module_scope(), source.deadline())),
+        mapping
+            .module_scope()
+            .map(|scope| (scope, source.deadline())),
     ) {
         Ok(result) => {
             // Провайдер, который не отработал, не доказывает чистоту кода.
@@ -4084,11 +4115,11 @@ fn run_bsl_diagnostics(
             // стилю не ломает модуль, и остальные валидаторы поверхности
             // судят так же.
             let passed = bsl_findings_passed(&result.items) && bsl_findings_passed(&structure);
-            Ok(CheckStepVerdict {
+            Ok(Some(CheckStepVerdict {
                 passed,
                 diagnostics: findings,
                 suppressed: bsl_suppression_facts(&result),
-            })
+            }))
         }
         // Координатор отказывает по разным причинам, и уточнение получает
         // только та, которую словарь уточнений называет: «подходящего
@@ -4127,7 +4158,7 @@ const MISPLACED_VARIABLE_CODE: &str = "VariableDeclarationPlacement";
 /// проверенному модулю — тому же месту, куда отображение относит находки
 /// анализатора в этом модуле, — и проваливает проверку.
 fn bsl_structure_findings(
-    mapping: &crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping,
+    mapping: &crate::infrastructure::diagnostics::CanonicalDiagnosticMapping,
     address: &QualifiedAddress,
     cancellation: &CancellationToken,
 ) -> Result<Vec<unica_diagnostics::model::DiagnosticItem>, Box<DomainResult>> {
@@ -4139,7 +4170,11 @@ fn bsl_structure_findings(
     use unica_diagnostics::source_ranges::misplaced_variable_declarations;
     use unica_source_contract::location::SourceLocation;
 
-    let text = match std::fs::read_to_string(mapping.module_scope().module_path) {
+    // Объект и корень не модуль: структуру модуля у них не проверить.
+    let Some(scope) = mapping.module_scope() else {
+        return Ok(Vec::new());
+    };
+    let text = match std::fs::read_to_string(scope.module_path) {
         Ok(text) => text,
         // Модуля без файла анализатор тоже не судил: судить нечего.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -4455,15 +4490,16 @@ fn run_node_checks(
                 cancellation,
                 prepared_xdto.take(),
             )
-            .map(CheckStepVerdict::from),
-            CheckStep::Meta => {
-                run_meta_validator(&address, at, context, cancellation).map(CheckStepVerdict::from)
-            }
-            CheckStep::Bsl => run_bsl_diagnostics(ports, &address, invocation, cancellation),
+            .map(|verdict| Some(verdict.into())),
+            CheckStep::Meta => run_meta_validator(&address, at, context, cancellation)
+                .map(|verdict| Some(verdict.into())),
+            CheckStep::Bsl => run_bsl_diagnostics(ports, &address, kind, invocation, cancellation),
         };
         match verdict {
             Err(refusal) => return *refusal,
-            Ok(step_verdict) => {
+            // Шаг без применимого поставщика не проверял ничего.
+            Ok(None) => {}
+            Ok(Some(step_verdict)) => {
                 passed &= step_verdict.passed;
                 validators.push(step.name());
                 let tag = |mut value: Value| {
@@ -5071,11 +5107,26 @@ pub(super) fn preflight_apply_operations_with(
                     .collect::<Vec<_>>()
                     .join(" or ");
                 let message = format!("{refused}; it addresses {shapes}");
-                let refusal = error_result(
+                let mut refusal = error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,
                     message,
                 );
+                // Код пишется в модуль, а не в его владельца: узел с модулями
+                // ведёт к их адресам (#1964).
+                if descriptor.family() == unica_operations::OperationFamily::Code {
+                    if let Some(branch) = crate::infrastructure::v13_read::module_branch_for_parent(
+                        operation.at(),
+                        crate::domain::apply::source_classification_profile(source),
+                        source.kind(),
+                    ) {
+                        refusal.next.push(json!({
+                            "tool": "unica.view",
+                            "args": {"at": branch.at()},
+                            "reason": "адреса модулей этого узла: код пишется по адресу модуля",
+                        }));
+                    }
+                }
                 // Узел, который читается, показывает свой словарь; адрес,
                 // которого нет ни в одном дереве, ведёт к корню набора.
                 let readable = crate::infrastructure::logical_tree::route_logical_address(
@@ -7133,6 +7184,88 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains(hit["snippet"].as_str().unwrap()));
+    }
+
+    /// Literal search under a module scope opens no publication artifact:
+    /// an unreadable staged copy or private directory left beside the module
+    /// right after apply does not refuse the search. An unreadable entry the
+    /// search does need is named in the refusal.
+    #[test]
+    fn literal_search_skips_publication_artifacts_and_names_an_unreadable_entry() {
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_workspace::test_support::set_unix_mode_for_test;
+
+        /// Restores the mode even when an assertion fails, so the
+        /// temporary workspace can still be removed.
+        struct Unlocked(Vec<std::path::PathBuf>);
+        impl Drop for Unlocked {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    let _ = set_unix_mode_for_test(path, 0o755);
+                }
+            }
+        }
+
+        let workspace = resolve_exact_workspace();
+        let ext = workspace.path().join("src/CommonModules/Probe/Ext");
+        std::fs::write(
+            ext.join("Module.bsl"),
+            "Процедура Ping()\n\tСообщить(\"needle\");\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let artifact = ext.join(".unica-apply-left-behind");
+        std::fs::write(&artifact, b"preimage").unwrap();
+        let staged = ext.join(".unica-apply-dir-left-behind");
+        std::fs::create_dir(&staged).unwrap();
+        std::fs::write(staged.join("Module.bsl"), "stale needle\n").unwrap();
+        let locked = ext.join("Locked");
+        std::fs::create_dir(&locked).unwrap();
+        let mut unlocked = Unlocked(Vec::new());
+        for path in [&artifact, &staged] {
+            if !set_unix_mode_for_test(path, 0o000).unwrap() {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::UnixPermissionBits,
+                    "the test sets Unix permission bits",
+                );
+                return;
+            }
+            unlocked.0.push(path.clone());
+        }
+        if std::fs::read(&artifact).is_ok() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::EnforcedPermissionBits,
+                "the test process ignores permission bits",
+            );
+            return;
+        }
+        let search = || {
+            invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Search,
+                json!({"query":"needle", "scope":"main:CommonModule.Probe"}),
+            )
+        };
+        let found = search();
+        assert!(found.ok, "{found:?}");
+        let matches = found.data.as_ref().unwrap()["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1, "{found:?}");
+        assert_eq!(
+            matches[0]["at"],
+            "main:CommonModule.Probe.Method.Ping.Body#L2"
+        );
+
+        set_unix_mode_for_test(&locked, 0o000).unwrap();
+        unlocked.0.push(locked);
+        let refused = search();
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "provider_unavailable");
+        assert!(
+            refused.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message
+                    .contains("could not open source entry `CommonModules/Probe/Ext/Locked`")),
+            "{refused:?}"
+        );
     }
 
     #[test]

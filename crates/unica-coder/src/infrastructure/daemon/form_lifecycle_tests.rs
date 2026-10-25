@@ -308,14 +308,10 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
     assert!(!refused.ok, "foreign binary was accepted: {refused:?}");
     assert_eq!(refused.diagnostics[0]["code"], "invalid_state");
     assert!(refused.summary.contains("supported source profile"));
-    // Rebuild components so the expected spelling uses the host's separator.
-    // Path::new alone preserves the fixture literal's forward slashes on Windows.
-    let foreign_relative: PathBuf = Path::new(foreign).components().collect();
+    // The refusal spells the relative path with `/` on every host.
     assert!(
-        refused
-            .summary
-            .contains(&foreign_relative.display().to_string()),
-        "refusal must name the complete foreign relative path {foreign_relative:?}: {refused:?}"
+        refused.summary.contains(foreign),
+        "refusal must name the complete foreign relative path {foreign}: {refused:?}"
     );
     assert!(refused.changed.is_empty());
     assert!(refused

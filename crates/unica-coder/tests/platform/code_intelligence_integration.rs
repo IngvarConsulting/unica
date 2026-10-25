@@ -1543,10 +1543,19 @@ mod tests {
             "No results found.\nIndexing lexical: ready\nIndexing semantic: ready\nIndexing semantic: ready",
             "No results found.\nIndexing lexical: ready\nIndexing semantic: ready\nIndexing semantic: disabled",
             "No results found.\nIndexing lexical: failed\nIndexing semantic: disabled",
-            "No results found.\nIndexing lexical: running (parsing): 1/2 chunks\nIndexing semantic: disabled",
-            "No results found.\nIndexing lexical: ready\nIndexing semantic: unknown",
             "No results found.\nIndexing lexical: ready\nIndexing semantic: failed",
-            "No results found.\nIndexing lexical: ready\nIndexing semantic: running",
+            "No results found.\nIndexing lexical: disabled\nIndexing semantic: running",
+            "No results found.\nIndexing lexical: cancelled\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: superseded\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: superseded",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: unknown",
+            "No results found.\nIndexing lexical: waiting: 1/2 chunks\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: unknown extra\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: runningx\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: ready junk",
+            "No results found.\nIndexing lexical: running\nIndexing semantic: failed",
+            "No results found.\nIndexing lexical: running\nIndexing lexical: running",
+            "No results found.\nIndexing lexical: running\nIndexing semantic: ready\nextra",
             "No results found.\n#broken header",
             "No results found.\nNo results found.",
         ] {
@@ -1555,6 +1564,99 @@ mod tests {
             assert!(!section.search_complete, "{text}");
             assert_eq!(section.matches.total, None, "{text}");
             assert_eq!(section.matches.relation, SearchCountRelation::Unknown, "{text}");
+        }
+    }
+
+    #[test]
+    fn bsl_analyzer_busy_or_building_index_is_a_retryable_wait_not_an_empty_answer() {
+        use unica_code_intelligence::model::SearchTerminationCode;
+        for (text, code, detail) in [
+            (
+                "No results found.\nIndexing pending: initializing (no live counters yet)",
+                SearchTerminationCode::DependencyPending,
+                Some("buildingIndex"),
+            ),
+            (
+                "No results found (overlay is warming up, only baseline search available).",
+                SearchTerminationCode::DependencyPending,
+                Some("updatingIndex"),
+            ),
+            (
+                "Search index is busy (a long operation is holding it); please try again in a moment.",
+                SearchTerminationCode::CapacityExhausted,
+                None,
+            ),
+            (
+                "Semantic search is busy (a long operation is holding the index). Lexical search is available in the meantime.",
+                SearchTerminationCode::CapacityExhausted,
+                None,
+            ),
+        ] {
+            let section = parse_bsl_analyzer_search(text, &context());
+            let termination = section.termination.as_ref().expect(text);
+            assert_eq!(termination.code, code, "{text}");
+            assert!(termination.retryable, "{text}");
+            assert_eq!(termination.detail_code.as_deref(), detail, "{text}");
+            assert!(!section.search_complete, "{text}");
+            assert!(section.hits.is_empty(), "{text}");
+            assert_ne!(section.status, ProviderSectionStatus::Empty, "{text}");
+            assert_ne!(section.matches.relation, SearchCountRelation::Exact, "{text}");
+        }
+        // A failed index state or any other line is no wait. Index footers
+        // proper are covered by the queued-or-running test below.
+        for text in [
+            "No results found.\nIndexing lexical: running\nIndexing semantic: failed",
+            "No results found.\nIndexing lexical: running\nIndexing semantic: failed (embedding)",
+            "No results found.\nIndexing lexical: running\nunknown provider error",
+            "No results found (overlay is warming up, only baseline search available).\nIndexing lexical: failed",
+            "Search index is busy (a long operation is holding it); please try again in a moment.\nunexpected tail",
+        ] {
+            let section = parse_bsl_analyzer_search(text, &context());
+            assert_eq!(section.status, ProviderSectionStatus::Failed, "{text}");
+        }
+    }
+
+    #[test]
+    fn bsl_analyzer_empty_marker_with_a_queued_or_running_index_is_pending() {
+        // After a published edit the analyzer answers before its index update
+        // lands. No hits then prove nothing, but the provider has not failed
+        // either: the next attempt is promised to differ.
+        for (text, detail_code) in [
+            (
+                "No results found.\nIndexing lexical: running (parsing): 1/2 chunks\nIndexing semantic: disabled",
+                "updatingIndex",
+            ),
+            (
+                "No results found.\nIndexing semantic: ready\nIndexing lexical: running",
+                "updatingIndex",
+            ),
+            (
+                "No results found.\nIndexing lexical: ready\nIndexing semantic: running",
+                "buildingIndex",
+            ),
+            (
+                "No results found.\nIndexing lexical: waiting\nIndexing semantic: ready",
+                "indexQueued",
+            ),
+            // Seen live right after an edit: the analyzer could not snapshot the
+            // index its update was holding.
+            (
+                "No results found.\nIndexing lexical: unknown\nIndexing semantic: unknown",
+                "updatingIndex",
+            ),
+        ] {
+            let section = parse_bsl_analyzer_search(text, &context());
+            assert_eq!(section.status, ProviderSectionStatus::TimedOut, "{text}");
+            assert!(!section.search_complete, "{text}");
+            assert_ne!(section.matches.relation, SearchCountRelation::Exact, "{text}");
+            let termination = section.termination.as_ref().unwrap();
+            assert_eq!(
+                termination.code,
+                unica_code_intelligence::model::SearchTerminationCode::DependencyPending,
+                "{text}"
+            );
+            assert!(termination.retryable, "{text}");
+            assert_eq!(termination.detail_code.as_deref(), Some(detail_code), "{text}");
         }
     }
 
