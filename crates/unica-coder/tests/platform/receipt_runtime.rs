@@ -4407,8 +4407,12 @@ fn sixty_fifth_authenticated_owner_delivers_exact_cancellation() {
     cancellation_owner_crosses_admission_count(0, 64);
 }
 
+/// Every owner set the listener read, in order, with the time it read it.
+type ListenerOwnersLog = Arc<Mutex<Vec<(Instant, V5ListenerOwners)>>>;
+
 struct PromisedWorkIdleHooks {
     observations: mpsc::Sender<(Instant, bool)>,
+    owners: ListenerOwnersLog,
 }
 
 impl V5RuntimeHooks<CanonicalInvocationHost> for PromisedWorkIdleHooks {
@@ -4419,6 +4423,28 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for PromisedWorkIdleHooks {
     fn after_idle_owner_leases_read(&self, empty: bool) {
         let _ = self.observations.send((Instant::now(), empty));
     }
+
+    fn observes_listener_owners(&self) -> bool {
+        true
+    }
+
+    fn listener_owners_observed(&self, owners: V5ListenerOwners) {
+        self.owners.lock().unwrap().push((Instant::now(), owners));
+    }
+}
+
+/// Every owner set read once the clients had left names the owner that kept
+/// the daemon, so a test shows which counter its work enters.
+fn assert_held_by(
+    observed: &[V5ListenerOwners],
+    holds: impl Fn(&V5ListenerOwners) -> bool,
+    owner: &str,
+) {
+    assert!(!observed.is_empty(), "no owner set was read for {owner}");
+    assert!(
+        observed.iter().all(holds),
+        "{owner} did not hold the daemon: {observed:?}"
+    );
 }
 
 struct PromisedWorkIdleDaemon {
@@ -4429,6 +4455,7 @@ struct PromisedWorkIdleDaemon {
     record: V5EndpointRecord,
     observations: mpsc::Receiver<(Instant, bool)>,
     exited: mpsc::Receiver<()>,
+    owners: ListenerOwnersLog,
 }
 
 impl PromisedWorkIdleDaemon {
@@ -4443,9 +4470,16 @@ impl PromisedWorkIdleDaemon {
         idle_grace: Duration,
         service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
     ) -> Self {
-        Self::with_service_and_hooks(idle_grace, service, |observations| {
-            Arc::new(PromisedWorkIdleHooks { observations })
-        })
+        let owners = ListenerOwnersLog::default();
+        let recorded = Arc::clone(&owners);
+        let mut daemon = Self::with_service_and_hooks(idle_grace, service, |observations| {
+            Arc::new(PromisedWorkIdleHooks {
+                observations,
+                owners: recorded,
+            })
+        });
+        daemon.owners = owners;
+        daemon
     }
 
     fn with_service_and_hooks(
@@ -4487,7 +4521,31 @@ impl PromisedWorkIdleDaemon {
             record,
             observations: observed,
             exited,
+            owners: ListenerOwnersLog::default(),
         }
+    }
+
+    /// Every owner set the listener read after `since`.
+    fn owners_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
+        self.owners
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(observed, _)| *observed >= since)
+            .map(|(_, owners)| *owners)
+            .collect()
+    }
+
+    /// The owner sets the listener read after `since` with no client lease:
+    /// what kept the daemon once every client had left.
+    fn owners_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
+        self.owners
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(observed, owners)| *observed >= since && !owners.client_leases)
+            .map(|(_, owners)| *owners)
+            .collect()
     }
 
     fn owner(&mut self) -> (TcpStream, BufReader<TcpStream>) {
@@ -4676,7 +4734,13 @@ fn daemon_idle_saved_apply_plan_preserves_instance_and_exact_replay_after_owner_
     );
     release_promised_work_owner(owner);
 
+    let released = Instant::now();
     let observed = daemon.observe_idle_interval(idle * 3);
+    assert_held_by(
+        &daemon.owners_without_clients_since(released),
+        |owners| owners.retained_workspace_work && !owners.task_cancellations,
+        "the saved plan, as retained workspace work",
+    );
     assert_eq!(
         daemon.endpoint(),
         Some(daemon.record.clone()),
@@ -4889,6 +4953,7 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
         .recv_timeout(Duration::from_secs(2))
         .expect("the real SharedWork producer starts");
     release_promised_work_owner(owner);
+    let released = Instant::now();
     let observed = daemon.observe_idle_interval(idle * 3);
     assert_eq!(
         daemon.endpoint(),
@@ -4896,6 +4961,11 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
         "idle shutdown lost a running index producer after the RPC and its lease ended"
     );
     assert!(observed);
+    assert_held_by(
+        &daemon.owners_without_clients_since(released),
+        |owners| owners.retained_workspace_work && !owners.task_cancellations,
+        "the running producer, as retained workspace work",
+    );
     let mut successor = daemon.owner();
     assert!(call(&mut successor).ok);
     let lease = joined
@@ -5036,9 +5106,15 @@ fn daemon_idle_live_task_after_client_release_preserves_attempt_then_retires() {
     assert_eq!(initial.invocation_id(), invocation.invocation_id());
     executing.recv_timeout(Duration::from_secs(3)).unwrap();
     release_promised_work_owner(owner);
+    let released = Instant::now();
 
     assert!(daemon.observe_idle_interval(idle * 3));
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
+    assert_held_by(
+        &daemon.owners_without_clients_since(released),
+        |owners| owners.task_cancellations,
+        "the live Task, through its cancellation registration",
+    );
     let mut successor = daemon.owner();
     let V5ServerResponse::Task { snapshot: running } = idle_request_over_tcp(
         &mut successor,
@@ -5097,11 +5173,19 @@ fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
     executing.recv_timeout(Duration::from_secs(3)).unwrap();
     owner.0.shutdown(std::net::Shutdown::Both).unwrap();
     drop(owner);
+    let disconnected = Instant::now();
 
     // The client has left, but the synchronous handler still owns its lease
     // until this invocation returns. Do not call its registry empty.
     assert!(daemon.observe_until(Instant::now() + idle * 3));
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
+    // Besides that lease, the begun attempt holds through its own
+    // cancellation registration.
+    assert_held_by(
+        &daemon.owners_since(disconnected),
+        |owners| owners.task_cancellations,
+        "the begun inline attempt, through its cancellation registration",
+    );
     let mut successor = daemon.owner();
     cleanup.release();
     // The released handler may not have published its receipt when the repeat
@@ -5228,7 +5312,13 @@ fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
         panic!("the producer must finish before the lease-only idle interval");
     };
 
+    let released = Instant::now();
     assert!(daemon.observe_idle_interval(idle * 3));
+    assert_held_by(
+        &daemon.owners_without_clients_since(released),
+        |owners| owners.retained_workspace_work && !owners.task_cancellations,
+        "the needed lease, as retained workspace work",
+    );
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
     let mut successor = daemon.owner();
     assert!(call(&mut successor).ok);
@@ -6294,6 +6384,62 @@ fn materialize_completed_task(
     .reserved_task_id()
 }
 
+/// Elapsed time of each fixture-preparation stage of one Task, so a refusal
+/// names the Task, the stage that refused and where the shared deadline went
+/// (#1786) instead of a bare ledger error.
+struct FixturePreparation<'a> {
+    task: &'a str,
+    started: Instant,
+    budget: Duration,
+    deadline: Instant,
+    stages: Vec<(&'static str, Duration)>,
+}
+
+impl<'a> FixturePreparation<'a> {
+    fn new(task: &'a str, budget: Duration) -> Self {
+        let started = Instant::now();
+        Self {
+            task,
+            started,
+            budget,
+            deadline: started + budget,
+            stages: Vec::new(),
+        }
+    }
+
+    /// Run `stage`, recording its duration; a refusal panics with the trace.
+    fn step<T, E: std::fmt::Debug>(
+        &mut self,
+        stage: &'static str,
+        run: impl FnOnce(Instant) -> Result<T, E>,
+    ) -> T {
+        let begun = Instant::now();
+        let outcome = run(self.deadline);
+        self.stages.push((stage, begun.elapsed()));
+        outcome.unwrap_or_else(|error| {
+            panic!(
+                "fixture preparation of Task `{}` refused at `{stage}`: {error:?}; {}",
+                self.task,
+                self.trace()
+            )
+        })
+    }
+
+    fn trace(&self) -> String {
+        let stages = self
+            .stages
+            .iter()
+            .map(|(stage, spent)| format!("{stage}={}ms", spent.as_millis()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "stages {stages}; {}ms of the {}ms budget elapsed",
+            self.started.elapsed().as_millis(),
+            self.budget.as_millis()
+        )
+    }
+}
+
 /// [`materialize_completed_task`], answering with the call's full key.
 fn materialize_completed_task_key(
     runtime: &V5ReceiptRuntime,
@@ -6315,29 +6461,35 @@ fn materialize_completed_task_key(
             request_scope_hash(workspace).expect("request scope"),
         ),
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let reserved = receipt_actor_for_fixture(runtime)
-        .reserve(
-            key.clone(),
-            OriginalCutoffDescriptor::new(created_epoch_ms, 6_000).expect("valid cutoff"),
-            deadline,
-        )
-        .expect("reserve Task receipt")
-        .into_reservation()
-        .expect("new Task receipt");
-    let actor_bound = receipt_actor_for_fixture(runtime)
-        .bind_reserved_actor(
+    let mut preparation = FixturePreparation::new(summary, Duration::from_secs(5));
+    let reserved = preparation.step("reserve", |deadline| {
+        receipt_actor_for_fixture(runtime)
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(created_epoch_ms, 6_000).expect("valid cutoff"),
+                deadline,
+            )
+            .map_err(|error| format!("{error:?}"))?
+            .into_reservation()
+            .map_err(|existing| format!("the Task receipt already exists: {existing:?}"))
+    });
+    let actor_bound = preparation.step("bind actor", |deadline| {
+        receipt_actor_for_fixture(runtime).bind_reserved_actor(
             key.clone(),
             reserved.record_version(),
             SafeIdentityHash::from_sha256(Sha256::digest(workspace.as_bytes()).into()),
             deadline,
         )
-        .expect("bind Task actor");
-    let begun = receipt_actor_for_fixture(runtime)
-        .mark_reserved_begun(key.clone(), actor_bound.record_version(), deadline)
-        .expect("mark Task attempt begun");
-    let handoff = receipt_actor_for_fixture(runtime)
-        .begin_bound_task_handoff(
+    });
+    let begun = preparation.step("mark begun", |deadline| {
+        receipt_actor_for_fixture(runtime).mark_reserved_begun(
+            key.clone(),
+            actor_bound.record_version(),
+            deadline,
+        )
+    });
+    let handoff = preparation.step("begin handoff", |deadline| {
+        receipt_actor_for_fixture(runtime).begin_bound_task_handoff(
             key.clone(),
             begun.record_version(),
             created_epoch_ms,
@@ -6345,18 +6497,25 @@ fn materialize_completed_task_key(
             V5_TASK_POLL_INTERVAL_MS,
             deadline,
         )
-        .expect("begin Task handoff");
-    let (record, task_bound) = materialize_bound_handoff_for_fixture(
-        runtime,
-        &handoff,
-        created_epoch_ms,
-        deadline,
-        runtime.hooks().as_ref(),
-    )
-    .unwrap_or_else(|failure| panic!("materialize TaskBound: {}", failure.error()));
-    let task_bound = receipt_actor_for_fixture(runtime)
-        .complete_bound_task_handoff(key.clone(), handoff.record_version(), task_bound, deadline)
-        .expect("complete TaskBound ownership");
+    });
+    let (record, task_bound) = preparation.step("materialize TaskBound", |deadline| {
+        materialize_bound_handoff_for_fixture(
+            runtime,
+            &handoff,
+            created_epoch_ms,
+            deadline,
+            runtime.hooks().as_ref(),
+        )
+        .map_err(|failure| failure.error().clone())
+    });
+    let task_bound = preparation.step("complete handoff", |deadline| {
+        receipt_actor_for_fixture(runtime).complete_bound_task_handoff(
+            key.clone(),
+            handoff.record_version(),
+            task_bound,
+            deadline,
+        )
+    });
     clock.set(terminal_epoch_ms);
     let terminal = canonical_v5_terminal(
         &ReceiptTerminalOutcome::Completed {
@@ -6365,16 +6524,18 @@ fn materialize_completed_task_key(
         unica_bootstrap::MAX_RESPONSE_BUDGET,
     )
     .expect("canonical completed terminal");
-    publish_bound_task_terminal_for_fixture(
-        runtime,
-        &task_bound,
-        &record,
-        &terminal,
-        terminal_epoch_ms,
-        deadline,
-        runtime.hooks().as_ref(),
-    )
-    .unwrap_or_else(|failure| panic!("publish completed Task: {}", failure.error()));
+    preparation.step("publish terminal", |deadline| {
+        publish_bound_task_terminal_for_fixture(
+            runtime,
+            &task_bound,
+            &record,
+            &terminal,
+            terminal_epoch_ms,
+            deadline,
+            runtime.hooks().as_ref(),
+        )
+        .map_err(|failure| failure.error().clone())
+    });
     key
 }
 

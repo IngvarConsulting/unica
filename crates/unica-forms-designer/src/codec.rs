@@ -3517,6 +3517,35 @@ pub fn form_edit_apply_definition(
     form_root_start: usize,
     lang: Option<&str>,
 ) -> Result<FormEditApplied, String> {
+    // The fragments are built with LF. A platform export ends every line
+    // with CRLF, so in such a form each bare LF after the edit is a new one
+    // and takes the form's line ending (#1996). A form with LF or mixed
+    // endings keeps the inserted LF.
+    let crlf_only = xml_text.contains("\r\n") && !has_bare_lf(xml_text) && !has_bare_cr(xml_text);
+    let applied = form_edit_apply_definition_lf(xml_text, defn, form_path, form_root_start, lang)?;
+    if crlf_only && has_bare_lf(xml_text) {
+        *xml_text = xml_text.replace("\r\n", "\n").replace('\n', "\r\n");
+    }
+    Ok(applied)
+}
+
+fn has_bare_lf(text: &str) -> bool {
+    text.match_indices('\n')
+        .any(|(index, _)| index == 0 || text.as_bytes()[index - 1] != b'\r')
+}
+
+fn has_bare_cr(text: &str) -> bool {
+    text.match_indices('\r')
+        .any(|(index, _)| text.as_bytes().get(index + 1) != Some(&b'\n'))
+}
+
+fn form_edit_apply_definition_lf(
+    xml_text: &mut String,
+    defn: &Value,
+    form_path: &Path,
+    form_root_start: usize,
+    lang: Option<&str>,
+) -> Result<FormEditApplied, String> {
     if let Some(values) = defn.get("rootProperties").and_then(Value::as_object) {
         crate::form_root_properties::set_root_properties(xml_text, values, lang)?;
         return Ok(FormEditApplied {

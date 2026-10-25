@@ -918,6 +918,16 @@ mod tests {
         assert_eq!(event.state, EventState::Invalid);
         assert!(event.can.is_empty());
         assert!(event.implementation_at.is_none());
+        // Both bindings stay visible; none is chosen as the handler.
+        assert_eq!(event.handler, "");
+        assert_eq!(
+            event
+                .handlers
+                .iter()
+                .map(|binding| binding.handler.as_str())
+                .collect::<Vec<_>>(),
+            ["FirstHandler", "SecondHandler"]
+        );
     }
 
     #[test]
@@ -981,9 +991,42 @@ mod tests {
         );
         assert_eq!(implemented[0].state, EventState::Implemented);
 
-        let duplicate = project_form_owner_events(&[owner], &[action.clone(), action], &method);
+        let duplicate = project_form_owner_events(
+            std::slice::from_ref(&owner),
+            &[action.clone(), action.clone()],
+            &method,
+        );
         assert_eq!(duplicate[0].state, EventState::Invalid);
         assert!(duplicate[0].can.is_empty());
+        // The same Action twice is two bindings in the source: both stay.
+        assert_eq!(duplicate[0].handlers.len(), 2);
+        assert!(duplicate[0].handlers.iter().all(
+            |binding| binding.handler == "RefreshAction" && binding.implementation_at.is_some()
+        ));
+
+        // Two Action elements, as an extension leaves them: the event names
+        // both, with the implementation each one has, and not the catalog
+        // handler name.
+        let extension_action = FormEventBindingInput::property(
+            FormBindingOwner::Command,
+            "main:CommonForm.Test.Command.Refresh.Event.Execute",
+            "Execute",
+            "Extension_RefreshActionAfter",
+            None,
+        );
+        let conflict = project_form_owner_events(&[owner], &[action, extension_action], &method);
+        assert_eq!(conflict[0].state, EventState::Invalid);
+        assert!(conflict[0].can.is_empty());
+        assert_eq!(conflict[0].handler, "");
+        assert_eq!(conflict[0].signature, "");
+        assert_eq!(conflict[0].handler_en, "");
+        assert!(conflict[0].implementation_at.is_none());
+        let handlers = &conflict[0].handlers;
+        assert_eq!(handlers.len(), 2, "{handlers:?}");
+        assert_eq!(handlers[0].handler, "RefreshAction");
+        assert!(handlers[0].implementation_at.is_some());
+        assert_eq!(handlers[1].handler, "Extension_RefreshActionAfter");
+        assert!(handlers[1].implementation_at.is_none());
     }
 
     #[test]
