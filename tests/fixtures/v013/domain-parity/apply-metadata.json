@@ -62,19 +62,13 @@
           },
           "caseIds": [
             "batch2-object-remove-unreferenced",
-            "batch2-object-remove-referenced-refuses"
+            "batch2-object-remove-referenced-cleans"
           ]
         },
         {
           "legacyVariant": "force",
-          "disposition": "mapped",
-          "successor": {
-            "entry": "apply",
-            "operation": "object.remove"
-          },
-          "caseIds": [
-            "batch2-object-remove-forced"
-          ]
+          "disposition": "removed",
+          "rejectionEvidence": "#1977: владелец снял force с object.remove; ссылки в метаданных отказывают до записи, передача force — bad_value (S293)"
         }
       ]
     }
@@ -126,26 +120,13 @@
       }
     },
     {
-      "caseId": "batch2-object-remove-referenced-refuses",
+      "caseId": "batch2-object-remove-referenced-cleans",
       "entry": "apply",
       "operation": "object.remove",
       "mode": "preview;referenced",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S112",
-        "wireStep": 3,
-        "class": "refused",
-        "code": "invalid_state"
-      }
-    },
-    {
-      "caseId": "batch2-object-remove-forced",
-      "entry": "apply",
-      "operation": "object.remove",
-      "mode": "preview;force=true",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
-      "expected": {
-        "scenario": "S293",
         "wireStep": 3,
         "class": "ok"
       }

@@ -570,6 +570,17 @@ fn production_form_command_execute_has_one_semantic_identity_across_view_and_fin
         if state == "missing" {
             assert!(items[0]["props"]["implementationAt"].is_null());
         }
+        // Two Action elements conflict: both are named, neither is the
+        // handler, and the catalog name does not stand in for them.
+        if command == "Duplicate" {
+            assert!(items[0]["props"]["handler"].is_null(), "{}", items[0]);
+            assert_eq!(
+                items[0]["props"]["handlers"],
+                json!([{"handler": "FirstAction"}, {"handler": "SecondAction"}])
+            );
+        } else {
+            assert!(items[0]["props"].get("handlers").is_none(), "{}", items[0]);
+        }
         if state == "implemented" {
             assert_eq!(
                 items[0]["props"]["implementationAt"],
@@ -1026,6 +1037,44 @@ fn inherited_form_metadata_is_local_without_claiming_a_local_form_payload() {
     }
 }
 
+/// A form borrowed with its own `Form.xml` (#1982) carries local content:
+/// view does not report it as inherited, so its content writers stay open.
+#[test]
+fn borrowed_form_with_its_own_form_xml_reads_as_local_content() {
+    let fixture = RealReaderFixture::new();
+    install_inherited_objects(&fixture);
+    let forms = fixture.source.join("DataProcessors/Обработка/Forms");
+    let inherited = platform_borrow_fixture("extension-object-form-inherited.xml");
+    let borrowed = platform_borrow_fixture("extension-object-form-borrowed.xml")
+        .replace(
+            "4a1f0000-0000-4000-8000-0000000019f1",
+            "2f0e0000-0000-4000-8000-000000000104",
+        )
+        .replace(
+            "3a1f0000-0000-4000-8000-000000001982",
+            "1f0e0000-0000-4000-8000-000000000104",
+        )
+        .replace("<Name>CorpusForm</Name>", "<Name>Форма</Name>");
+    assert_ne!(borrowed, inherited);
+    write(&forms.join("Форма.xml"), &borrowed);
+    write(
+        &forms.join("Форма/Ext/Form.xml"),
+        &platform_borrow_fixture("extension-object-form-borrowed-Form.xml"),
+    );
+    let service = fixture.extension_view_service();
+    let form = service.view(ViewRequest::new("main:DataProcessor.Обработка.Form.Форма").unwrap());
+    assert!(
+        form.ok,
+        "borrowed form with its own Form.xml must be readable"
+    );
+    let data = form.data.unwrap();
+    assert_eq!(data["kind"], "Form");
+    assert!(
+        data["props"].get("content").is_none(),
+        "borrowed form with its own Form.xml must not read as inherited"
+    );
+}
+
 #[test]
 fn form_metadata_rejects_orphans_and_does_not_follow_descriptor_links() {
     let fixture = RealReaderFixture::new();
@@ -1292,11 +1341,16 @@ fn dynamic_list_no_context_rule_keeps_incompatible_bindings_invalid() {
 
 #[test]
 fn contextual_form_event_does_not_accept_server_no_context() {
-    for (directive, state) in [
-        ("&НаСервере", "implemented"),
-        ("&AtServer", "implemented"),
-        ("&НаСервереБезКонтекста", "invalid"),
-        ("&AtServerNoContext", "invalid"),
+    // The module is checked with both line endings: a Windows checkout used
+    // to hand it over with CRLF (#1970), and the directive reading must not
+    // depend on that.
+    for (directive, state, eol) in [
+        ("&НаСервере", "implemented", "\n"),
+        ("&AtServer", "implemented", "\n"),
+        ("&НаСервереБезКонтекста", "invalid", "\n"),
+        ("&AtServerNoContext", "invalid", "\n"),
+        ("&НаСервереБезКонтекста", "invalid", "\r\n"),
+        ("&AtServer", "implemented", "\r\n"),
     ] {
         let fixture = RealReaderFixture::new();
         install_dynamic_list_context_fixture(&fixture);
@@ -1307,6 +1361,12 @@ fn contextual_form_event_does_not_accept_server_no_context() {
             "&НаСервере\nПроцедура СоздатьФорму",
             &format!("{directive}\nПроцедура СоздатьФорму"),
         );
+        // A silent no-op here once tested the original directive (#1970).
+        assert!(
+            source.contains(&format!("{directive}\nПроцедура СоздатьФорму")),
+            "{directive}: the handler directive must be substituted"
+        );
+        let source = source.replace('\n', eol);
         fs::write(&path, &source).unwrap();
         let service = fixture.view_service();
         let event_at = "main:Catalog.Items.Form.List.Event.OnCreateAtServer";

@@ -74,7 +74,8 @@ pub(crate) fn classify_route(
                 | NodeKind::Setting
         )
     });
-    let dcs_template_member = any_named(NodeKind::Template)
+    let dcs_template_member = (any_named(NodeKind::Template)
+        || any_named(NodeKind::CommonTemplate))
         && !any(NodeKind::Area)
         && segments
             .iter()

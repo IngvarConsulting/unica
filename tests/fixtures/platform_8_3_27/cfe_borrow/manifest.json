@@ -81,6 +81,56 @@
       "sha256": "1bd78b0d3b0911b8853107cd4c283e1460ffd1ead1d6683377c53141af42da1a",
       "size": 1261,
       "source": "Raw platform export of an adopted XDTOPackage imported without Namespace and Ext/Package.bin: neither is exported (#1381)."
+    },
+    "extension-object-form-borrowed.xml": {
+      "sha256": "25aa4de7252f5d2daad828d79af0318b01db09f9c590bf225b5c6aeb963071d6",
+      "size": 1405,
+      "source": "Исходный экспорт дескриптора заимствованной формы объекта с FormType Managed и собственным Ext/Form.xml (#1982); платформа добавила только PropertyState Form/Extended. Побайтно совпал во втором круге через независимую базу."
+    },
+    "extension-object-form-borrowed-Form.xml": {
+      "sha256": "b28169d8d730651eab9612bf5c00acd02f7aa293d5a734e555147ba13df9a222",
+      "size": 1117,
+      "source": "Исходный экспорт Ext/Form.xml заимствованной формы (#1982): AutoCommandBar name=\"\" id=\"-1\" и пустой Attributes в собственной части и в BaseForm. Импортирован теми же байтами и выгружен без изменений в обоих кругах — фиксированная точка."
+    },
+    "extension-object-form-borrowed-Module.bsl": {
+      "sha256": "95271a2ebccd22c4c4f6667cdd2c35820bf69e170242a2541f6a6496f3b5befe",
+      "size": 292,
+      "source": "Исходный экспорт модуля заимствованной формы с одним перехватчиком &После (#1982); сохранён рядом с минимальным Form.xml побайтно в обоих кругах."
+    },
+    "extension-catalog-with-borrowed-form.xml": {
+      "sha256": "eeac9b6cc622c74cb3862365ae40aed8327d1ad32be3e078201f32c439bb3a51",
+      "size": 2485,
+      "source": "Исходный экспорт заимствованного справочника-владельца с ChildObjects/Form (#1982); владелец без свойств сверх ObjectBelonging, Name, Comment, ExtendedConfigurationObject."
+    },
+    "extension-configuration-with-borrowed-form.xml": {
+      "sha256": "dfed201b033f4f679a3e709cdbb571bf3f3ab3ec3adcd09b34ccc3042c333b24",
+      "size": 3620,
+      "source": "Исходный экспорт Configuration.xml расширения из опыта #1982 со справочником-владельцем в ChildObjects."
+    },
+    "extension-object-form-borrowed-without-form-type.xml": {
+      "sha256": "15dd38e519876cb6ba452ad0d3892e6bfe01f9eeaa67acc2fe7b08f433541916",
+      "size": 1372,
+      "source": "Исходный экспорт дескриптора заимствованной формы, импортированного без FormType вместе с Ext/Form.xml (#1982): платформа приняла его, но не выгрузила ни FormType, ни Form.xml."
+    },
+    "parent-catalog-with-form.xml": {
+      "sha256": "3325b97d14a6f98bde3b5695c398182e6dca8007ad4abe712f49a4d021cc327a",
+      "size": 15032,
+      "source": "Исходный экспорт родительского Catalog.CorpusCatalog с формой элемента CorpusForm (DefaultObjectForm), родитель опыта #1982."
+    },
+    "parent-catalog-form.xml": {
+      "sha256": "527665701da0bfc68194a7e8e390bc8f27984efa52e89fda5d942a618b8c21e3",
+      "size": 1383,
+      "source": "Исходный экспорт дескриптора родительской управляемой формы CorpusForm (#1982)."
+    },
+    "parent-catalog-form-Form.xml": {
+      "sha256": "9ba427f85310cb01f320ae8026454d1f479d3170c5a1d094f024faa00ee4bf8a",
+      "size": 2511,
+      "source": "Исходный экспорт Ext/Form.xml родительской формы: поле Объект.Description, кнопка командной панели, команда и событие OnCreateAtServer (#1982)."
+    },
+    "parent-catalog-form-Module.bsl": {
+      "sha256": "356b4673e18b5c3dda27058f3ed5ce9f889b8c5c396010f3e0d2c1b334fd3755",
+      "size": 497,
+      "source": "Исходный экспорт модуля родительской формы с обработчиками ПриСозданииНаСервере и ОбновитьНаименование (#1982)."
     }
   }
 }

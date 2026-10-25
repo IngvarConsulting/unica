@@ -128,7 +128,6 @@ Unica отдаёт сама справку установленной платф
   "params": {
     "name": "unica.docs",
     "arguments": {
-      "cwd": "<workspace>",
       "query": "СтрНайти",
       "source": "platform-help"
     }
@@ -143,7 +142,6 @@ Unica отдаёт сама справку установленной платф
   "params": {
     "name": "unica.docs",
     "arguments": {
-      "cwd": "<workspace>",
       "query": "как удалить элемент массива"
     }
   }

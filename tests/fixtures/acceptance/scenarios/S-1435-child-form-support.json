@@ -637,7 +637,7 @@
      "eq": "68eae2b0dd5b5ac0a636b06d302219f6e0e49b5de348bebca749f946dd1b6fbb"
     }
    ],
-   "refusal": "invalid_state: `Catalog.Items` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
+   "refusal": "invalid_state: `main:Catalog.Items` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
   },
   {
    "tool": "unica.apply",

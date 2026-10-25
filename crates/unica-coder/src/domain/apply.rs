@@ -128,7 +128,7 @@ impl ApplyRequest {
                 if !available_source_sets.contains(&parent.source_set())
                     || !valid_borrow_source(&parent, at.source_set())
                 {
-                    return Err(ApplyValidationError::bad_value(&location, "from must name a top-level object or Enum.EnumValue in a distinct admitted parent source set"));
+                    return Err(ApplyValidationError::bad_value(&location, "from must name a top-level object, Enum.EnumValue or object Form in a distinct admitted parent source set"));
                 }
             }
             // Configuration owns newly created metadata although its address is
@@ -244,8 +244,9 @@ pub(crate) fn valid_borrow_source(parent: &QualifiedAddress, destination_source_
     parent.source_set() != destination_source_set
         && (parent.segments().len() == 1
             || (parent.segments().len() == 2
-                && parent.segments()[0].kind() == NodeKind::Enum
-                && parent.segments()[1].kind() == NodeKind::EnumValue
+                && ((parent.segments()[0].kind() == NodeKind::Enum
+                    && parent.segments()[1].kind() == NodeKind::EnumValue)
+                    || parent.segments()[1].kind() == NodeKind::Form)
                 && parent.segments()[1].name().is_some()))
         && parent.segments()[0].name().is_some()
 }
@@ -548,6 +549,7 @@ operation_descriptors!(
     (FormOperation::AttributeAdd),
     (FormOperation::CommandAdd),
     (FormOperation::EventBind),
+    (FormOperation::PropsSet),
     (RoleOperation::Create),
     (RoleOperation::RightAdd),
     (RoleOperation::RightSet),
@@ -613,6 +615,7 @@ operation_descriptors!(
     (XdtoOperation::AddProperty),
     (XdtoOperation::RemoveType),
     (XdtoOperation::RemoveProperty),
+    (XdtoOperation::RenameProperty),
     (SubsystemOperation::Create),
     (SubsystemOperation::ContentAdd),
     (SubsystemOperation::ContentRemove),
@@ -827,7 +830,9 @@ mod tests {
             )
         };
         assert!(request("main:Enum.Operations.EnumValue.Costs").is_ok());
+        assert!(request("main:Catalog.Orders.Form.ItemForm").is_ok());
         for from in [
+            "main:Catalog.Orders.Form",
             "main:Enum.Operations.EnumValue",
             "main:Catalog.Orders.Attribute.Code",
             "extension:Enum.Operations.EnumValue.Costs",
@@ -1091,16 +1096,33 @@ mod tests {
         assert_eq!(valid.name(), "props.set");
         assert_eq!(valid.family(), OperationFamily::Properties);
         assert_eq!(valid.skeleton(), OperationSkeleton::Values);
-        let source =
-            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
-        for (raw, expected) in [
-            ("main:CommonModule.Utilities", true),
-            ("main:Role.Reader", true),
-            ("main:Subsystem.Sales", true),
-            ("main:Configuration", false),
-            ("main:Catalog.Items.Attribute.Code", false),
-            ("main:Subsystem.Sales.Subsystem.Child", false),
+        for (kind, raw, expected) in [
+            (
+                SourceSetKind::Configuration,
+                "main:CommonModule.Utilities",
+                true,
+            ),
+            (SourceSetKind::Configuration, "main:Role.Reader", true),
+            (SourceSetKind::Configuration, "main:Subsystem.Sales", true),
+            (SourceSetKind::Configuration, "main:Configuration", true),
+            (SourceSetKind::Extension, "main:Configuration", true),
+            (
+                SourceSetKind::ExternalProcessor,
+                "main:Configuration",
+                false,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Catalog.Items.Attribute.Code",
+                false,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Subsystem.Sales.Subsystem.Child",
+                false,
+            ),
         ] {
+            let source = source_set_traits_for_read(kind, PlatformProfile::v8_3_27());
             let at = QualifiedAddress::parse(raw).unwrap();
             let site = operation_site(&at, source).unwrap();
             assert_eq!(
@@ -1382,6 +1404,7 @@ mod tests {
             "attribute.add",
             "command.add",
             "event.bind",
+            "props.set",
             "role.create",
             "right.add",
             "right.set",
@@ -1445,6 +1468,7 @@ mod tests {
             "property.add",
             "type.remove",
             "property.remove",
+            "property.rename",
             "subsystem.create",
             "content.add",
             "content.remove",
@@ -1462,12 +1486,16 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 123);
+        assert_eq!(expected.len(), 125);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
-        // метаданных (#1465): имя одно, семейство выбирает адрес. Других
-        // повторов в реестре нет.
-        const SHARED_NAMES: &[&str] = &["attribute.add", "command.add"];
+        // метаданных (#1465), свойства формы — как свойства описания (#1984):
+        // имя одно, семейство выбирает адрес. Других повторов в реестре нет.
+        const SHARED_NAMES: &[(&str, OperationFamily)] = &[
+            ("attribute.add", OperationFamily::Metadata),
+            ("command.add", OperationFamily::Metadata),
+            ("props.set", OperationFamily::Properties),
+        ];
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();
         unique.dedup();
@@ -1503,18 +1531,14 @@ mod tests {
                 "every Metadata identity must be registered exactly once: {operation:?}"
             );
         }
-        for name in SHARED_NAMES {
+        for (name, first) in SHARED_NAMES {
             let families = registry
                 .descriptors()
                 .iter()
                 .filter(|descriptor| descriptor.name() == *name)
                 .map(|descriptor| descriptor.family())
                 .collect::<Vec<_>>();
-            assert_eq!(
-                families,
-                [OperationFamily::Metadata, OperationFamily::Form],
-                "{name}"
-            );
+            assert_eq!(families, [*first, OperationFamily::Form], "{name}");
         }
 
         assert_eq!(
@@ -1821,9 +1845,24 @@ mod tests {
                 "main:XDTOPackage.Exchange.Type.Order.Property.Id",
                 false,
             ),
+            (
+                "property.rename",
+                "main:XDTOPackage.Exchange.Type.Order.Property.Lines.Property.Item",
+                true,
+            ),
+            (
+                "property.rename",
+                "main:XDTOPackage.Exchange.Type.Order",
+                false,
+            ),
             // Глобальное свойство пакета — не член типа.
             (
                 "property.remove",
+                "main:XDTOPackage.Exchange.Property.Id",
+                false,
+            ),
+            (
+                "property.rename",
                 "main:XDTOPackage.Exchange.Property.Id",
                 false,
             ),

@@ -2,6 +2,7 @@
 id: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 check:
   - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::inherited_form_metadata_is_local_without_claiming_a_local_form_payload
+  - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::borrowed_form_with_its_own_form_xml_reads_as_local_content
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_objects_without_companion_files_read_their_content_as_inherited
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_companion_file_stays_a_source_error_outside_borrowing
   - crates/unica-coder/src/infrastructure/metadata_operations.rs::borrowed_children_of_a_borrowed_owner_validate_without_payload
@@ -17,8 +18,8 @@ check:
 # Заимствованный объект без своего содержимого читается по описанию
 
 Платформа 8.3.27 импортирует и выгружает заимствованные расширением роль,
-общую форму, форму объекта, макет объекта и пакет XDTO без `Rights.xml`,
-`Form.xml`, `Template.xml` и `Package.bin`. Содержимое такого объекта
+общую форму, форму объекта, общий макет, макет объекта и пакет XDTO без
+`Rights.xml`, `Form.xml`, `Template.xml` и `Package.bin`. Содержимое такого объекта
 унаследовано от родителя, если объект в наборе вида `extension` указывает
 родителя через `ExtendedConfigurationObject`, а у формы или макета владельца
 родителя указывает и описание владельца.

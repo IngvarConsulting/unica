@@ -1,0 +1,157 @@
+{
+  "id": "S-2025-common-template-remove",
+  "name": "remove-common-template-like-any-object",
+  "issue": 2025,
+  "area": "Создание и удаление объектов",
+  "task": "Удалить общий макет каноническим object.remove: операция есть в can узла, план вычищает макет из состава подсистемы и предупреждает о коде, который берёт макет по имени, а исполнение снимает описание, содержимое, пустой каталог и регистрацию в конфигурации",
+  "workspace": "tests/fixtures/acceptance/workspace-common-template-remove",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonTemplate.ПечатьСчета.Can.object.remove"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "object.remove"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonTemplate.ПечатьСчета",
+        "ops": [
+          {
+            "op": "object.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "code_references"
+        },
+        {
+          "pointer": "/warnings/0/references/0/at",
+          "eq": "main:CommonModule.Печать"
+        },
+        {
+          "pointer": "/warnings/0/references/0/line",
+          "eq": 4
+        },
+        {
+          "pointer": "/warnings/1/code",
+          "eq": "composition_cleaned"
+        },
+        {
+          "pointer": "/warnings/1/entries",
+          "contains": {
+            "at": "main:Subsystem.Продажи",
+            "property": "Content"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/CommonTemplates/ПечатьСчета.xml",
+          "eq": true
+        },
+        {
+          "kind": "exists",
+          "path": "src/CommonTemplates/ПечатьСчета/Ext/Template.xml",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "code_references"
+        },
+        {
+          "pointer": "/warnings/0/references/0/at",
+          "eq": "main:CommonModule.Печать"
+        },
+        {
+          "pointer": "/warnings/0/references/0/line",
+          "eq": 4
+        },
+        {
+          "pointer": "/warnings/1/code",
+          "eq": "composition_cleaned"
+        },
+        {
+          "pointer": "/warnings/1/entries",
+          "contains": {
+            "at": "main:Subsystem.Продажи",
+            "property": "Content"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/CommonTemplates",
+          "eq": false
+        },
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}CommonTemplate",
+          "eq": []
+        },
+        {
+          "kind": "xml",
+          "path": "src/Subsystems/Продажи.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/readable}Item",
+          "eq": [
+            "CommonModule.Печать"
+          ]
+        },
+        {
+          "kind": "exists",
+          "path": "src/CommonModules/Печать/Ext/Module.bsl",
+          "eq": true
+        }
+      ]
+    }
+  ]
+}

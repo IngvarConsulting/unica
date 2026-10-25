@@ -224,8 +224,8 @@
           "absent": true
         },
         {
-          "pointer": "/data/props/contract/argsSchema/properties/force/type",
-          "eq": "boolean"
+          "pointer": "/data/props/contract/argsSchema/properties/force",
+          "absent": true
         }
       ]
     },
@@ -698,9 +698,7 @@
         "ops": [
           {
             "op": "object.remove",
-            "args": {
-              "force": true
-            }
+            "args": {}
           }
         ]
       },

@@ -491,8 +491,9 @@ pub fn form_validate_button_commands(
 /// Lazily read facts for comparing bound handlers with their events: the
 /// form module next to `Ext/Form.xml` and the owner's event lists.
 pub struct HandlerSignatureCheck<'reader> {
-    reader: &'reader dyn ProjectDiscoveryRead,
+    reader: Option<&'reader dyn ProjectDiscoveryRead>,
     module_path: Option<PathBuf>,
+    module_text: Option<&'reader str>,
     module: Option<Option<Vec<unica_bsl_parser::BslMethodParameters>>>,
     metadata_owner: Option<unica_address::address::NodeKind>,
     owners: HashMap<(FormEventOwnerKind, Option<String>), Vec<FormEventParameterForms>>,
@@ -501,12 +502,28 @@ pub struct HandlerSignatureCheck<'reader> {
 impl<'reader> HandlerSignatureCheck<'reader> {
     pub fn new(reader: &'reader dyn ProjectDiscoveryRead, form_path: &Path) -> Self {
         Self {
-            reader,
+            reader: Some(reader),
             module_path: form_path
                 .parent()
                 .map(|ext| ext.join("Form").join("Module.bsl")),
+            module_text: None,
             module: None,
             metadata_owner: form_metadata_owner(form_path),
+            owners: HashMap::new(),
+        }
+    }
+
+    /// Проверяет сохранённый модуль без повторного обращения к исходникам.
+    pub fn from_source(
+        module: Option<&'reader str>,
+        metadata_owner: Option<unica_address::address::NodeKind>,
+    ) -> Self {
+        Self {
+            reader: None,
+            module_path: None,
+            module_text: module,
+            module: None,
+            metadata_owner,
             owners: HashMap::new(),
         }
     }
@@ -517,9 +534,13 @@ impl<'reader> HandlerSignatureCheck<'reader> {
     fn module(&mut self) -> Option<&[unica_bsl_parser::BslMethodParameters]> {
         let path = &self.module_path;
         let reader = self.reader;
+        let module_text = self.module_text;
         self.module
             .get_or_insert_with(|| {
-                let text = read_string(reader, path.as_ref()?).ok()?;
+                let text = match module_text {
+                    Some(text) => std::borrow::Cow::Borrowed(text),
+                    None => std::borrow::Cow::Owned(read_string(reader?, path.as_ref()?).ok()?),
+                };
                 unica_bsl_parser::bsl_method_parameters(text.trim_start_matches('\u{feff}')).ok()
             })
             .as_deref()
@@ -583,6 +604,37 @@ pub fn form_validate_events(
     metadata_owner: Option<unica_address::address::NodeKind>,
     report: &mut FormValidationReporter,
 ) {
+    form_validate_events_inner(root, signatures, metadata_owner, report);
+}
+
+/// Определяет необходимость модуля теми же правилами, что проверка событий.
+/// Непригодный XML остаётся предметом основной проверки формы.
+pub fn form_validation_requires_module(
+    text: &str,
+    metadata_owner: Option<unica_address::address::NodeKind>,
+) -> bool {
+    let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
+        return false;
+    };
+    let root = document.root_element();
+    if require_form_root(root).is_err() {
+        return false;
+    }
+    form_validate_events_inner(
+        root,
+        None,
+        metadata_owner,
+        // Без предела ошибок обход видит каждую привязку при любом maxErrors проверки.
+        &mut FormValidationReporter::new("", usize::MAX, false),
+    )
+}
+
+fn form_validate_events_inner(
+    root: roxmltree::Node<'_, '_>,
+    signatures: Option<HandlerSignatureCheck<'_>>,
+    metadata_owner: Option<unica_address::address::NodeKind>,
+    report: &mut FormValidationReporter,
+) -> bool {
     struct EventValidationState<'report, 'reader> {
         context: FormEventContext,
         signatures: Option<HandlerSignatureCheck<'reader>>,
@@ -590,6 +642,7 @@ pub fn form_validate_events(
         errors: usize,
         checked: usize,
         unverified: usize,
+        module_required: bool,
     }
 
     impl EventValidationState<'_, '_> {
@@ -608,6 +661,7 @@ pub fn form_validate_events(
             if binding.call_type.is_some() {
                 return;
             }
+            self.module_required = true;
             let Some(check) = self.signatures.as_mut() else {
                 return;
             };
@@ -749,6 +803,7 @@ pub fn form_validate_events(
         errors: 0,
         checked: 0,
         unverified: 0,
+        module_required: false,
     };
     state.validate_owner(root, Some(FormEventTarget::Form), "form");
 
@@ -769,7 +824,7 @@ pub fn form_validate_events(
         let target = FormElementKind::from_xml_tag(tag).map(FormEventTarget::Element);
         state.validate_owner(owner, target, &target_label);
         if state.report.stopped {
-            return;
+            return state.module_required;
         }
     }
 
@@ -778,6 +833,7 @@ pub fn form_validate_events(
             .report
             .ok(format!("Event handlers: {} events checked", state.checked));
     }
+    state.module_required
 }
 
 fn validate_event_owner_node(
@@ -1407,36 +1463,15 @@ pub fn parse_form_info_xml(
     let form_title = form_child(root, "Title")
         .map(form_ml_text)
         .filter(|value| !value.is_empty());
-    let prop_names = [
-        "Width",
-        "Height",
-        "Group",
-        "WindowOpeningMode",
-        "EnterKeyBehavior",
-        "AutoTitle",
-        "AutoURL",
-        "AutoFillCheck",
-        "Customizable",
-        "CommandBarLocation",
-        "SaveDataInSettings",
-        "AutoSaveDataInSettings",
-        "AutoTime",
-        "UsePostingMode",
-        "RepostOnWrite",
-        "UseForFoldersAndItems",
-        "ReportResult",
-        "DetailsData",
-        "ReportFormType",
-        "VerticalScroll",
-        "ScalingMode",
-    ];
-    let properties = prop_names
+    // Свойства корня в порядке 8.3.27: те же имена, что пишет `props.set`.
+    let properties = unica_forms::root_properties::ROOT_PROPERTIES
         .iter()
+        .map(|property| property.name)
         .filter_map(|name| {
             form_child(root, name).and_then(|node| {
                 let value = form_ml_text(node);
                 (!value.is_empty()).then(|| FormInfoProperty {
-                    name: (*name).to_string(),
+                    name: name.to_string(),
                     value,
                 })
             })
@@ -3047,31 +3082,55 @@ pub fn form_add_metadata_xml(
     )
 }
 
+/// Namespace declarations of a `Form.xml` root as 8.3.27 exports them.
+const FORM_ROOT_NAMESPACES: &str = concat!(
+    "xmlns=\"http://v8.1c.ru/8.3/xcf/logform\"",
+    " xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\"",
+    " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
+    " xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\"",
+    " xmlns:dcssch=\"http://v8.1c.ru/8.1/data-composition-system/schema\"",
+    " xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"",
+    " xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\"",
+    " xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\"",
+    " xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\"",
+    " xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\"",
+    " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+    " xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"",
+    " xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\"",
+    " xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\"",
+    " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
+    " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
+    " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+);
+
+/// `Form.xml` of an object form borrowed into an extension, byte for byte
+/// as 8.3.27 exports it (#1982): the own part and `BaseForm` hold only the
+/// empty command bar and attributes, so the borrowed form changes nothing.
+/// Parent events and commands are not copied: the platform would turn them
+/// into `callType="Before"` interceptors of the extension.
+pub fn borrowed_form_content_xml(format_version: &str) -> String {
+    let version = unica_xml_format::text::escape_xml(format_version);
+    [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
+        format!("<Form {FORM_ROOT_NAMESPACES} version=\"{version}\">"),
+        "\t<AutoCommandBar name=\"\" id=\"-1\"/>".to_string(),
+        "\t<Attributes/>".to_string(),
+        format!("\t<BaseForm version=\"{version}\">"),
+        "\t\t<AutoCommandBar name=\"\" id=\"-1\"/>".to_string(),
+        "\t\t<Attributes/>".to_string(),
+        "\t</BaseForm>".to_string(),
+        "</Form>".to_string(),
+    ]
+    .join("\r\n")
+}
+
 pub fn form_add_content_xml(
     object_type: &str,
     object_name: &str,
     purpose: &str,
     format_version: &str,
 ) -> Result<String, String> {
-    let ns = concat!(
-        "xmlns=\"http://v8.1c.ru/8.3/xcf/logform\"",
-        " xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\"",
-        " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
-        " xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\"",
-        " xmlns:dcssch=\"http://v8.1c.ru/8.1/data-composition-system/schema\"",
-        " xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"",
-        " xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\"",
-        " xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\"",
-        " xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\"",
-        " xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\"",
-        " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
-        " xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"",
-        " xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\"",
-        " xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\"",
-        " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
-        " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
-        " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
-    );
+    let ns = FORM_ROOT_NAMESPACES;
     if matches!(purpose, "List" | "Choice") {
         let main_table = format!("{object_type}.{object_name}");
         return Ok(format!(
@@ -3145,6 +3204,12 @@ pub fn form_add_content_xml(
     };
     let root_defaults = match object_type {
         "Catalog" => "\t<UseForFoldersAndItems>Items</UseForFoldersAndItems>\r\n",
+        // 1C 8.3.27 always exports the posting properties of a document form.
+        "Document" => concat!(
+            "\t<AutoTime>CurrentOrLast</AutoTime>\r\n",
+            "\t<UsePostingMode>Auto</UsePostingMode>\r\n",
+            "\t<RepostOnWrite>true</RepostOnWrite>\r\n"
+        ),
         "Report" | "ExternalReport" => concat!(
             "\t<ReportFormType>Main</ReportFormType>\r\n",
             "\t<AutoShowState>Auto</AutoShowState>\r\n",
@@ -3448,6 +3513,48 @@ pub fn form_edit_apply_definition(
     form_root_start: usize,
     lang: Option<&str>,
 ) -> Result<FormEditApplied, String> {
+    // The fragments are built with LF. A platform export ends every line
+    // with CRLF, so in such a form each bare LF after the edit is a new one
+    // and takes the form's line ending (#1996). A form with LF or mixed
+    // endings keeps the inserted LF.
+    let crlf_only = xml_text.contains("\r\n") && !has_bare_lf(xml_text) && !has_bare_cr(xml_text);
+    let applied = form_edit_apply_definition_lf(xml_text, defn, form_path, form_root_start, lang)?;
+    if crlf_only && has_bare_lf(xml_text) {
+        *xml_text = xml_text.replace("\r\n", "\n").replace('\n', "\r\n");
+    }
+    Ok(applied)
+}
+
+fn has_bare_lf(text: &str) -> bool {
+    text.match_indices('\n')
+        .any(|(index, _)| index == 0 || text.as_bytes()[index - 1] != b'\r')
+}
+
+fn has_bare_cr(text: &str) -> bool {
+    text.match_indices('\r')
+        .any(|(index, _)| text.as_bytes().get(index + 1) != Some(&b'\n'))
+}
+
+fn form_edit_apply_definition_lf(
+    xml_text: &mut String,
+    defn: &Value,
+    form_path: &Path,
+    form_root_start: usize,
+    lang: Option<&str>,
+) -> Result<FormEditApplied, String> {
+    if let Some(values) = defn.get("rootProperties").and_then(Value::as_object) {
+        crate::form_root_properties::set_root_properties(xml_text, values, lang)?;
+        return Ok(FormEditApplied {
+            added_elements: Vec::new(),
+            added_attrs: Vec::new(),
+            added_cmds: Vec::new(),
+            added_form_events: Vec::new(),
+            added_element_events: Vec::new(),
+            planned_removals: Vec::new(),
+            companion_count: 0,
+            form_name: form_edit_form_name(form_path),
+        });
+    }
     if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
         form_edit_validate_named_objects(xml_text, attributes, "Attribute", "attribute")?;
     }
@@ -7042,59 +7149,15 @@ pub fn emit_form_font(lines: &mut Vec<String>, font: &Value, indent: &str) {
     lines.push(format!("{indent}<Font {}/>", serialized.join(" ")));
 }
 
-const FORM_ROOT_SCALAR_PROPERTY_ORDER: &[&str] = &[
-    "Width",
-    "Height",
-    "WindowOpeningMode",
-    "EnterKeyBehavior",
-    "AutoSaveDataInSettings",
-    "SaveDataInSettings",
-    "SaveWindowSettings",
-    "SettingsStorage",
-    "AutoTitle",
-    "AutoURL",
-    "Group",
-    "ChildrenAlign",
-    "HorizontalSpacing",
-    "VerticalSpacing",
-    "HorizontalAlign",
-    "VerticalAlign",
-    "ChildItemsWidth",
-    "AutoFillCheck",
-    "Customizable",
-    "Enabled",
-    "ReadOnly",
-    "CommandBarLocation",
-    "VerticalScroll",
-    "ScalingMode",
-    "Scale",
-    "ConversationsRepresentation",
-    "ShowTitle",
-    "ShowCloseButton",
-    "CollapseItemsByImportanceVariant",
-    "UseForFoldersAndItems",
-    "GroupList",
-    "AutoTime",
-    "UsePostingMode",
-    "RepostOnWrite",
-    "ReportResult",
-    "DetailsData",
-    "ReportFormType",
-    "VariantAppearance",
-    "AutoShowState",
-    "CustomSettingsFolder",
-    "ReportResultViewMode",
-    "ViewModeApplicationOnSetReportResult",
-];
-
-fn form_root_xml_property(name: &str) -> Option<(usize, &'static str)> {
+/// Корневое свойство формы по имени из JSON (`width` или `Width`): его
+/// место в порядке 8.3.27 и описание из общей таблицы.
+fn form_root_xml_property(
+    name: &str,
+) -> Option<(usize, &'static unica_forms::root_properties::RootProperty)> {
     let mut characters = name.chars();
     let first = characters.next()?;
     let candidate = format!("{}{}", first.to_uppercase(), characters.as_str());
-    FORM_ROOT_SCALAR_PROPERTY_ORDER
-        .iter()
-        .position(|property| *property == candidate)
-        .map(|index| (index, FORM_ROOT_SCALAR_PROPERTY_ORDER[index]))
+    unica_forms::root_properties::root_property(&candidate)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -7104,43 +7167,6 @@ pub fn form_8_3_27_enum_values_for_test(xml_name: &str) -> Option<&'static [&'st
 
 fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
     match xml_name {
-        "WindowOpeningMode" => Some(&["Independent", "LockOwnerWindow", "LockWholeInterface"]),
-        "EnterKeyBehavior" => Some(&["ControlNavigation", "DefaultButton"]),
-        "AutoSaveDataInSettings" => Some(&["DontUse", "Use"]),
-        "SaveDataInSettings" => Some(&["DontUse", "UseList"]),
-        "Group" => Some(&[
-            "Horizontal",
-            "Vertical",
-            "HorizontalIfPossible",
-            "AlwaysHorizontal",
-        ]),
-        "ChildrenAlign" => Some(&[
-            "Auto",
-            "None",
-            "ItemsLeftTitlesLeft",
-            "ItemsRightTitlesLeft",
-            "ItemsLeftTitlesRight",
-            "ItemsRightTitlesRight",
-            "TitlesLeftDataLeft",
-            "TitlesLeftDataRight",
-            "TitlesRightDataLeft",
-            "TitlesRightDataRight",
-            "TitlesLeftDataAuto",
-        ]),
-        "HorizontalSpacing" | "VerticalSpacing" => {
-            Some(&["Auto", "None", "Half", "Single", "OneAndHalf", "Double"])
-        }
-        "HorizontalAlign" => Some(&["Left", "Center", "Right", "Auto"]),
-        "VerticalAlign" => Some(&["Top", "Center", "Bottom", "Auto"]),
-        "ChildItemsWidth" => Some(&[
-            "Auto",
-            "Equal",
-            "LeftWide",
-            "LeftWidest",
-            "LeftNarrow",
-            "LeftNarrowest",
-        ]),
-        "CommandBarLocation" => Some(&["None", "Auto", "Top", "Bottom"]),
         "TableRepresentation" => Some(&["List", "HierarchicalList", "Tree"]),
         "FormChildrenGroup" => Some(&[
             "Horizontal",
@@ -7189,24 +7215,13 @@ fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
             "InCommandBar",
             "InCommandBarAndInAdditionalSubmenu",
         ]),
-        "VerticalScroll" => Some(&["auto", "use", "useIfNecessary", "useWithoutStretch"]),
-        "ScalingMode" => Some(&["Auto", "Normal", "Compact"]),
-        "ConversationsRepresentation" => Some(&["Auto", "Show", "DontShow"]),
-        "CollapseItemsByImportanceVariant" => Some(&["Auto", "Use", "DontUse"]),
-        "UseForFoldersAndItems" => Some(&["Items", "Folders", "FoldersAndItems"]),
-        "AutoTime" => Some(&[
-            "DontUse",
-            "Last",
-            "First",
-            "CurrentOrLast",
-            "CurrentOrFirst",
-        ]),
-        "UsePostingMode" => Some(&["Regular", "RealTime", "Ask", "Auto"]),
-        "ReportFormType" => Some(&["Main", "Settings", "Variant"]),
-        "AutoShowState" => Some(&["Auto", "DontShow", "Show", "ShowOnComposition"]),
-        "ReportResultViewMode" => Some(&["Auto", "Default", "Compact"]),
-        "ViewModeApplicationOnSetReportResult" => Some(&["Auto", "Apply", "DontApply"]),
-        _ => None,
+        // Свойства корня формы: перечисления общей таблицы 8.3.27.
+        _ => unica_forms::root_properties::root_property(xml_name).and_then(|(_, property)| {
+            match property.value {
+                unica_forms::root_properties::RootValue::Choice(choices) => Some(choices),
+                _ => None,
+            }
+        }),
     }
 }
 
@@ -7448,64 +7463,42 @@ fn form_compile_validate_normalized_element_enum(
     Ok(())
 }
 
-fn form_root_property_text(name: &str, xml_name: &str, value: &Value) -> Result<String, String> {
-    if [
-        "SaveWindowSettings",
-        "AutoTitle",
-        "AutoURL",
-        "AutoFillCheck",
-        "Customizable",
-        "Enabled",
-        "ReadOnly",
-        "ShowTitle",
-        "ShowCloseButton",
-        "RepostOnWrite",
-    ]
-    .contains(&xml_name)
-    {
-        return value
+fn form_root_property_text(
+    name: &str,
+    property: &unica_forms::root_properties::RootProperty,
+    value: &Value,
+) -> Result<String, String> {
+    use unica_forms::root_properties::RootValue;
+    match property.value {
+        RootValue::Flag => value
             .as_bool()
             .map(|flag| if flag { "true" } else { "false" }.to_string())
-            .ok_or_else(|| format!("form root property {name} must be a boolean"));
-    }
-    if ["Width", "Height", "Scale"].contains(&xml_name) {
-        return value
+            .ok_or_else(|| format!("form root property {name} must be a boolean")),
+        RootValue::Size => value
             .as_u64()
             .filter(|number| *number <= u32::MAX as u64)
             .map(|number| number.to_string())
             .ok_or_else(|| {
                 format!("form root property {name} must be an integer in 0..=4294967295 for 8.3.27")
-            });
-    }
-    if let Some(allowed) = form_8_3_27_enum_values(xml_name) {
-        let text = value
-            .as_str()
-            .ok_or_else(|| format!("form root property {name} must be a string"))?;
-        if !allowed.contains(&text) {
-            return Err(format!(
-                "form root property {name} is not valid for 8.3.27: {text}; expected one of {}",
-                allowed.join(", ")
-            ));
+            }),
+        RootValue::Choice(allowed) => {
+            let text = value
+                .as_str()
+                .ok_or_else(|| format!("form root property {name} must be a string"))?;
+            if !allowed.contains(&text) {
+                return Err(format!(
+                    "form root property {name} is not valid for 8.3.27: {text}; expected one of {}",
+                    allowed.join(", ")
+                ));
+            }
+            Ok(text.to_string())
         }
-        return Ok(text.to_string());
-    }
-    if [
-        "SettingsStorage",
-        "GroupList",
-        "ReportResult",
-        "DetailsData",
-        "VariantAppearance",
-        "CustomSettingsFolder",
-    ]
-    .contains(&xml_name)
-    {
-        return value
+        RootValue::Reference => value
             .as_str()
             .filter(|text| !text.is_empty())
             .map(ToOwned::to_owned)
-            .ok_or_else(|| format!("form root property {name} must be a non-empty string"));
+            .ok_or_else(|| format!("form root property {name} must be a non-empty string")),
     }
-    Err(format!("unsupported form root property for 8.3.27: {name}"))
 }
 
 pub fn emit_form_properties(
@@ -7518,21 +7511,23 @@ pub fn emit_form_properties(
         if name == "title" {
             continue;
         }
-        let (order, xml_name) = form_root_xml_property(name)
+        let (order, property) = form_root_xml_property(name)
             .ok_or_else(|| format!("unsupported form root property for 8.3.27: {name}"))?;
         if let Some((previous, _)) = canonical.insert(order, (name, value)) {
             return Err(format!(
-                "duplicate form root property {xml_name}: {previous} and {name}"
+                "duplicate form root property {}: {previous} and {name}",
+                property.name
             ));
         }
     }
 
     for (order, (name, value)) in canonical {
-        let xml_name = FORM_ROOT_SCALAR_PROPERTY_ORDER[order];
+        let property = &unica_forms::root_properties::ROOT_PROPERTIES[order];
+        let xml_name = property.name;
         if xml_name == "AutoTitle" && value.as_str() == Some("") {
             continue;
         }
-        let text = form_root_property_text(name, xml_name, value)?;
+        let text = form_root_property_text(name, property, value)?;
         lines.push(format!(
             "{indent}<{xml_name}>{}</{xml_name}>",
             unica_xml_format::text::escape_xml(&text)
@@ -9724,6 +9719,52 @@ pub fn validate_form_image(
     text: &str,
     signatures: HandlerSignatures,
 ) -> Result<FormValidationRun, String> {
+    validate_form_image_inner(
+        args,
+        form_path,
+        text,
+        form_metadata_owner(form_path),
+        (signatures == HandlerSignatures::Check)
+            .then(|| HandlerSignatureCheck::new(reader, form_path)),
+        || form_is_config_context(reader, form_path),
+    )
+}
+
+/// Факты владельца и модуля, полученные через доказанное право чтения.
+pub struct FormValidationContext<'a> {
+    pub config_context: bool,
+    pub metadata_owner: Option<unica_address::address::NodeKind>,
+    pub module: Option<&'a str>,
+}
+
+/// Проверяет сохранённые исходники; путь служит только для имени результата.
+pub fn validate_form_image_with_context(
+    args: &Map<String, Value>,
+    form_path: &Path,
+    text: &str,
+    context: FormValidationContext<'_>,
+) -> Result<FormValidationRun, String> {
+    validate_form_image_inner(
+        args,
+        form_path,
+        text,
+        context.metadata_owner,
+        Some(HandlerSignatureCheck::from_source(
+            context.module,
+            context.metadata_owner,
+        )),
+        || context.config_context,
+    )
+}
+
+fn validate_form_image_inner(
+    args: &Map<String, Value>,
+    form_path: &Path,
+    text: &str,
+    metadata_owner: Option<unica_address::address::NodeKind>,
+    signature_check: Option<HandlerSignatureCheck<'_>>,
+    config_context: impl FnOnce() -> bool,
+) -> Result<FormValidationRun, String> {
     let form_path = form_path.to_path_buf();
     let detailed = unica_operation_contract::input::bool_arg(args, &["detailed", "Detailed"]);
     let max_errors = unica_operation_contract::input::int_arg(args, &["maxErrors", "MaxErrors"])
@@ -9940,14 +9981,7 @@ pub fn validate_form_image(
         form_validate_button_commands(&elements, &cmd_map, &mut report);
     }
     if !report.stopped {
-        let signature_check = (signatures == HandlerSignatures::Check)
-            .then(|| HandlerSignatureCheck::new(reader, &form_path));
-        form_validate_events(
-            root,
-            signature_check,
-            form_metadata_owner(&form_path),
-            &mut report,
-        );
+        form_validate_events(root, signature_check, metadata_owner, &mut report);
     }
     if !report.stopped {
         form_validate_command_actions(&cmd_nodes, &mut report);
@@ -9992,11 +10026,7 @@ pub fn validate_form_image(
         report.warn("callType attributes found but no BaseForm — possible incorrect structure");
     }
     if !report.stopped {
-        form_validate_types(
-            root,
-            form_is_config_context(reader, &form_path),
-            &mut report,
-        );
+        form_validate_types(root, config_context(), &mut report);
     }
 
     let warnings = report.surfaced_warnings.clone();

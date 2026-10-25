@@ -11,6 +11,15 @@ import unittest
 from pathlib import Path
 
 
+# Предохранитель call_mcp против зависшего фейка, а не проверяемый срок:
+# фейки ниже отвечают сразу или выходят сами, и прогон кончается событием.
+MCP_FAKE_FUSE_SECONDS = 60
+# Сколько молчит фейк в проверке срока. Срок call_mcp — контракт этой
+# проверки; длительность сравнивается с молчанием фейка, а не с машиной:
+# без срока вызов длился бы не меньше всего молчания.
+SILENT_FAKE_SECONDS = 60
+
+
 def load_assessment_module():
     module_path = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "release-assessment.py"
     spec = importlib.util.spec_from_file_location("release_assessment", module_path)
@@ -487,7 +496,7 @@ for raw in sys.stdin:
                 [module.tool_call_message(1, "unica.cf.info", {})],
                 cwd=root,
                 cache_dir=root / "cache",
-                timeout_seconds=2,
+                timeout_seconds=MCP_FAKE_FUSE_SECONDS,
             )
 
             self.assertEqual(returncode, 0, stderr)
@@ -664,7 +673,7 @@ for raw in sys.stdin:
                 [module.tool_call_message(1, "unica.cf.info", {})],
                 cwd=root,
                 cache_dir=root / "cache",
-                timeout_seconds=2,
+                timeout_seconds=MCP_FAKE_FUSE_SECONDS,
             )
 
             self.assertEqual(returncode, 0, stderr)
@@ -690,7 +699,7 @@ for raw in sys.stdin:
                 [module.tool_call_message(1, "unica.cf.info", {})],
                 cwd=root,
                 cache_dir=root / "cache",
-                timeout_seconds=2,
+                timeout_seconds=MCP_FAKE_FUSE_SECONDS,
             )
 
             self.assertTrue(
@@ -710,7 +719,7 @@ for raw in sys.stdin:
                 [module.tool_call_message(1, "unica.cf.info", {})],
                 cwd=root,
                 cache_dir=root / "cache",
-                timeout_seconds=2,
+                timeout_seconds=MCP_FAKE_FUSE_SECONDS,
             )
 
             self.assertTrue(
@@ -733,7 +742,7 @@ for raw in sys.stdin:
                 ],
                 cwd=root,
                 cache_dir=root / "cache",
-                timeout_seconds=2,
+                timeout_seconds=MCP_FAKE_FUSE_SECONDS,
             )
 
             self.assertEqual([response.get("id") for response in responses], [1, 2])
@@ -755,7 +764,7 @@ for raw in sys.stdin:
                 [module.tool_call_message(1, "unica.cf.info", {})],
                 cwd=root,
                 cache_dir=root / "cache",
-                timeout_seconds=2,
+                timeout_seconds=MCP_FAKE_FUSE_SECONDS,
             )
 
             self.assertTrue(
@@ -779,7 +788,7 @@ for raw in sys.stdin:
                 [module.tool_call_message(1, "unica.cf.info", {})],
                 cwd=root,
                 cache_dir=root / "cache",
-                timeout_seconds=2,
+                timeout_seconds=MCP_FAKE_FUSE_SECONDS,
             )
 
             self.assertEqual(returncode, 7)
@@ -793,7 +802,8 @@ for raw in sys.stdin:
             root = Path(tmp)
             fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
             fake_mcp.write_text(
-                "#!/usr/bin/env python3\nimport sys\nimport time\nsys.stdin.readline()\ntime.sleep(60)\n",
+                "#!/usr/bin/env python3\nimport sys\nimport time\nsys.stdin.readline()\n"
+                f"time.sleep({SILENT_FAKE_SECONDS})\n",
                 encoding="utf-8",
             )
             fake_mcp.chmod(fake_mcp.stat().st_mode | stat.S_IXUSR)
@@ -809,7 +819,7 @@ for raw in sys.stdin:
             self.assertEqual(responses, [])
             self.assertEqual(returncode, 124)
             self.assertIn("timed out", stderr)
-            self.assertLess(duration_ms, 2_000)
+            self.assertLess(duration_ms, SILENT_FAKE_SECONDS * 1000)
 
     def test_mcp_client_closes_and_reaps_process_after_write_error(self) -> None:
         module = load_assessment_module()
@@ -829,7 +839,7 @@ for raw in sys.stdin:
                 [module.tool_call_message(1, "unica.cf.info", {"value": "Ж" * 1_000_000})],
                 cwd=root,
                 cache_dir=root / "cache",
-                timeout_seconds=2,
+                timeout_seconds=MCP_FAKE_FUSE_SECONDS,
             )
 
             self.assertNotEqual(returncode, 0)

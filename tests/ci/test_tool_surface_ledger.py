@@ -70,6 +70,25 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         cls.tools = cls.module.read_registry(BINARY)
         cls.review = json.loads(REVIEW.read_text(encoding="utf-8"))
 
+    def test_plugin_examples_pass_only_published_arguments(self) -> None:
+        # A skill example is copied by the agent as is: an argument the
+        # schema does not publish is refused as unknown (#2006, `cwd`).
+        # The server checks top-level `properties` only (`validate_hidden_v13_request`).
+        published = {tool["name"]: set(tool["inputSchema"].get("properties", {})) for tool in self.tools}
+        examples = 0
+        for path in sorted((REPO_ROOT / "plugins/unica").rglob("*.md")):
+            text = path.read_text(encoding="utf-8")
+            for block in re.findall(r"```jsonc?\n(.*?)\n```", text, flags=re.S):
+                if '"tools/call"' not in block:
+                    continue
+                call = json.loads(re.sub(r"^\s*//.*$", "", block, flags=re.M))
+                name, arguments = call["params"]["name"], call["params"].get("arguments", {})
+                with self.subTest(path=str(path.relative_to(REPO_ROOT)), tool=name, arguments=sorted(arguments)):
+                    self.assertIn(name, published)
+                    self.assertLessEqual(set(arguments), published[name])
+                examples += 1
+        self.assertGreater(examples, 0)
+
     def test_a_branch_only_argument_is_not_published_as_freely_optional(self) -> None:
         schema = {
             "type": "object",

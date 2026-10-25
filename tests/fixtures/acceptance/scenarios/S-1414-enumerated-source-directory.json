@@ -39,9 +39,7 @@
         "ops": [
           {
             "op": "object.remove",
-            "args": {
-              "force": true
-            }
+            "args": {}
           }
         ]
       },
@@ -371,9 +369,7 @@
         "ops": [
           {
             "op": "object.remove",
-            "args": {
-              "force": true
-            }
+            "args": {}
           }
         ]
       },

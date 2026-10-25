@@ -905,9 +905,10 @@ pub fn build_subsystem_info_result(
 ) -> SubsystemInfoResult {
     SubsystemInfoResult {
         name: data.name,
+        property_limits: data.property_limits,
         synonym: subsystem_optional(data.synonym),
-        comment: subsystem_optional(data.comment),
-        explanation: subsystem_optional(data.explanation),
+        comment: data.comment,
+        explanation: data.explanation,
         picture: subsystem_optional(data.picture),
         include_in_command_interface: subsystem_optional(data.include_ci),
         use_one_command: subsystem_optional(data.use_one_command),
@@ -1746,25 +1747,77 @@ pub fn patch_subsystem_lists(
             .next()
             .unwrap()
     }
+    /// Отступ строки, на которой стоит `offset`, если до него на строке
+    /// только пробельные символы: элемент стоит на своей строке.
+    fn line_indent(body: &str, offset: usize) -> Option<&str> {
+        let start = body[..offset].rfind('\n').map_or(0, |at| at + 1);
+        let indent = &body[start..offset];
+        indent
+            .chars()
+            .all(|c| c == ' ' || c == '\t')
+            .then_some(indent)
+    }
+    /// Удаляемый элемент на своей строке уходит вместе со строкой: отступ
+    /// и перевод строки не остаются пустой строкой (#1889).
+    fn removal(body: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+        let rest = &body[range.end..];
+        let line_end = rest.find('\n').map(|at| range.end + at + 1);
+        match (line_indent(body, range.start), line_end) {
+            (Some(indent), Some(end))
+                if body[range.end..end]
+                    .trim_end_matches(['\r', '\n'])
+                    .trim()
+                    .is_empty() =>
+            {
+                range.start - indent.len()..end
+            }
+            _ => range,
+        }
+    }
+    /// Новые элементы встают как в выгрузке платформы: каждый на своей строке
+    /// с отступом соседей, перед строкой закрывающего тега. Контейнер,
+    /// записанный в одну строку, остаётся в одну строку.
     fn insert(
         body: &str,
         node: roxmltree::Node<'_, '_>,
-        value: &str,
+        entries: &[roxmltree::Node<'_, '_>],
+        items: &[String],
     ) -> Result<(std::ops::Range<usize>, String), String> {
         let range = node.range();
         let raw = &body[range.clone()];
+        let eol = if body.contains("\r\n") { "\r\n" } else { "\n" };
+        let own_line = line_indent(body, range.start);
+        let lines = |indent: &str| {
+            items
+                .iter()
+                .map(|item| format!("{indent}{item}{eol}"))
+                .collect::<String>()
+        };
         if raw.ends_with("/>") {
             let at = range.end - 2;
-            Ok((
-                at..range.end,
-                format!(">{value}</{}>", lexical_name(body, node)),
-            ))
-        } else {
-            let at = raw
-                .rfind("</")
-                .ok_or("subsystem container has no closing tag")?
-                + range.start;
-            Ok((at..at, value.to_owned()))
+            let name = lexical_name(body, node);
+            return Ok(match own_line {
+                Some(indent) if body.contains('\n') => (
+                    at..range.end,
+                    format!(">{eol}{}{indent}</{name}>", lines(&format!("{indent}\t"))),
+                ),
+                _ => (at..range.end, format!(">{}</{name}>", items.concat())),
+            });
+        }
+        let at = raw
+            .rfind("</")
+            .ok_or("subsystem container has no closing tag")?
+            + range.start;
+        match line_indent(body, at) {
+            Some(closing) if own_line.is_some() => {
+                let indent = entries
+                    .iter()
+                    .find_map(|entry| line_indent(body, entry.range().start))
+                    .map_or_else(|| format!("{closing}\t"), str::to_owned);
+                let line_start = at - closing.len();
+                Ok((line_start..line_start, lines(&indent)))
+            }
+            _ => Ok((at..at, items.concat())),
         }
     }
     let body = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -1845,18 +1898,33 @@ pub fn patch_subsystem_lists(
         {
             continue;
         }
-        for entry in &entries {
-            if !desired
-                .iter()
-                .any(|v| v == entry.text().unwrap_or("").trim())
-            {
-                edits.push((entry.range(), String::new()));
+        let removed: Vec<_> = entries
+            .iter()
+            .filter(|entry| {
+                !desired
+                    .iter()
+                    .any(|v| v == entry.text().unwrap_or("").trim())
+            })
+            .map(|entry| (removal(body, entry.range()), String::new()))
+            .collect();
+        // Опустевший контейнер платформа пишет пустым тегом `<Content/>`.
+        if desired.is_empty() {
+            if let Some(node) = container {
+                let only_entries = node.children().all(|child| {
+                    entries.contains(&child)
+                        || (child.is_text() && child.text().unwrap_or("").trim().is_empty())
+                });
+                if only_entries && !entries.is_empty() {
+                    edits.push((node.range(), format!("<{}/>", lexical_name(body, node))));
+                    continue;
+                }
             }
         }
+        edits.extend(removed);
         let scope = container.unwrap_or(parent);
         let prefix = scope.lookup_prefix(item_namespace);
         let tag = prefix.map_or_else(|| item_name.to_owned(), |p| format!("{p}:{item_name}"));
-        let mut added = String::new();
+        let mut added = Vec::new();
         for value in desired.iter().filter(|v| !current.contains(&v.as_str())) {
             if item_namespace == XR {
                 // A QName in xsi:type must bind to the readable namespace too.
@@ -1877,12 +1945,12 @@ pub fn patch_subsystem_lists(
                 } else {
                     String::new()
                 };
-                added.push_str(&format!(
+                added.push(format!(
                     "<{xr}:Item{xr_decl}{xsi_decl} {xsi}:type=\"{xr}:MDObjectRef\">{}</{xr}:Item>",
                     unica_xml_format::text::escape_xml(value)
                 ));
             } else {
-                added.push_str(&format!(
+                added.push(format!(
                     "<{tag}>{}</{tag}>",
                     unica_xml_format::text::escape_xml(value)
                 ));
@@ -1890,11 +1958,12 @@ pub fn patch_subsystem_lists(
         }
         if !added.is_empty() {
             if let Some(node) = container {
-                edits.push(insert(body, node, &added)?);
+                edits.push(insert(body, node, &entries, &added)?);
             } else {
                 let prefix = parent.lookup_prefix(MD);
                 let tag = prefix.map_or_else(|| name.to_owned(), |p| format!("{p}:{name}"));
-                edits.push(insert(body, parent, &format!("<{tag}>{added}</{tag}>"))?);
+                let wrapped = format!("<{tag}>{}</{tag}>", added.concat());
+                edits.push(insert(body, parent, &[], &[wrapped])?);
             }
         }
     }
@@ -2127,8 +2196,8 @@ pub fn parse_subsystem_info_xml(
         })
         .map(unica_xml_format::read::multilang_text)
         .unwrap_or_default();
-    let comment =
-        unica_xml_format::read::child_text(props, "Comment", Some("http://v8.1c.ru/8.3/MDClasses"));
+    let mut property_limits = Vec::new();
+    let comment = subsystem_text_property(props, "Comment", false, &mut property_limits);
     let include_ci = unica_xml_format::read::child_text(
         props,
         "IncludeInCommandInterface",
@@ -2139,17 +2208,7 @@ pub fn parse_subsystem_info_xml(
         "UseOneCommand",
         Some("http://v8.1c.ru/8.3/MDClasses"),
     );
-    let explanation = props
-        .children()
-        .find(|node| {
-            unica_xml_format::names::element_has_name(
-                *node,
-                "Explanation",
-                Some("http://v8.1c.ru/8.3/MDClasses"),
-            )
-        })
-        .map(unica_xml_format::read::multilang_text)
-        .unwrap_or_default();
+    let explanation = subsystem_text_property(props, "Explanation", true, &mut property_limits);
     let picture = props
         .children()
         .find(|node| {
@@ -2182,22 +2241,86 @@ pub fn parse_subsystem_info_xml(
             groups,
             child_names,
             has_ci,
+            property_limits,
         },
         Vec::new(),
     ))
 }
+
+fn subsystem_text_property(
+    properties: roxmltree::Node<'_, '_>,
+    name: &str,
+    localized: bool,
+    limits: &mut Vec<String>,
+) -> Option<String> {
+    use crate::info_projection::{direct_text_content, localized_string_is_valid};
+    let nodes = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == name)
+        .collect::<Vec<_>>();
+    if nodes.is_empty() {
+        return None;
+    }
+    if let [node] = nodes.as_slice() {
+        let direct_text = direct_text_content(*node);
+        let valid = node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
+            && node.attributes().len() == 0
+            && if localized {
+                direct_text.trim().is_empty() && localized_string_is_valid(*node)
+            } else {
+                !node.children().any(|child| child.is_element())
+            };
+        if valid {
+            return Some(if localized {
+                subsystem_localized_text(*node)
+            } else {
+                direct_text
+            });
+        }
+    }
+    limits.push(format!("source_unreadable: Subsystem properties.{name} is malformed, duplicated or has a foreign namespace"));
+    None
+}
+
+fn subsystem_localized_text(node: roxmltree::Node<'_, '_>) -> String {
+    use crate::info_projection::direct_text_content;
+    let values = node
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .map(|item| {
+            let text = |name| {
+                item.children()
+                    .find(|child| child.is_element() && child.tag_name().name() == name)
+                    .map(direct_text_content)
+                    .unwrap_or_default()
+            };
+            (text("lang"), text("content"))
+        })
+        .collect::<Vec<_>>();
+    values
+        .iter()
+        .find(|(language, content)| language == "ru" && !content.is_empty())
+        .or_else(|| values.iter().find(|(_, content)| !content.is_empty()))
+        .map(|(_, content)| content.clone())
+        .unwrap_or_default()
+}
+
 pub fn append_subsystem_overview(lines: &mut Vec<String>, data: &SubsystemInfoData) {
     lines.push(format!("Подсистема: {}", data.name));
     if !data.synonym.is_empty() && data.synonym != data.name {
         lines.push(format!("Синоним: {}", data.synonym));
     }
-    if !data.comment.is_empty() {
-        lines.push(format!("Комментарий: {}", data.comment));
+    if let Some(comment) = data.comment.as_deref().filter(|value| !value.is_empty()) {
+        lines.push(format!("Комментарий: {comment}"));
     }
     lines.push(format!("ВключатьВКомандныйИнтерфейс: {}", data.include_ci));
     lines.push(format!("ИспользоватьОднуКоманду: {}", data.use_one_command));
-    if !data.explanation.is_empty() {
-        lines.push(format!("Пояснение: {}", data.explanation));
+    if let Some(explanation) = data
+        .explanation
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("Пояснение: {explanation}"));
     }
     if !data.picture.is_empty() {
         lines.push(format!("Картинка: {}", data.picture));

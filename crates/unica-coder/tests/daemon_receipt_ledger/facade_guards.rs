@@ -15,8 +15,10 @@ const FACADE_PRODUCTION_SOURCES: &[(&str, &str)] = &[(
     include_str!("../../src/receipt_ledger_test_support.rs"),
 )];
 
-// Бегунок сценариев целиком: корень и диспетчер действий, который корень
-// подключает модулем. Новый файл бегунка добавляется сюда осознанно.
+// Бегунок сценариев целиком: корень и все модули, которые он подключает из
+// `receipt_scenario/`. Новый файл бегунка добавляется сюда осознанно, а
+// `scenario_driver_source_list_names_every_runner_file` роняет сборку, если
+// файл на диске есть, а в списке его нет (#1905).
 const OWNER_HELPER_PRODUCTION_SOURCES: &[(&str, &str)] = &[
     (
         "../tests/support/receipt_scenario.rs",
@@ -26,7 +28,49 @@ const OWNER_HELPER_PRODUCTION_SOURCES: &[(&str, &str)] = &[
         "../tests/support/receipt_scenario/dispatch.rs",
         include_str!("../support/receipt_scenario/dispatch.rs"),
     ),
+    (
+        "../tests/support/receipt_scenario/tests.rs",
+        include_str!("../support/receipt_scenario/tests.rs"),
+    ),
 ];
+
+/// Every `.rs` file of the scenario runner on disk, as the closed list names it.
+fn scenario_runner_files_on_disk() -> BTreeSet<String> {
+    let support = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support");
+    let mut found = BTreeSet::from(["../tests/support/receipt_scenario.rs".to_owned()]);
+    let mut pending = vec![support.join("receipt_scenario")];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory)
+            .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()));
+        for entry in entries {
+            let path = entry.expect("scenario runner directory entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let relative = path
+                    .strip_prefix(&support)
+                    .expect("runner file under tests/support")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                found.insert(format!("../tests/support/{relative}"));
+            }
+        }
+    }
+    found
+}
+
+/// Runner files on disk that the closed source list does not scan.
+fn unlisted_scenario_runner_files(
+    listed: &[(&str, &str)],
+    on_disk: &BTreeSet<String>,
+) -> Vec<String> {
+    let listed: BTreeSet<&str> = listed.iter().map(|(path, _)| *path).collect();
+    on_disk
+        .iter()
+        .filter(|path| !listed.contains(path.as_str()))
+        .cloned()
+        .collect()
+}
 
 fn facade_forbidden_authority_references(
     source: &str,
@@ -807,6 +851,53 @@ fn scenario_driver_cannot_mint_runtime_telemetry_events() {
     assert!(
         references.is_empty(),
         "scenario driver mints runtime telemetry instead of reading it: {references:?}"
+    );
+}
+
+#[test]
+fn scenario_driver_source_list_names_every_runner_file() {
+    let on_disk = scenario_runner_files_on_disk();
+    assert!(
+        on_disk.contains("../tests/support/receipt_scenario/dispatch.rs"),
+        "the disk walk must see the nested modules: {on_disk:?}"
+    );
+    assert_eq!(
+        unlisted_scenario_runner_files(OWNER_HELPER_PRODUCTION_SOURCES, &on_disk),
+        Vec::<String>::new(),
+        "scenario runner files are not scanned by the telemetry guard"
+    );
+    // The completeness check itself reports a file the list forgot.
+    let mut grown = on_disk.clone();
+    grown.insert("../tests/support/receipt_scenario/replay.rs".to_owned());
+    assert_eq!(
+        unlisted_scenario_runner_files(OWNER_HELPER_PRODUCTION_SOURCES, &grown),
+        vec!["../tests/support/receipt_scenario/replay.rs".to_owned()]
+    );
+}
+
+#[test]
+fn scenario_telemetry_guard_sees_minting_in_a_nested_runner_module() {
+    let sources: &[(&str, &str)] = &[
+        (
+            "../tests/support/receipt_scenario.rs",
+            "#[path = \"receipt_scenario/dispatch.rs\"]\nmod dispatch;\nfn root() {}\n",
+        ),
+        (
+            "../tests/support/receipt_scenario/dispatch.rs",
+            "pub(super) fn act(runtime: &Runtime) {\n    runtime.record_event(forged());\n}\n",
+        ),
+    ];
+    let references = facade_forbidden_authority_references_by_source(
+        sources,
+        &["record_runtime_entry", "record_event"],
+    )
+    .expect("synthetic runner sources parse");
+    assert_eq!(
+        references,
+        BTreeMap::from([(
+            "../tests/support/receipt_scenario/dispatch.rs".to_owned(),
+            BTreeSet::from(["record_event".to_owned()]),
+        )])
     );
 }
 
