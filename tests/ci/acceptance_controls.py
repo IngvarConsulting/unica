@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 import xml.etree.ElementTree as ET
 
 MISSING = object()
-OPERATORS = {"eq", "notEq", "contains", "noneMatches", "absent"}
+OPERATORS = {"eq", "notEq", "contains", "noneMatches", "sameItems", "absent"}
 KNOWN_GAP = "form-handler-signature-unchecked"
 FORM_AT = "main:Catalog.Валюты.Form.ФормаЭлемента"
 FORM_FILE = "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
@@ -194,6 +194,8 @@ def assert_value(value, assertion, context):
         passed = not json_equal(value, expected)
     elif op == "noneMatches":
         passed = isinstance(value, list) and not any(json_matches(item, expected) for item in value)
+    elif op == "sameItems":
+        passed = same_items(value, expected)
     elif isinstance(value, str) and isinstance(expected, str):
         passed = expected in value
     elif isinstance(value, list):
@@ -203,6 +205,22 @@ def assert_value(value, assertion, context):
     if not passed:
         observed = "missing" if value is MISSING else repr(value)
         raise ValueError(f"{op} expected {expected!r}, got {observed}")
+
+
+def same_items(value, expected):
+    """The same elements as many times each, in any order.
+
+    For lists whose order is not part of the contract, such as register
+    records that the platform orders by a generated UUID (#1404)."""
+    if not isinstance(value, list) or not isinstance(expected, list) or len(value) != len(expected):
+        return False
+    remaining = list(value)
+    for item in expected:
+        index = next((i for i, actual in enumerate(remaining) if json_equal(actual, item)), None)
+        if index is None:
+            return False
+        del remaining[index]
+    return True
 
 
 def validate_file_operand(assertion, expected):
@@ -219,7 +237,7 @@ def validate_file_operand(assertion, expected):
         if not isinstance(expected, str):
             raise ValueError("XML contains operand must be one text string")
     elif not isinstance(expected, list) or not all(isinstance(item, str) for item in expected):
-        raise ValueError("XML eq/notEq operand must be a list of text strings")
+        raise ValueError("XML eq/notEq/sameItems operand must be a list of text strings")
 
 
 def validate_controls(step, declared=None):
