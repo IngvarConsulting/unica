@@ -149,6 +149,13 @@ fn assert_legacy_warnings(data: &Value) {
                 diagnostic["message"].as_str().unwrap().contains("8.3.27"),
                 "the warning must identify the affected platform: {diagnostic}"
             );
+            assert!(
+                diagnostic["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("An apply that changes the owner's description"),
+                "the warning must name the edit that repairs it: {diagnostic}"
+            );
             diagnostic["field"].as_str().unwrap()
         })
         .collect::<BTreeSet<_>>();
@@ -289,15 +296,52 @@ fn an_owner_edit_registers_legacy_inline_forms_and_templates_by_name() {
         assert!(owner.contains("<Command uuid="), "{owner}");
 
         let checked = fixture.check_without_writes();
-        let diagnostics = checked["data"]["diagnostics"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        assert!(
-            diagnostics.iter().all(|diagnostic| !diagnostic
-                .to_string()
-                .contains("Legacy inline registration")),
-            "{ops}: {checked}"
-        );
+        assert_eq!(checked["diagnosticCount"], 0, "{ops}: {checked}");
+        assert_eq!(checked["diagnostics"], json!([]), "{ops}: {checked}");
     }
+}
+
+#[test]
+fn an_edit_outside_the_owner_description_keeps_legacy_inline_registrations() {
+    let fixture = Fixture::new(false);
+    let before = std::fs::read(fixture.owner_path()).unwrap();
+    let runtime = V5CanonicalInvocationRuntime::new(
+        Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()),
+        Arc::new(TokioClock),
+    );
+    let call = |tool, args| {
+        direct_v5(
+            &runtime,
+            InvocationRequest::new(tool, args, fixture.workspace.to_string_lossy(), 7_000).unwrap(),
+        )
+        .unwrap()
+    };
+    let planned = call(
+        ToolIdentity::Apply,
+        json!({
+            "at": format!("main:{OWNER}.Form.Main.Module.Form"),
+            "ops": [{"op": "code.insert", "args": {"text": "// untouched owner\n"}}],
+        }),
+    );
+    assert!(planned.ok, "{planned:?}");
+    assert!(
+        planned
+            .warnings
+            .iter()
+            .all(|warning| warning["code"] != "legacy_inline_registration"),
+        "{planned:?}"
+    );
+    let token = planned.data.as_ref().unwrap()["executionToken"].clone();
+    let published = call(ToolIdentity::Apply, json!({"executionToken": token}));
+    assert!(published.ok, "{published:?}");
+
+    let module = std::fs::read_to_string(
+        fixture
+            .workspace
+            .join("src/Catalogs/Editable/Forms/Main/Ext/Form/Module.bsl"),
+    )
+    .unwrap();
+    assert!(module.contains("// untouched owner"), "{module}");
+    assert_eq!(std::fs::read(fixture.owner_path()).unwrap(), before);
+    assert_legacy_warnings(&fixture.check_without_writes());
 }
