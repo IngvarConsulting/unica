@@ -1713,7 +1713,9 @@ mod tests {
     use unica_execution::invocation::{INVOCATION_HANDOFF_WINDOW, RESPONSE_SERIALIZATION_MARGIN};
     use unica_workspace::cache::CacheReport;
 
-    const TEST_STEP: Duration = Duration::from_secs(10);
+    // Guards a wait that ends on its event. Under a fully loaded runner the
+    // event can come late; the guard only stops a hang (#2063).
+    const TEST_STEP: Duration = Duration::from_secs(30);
 
     #[test]
     fn unica_server_implements_official_rmcp_server_handler() {
@@ -4674,7 +4676,7 @@ mod tests {
         );
         assert!(!workspace.join("entered.marker").exists());
         if manual {
-            flush.armed.store(true, Ordering::Release);
+            flush.arm().await;
         }
         client
             .send(json!({
@@ -6711,7 +6713,7 @@ mod tests {
         }
 
         async fn wait(&self, id: &str, completed: bool) -> bool {
-            timeout(Duration::from_secs(3), async {
+            timeout(TEST_STEP, async {
                 loop {
                     let observed = self.observed.notified();
                     let ready = {
@@ -6836,9 +6838,32 @@ mod tests {
         fail_after_prefix: AtomicBool,
         panic_after_prefix: AtomicBool,
         written: Mutex<Vec<u8>>,
+        written_total: AtomicUsize,
+        flushed_total: AtomicUsize,
     }
 
     impl ManualFlushGate {
+        /// Arms the gate once every byte already written has been flushed. A
+        /// client reads a frame before the server's flush of it completes;
+        /// arming in that window would hold the earlier frame and stall the
+        /// transport before the next request is even read (#2063).
+        async fn arm(&self) {
+            let quiet = timeout(TEST_STEP, async {
+                loop {
+                    let observed = self.observed.notified();
+                    if self.flushed_total.load(Ordering::Acquire)
+                        == self.written_total.load(Ordering::Acquire)
+                    {
+                        break;
+                    }
+                    observed.await;
+                }
+            })
+            .await;
+            assert!(quiet.is_ok(), "earlier MCP output never finished flushing");
+            self.armed.store(true, Ordering::Release);
+        }
+
         fn poll_held(&self, cx: &mut std::task::Context<'_>) -> bool {
             if self.armed.load(Ordering::Acquire) && !self.released.load(Ordering::Acquire) {
                 *self.waiter.lock().unwrap() = Some(cx.waker().clone());
@@ -6852,7 +6877,7 @@ mod tests {
         }
 
         async fn wait(&self) -> bool {
-            timeout(Duration::from_secs(3), async {
+            timeout(TEST_STEP, async {
                 loop {
                     let observed = self.observed.notified();
                     if self.entered.load(Ordering::Acquire) {
@@ -6920,6 +6945,7 @@ mod tests {
                 if partial && *count > 0 {
                     self.gate.prefix_written.store(true, Ordering::Release);
                 }
+                self.gate.written_total.fetch_add(*count, Ordering::AcqRel);
             }
             result
         }
@@ -6941,6 +6967,11 @@ mod tests {
                 return std::task::Poll::Pending;
             }
             let result = std::pin::Pin::new(&mut self.writer).poll_flush(cx);
+            if matches!(&result, std::task::Poll::Ready(Ok(()))) {
+                let written = self.gate.written_total.load(Ordering::Acquire);
+                self.gate.flushed_total.store(written, Ordering::Release);
+                self.gate.observed.notify_waiters();
+            }
             if initialize_frame_written && matches!(&result, std::task::Poll::Ready(Ok(()))) {
                 if let Some(pause) = &self.initialize_flush_pause {
                     pause.flush_completed.store(true, Ordering::Release);
@@ -6995,7 +7026,7 @@ mod tests {
 
     impl ManualCancelReplyHooks {
         async fn wait(&self, count: usize) -> bool {
-            timeout(Duration::from_secs(3), async {
+            timeout(TEST_STEP, async {
                 loop {
                     let observed = self.observed.notified();
                     if self.replies.load(Ordering::Acquire) >= count {
@@ -7055,7 +7086,7 @@ mod tests {
         }
 
         async fn wait(&self) -> Option<unica_execution::receipt_ledger::ReceiptKey> {
-            timeout(Duration::from_secs(3), async {
+            timeout(TEST_STEP, async {
                 loop {
                     let observed = self.observed.notified();
                     let key = self.key.lock().unwrap().clone();
@@ -7196,7 +7227,7 @@ mod tests {
 
     impl ManualWaitHooks {
         async fn wait(&self) -> bool {
-            timeout(Duration::from_secs(3), async {
+            timeout(TEST_STEP, async {
                 loop {
                     let notified = self.observed.notified();
                     if self.received.load(Ordering::Acquire) {
@@ -7268,7 +7299,7 @@ mod tests {
         client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":task_id,"waitMs":7000}}})).await;
         let wait_entered = hooks.wait().await;
         cancel_manual_daemon_call(&mut client, 2).await;
-        let released_observation = timeout(Duration::from_secs(3), async {
+        let released_observation = timeout(TEST_STEP, async {
             while in_flight.running() != 0 {
                 tokio::task::yield_now().await;
             }
@@ -7278,7 +7309,7 @@ mod tests {
         let producer_cancelled = service.cancelled("wait-owned-producer");
         service.release("wait-owned-producer");
         let completed = service.wait("wait-owned-producer", true).await;
-        client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":task_id,"waitMs":1000}}})).await;
+        client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":task_id,"waitMs":7000}}})).await;
         // A cancelled observation is suppressed; the next visible response
         // must belong to the new result request for the same actual task.
         let result = client.receive().await;
@@ -7334,7 +7365,7 @@ mod tests {
         cancel_manual_daemon_call(&mut client, 1).await;
         let stopped = service.wait("duplicate-original", true).await;
         let cancelled = service.cancelled("duplicate-original");
-        let settled = timeout(Duration::from_secs(3), async {
+        let settled = timeout(TEST_STEP, async {
             while in_flight.running() != 0 {
                 tokio::task::yield_now().await;
             }
@@ -7449,10 +7480,7 @@ mod tests {
         let key = receipt_gate.wait().await;
         let cancel_reserved = key.as_ref().is_some_and(|key| {
             matches!(
-                observer.recover_invocation_receipt_before(
-                    key.clone(),
-                    Instant::now() + Duration::from_secs(3)
-                ),
+                observer.recover_invocation_receipt_before(key.clone(), Instant::now() + TEST_STEP),
                 Ok(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::ReceiptPending {
                         phase: V5InvocationPhase::CancelReserved,
@@ -7472,7 +7500,7 @@ mod tests {
             .unwrap()
             .digest()
             .clone();
-            let watchdog = Instant::now() + Duration::from_secs(3);
+            let watchdog = Instant::now() + TEST_STEP;
             while Instant::now() < watchdog {
                 if matches!(observer.recover_invocation_receipt_before(key.clone(), watchdog), Ok(V5ServerResponse::Invocation { outcome: V5InvocationResponse::Direct { ref receipt } }) if receipt.receipt_key() == &key && receipt.terminal() == &unica_execution::receipt_ledger::ReceiptTerminalOutcome::Cancelled && receipt.terminal_digest() == &cancelled_digest)
                 {
@@ -7649,7 +7677,7 @@ mod tests {
         let completed = service.wait("eof-work", true).await;
         let key = keys.lock().unwrap().first().cloned();
         let mut recovered = None;
-        let watchdog = Instant::now() + Duration::from_secs(3);
+        let watchdog = Instant::now() + TEST_STEP;
         let recovery_peer = observer_owner.connect_peer_before(watchdog);
         if let (Some(key), Ok(mut recovery_peer)) = (key, recovery_peer) {
             loop {
@@ -7732,7 +7760,7 @@ mod tests {
         cancel_manual_daemon_call(&mut client, 1).await;
         let mut cancel_reserved = false;
         if let Some(key) = &key {
-            let watchdog = Instant::now() + Duration::from_secs(3);
+            let watchdog = Instant::now() + TEST_STEP;
             while Instant::now() < watchdog {
                 if matches!(
                     observer_owner.recover_invocation_receipt_before(key.clone(), watchdog),
@@ -7752,7 +7780,7 @@ mod tests {
         }
         let exact_control_confirmed = !lost_reply || hooks.wait(2).await;
         gate.release();
-        let suppressed = timeout(Duration::from_secs(3), async {
+        let suppressed = timeout(TEST_STEP, async {
             while in_flight.running() != 0 {
                 tokio::task::yield_now().await;
             }
@@ -7780,7 +7808,7 @@ mod tests {
         .clone();
         let mut exact_cancelled_terminal = false;
         if let Some(key) = &key {
-            let watchdog = Instant::now() + Duration::from_secs(3);
+            let watchdog = Instant::now() + TEST_STEP;
             while Instant::now() < watchdog {
                 match observer_owner.recover_invocation_receipt_before(key.clone(), watchdog) {
                     Ok(V5ServerResponse::Invocation {
@@ -7860,7 +7888,7 @@ mod tests {
         let draining = tokio::task::spawn_blocking(move || {
             drain_mcp_shutdown(&in_flight, EOF_CANCELLATION_GRACE)
         });
-        let admission_cancelled = timeout(Duration::from_secs(3), async {
+        let admission_cancelled = timeout(TEST_STEP, async {
             loop {
                 if admission_token
                     .as_ref()
@@ -7878,7 +7906,7 @@ mod tests {
         let completed = service.wait("stdio-drain", true).await;
         let drained = draining.await.unwrap();
         let key = keys.lock().unwrap().first().cloned();
-        let watchdog = Instant::now() + Duration::from_secs(3);
+        let watchdog = Instant::now() + TEST_STEP;
         let mut terminal_recovered = false;
         if let (Some(key), Ok(mut peer)) = (key, anchor.connect_peer_before(watchdog)) {
             while Instant::now() < watchdog {
@@ -7938,12 +7966,12 @@ mod tests {
         output.partial_write.store(true, Ordering::Release);
         output.fail_after_prefix.store(!panic, Ordering::Release);
         output.panic_after_prefix.store(panic, Ordering::Release);
-        output.armed.store(true, Ordering::Release);
+        output.arm().await;
         send_manual_daemon_call(&mut client, 1, "failed-output").await;
         let started = service.wait("failed-output", false).await;
         let fragment = timeout(TEST_STEP, client.reader.next_line()).await;
         let ended = timeout(TEST_STEP, client.reader.next_line()).await;
-        let settled = timeout(Duration::from_secs(3), async {
+        let settled = timeout(TEST_STEP, async {
             while in_flight.running() != 0 {
                 tokio::task::yield_now().await;
             }
@@ -7997,7 +8025,7 @@ mod tests {
         let neighbor_response = client.receive().await;
         gate.written.lock().unwrap().clear();
         gate.partial_write.store(partial, Ordering::Release);
-        gate.armed.store(true, Ordering::Release);
+        gate.arm().await;
         send_manual_daemon_call(&mut client, 2, "flush-target").await;
         let target_started = service.wait("flush-target", false).await;
         let send_started = gate.wait().await;
@@ -8010,7 +8038,7 @@ mod tests {
         let neighbor_cancelled = service.cancelled("flush-neighbor");
         let target_key = keys.lock().unwrap().get(1).cloned();
         let cancel_recorded = target_key.is_some_and(|key| {
-            matches!(observer_owner.recover_invocation_receipt_before(key, Instant::now() + Duration::from_secs(2)), Ok(unica_daemon::protocol_v5::V5ServerResponse::Invocation { outcome: unica_execution::receipt_runtime::response::V5InvocationResponse::Task { snapshot } }) if snapshot.cancel_requested())
+            matches!(observer_owner.recover_invocation_receipt_before(key, Instant::now() + TEST_STEP), Ok(unica_daemon::protocol_v5::V5ServerResponse::Invocation { outcome: unica_execution::receipt_runtime::response::V5InvocationResponse::Task { snapshot } }) if snapshot.cancel_requested())
         });
         gate.release();
         let target_response = client.receive().await;
@@ -8243,7 +8271,7 @@ mod tests {
         let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
         let (mut client, _) = spawn_manual_flush_server(server, gate.clone());
         client.initialize().await;
-        gate.armed.store(true, Ordering::Release);
+        gate.arm().await;
         send_manual_daemon_call(&mut client, 1, "completed-winner").await;
         assert!(service.wait("completed-winner", false).await);
         service.release("completed-winner");
@@ -8313,7 +8341,7 @@ mod tests {
         let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
         let calls = server.manual_calls.clone();
         let initialize_flush_pause = Arc::new(ManualFlushGate::default());
-        initialize_flush_pause.armed.store(true, Ordering::Release);
+        initialize_flush_pause.arm().await;
         let initialize_flush_release = ManualFlushRelease(initialize_flush_pause.clone());
         let (mut client, in_flight) = spawn_manual_flush_server_with_initialize_pause(
             server,
@@ -8354,7 +8382,7 @@ mod tests {
                 .load(Ordering::Acquire),
             "original execute must follow the completed initialize flush"
         );
-        flush.armed.store(true, Ordering::Release);
+        flush.arm().await;
         service.release("reuse-original");
         let actual_flush_held = flush.wait().await;
         // The modern sender has received a complete original response. That
@@ -8554,7 +8582,7 @@ fn main() {
         );
         let (mut client, _) = spawn_manual_flush_server(server, flush.clone());
         client.initialize().await;
-        flush.armed.store(true, Ordering::Release);
+        flush.arm().await;
         client.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"extensions.list","args":{},"dryRun":true},"_meta":modern_meta()}})).await;
         let response = client.receive().await;
         let task_id = response["result"]["structuredContent"]["data"]["task"]["taskId"]
@@ -8666,7 +8694,7 @@ fn main() {
         client
             .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
             .await;
-        flush.armed.store(true, Ordering::Release);
+        flush.arm().await;
         client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{"label":"native-reuse-original"}},"_meta":modern_meta()}})).await;
         assert!(service.wait("native-reuse-original", false).await);
         service.release("native-reuse-original");
