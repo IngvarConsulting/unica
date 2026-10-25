@@ -65,9 +65,6 @@ fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_rece
         fn reserved_task_id(&self) -> Option<TaskId> {
             self.inner.reserved_task_id()
         }
-        fn response_budget_ms(&self) -> Option<u64> {
-            self.inner.response_budget_ms()
-        }
         fn into_strict_submit(
             self,
             expected_core: &CoreIdentityDigest,
