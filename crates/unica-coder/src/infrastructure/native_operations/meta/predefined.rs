@@ -18,6 +18,10 @@ impl PredefinedResourceRead for PredefinedResourceReadBinding {
         unica_workspace::read::read_root_relative_regular_file(source_root, path, maximum, |_| {})
             .map(|observed| observed.bytes)
     }
+    fn read_whole_resource(&self, source_root: &Path, path: &Path) -> std::io::Result<Vec<u8>> {
+        unica_workspace::read::read_root_relative_regular_file_whole(source_root, path, |_| {})
+            .map(|observed| observed.bytes)
+    }
 }
 #[cfg(test)]
 fn plan_predefined_resource(

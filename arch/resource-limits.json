@@ -4656,30 +4656,6 @@
       "derived": true
     },
     {
-      "id": "metadata.child-tree-bytes",
-      "class": "corpus",
-      "resource": "Суммарный объём файлов дерева дочерних ресурсов одного объекта метаданных, читаемых в память.",
-      "unit": "bytes",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/child_resources.rs",
-        "symbol": "TYPED_CHILD_TREE_MAX_BYTES"
-      },
-      "expr": "64 * 1024 * 1024",
-      "value": 67108864,
-      "applied": [
-        "crates/unica-metadata-designer/src/child_resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "отказ ProviderUnavailable «typed child resource topology is unavailable»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
       "id": "metadata.child-tree-depth",
       "class": "format",
       "resource": "Глубина обхода дерева дочерних ресурсов объекта метаданных.",
@@ -4702,54 +4678,6 @@
       "evidence": [],
       "decision": null,
       "review": null
-    },
-    {
-      "id": "metadata.child-tree-entries",
-      "class": "corpus",
-      "resource": "Число записей каталога в дереве дочерних ресурсов одного объекта метаданных.",
-      "unit": "count",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/child_resources.rs",
-        "symbol": "TYPED_CHILD_TREE_MAX_ENTRIES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-metadata-designer/src/child_resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "отказ ProviderUnavailable «typed child resource topology is unavailable»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.child-tree-files",
-      "class": "corpus",
-      "resource": "Число файлов в дереве дочерних ресурсов одного объекта метаданных.",
-      "unit": "count",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/child_resources.rs",
-        "symbol": "TYPED_CHILD_TREE_MAX_FILES"
-      },
-      "expr": "20_000",
-      "value": 20000,
-      "applied": [
-        "crates/unica-metadata-designer/src/child_resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "отказ ProviderUnavailable «typed child resource topology is unavailable»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
     },
     {
       "id": "metadata.registrar-scan-bytes",
@@ -5021,54 +4949,6 @@
       "evidence": [],
       "decision": null,
       "review": null
-    },
-    {
-      "id": "metadata.usage-file-bytes",
-      "class": "corpus",
-      "resource": "Размер одного XML-дескриптора или Predefined.xml, читаемого при скане использования.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/usage_scan.rs",
-        "symbol": "USAGE_FILE_MAX_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-metadata-designer/src/usage_scan.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309",
-      "problem": null,
-      "onReach": "Predefined.xml: отказ чтения; прочие дескрипторы: тихо — файл выпадает из скана (.ok()?)",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
-    },
-    {
-      "id": "metadata.usage-section-files",
-      "class": "corpus",
-      "resource": "Число записей одного раздела конфигурации, открываемых при скане использования.",
-      "unit": "count",
-      "scope": "directory",
-      "source": {
-        "file": "crates/unica-metadata-designer/src/usage_scan.rs",
-        "symbol": "USAGE_SECTION_MAX_FILES"
-      },
-      "expr": "8192",
-      "value": 8192,
-      "applied": [
-        "crates/unica-metadata-designer/src/usage_scan.rs"
-      ],
-      "status": "unproven",
-      "origin": "#309; замер дампа с 2172 наборами прав ролей",
-      "problem": "остановить патологическое дерево, не формируя обычные ответы",
-      "onReach": "тихо: .take() отбрасывает хвост раздела, признака неполноты нет",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR5"
     },
     {
       "id": "metadata.subsystem-address-depth",
