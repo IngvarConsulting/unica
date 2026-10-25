@@ -3734,6 +3734,13 @@ fn apply_plan_hash(staged: &ApplyStagedState, effects: &PlannedApplyEffects) -> 
 fn diff_page_result(request: &DiffRequest, page: Result<DiffPage, DiffError>) -> DomainResult {
     let page = match page {
         Ok(page) => page,
+        Err(error @ DiffError::ChangeTooLarge) => {
+            return error_result(
+                Some(request.left().to_string()),
+                error.code(),
+                error.to_string(),
+            )
+        }
         Err(error) => return error_result(None, error.code(), error.to_string()),
     };
     let limit = request.limit();

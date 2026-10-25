@@ -424,8 +424,8 @@ fn schema_for_saved_apply_plan(properties: Value, required: Value) -> Value {
 }
 
 fn schema_for_plan_diff() -> Value {
-    let limit = json!({"type": "integer", "minimum": 1, "maximum": SOURCE_NAVIGATION_LIMIT_MAX,
-        "description": format!("Maximum differences, or saved-plan source chunks, on one page; default {SOURCE_NAVIGATION_LIMIT_DEFAULT}. Pages are also bounded by encoded bytes.")});
+    let limit = json!({"type": "integer", "minimum": 1, "maximum": super::diff::MAX_DIFF_LIMIT,
+        "description": format!("Maximum differences on one page; default {}. Pages are also bounded by encoded bytes.", super::diff::DEFAULT_DIFF_LIMIT)});
     let compare = schema(
         json!({"left": logical_address_with("Qualified logical address of the left node."), "right": logical_address_with("Qualified logical address of the right node."), "limit": limit,
             "cursor": cursor("Continue the same left/right pair with the same limit; later pages read the pair saved by the first page. Omit, or pass an empty string or null, for the first page.")}),
@@ -556,8 +556,9 @@ mod tests {
         assert!(schema["then"]["properties"]["limit"]
             .get("default")
             .is_none());
-        assert_eq!(schema["properties"]["limit"]["maximum"], 50);
-        assert_eq!(schema["else"]["properties"]["limit"]["maximum"], 50);
+        let compare = crate::application::v13::diff::MAX_DIFF_LIMIT;
+        assert_eq!(schema["properties"]["limit"]["maximum"], compare);
+        assert_eq!(schema["else"]["properties"]["limit"]["maximum"], compare);
     }
 
     #[test]
@@ -883,7 +884,10 @@ mod tests {
             );
         }
         assert_eq!(input_field(&catalog.tools, "view", "limit")["maximum"], 50);
-        assert_eq!(input_field(&catalog.tools, "diff", "limit")["maximum"], 50);
+        assert_eq!(
+            input_field(&catalog.tools, "diff", "limit")["maximum"],
+            crate::application::v13::diff::MAX_DIFF_LIMIT
+        );
         assert_eq!(input_field(&catalog.tools, "docs", "limit")["default"], 20);
         assert_eq!(input_field(&catalog.tools, "docs", "limit")["maximum"], 50);
         assert_eq!(

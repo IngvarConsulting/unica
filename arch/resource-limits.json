@@ -1030,6 +1030,7 @@
       "value": 20,
       "applied": [
         "crates/unica-coder/src/application/v13/diff.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
       "status": "unproven",
@@ -1055,6 +1056,7 @@
       "value": 50,
       "applied": [
         "crates/unica-coder/src/application/v13/diff.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
       "status": "unproven",
