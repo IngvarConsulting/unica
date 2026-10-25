@@ -2,6 +2,7 @@
 id: INV.WIRE.DAEMON-RESPONSE-TIME
 check:
   - crates/unica-daemon/src/client_v5.rs::partial_v5_response_bytes_cannot_replenish_client_deadline
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::the_deadline_fixed_at_frame_receipt_governs_the_whole_call
 gap: https://github.com/IngvarConsulting/unica/issues/984
 ---
 

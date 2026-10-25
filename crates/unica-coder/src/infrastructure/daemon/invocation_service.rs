@@ -768,6 +768,13 @@ impl ActorBoundInvocation {
         &self.response_deadline
     }
 
+    /// The handoff moment of the call's window, for tests that observe it at
+    /// the executor; the deadline itself stays private to `server`.
+    #[cfg(test)]
+    pub(in crate::infrastructure::daemon) fn handoff_at_for_test(&self) -> std::time::Instant {
+        self.response_deadline.now() + self.response_deadline.remaining_handoff_budget()
+    }
+
     #[cfg(test)]
     pub(super) fn actor_for_test(&self) -> &Arc<WorkspaceActor> {
         &self.actor

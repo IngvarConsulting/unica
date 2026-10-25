@@ -8,7 +8,7 @@ mod joining;
 pub mod ports;
 pub mod response;
 mod retirement_facts;
-use crate::invocation::{RESPONSE_SERIALIZATION_MARGIN, TASK_RECONCILIATION_BUDGET};
+use crate::invocation::TASK_RECONCILIATION_BUDGET;
 use crate::invocation_store::EpochMillisClock;
 use crate::invocation_store_v5::{
     InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
@@ -3619,17 +3619,31 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         }
     }
 
+    /// The call's one deadline, fixed when the daemon accepts the submit
+    /// frame: the transport captures it before anything else reads the frame
+    /// and hands it to [`Self::submit_invocation`], so no later stage starts a
+    /// window of its own.
+    pub fn capture_submit_deadline(
+        &self,
+        response_budget_ms: u64,
+    ) -> crate::invocation::InvocationResponseDeadline {
+        self.invocation_executor
+            .capture_response_deadline(response_budget_ms)
+    }
+
     pub fn submit_invocation(
         self: &Arc<Self>,
         decoded: impl DecodedSubmit<H::Request>,
         epoch_ms: u64,
         deadline: Instant,
+        response_deadline: crate::invocation::InvocationResponseDeadline,
     ) -> Result<ReceiptReply, ReceiptLedgerError> {
         let task_id = decoded
             .reserved_task_id()
             .ok_or(ReceiptLedgerError::InvocationIdentityMismatch)?;
         let before = self.joins.capture_reply(task_id);
-        let reply = self.submit_invocation_canonical(decoded, epoch_ms, deadline)?;
+        let reply =
+            self.submit_invocation_canonical(decoded, epoch_ms, deadline, response_deadline)?;
         self.project_holder_reply(&before, reply, deadline)
     }
 
@@ -3638,18 +3652,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         decoded: impl DecodedSubmit<H::Request>,
         epoch_ms: u64,
         deadline: Instant,
+        response_deadline: crate::invocation::InvocationResponseDeadline,
     ) -> Result<ReceiptReply, ReceiptLedgerError> {
         self.hooks
             .event(V5ReceiptRuntimeEventKind::V5ExecutorEntered, epoch_ms);
-        // One opaque daemon-side deadline per request, captured before strict
-        // validation and narrowed to the frontend budget: every later stage
-        // measures against it and none of them starts a new clock.
-        let response_budget_ms = decoded
-            .response_budget_ms()
-            .ok_or(ReceiptLedgerError::InvocationIdentityMismatch)?;
-        let response_deadline = self
-            .invocation_executor
-            .capture_response_deadline(response_budget_ms);
+        // One opaque daemon-side deadline per request, fixed at frame receipt
+        // before strict validation and narrowed to the frontend budget: every
+        // later stage measures against it and none of them starts a new clock.
         let strict = decoded
             .into_strict_submit(&self.core_identity_digest)
             .map_err(|_| ReceiptLedgerError::InvocationIdentityMismatch)?;
@@ -4464,6 +4473,11 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 };
             }
         }
+        // The direct answer's publication point: the call's deadline plus the
+        // serialization margin, both fixed at frame receipt.
+        let response_at = actor_bound
+            .response_deadline()
+            .map(|deadline| deadline.response_at());
         let (prepared, direct_outcome) = match self.drive_inline_invocation(actor_bound, &begun)? {
             InlineDrive::Rejected(result) => {
                 let terminal = rejection_terminal(
@@ -4596,9 +4610,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             return Err(ReceiptLedgerError::StoreUnavailable);
         }
         // An outcome that arrived on the last tick of the budget is still
-        // published: the ledger command gets the serialization margin, not
-        // an already spent operation deadline.
-        let deadline = deadline.max(Instant::now() + RESPONSE_SERIALIZATION_MARGIN);
+        // published: the ledger command keeps the serialization margin the
+        // call was given at frame receipt, never a new one from now.
+        let deadline = response_at.map_or(deadline, |response_at| deadline.max(response_at));
         let (terminal, oversized_result) =
             match canonical_v5_terminal(&outcome, H::MAX_SUPPORTED_BODY_RESPONSE_BYTES) {
                 Ok(terminal) => (terminal, false),
