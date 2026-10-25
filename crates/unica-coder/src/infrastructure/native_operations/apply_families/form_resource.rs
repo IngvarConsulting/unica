@@ -1770,14 +1770,22 @@ mod tests {
         let text = staged_text(&staged, "Subsystems/Sales.xml");
         assert!(text.contains("Document.First"), "{text}");
         assert!(text.contains("<Subsystem>Orders</Subsystem>"), "{text}");
+        // Пустой тег раскрывается так, как пишет платформа: элемент на своей
+        // строке с отступом на уровень глубже, закрывающий тег — с отступом
+        // контейнера (#1889).
+        let indent = |tag: &str| {
+            let at = stub.find(tag).unwrap();
+            stub[..at].rsplit('\n').next().unwrap().to_owned()
+        };
+        let (content, children) = (indent("<Content/>"), indent("<ChildObjects/>"));
         let expected = format!("\u{feff}{stub}")
             .replace(
                 "<Content/>",
-                "<Content><xr:Item xsi:type=\"xr:MDObjectRef\">Document.First</xr:Item></Content>",
+                &format!("<Content>\n{content}\t<xr:Item xsi:type=\"xr:MDObjectRef\">Document.First</xr:Item>\n{content}</Content>"),
             )
             .replace(
                 "<ChildObjects/>",
-                "<ChildObjects><Subsystem>Orders</Subsystem></ChildObjects>",
+                &format!("<ChildObjects>\n{children}\t<Subsystem>Orders</Subsystem>\n{children}</ChildObjects>"),
             );
         assert_eq!(
             text, expected,
@@ -2465,7 +2473,7 @@ mod tests {
             (
                 "attribute.add",
                 json!({"name":" Added ","type":"String"}),
-                json!({"attributes":[{"name":"Added","type":"xs:string"}]}),
+                json!({"attributes":[{"name":"Added","type":"string"}]}),
             ),
             (
                 "command.add",

@@ -3933,18 +3933,52 @@ fn bounded_usize(value: &Value) -> Option<usize> {
 /// которых его и зовут. Порты здесь строятся свои, а недоставленный
 /// анализатор доставляется через стол доставок демона до запуска анализа,
 /// как у поиска с ролью.
+///
+/// На объекте метаданных и корне конфигурации шаг спрашивает находки только
+/// у поставщиков, которые объявили такую цель. Анализатор BSL судит модули,
+/// поэтому без такого поставщика шага нет (`None`): весь набор исходников
+/// ради объекта не анализируется.
 fn run_bsl_diagnostics(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     address: &QualifiedAddress,
+    kind: &str,
     invocation: &ActorBoundExecution,
     cancellation: &CancellationToken,
-) -> Result<CheckStepVerdict, Box<DomainResult>> {
+) -> Result<Option<CheckStepVerdict>, Box<DomainResult>> {
     use crate::application::ports::ApplicationPorts;
+    use unica_address::source_target::TargetKind;
     use unica_diagnostics::coordinator::DiagnosticCoordinator;
     use unica_diagnostics::model::DiagnosticAction;
     use unica_diagnostics::model::DiagnosticFilter;
     use unica_diagnostics::model::DiagnosticRequest;
 
+    let target_kind = match kind {
+        "Module" | "Body" => TargetKind::Module,
+        "Configuration" => TargetKind::SourceRoot,
+        _ => TargetKind::MetadataObject,
+    };
+    let registry = match ports.diagnostic_provider_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            return Err(Box::new(error_result(
+                Some(address.to_string()),
+                RefusalCode::ProviderUnavailable,
+                error,
+            )))
+        }
+    };
+    let action = if target_kind == TargetKind::Module {
+        DiagnosticAction::Analyze
+    } else {
+        DiagnosticAction::Findings
+    };
+    if target_kind != TargetKind::Module
+        && !registry.descriptors().any(|descriptor| {
+            descriptor.supports_action(action) && descriptor.supports_findings_target(target_kind)
+        })
+    {
+        return Ok(None);
+    }
     let context = invocation.workspace_context();
     let sources = invocation.read_sources().map_err(|error| {
         Box::new(error_result_detailed(
@@ -3972,24 +4006,18 @@ fn run_bsl_diagnostics(
                 error,
             ))
         })?;
-    let mapping = authority
-        .diagnostic_mapping(address, context)
-        .map_err(|error| Box::new(view_error_result(Some(address.to_string()), error)))?;
-    let registry = match ports.diagnostic_provider_registry() {
-        Ok(registry) => registry,
-        Err(error) => {
-            return Err(Box::new(error_result(
-                Some(address.to_string()),
-                RefusalCode::ProviderUnavailable,
-                error,
-            )))
-        }
-    };
+    let mapping = if target_kind == TargetKind::Module {
+        authority.diagnostic_mapping(address, context)
+    } else {
+        authority.diagnostic_node_mapping(address, context)
+    }
+    .map_err(|error| Box::new(view_error_result(Some(address.to_string()), error)))?;
     // Анализатор, которого ещё нет на машине, доставляется этим же вызовом,
     // как у поиска с ролью: незавершённая поставка отвечает `working`
     // с повтором, неудачная — своим классом и полями движка (#1338), а
     // движок, которого и после поставки нет, — общим отказом (#549).
-    let analyzer_engine = true;
+    // Анализатор BSL судит только модули: ради чужой цели его не доставляют.
+    let analyzer_engine = target_kind == TargetKind::Module;
     #[cfg(test)]
     let analyzer_engine = analyzer_engine
         && crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
@@ -4005,7 +4033,7 @@ fn run_bsl_diagnostics(
     }
     let metadata_path = mapping.target().metadata_path.clone();
     let request = DiagnosticRequest {
-        action: DiagnosticAction::Analyze,
+        action,
         source_set: address.source_set().to_string(),
         metadata_path,
         filter: DiagnosticFilter::default(),
@@ -4034,7 +4062,9 @@ fn run_bsl_diagnostics(
         &request,
         context,
         cancellation,
-        Some((mapping.module_scope(), source.deadline())),
+        mapping
+            .module_scope()
+            .map(|scope| (scope, source.deadline())),
     ) {
         Ok(result) => {
             // Провайдер, который не отработал, не доказывает чистоту кода.
@@ -4084,11 +4114,11 @@ fn run_bsl_diagnostics(
             // стилю не ломает модуль, и остальные валидаторы поверхности
             // судят так же.
             let passed = bsl_findings_passed(&result.items) && bsl_findings_passed(&structure);
-            Ok(CheckStepVerdict {
+            Ok(Some(CheckStepVerdict {
                 passed,
                 diagnostics: findings,
                 suppressed: bsl_suppression_facts(&result),
-            })
+            }))
         }
         // Координатор отказывает по разным причинам, и уточнение получает
         // только та, которую словарь уточнений называет: «подходящего
@@ -4127,7 +4157,7 @@ const MISPLACED_VARIABLE_CODE: &str = "VariableDeclarationPlacement";
 /// проверенному модулю — тому же месту, куда отображение относит находки
 /// анализатора в этом модуле, — и проваливает проверку.
 fn bsl_structure_findings(
-    mapping: &crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping,
+    mapping: &crate::infrastructure::diagnostics::CanonicalDiagnosticMapping,
     address: &QualifiedAddress,
     cancellation: &CancellationToken,
 ) -> Result<Vec<unica_diagnostics::model::DiagnosticItem>, Box<DomainResult>> {
@@ -4139,7 +4169,11 @@ fn bsl_structure_findings(
     use unica_diagnostics::source_ranges::misplaced_variable_declarations;
     use unica_source_contract::location::SourceLocation;
 
-    let text = match std::fs::read_to_string(mapping.module_scope().module_path) {
+    // Объект и корень не модуль: структуру модуля у них не проверить.
+    let Some(scope) = mapping.module_scope() else {
+        return Ok(Vec::new());
+    };
+    let text = match std::fs::read_to_string(scope.module_path) {
         Ok(text) => text,
         // Модуля без файла анализатор тоже не судил: судить нечего.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -4455,15 +4489,16 @@ fn run_node_checks(
                 cancellation,
                 prepared_xdto.take(),
             )
-            .map(CheckStepVerdict::from),
-            CheckStep::Meta => {
-                run_meta_validator(&address, at, context, cancellation).map(CheckStepVerdict::from)
-            }
-            CheckStep::Bsl => run_bsl_diagnostics(ports, &address, invocation, cancellation),
+            .map(|verdict| Some(verdict.into())),
+            CheckStep::Meta => run_meta_validator(&address, at, context, cancellation)
+                .map(|verdict| Some(verdict.into())),
+            CheckStep::Bsl => run_bsl_diagnostics(ports, &address, kind, invocation, cancellation),
         };
         match verdict {
             Err(refusal) => return *refusal,
-            Ok(step_verdict) => {
+            // Шаг без применимого поставщика не проверял ничего.
+            Ok(None) => {}
+            Ok(Some(step_verdict)) => {
                 passed &= step_verdict.passed;
                 validators.push(step.name());
                 let tag = |mut value: Value| {
@@ -4523,6 +4558,7 @@ fn run_native_validator(
         crate::application::v13::check::CheckValidator::Subsystem
             | crate::application::v13::check::CheckValidator::Dcs
             | crate::application::v13::check::CheckValidator::Mxl
+            | crate::application::v13::check::CheckValidator::Form
     ) {
         let sources = invocation.read_sources().map_err(|error| {
             Box::new(error_result_detailed(
@@ -4550,7 +4586,12 @@ fn run_native_validator(
                     error,
                 ))
             })?;
-        if validator == crate::application::v13::check::CheckValidator::Subsystem {
+        if validator == crate::application::v13::check::CheckValidator::Form {
+            let input = authority
+                .form_validation_input(address)
+                .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?;
+            crate::infrastructure::native_operations::v13_analysis::validate_form_input(input)
+        } else if validator == crate::application::v13::check::CheckValidator::Subsystem {
             authority
                 .validate_subsystem(address)
                 .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?
@@ -7127,6 +7168,88 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains(hit["snippet"].as_str().unwrap()));
+    }
+
+    /// Literal search under a module scope opens no publication artifact:
+    /// an unreadable staged copy or private directory left beside the module
+    /// right after apply does not refuse the search. An unreadable entry the
+    /// search does need is named in the refusal.
+    #[test]
+    fn literal_search_skips_publication_artifacts_and_names_an_unreadable_entry() {
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_workspace::test_support::set_unix_mode_for_test;
+
+        /// Restores the mode even when an assertion fails, so the
+        /// temporary workspace can still be removed.
+        struct Unlocked(Vec<std::path::PathBuf>);
+        impl Drop for Unlocked {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    let _ = set_unix_mode_for_test(path, 0o755);
+                }
+            }
+        }
+
+        let workspace = resolve_exact_workspace();
+        let ext = workspace.path().join("src/CommonModules/Probe/Ext");
+        std::fs::write(
+            ext.join("Module.bsl"),
+            "Процедура Ping()\n\tСообщить(\"needle\");\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let artifact = ext.join(".unica-apply-left-behind");
+        std::fs::write(&artifact, b"preimage").unwrap();
+        let staged = ext.join(".unica-apply-dir-left-behind");
+        std::fs::create_dir(&staged).unwrap();
+        std::fs::write(staged.join("Module.bsl"), "stale needle\n").unwrap();
+        let locked = ext.join("Locked");
+        std::fs::create_dir(&locked).unwrap();
+        let mut unlocked = Unlocked(Vec::new());
+        for path in [&artifact, &staged] {
+            if !set_unix_mode_for_test(path, 0o000).unwrap() {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::UnixPermissionBits,
+                    "the test sets Unix permission bits",
+                );
+                return;
+            }
+            unlocked.0.push(path.clone());
+        }
+        if std::fs::read(&artifact).is_ok() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::EnforcedPermissionBits,
+                "the test process ignores permission bits",
+            );
+            return;
+        }
+        let search = || {
+            invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Search,
+                json!({"query":"needle", "scope":"main:CommonModule.Probe"}),
+            )
+        };
+        let found = search();
+        assert!(found.ok, "{found:?}");
+        let matches = found.data.as_ref().unwrap()["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1, "{found:?}");
+        assert_eq!(
+            matches[0]["at"],
+            "main:CommonModule.Probe.Method.Ping.Body#L2"
+        );
+
+        set_unix_mode_for_test(&locked, 0o000).unwrap();
+        unlocked.0.push(locked);
+        let refused = search();
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "provider_unavailable");
+        assert!(
+            refused.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message
+                    .contains("could not open source entry `CommonModules/Probe/Ext/Locked`")),
+            "{refused:?}"
+        );
     }
 
     #[test]

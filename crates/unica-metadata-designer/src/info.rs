@@ -688,7 +688,7 @@ pub fn parse_typed_meta_local_info_inner(
     let collection_route = |tag, nested_attributes, field| {
         TypedRootCollectionRoute::new(kind, tag, nested_attributes, field)
     };
-    Ok(unica_metadata::validation_subject::MetaLocalInfo {
+    let mut local = unica_metadata::validation_subject::MetaLocalInfo {
         member_read_profile,
         metadata_path: target.clone(),
         kind,
@@ -803,7 +803,59 @@ pub fn parse_typed_meta_local_info_inner(
             ),
         },
         diagnostics,
-    })
+    };
+    let unmodelled = unmodelled_declaration_warnings(&local, target);
+    local.diagnostics.extend(unmodelled);
+    Ok(local)
+}
+
+/// Предупреждения о допустимых декларациях стандартных реквизитов, которые
+/// профиль не моделирует: агент видит, что их содержимое не прочитано, а
+/// `check` не считает это повреждением исходника.
+fn unmodelled_declaration_warnings(
+    local: &unica_metadata::validation_subject::MetaLocalInfo,
+    target: &MetadataAddress,
+) -> Vec<MetaDiagnostic> {
+    let mut found = Vec::new();
+    let mut scan = |field: &str, attributes: &[unica_metadata::MetaStandardAttribute]| {
+        for (index, attribute) in attributes.iter().enumerate() {
+            for property in &attribute.properties {
+                if matches!(
+                    property.value,
+                    unica_metadata::MetaObservedPropertyValue::Unmodelled {}
+                ) {
+                    found.push(
+                        MetaDiagnostic::warning(
+                            MetaDiagnosticCode::ValidationWarning,
+                            "declaration is valid but not modelled by this format profile",
+                        )
+                        .with_metadata_path(target.clone())
+                        .with_field(format!("{field}[{index}].properties.{}", property.name)),
+                    );
+                }
+            }
+        }
+    };
+    if let Some(Some(attributes)) = &local.declarations.standard_attributes {
+        scan("standardAttributes", attributes);
+    }
+    if let Some(Some(sections)) = &local.declarations.standard_tabular_sections {
+        for (index, section) in sections.iter().enumerate() {
+            scan(
+                &format!("standardTabularSections[{index}].standardAttributes"),
+                &section.standard_attributes,
+            );
+        }
+    }
+    for (index, section) in local.collections.tabular_sections.iter().enumerate() {
+        if let Some(Some(attributes)) = &section.standard_attributes {
+            scan(
+                &format!("collections.tabularSections[{index}].standardAttributes"),
+                attributes,
+            );
+        }
+    }
+    found
 }
 pub fn predefined_code_type_for_info(
     properties: Option<roxmltree::Node<'_, '_>>,

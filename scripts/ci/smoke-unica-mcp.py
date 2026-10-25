@@ -32,6 +32,7 @@ _WIRE_PROBE = _load_wire_probe_module()
 ProcessIdentity = _WIRE_PROBE.ProcessIdentity
 ProcessCleanupResult = _WIRE_PROBE.ProcessCleanupResult
 ProcessOwnership = _WIRE_PROBE.ProcessOwnership
+ProcessObservationError = _WIRE_PROBE.ProcessObservationError
 
 
 TOOL_SURFACE_REVIEW_RELATIVE = Path("tests/fixtures/v013/tool-surface-review.json")
@@ -1223,9 +1224,15 @@ class McpSession(_WIRE_PROBE.JsonRpcSession):
     def observe_workspace_services(self, cache_root: Path) -> None:
         observed = getattr(self, "_service_identities", {})
         unobserved_pids = _workspace_service_pids(cache_root) - set(observed)
-        identities = self._process_ownership().capture_identities(
-            unobserved_pids
-        )
+        try:
+            identities = self._process_ownership().capture_identities(
+                unobserved_pids
+            )
+        except ProcessObservationError:
+            # Unknown is not absent: the PIDs stay unobserved and are read
+            # again after the next request. A service never captured is not
+            # claimed by cleanup, and the service wait reports it alive.
+            return
         for identity in identities:
             observed.setdefault(identity.pid, identity)
         self._service_identities = observed
@@ -1706,9 +1713,16 @@ def _close_session_and_workspace_services(
     # prove that the current process is the service that wrote it.
     service_pids = _workspace_service_pids(cache_root)
     service_identities = _observed_service_identities(session)
-    ownership, owned_processes = _capture_owned_processes(
-        session, service_identities
-    )
+    # A graceful service shutdown does not need the process table; only the
+    # final ownership claim does, so a failed snapshot is reported after it.
+    snapshot_error: ProcessObservationError | None = None
+    try:
+        ownership, owned_processes = _capture_owned_processes(
+            session, service_identities
+        )
+    except ProcessObservationError as error:
+        snapshot_error = error
+        ownership, owned_processes = None, set()
     try:
         try:
             # On Windows, a detached workspace service may inherit extra copies of
@@ -1736,6 +1750,11 @@ def _close_session_and_workspace_services(
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                     service_pids,
                 )
+                if snapshot_error is not None:
+                    raise SystemExit(
+                        "Unica MCP owned process snapshot failed before cleanup: "
+                        f"{snapshot_error}"
+                    ) from snapshot_error
                 _trace("cleanup: quiescing owned processes")
                 _quiesce_owned_processes(
                     ownership,

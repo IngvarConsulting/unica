@@ -410,6 +410,7 @@ fn available_module_event(
         handler_en: spec.handler_en.clone(),
         implementation_at: None,
         call_type: None,
+        handlers: Vec::new(),
         can: (write == PlatformEventWriteCapability::Proven)
             .then(|| unica_metadata::event::EventOperation::implementation_skeleton(event_at, None))
             .into_iter()
@@ -469,6 +470,7 @@ fn project_module_events(
                 handler_en: spec.handler_en.clone(),
                 implementation_at: Some(method.at.clone()),
                 call_type: None,
+                handlers: Vec::new(),
                 can: Vec::new(),
             }
         })
@@ -1399,6 +1401,7 @@ pub fn project_form_owner_events(
                 .push(binding);
         }
         for (event_id, actuals) in unknown {
+            let duplicate = actuals.len() > 1;
             let actual = actuals[0];
             let method = methods
                 .iter()
@@ -1411,16 +1414,49 @@ pub fn project_form_owner_events(
                 signature: String::new(),
                 contexts: Vec::new(),
                 binding: BindingFact::Property,
-                handler: actual.handler.clone(),
+                handler: if duplicate {
+                    String::new()
+                } else {
+                    actual.handler.clone()
+                },
                 handler_en: String::new(),
                 implementation_at: method
+                    .filter(|_| !duplicate)
                     .map(|method| form_method_at(actual.at.as_str(), method.name)),
-                call_type: actual.call_type.clone(),
+                call_type: actual.call_type.clone().filter(|_| !duplicate),
+                handlers: if duplicate {
+                    event_handler_bindings(&actuals, methods)
+                } else {
+                    Vec::new()
+                },
                 can: Vec::new(),
             });
         }
     }
     events
+}
+
+/// Each actual binding of a conflicting event, with its implementation when
+/// exactly one method of the form carries that name.
+fn event_handler_bindings(
+    actuals: &[&FormEventBindingInput],
+    methods: &[FormMethodFact<'_>],
+) -> Vec<unica_bsl::projection::EventHandlerBinding> {
+    actuals
+        .iter()
+        .map(|binding| {
+            let mut named = methods
+                .iter()
+                .filter(|method| method.name.to_lowercase() == binding.handler.to_lowercase());
+            let method = named.next().filter(|_| named.next().is_none());
+            unica_bsl::projection::EventHandlerBinding {
+                handler: binding.handler.clone(),
+                call_type: binding.call_type.clone(),
+                implementation_at: method
+                    .map(|method| form_method_at(binding.at.as_str(), method.name)),
+            }
+        })
+        .collect()
 }
 
 fn project_known_form_event(
@@ -1499,7 +1535,10 @@ fn project_known_form_event(
         }
         (false, Some(_), Some(_), true) => EventState::Invalid,
     };
-    let signature = if owner.owner == FormBindingOwner::Command {
+    // A conflict names no handler, so no catalog signature stands in for one.
+    let signature = if duplicate {
+        String::new()
+    } else if owner.owner == FormBindingOwner::Command {
         actual.map_or_else(
             || spec.signature_ru.clone(),
             |binding| format!("Процедура {}(Команда)", binding.handler),
@@ -1529,14 +1568,29 @@ fn project_known_form_event(
         signature,
         contexts: spec.contexts.clone(),
         binding: BindingFact::Property,
-        handler: actual
-            .map_or(spec.handler_ru.as_str(), |binding| binding.handler.as_str())
-            .to_string(),
-        handler_en: spec.handler_en.clone(),
+        // Several bindings conflict: none is the handler, and the catalog
+        // name would read as one that the source states.
+        handler: if duplicate {
+            String::new()
+        } else {
+            actual
+                .map_or(spec.handler_ru.as_str(), |binding| binding.handler.as_str())
+                .to_string()
+        },
+        handler_en: if duplicate {
+            String::new()
+        } else {
+            spec.handler_en.clone()
+        },
         implementation_at: actual.and_then(|binding| {
             method.map(|method| form_method_at(binding.at.as_str(), method.name))
         }),
         call_type: actual.and_then(|binding| binding.call_type.clone()),
+        handlers: if duplicate {
+            event_handler_bindings(&actuals, methods)
+        } else {
+            Vec::new()
+        },
         can,
     }
 }

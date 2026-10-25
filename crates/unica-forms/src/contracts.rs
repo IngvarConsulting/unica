@@ -3,7 +3,7 @@
 //! отказывает `bad_value` до записи, а не теряется молча.
 
 use crate::operations::FormOperation;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use unica_metadata::event::FormCallType;
 use unica_operation_contract::{object, text, OperationContract};
 
@@ -498,7 +498,7 @@ pub fn form(operation: FormOperation) -> OperationContract {
                 object(&[at(), ("values", values)], &["values"]),
                 "The form owner: <source-set>:<Kind>.<Name>.",
                 "Point the owner's default and auxiliary form slots at the named forms. Unlisted slots stay.",
-                "Form properties are not written by this operation.",
+                "Properties of a form itself (title, size, behaviour) are written by props.set at the form address.",
                 json!({"values":{"defaultObjectForm":"Sample"}}),
             )
         }
@@ -534,6 +534,7 @@ pub fn form(operation: FormOperation) -> OperationContract {
             "The event and its item are named by the address.",
             json!({"values":{"handler":"Sample"}}),
         ),
+        FormOperation::PropsSet => return form_props_set(),
         FormOperation::ItemMove => return form_move(),
         FormOperation::AttributeAdd => return form_attribute_add(),
         FormOperation::CommandAdd => return form_command_add(),
@@ -544,6 +545,40 @@ pub fn form(operation: FormOperation) -> OperationContract {
         effect,
         notes,
         example_args,
+        help: FORM_HELP,
+        format_validators: &[],
+    }
+}
+
+/// `props.set` at a form: the root properties of its `Form.xml` (#1984).
+pub fn form_props_set() -> OperationContract {
+    use crate::root_properties::{writable_root_properties, RootValue};
+    let mut values = Map::new();
+    values.insert(
+        "Title".to_string(),
+        json!({"anyOf":[
+            {"type":"string","description":"Text in the default language of the source set; other translations stay. An empty string removes the title."},
+            {"type":"object","additionalProperties":{"type":"string"},"minProperties":1,
+                "description":"Every translation by language code: {\"ru\": \"…\", \"en\": \"…\"}."}
+        ]}),
+    );
+    for property in writable_root_properties() {
+        let schema = match property.value {
+            RootValue::Flag => json!({"type":"boolean"}),
+            RootValue::Size => json!({"type":"integer","minimum":0,"maximum":u32::MAX}),
+            RootValue::Choice(choices) => json!({"type":"string","enum":choices}),
+            RootValue::Reference => continue,
+        };
+        values.insert(property.name.to_string(), schema);
+    }
+    let values = json!({"type":"object","additionalProperties":false,"minProperties":1,
+        "properties":values});
+    OperationContract {
+        schema: object(&[("at", text(true)), ("values", values)], &["values"]),
+        target: "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>.",
+        effect: "Set the supplied root properties of the form, in the order 1C writes them. A value equal to the platform default is not written, as 1C does not export it. Other properties and the form content stay.",
+        notes: "Names are the ones view shows for the form. AutoTitle is not changed with Title: set AutoTitle false to show only the title. AutoTime, UsePostingMode and RepostOnWrite belong to a document form, UseForFoldersAndItems to a catalog form, report properties to a report form; on another form they are refused. ReportResult, DetailsData, VariantAppearance, CustomSettingsFolder, SettingsStorage and GroupList are not written by this operation.",
+        example_args: json!({"values":{"Title":"Products","AutoTitle":false,"Width":60}}),
         help: FORM_HELP,
         format_validators: &[],
     }
