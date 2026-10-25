@@ -1025,7 +1025,7 @@ fn project_subsystem(
                 payload,
             )
             .with_branches(branches)
-            .with_limits(limits),
+            .with_additional_limits(limits),
         ));
     }
     let first = &suffix[0];
@@ -1720,6 +1720,51 @@ fn place_prop(
     }
 }
 
+/// Пределы свойств профиля, которые `project` отбросил только из-за размера.
+///
+/// Профиль узла здесь не повторяется: поле больше предела заменяется
+/// коротким значением того же типа, и если проекция тогда его публикует,
+/// это свойство профиля, потерянное по размеру. Составное значение, которое
+/// профиль не публикует вовсе, предела не даёт.
+fn dropped_by_size(
+    value: &Value,
+    props: &Map<String, Value>,
+    owner: &QualifiedAddress,
+    project: impl Fn(&Value) -> Map<String, Value>,
+) -> Vec<String> {
+    let Some(object) = value.as_object() else {
+        return Vec::new();
+    };
+    let mut limits = Vec::new();
+    for (key, field) in object {
+        if props.contains_key(key) {
+            continue;
+        }
+        // Та же мера, что у `safe_prop` и `bounded_prop`.
+        let (oversize, stand_in) = match field {
+            Value::String(text) => (text.len() > prop_limit(key), json!("")),
+            Value::Array(_) | Value::Object(_) => (
+                serde_json::to_string(field).is_ok_and(|rendered| rendered.len() > prop_limit(key)),
+                if field.is_array() {
+                    json!([])
+                } else {
+                    json!({})
+                },
+            ),
+            _ => continue,
+        };
+        if !oversize {
+            continue;
+        }
+        let mut probe = object.clone();
+        probe.insert(key.clone(), stand_in);
+        if project(&Value::Object(probe)).contains_key(key) {
+            limits.push(compact_limit(key, owner, key));
+        }
+    }
+    limits
+}
+
 /// Предел свойства и адрес, по которому `view` отдаёт его целиком (#2088).
 fn compact_limit(subject: &str, owner: &QualifiedAddress, key: &str) -> String {
     format!(
@@ -1853,7 +1898,15 @@ fn node_from_value(
         })
         .unwrap_or_else(|| kind.as_str());
     let props = reader_node_props(reader, kind, value);
-    NodeView::new(address.to_string(), kind.as_str(), title, props)
+    let limits = dropped_by_size(value, &props, address, |probe| {
+        reader_node_props(reader, kind, probe)
+    });
+    let node = NodeView::new(address.to_string(), kind.as_str(), title, props);
+    if limits.is_empty() {
+        node
+    } else {
+        node.with_limits(limits)
+    }
 }
 
 /// Отбирает публичные свойства из внутренних фактов читателя.
@@ -2426,5 +2479,28 @@ mod composite_prop_tests {
         assert_eq!(whole_limits.len(), 1);
         // Режим не переживает чтение.
         assert_eq!(prop_limit("type"), MAX_COMPACT_PROP_BYTES);
+    }
+
+    /// Скаляр профиля длиннее предела называет предел и адрес; составное
+    /// значение, которое профиль скаляров не публикует вовсе, предела не даёт.
+    #[test]
+    fn a_profile_scalar_dropped_for_size_is_named_with_its_address() {
+        let owner = QualifiedAddress::parse("main:Catalog.Items").unwrap();
+        let keys: &[&str] = &["comment", "details"];
+        let item = json!({
+            "comment": "к".repeat(MAX_COMPACT_PROP_BYTES),
+            "details": {"text": "x".repeat(MAX_COMPACT_PROP_BYTES)},
+            "internal": "y".repeat(MAX_COMPACT_PROP_BYTES * 2),
+        });
+        let props = selected_scalar_props(&item, keys);
+        assert!(props.is_empty());
+        assert_eq!(
+            dropped_by_size(&item, &props, &owner, |probe| selected_scalar_props(probe, keys)),
+            vec![format!(
+                "comment exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes; read it whole at main:Catalog.Items.Props.comment"
+            )]
+        );
+        let whole = with_whole_prop("comment", || selected_scalar_props(&item, keys));
+        assert_eq!(whole["comment"], item["comment"]);
     }
 }

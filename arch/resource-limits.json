@@ -2338,14 +2338,13 @@
       "expr": "2_048",
       "value": 2048,
       "applied": [
-        "crates/unica-coder/src/infrastructure/v13_read_projection.rs",
-        "crates/unica-coder/src/infrastructure/v13_read_projection/metadata.rs"
+        "crates/unica-coder/src/infrastructure/v13_read_projection.rs"
       ],
       "status": "unproven",
       "origin": "cec3ddf7c",
       "problem": null,
-      "onReach": "Свойство не включается; в limits ответа добавляется пометка «exceeds the compact property limit of 2048 bytes».",
-      "issue": null,
+      "onReach": "Свойство не включается в props; limits называет предел и адрес <узел>.Props.<имя>, по которому view отдаёт свойство целиком.",
+      "issue": "#2088",
       "evidence": [],
       "decision": null,
       "review": null

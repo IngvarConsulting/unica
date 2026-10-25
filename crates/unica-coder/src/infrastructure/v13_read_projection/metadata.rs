@@ -1,4 +1,6 @@
-use super::{member_properties, place_prop, safe_prop, select_named, selected_scalar_props};
+use super::{
+    dropped_by_size, member_properties, place_prop, safe_prop, select_named, selected_scalar_props,
+};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_execution_contract::view_error::ViewError;
 
@@ -27,6 +29,51 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "overrides",
     // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
     "unreadable",
+];
+
+/// Скаляры корня объекта метаданных в его `props`.
+const ROOT_SCALAR_KEYS: &[&str] = &[
+    "kind",
+    "synonym",
+    "support",
+    // Заимствование расширением: ключи есть только в наборе
+    // расширения и только у заимствованного объекта, кроме
+    // `belonging` — он отвечает у всякого объекта расширения.
+    "belonging",
+    "parentId",
+    "parentStatus",
+    "overridesCount",
+    "overridesComplete",
+    "overrides",
+];
+
+/// Скаляры члена объекта метаданных в его `props`.
+const ITEM_SCALAR_KEYS: &[&str] = &[
+    "synonym",
+    "comment",
+    "required",
+    "fillValue",
+    "addressingDimension",
+    "incomplete",
+    "template",
+    "httpMethod",
+    "handler",
+    "procedure",
+    "nillable",
+    "transactioned",
+    "direction",
+    // Предопределённый элемент: собственные скаляры и поля по виду
+    // владельца. Без них ветвь отвечала бы одним заголовком, то есть
+    // домом без содержимого.
+    "id",
+    "parentId",
+    "code",
+    "description",
+    "isFolder",
+    "accountType",
+    "offBalance",
+    "order",
+    "actionPeriodIsBase",
 ];
 
 pub(super) fn project_metadata_for_source(
@@ -81,24 +128,12 @@ fn project_metadata(
     member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> Result<NodeViewData, ViewError> {
     if suffix.is_empty() {
-        let mut props = selected_scalar_props(
-            payload,
-            &[
-                "kind",
-                "synonym",
-                "support",
-                // Заимствование расширением: ключи есть только в наборе
-                // расширения и только у заимствованного объекта, кроме
-                // `belonging` — он отвечает у всякого объекта расширения.
-                "belonging",
-                "parentId",
-                "parentStatus",
-                "overridesCount",
-                "overridesComplete",
-                "overrides",
-            ],
-        );
+        let mut props = selected_scalar_props(payload, ROOT_SCALAR_KEYS);
+        let size_limits = dropped_by_size(payload, &props, address, |probe| {
+            selected_scalar_props(probe, ROOT_SCALAR_KEYS)
+        });
         let mut limits = metadata_limits(payload);
+        limits.extend(size_limits);
         props.extend(metadata_property_props(address, payload, &mut limits));
         props.extend(metadata_detail_props(address, payload, &mut limits));
         // Счёт предопределённых элементов берётся из ответа читателя, а не из
@@ -668,37 +703,10 @@ fn metadata_item_node(
     item: &Value,
     member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> NodeView {
-    let mut limits = Vec::new();
-    let mut props = selected_scalar_props(
-        item,
-        &[
-            "synonym",
-            "comment",
-            "required",
-            "fillValue",
-            "addressingDimension",
-            "incomplete",
-            "template",
-            "httpMethod",
-            "handler",
-            "procedure",
-            "nillable",
-            "transactioned",
-            "direction",
-            // Предопределённый элемент: собственные скаляры и поля по виду
-            // владельца. Без них ветвь отвечала бы одним заголовком, то есть
-            // домом без содержимого.
-            "id",
-            "parentId",
-            "code",
-            "description",
-            "isFolder",
-            "accountType",
-            "offBalance",
-            "order",
-            "actionPeriodIsBase",
-        ],
-    );
+    let mut props = selected_scalar_props(item, ITEM_SCALAR_KEYS);
+    let mut limits = dropped_by_size(item, &props, address, |probe| {
+        selected_scalar_props(probe, ITEM_SCALAR_KEYS)
+    });
     if kind == NodeKind::StandardAttribute {
         let tabular = address
             .segments()
