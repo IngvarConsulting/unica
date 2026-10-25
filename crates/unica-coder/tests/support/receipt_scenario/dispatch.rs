@@ -1899,11 +1899,11 @@ fn run_receipt_scenario_with_control_observer(
                         .and_then(|value| value.as_str().map(str::to_owned))
                 });
                 report.responses.insert(
-                    label,
+                    label.clone(),
                     response_observation_with_exact_task(
                         &response,
                         Some((pending.accepted_epoch_ms, pending.response_budget_ms)),
-                        &exact_key,
+                        submit_keys.get(&label).unwrap_or(&exact_key),
                         state.path(),
                         &identity,
                         Some(workspace),
