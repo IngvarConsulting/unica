@@ -444,9 +444,23 @@ pub fn dcs(op: Primitive) -> OperationContract {
             vec![key]
         }
     };
-    OperationContract{schema:object(&fields,&required),target,effect,
-        notes:"Operands are structured values. Where accepted, valueType requires its value or value list, including an empty list. There is no shorthand or whole-schema JSON input. Unspecified properties and unrelated XML bytes are preserved; create template.add first, then compose operations. Preview makes no writes; execute its executionToken, read the post-image and check the template.",example_args,help:REPORTS_HELP,
-        format_validators: &[]}
+    let notes = if matches!(
+        op,
+        Primitive::DataSetLinkAdd | Primitive::DataSetLinkSet | Primitive::DataSetLinkRemove
+    ) {
+        "This example is a template, not a ready-to-submit call: replace Left/Right/Amount with existing dataset names and expressions read from this schema. For set/remove, select an existing unique link. Preview makes no writes."
+    } else {
+        "Operands are structured values. Where accepted, valueType requires its value or value list, including an empty list. There is no shorthand or whole-schema JSON input. Unspecified properties and unrelated XML bytes are preserved; create template.add first, then compose operations. Preview makes no writes; execute its executionToken, read the post-image and check the template."
+    };
+    OperationContract {
+        schema: object(&fields, &required),
+        target,
+        effect,
+        notes,
+        example_args,
+        help: REPORTS_HELP,
+        format_validators: &[],
+    }
 }
 
 const REPORTS_HELP: &str = "references/use-cases/reports-printing.md";
