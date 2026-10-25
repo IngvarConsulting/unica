@@ -2704,10 +2704,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
             "at".to_string(),
             Value::String("main:Catalog.CorpusCatalog".to_string()),
         );
-        args.insert(
-            "ops".to_string(),
-            json!([{"op": "object.remove", "args": {"force": true}}]),
-        );
+        args.insert("ops".to_string(), json!([{"op": "object.remove"}]));
         return Ok(args);
     }
 

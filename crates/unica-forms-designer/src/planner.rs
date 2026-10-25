@@ -280,19 +280,20 @@ pub fn default_form_property(key: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
-/// Тип реквизита формы так, как его выгружает 8.3.27. Имена контракта
-/// `String`, `Number`, `Date`, `Boolean` (и русские) раньше уходили голыми
-/// `xs:*`, и платформа дописывала квалификаторы по умолчанию: длину 0,
-/// 0 знаков, состав «дата и время» (#1996). Теперь они пишутся явно, смысл
-/// прежний. Словарь кодека (`string`, `decimal`, `date`) проходит как есть.
-/// Составной тип отображается по частям.
+/// Тип реквизита формы с квалификаторами, которые пишет выгрузка 8.3.27.
+/// Имена контракта `String`, `Number`, `Date`, `Boolean` (и русские) раньше
+/// уходили голыми `xs:*`, и платформа дописывала умолчания (#1996). Теперь
+/// строка — длина 0 переменной длины, дата — «дата и время», как понимает
+/// платформа, а число — 10 знаков, как ставит конфигуратор и как у колонки
+/// таблицы значений. Словарь кодека (`string`, `decimal`, `date`) проходит
+/// как есть. Составной тип отображается по частям.
 pub fn form_attribute_type(type_name: &str) -> String {
     type_name
         .split(['|', '+'])
         .map(|part| match part.trim() {
             "Boolean" | "Булево" => "boolean",
             "String" | "Строка" => "string",
-            "Number" | "Число" => "decimal(0,0)",
+            "Number" | "Число" => "decimal",
             "Date" | "Дата" => "dateTime",
             other => other,
         })
@@ -1641,14 +1642,14 @@ mod attribute_type_tests {
         for (input, expected) in [
             ("String", "string"),
             ("Строка", "string"),
-            ("Number", "decimal(0,0)"),
+            ("Number", "decimal"),
             ("Date", "dateTime"),
             ("Boolean", "boolean"),
             ("date", "date"),
             ("decimal", "decimal"),
             ("string(10)", "string(10)"),
             ("CatalogRef.Товары", "CatalogRef.Товары"),
-            ("String | Number", "string | decimal(0,0)"),
+            ("String | Number", "string | decimal"),
             ("String+Date", "string | dateTime"),
         ] {
             assert_eq!(form_attribute_type(input), expected, "{input}");

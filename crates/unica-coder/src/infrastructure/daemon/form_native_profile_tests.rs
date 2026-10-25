@@ -111,6 +111,12 @@ fn canonical_form_content_is_written_as_1c_exports_it() {
     let fixture = Fixture::catalog_form();
     fixture.publish(form_content());
     let written = std::fs::read(fixture.workspace.join(FORM_XML)).unwrap();
+    // A bare Number takes 10 digits, as the configurator sets for a new
+    // attribute and as a value table column has.
+    let text = String::from_utf8_lossy(&written).replace("\r\n", "\n");
+    let number = &text[text.find("<Attribute name=\"Число\"").unwrap()..];
+    let number = &number[..number.find("</Attribute>").unwrap()];
+    assert!(number.contains("<v8:Digits>10</v8:Digits>"), "{number}");
     let native = std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/platform_8_3_27/form-native-profile/native-form.xml"),
