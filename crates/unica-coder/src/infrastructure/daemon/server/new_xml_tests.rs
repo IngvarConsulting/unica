@@ -330,7 +330,7 @@ fn publish_catalog_user_value(
     assert!(published.ok, "user-value publication failed: {published:?}");
     let publication = published.data.as_ref().unwrap();
     assert_eq!(publication["mode"], "published");
-    for field in ["planHash", "operations", "effects"] {
+    for field in ["planHash", "operationCount", "effects"] {
         assert_eq!(publication[field], plan[field]);
     }
     assert_eq!(published.changed, preview.changed);
@@ -588,13 +588,8 @@ fn canonical_object_create_then_form_add_preserves_native_new_file_bytes() {
     assert_eq!(plan["mode"], "preview");
     assert_eq!(plan["validated"], true);
     assert_eq!(plan["executable"], true);
-    assert_eq!(
-        plan["operations"],
-        json!([
-            {"index":0,"op":"object.create","at":"main:Configuration"},
-            {"index":1,"op":"form.add","at":"main:Catalog.CorpusCatalog"}
-        ])
-    );
+    assert_eq!(plan["operationCount"], 2);
+    assert!(plan.get("operations").is_none(), "{plan}");
     assert_eq!(plan["effects"], 2);
     assert_eq!(
         planned.changed,
@@ -621,7 +616,7 @@ fn canonical_object_create_then_form_add_preserves_native_new_file_bytes() {
     let publication = published.data.as_ref().unwrap();
     assert_eq!(publication["mode"], "published");
     assert_eq!(publication["planHash"], plan["planHash"]);
-    assert_eq!(publication["operations"], plan["operations"]);
+    assert_eq!(publication["operationCount"], plan["operationCount"]);
     assert_eq!(publication["effects"], plan["effects"]);
     assert_eq!(published.changed, planned.changed);
 

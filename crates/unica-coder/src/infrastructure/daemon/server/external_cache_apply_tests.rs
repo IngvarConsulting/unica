@@ -114,7 +114,7 @@ fn canonical_apply_preserves_external_cache_authority_from_preview_to_execution(
         .unwrap()
         .replace("<Comment/>", "<Comment>external cache</Comment>");
     assert_eq!(std::fs::read(&descriptor).unwrap(), expected.as_bytes());
-    for key in ["planHash", "operations", "effects"] {
+    for key in ["planHash", "operationCount", "effects"] {
         assert_eq!(
             preview.data.as_ref().unwrap()[key],
             published.data.as_ref().unwrap()[key]

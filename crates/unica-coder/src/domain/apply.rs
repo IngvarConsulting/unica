@@ -616,6 +616,7 @@ operation_descriptors!(
     (XdtoOperation::RemoveType),
     (XdtoOperation::RemoveProperty),
     (XdtoOperation::RenameProperty),
+    (XdtoOperation::SetType),
     (SubsystemOperation::Create),
     (SubsystemOperation::ContentAdd),
     (SubsystemOperation::ContentRemove),
@@ -1469,6 +1470,7 @@ mod tests {
             "type.remove",
             "property.remove",
             "property.rename",
+            "type.set",
             "subsystem.create",
             "content.add",
             "content.remove",
@@ -1486,7 +1488,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 125);
+        assert_eq!(expected.len(), 126);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465), свойства формы — как свойства описания (#1984):
@@ -1855,6 +1857,13 @@ mod tests {
                 "main:XDTOPackage.Exchange.Type.Order",
                 false,
             ),
+            ("type.set", "main:XDTOPackage.Exchange.Type.Order", true),
+            (
+                "type.set",
+                "main:XDTOPackage.Exchange.Type.Order.Property.Id",
+                false,
+            ),
+            ("type.set", "main:XDTOPackage.Exchange", false),
             // Глобальное свойство пакета — не член типа.
             (
                 "property.remove",

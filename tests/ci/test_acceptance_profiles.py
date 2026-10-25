@@ -270,6 +270,24 @@ class AcceptanceProfileTests(unittest.TestCase):
             with self.subTest(field=field),self.assertRaises(ValueError):
                 select_profile({**corpus,"scenarios":[{**scenario,field:value}]},"source")
 
+    def test_runtime_form_diagnostic_driver_is_closed_to_its_fixture_and_check(self):
+        from tests.ci.form_runtime_diagnostics import AT, CASES, DRIVER, WORKSPACE
+        scenario = {"id":"form-diagnostics","profile":"delivery","driver":DRIVER,
+                    "workspace":WORKSPACE,"evaluation":"default-bare",
+                    "wire":[{"tool":"unica.check","args":{"at":AT,"limit":50}}]}
+        corpus = {"workspace":"tests/fixtures/acceptance/workspace","scenarios":[scenario]}
+        for case in CASES:
+            selected = select_profile({**corpus,"scenarios":[{**scenario,"evaluation":case}]},"delivery")
+            self.assertEqual(len(selected["scenarios"]),1)
+        for field, value in [
+            ("evaluation","unknown"), ("workspace",DIAGNOSTICS_WORKSPACE),
+            ("wire",[{"tool":"unica.apply","args":{"at":AT,"limit":50}}]),
+            ("wire",[{"tool":"unica.check","args":{"at":AT,"limit":2}}]),
+            ("wire",[{"tool":"unica.check","args":{"at":"main:CommonModule.Other","limit":50}}]),
+        ]:
+            with self.subTest(field=field,value=value), self.assertRaises(ValueError):
+                select_profile({**corpus,"scenarios":[{**scenario,field:value}]},"source")
+
     def test_host_target_uses_the_lock_and_rejects_unsupported_platform(self):
         lock = json.loads((REPO / "plugins/unica/third-party/tools.lock.json").read_text())
         for system, machine, expected in [("Darwin", "arm64", "darwin-arm64"),

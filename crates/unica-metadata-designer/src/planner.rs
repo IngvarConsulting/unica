@@ -1716,16 +1716,27 @@ fn stage_exchange_content(
             .at_path(target_path.clone()));
         }
     }
-    let relative = metadata_descriptor_relative(owner, authority.source_kind())
-        .map_err(|e| ApplyPlanError::new(ApplyPlanErrorKind::BadValue, e).at_path(path.clone()))?
-        .with_extension("")
-        .join("Ext/Content.xml");
+    let descriptor = metadata_descriptor_relative(owner, authority.source_kind())
+        .map_err(|e| ApplyPlanError::new(ApplyPlanErrorKind::BadValue, e).at_path(path.clone()))?;
+    // Заимствованный в расширение план хранит только добавления расширения
+    // в форме платформы, с `ExtensionProperty` после них (#1924).
+    let borrowed = authority.source_kind() == SourceSetKind::Extension
+        && staged
+            .read(&descriptor)
+            .map_err(|e| ApplyPlanError::staging(e, path.clone()))?
+            .and_then(|bytes| crate::xml_model::parse_meta_borrowing(&bytes).ok())
+            .is_some_and(|borrowing| borrowing.extends.is_some());
+    let relative = descriptor.with_extension("").join("Ext/Content.xml");
     // The platform omits Content.xml for an empty composition; the first
     // added item creates the file in the platform layout.
     let before = staged
         .read(&relative)
         .map_err(|e| ApplyPlanError::staging(e, path.clone()))?;
-    let template = crate::exchange_content::EMPTY_CONTENT.as_bytes();
+    let template = if borrowed {
+        crate::exchange_content::EMPTY_EXTENSION_CONTENT.as_bytes()
+    } else {
+        crate::exchange_content::EMPTY_CONTENT.as_bytes()
+    };
     let text = std::str::from_utf8(before.as_deref().unwrap_or(template)).map_err(|_| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidSource,
@@ -1733,7 +1744,7 @@ fn stage_exchange_content(
         )
         .at_path(path.clone())
     })?;
-    let after = crate::exchange_content::update_content(text, items)
+    let after = crate::exchange_content::update_content(text, items, borrowed)
         .map_err(|e| {
             ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, e).at_path(path.clone())
         })?

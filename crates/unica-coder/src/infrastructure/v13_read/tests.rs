@@ -2265,8 +2265,12 @@ fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
     )
     .unwrap();
     let legacy = project_typed_payload(&route, legacy_payload.as_ref().clone()).unwrap();
-    let module_branch = super::module_branch_for_parent(route.at(), PlatformProfile::v8_3_27())
-        .expect("Configuration has a profile module branch");
+    let module_branch = super::module_branch_for_parent(
+        route.at(),
+        PlatformProfile::v8_3_27(),
+        SourceSetKind::Configuration,
+    )
+    .expect("Configuration has a profile module branch");
     let expected = serde_json::to_value(legacy.with_branch(module_branch)).unwrap();
 
     fs::write(
@@ -5715,29 +5719,56 @@ fn named_external_missing_descriptor_preserves_explicit_cancellation() {
 }
 
 #[test]
-fn external_leaf_preserves_an_explicit_finite_relative_read_limit() {
+fn external_leaf_reads_a_relative_file_whole_whatever_its_size() {
     let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
-    let bytes = external_leaf_descriptor("ExternalDataProcessor", "Large", 1024).into_bytes();
+    let bytes =
+        external_leaf_descriptor("ExternalDataProcessor", "Large", 9 * 1024 * 1024).into_bytes();
     fs::write(source.join("Large.xml"), &bytes).unwrap();
     let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
-    let error = reader
-        .read_relative(Path::new("Large.xml"), 128)
-        .unwrap_err();
-    assert_eq!(
-        error.detail(),
-        Some(unica_refusal::RefusalDetail::SourceUnreadable)
-    );
-    assert!(error.to_string().contains("128-byte read limit"));
-    assert_eq!(
-        reader
-            .read_relative(Path::new("Large.xml"), bytes.len())
-            .unwrap(),
-        bytes
+    assert!(
+        reader.read_relative_whole(Path::new("Large.xml")).unwrap() == bytes,
+        "large relative file differs from its source bytes"
     );
     assert_eq!(
         configuration_payload(&reader).unwrap()["registeredObjects"],
         json!([{"kind":"ExternalDataProcessor","name":"Large"}])
     );
+}
+
+/// #1119: a correct descriptor larger than the former 8 MiB read limit is
+/// read through the public view instead of refused by its size.
+#[test]
+fn a_descriptor_larger_than_eight_mebibytes_is_read_through_public_view() {
+    let fixture = RealReaderFixture::new();
+    let relative = fixture
+        .source
+        .read_dir()
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.ends_with("Catalogs"))
+        .expect("the real fixture has catalogs");
+    let descriptor = fs::read_dir(&relative)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "xml"))
+        .unwrap();
+    let name = descriptor
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let original = fs::read_to_string(&descriptor).unwrap();
+    let padding = format!("<!--{}-->", "x".repeat(9 * 1024 * 1024));
+    let at = original.find("<MetaDataObject").unwrap();
+    let mut large = original.clone();
+    large.insert_str(at, &padding);
+    fs::write(&descriptor, &large).unwrap();
+    assert!(large.len() > 8 * 1024 * 1024);
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new(&format!("main:Catalog.{name}")).unwrap());
+    assert!(result.ok);
+    assert_eq!(result.data.unwrap()["at"], format!("main:Catalog.{name}"));
 }
 
 #[test]
