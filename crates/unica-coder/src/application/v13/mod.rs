@@ -3,6 +3,7 @@ pub(crate) mod check;
 pub(crate) mod diff;
 pub(crate) mod find;
 pub(crate) mod resolve;
+pub(crate) mod saved_pages;
 pub(crate) mod source_text;
 pub(crate) mod task_tools;
 pub(crate) mod tool_catalog;
