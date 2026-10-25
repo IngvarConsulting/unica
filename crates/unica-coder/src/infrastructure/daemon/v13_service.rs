@@ -87,7 +87,7 @@ pub(crate) struct CanonicalV13ReadService {
         Option<Vec<Arc<dyn unica_code_intelligence::model::CodeIntelligenceProvider>>>,
 }
 
-/// Снимки продолжений лежат во временных файлах: в памяти процесса остаются
+/// Снимки продолжений лежат во временном файле: в памяти процесса остаются
 /// узлы и границы элементов.
 fn product_view_cursors() -> ViewCursorStore {
     use crate::infrastructure::platform::{TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
