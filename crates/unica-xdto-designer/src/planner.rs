@@ -266,6 +266,7 @@ fn xdto_operation_at(operation: &XdtoPlanOperation) -> &QualifiedAddress {
         XdtoPlanOperation::RemoveType(args) => &args.at,
         XdtoPlanOperation::RemoveProperty(args) => &args.at,
         XdtoPlanOperation::RenameProperty(args) => &args.at,
+        XdtoPlanOperation::SetType(args) => &args.at,
     }
 }
 
@@ -288,6 +289,7 @@ fn staged_xdto_package(
             | XdtoPlanOperation::RemoveType(_)
             | XdtoPlanOperation::RemoveProperty(_)
             | XdtoPlanOperation::RenameProperty(_)
+            | XdtoPlanOperation::SetType(_)
     );
     let package_name = match (type_target, at.segments()) {
         (false, [package]) if package.kind() == NodeKind::XdtoPackage => package.name(),
@@ -527,6 +529,12 @@ pub fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWr
                 .name()
                 .expect("closed XDTO type target has a name"),
         },
+        XdtoPlanOperation::SetType(args) => writer::TypedWriterOperation::SetTypeBase {
+            name: args.at.segments()[1]
+                .name()
+                .expect("closed XDTO type target has a name"),
+            base: args.base.as_str(),
+        },
         XdtoPlanOperation::RemoveProperty(args) => writer::TypedWriterOperation::RemoveProperty {
             type_name: args.at.segments()[1]
                 .name()
@@ -593,6 +601,11 @@ pub fn staged_writer_error(
         // An unsupported base and facet profile is the caller's to fix, so
         // the refusal says which profiles are supported.
         writer::WriterErrorField::Facets | writer::WriterErrorField::ValueType => error.to_string(),
+        // A new base is refused for a reason the caller can act on: family,
+        // cycle, missing declaration or restrictions the base cannot carry.
+        writer::WriterErrorField::Base if matches!(operation, XdtoPlanOperation::SetType(_)) => {
+            error.to_string()
+        }
         _ => "XDTO writer rejected the typed operation".to_string(),
     };
     ApplyPlanError::new(kind, message).at_path(path)
@@ -606,6 +619,7 @@ fn xdto_operation_identity_path(operation: &XdtoPlanOperation, op_index: usize) 
         }
         XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.name"),
         XdtoPlanOperation::RenameProperty(_) => format!("{base}.values.newName"),
+        XdtoPlanOperation::SetType(_) => format!("{base}.values.base"),
         XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
             format!("{base}.at")
         }
@@ -615,7 +629,9 @@ fn xdto_operation_identity_path(operation: &XdtoPlanOperation, op_index: usize) 
 fn xdto_validation_error_path(operation: &XdtoPlanOperation, op_index: usize) -> String {
     let base = format!("ops[{op_index}].args");
     match operation {
-        XdtoPlanOperation::AddValueType(_) => format!("{base}.values.base"),
+        XdtoPlanOperation::AddValueType(_) | XdtoPlanOperation::SetType(_) => {
+            format!("{base}.values.base")
+        }
         XdtoPlanOperation::AddObjectType(_) => format!("{base}.at"),
         // The final package names no child, so an anonymous type answers
         // at the field that declares its children.

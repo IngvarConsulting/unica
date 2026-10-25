@@ -435,18 +435,6 @@ impl CanonicalV13ReadService {
                 )
             }),
         );
-        let operations = request
-            .ops()
-            .iter()
-            .enumerate()
-            .map(|(index, operation)| {
-                serde_json::json!({
-                    "index": index,
-                    "op": operation.name(),
-                    "at": operation.at(),
-                })
-            })
-            .collect::<Vec<_>>();
         let (staged, mut effects) = match plan_hidden_v13_apply(&request, &binding, &admission) {
             Err(error)
                 if error.kind() == ApplyPlanErrorKind::ProviderUnavailable
@@ -479,6 +467,25 @@ impl CanonicalV13ReadService {
             effects = Default::default();
         }
         let plan_warnings = effects.warnings().to_vec();
+        // The answer does not echo the request: only an operation that
+        // attached a warning is named, so the answer does not grow with `ops`.
+        let operations = effects
+            .warned_operations()
+            .iter()
+            .filter_map(|index| {
+                request
+                    .ops()
+                    .get(*index)
+                    .map(|operation| (index, operation))
+            })
+            .map(|(index, operation)| {
+                serde_json::json!({
+                    "index": index,
+                    "op": operation.name(),
+                    "at": operation.at(),
+                })
+            })
+            .collect::<Vec<_>>();
         let plan_hash = apply_plan_hash(&staged, &effects);
         let changed = effects
             .events()
@@ -528,11 +535,15 @@ impl CanonicalV13ReadService {
             "validated": true,
             "mode": disposition,
             "executable": true,
-            "operations": operations,
+            "operationCount": request.ops().len(),
             "planHash": plan_hash,
             "effects": publication.effects().events().len(),
             "cache": publication.effects().cache(),
         }));
+        if !operations.is_empty() {
+            result.data.as_mut().expect("apply data exists")["operations"] =
+                serde_json::Value::Array(operations);
+        }
         if !borrowing.is_empty() {
             result.data.as_mut().expect("apply data exists")["borrowing"] =
                 serde_json::json!(borrowing);
@@ -3671,6 +3682,7 @@ const APPLY_DATA_FIELDS: &[&str] = &[
     "validated",
     "mode",
     "executable",
+    "operationCount",
     "operations",
     "planHash",
     "effects",
@@ -5096,11 +5108,26 @@ pub(super) fn preflight_apply_operations_with(
                     .collect::<Vec<_>>()
                     .join(" or ");
                 let message = format!("{refused}; it addresses {shapes}");
-                let refusal = error_result(
+                let mut refusal = error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,
                     message,
                 );
+                // Код пишется в модуль, а не в его владельца: узел с модулями
+                // ведёт к их адресам (#1964).
+                if descriptor.family() == unica_operations::OperationFamily::Code {
+                    if let Some(branch) = crate::infrastructure::v13_read::module_branch_for_parent(
+                        operation.at(),
+                        crate::domain::apply::source_classification_profile(source),
+                        source.kind(),
+                    ) {
+                        refusal.next.push(json!({
+                            "tool": "unica.view",
+                            "args": {"at": branch.at()},
+                            "reason": "адреса модулей этого узла: код пишется по адресу модуля",
+                        }));
+                    }
+                }
                 // Узел, который читается, показывает свой словарь; адрес,
                 // которого нет ни в одном дереве, ведёт к корню набора.
                 let readable = crate::infrastructure::logical_tree::route_logical_address(
