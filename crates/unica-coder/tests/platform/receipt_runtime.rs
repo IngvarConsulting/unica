@@ -72,9 +72,10 @@ fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_rece
             self,
             expected_core: &CoreIdentityDigest,
         ) -> Result<StrictSubmit<V5InvocationRequest>, Self::Error> {
-            assert!(
-                self.clock_reads.load(Ordering::SeqCst) > 0,
-                "the actual CanonicalInvocationHost clock must be captured before strict decoding"
+            assert_eq!(
+                self.clock_reads.load(Ordering::SeqCst),
+                0,
+                "the submit must not read the clock again before strict decoding"
             );
             self.entered.store(true, Ordering::SeqCst);
             self.inner.into_strict_submit(expected_core)
@@ -123,6 +124,15 @@ fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_rece
         .expect("read receipt generation before strict refusal");
     let foreign: CoreIdentity = "ab".repeat(32).parse().expect("foreign core identity");
     assert_ne!(foreign, identity);
+    // The transport captures the call's deadline at frame receipt, on the
+    // actual CanonicalInvocationHost clock. From then on the submit spends
+    // that one deadline: it reads no clock of its own before strict decoding.
+    let call_deadline = runtime.capture_submit_deadline(7_000);
+    assert!(
+        clock_reads.load(Ordering::SeqCst) > 0,
+        "the call's deadline is captured on the host clock"
+    );
+    clock_reads.store(0, Ordering::SeqCst);
     let submitted = runtime.submit_invocation(
         ObservedStrictSubmit {
             inner: DecodedSubmitAdapter::new(
@@ -134,9 +144,7 @@ fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_rece
         },
         1_000,
         Instant::now() + Duration::from_secs(2),
-        // The transport captures the call's deadline at frame receipt, before
-        // the strict decode the observer guards.
-        runtime.capture_submit_deadline(7_000),
+        call_deadline,
     );
     assert!(matches!(
         submitted,
@@ -9342,9 +9350,7 @@ fn the_deadline_fixed_at_frame_receipt_governs_the_whole_call() {
     // The caller may give up on the handoff answer; the Task is read below.
     let sent = Instant::now();
     let _ = owner.submit_invocation(invocation);
-    hooks
-        .delay_ms
-        .store(WAIT.as_millis() as u64, Ordering::SeqCst);
+    hooks.delay_ms.store(0, Ordering::SeqCst);
     let handoff_at = service
         .handoff_at_prepare
         .lock()
