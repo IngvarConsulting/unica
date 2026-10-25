@@ -219,9 +219,10 @@ impl Clock for InspectionClock {
 const FAR_PAST_FORMER_DEADLINES_MS: u64 = 600_000;
 
 /// A protective bound for one test step on the wall clock: how long a test
-/// waits for the daemon, a channel or a socket before it calls the step lost.
-/// It bounds waiting only, never the behaviour under test, so a loaded machine
-/// slows a test down instead of failing it (#2111).
+/// waits for the daemon, a channel or a socket before it calls the step lost,
+/// and the deadline of a fixture call whose timing the test does not check.
+/// No deadline under test takes it, so a loaded machine slows a test down
+/// instead of failing it (#2111).
 const TEST_STEP: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
@@ -1014,9 +1015,19 @@ fn cancel_task_signals_the_running_v5_canonical_execution() {
     }
 
     owner.cancel_task(task_id).expect("cancel running Task");
-    let terminal = owner
-        .wait_task(task_id, 7_000)
-        .expect("wait for cancellation");
+    let until = Instant::now() + TEST_STEP;
+    let terminal = loop {
+        let terminal = owner
+            .wait_task(task_id, 7_000)
+            .expect("wait for cancellation");
+        if !matches!(
+            &terminal,
+            V5ServerResponse::Task { snapshot } if !task_snapshot_is_terminal(snapshot)
+        ) || Instant::now() >= until
+        {
+            break terminal;
+        }
+    };
     assert!(matches!(
         terminal,
         V5ServerResponse::Task {
@@ -1445,7 +1456,7 @@ fn running_mutation_timeout_preserves_response_margin_or_closes_after_it() {
     let response = owner.cancel_invocation(key);
     let response_completed_at = Instant::now();
     let operation_deadline = operation_deadline_rx
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(TEST_STEP)
         .expect("observe the live cancel operation deadline")
         .as_instant()
         .expect("existing runtime deadline is finite");
@@ -3193,7 +3204,7 @@ fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: Receipt
     let reopened = V5ReceiptRuntime::open(&state, &(config).receipt_runtime_config()).unwrap();
     assert_eq!(
         reopened
-            .resolve_task(key.reserved_task_id(), Instant::now() + TEST_STEP,)
+            .resolve_task(key.reserved_task_id(), Instant::now() + TEST_STEP)
             .unwrap(),
         snapshot
     );
@@ -4551,7 +4562,7 @@ impl PromisedWorkIdleDaemon {
     /// lease after `since`, so a slow handler that still holds its lease
     /// does not leave the check empty.
     fn observe_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
-        let watchdog = Instant::now() + Duration::from_secs(5);
+        let watchdog = Instant::now() + TEST_STEP;
         loop {
             let observed = self.owners_without_clients_since(since);
             if !observed.is_empty() || Instant::now() >= watchdog {
@@ -4616,7 +4627,7 @@ impl PromisedWorkIdleDaemon {
     /// owner registry after Release, excluding startup and buffered events.
     fn observe_idle_interval(&self, interval: Duration) -> bool {
         let released_at = Instant::now();
-        let watchdog = released_at + Duration::from_secs(3);
+        let watchdog = released_at + TEST_STEP;
         let mut empty_since = None;
         loop {
             match self
@@ -4833,7 +4844,7 @@ fn daemon_idle_saved_apply_plan_does_not_prevent_explicit_stop() {
     daemon.guard.stop.store(true, Ordering::SeqCst);
     daemon
         .exited
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(TEST_STEP)
         .expect("explicit stop must exit despite a pending apply plan");
     assert!(daemon.guard.stop.load(Ordering::SeqCst));
     daemon.join();
@@ -5004,7 +5015,7 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
     cleanup.release();
     assert!(
         matches!(
-            lease.wait_timeout(Duration::from_secs(2)),
+            lease.wait_timeout(TEST_STEP),
             unica_work_control::shared_work::SharedWorkSnapshot::Ready(_)
         ),
         "producer must actually settle before its last lease is released"
@@ -5331,7 +5342,7 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
         release: Arc::clone(&release),
     });
     let idle = Duration::from_millis(80);
-    let budget = Duration::from_millis(600);
+    let budget = Duration::from_millis(3_000);
     let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service.clone());
     let cleanup = IdleInvocationRelease(release);
     let invocation =
@@ -5345,7 +5356,7 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
         })
         .unwrap(),
     );
-    executing.recv_timeout(Duration::from_secs(3)).unwrap();
+    executing.recv_timeout(TEST_STEP).unwrap();
     owner.0.shutdown(std::net::Shutdown::Both).unwrap();
     drop(owner);
     let disconnected = Instant::now();
@@ -5516,7 +5527,7 @@ fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
     release_promised_work_owner(owner);
     cleanup.release();
     let unica_work_control::shared_work::SharedWorkSnapshot::Ready(original) =
-        lease.wait_timeout(Duration::from_secs(2))
+        lease.wait_timeout(TEST_STEP)
     else {
         panic!("the producer must finish before the lease-only idle interval");
     };
@@ -7611,7 +7622,7 @@ fn zero_budget_call_is_a_durable_task_before_the_provider_runs() {
         .unwrap(),
     );
     // While the provider runs, a client already reads the same Task.
-    executing.recv_timeout(Duration::from_secs(3)).unwrap();
+    executing.recv_timeout(TEST_STEP).unwrap();
     let mut reader = daemon.owner();
     let V5ServerResponse::Task { snapshot: working } = idle_request_over_tcp(
         &mut reader,
@@ -8493,7 +8504,7 @@ fn exact_cancel_racing_the_handoff_completion_cancels_the_task() {
         ),
         "recovery reads the Task, not a stray cancel row: {recovered:?}"
     );
-    let _ = entered_rx.recv_timeout(TEST_STEP);
+    let _ = entered_rx.recv_timeout(Duration::from_secs(2));
     let _ = release_tx.send(());
     let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
     assert!(

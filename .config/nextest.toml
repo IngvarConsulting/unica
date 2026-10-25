@@ -772,6 +772,13 @@ threads-required = "num-cpus"
 [test-groups]
 receipt-runtime = { max-threads = 4 }
 
+# Гонка отмены со стартом задания держит отмену, пока задание стартует с
+# записью на диск; срок самой отмены — 2 с. Тест занимает машину целиком,
+# чтобы старт не делил её с соседями по прогону.
+[[profile.default.overrides]]
+filter = 'binary(unica_coder) & test(/^infrastructure::daemon::receipt_runtime_tests::(exact|task_id)_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled$/)'
+threads-required = "num-cpus"
+
 [[profile.default.overrides]]
 filter = 'binary(unica_coder) & test(/^infrastructure::daemon::receipt_runtime_tests::/)'
 test-group = "receipt-runtime"
