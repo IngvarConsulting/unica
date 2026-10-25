@@ -7,6 +7,8 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_hands_a_failing_inline_attempt_over_the_cutoff_and_the_task_fails_once
   - crates/unica-coder/tests/platform/receipt_runtime.rs::committed_canonical_apply_and_saved_replay_keep_their_receipts_after_task_cancel
   - crates/unica-coder/src/interfaces/daemon_router.rs::response_lost_at_the_cutoff_is_recovered_into_the_handed_off_task
+  - crates/unica-coder/src/interfaces/daemon_router.rs::a_recovered_task_of_another_key_is_refused
+  - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_window_closing_answers_the_closed_lost_submit_refusal
 gap: https://github.com/IngvarConsulting/unica/issues/980
 ---
 
@@ -17,8 +19,9 @@ gap: https://github.com/IngvarConsulting/unica/issues/980
 выделенным `taskId`. Та же попытка продолжает работу; её успех или ошибка
 становится конечным состоянием задания. Повторного исполнения нет.
 
-Ответ о передаче в задание может не дойти до клиента в своё окно. Это штатный
-исход: клиент восстанавливает вызов по ключу и получает то же задание.
+Ответ о передаче в задание может не дойти до frontend. Это штатный исход:
+frontend восстанавливает вызов по ключу и получает то же задание либо закрытый
+отказ, который его называет. Задание другого вызова не принимается.
 
 Если срок наступил ещё при допуске к рабочему пространству, задание имеет
 состояние `queued` и пока хранится в квитанции вызова. Запись в TaskStore

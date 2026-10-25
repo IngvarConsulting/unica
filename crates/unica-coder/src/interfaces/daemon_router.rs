@@ -583,7 +583,20 @@ fn settle(
         }
         V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::Task { snapshot },
-        } => Ok(CanonicalCallOutcome::Task(snapshot)),
+        } => {
+            // A submitted or recovered call continues only as the Task reserved
+            // for its exact key.
+            if snapshot.task_id() != receipt_key.reserved_task_id()
+                || snapshot.invocation_id() != receipt_key.invocation_id()
+                || snapshot.receipt_key_digest()
+                    != &unica_execution::receipt_ledger::receipt_key_digest(receipt_key)
+            {
+                return Err(protocol_refusal(
+                    "daemon answered with a task of a different invocation",
+                ));
+            }
+            Ok(CanonicalCallOutcome::Task(snapshot))
+        }
         V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::ReceiptPending { .. },
         } => Err(receipt_pending_refusal()),
@@ -1888,10 +1901,8 @@ mod tests {
         assert_eq!(fake.submissions(), 1);
     }
 
-    #[test]
-    fn response_lost_at_the_cutoff_is_recovered_into_the_handed_off_task() {
-        let task_id = TaskId::new();
-        let fake = FakeDaemon::start(Box::new(move |_, request| match request {
+    fn lost_cutoff_fake(foreign: bool) -> FakeDaemon {
+        FakeDaemon::start(Box::new(move |_, request| match request {
             // The daemon is still working when the frontend cutoff passes: the
             // submit session sees nothing before the client gives up on it.
             V5ClientRequest::SubmitInvocation { .. } => {
@@ -1899,12 +1910,19 @@ mod tests {
                 Step::Close
             }
             V5ClientRequest::RecoverInvocationReceipt { receipt_key } => {
+                let task_id = if foreign {
+                    TaskId::new()
+                } else {
+                    receipt_key.reserved_task_id()
+                };
                 Step::Reply(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Task {
                         snapshot: V5DaemonTaskSnapshot::Working {
                             task_id,
                             invocation_id: receipt_key.invocation_id(),
-                            receipt_key_digest: "07".repeat(32).parse().unwrap(),
+                            receipt_key_digest: unica_execution::receipt_ledger::receipt_key_digest(
+                                receipt_key,
+                            ),
                             created_at_epoch_ms: epoch_ms_now(),
                             updated_at_epoch_ms: epoch_ms_now(),
                             ttl_ms: 3_600_000,
@@ -1916,7 +1934,12 @@ mod tests {
                 })
             }
             other => panic!("unexpected frame {other:?}"),
-        }));
+        }))
+    }
+
+    #[test]
+    fn response_lost_at_the_cutoff_is_recovered_into_the_handed_off_task() {
+        let fake = lost_cutoff_fake(false);
         let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let started = Instant::now();
@@ -1925,12 +1948,38 @@ mod tests {
         let Ok(CanonicalCallOutcome::Task(snapshot)) = outcome else {
             panic!("a lost response must recover the handed-off Task: {outcome:?}");
         };
-        assert_eq!(snapshot.task_id(), task_id);
+        let reserved = fake
+            .seen()
+            .iter()
+            .find_map(|request| match request {
+                V5ClientRequest::SubmitInvocation { invocation } => {
+                    Some(invocation.reserved_task_id())
+                }
+                _ => None,
+            })
+            .expect("the call was submitted");
+        assert_eq!(snapshot.task_id(), reserved);
         assert!(
             started.elapsed()
                 < Duration::from_millis(300) + RECOVERY_BUDGET + Duration::from_millis(500),
             "recovery stays inside its bounded window: {:?}",
             started.elapsed()
+        );
+        assert_eq!(fake.submissions(), 1, "recovery never resubmits");
+    }
+
+    /// Recovery answers only with the Task reserved for the exact key: a Task
+    /// of another invocation is a protocol refusal, never this call's Task.
+    #[test]
+    fn a_recovered_task_of_another_key_is_refused() {
+        let fake = lost_cutoff_fake(true);
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+
+        let outcome = call(&router, Some(Duration::from_millis(300)));
+
+        assert!(
+            !matches!(&outcome, Ok(CanonicalCallOutcome::Task(_))),
+            "a foreign Task was taken as this call's: {outcome:?}"
         );
         assert_eq!(fake.submissions(), 1, "recovery never resubmits");
     }
