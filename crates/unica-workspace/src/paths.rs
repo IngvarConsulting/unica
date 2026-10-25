@@ -18,6 +18,7 @@ pub use crate::platform::filesystem::{
 pub const GENERATED_DIR_NAME: &str = ".build";
 
 pub fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {
+    let _probe = crate::probe_timing::span(9);
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {

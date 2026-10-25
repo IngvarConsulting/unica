@@ -580,6 +580,7 @@ pub fn discover_project_source_admission(
     discovery: Arc<dyn unica_source_contract::read::SourceMapDiscovery>,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<ResolvedProjectSourceAdmission, String> {
+    let _probe = crate::probe_timing::span(0);
     checkpoint()?;
     let canonical_workspace = crate::paths::normalize_path_identity(workspace_root)?;
     let workspace = RetainedDirectoryCapability::open(&canonical_workspace).map_err(|error| {

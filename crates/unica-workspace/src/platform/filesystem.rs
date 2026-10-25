@@ -2230,6 +2230,7 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
 
 #[cfg(unix)]
 pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    let _probe = crate::probe_timing::span(1);
     use std::path::Component;
 
     if !path.is_absolute() {
@@ -3240,6 +3241,7 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
 
 #[cfg(windows)]
 pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    let _probe = crate::probe_timing::span(1);
     use std::path::Component;
 
     if !path.is_absolute() {

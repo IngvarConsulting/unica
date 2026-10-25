@@ -6575,6 +6575,7 @@ impl ReceiptLedgerStore {
         deadline: OperationDeadline,
         commit: impl FnOnce(&mut ReceiptCatalog),
     ) -> Result<(), ReceiptLedgerError> {
+    let _probe = unica_workspace::probe_timing::span(3);
         if rows.is_empty() || rows.len() > MAX_RECEIPT_BATCH_ENVELOPE_ROWS {
             return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
         }
@@ -6762,6 +6763,7 @@ impl ReceiptLedgerStore {
         backings: &[ReceiptBatchBacking],
         deadline: OperationDeadline,
     ) -> Result<(), ReceiptLedgerError> {
+    let _probe = unica_workspace::probe_timing::span(4);
         if backings.is_empty() {
             return Ok(());
         }
@@ -7151,6 +7153,7 @@ impl ReceiptLedgerStore {
     }
 
     fn verify_named_authority(&self) -> Result<(), ReceiptLedgerError> {
+    let _probe = unica_workspace::probe_timing::span(8);
         self.receipts
             .validate_named_identity()
             .map_err(|error| storage_error("validate named receipts directory", error))?;
@@ -7599,6 +7602,7 @@ fn recovery_error(operation: &'static str, error: io::Error) -> ReceiptLedgerErr
 }
 
 fn sync_receipt_row_directory(directory: &File) -> io::Result<()> {
+    let _probe = unica_workspace::probe_timing::span(10);
     let armed_on_this_thread =
         ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT_ON_THIS_THREAD.with(|slot| slot.replace(false));
     if armed_on_this_thread || ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT.swap(false, Ordering::AcqRel)

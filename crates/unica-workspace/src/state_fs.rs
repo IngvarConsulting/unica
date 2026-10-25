@@ -113,6 +113,7 @@ impl StateHandle {
         self.file.metadata()
     }
     pub fn sync_all(&self) -> io::Result<()> {
+    let _probe = crate::probe_timing::span(2);
         self.file.sync_all()
     }
     pub fn sync_data(&self) -> io::Result<()> {
@@ -261,6 +262,7 @@ pub fn create_state_directory_child(parent: &StateHandle, name: &OsStr) -> io::R
 }
 
 pub fn create_state_file_child(parent: &StateHandle, name: &OsStr) -> io::Result<StateHandle> {
+    let _probe = crate::probe_timing::span(5);
     filesystem::create_owner_only_file_child(&parent.file, name).map(|file| StateHandle { file })
 }
 
@@ -282,6 +284,7 @@ pub fn remove_state_regular_child(
     identity: FileIdentity,
     retained: &StateHandle,
 ) -> io::Result<()> {
+    let _probe = crate::probe_timing::span(6);
     filesystem::remove_identity_bound_regular_child(&parent.file, name, identity, &retained.file)
 }
 pub fn replace_state_regular_child(
@@ -307,6 +310,7 @@ pub fn rename_state_regular_child_no_replace(
     destination_parent: &StateHandle,
     destination: &OsStr,
 ) -> io::Result<()> {
+    let _probe = crate::probe_timing::span(7);
     filesystem::rename_identity_bound_regular_child_no_replace(
         &source_parent.file,
         source,

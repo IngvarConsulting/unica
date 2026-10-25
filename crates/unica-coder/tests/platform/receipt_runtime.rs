@@ -6272,6 +6272,12 @@ struct FixturePreparation<'a> {
     stages: Vec<(&'static str, Duration)>,
 }
 
+impl Drop for FixturePreparation<'_> {
+    fn drop(&mut self) {
+        eprintln!("PROBE prep task={} {}", self.task, self.trace());
+    }
+}
+
 impl<'a> FixturePreparation<'a> {
     fn new(task: &'a str, budget: Duration) -> Self {
         let started = Instant::now();
@@ -6302,6 +6308,8 @@ impl<'a> FixturePreparation<'a> {
     }
 
     fn trace(&self) -> String {
+        // PROBE #1786: never merged.
+        let _ = ();
         let stages = self
             .stages
             .iter()

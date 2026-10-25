@@ -1,0 +1,47 @@
+name: Probe 1786 retirement fixture timing
+
+# Throwaway probe for #1786 on a scratch branch; never merged.
+on:
+  push:
+    branches: [probe/1786-windows-retirement]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci-rust-ordinary
+          save-if: false
+      - name: Build
+        shell: bash
+        run: cargo test --locked -p unica-coder --lib --no-run
+      - name: Sequential retirement tests
+        shell: bash
+        run: |
+          bin=$(ls target/debug/deps/unica_coder-* | grep -v '\.d$' | grep -v '\.pdb$' | grep -v '\.rlib$' | head -1)
+          for round in 1 2; do
+            "$bin" receipt_runtime_tests::retirement --test-threads=1 --nocapture 2>&1 | grep -E "PROBE prep|panicked|refused|test result" || true
+            "$bin" receipt_runtime_tests::retirement --test-threads=1 --nocapture 2>&1 | grep -E "^PROBE [a-z_]+:" | tail -12 || true
+          done
+      - name: Parallel receipt runtime tests
+        shell: bash
+        run: |
+          bin=$(ls target/debug/deps/unica_coder-* | grep -v '\.d$' | grep -v '\.pdb$' | grep -v '\.rlib$' | head -1)
+          for round in 1 2 3; do
+            "$bin" receipt_runtime_tests --test-threads=4 --nocapture 2>&1 | grep -E "PROBE prep|panicked|refused|FAILED|test result" || true
+          done

@@ -934,6 +934,7 @@ impl V5CanonicalInvocationRuntime {
         response_deadline: InvocationResponseDeadline,
         admission_cancellation: &CancellationToken,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
+        let _probe = unica_workspace::probe_timing::span(11);
         request.normalize_omitted_options();
         if let Some(refusal) = retired_read_filter(&request) {
             return Err(V5CanonicalPrepareError::Rejected(Box::new(refusal)));
