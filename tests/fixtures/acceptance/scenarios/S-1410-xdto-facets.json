@@ -192,7 +192,9 @@
       "assertions": [
         {
           "pointer": "/data/props/facets",
-          "eq": "{\"maxLength\":10}"
+          "eq": {
+            "maxLength": 10
+          }
         }
       ]
     },
@@ -207,7 +209,12 @@
       "assertions": [
         {
           "pointer": "/data/props/facets",
-          "eq": "{\"totalDigits\":5,\"fractionDigits\":2,\"minInclusive\":\"0\",\"maxInclusive\":\"999.99\"}"
+          "eq": {
+            "totalDigits": 5,
+            "fractionDigits": 2,
+            "minInclusive": "0",
+            "maxInclusive": "999.99"
+          }
         }
       ]
     },
@@ -222,7 +229,9 @@
       "assertions": [
         {
           "pointer": "/data/props/facets",
-          "eq": "{\"maxLength\":10}"
+          "eq": {
+            "maxLength": 10
+          }
         },
         {
           "pointer": "/data/props/anonymousType",
@@ -245,7 +254,9 @@
         },
         {
           "pointer": "/data/props/facets",
-          "eq": "{\"maxLength\":10}"
+          "eq": {
+            "maxLength": 10
+          }
         }
       ]
     },

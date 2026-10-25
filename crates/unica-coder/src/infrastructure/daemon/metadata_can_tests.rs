@@ -1046,10 +1046,8 @@ fn canonical_uuid_attribute_round_trips_as_an_editable_observed_type() {
     assert!(viewed.ok, "{viewed:?}");
     let props = &viewed.data.as_ref().unwrap()["props"];
     assert!(props.get("incomplete").is_none(), "{props}");
-    let observed: Value =
-        serde_json::from_str(props["type"].as_str().expect("compact type")).unwrap();
     assert_eq!(
-        observed,
+        props["type"],
         json!({"variants":[{"kind":"uuid"}],"mutationCapability":"editable"})
     );
     let checked = call(
@@ -1773,7 +1771,7 @@ fn canonical_bare_fill_value_is_a_diagnostic_not_an_absent_value() {
     );
     assert_eq!(attribute["props"]["incomplete"], true);
     assert!(attribute["props"].get("fillValue").is_none(), "{attribute}");
-    assert!(attribute["props"]["type"].is_string(), "{attribute}");
+    assert!(attribute["props"]["type"].is_object(), "{attribute}");
     assert!(
         limits(&attribute)
             .iter()

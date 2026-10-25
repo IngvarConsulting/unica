@@ -621,6 +621,21 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.corpus = load_acceptance_corpus()
 
+    def test_the_packed_json_guard_sees_nested_strings_and_has_view_steps_to_check(self) -> None:
+        answer = {"data": {"items": [{"props": {
+            "type": '{"variants":[]}',
+            "bounds": ' [1, 2]',
+            "text": "{not json",
+            "nested": {"kind": "reference"},
+        }}]}}
+        self.assertEqual(
+            [finding.split(" packs")[0] for finding in packed_json_strings(answer)],
+            ["/data/items/0/props/type", "/data/items/0/props/bounds"],
+        )
+        views = [step for scenario in self.corpus["scenarios"] for step in scenario["wire"]
+                 if step["tool"] == "unica.view"]
+        self.assertGreater(len(views), 0, "the guard runs on `unica.view` steps")
+
     def test_corpus_ids_are_stable_and_the_manifest_freezes_every_step(self) -> None:
         storage = corpus_storage()
         scenarios = self.corpus["scenarios"]
@@ -2089,6 +2104,25 @@ def corpus_workers(plugin, scenario_driver=None) -> int:
     return int(raw)
 
 
+def packed_json_strings(value, path=""):
+    """Strings of a `view` answer that hold a JSON object or array.
+
+    A composite value travels as nested JSON (#2031): a string the agent has
+    to parse a second time costs tokens on every escaped quote."""
+    if isinstance(value, dict):
+        return [found for key, item in value.items() for found in packed_json_strings(item, f"{path}/{key}")]
+    if isinstance(value, list):
+        return [found for index, item in enumerate(value) for found in packed_json_strings(item, f"{path}/{index}")]
+    if isinstance(value, str) and value.lstrip()[:1] in "{[":
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return []
+        if isinstance(parsed, (dict, list)):
+            return [f"{path or '/'} packs JSON into a string: {value[:80]}"]
+    return []
+
+
 def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cleanup=None):
     from concurrent.futures import ThreadPoolExecutor
     from tests.ci.private_provider_failure_evidence import before_call, emit_failure_evidence
@@ -2188,6 +2222,8 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                     structured = tool_result(response) or {}
                     verification.append({"tool": step["tool"], "args": arguments, "result": structured})
                     failures = content_mismatches(step, structured, actual, note, server.workspace, context)
+                    if step["tool"] == "unica.view":
+                        failures.extend(packed_json_strings(structured))
                     if not failures:
                         try:
                             candidate["captures"] = capture_values(step, structured, server.workspace, context)

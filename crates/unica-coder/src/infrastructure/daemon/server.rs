@@ -12708,8 +12708,11 @@ struct ActorLogicalReadLease {"#,
                 props.get("Type").is_none(),
                 "type has one public projection: {props}"
             );
-            serde_json::from_str::<serde_json::Value>(props["type"].as_str().expect("compact type"))
-                .unwrap()
+            assert!(
+                props["type"].is_object(),
+                "type is nested JSON, not a string: {props}"
+            );
+            props["type"].clone()
         };
         let assert_xml_type = |expected: &str| {
             let xml = std::fs::read_to_string(source.join("Constants/Enabled.xml")).unwrap();
