@@ -23,6 +23,9 @@ tests/fixtures/platform_8_3_27/staged_dump_roots/** -text -whitespace
 # The native HTML oracle retains its exact BOM and internal line ending.
 tests/fixtures/platform_8_3_27/html-template/native-ru.html -text
 
+# The native form export keeps the BOM and CRLF 8.3.27 writes.
+tests/fixtures/platform_8_3_27/form-root-properties/*.xml -text -whitespace
+
 # XDTO platform-export fixtures assert BOM and CRLF as part of their byte contract.
 tests/fixtures/xdto/** -text -whitespace
 
@@ -90,6 +93,11 @@ tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -
 /tests/fixtures/platform_8_3_27/configuration_root_props/**/*.xml -text whitespace=cr-at-eol
 # Metadata objects written once by the retained 8.3.27 writer for meta-info tests.
 /tests/fixtures/platform_8_3_27/meta_info_surface/** -text whitespace=cr-at-eol
+# External EPF/ERF hierarchical dumps keep BOM, CRLF, LF inside query text,
+# verbatim text/binary template payloads and absent terminal newlines;
+# the README and manifest beside them simply share the rule.
+/tests/fixtures/platform_8_3_27/external_artifacts/** -text whitespace=cr-at-eol
+/tests/fixtures/platform_8_3_27/external_artifacts/**/*.bin binary
 
 # DCS codec fixtures: tests splice them by exact text.
 crates/unica-dcs-designer/tests/fixtures/** text eol=lf

@@ -1,0 +1,150 @@
+{
+ "id": "S-1984-form-root-properties",
+ "name": "props-set-writes-form-title-and-size",
+ "issue": 1984,
+ "area": "Формы",
+ "task": "Задать форме заголовок, отключить автозаголовок и задать ширину и режим открытия через props.set на адресе формы; view показывает свойства теми же именами, а свойство формы документа на форме справочника отклоняется без записи",
+ "wire": [
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+    "ops": [
+     {
+      "op": "props.set",
+      "args": {
+       "values": {
+        "Title": "Валюта",
+        "AutoTitle": false,
+        "Width": 60,
+        "WindowOpeningMode": "LockOwnerWindow"
+       }
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "captures": {
+    "token": {
+     "pointer": "/data/executionToken"
+    },
+    "before": {
+     "kind": "sha256",
+     "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$capture.token"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/mode",
+     "eq": "published"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": "./{http://v8.1c.ru/8.3/xcf/logform}Title/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+     "eq": [
+      "Валюта"
+     ]
+    },
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": "./{http://v8.1c.ru/8.3/xcf/logform}AutoTitle",
+     "eq": [
+      "false"
+     ]
+    },
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": "./{http://v8.1c.ru/8.3/xcf/logform}Width",
+     "eq": [
+      "60"
+     ]
+    },
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": "./{http://v8.1c.ru/8.3/xcf/logform}WindowOpeningMode",
+     "eq": [
+      "LockOwnerWindow"
+     ]
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "notEq": "$capture.before"
+    }
+   ]
+  },
+  {
+   "tool": "unica.view",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/title",
+     "eq": "Валюта"
+    },
+    {
+     "pointer": "/data/props/properties/Width",
+     "eq": 60
+    },
+    {
+     "pointer": "/data/props/properties/AutoTitle",
+     "eq": false
+    }
+   ],
+   "captures": {
+    "published": {
+     "kind": "sha256",
+     "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+    "ops": [
+     {
+      "op": "props.set",
+      "args": {
+       "values": {
+        "UsePostingMode": "Regular"
+       }
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "refusal": "bad_value: form property `UsePostingMode` belongs to a document form (main attribute DocumentObject); this form's main attribute is CatalogObject.Валюты",
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "eq": "$capture.published"
+    }
+   ]
+  }
+ ]
+}

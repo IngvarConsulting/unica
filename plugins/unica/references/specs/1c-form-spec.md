@@ -214,7 +214,7 @@ CommonForms регистрируются в `Configuration.xml`:
 
 ```
 <Form>
-  ┌─ Свойства формы (необязательные, в произвольном порядке)
+  ┌─ Свойства формы (необязательные, в порядке платформы, см. раздел 3)
   ├─ <CommandSet>           — исключённые стандартные команды
   ├─ <AutoCommandBar>       — главная командная панель (обязательный, id="-1")
   ├─ <Events>               — обработчики событий формы
@@ -229,7 +229,19 @@ CommonForms регистрируются в `Configuration.xml`:
 
 ## 3. Свойства формы
 
-Прямые дочерние элементы `<Form>` (все необязательные, указываются до `<CommandSet>`/`<AutoCommandBar>`; свойства отчётов выгружаются после `<CommandSet>`, см. ниже):
+Прямые дочерние элементы `<Form>`, все необязательные. Платформа 8.3.27 пишет их
+в фиксированном порядке: `Title`, `Width`, `Height`, `WindowOpeningMode`,
+`EnterKeyBehavior`, `AutoSaveDataInSettings`, `SaveDataInSettings`,
+`SaveWindowSettings`, `AutoTitle`, `AutoURL`, `Group`, `ChildrenAlign`,
+`HorizontalSpacing`, `VerticalSpacing`, `HorizontalAlign`, `VerticalAlign`,
+`ChildItemsWidth`, `AutoFillCheck`, `Customizable`, `Enabled`, `ReadOnly`,
+`CommandBarLocation`, `VerticalScroll`, `ScalingMode`, `Scale`,
+`ConversationsRepresentation`, `MobileDeviceCommandBarContent`, `CommandSet`,
+`ShowTitle`, `ShowCloseButton`, `CollapseItemsByImportanceVariant`, затем
+свойства справочника, документа и отчёта и `AutoCommandBar`. Свойство со
+значением по умолчанию (`Width` 0, `Scale` 100, `AutoTitle` true и т. п.)
+платформа не выгружает. Unica пишет свойства корня операцией `props.set`
+на адресе формы.
 
 ### Общие свойства (все типы форм)
 
