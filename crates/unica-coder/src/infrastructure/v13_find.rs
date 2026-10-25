@@ -4494,6 +4494,91 @@ mod tests {
         }
     }
 
+    /// The one-pass name search answers exactly what ranking the whole
+    /// directory answers: direct and nearest matches, kind and scope.
+    #[test]
+    fn name_search_ranks_like_the_full_directory() {
+        use crate::application::v13::find::NameRanker;
+        use unica_address::address::QualifiedAddress;
+
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("Catalogs/Валютные.xml"),
+            &owner("Валютные", "Catalog", "Валютные счета", ""),
+        );
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
+        let sources = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let deadline = || ProviderDeadline::from_budget(Duration::from_secs(7));
+        let directory = WorkspaceFindDirectoryBuilder::default()
+            .build_for_search(&sources, deadline(), &CancellationToken::new())
+            .unwrap()
+            .index;
+        let scope = QualifiedAddress::parse("main:Catalog.Валюты").unwrap();
+        let requests = [
+            FindRequest::new("Валют").unwrap(),
+            FindRequest::new("валюты и курсы").unwrap(),
+            FindRequest::new("Форма").unwrap(),
+            FindRequest::new("Печать").unwrap(),
+            FindRequest::new("Вылюты").unwrap(),
+            FindRequest::new("нет такого").unwrap(),
+            FindRequest::new("Валют")
+                .unwrap()
+                .with_kind("Catalog")
+                .unwrap(),
+            FindRequest::new("Форма").unwrap().with_scope(scope.clone()),
+            FindRequest::new("Catalogs/Валюты.xml").unwrap(),
+        ];
+        for request in requests {
+            let expected = directory
+                .find_all_checked(request.clone(), deadline(), &CancellationToken::new())
+                .unwrap();
+            let searched = WorkspaceFindDirectoryBuilder::default()
+                .search_names(
+                    &sources,
+                    NameRanker::new(request.clone(), [scope.to_string()]),
+                    deadline(),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(searched.result, expected, "{request:?}");
+            if request == FindRequest::new("Вылюты").unwrap() {
+                assert!(expected.is_nearest() && !expected.candidates().is_empty());
+            }
+            if request == FindRequest::new("Валют").unwrap() {
+                assert!(expected.candidates().len() >= 2);
+            }
+            assert!((searched.scope_present)("main:Catalog.Валюты"));
+            assert!(!(searched.scope_present)("main:Catalog.Нет"));
+        }
+    }
+
+    #[test]
+    fn name_search_lists_a_collection_whole() {
+        use crate::application::v13::find::NameRanker;
+
+        let fixture = Fixture::new();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
+        let sources = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let builder = WorkspaceFindDirectoryBuilder::default().with_collection_limit_for_test(1);
+        let searched = builder
+            .search_names(
+                &sources,
+                NameRanker::new(FindRequest::new("Валюты").unwrap(), []),
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect("a name search is not bounded by the layout collection limit");
+        assert_eq!(searched.result.candidates()[0].at(), "main:Catalog.Валюты");
+    }
+
     #[test]
     fn the_directory_observes_cancellation() {
         let fixture = Fixture::new();
