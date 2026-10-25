@@ -369,7 +369,10 @@ def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str
                 name = operation["op"]
                 candidates = families.get(name, [])
                 if len(candidates) > 1:
-                    target = (operation.get("args") or {}).get("at") or step["args"]["at"]
+                    # Args captured from an earlier answer (`$capture.*`) are
+                    # not known statically; the step address names the target.
+                    args = operation.get("args")
+                    target = (args.get("at") if isinstance(args, dict) else None) or step["args"]["at"]
                     on_form = names_form(target)
                     candidates = [row for row in candidates if (row[1] == "Form") == on_form]
                     if on_form is None or len(candidates) != 1:
