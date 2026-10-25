@@ -1990,6 +1990,32 @@
       "review": null
     },
     {
+      "id": "view.snapshot-retained-bytes",
+      "class": "retention",
+      "resource": "Суммарный объём удерживаемых снимков продолжений view и check: элементы во временных файлах, узлы и границы элементов в памяти.",
+      "unit": "bytes",
+      "scope": "process",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/platform/view_snapshot_spill.rs",
+        "symbol": "VIEW_SNAPSHOT_MAX_RETAINED_BYTES"
+      },
+      "expr": "4 * 1024 * 1024 * 1024",
+      "value": 4294967296,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "crates/unica-coder/src/infrastructure/platform/mod.rs",
+        "crates/unica-coder/src/infrastructure/platform/view_snapshot_spill.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 PR9 9e: заменил 64 МиБ снимков в памяти",
+      "problem": "Обещанные продолжения не вытесняются, поэтому общий объём удерживаемых снимков процесса нужно ограничить.",
+      "onReach": "новый снимок отказывает result_too_large до выдачи курсора; выданные продолжения остаются",
+      "issue": "#1119",
+      "evidence": [],
+      "decision": null,
+      "review": "временное число без замеров; пересмотр по замерам #1119 PR8"
+    },
+    {
       "id": "resolve.navigation-descriptor-bytes",
       "class": "corpus",
       "resource": "Размер одного дескриптора, читаемого навигационным инвентарём платформенного XML.",
@@ -5195,6 +5221,30 @@
       "review": null
     },
     {
+      "id": "navigation.result-store-bytes",
+      "class": "retention",
+      "resource": "Суммарный объём отложенных результатов прежнего хранилища ResultStore в памяти.",
+      "unit": "bytes",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-navigation/src/result_store.rs",
+        "symbol": "DEFAULT_MAX_TOTAL_BYTES"
+      },
+      "expr": "64 * 1024 * 1024",
+      "value": 67108864,
+      "applied": [
+        "crates/unica-navigation/src/result_store.rs"
+      ],
+      "status": "unproven",
+      "origin": "27a108daf (#537); в коде помечено «Temporary and unproven… see #1119»",
+      "problem": null,
+      "onReach": "вытесняются давно не читавшиеся записи хранилища результатов",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "navigation.result-store-entries",
       "class": "retention",
       "resource": "Число записей хранилища отложенных результатов.",
@@ -5241,30 +5291,6 @@
       "evidence": [],
       "decision": null,
       "review": null
-    },
-    {
-      "id": "navigation.retained-snapshot-bytes",
-      "class": "result",
-      "resource": "Суммарный объём удерживаемых снимков view и отложенных результатов процесса.",
-      "unit": "bytes",
-      "scope": "cache",
-      "source": {
-        "file": "crates/unica-navigation/src/result_store.rs",
-        "symbol": "DEFAULT_MAX_TOTAL_BYTES"
-      },
-      "expr": "64 * 1024 * 1024",
-      "value": 67108864,
-      "applied": [
-        "crates/unica-navigation/src/result_store.rs"
-      ],
-      "status": "unproven",
-      "origin": "27a108daf (#537); в коде помечено «Temporary and unproven… see #1119»",
-      "problem": null,
-      "onReach": "Новый снимок view — отказ result_too_large «new view snapshot exceeds the temporary retained-state budget; earlier continuations remain available»; в хранилище результатов вытесняются давно не читавшиеся записи.",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "#1119 PR9"
     },
     {
       "id": "navigation.source-page-default-entries",

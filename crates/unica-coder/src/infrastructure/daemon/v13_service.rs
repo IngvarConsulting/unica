@@ -87,10 +87,18 @@ pub(crate) struct CanonicalV13ReadService {
         Option<Vec<Arc<dyn unica_code_intelligence::model::CodeIntelligenceProvider>>>,
 }
 
+/// Снимки продолжений лежат во временных файлах: в памяти процесса остаются
+/// узлы и границы элементов.
+fn product_view_cursors() -> ViewCursorStore {
+    use crate::infrastructure::platform::{TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
+    ViewCursorStore::new(VIEW_SNAPSHOT_MAX_RETAINED_BYTES)
+        .with_spill(Arc::new(TempFileSpill::default()))
+}
+
 impl Default for CanonicalV13ReadService {
     fn default() -> Self {
         Self {
-            cursors: Arc::new(ViewCursorStore::default()),
+            cursors: Arc::new(product_view_cursors()),
             search_cursors: Arc::new(SearchCursorStore::default()),
             find_builder: WorkspaceFindDirectoryBuilder::default(),
             ports: Arc::new(
@@ -208,7 +216,9 @@ impl CanonicalV13ReadService {
     #[cfg(test)]
     pub(super) fn with_view_cursor_budget_for_test(max_total_bytes: usize) -> Self {
         Self {
-            cursors: Arc::new(ViewCursorStore::new(max_total_bytes)),
+            cursors: Arc::new(ViewCursorStore::new(max_total_bytes).with_spill(Arc::new(
+                crate::infrastructure::platform::TempFileSpill::default(),
+            ))),
             ..Self::default()
         }
     }
@@ -232,8 +242,7 @@ impl CanonicalV13ReadService {
 
     pub(crate) fn with_capacity_observer(observer: Arc<CapacityObserver>) -> Self {
         let mut service = Self::default();
-        service.cursors =
-            Arc::new(ViewCursorStore::default().with_capacity_observer(observer.clone()));
+        service.cursors = Arc::new(product_view_cursors().with_capacity_observer(observer.clone()));
         service.find_builder = service.find_builder.with_capacity_observer(observer);
         service
     }

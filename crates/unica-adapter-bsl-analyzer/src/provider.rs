@@ -382,34 +382,6 @@ fn pending_index_footer(lines: &[&str]) -> Option<&'static str> {
     }
 }
 
-/// The pending reason of the analyzer's other no-hits wordings: the overlay
-/// warm-up sentence over a known footer, or the plain sentence followed only
-/// by `Indexing pending: …` lines before any index pass reports a state.
-fn pending_index_sentence(lines: &[&str]) -> Option<&'static str> {
-    let index_state = |line: &&str| {
-        ["Indexing lexical: ", "Indexing semantic: "]
-            .iter()
-            .filter_map(|prefix| line.strip_prefix(prefix))
-            .any(|state| matches!(state, "ready" | "disabled") || state.starts_with("running"))
-    };
-    match lines.split_first()? {
-        (&"No results found (overlay is warming up, only baseline search available).", tail)
-            if tail.iter().all(index_state) =>
-        {
-            Some("updatingIndex")
-        }
-        (&"No results found.", tail)
-            if !tail.is_empty()
-                && tail
-                    .iter()
-                    .all(|line| line.starts_with("Indexing pending: ")) =>
-        {
-            Some("buildingIndex")
-        }
-        _ => None,
-    }
-}
-
 pub fn parse_bsl_analyzer_search(
     text: &str,
     context: &CodeIntelligenceContext,
@@ -446,21 +418,7 @@ pub fn parse_bsl_analyzer_search(
     if trimmed.is_empty() || empty_with_ready_footer {
         return empty_section(ProviderId::BslAnalyzer, SearchRanking::Provider);
     }
-    // A busy analyzer answers in a whole plain sentence: a later answer is
-    // promised, but there is no index wait to name, only spent capacity.
-    if matches!(
-        empty_lines.as_slice(),
-        ["Search index is busy (a long operation is holding it); please try again in a moment."]
-            | ["Semantic search is busy (a long operation is holding the index). Lexical search is available in the meantime."]
-    ) {
-        return ProviderSearchSection::capacity_exhausted(
-            ProviderId::BslAnalyzer.identity(),
-            "bsl-analyzer search index is busy".to_string(),
-        );
-    }
-    if let Some(detail_code) =
-        pending_index_footer(&empty_lines).or_else(|| pending_index_sentence(&empty_lines))
-    {
+    if let Some(detail_code) = pending_index_footer(&empty_lines) {
         // No hits while the index is still queued or being rewritten — after a
         // published edit the analyzer serves before its update lands. That is
         // not proven absence and not a provider failure: the next attempt is

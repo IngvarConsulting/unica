@@ -3786,8 +3786,8 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(one.records, 1);
         assert_eq!(one.unique_payloads, 1);
         assert!(
-            one.payload_bytes > 64 * 1024,
-            "the payload must dominate admission metadata"
+            one.payload_bytes > 16 * one.record_bytes,
+            "the payload must dominate admission metadata: {one:?}"
         );
         let index_slot = std::mem::size_of::<Arc<ViewCollectionSnapshot>>();
         let fixed_bytes = one.retained_bytes
