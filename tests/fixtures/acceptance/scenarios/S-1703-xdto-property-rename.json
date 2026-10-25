@@ -1,0 +1,332 @@
+{
+  "id": "S-1703-xdto-property-rename",
+  "issue": 1703,
+  "area": "XDTO и обмены",
+  "task": "Переименовать собственные свойства типа XDTO, сохранив тип, границы, localName и порядок соседей, прочитать их по новым адресам и отклонить дубль и неверное имя без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-rename",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар.Property.Код"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/raw",
+          "contains": "d3p1:СтрокаКода"
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар.Property.Код.Can.property.rename"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/required",
+          "eq": [
+            "newName"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар",
+        "ops": [
+          {
+            "op": "property.rename",
+            "args": {
+              "at": "main:XDTOPackage.Пример.Type.Товар.Property.Наименование",
+              "values": {
+                "newName": "Название"
+              }
+            }
+          },
+          {
+            "op": "property.rename",
+            "args": {
+              "at": "main:XDTOPackage.Пример.Type.Товар.Property.Код",
+              "values": {
+                "newName": "ВнешнийКод"
+              }
+            }
+          },
+          {
+            "op": "property.rename",
+            "args": {
+              "at": "main:XDTOPackage.Пример.Type.Товар.Property.Цена",
+              "values": {
+                "newName": "Цена.Розничная"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e5396170f880c7afccc2979e493f7f7d641e47b47073fed4c632fea5d508c082"
+        },
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}objectType[@name=\"Товар\"]/{http://v8.1c.ru/8.1/xdto}property[1][@name=\"Название\"]",
+          "eq": [
+            "property"
+          ]
+        },
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}objectType[@name=\"Товар\"]/{http://v8.1c.ru/8.1/xdto}property[2][@name=\"ВнешнийКод\"][@localName=\"code\"][@form=\"Attribute\"][@lowerBound=\"0\"]",
+          "eq": [
+            "property"
+          ]
+        },
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}objectType[@name=\"Товар\"]/{http://v8.1c.ru/8.1/xdto}property[3][@name=\"Цена.Розничная\"][@upperBound=\"-1\"]",
+          "eq": [
+            "property"
+          ]
+        },
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}property[@name=\"Код\"]",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар.Property.ВнешнийКод"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/raw",
+          "contains": "d3p1:СтрокаКода"
+        },
+        {
+          "pointer": "/data/props/bounds/lower",
+          "eq": "0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар.Property.Код"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: XDTO property `Код` was not found"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар.Property"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.Пример.Type.Товар.Property.Название"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:XDTOPackage.Пример.Type.Товар.Property.ВнешнийКод"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:XDTOPackage.Пример.Type.Товар.Property.Цена\\.Розничная"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар.Property.Цена\\.Розничная"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Цена.Розничная"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар.Property.ВнешнийКод",
+        "ops": [
+          {
+            "op": "property.rename",
+            "args": {
+              "values": {
+                "newName": "ВнешнийКод"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e5396170f880c7afccc2979e493f7f7d641e47b47073fed4c632fea5d508c082"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар",
+        "ops": [
+          {
+            "op": "property.rename",
+            "args": {
+              "at": "main:XDTOPackage.Пример.Type.Товар.Property.Название",
+              "values": {
+                "newName": "Наименование"
+              }
+            }
+          },
+          {
+            "op": "property.rename",
+            "args": {
+              "at": "main:XDTOPackage.Пример.Type.Товар.Property.ВнешнийКод",
+              "values": {
+                "newName": "Наименование"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: XDTO operation conflicts with the package postimage",
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e5396170f880c7afccc2979e493f7f7d641e47b47073fed4c632fea5d508c082"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар.Property.ВнешнийКод",
+        "ops": [
+          {
+            "op": "property.rename",
+            "args": {
+              "values": {
+                "newName": "1Код"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: text does not match the supported argument grammar",
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e5396170f880c7afccc2979e493f7f7d641e47b47073fed4c632fea5d508c082"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Товар.Property.Код",
+        "ops": [
+          {
+            "op": "property.rename",
+            "args": {
+              "values": {
+                "newName": "Другой"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: XDTO writer rejected the typed operation",
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e5396170f880c7afccc2979e493f7f7d641e47b47073fed4c632fea5d508c082"
+        }
+      ]
+    }
+  ]
+}

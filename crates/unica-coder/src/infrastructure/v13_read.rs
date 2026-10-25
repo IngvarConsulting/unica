@@ -1,9 +1,10 @@
-use crate::application::v13::resolve::ResolvedLines;
+use crate::application::v13::resolve::{ModuleLine, ResolvedLines};
 use crate::application::v13::source_text::{admit_text, ModuleText};
 use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
 };
+use unica_metadata::validation_subject::{MetadataChildProfile, MetadataTemplateType};
 use unica_metadata::{MetaDiagnosticCode, MetaDiagnosticSeverity, MetadataKind};
 use {
     crate::application::v13::view::ViewReadAuthority,
@@ -103,7 +104,6 @@ fn observe_completed_view_projection_for_test(at: &QualifiedAddress, revision: &
     });
 }
 
-const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
 /// Logical read adapter over one actor-issued source capability. Its read
 /// identity is fixed at admission; the adapter never snapshots the tree.
 pub(crate) struct LogicalViewReadAuthority<'a> {
@@ -501,6 +501,30 @@ impl<'a> LogicalViewReadAuthority<'a> {
         to: usize,
         inspect: impl FnOnce(QualifiedAddress, &ModuleProjectionSet) -> T,
     ) -> Result<T, ViewError> {
+        self.with_module_projection(module, |module_at, projections| {
+            let body = projections
+                .methods()
+                .iter()
+                .filter(|method| from >= method.text_from_line && to <= method.to_line)
+                .min_by_key(|method| method.to_line - method.text_from_line)
+                .map_or_else(
+                    || format!("{module_at}.Body"),
+                    |method| format!("{}.Body", method.at),
+                );
+            let body = QualifiedAddress::parse(&body)
+                .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
+            Ok(inspect(body, projections))
+        })
+    }
+
+    /// One retained projection of the module that `module` names, fenced by
+    /// the source identity it was admitted with: a change while `inspect`
+    /// reads it refuses the whole answer instead of mixing two revisions.
+    fn with_module_projection<T>(
+        &self,
+        module: &QualifiedAddress,
+        inspect: impl FnOnce(&QualifiedAddress, &ModuleProjectionSet) -> Result<T, ViewError>,
+    ) -> Result<T, ViewError> {
         self.read_checkpoint()?;
         let admitted = self.snapshot(module)?;
         let route = route_logical_address(module, self.profile)
@@ -508,32 +532,54 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let capability = route.module().ok_or_else(|| {
             ViewError::new(
                 RefusalCode::BadValue,
-                "search hit does not name a BSL module",
+                "the address does not name a BSL module",
             )
         })?;
         let (module_at, _) = module_prefix(module, self.profile, capability)?;
         self.verify_module_owner(&module_at, capability, &admitted)?;
         let projections = self.module_projection(&module_at, capability, &admitted)?;
-        let body = projections
-            .methods()
-            .iter()
-            .filter(|method| from >= method.text_from_line && to <= method.to_line)
-            .min_by_key(|method| method.to_line - method.text_from_line)
-            .map_or_else(
-                || format!("{module_at}.Body"),
-                |method| format!("{}.Body", method.at),
-            );
-        let body = QualifiedAddress::parse(&body)
-            .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
-        let result = inspect(body, &projections);
+        let result = inspect(&module_at, &projections)?;
         self.read_checkpoint()?;
         if self.snapshot(module)? != admitted {
             return Err(ViewError::new(
                 RefusalCode::ConcurrentChange,
-                "source changed while search hit boundaries were read",
+                "source changed while module line boundaries were read",
             ));
         }
         Ok(result)
+    }
+
+    /// Places each physical file line of a BSL module: inside the method
+    /// whose own range holds it — the range `resolve` names for `Method`,
+    /// from its first annotation through the closing line — outside every
+    /// method, or past the end of the file. One projection answers all lines.
+    pub(crate) fn module_lines(
+        &self,
+        module: &QualifiedAddress,
+        lines: &[usize],
+    ) -> Result<Vec<ModuleLine>, ViewError> {
+        self.with_module_projection(module, |_, projections| {
+            let count = projections.source_text().lines().count();
+            lines
+                .iter()
+                .map(|&line| {
+                    if line == 0 || line > count {
+                        return Ok(ModuleLine::PastEnd { lines: count });
+                    }
+                    projections
+                        .methods()
+                        .iter()
+                        .find(|method| method.from_line <= line && line <= method.to_line)
+                        .map_or(Ok(ModuleLine::OutsideMethod), |method| {
+                            QualifiedAddress::parse(&method.at)
+                                .map(ModuleLine::Method)
+                                .map_err(|error| {
+                                    ViewError::new(RefusalCode::BadValue, error.to_string())
+                                })
+                        })
+                })
+                .collect()
+        })
     }
 
     /// Resolves semantic containment from the same projection as Method
@@ -624,13 +670,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
         &self,
         at: &QualifiedAddress,
         workspace: &unica_source_contract::workspace::WorkspaceContext,
-    ) -> Result<crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping, ViewError>
-    {
-        use unica_diagnostics::model::DiagnosticContext;
-        use unica_source_contract::{ProjectSourceSet, SourceFormat, SourceSetState};
-
-        use unica_address::source_target::{ResolvedTarget, TargetKind};
-        use unica_source_contract::workspace::ResolvedSourceRoot;
+    ) -> Result<crate::infrastructure::diagnostics::CanonicalDiagnosticMapping, ViewError> {
+        use unica_address::source_target::TargetKind;
         let admitted = self.snapshot(at)?;
         let canonical = self.canonical_address(at, &admitted)?;
         let capability = self
@@ -649,8 +690,71 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.read_exact(&module_at, &admitted)?;
         let target = module_source_address(&module_at, capability)?;
         let relative = self.read.module_export_path(&target)?;
+        let context = self.diagnostic_context(workspace, Some(target), TargetKind::Module);
+        crate::infrastructure::diagnostics::CanonicalDiagnosticMapping::from_proven_module(
+            context,
+            relative.into(),
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
+    /// Mapping of a metadata object or the configuration root, proved by the
+    /// same typed read as `view`. Findings on its own elements keep their
+    /// metadata focus; separately addressable children stay their own targets.
+    pub(crate) fn diagnostic_node_mapping(
+        &self,
+        at: &QualifiedAddress,
+        workspace: &unica_source_contract::workspace::WorkspaceContext,
+    ) -> Result<crate::infrastructure::diagnostics::CanonicalDiagnosticMapping, ViewError> {
+        use unica_address::source_target::TargetKind;
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let route = route_logical_address(&canonical, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        let (target, kind) = match (route.reader(), canonical.segments()) {
+            (LogicalReader::Configuration, [_]) => (None, TargetKind::SourceRoot),
+            // Объект любого вида, включая общий модуль, чей маршрут ведёт в
+            // читатель модулей: целью остаётся сам объект.
+            (_, [owner]) if owner.name().is_some() => (
+                Some(
+                    MetadataAddress::parse(
+                        PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        &format!(
+                            "{}.{}",
+                            owner.kind().as_str(),
+                            owner.name().unwrap_or_default()
+                        ),
+                    )
+                    .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?,
+                ),
+                TargetKind::MetadataObject,
+            ),
+            _ => {
+                return Err(ViewError::new(
+                    RefusalCode::BadValue,
+                    "provider diagnostics requires a module, a metadata object or the configuration root",
+                ))
+            }
+        };
+        self.read_exact(&canonical, &admitted)?;
+        crate::infrastructure::diagnostics::CanonicalDiagnosticMapping::from_proven_node(
+            self.diagnostic_context(workspace, target, kind),
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
+    fn diagnostic_context(
+        &self,
+        workspace: &unica_source_contract::workspace::WorkspaceContext,
+        metadata_path: Option<MetadataAddress>,
+        target_kind: unica_address::source_target::TargetKind,
+    ) -> unica_diagnostics::model::DiagnosticContext {
+        use unica_address::source_target::ResolvedTarget;
+        use unica_diagnostics::model::DiagnosticContext;
+        use unica_source_contract::workspace::ResolvedSourceRoot;
+        use unica_source_contract::{ProjectSourceSet, SourceFormat, SourceSetState};
         let source_set = self.read.source_set().to_owned();
-        let context = DiagnosticContext::new(
+        DiagnosticContext::new(
             workspace.clone(),
             ProjectSourceSet {
                 name: source_set.clone(),
@@ -667,15 +771,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
             },
             ResolvedTarget {
                 source_set,
-                metadata_path: Some(target),
-                target_kind: TargetKind::Module,
+                metadata_path,
+                target_kind,
             },
-        );
-        crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping::from_proven_module(
-            context,
-            relative.into(),
         )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
     /// One retained read prepares the complete package verdict. A separate
@@ -909,6 +1008,26 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 &mut || self.read_checkpoint(),
             );
         }
+        if matches!(route.reader(), LogicalReader::Dcs | LogicalReader::Mxl) {
+            if let Some(target) = route
+                .reader_metadata_path()
+                .filter(|target| target.as_str().starts_with("CommonTemplate."))
+            {
+                let expected = if route.reader() == LogicalReader::Dcs {
+                    MetadataTemplateType::DataCompositionSchema
+                } else {
+                    MetadataTemplateType::SpreadsheetDocument
+                };
+                if self.read.metadata_child_profile(target)?
+                    != MetadataChildProfile::Template(expected)
+                {
+                    return Err(ViewError::new(
+                        RefusalCode::NotFound,
+                        "template kind has no requested interior",
+                    ));
+                }
+            }
+        }
         if route.reader() == LogicalReader::Dcs {
             return self.read.dcs_payload(
                 route.reader_metadata_path().ok_or_else(|| {
@@ -1050,6 +1169,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if kind == NodeKind::WebSocketClient.as_str() {
             let name = target.as_str().split('.').nth(1).unwrap_or_default();
             return Ok(identity_only_metadata_payload(kind, name));
+        }
+        if kind == NodeKind::CommonTemplate.as_str() {
+            let facts = self.read.common_template_facts(target)?;
+            let mut payload = self.read.identity_metadata_payload(target)?;
+            payload["synonym"] = json!(facts.synonym);
+            payload["properties"] =
+                json!([{"key":"TemplateType", "value":facts.template_type.descriptor_value()}]);
+            if let Some(message) = facts.unreadable_synonym {
+                payload["unreadable"] = json!([{"field":"properties.Synonym", "message":message}]);
+            }
+            return Ok(payload);
         }
         if MetadataKind::parse(kind).is_err() {
             return self.read.identity_metadata_payload(target);
@@ -2174,26 +2304,32 @@ impl LogicalViewReadAuthority<'_> {
             return Ok(projected);
         }
         let segments = route.at().segments();
-        let [owner, template] = segments else {
-            return Ok(projected);
+        let child_text = match segments {
+            [template]
+                if template.kind() == NodeKind::CommonTemplate && template.name().is_some() =>
+            {
+                format!("CommonTemplate.{}", template.name().unwrap_or_default())
+            }
+            [owner, template]
+                if template.kind() == NodeKind::Template
+                    && template.name().is_some()
+                    && owner.name().is_some() =>
+            {
+                format!(
+                    "{}.{}.Template.{}",
+                    owner.kind().as_str(),
+                    owner.name().unwrap_or_default(),
+                    template.name().unwrap_or_default()
+                )
+            }
+            _ => return Ok(projected),
         };
-        if template.kind() != NodeKind::Template || template.name().is_none() {
-            return Ok(projected);
-        }
-        let Some(owner_name) = owner.name() else {
-            return Ok(projected);
-        };
-        let child = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!(
-                "{}.{owner_name}.Template.{}",
-                owner.kind().as_str(),
-                template.name().unwrap_or_default()
-            ),
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+        let child = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &child_text).map_err(
+            |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
+        )?;
         let mut projected = projected;
-        let format = match self.read.metadata_child_profile(&child) {
+        let profile = self.read.metadata_child_profile(&child);
+        let format = match &profile {
             Ok(unica_metadata::validation_subject::MetadataChildProfile::Template(
                 unica_metadata::validation_subject::MetadataTemplateType::DataCompositionSchema,
             )) => Some("DataCompositionSchema"),
@@ -2202,7 +2338,15 @@ impl LogicalViewReadAuthority<'_> {
             )) => Some("SpreadsheetDocument"),
             _ => None,
         };
-        if format.is_some() {
+        let common_opaque_xml = matches!(segments, [template] if template.kind() == NodeKind::CommonTemplate)
+            && matches!(
+                &profile,
+                Ok(MetadataChildProfile::Template(
+                    MetadataTemplateType::HtmlDocument
+                        | MetadataTemplateType::DataCompositionAppearanceTemplate
+                ))
+            );
+        if format.is_some() || common_opaque_xml {
             if let Some(borrowing) = self.read.inherited_resource(&child, "Template.xml")? {
                 // Тела у заимствованного макета в расширении нет: ветвей не
                 // выдумываем, узел называет содержимое унаследованным. Вид
@@ -2225,6 +2369,10 @@ impl LogicalViewReadAuthority<'_> {
         }
         if let Some(format) = format {
             projected = projected.with_prop("format", Value::String(format.into()));
+        } else if matches!(segments, [template] if template.kind() == NodeKind::CommonTemplate) {
+            if let MetadataChildProfile::Template(kind) = profile? {
+                projected = projected.with_prop("format", json!(kind.descriptor_value()));
+            }
         }
         for (kind, count) in self.template_body_branches(&child)? {
             if count > 0 {
@@ -2288,16 +2436,9 @@ impl LogicalViewReadAuthority<'_> {
         parent: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError> {
-        if matches!(
-            parent.segments(),
-            [root] if root.kind() == NodeKind::Configuration
-        ) && matches!(
-            self.read.source_set_kind(),
-            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-        ) {
-            return Ok(projected);
-        }
-        let Some(branch) = module_branch_for_parent(parent, self.profile) else {
+        let Some(branch) =
+            module_branch_for_parent(parent, self.profile, self.read.source_set_kind())
+        else {
             return Ok(projected);
         };
         if let Some(owner) = parent
@@ -2485,11 +2626,21 @@ fn module_owner_address(
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
+/// Ветка `Module` узла, которому профиль платформы даёт модули. Корень
+/// конфигурации и расширения ведёт к модулям приложения; у корня внешней
+/// обработки и отчёта их нет.
 pub(crate) fn module_branch_for_parent(
     parent: &QualifiedAddress,
     profile: PlatformProfile,
+    source_kind: SourceSetKind,
 ) -> Option<BranchRef> {
     let branch = if matches!(parent.segments(), [root] if root.kind() == NodeKind::Configuration) {
+        if matches!(
+            source_kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            return None;
+        }
         QualifiedAddress::parse(&format!("{}:Module", parent.source_set())).ok()
     } else {
         QualifiedAddress::parse(&format!("{parent}.Module")).ok()
@@ -3090,13 +3241,21 @@ fn region_item_value(region: &RegionProjection) -> Value {
 }
 
 pub(super) fn event_node(event: &EventProjection) -> NodeView {
-    let props = Map::from_iter([
+    let mut props = Map::from_iter([
         ("eventId".to_string(), json!(event.event_id)),
         ("state".to_string(), json!(event.state)),
         ("signature".to_string(), json!(event.signature)),
         ("contexts".to_string(), json!(event.contexts)),
         ("binding".to_string(), json!(event.binding)),
-        ("handler".to_string(), json!(event.handler)),
+        // Several conflicting bindings name no single handler.
+        (
+            "handler".to_string(),
+            if event.handlers.is_empty() {
+                json!(event.handler)
+            } else {
+                Value::Null
+            },
+        ),
         ("handlerEn".to_string(), json!(event.handler_en)),
         (
             "implementationAt".to_string(),
@@ -3104,6 +3263,9 @@ pub(super) fn event_node(event: &EventProjection) -> NodeView {
         ),
         ("callType".to_string(), json!(event.call_type)),
     ]);
+    if !event.handlers.is_empty() {
+        props.insert("handlers".to_string(), json!(event.handlers));
+    }
     NodeView::new(&event.at, NodeKind::Event.as_str(), &event.event_id, props)
         .with_can(event.can.clone())
 }

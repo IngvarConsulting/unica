@@ -529,6 +529,8 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "property.add",
     "type.remove",
     "property.remove",
+    "property.rename",
+    "type.set",
 ];
 
 /// Composition adapters for already-observed family facts. All semantic
@@ -742,6 +744,8 @@ operation_descriptors!(
     (XdtoOperation::AddProperty),
     (XdtoOperation::RemoveType),
     (XdtoOperation::RemoveProperty),
+    (XdtoOperation::RenameProperty),
+    (XdtoOperation::SetType),
     (SubsystemOperation::Create),
     (SubsystemOperation::ContentAdd),
     (SubsystemOperation::ContentRemove),
@@ -849,6 +853,25 @@ mod tests {
     use unica_source_contract::route::RouteClass;
     use unica_source_contract::SourceSetKind;
     use unica_xdto::operations::XdtoOperation;
+
+    #[test]
+    fn implemented_operations_have_contracts_and_target_skeletons_have_no_empty_address() {
+        for descriptor in OPERATION_DESCRIPTORS {
+            if descriptor.family() != OperationFamily::Properties {
+                assert!(
+                    descriptor.argument_contract().is_some(),
+                    "{}",
+                    descriptor.name()
+                );
+            }
+            assert_ne!(
+                serde_json::to_value(descriptor.copyable_skeleton()).unwrap()["args"].get("at"),
+                Some(&json!("")),
+                "{}",
+                descriptor.name()
+            );
+        }
+    }
 
     fn address(raw: &str) -> QualifiedAddress {
         QualifiedAddress::parse(raw).unwrap_or_else(|error| panic!("{raw}: {error}"))
@@ -1594,6 +1617,8 @@ mod tests {
             "property.add",
             "type.remove",
             "property.remove",
+            "property.rename",
+            "type.set",
             "subsystem.create",
             "content.add",
             "content.remove",
@@ -1611,7 +1636,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 124);
+        assert_eq!(expected.len(), 126);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465), свойства формы — как свойства описания (#1984):
@@ -1686,7 +1711,7 @@ mod tests {
             .map(|item| serde_json::to_value(item).unwrap())
             .find(|value| value["op"] == "event.implement")
             .expect("Event.can must be projected from the dispatch registry");
-        assert_eq!(event, json!({"op": "event.implement", "args": {"at": ""}}));
+        assert_eq!(event, json!({"op": "event.implement"}));
         for skeleton in registry
             .descriptors()
             .iter()
@@ -1970,9 +1995,31 @@ mod tests {
                 "main:XDTOPackage.Exchange.Type.Order.Property.Id",
                 false,
             ),
+            (
+                "property.rename",
+                "main:XDTOPackage.Exchange.Type.Order.Property.Lines.Property.Item",
+                true,
+            ),
+            (
+                "property.rename",
+                "main:XDTOPackage.Exchange.Type.Order",
+                false,
+            ),
+            ("type.set", "main:XDTOPackage.Exchange.Type.Order", true),
+            (
+                "type.set",
+                "main:XDTOPackage.Exchange.Type.Order.Property.Id",
+                false,
+            ),
+            ("type.set", "main:XDTOPackage.Exchange", false),
             // Глобальное свойство пакета — не член типа.
             (
                 "property.remove",
+                "main:XDTOPackage.Exchange.Property.Id",
+                false,
+            ),
+            (
+                "property.rename",
                 "main:XDTOPackage.Exchange.Property.Id",
                 false,
             ),
@@ -3921,9 +3968,12 @@ mod tests {
                 "code.replace",
                 json!({"op": "code.replace", "args": {"text": ""}}),
             ),
+            ("event.implement", json!({"op": "event.implement"})),
+            // The owner is the address; the removed entries are `items`, as
+            // the subsystem decoder has always required.
             (
-                "event.implement",
-                json!({"op": "event.implement", "args": {"at": ""}}),
+                "content.remove",
+                json!({"op": "content.remove", "args": {"items": []}}),
             ),
         ];
         for (name, expected) in cases {
@@ -3936,9 +3986,8 @@ mod tests {
         }
         for descriptor in registry.descriptors() {
             let value = serde_json::to_value(descriptor.copyable_skeleton()).unwrap();
-            assert!(value["args"]
-                .as_object()
-                .is_some_and(|args| !args.is_empty()));
+            assert!(value.get("args").is_none_or(Value::is_object));
+            assert_ne!(value["args"].get("at"), Some(&json!("")));
             assert!(value.to_string().len() <= 256, "{value}");
         }
     }

@@ -20,8 +20,10 @@ pub struct MetaRemoveTextRead {
     pub raw: Vec<u8>,
 }
 
+// #1119: the reference scan visits the whole source root, however many
+// entries the configuration holds; depth still guards against cycles.
 const META_REMOVE_MAX_TRAVERSAL_DEPTH: usize = 256;
-const META_REMOVE_MAX_TRAVERSAL_ENTRIES: usize = 1_000_000;
+const META_REMOVE_MAX_TRAVERSAL_ENTRIES: usize = usize::MAX;
 
 #[derive(Clone, Copy)]
 pub struct MetaRemoveTraversalLimits {
@@ -504,14 +506,6 @@ pub fn plan_meta_remove_subsystem_replacements_bounded(
     Ok(())
 }
 
-/// Largest single source file the reference scan will read.
-///
-/// The scan decides whether an object may be removed, so it reads every XML and
-/// BSL file under the source root. Without a per-file bound one oversized file
-/// would size the whole operation, and the traversal limits above only bound
-/// how many entries are visited, not how big each one is.
-pub const META_REMOVE_REFERENCE_FILE_MAX_BYTES: usize = 16 * 1024 * 1024;
-
 pub fn meta_remove_should_skip_file(
     file: &Path,
     config_dir: &Path,
@@ -528,6 +522,8 @@ pub fn meta_remove_should_skip_file(
     }
     let relative = file.strip_prefix(config_dir).ok();
     let rel = relative_display(file, config_dir);
+    // Subsystem descriptors are walked separately. The command interface of
+    // a subsystem is a composition: what its rules leave is a reference.
     rel == "Configuration.xml"
         || rel == "ConfigDumpInfo.xml"
         || relative.is_some_and(|path| {
@@ -535,6 +531,7 @@ pub fn meta_remove_should_skip_file(
                 == Some(std::path::Component::Normal(std::ffi::OsStr::new(
                     "Subsystems",
                 )))
+                && !path.ends_with("Ext/CommandInterface.xml")
         })
 }
 
@@ -543,10 +540,10 @@ pub fn meta_remove_search_patterns(
     obj_name: &str,
     type_plural: &str,
 ) -> Vec<String> {
-    let mut patterns = Vec::new();
-    if let Some(ref_names) = meta_remove_type_ref_names(obj_type) {
-        patterns.extend(ref_names.iter().map(|name| format!("{name}.{obj_name}")));
-    }
+    let mut patterns = meta_remove_derived_type_names(obj_type)
+        .into_iter()
+        .map(|name| format!("{name}.{obj_name}"))
+        .collect::<Vec<_>>();
     if let Some(manager) = meta_remove_ru_manager(obj_type) {
         patterns.push(format!("{manager}.{obj_name}"));
     }
@@ -556,28 +553,74 @@ pub fn meta_remove_search_patterns(
         // it `CommonModule.X`, which the caller adds for XML.
         patterns.push(format!("{obj_name}."));
     }
+    if obj_type == "CommonTemplate" {
+        // No manager names a common template; `Метаданные.ОбщиеМакеты.X` does.
+        patterns.push(format!("ОбщиеМакеты.{obj_name}"));
+    }
     patterns
 }
 
-pub fn meta_remove_type_ref_names(obj_type: &str) -> Option<&'static [&'static str]> {
-    match obj_type {
-        "Catalog" => Some(&["CatalogRef", "CatalogObject"]),
-        "Document" => Some(&["DocumentRef", "DocumentObject"]),
-        "Enum" => Some(&["EnumRef"]),
-        "ExchangePlan" => Some(&["ExchangePlanRef", "ExchangePlanObject"]),
-        "ChartOfAccounts" => Some(&["ChartOfAccountsRef", "ChartOfAccountsObject"]),
-        "ChartOfCharacteristicTypes" => Some(&[
-            "ChartOfCharacteristicTypesRef",
-            "ChartOfCharacteristicTypesObject",
-        ]),
-        "ChartOfCalculationTypes" => Some(&[
-            "ChartOfCalculationTypesRef",
-            "ChartOfCalculationTypesObject",
-        ]),
-        "BusinessProcess" => Some(&["BusinessProcessRef", "BusinessProcessObject"]),
-        "Task" => Some(&["TaskRef", "TaskObject"]),
-        _ => None,
+/// The types the platform derives from an object of the kind, as its own
+/// descriptor declares them in `xr:GeneratedType`: `CatalogRef`,
+/// `InformationRegisterRecordSet`, `Characteristic` and the others, and the
+/// tabular section types `<Kind>TabularSection` and `<Kind>TabularSectionRow`
+/// of a kind with tabular sections.
+pub fn meta_remove_derived_type_names(obj_type: &str) -> Vec<String> {
+    let mut names = crate::template_catalog::metadata_generated_types_8_3_27(obj_type)
+        .unwrap_or_default()
+        .iter()
+        .map(|(name, _)| (*name).to_string())
+        .collect::<Vec<_>>();
+    let tabular = unica_metadata::MetadataKind::parse(obj_type).is_ok_and(|kind| {
+        unica_metadata::metadata_kind_collections(kind)
+            .contains(&unica_metadata::MetaCollection::TabularSections)
+    });
+    if tabular {
+        names.push(format!("{obj_type}TabularSection"));
+        names.push(format!("{obj_type}TabularSectionRow"));
     }
+    names
+}
+
+/// The Russian spelling of a derived type name in module code, from the
+/// Russian spellings of the kind: `CatalogRef` is `СправочникСсылка`,
+/// `InformationRegisterRecordSet` is `РегистрСведенийНаборЗаписей`. Types
+/// whose Russian name does not follow the kind — `Characteristic` is
+/// `Характеристика`, `BusinessProcessRoutePointRef` is
+/// `ТочкаМаршрутаБизнесПроцессаСсылка` — are spelled whole; the rest, whose
+/// Russian names are not known here, have only their English name.
+pub fn meta_remove_ru_derived_type_names(
+    obj_type: &str,
+    derived: &str,
+    ru_kind_spellings: &[&str],
+) -> Vec<String> {
+    match derived {
+        "Characteristic" => return vec!["Характеристика".to_string()],
+        "BusinessProcessRoutePointRef" => {
+            return vec!["ТочкаМаршрутаБизнесПроцессаСсылка".to_string()]
+        }
+        _ => {}
+    }
+    let suffix = match derived.strip_prefix(obj_type) {
+        Some("Ref") => "Ссылка",
+        Some("Object") => "Объект",
+        Some("Selection") => "Выборка",
+        Some("List") => "Список",
+        Some("Manager") => "Менеджер",
+        Some("Record") => "Запись",
+        Some("RecordSet") => "НаборЗаписей",
+        Some("RecordKey") => "КлючЗаписи",
+        Some("RecordManager") => "МенеджерЗаписи",
+        Some("ValueManager") => "МенеджерЗначения",
+        Some("ValueKey") => "КлючЗначения",
+        Some("TabularSection") => "ТабличнаяЧасть",
+        Some("TabularSectionRow") => "ТабличнаяЧастьСтрока",
+        _ => return Vec::new(),
+    };
+    ru_kind_spellings
+        .iter()
+        .map(|spelling| format!("{spelling}{suffix}"))
+        .collect()
 }
 
 pub fn meta_remove_ru_manager(obj_type: &str) -> Option<&'static str> {
@@ -616,7 +659,9 @@ pub enum MetaRemoveReference {
 /// logically: XML is metadata and refuses the removal, BSL is module code.
 /// The text of a query held in XML — a dynamic list's `QueryText`, a data
 /// composition `query` — is code too: it is searched with `query_patterns`
-/// and reported by the line inside the query.
+/// and reported by the line inside the query. A design-time value of data
+/// composition settings is metadata searched with `query_patterns` too: the
+/// dump writes it in the configuration's language.
 pub fn meta_remove_references(
     source_set: &str,
     relative: &Path,
@@ -666,7 +711,7 @@ pub fn meta_remove_references(
         let holds_query = node.is_text()
             && node
                 .parent_element()
-                .is_some_and(|parent| query_text_element(file_name, parent.tag_name().name()));
+                .is_some_and(|parent| query_text_element(file_name, parent));
         if holds_query {
             let at = query_text_address(source_set, &owner, node);
             for (index, line) in node.text().unwrap_or_default().lines().enumerate() {
@@ -679,6 +724,26 @@ pub fn meta_remove_references(
                 {
                     found.push(reference);
                 }
+            }
+            continue;
+        }
+        // A design-time value — the value of a filter, a parameter or a
+        // choice parameter in data composition settings — names a predefined
+        // item or an enum value the way the dump is written, `Справочник.X.Y`
+        // in a Russian configuration, so it is searched in both languages.
+        if let Some(value) = node
+            .parent_element()
+            .filter(|parent| node.is_text() && design_time_value(*parent))
+        {
+            let text = node.text().unwrap_or_default();
+            let reference = MetaRemoveReference::Metadata {
+                at: query_text_address(source_set, &owner, node),
+                property: design_time_property(value),
+            };
+            if query_patterns.iter().any(|pattern| mentions(text, pattern))
+                && !found.contains(&reference)
+            {
+                found.push(reference);
             }
             continue;
         }
@@ -713,26 +778,85 @@ pub fn meta_remove_references(
     found
 }
 
+/// The namespaces of data composition, `…/data-composition-system/schema`,
+/// `…/settings`, `…/common`, `…/area-template` and the others.
+const DATA_COMPOSITION_NAMESPACE: &str = "http://v8.1c.ru/8.1/data-composition-system/";
+
+/// The namespace of a data composition schema.
+const DATA_COMPOSITION_SCHEMA_NAMESPACE: &str =
+    "http://v8.1c.ru/8.1/data-composition-system/schema";
+
 /// Whether an element of an XML source holds query-language text, which is
 /// searched like code: a dynamic list's `QueryText` and a data composition
-/// `query` anywhere, the expressions of a data composition schema in
-/// `Template.xml`, the access restriction `condition` of role rights.
-fn query_text_element(file_name: Option<&str>, element: &str) -> bool {
-    match element {
+/// `query` anywhere, every expression of data composition — an element of a
+/// data composition namespace named `expression` or `…Expression`, in a
+/// template or in a dynamic list of a form — and the access restriction
+/// `condition` of role rights.
+fn query_text_element(file_name: Option<&str>, element: roxmltree::Node<'_, '_>) -> bool {
+    let name = element.tag_name().name();
+    match name {
         "QueryText" | "query" => true,
-        "expression" | "presentationExpression" | "sourceExpression" | "detailExpression" => {
-            file_name == Some("Template.xml")
-        }
         "condition" => file_name == Some("Rights.xml"),
-        _ => false,
+        _ => {
+            matches!(file_name, Some("Template.xml" | "Form.xml"))
+                && (name == "expression" || name.ends_with("Expression"))
+                && element
+                    .tag_name()
+                    .namespace()
+                    .is_some_and(|namespace| namespace.starts_with(DATA_COMPOSITION_NAMESPACE))
+        }
     }
 }
 
+/// Whether an element holds a data composition design-time value,
+/// `xsi:type="dcscor:DesignTimeValue"`.
+fn design_time_value(element: roxmltree::Node<'_, '_>) -> bool {
+    element
+        .attribute(("http://www.w3.org/2001/XMLSchema-instance", "type"))
+        .and_then(|value| value.split_once(':'))
+        .is_some_and(|(prefix, name)| {
+            name == "DesignTimeValue"
+                && element.lookup_namespace_uri(Some(prefix))
+                    == Some("http://v8.1c.ru/8.1/data-composition-system/core")
+        })
+}
+
+/// The property holding a design-time value: the outermost settings section
+/// around it — `Filter`, `ConditionalAppearance` of a list or of the whole
+/// form, `DataParameters`, the `InputParameters` or `AvailableValue` of a
+/// field or parameter — or the element itself, `Value` of a schema parameter.
+fn design_time_property(value: roxmltree::Node<'_, '_>) -> String {
+    let section = value
+        .ancestors()
+        .filter(|ancestor| {
+            matches!(
+                ancestor.tag_name().name(),
+                "filter"
+                    | "conditionalAppearance"
+                    | "ConditionalAppearance"
+                    | "dataParameters"
+                    | "inputParameters"
+                    | "availableValue"
+                    | "userFields"
+            )
+        })
+        .last()
+        .unwrap_or(value);
+    let name = section.tag_name().name();
+    let mut chars = name.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
 /// The address of the query text holding a reference: the form attribute of
-/// a dynamic list, the data set, field, calculated field, total or parameter
-/// of a data composition schema, the right entry of a role, as far as the
+/// a dynamic list, the data set, field, calculated field, total, parameter or
+/// settings variant of a data composition schema, the right entry of a role, as far as the
 /// address grammar names it; otherwise the form, template or role that owns
-/// the file.
+/// the file. The grammar has no node for a nested schema or an output
+/// template of the schema, so whatever lies inside one is addressed by the
+/// template.
 fn query_text_address(source_set: &str, owner: &str, node: roxmltree::Node<'_, '_>) -> String {
     let child_text = |element: roxmltree::Node<'_, '_>, name: &str| {
         element
@@ -743,12 +867,21 @@ fn query_text_address(source_set: &str, owner: &str, node: roxmltree::Node<'_, '
     };
     let mut segments = Vec::new();
     for ancestor in node.ancestors().filter(|ancestor| ancestor.is_element()) {
+        // A nested schema and an output template of the schema have no node
+        // in the address grammar; their parameters are not the schema's.
+        if ancestor.tag_name().namespace() == Some(DATA_COMPOSITION_SCHEMA_NAMESPACE)
+            && matches!(ancestor.tag_name().name(), "nestedSchema" | "template")
+        {
+            segments.clear();
+            continue;
+        }
         let member = |kind: &str, name: Option<String>| {
             name.map(|name| unica_address::address::member_address(&format!(".{kind}"), &name))
         };
         let segment = match ancestor.tag_name().name() {
             "Attribute" => member("Attribute", ancestor.attribute("name").map(str::to_string)),
             "dataSet" => member("DataSet", child_text(ancestor, "name")),
+            "settingsVariant" => member("Setting", child_text(ancestor, "name")),
             "field" => member("Field", child_text(ancestor, "dataPath")),
             "calculatedField" => member("CalculatedField", child_text(ancestor, "dataPath")),
             "totalField" => member("Total", child_text(ancestor, "dataPath")),

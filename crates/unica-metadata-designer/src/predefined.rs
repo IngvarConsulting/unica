@@ -2580,7 +2580,7 @@ pub fn validate_predefined_text(kind: MetadataKind, text: &str) -> Result<(), St
 use crate::resource_plan::{TypedChildFileMutation, TypedChildResourcePlan};
 use std::io::ErrorKind;
 use std::path::Path;
-/// One bounded, source-contained ordinary read at the existing resource phase.
+/// Source-contained ordinary reads at the existing resource phase.
 /// The binding reuses the actual secure reader and cannot publish bytes.
 pub trait PredefinedResourceRead {
     fn read_bounded_resource(
@@ -2589,8 +2589,9 @@ pub trait PredefinedResourceRead {
         path: &Path,
         maximum: usize,
     ) -> std::io::Result<Vec<u8>>;
+    /// The whole resource, whatever its size (#1119).
+    fn read_whole_resource(&self, source_root: &Path, path: &Path) -> std::io::Result<Vec<u8>>;
 }
-const MAX_PREDEFINED_BYTES: usize = 8 * 1024 * 1024;
 
 pub struct PlannedPredefinedResource<G> {
     pub resources: TypedChildResourcePlan<G>,
@@ -2657,7 +2658,7 @@ pub fn plan_predefined_resource_after_descriptor_edit<G>(
     let path = descriptor_path
         .with_extension("")
         .join("Ext/Predefined.xml");
-    let original = match reader.read_bounded_resource(source_root, &path, MAX_PREDEFINED_BYTES) {
+    let original = match reader.read_whole_resource(source_root, &path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == ErrorKind::NotFound => None,
         Err(_) => {

@@ -30,7 +30,12 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `no_memory` when this working copy has no memory of the infobase; the refusal offers a `pull` preview and a `push` preview with `force:true`. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Full pulling requires explicit `force:true` and provides no local-work protection; inspect the preview before execution.
 For source readiness independently of runtime availability, first
 call `unica.check {}`. It returns `status`, `ready`, `repositoryReady`,
-`checks[]` and `diagnostics[]` — the verdict on the workspace. The facts it
+`checks[]` and `diagnostics[]` — the verdict on the workspace. Every page
+repeats the whole verdict, `checks[]` and `diagnosticCount`; diagnostic groups
+arrive in pages of up to 20 (`limit` up to 50, about 64 KiB). When the answer
+has a `cursor`, call the `unica.check` continuation from `next` until
+`page.stoppedBy` is `complete`: it reads the saved verdict and does not inspect
+again. The facts it
 judges live in `unica.view {}`: `sourceSets` (possibly an empty array),
 `config`, `infobase` and the recommended `v8project.yaml` content. The split is
 the same as on a node, where `view {at}` gives `props` and `check {at}` gives
@@ -90,7 +95,11 @@ effect although no final receipt was durably saved. Inspect the actual
 infobase state and intended change, record the finding alongside the `taskId`,
 then decide a new action from that evidence. Unica does not replay this work
 automatically; a second `run` call is a new mutation, not a retry of the old
-Task.
+Task. A read-only call (`view`, `resolve`, `search`, `check`, `diff`, `docs`)
+changed nothing: its direct `outcome_uncertain` refusal says so and carries the
+same call in `next`, which is safe to send as a new call. A read-only call that
+had become a Task reports `outcome_uncertain` without `next`; it changed
+nothing either, so send the original call again.
 
 Each `sourceSets[].sourceFormat` describes working-tree discovery. Repository
 checks may additionally become applicable from staged index markers; do not

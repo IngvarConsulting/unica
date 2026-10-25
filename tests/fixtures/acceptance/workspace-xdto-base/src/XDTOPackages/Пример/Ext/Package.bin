@@ -1,0 +1,16 @@
+﻿<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:unica:example" targetNamespace="urn:unica:example">
+	<valueType name="Процент" base="xs:decimal" totalDigits="5" fractionDigits="2"/>
+	<valueType name="Количество" base="xs:decimal"/>
+	<objectType name="ОсноваА">
+		<property name="Код" type="xs:string"/>
+	</objectType>
+	<objectType name="ОсноваБ">
+		<property name="Номер" type="tns:Количество"/>
+	</objectType>
+	<objectType name="Документ" base="tns:ОсноваА" sequenced="true">
+		<property name="Сумма" type="tns:Процент" lowerBound="0"/>
+	</objectType>
+	<objectType name="Ссылка">
+		<property name="Цель" type="tns:Документ"/>
+	</objectType>
+</package>

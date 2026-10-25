@@ -3270,6 +3270,72 @@ pub fn canonical_failed_terminal(
     canonical_v5_terminal_from_shared(Arc::new(ReceiptTerminalOutcome::Failed { reason }))
 }
 
+/// Результат, который не помещается в доставку, заменяется отказом
+/// `result_too_large` с фактическим размером и пределом: вызывающий видит,
+/// сколько не поместилось, а не голый код сбоя. Сам результат не сохраняется.
+/// Закрытый сбой остаётся только для исхода без результата и для отказа,
+/// который сам не поместился бы.
+pub fn canonical_oversized_terminal(
+    outcome: &ReceiptTerminalOutcome,
+    max_supported_body_response_bytes: usize,
+) -> Result<V5CanonicalTerminal, CanonicalTerminalError> {
+    use unica_execution_contract::result_delivery::MAX_ERROR_DIAGNOSTIC_TEXT_BYTES;
+    let ReceiptTerminalOutcome::Completed { result } = outcome else {
+        return canonical_failed_terminal(V5SafeFailureReason::ResultTooLarge);
+    };
+    let result_bytes = serialized_len(result)?;
+    let message = if result_bytes > MAX_CANONICAL_RESULT_BYTES {
+        format!(
+            "result of {result_bytes} bytes exceeds the {MAX_CANONICAL_RESULT_BYTES}-byte result limit; ask for a narrower address or a smaller page"
+        )
+    } else {
+        format!(
+            "result of {result_bytes} bytes fits the {MAX_CANONICAL_RESULT_BYTES}-byte result limit, but its delivery with the text recovery blocks does not; ask for a narrower address"
+        )
+    };
+    // Адрес повторяется в отказе, только пока он сам не раздувает отказ.
+    let at = result
+        .at
+        .as_ref()
+        .filter(|at| at.len() <= MAX_ERROR_DIAGNOSTIC_TEXT_BYTES)
+        .cloned();
+    let mut refusal =
+        DomainResult::canonical_rejection(at, unica_refusal::RefusalCode::ResultTooLarge, message);
+    refusal.data = Some(serde_json::json!({
+        "resultBytes": result_bytes,
+        "limitBytes": MAX_CANONICAL_RESULT_BYTES,
+    }));
+    match canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(refusal),
+        },
+        max_supported_body_response_bytes,
+    ) {
+        Err(CanonicalTerminalError::ResultTooLarge) => {
+            canonical_failed_terminal(V5SafeFailureReason::ResultTooLarge)
+        }
+        terminal => terminal,
+    }
+}
+
+/// Точная длина канонической сериализации без её удержания в памяти.
+fn serialized_len(result: &DomainResult) -> Result<usize, CanonicalTerminalError> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0 += buffer.len();
+            Ok(buffer.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, result)
+        .map_err(|_| CanonicalTerminalError::Serialization)?;
+    Ok(counter.0)
+}
+
 pub fn canonical_v5_terminal_from_shared(
     outcome: Arc<ReceiptTerminalOutcome>,
 ) -> Result<V5CanonicalTerminal, CanonicalTerminalError> {
@@ -4130,6 +4196,68 @@ mod tests {
             canonical_v5_terminal(&oversized, 73_728),
             Err(CanonicalTerminalError::ResultTooLarge)
         );
+    }
+
+    #[test]
+    fn oversized_result_becomes_a_size_refusal_that_names_both_sizes() {
+        let mut oversized = DomainResult::success("x".repeat(MAX_CANONICAL_RESULT_BYTES));
+        oversized.at = Some("main:Catalog.Items".into());
+        let actual_bytes = serde_json::to_vec(&oversized).unwrap().len();
+        let outcome = ReceiptTerminalOutcome::Completed {
+            result: Box::new(oversized),
+        };
+        let terminal = canonical_oversized_terminal(&outcome, 73_728).unwrap();
+        let ReceiptTerminalOutcome::Completed { result } = terminal.outcome() else {
+            panic!(
+                "a size refusal is a completed result: {:?}",
+                terminal.outcome()
+            );
+        };
+        assert!(!result.ok);
+        assert_eq!(result.at.as_deref(), Some("main:Catalog.Items"));
+        assert_eq!(result.diagnostics[0]["code"], "result_too_large");
+        assert_eq!(
+            result.data,
+            Some(json!({
+                "resultBytes": actual_bytes,
+                "limitBytes": MAX_CANONICAL_RESULT_BYTES,
+            }))
+        );
+        assert!(result.summary.contains(&actual_bytes.to_string()));
+        // The refusal itself is an ordinary deliverable terminal.
+        assert!(canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: result.clone()
+            },
+            73_728
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn undeliverable_recovery_refusal_keeps_a_fitting_result_size_and_drops_a_huge_address() {
+        let mut result = DomainResult::success("ambiguous target");
+        result.ok = false;
+        result.at = Some("x".repeat(4_097));
+        result.next = vec![serde_json::json!({
+            "tool": "unica.view", "args": {"at": "x".repeat(4_300_000)}
+        })];
+        let outcome = ReceiptTerminalOutcome::Completed {
+            result: Box::new(result),
+        };
+        let terminal = canonical_oversized_terminal(&outcome, 73_728).unwrap();
+        let ReceiptTerminalOutcome::Completed { result } = terminal.outcome() else {
+            panic!("a size refusal is a completed result");
+        };
+        assert_eq!(result.at, None);
+        assert!(result.next.is_empty());
+        assert!(
+            result.data.as_ref().unwrap()["resultBytes"]
+                .as_u64()
+                .unwrap()
+                < MAX_CANONICAL_RESULT_BYTES as u64
+        );
+        assert!(result.summary.contains("delivery"));
     }
 
     #[test]

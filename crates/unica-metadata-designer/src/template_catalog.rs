@@ -441,14 +441,45 @@ pub fn add_document_register_record(bytes: &[u8], register: &str) -> Result<Vec<
         .into_iter()
         .find(|tag| source.contains(tag));
     let updated = if let Some(tag) = empty {
-        source.replacen(
-            tag,
-            &format!("<RegisterRecords>{item}</RegisterRecords>"),
-            1,
-        )
+        // 8.3.27 writes the first record on its own line, one level deeper
+        // than an empty property that stands on its own line.
+        let start = source.find(tag).expect("the empty tag was found");
+        let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
+        let indentation = &source[line_start..start];
+        let rest = &source[start + tag.len()..];
+        let rest = &rest[..rest.find(['\r', '\n']).unwrap_or(rest.len())];
+        let replacement = if line_start > 0
+            && indentation.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+            && rest.trim().is_empty()
+        {
+            let ending = if source[..line_start].ends_with("\r\n") {
+                "\r\n"
+            } else {
+                "\n"
+            };
+            format!(
+                "<RegisterRecords>{ending}{indentation}\t{item}{ending}{indentation}</RegisterRecords>"
+            )
+        } else {
+            format!("<RegisterRecords>{item}</RegisterRecords>")
+        };
+        source.replacen(tag, &replacement, 1)
     } else if let Some(end) = source.find("</RegisterRecords>") {
         let mut updated = source.to_string();
-        updated.insert_str(end, &item);
+        let line_start = source[..end].rfind('\n').map_or(0, |index| index + 1);
+        let indentation = &source[line_start..end];
+        if line_start > 0 && indentation.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+            // A closing tag on its own line: the record takes its own line
+            // before it, as the 8.3.27 export lists every record.
+            let ending = if source[..line_start].ends_with("\r\n") {
+                "\r\n"
+            } else {
+                "\n"
+            };
+            updated.insert_str(line_start, &format!("{indentation}\t{item}{ending}"));
+        } else {
+            updated.insert_str(end, &item);
+        }
         updated
     } else {
         return Err("document has no RegisterRecords property".to_string());
@@ -459,6 +490,93 @@ pub fn add_document_register_record(bytes: &[u8], register: &str) -> Result<Vec<
     }
     output.extend_from_slice(updated.as_bytes());
     Ok(output)
+}
+
+/// The `uuid` of the metadata object a descriptor declares.
+pub fn descriptor_object_uuid(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes)
+        .ok()?
+        .trim_start_matches('\u{feff}');
+    let document = Document::parse(text).ok()?;
+    document
+        .root_element()
+        .children()
+        .find(|node| node.is_element())?
+        .attribute("uuid")
+        .map(str::to_ascii_lowercase)
+}
+
+/// Moves the record of `register`, each record on its own line, before the
+/// first record whose register UUID is greater, as 8.3.27 orders them. Records
+/// whose UUID is unknown are not compared; nothing moves when the new
+/// register's UUID is unknown or the layout is not one record per line.
+pub fn place_register_record(
+    bytes: &[u8],
+    register: &str,
+    uuid_of: &mut dyn FnMut(&str) -> Option<String>,
+) -> Option<Vec<u8>> {
+    let (bom, text) = match bytes.strip_prefix(b"\xef\xbb\xbf") {
+        Some(text) => (&b"\xef\xbb\xbf"[..], text),
+        None => (&b""[..], bytes),
+    };
+    let text = std::str::from_utf8(text).ok()?;
+    let open = text.find("<RegisterRecords>")? + "<RegisterRecords>".len();
+    let close = open + text[open..].find("</RegisterRecords>")?;
+    // One record per line: (line range, reference).
+    let mut lines = Vec::new();
+    let mut cursor = open;
+    for line in text[open..close].split_inclusive('\n') {
+        let range = cursor..cursor + line.len();
+        cursor = range.end;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let reference = trimmed
+            .strip_prefix("<xr:Item xsi:type=\"xr:MDObjectRef\">")?
+            .strip_suffix("</xr:Item>")?;
+        lines.push((range, reference.to_string()));
+    }
+    // The first record must begin its own line; a record on the opening
+    // tag's line has no per-record layout to keep.
+    let first = lines.first()?.0.clone();
+    let first_record = first.start + (text[first.clone()].len() - text[first].trim_start().len());
+    if !text[open..first_record].contains('\n') {
+        return None;
+    }
+    // The record just added is the last one with this reference.
+    let own = lines
+        .iter()
+        .rposition(|(_, reference)| *reference == unica_xml_format::text::escape_xml(register))?;
+    let new_uuid = uuid_of(register)?;
+    let target = lines
+        .iter()
+        .enumerate()
+        .find_map(|(index, (_, reference))| {
+            (index != own
+                && uuid_of(&unica_xml_format::text::unescape_xml(reference))
+                    .is_some_and(|uuid| uuid > new_uuid))
+            .then_some(index)
+        });
+    let target = target.unwrap_or(lines.len());
+    if target == own || target == own + 1 {
+        return None;
+    }
+    let moved = text[lines[own].0.clone()].to_string();
+    let mut updated = text.to_string();
+    let insert_at = lines
+        .get(target)
+        .map_or(lines.last()?.0.end, |(range, _)| range.start);
+    if insert_at > lines[own].0.start {
+        updated.insert_str(insert_at, &moved);
+        updated.replace_range(lines[own].0.clone(), "");
+    } else {
+        updated.replace_range(lines[own].0.clone(), "");
+        updated.insert_str(insert_at, &moved);
+    }
+    let mut output = bom.to_vec();
+    output.extend_from_slice(updated.as_bytes());
+    Some(output)
 }
 
 pub fn template_failure(
@@ -2857,18 +2975,12 @@ pub fn emit_meta_attribute<F>(
     lines.push(format!("{indent}\t\t<ExtendedEdit>false</ExtendedEdit>"));
     lines.push(format!("{indent}\t\t<MinValue xsi:nil=\"true\"/>"));
     lines.push(format!("{indent}\t\t<MaxValue xsi:nil=\"true\"/>"));
-    if !matches!(
-        context,
-        "tabular" | "processor" | "chart" | "register-other"
-    ) {
+    if !matches!(context, "tabular" | "processor" | "register-other") {
         lines.push(format!(
             "{indent}\t\t<FillFromFillingValue>false</FillFromFillingValue>"
         ));
     }
-    if !matches!(
-        context,
-        "tabular" | "processor" | "chart" | "register-other"
-    ) {
+    if !matches!(context, "tabular" | "processor" | "register-other") {
         lines.push(format!("{indent}\t\t<FillValue xsi:nil=\"true\"/>"));
     }
     let fill_checking = if attr.required {
@@ -2894,13 +3006,20 @@ pub fn emit_meta_attribute<F>(
     lines.push(format!(
         "{indent}\t\t<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>"
     ));
+    // 8.3.27 writes `Use` for the header attributes of hierarchical kinds
+    // that distinguish folders from items: a catalog before `Indexing`,
+    // characteristic types after it.
+    let use_line = format!("{indent}\t\t<Use>ForItem</Use>");
     if context == "catalog" {
-        lines.push(format!("{indent}\t\t<Use>ForItem</Use>"));
+        lines.push(use_line.clone());
     }
     if !matches!(context, "processor" | "processor-tabular") {
         lines.push(format!("{indent}\t\t<Indexing>DontIndex</Indexing>"));
+        if context == "chart-characteristic" {
+            lines.push(use_line);
+        }
         lines.push(format!("{indent}\t\t<FullTextSearch>Use</FullTextSearch>"));
-        if !matches!(context, "chart" | "register-other") {
+        if context != "register-other" {
             lines.push(format!("{indent}\t\t<DataHistory>Use</DataHistory>"));
         }
     }
@@ -2913,7 +3032,10 @@ pub fn meta_attribute_context(object_type: &str) -> &'static str {
         "Catalog" => "catalog",
         "Document" => "document",
         "Report" | "DataProcessor" | "ExternalReport" | "ExternalDataProcessor" => "processor",
-        "ChartOfAccounts" | "ChartOfCharacteristicTypes" | "ChartOfCalculationTypes" => "chart",
+        // A chart header attribute has the full field profile of an object
+        // attribute in the 8.3.27 export; characteristic types add `Use`.
+        "ChartOfAccounts" | "ChartOfCalculationTypes" => "chart",
+        "ChartOfCharacteristicTypes" => "chart-characteristic",
         "InformationRegister" => "register-info",
         "AccumulationRegister" | "AccountingRegister" | "CalculationRegister" => "register-other",
         _ => "object",

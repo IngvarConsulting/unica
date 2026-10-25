@@ -513,7 +513,7 @@ impl OperationSkeleton {
             Self::Items => Value::Array(Vec::new()),
             Self::Values => Value::Object(Map::new()),
             Self::Text => Value::String(String::new()),
-            Self::Target => Value::String(String::new()),
+            Self::Target => return Map::new(),
         };
         Map::from_iter([(self.key().to_string(), value)])
     }
