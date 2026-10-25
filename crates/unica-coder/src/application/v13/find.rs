@@ -522,7 +522,9 @@ pub(crate) struct NameRanker {
     seen: HashSet<String>,
     watched: HashMap<String, bool>,
     direct: Vec<OwnedCandidate>,
-    nearest: Vec<OwnedCandidate>,
+    /// While nothing matches directly, the eligible documents cut down to
+    /// the facts nearest names are scored on; scored once, at the end.
+    nearest_pool: Vec<FindDocument>,
 }
 
 struct OwnedCandidate {
@@ -540,7 +542,7 @@ impl NameRanker {
             seen: HashSet::new(),
             watched: watched.into_iter().map(|at| (at, false)).collect(),
             direct: Vec::new(),
-            nearest: Vec::new(),
+            nearest_pool: Vec::new(),
         }
     }
 
@@ -563,12 +565,15 @@ impl NameRanker {
         }
         if let Some(found) = best_direct_match(&document, &self.query) {
             // Nearest names are an answer only when nothing matches directly.
-            self.nearest = Vec::new();
+            self.nearest_pool = Vec::new();
             self.direct.push(OwnedCandidate::from(found));
         } else if self.direct.is_empty() {
-            if let Some(found) = nearest_match(&document, &self.query) {
-                self.nearest.push(OwnedCandidate::from(found));
-            }
+            let mut document = document;
+            document
+                .facts
+                .retain(|fact| matches!(fact.kind, FindFactKind::Name | FindFactKind::Address));
+            document.path_alias = None;
+            self.nearest_pool.push(document);
         }
     }
 
@@ -583,7 +588,15 @@ impl NameRanker {
 
     pub(crate) fn finish(self) -> FindResult {
         let nearest = self.direct.is_empty();
-        let mut candidates = if nearest { self.nearest } else { self.direct };
+        let mut candidates = if nearest {
+            self.nearest_pool
+                .iter()
+                .filter_map(|document| nearest_match(document, &self.query))
+                .map(OwnedCandidate::from)
+                .collect()
+        } else {
+            self.direct
+        };
         candidates.sort_by(|left, right| {
             left.score
                 .cmp(&right.score)
