@@ -37,6 +37,10 @@ LARGE_LIBRARY_MODULES = {
         "crates/unica-project-health/tests/platform/project_health_resources.rs",
         "inspection::resources::tests::",
     ),
+    ("unica_project_health", "inspection::git::tests::"): (
+        "crates/unica-project-health/tests/platform/project_health_git.rs",
+        "inspection::git::tests::",
+    ),
     ("selection", ""): (
         "crates/unica-source-integration-tests/tests/selection.rs",
         "",
