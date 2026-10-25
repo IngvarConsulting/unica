@@ -1587,6 +1587,56 @@ mod tests {
         );
     }
 
+    /// An answer to the submit that trickles in byte by byte does not renew
+    /// the frontend's deadline: the call ends within its own window plus the
+    /// recovery budget, long before the trickle would finish.
+    #[test]
+    fn a_trickling_submit_answer_does_not_renew_the_frontend_deadline() {
+        use std::io::Write as _;
+        let host = Duration::from_millis(300);
+        let fake =
+            FakeDaemon::start_with_raw_script(Box::new(
+                move |raw, request, writer| match request {
+                    V5ClientRequest::SubmitInvocation { .. } => {
+                        let mut frame = serde_json::to_vec(&direct_receipt(
+                            daemon_side_key(raw),
+                            completed("trickled"),
+                        ))
+                        .unwrap();
+                        frame.push(b'\n');
+                        for byte in frame {
+                            if writer
+                                .write_all(&[byte])
+                                .and_then(|()| writer.flush())
+                                .is_err()
+                            {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(50));
+                        }
+                        false
+                    }
+                    V5ClientRequest::RecoverInvocationReceipt { .. } => false,
+                    other => panic!("unexpected frame {other:?}"),
+                },
+            ));
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+
+        let started = Instant::now();
+        let outcome = call(&router, Some(host));
+        let elapsed = started.elapsed();
+        assert!(
+            !matches!(&outcome, Ok(CanonicalCallOutcome::Direct(_))),
+            "the trickled answer was taken as delivered: {outcome:?}"
+        );
+        assert!(
+            elapsed
+                < host + RESPONSE_SERIALIZATION_MARGIN + RECOVERY_BUDGET + Duration::from_secs(1),
+            "the trickle renewed the deadline: {elapsed:?}"
+        );
+        assert_eq!(fake.submissions(), 1);
+    }
+
     #[test]
     fn pending_receipt_is_polled_until_its_original_budget_settles() {
         let recoveries = Arc::new(AtomicUsize::new(0));
