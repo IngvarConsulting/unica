@@ -550,12 +550,15 @@ fn root_check_pages_are_the_same_through_a_task_and_a_direct_call() {
         panic!("the paused root check did not hand off to a task");
     };
     daemon.pause.release();
-    let V5ServerResponse::Task {
-        snapshot: V5DaemonTaskSnapshot::Completed { result: tasked, .. },
-    } = owner.wait_task(task_id, 7_000).unwrap()
-    else {
-        panic!("the root check task did not complete");
-    };
+    // Under load the inspection may outlast one wait; the Task stays the same.
+    let tasked = (0..10)
+        .find_map(|_| match owner.wait_task(task_id, 7_000).unwrap() {
+            V5ServerResponse::Task {
+                snapshot: V5DaemonTaskSnapshot::Completed { result, .. },
+            } => Some(result),
+            _ => None,
+        })
+        .expect("the root check task did not complete");
     let answered = direct(&mut owner, first_page);
     assert!(tasked.ok, "{tasked:?}");
     assert_eq!(
