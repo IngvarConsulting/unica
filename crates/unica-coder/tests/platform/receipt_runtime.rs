@@ -8613,39 +8613,6 @@ fn cancel_during_task_materialization_by(
     cancel_races_start: bool,
     cancel_by: CancelBy,
 ) {
-    // The test holds the attempt, and in the race also the cancel, at its
-    // own gates while the submit and the cancel wait on the daemon. On a
-    // loaded machine a hold can outlast their own two-second budget: the
-    // daemon then answers `overloaded`, or the answer is lost, before the
-    // window under test is reached. Such an attempt is repeated; only an
-    // attempt whose submit and cancel were answered within budget counts.
-    for _ in 0..5 {
-        if try_cancel_during_task_materialization_by(race, cancel_races_start, cancel_by) {
-            return;
-        }
-    }
-    panic!("{race:?}/{cancel_by:?}: every attempt's cancel ran out of its own budget");
-}
-
-/// Whether a submit or cancel answer is the daemon's own budget running out
-/// while the test held the attempt, not an answer about the window under test.
-fn ran_out_of_its_own_budget(answer: &Result<V5ServerResponse, String>) -> bool {
-    matches!(
-        answer,
-        Ok(V5ServerResponse::Error {
-            code: V5DaemonErrorCode::Overloaded
-        })
-    ) || matches!(answer, Err(error) if error.contains("ended before data")
-        || error.contains("deadline expired"))
-}
-
-/// One attempt of the race; `false` when a submit or cancel ran out of its
-/// own budget while the test held it, so the window did not take place.
-fn try_cancel_during_task_materialization_by(
-    race: MaterializationRace,
-    cancel_races_start: bool,
-    cancel_by: CancelBy,
-) -> bool {
     let state = tempfile::tempdir().expect("temporary daemon state");
     let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
     let (_workspace, root) = catalog_workspace();
@@ -8770,26 +8737,9 @@ fn try_cancel_during_task_materialization_by(
     let mut submit = Some(submit);
     let mut answered = None;
     if answered_early {
-        let submitted = submit.take().unwrap().join().expect("submit thread");
-        if ran_out_of_its_own_budget(&submitted) {
-            for gate in [
-                &hooks.attempt_gate,
-                &hooks.materialize_gate,
-                &hooks.start_gate,
-                &hooks.cancel_write_gate,
-            ] {
-                MaterializationRaceHooks::open_gate(gate);
-            }
-            if let Some(admission) = admission.as_ref() {
-                admission.release();
-            }
-            drop(owner);
-            drop(admission);
-            stop.store(true, Ordering::SeqCst);
-            let _ = server.join();
-            return false;
-        }
-        answered = Some(submitted_task_snapshot(submitted));
+        answered = Some(submitted_task_snapshot(
+            submit.take().unwrap().join().expect("submit thread"),
+        ));
         match race {
             MaterializationRace::PromotedActorBound => {
                 MaterializationRaceHooks::open_gate(&hooks.attempt_gate);
@@ -8823,44 +8773,14 @@ fn try_cancel_during_task_materialization_by(
         MaterializationRaceHooks::open_gate(&hooks.cancel_write_gate);
     }
 
-    let cancelled = cancel.join().expect("cancel thread");
-    if ran_out_of_its_own_budget(&cancelled) {
-        for gate in [
-            &hooks.attempt_gate,
-            &hooks.materialize_gate,
-            &hooks.start_gate,
-            &hooks.cancel_write_gate,
-        ] {
-            MaterializationRaceHooks::open_gate(gate);
-        }
-        if let Some(submit) = submit.take() {
-            let _ = submit.join();
-        }
-        drop(owner);
-        drop(admission);
-        stop.store(true, Ordering::SeqCst);
-        let _ = server.join();
-        return false;
-    }
-    let cancelled = cancelled.expect("cancel answered");
+    let cancelled = cancel
+        .join()
+        .expect("cancel thread")
+        .expect("cancel answered");
     if let Some(submit) = submit.take() {
-        let submitted = submit.join().expect("submit thread");
-        if ran_out_of_its_own_budget(&submitted) {
-            for gate in [
-                &hooks.attempt_gate,
-                &hooks.materialize_gate,
-                &hooks.start_gate,
-                &hooks.cancel_write_gate,
-            ] {
-                MaterializationRaceHooks::open_gate(gate);
-            }
-            drop(owner);
-            drop(admission);
-            stop.store(true, Ordering::SeqCst);
-            let _ = server.join();
-            return false;
-        }
-        answered = Some(submitted_task_snapshot(submitted));
+        answered = Some(submitted_task_snapshot(
+            submit.join().expect("submit thread"),
+        ));
     }
     assert_eq!(answered.expect("submit answered").task_id(), task_id);
     MaterializationRaceHooks::open_gate(&hooks.attempt_gate);
@@ -8919,7 +8839,6 @@ fn try_cancel_during_task_materialization_by(
         .join()
         .expect("daemon thread did not panic")
         .expect("daemon exits cleanly");
-    true
 }
 
 #[test]
