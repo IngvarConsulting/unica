@@ -1,5 +1,6 @@
 use super::super::retained_directory::{DirectoryRemoval, PublishedDirectoryRemoval};
 use super::*;
+use unica_source_contract::portable_path::PortablePathExt;
 
 fn directory_validation_error(
     error: super::super::apply::ApplyStagingError,
@@ -127,7 +128,7 @@ impl CompileTransaction {
             if let Err(error) = change.rollback() {
                 errors.push(format!(
                     "directory {} recovery {}: {error}",
-                    change.plan.relative.display(),
+                    change.plan.relative.portable(),
                     change.recovery.path().display()
                 ));
             }
