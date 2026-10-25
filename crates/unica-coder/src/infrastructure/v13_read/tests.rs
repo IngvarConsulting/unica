@@ -5690,7 +5690,7 @@ fn a_descriptor_larger_than_eight_mebibytes_is_read_through_public_view() {
     let result = fixture
         .view_service()
         .view(ViewRequest::new(&format!("main:Catalog.{name}")).unwrap());
-    assert!(result.ok, "{:?}", result.diagnostics);
+    assert!(result.ok);
     assert_eq!(result.data.unwrap()["at"], format!("main:Catalog.{name}"));
 }
 
