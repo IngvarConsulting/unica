@@ -4259,8 +4259,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 .receipt_ledger
                 .recover(reservation.key().clone(), deadline)?;
             if reservation_is_still_unbound(&current) {
-                let terminal = crate::receipt_ledger::canonical_cancelled_terminal()
-                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                // Fail-stop stops the bind too, and that is no client cancel.
+                let terminal = if self.restart_required() {
+                    rejection_terminal(&Self::interrupted(), H::MAX_SUPPORTED_BODY_RESPONSE_BYTES)?
+                } else {
+                    crate::receipt_ledger::canonical_cancelled_terminal()
+                        .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?
+                };
                 return self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
             }
             return self.reply_for_existing_state(current, deadline);
@@ -4808,6 +4813,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         cancellation: CancellationToken,
         invocation_id: unica_execution_contract::invocation::InvocationId,
     ) {
+        if self.restart_required() {
+            self.publish_inline_settlement(
+                slot.settle(InlineWorkerReport::Outcome(Self::interrupted())),
+                cancellation,
+            );
+            return;
+        }
         let prepared = match actor_bound.prepare() {
             Ok(prepared) => prepared,
             Err(result) => {
@@ -4860,6 +4872,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         self.provider_outcome(prepared, cancellation, self.epoch_ms(), Some(invocation_id))
     }
 
+    /// The outcome of an attempt the process stopped on fail-stop.
+    fn interrupted() -> ReceiptTerminalOutcome {
+        ReceiptTerminalOutcome::Failed {
+            reason: V5SafeFailureReason::Interrupted,
+        }
+    }
+
     /// Runs the provider and maps its result to the attempt's outcome. No
     /// subject work begins once the process latched fail-stop: the attempt
     /// then ends interrupted without entering the provider.
@@ -4871,9 +4890,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         invocation_id: Option<unica_execution_contract::invocation::InvocationId>,
     ) -> ReceiptTerminalOutcome {
         if self.restart_required() {
-            return ReceiptTerminalOutcome::Failed {
-                reason: V5SafeFailureReason::Interrupted,
-            };
+            return Self::interrupted();
         }
         self.hooks.stage_entered(V5Stage::Execute);
         self.hooks
@@ -4884,7 +4901,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         let result = prepared.execute(cancellation.clone());
         let authority = cancellation.factual_outcome_authority();
         if cancellation.is_cancelled() && authority == FactualOutcomeAuthority::Cancellable {
-            ReceiptTerminalOutcome::Cancelled
+            // A stop the process asked for on fail-stop is no cancel the
+            // client requested.
+            if self.restart_required() {
+                Self::interrupted()
+            } else {
+                ReceiptTerminalOutcome::Cancelled
+            }
         } else {
             match result {
                 Ok(result) => ReceiptTerminalOutcome::Completed {
@@ -5324,6 +5347,17 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 "scenario prepare rejected invocation",
                 H::MAX_SUPPORTED_BODY_RESPONSE_BYTES,
             )?;
+            return self.publish_bound_terminal_reply(
+                &bound,
+                &task_record,
+                &terminal,
+                epoch_ms,
+                deadline,
+            );
+        }
+        if self.restart_required() {
+            let terminal =
+                rejection_terminal(&Self::interrupted(), H::MAX_SUPPORTED_BODY_RESPONSE_BYTES)?;
             return self.publish_bound_terminal_reply(
                 &bound,
                 &task_record,

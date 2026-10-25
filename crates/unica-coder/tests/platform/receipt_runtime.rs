@@ -7369,6 +7369,13 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for FailStopHooks {
         }
     }
 
+    // Join the handlers and Task threads on fail-stop, as the contract
+    // harness does: what an attempt did is then settled when the daemon
+    // returns, so the test reads it without racing the exit.
+    fn releases_authority_on_fail_stop(&self) -> bool {
+        true
+    }
+
     fn runtime_opened(&self, runtime: &Arc<V5ReceiptRuntime>) {
         *self.runtime.lock().unwrap() = Some(Arc::downgrade(runtime));
     }
@@ -7477,8 +7484,8 @@ fn fail_stop_by_another_call_during_prepare_never_enters_the_provider() {
     hooks.latch_fail_stop();
     IdleInvocationRelease(Arc::clone(&service.prepare)).release();
 
-    daemon.await_idle_exit();
     drop(owner);
+    daemon.await_idle_exit();
     daemon.join();
     assert_eq!(
         service.executions.load(Ordering::SeqCst),
@@ -7508,8 +7515,8 @@ fn fail_stop_signals_cancellation_to_running_subject_work() {
     executing.recv_timeout(Duration::from_secs(3)).unwrap();
     hooks.latch_fail_stop();
 
-    daemon.await_idle_exit();
     drop(owner);
+    daemon.await_idle_exit();
     daemon.join();
     assert_eq!(service.executions.load(Ordering::SeqCst), 1);
     assert!(
