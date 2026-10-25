@@ -10,6 +10,7 @@ use unica_source_contract::SourceSetKind;
 pub enum OperationApplicability {
     ExchangePlan,
     Configuration,
+    ConfigurationRoot,
     Event,
     ExtensionRoot,
     Interface,
@@ -46,6 +47,7 @@ impl OperationApplicability {
         match self {
             Self::ExchangePlan => "`ExchangePlan.Name`",
             Self::Configuration => "`Configuration`",
+            Self::ConfigurationRoot => "`Configuration` of a configuration, not of an extension",
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata => "`Kind.Name`",
             Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
@@ -91,6 +93,10 @@ impl OperationApplicability {
                 matches!(segments, [only] if only.kind() == NodeKind::ExchangePlan && only.name().is_some())
             }
             Self::Configuration => site.route() == RouteClass::Configuration,
+            Self::ConfigurationRoot => {
+                site.route() == RouteClass::Configuration
+                    && site.source().kind() == SourceSetKind::Configuration
+            }
             Self::ExtensionRoot => {
                 site.route() == RouteClass::Configuration
                     && site.source().kind() == SourceSetKind::Extension

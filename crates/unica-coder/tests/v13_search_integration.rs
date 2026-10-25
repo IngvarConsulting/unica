@@ -436,6 +436,17 @@ fn body_workspace(workspace: &std::path::Path, module_bytes: &[u8]) {
         .success());
 }
 
+/// A text-search file identifier: stable, and neither a path nor an address.
+fn is_file_id(value: &Value) -> bool {
+    value.as_str().is_some_and(|id| {
+        id.len() == 20
+            && id.starts_with("bsl-")
+            && id[4..]
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+    })
+}
+
 fn initialize_body_mcp(mcp: &mut McpProcess) {
     initialize_body_mcp_as(mcp, "body-large-test");
 }
@@ -1012,107 +1023,87 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     )
     .expect("nested source-set scope trap for the lexical provider");
 
-    let lexical = mcp.completed_tool_call(call_tool(
-        24,
-        "unica.search",
-        json!({"query": "MainNeedle", "role": "lexical", "scope": "main:CommonModule.Main", "limit": 7}),
-    ));
-    assert_eq!(lexical["ok"], true, "{lexical:#}");
-    assert_eq!(lexical["data"]["mode"], "lexical");
-    let sections = lexical["data"]["matches"]
-        .as_array()
-        .expect("provider sections");
-    assert_eq!(sections.len(), 1, "only the selected role may answer");
-    assert_eq!(sections[0]["role"], "lexical");
-    assert_eq!(sections[0]["hits"].as_array().map(Vec::len), Some(7));
-    assert_eq!(sections[0]["matches"]["returned"], 7);
-    let mut lexical_lines = sections[0]["hits"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|hit| hit["line"].as_u64().unwrap())
-        .collect::<Vec<_>>();
-    let mut lexical_cursor = lexical["cursor"]
-        .as_str()
-        .expect("provider continuation")
-        .to_string();
-    let mut lexical_pages = 1;
+    // The workspace is a Git work tree: the literal search reads it through
+    // Git, with the same scope boundaries as the walk.
+    let module_page = |id: u64, cursor: Option<&str>| {
+        let mut arguments =
+            json!({"query": "MainNeedle", "scope": "main:CommonModule.Main", "limit": 7});
+        if let Some(cursor) = cursor {
+            arguments["cursor"] = json!(cursor);
+        }
+        call_tool(id, "unica.search", arguments)
+    };
+    let mut module_lines = Vec::new();
+    let mut module_cursor = None::<String>;
+    let mut module_pages = 0;
     loop {
-        let page = mcp.completed_tool_call(call_tool(
-            30 + lexical_pages,
-            "unica.search",
-            json!({"query": "MainNeedle", "role": "lexical", "scope": "main:CommonModule.Main", "limit": 7, "cursor": lexical_cursor}),
-        ));
+        let page =
+            mcp.completed_tool_call(module_page(30 + module_pages, module_cursor.as_deref()));
         assert_eq!(page["ok"], true, "{page:#}");
-        let hits = page["data"]["matches"][0]["hits"].as_array().unwrap();
-        assert_eq!(
-            page["data"]["matches"][0]["matches"]["returned"],
-            hits.len()
-        );
-        lexical_lines.extend(hits.iter().map(|hit| hit["line"].as_u64().unwrap()));
-        lexical_pages += 1;
-        if let Some(next) = page["cursor"].as_str() {
-            lexical_cursor = next.to_string();
-        } else {
-            assert_eq!(page["page"]["stoppedBy"], "complete");
-            assert_eq!(page["data"]["matches"][0]["searchComplete"], true);
-            break;
+        let hits = page["data"]["matches"].as_array().unwrap();
+        assert!(hits.len() <= 7);
+        assert!(hits.iter().all(|hit| hit["at"]
+            .as_str()
+            .unwrap()
+            .starts_with("main:CommonModule.Main")));
+        module_lines.extend(hits.iter().map(|hit| hit["line"].as_u64().unwrap()));
+        module_pages += 1;
+        match page["cursor"].as_str() {
+            Some(next) => module_cursor = Some(next.to_string()),
+            None => {
+                assert_eq!(page["page"]["stoppedBy"], "complete");
+                assert_eq!(page["data"]["fileCoverage"]["scanComplete"], true);
+                break;
+            }
         }
     }
-    assert_eq!(lexical_pages, 4);
+    assert_eq!(module_pages, 4);
     assert_eq!(
-        lexical_lines,
+        module_lines,
         std::iter::once(1).chain(3..=23).collect::<Vec<_>>()
     );
-    let lexical_extension = mcp.completed_tool_call(call_tool(
+    let extension_module = mcp.completed_tool_call(call_tool(
         37,
         "unica.search",
-        json!({"query":"ExtensionNeedle","corpus":"text","role":"lexical","scope":"extension:CommonModule.Extension"}),
+        json!({"query":"ExtensionNeedle","corpus":"text","scope":"extension:CommonModule.Extension"}),
     ));
-    assert_eq!(lexical_extension["ok"], true, "{lexical_extension:#}");
+    assert_eq!(extension_module["ok"], true, "{extension_module:#}");
     assert_eq!(
-        lexical_extension["data"]["matches"][0]["hits"]
-            .as_array()
-            .map(Vec::len),
+        extension_module["data"]["matches"].as_array().map(Vec::len),
         Some(1),
-        "the ignored extension is searched: {lexical_extension:#}"
+        "the ignored extension is searched: {extension_module:#}"
     );
-    let lexical_main_root = mcp.completed_tool_call(call_tool(
+    let main_root = mcp.completed_tool_call(call_tool(
         38,
         "unica.search",
-        json!({"query":"MainNeedle","corpus":"text","role":"lexical","scope":"main:Configuration","limit":50}),
+        json!({"query":"MainNeedle","corpus":"text","scope":"main:Configuration","limit":50}),
     ));
-    assert_eq!(lexical_main_root["ok"], true, "{lexical_main_root:#}");
+    assert_eq!(main_root["ok"], true, "{main_root:#}");
     assert_eq!(
-        lexical_main_root["data"]["matches"][0]["hits"]
-            .as_array()
-            .map(Vec::len),
+        main_root["data"]["matches"].as_array().map(Vec::len),
         Some(22),
-        "main excludes the nested extension, generated BSL and private text: {lexical_main_root:#}"
+        "main excludes the nested extension, generated BSL and private text: {main_root:#}"
     );
-    assert_eq!(
-        lexical_main_root["data"]["matches"][0]["searchComplete"],
-        true
-    );
-    let lexical_all_sources = mcp.completed_tool_call(call_tool(
+    assert_eq!(main_root["data"]["fileCoverage"]["complete"], true);
+    let all_sources = mcp.completed_tool_call(call_tool(
         39,
         "unica.search",
-        json!({"query":"ExtensionNeedle","corpus":"text","role":"lexical","limit":50}),
+        json!({"query":"ExtensionNeedle","corpus":"text","limit":50}),
     ));
-    assert_eq!(lexical_all_sources["ok"], true, "{lexical_all_sources:#}");
-    let all_hits = lexical_all_sources["data"]["matches"][0]["hits"]
+    assert_eq!(all_sources["ok"], true, "{all_sources:#}");
+    let all_hits = all_sources["data"]["matches"]
         .as_array()
-        .expect("unscoped lexical source results");
+        .expect("unscoped text results");
     assert_eq!(
         all_hits.len(),
         1,
-        "nested sources are searched once: {lexical_all_sources:#}"
+        "nested sources are searched once: {all_sources:#}"
     );
-    assert_eq!(all_hits[0]["location"]["sourceSet"], "extension");
+    assert_eq!(all_hits[0]["scope"], "extension:Configuration");
     let cross_mode = mcp.completed_tool_call(call_tool(
         35,
         "unica.search",
-        json!({"query": "MainNeedle", "role": "lexical", "scope": "main:Configuration", "cursor": cursor}),
+        json!({"query": "MainNeedle", "ignoreCase": true, "scope": "main:Configuration", "cursor": cursor}),
     ));
     assert_eq!(cross_mode["diagnostics"][0]["code"], "invalid_cursor");
 
@@ -1205,9 +1196,11 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     let broad = mcp.completed_tool_call(call_tool(8, "unica.search", json!({"query": "Needle"})));
     assert_eq!(broad["page"]["stoppedBy"], "limit");
     let broad_cursor = broad["cursor"].as_str().expect("multi-source cursor");
+    // The extension is admitted first: the first page delivers its matches
+    // and the main module's head; the orphan module comes after the cursor.
     std::fs::write(
-        workspace.join("src/extension/CommonModules/Extension/Ext/Module.bsl"),
-        "Procedure ExtensionNeedle() Export\nEndProcedure\n// changed source\n",
+        workspace.join("CommonModules/Orphan/Ext/Module.bsl"),
+        "// changed source\n",
     )
     .expect("change a source not reached by the first page");
     let stale = mcp.completed_tool_call(call_tool(
@@ -1489,7 +1482,8 @@ fn unreadable_source_lines_keep_other_hits_and_truthful_coverage_across_pages() 
         format!("// {}Needle\n", "x".repeat(8 * 1024 * 1024)),
     )
     .expect("overlong source line");
-    std::fs::write(workspace.join("C.bsl"), b"// Needle\n\xff").expect("source with invalid UTF-8");
+    std::fs::write(workspace.join("C.bsl"), b"// Needle\n\xff Needle")
+        .expect("source with an invalid UTF-8 line that may hold a match");
     std::fs::write(workspace.join("D.bsl"), "// Needle\n".repeat(21))
         .expect("source after the uncovered files");
     std::fs::write(workspace.join("E.bsl"), "// Needle\n")
@@ -1540,8 +1534,8 @@ fn unreadable_source_lines_keep_other_hits_and_truthful_coverage_across_pages() 
     assert_eq!(details[0]["sourceSet"], "main");
     assert_eq!(details[0]["reason"], "line_too_long");
     assert_eq!(details[1]["reason"], "invalid_utf8");
-    assert_eq!(details[0]["fileId"], "bsl-2");
-    assert_eq!(details[1]["fileId"], "bsl-3");
+    assert_ne!(details[0]["fileId"], details[1]["fileId"]);
+    assert!(details.iter().all(|detail| is_file_id(&detail["fileId"])));
     assert_eq!(partial["page"]["stoppedBy"], "limit");
     let partial_cursor = partial["cursor"].as_str().expect("remaining hits");
     assert!(!partial.to_string().contains("B.bsl"));
@@ -1576,10 +1570,10 @@ fn unreadable_source_lines_keep_other_hits_and_truthful_coverage_across_pages() 
         terminal["data"]["fileCoverage"]["uncoveredIsLowerBound"],
         false
     );
-    assert_eq!(
-        terminal["data"]["fileCoverage"]["details"],
-        Value::Array(details.clone())
-    );
+    // The count carries the files earlier pages passed; the details name
+    // only what this page read.
+    assert_eq!(terminal["data"]["fileCoverage"]["details"], json!([]));
+    assert_eq!(terminal["data"]["fileCoverage"]["detailsTruncated"], true);
     assert_eq!(terminal["page"]["stoppedBy"], "complete");
     assert!(terminal.get("cursor").is_none());
     mcp.finish();
@@ -1600,8 +1594,8 @@ fn text_file_coverage_counts_all_uncovered_files_when_details_are_capped() {
     )
     .expect("configuration");
     for index in 0..33 {
-        std::fs::write(workspace.join(format!("Bad{index:02}.bsl")), b"\xff")
-            .expect("undecodable BSL source");
+        std::fs::write(workspace.join(format!("Bad{index:02}.bsl")), b"\xffNeedle")
+            .expect("undecodable BSL source line that may hold a match");
     }
     std::fs::write(workspace.join("Good.bsl"), "// Needle\n").expect("readable BSL source");
 
@@ -1633,8 +1627,15 @@ fn text_file_coverage_counts_all_uncovered_files_when_details_are_capped() {
         .as_array()
         .expect("bounded uncovered details");
     assert_eq!(details.len(), 32);
-    assert_eq!(details[0]["fileId"], "bsl-1");
-    assert_eq!(details[31]["fileId"], "bsl-32");
+    assert!(details.iter().all(|detail| is_file_id(&detail["fileId"])));
+    assert_eq!(
+        details
+            .iter()
+            .map(|detail| detail["fileId"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        32
+    );
     assert!(details
         .iter()
         .all(|detail| detail["reason"] == "invalid_utf8"));
@@ -1819,8 +1820,14 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         assert_eq!(page["page"]["stoppedBy"], "limit");
     }
     assert_eq!(seen.len(), 121);
-    assert_eq!(seen.first().unwrap(), "main:Catalog.Item000");
-    assert_eq!(seen.last().unwrap(), "main:Catalog.Item120");
+    // Equal scores rank by address: pages resumed after their last name
+    // walk the whole answer in that order.
+    assert_eq!(
+        seen,
+        (0..121)
+            .map(|index| format!("main:Catalog.Item{index:03}"))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         seen.iter().collect::<std::collections::BTreeSet<_>>().len(),
         121
@@ -1852,6 +1859,29 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         assert_eq!(page["page"]["stoppedBy"], "limit");
     }
     assert_eq!(nearest_seen, seen);
+
+    // 121 matches are eleven full pages of eleven: the last one completes
+    // without a continuation.
+    let mut exact_cursor: Option<String> = None;
+    let mut exact_pages = 0;
+    loop {
+        let mut arguments =
+            json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 11});
+        if let Some(token) = &exact_cursor {
+            arguments["cursor"] = json!(token);
+        }
+        let page = mcp.completed_tool_call(call_tool(300 + exact_pages, "unica.search", arguments));
+        assert_eq!(page["ok"], true, "{page:#}");
+        assert_eq!(page["data"]["matches"].as_array().map(Vec::len), Some(11));
+        exact_pages += 1;
+        exact_cursor = page["cursor"].as_str().map(str::to_owned);
+        if exact_cursor.is_none() {
+            assert_eq!(page["page"]["stoppedBy"], "complete");
+            break;
+        }
+        assert!(exact_pages < 11, "{page:#}");
+    }
+    assert_eq!(exact_pages, 11);
 
     let default_page = mcp.completed_tool_call(call_tool(
         200,
@@ -1899,6 +1929,23 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 18, "cursor": first_cursor}),
     ));
     assert_eq!(wrong_limit["diagnostics"][0]["code"], "invalid_cursor");
+
+    // A new title keeps the number of matches: the fingerprint of the
+    // answer, not its count, makes the continuation stale.
+    std::fs::write(
+        workspace.join("Catalogs/Item061.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Catalog><Properties><Name>Item061</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Другое имя</v8:content></v8:item></Synonym></Properties></Catalog></MetaDataObject>"#,
+    )
+    .expect("retitle one ranked name");
+    let retitled = mcp.completed_tool_call(call_tool(
+        34,
+        "unica.search",
+        json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 17, "cursor": first_cursor}),
+    ));
+    assert_eq!(
+        retitled["diagnostics"][0]["code"], "stale_cursor",
+        "{retitled:#}"
+    );
 
     std::fs::write(
         workspace.join("Catalogs/Item060.xml"),
@@ -2339,7 +2386,8 @@ fn text_search_keeps_nested_module_order_across_pages() {
     let mut mcp = McpProcess::start(root.path());
     initialize_body_mcp(&mut mcp);
     let mut args = json!({"query":"OrderedNeedle", "scope":"main:Configuration", "limit":1});
-    for (index, owner) in ["Z", "Main", "A"].into_iter().enumerate() {
+    // Git's path order: `A/` < `Main/` < `Z/`.
+    for (index, owner) in ["A", "Main", "Z"].into_iter().enumerate() {
         let page =
             mcp.completed_tool_call(call_tool(2 + index as u64, "unica.search", args.clone()));
         assert_eq!(page["ok"], true, "{page:#}");
@@ -2354,5 +2402,86 @@ fn text_search_keeps_nested_module_order_across_pages() {
             args["cursor"] = page["cursor"].clone();
         }
     }
+    mcp.finish();
+}
+
+/// #1119: the literal search is not a window of its first 200 matches,
+/// with Git and without it. Every match stays reachable through cursors in
+/// traversal order, a cursor replays its page while the delivered part is
+/// unchanged, and an edit before the cursor makes it stale instead of
+/// shifting matches.
+#[test]
+fn literal_search_pages_past_two_hundred_matches_without_loss() {
+    for git in [false, true] {
+        literal_search_pages_past_two_hundred_matches(git);
+    }
+}
+
+fn literal_search_pages_past_two_hundred_matches(git: bool) {
+    let root = tempfile::tempdir().unwrap();
+    body_workspace(root.path(), "// WideNeedle\n".repeat(450).as_bytes());
+    if !git {
+        // Without a work tree the walk answers.
+        std::fs::remove_dir_all(root.path().join(".git")).unwrap();
+    }
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let question = json!({"query": "WideNeedle", "scope": "main:CommonModule.Main", "limit": 50});
+    let mut arguments = question.clone();
+    let mut lines = Vec::new();
+    let mut cursors = Vec::new();
+    let last = loop {
+        let page = mcp.completed_tool_call(call_tool(
+            2 + cursors.len() as u64,
+            "unica.search",
+            arguments.clone(),
+        ));
+        assert_eq!(page["ok"], true, "git {git}: {page:#}");
+        lines.extend(
+            page["data"]["matches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|hit| hit["line"].as_u64().unwrap()),
+        );
+        let Some(cursor) = page["cursor"].as_str() else {
+            break page;
+        };
+        cursors.push(cursor.to_string());
+        arguments["cursor"] = json!(cursor);
+    };
+    assert_eq!(lines, (1..=450).collect::<Vec<_>>(), "git {git}");
+    assert_eq!(cursors.len(), 8, "git {git}");
+    assert_eq!(last["page"]["stoppedBy"], "complete");
+    assert_eq!(last["data"]["fileCoverage"]["complete"], true, "{last:#}");
+    assert!(
+        last["warnings"].as_array().is_none_or(Vec::is_empty),
+        "{last:#}"
+    );
+
+    // The fifth cursor continues at match 251, past the former window.
+    let mut past_window = question.clone();
+    past_window["cursor"] = json!(cursors[4]);
+    let page = mcp.completed_tool_call(call_tool(20, "unica.search", past_window.clone()));
+    let replay = mcp.completed_tool_call(call_tool(21, "unica.search", past_window.clone()));
+    assert_eq!(page, replay, "a cursor replays its page and continuation");
+    assert_eq!(page["data"]["matches"][0]["line"], 251);
+
+    // An edit after the delivered part is read by the next page.
+    let module = root.path().join("CommonModules/Main/Ext/Module.bsl");
+    let mut tail = "// WideNeedle\n".repeat(449);
+    tail.push_str("// WideNeedle tail\n");
+    std::fs::write(&module, tail).unwrap();
+    let after_tail = mcp.completed_tool_call(call_tool(22, "unica.search", past_window.clone()));
+    assert_eq!(after_tail["ok"], true, "{after_tail:#}");
+    assert_eq!(after_tail["data"], page["data"]);
+
+    // An edit inside the delivered part makes the cursor stale.
+    let mut prefix = String::from("// WideNeedle head\n");
+    prefix.push_str(&"// WideNeedle\n".repeat(450));
+    std::fs::write(&module, prefix).unwrap();
+    let stale = mcp.completed_tool_call(call_tool(23, "unica.search", past_window));
+    assert_eq!(stale["ok"], false, "{stale:#}");
+    assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
     mcp.finish();
 }

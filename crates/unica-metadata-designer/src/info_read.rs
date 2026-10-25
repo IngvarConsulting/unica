@@ -17,21 +17,25 @@ use unica_metadata::{
 };
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::read::{
-    RetainedSourceRead, SecureFileSnapshot, SecureTreeCaptureLimits,
+    RetainedSourceRead, SecureFileSnapshotEntry, SecureTreeCaptureLimits,
 };
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 /// Bounded IO factories and the existing observation hooks; never semantic callbacks.
 pub trait MetadataInfoRead: MetadataDependencyRead {
-    fn capture_regular_files(
+    /// Hand each selected file to `visit` one at a time; `true` when the start
+    /// directory is absent.
+    #[allow(clippy::too_many_arguments)]
+    fn visit_regular_files(
         &self,
         root: &Path,
         start: &Path,
         limits: SecureTreeCaptureLimits,
         descend: fn(&Path) -> bool,
         select: fn(&Path) -> bool,
+        visit: &mut dyn FnMut(SecureFileSnapshotEntry) -> io::Result<()>,
         checkpoint: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<SecureFileSnapshot>;
+    ) -> io::Result<bool>;
     fn open_retained_read(
         &self,
         root: &Path,
@@ -46,12 +50,10 @@ pub enum RegistrarProcessingPhase {
     AfterIdentityParse {
         logical_path: String,
         ordinal: usize,
-        total: usize,
     },
     AfterRegistrarParse {
         logical_path: String,
         ordinal: usize,
-        total: usize,
     },
     BeforeCompleteReturn,
 }
@@ -60,12 +62,6 @@ pub enum RegistrarProcessingPhase {
 pub enum SubsystemEvidenceProcessingPhase {
     BeforeCompleteReturn,
 }
-
-const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
-
-const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
-
-const REGISTRAR_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// The source set the descriptor belongs to: its name for dependency reads
 /// and its kind for the member property profile.
@@ -347,112 +343,45 @@ pub fn typed_registrar_document_images<G>(
             unica_metadata::validation_subject::MetadataEvidenceAvailability::Complete,
         );
     }
-    let mut checkpoint = || registrar_scan_checkpoint(deadline, cancellation);
-    let entries = match reader.capture_regular_files(
-        source_root,
-        Path::new("Documents"),
-        SecureTreeCaptureLimits {
-            maximum_depth: 0,
-            maximum_entries: REGISTRAR_SCAN_MAX_ENTRIES,
-            maximum_files: REGISTRAR_SCAN_MAX_FILES,
-            maximum_bytes: REGISTRAR_SCAN_MAX_BYTES,
-        },
-        |_| false,
-        |path| path.extension().and_then(|extension| extension.to_str()) == Some("xml"),
-        &mut checkpoint,
-    ) {
-        Ok(entries) => entries,
-        Err(_) => {
-            return registrar_evidence_unavailable(
-                target,
-                "registrar evidence cannot be scanned completely",
-            )
-        }
-    };
-    if entries.start_missing {
-        reader.registrar_processing_phase(RegistrarProcessingPhase::BeforeCompleteReturn);
-        if checkpoint().is_err() {
-            return registrar_evidence_unavailable(
-                target,
-                "registrar evidence processing was interrupted",
-            );
-        }
-        return (
-            Vec::new(),
-            unica_metadata::validation_subject::MetadataEvidenceAvailability::Complete,
-        );
-    }
+    // Each document is parsed and dropped as it is visited; only the
+    // documents that register the target keep their bytes (#1119).
+    let checkpoint = || registrar_scan_checkpoint(deadline, cancellation);
     let mut resources = Vec::new();
     let register_reference = target.as_str().to_string();
-    let total = entries.files.len();
-    for (ordinal, entry) in entries.files.into_iter().enumerate() {
-        if checkpoint().is_err() {
-            return registrar_evidence_unavailable(
-                target,
-                "registrar evidence processing was interrupted",
-            );
-        }
-        let logical_path = entry.logical_path;
-        let bytes = entry.bytes;
-        let identity_result = crate::validation_context::inspect_metadata_image_identity(&bytes);
-        reader.registrar_processing_phase(RegistrarProcessingPhase::AfterIdentityParse {
-            logical_path: logical_path.clone(),
-            ordinal,
-            total,
-        });
-        if checkpoint().is_err() {
-            return registrar_evidence_unavailable(
-                target,
-                "registrar evidence processing was interrupted",
-            );
-        }
-        let identity = match identity_result {
-            Ok(identity) if identity.object_type == "Document" => identity,
-            _ => {
-                return registrar_evidence_unavailable(
-                    target,
-                    "registrar evidence candidate is malformed",
-                )
+    let mut ordinal = 0usize;
+    let mut failure = None;
+    let visited = reader.visit_regular_files(
+        source_root,
+        Path::new("Documents"),
+        SecureTreeCaptureLimits { maximum_depth: 0 },
+        |_| false,
+        |path| path.extension().and_then(|extension| extension.to_str()) == Some("xml"),
+        &mut |entry| {
+            let outcome =
+                visit_registrar_candidate(reader, entry, ordinal, &register_reference, &checkpoint);
+            ordinal += 1;
+            match outcome {
+                Ok(Some(resource)) => {
+                    resources.push(resource);
+                    Ok(())
+                }
+                Ok(None) => Ok(()),
+                Err(message) => {
+                    failure = Some(message);
+                    Err(io::Error::other(message))
+                }
             }
-        };
-        let dependency_target = match MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{}.{}", identity.object_type, identity.object_name),
-        ) {
-            Ok(target) => target,
-            Err(_) => {
-                return registrar_evidence_unavailable(
-                    target,
-                    "registrar evidence candidate has no logical identity",
-                )
-            }
-        };
-        if checkpoint().is_err() {
-            return registrar_evidence_unavailable(
-                target,
-                "registrar evidence processing was interrupted",
-            );
-        }
-        let registers_target = crate::validation::document_registers(&bytes, &register_reference);
-        reader.registrar_processing_phase(RegistrarProcessingPhase::AfterRegistrarParse {
-            logical_path,
-            ordinal,
-            total,
-        });
-        if checkpoint().is_err() {
-            return registrar_evidence_unavailable(
-                target,
-                "registrar evidence processing was interrupted",
-            );
-        }
-        if registers_target {
-            resources.push(unica_metadata::validation_subject::MetadataResourceImage {
-                role: unica_metadata::validation_subject::MetadataResourceRole::Dependency {
-                    target: dependency_target,
-                },
-                bytes,
-            });
-        }
+        },
+        &mut || checkpoint(),
+    );
+    if let Some(message) = failure {
+        return registrar_evidence_unavailable(target, message);
+    }
+    if visited.is_err() {
+        return registrar_evidence_unavailable(
+            target,
+            "registrar evidence cannot be scanned completely",
+        );
     }
     reader.registrar_processing_phase(RegistrarProcessingPhase::BeforeCompleteReturn);
     if checkpoint().is_err() {
@@ -464,6 +393,50 @@ pub fn typed_registrar_document_images<G>(
     (
         resources,
         unica_metadata::validation_subject::MetadataEvidenceAvailability::Complete,
+    )
+}
+
+/// One document of the registrar scan: `Some` when it registers the target.
+fn visit_registrar_candidate<G>(
+    reader: &dyn MetadataInfoRead<Guard = G>,
+    entry: SecureFileSnapshotEntry,
+    ordinal: usize,
+    register_reference: &str,
+    checkpoint: &impl Fn() -> io::Result<()>,
+) -> Result<Option<unica_metadata::validation_subject::MetadataResourceImage>, &'static str> {
+    const INTERRUPTED: &str = "registrar evidence processing was interrupted";
+    checkpoint().map_err(|_| INTERRUPTED)?;
+    let logical_path = entry.logical_path;
+    let bytes = entry.bytes;
+    let identity_result = crate::validation_context::inspect_metadata_image_identity(&bytes);
+    reader.registrar_processing_phase(RegistrarProcessingPhase::AfterIdentityParse {
+        logical_path: logical_path.clone(),
+        ordinal,
+    });
+    checkpoint().map_err(|_| INTERRUPTED)?;
+    let identity = match identity_result {
+        Ok(identity) if identity.object_type == "Document" => identity,
+        _ => return Err("registrar evidence candidate is malformed"),
+    };
+    let dependency_target = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("{}.{}", identity.object_type, identity.object_name),
+    )
+    .map_err(|_| "registrar evidence candidate has no logical identity")?;
+    checkpoint().map_err(|_| INTERRUPTED)?;
+    let registers_target = crate::validation::document_registers(&bytes, register_reference);
+    reader.registrar_processing_phase(RegistrarProcessingPhase::AfterRegistrarParse {
+        logical_path,
+        ordinal,
+    });
+    checkpoint().map_err(|_| INTERRUPTED)?;
+    Ok(
+        registers_target.then_some(unica_metadata::validation_subject::MetadataResourceImage {
+            role: unica_metadata::validation_subject::MetadataResourceRole::Dependency {
+                target: dependency_target,
+            },
+            bytes,
+        }),
     )
 }
 
@@ -548,9 +521,6 @@ fn typed_subsystem_evidence<G>(
             &resolved.source_root,
             SecureTreeCaptureLimits {
                 maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2,
-                maximum_entries: crate::subsystem_topology::SUBSYSTEM_SCAN_MAX_ENTRIES,
-                maximum_files: crate::subsystem_topology::SUBSYSTEM_SCAN_MAX_FILES,
-                maximum_bytes: crate::subsystem_topology::SUBSYSTEM_SCAN_MAX_BYTES,
             },
             &mut checkpoint,
         )

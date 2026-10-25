@@ -40,7 +40,9 @@ use std::{
     },
 };
 use unica_source_contract::{
-    read::full_dump::{DumpSemanticValidator, DumpTreeObservation, DumpTreeReadPort},
+    read::full_dump::{
+        DumpSemanticValidator, DumpTreeObservation, DumpTreeReadPort, DumpValidationFailure,
+    },
     workspace::WorkspaceContext,
     SourceSetKind,
 };
@@ -1716,6 +1718,18 @@ pub struct VerifiedFullDumpPublication {
     published: Option<PublishedFullDump>,
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FullDumpCleanupReason {
+    VerifyPrivateStage,
+    CleanupPrivateStage,
+    CleanupCreatedParents,
+    WriterCompletionUnconfirmed,
+    RecoveryRetained,
+    RecoveryLocationUnavailable,
+    PublicationCleanup,
+}
+
 #[derive(Debug, Clone)]
 pub struct PublishedFullDump {
     pub replaced: bool,
@@ -1724,6 +1738,8 @@ pub struct PublishedFullDump {
 }
 
 pub struct FullDumpFinish {
+    pub recovery_origin: Option<PathBuf>,
+    pub cleanup_reasons: Vec<FullDumpCleanupReason>,
     pub warnings: Vec<String>,
     pub retained: Result<Option<PathBuf>, String>,
 }
@@ -1739,11 +1755,19 @@ pub enum FullDumpPhase {
     Cleanup,
 }
 
+#[derive(Default, Debug)]
+pub struct FullDumpFailureReport {
+    pub validation: Option<DumpValidationFailure>,
+    pub cleanup_reasons: Vec<FullDumpCleanupReason>,
+    pub recovery_origin: Option<PathBuf>,
+}
+
 pub struct FullDumpFailure {
     pub phase: FullDumpPhase,
     pub recovery: Result<Option<PathBuf>, String>,
     pub publication_uncertain: bool,
     detail: String,
+    pub report: Box<FullDumpFailureReport>,
 }
 
 impl std::fmt::Debug for FullDumpFailure {
@@ -1765,7 +1789,13 @@ impl FullDumpFailure {
             recovery: Ok(None),
             publication_uncertain: false,
             detail,
+            report: Box::default(),
         }
+    }
+    fn validation(error: DumpValidationFailure) -> Self {
+        let mut failure = Self::new(FullDumpPhase::Validation, error.to_string());
+        failure.report.validation = Some(error);
+        failure
     }
 }
 
@@ -1971,7 +2001,7 @@ impl VerifiedFullDumpPublication {
             staged,
             self.prepared.semantic_validator.as_ref(),
         )
-        .map_err(|error| FullDumpFailure::new(FullDumpPhase::Validation, error))?;
+        .map_err(FullDumpFailure::validation)?;
         if self.prepared.canonical_stage_identity != staged.root_identity() {
             return Err(FullDumpFailure::new(
                 FullDumpPhase::Integrity,
@@ -1990,6 +2020,7 @@ impl VerifiedFullDumpPublication {
             .publish_canonical(staged, cancellation)
             .map_err(|mut failure| {
                 failure.recovery = self.prepared.private.retained_location();
+                failure.report.recovery_origin = Some(self.prepared.private.root.clone());
                 failure.publication_uncertain = self.prepared.private.publication_uncertain;
                 failure
             })?;
@@ -2009,12 +2040,18 @@ impl VerifiedFullDumpPublication {
         let published = self.is_published();
         let pending_writer = self.prepared.private.writer_completion_pending;
         let mut errors = Vec::new();
+        let mut cleanup_reasons = Vec::new();
+        if pending_writer {
+            cleanup_reasons.push(FullDumpCleanupReason::WriterCompletionUnconfirmed);
+        }
         let stage_cleanup = self.prepared.release_canonical_stage_for_cleanup();
         let stage_integrity_failed = stage_cleanup.is_err();
         if let Err(error) = stage_cleanup {
+            cleanup_reasons.push(FullDumpCleanupReason::VerifyPrivateStage);
             errors.push(error);
         }
         if let Err(error) = self.prepared.private.cleanup_now() {
+            cleanup_reasons.push(FullDumpCleanupReason::CleanupPrivateStage);
             // A failed cleanup still owns private debris. Keep its location
             // stable while Drop may retry scrubbing the held config file.
             self.prepared.private.retention = PrivateRetention::EntireStage;
@@ -2022,6 +2059,7 @@ impl VerifiedFullDumpPublication {
         }
         if !published && !pending_writer {
             if let Err(error) = self.prepared.cleanup_created_target_parents() {
+                cleanup_reasons.push(FullDumpCleanupReason::CleanupCreatedParents);
                 errors.push(error);
             }
         }
@@ -2029,6 +2067,11 @@ impl VerifiedFullDumpPublication {
         // location after cleanup; a retained directory does not mean that the
         // public publication state is unknown.
         let retained = self.prepared.private.retained_location();
+        match &retained {
+            Ok(Some(_)) => cleanup_reasons.push(FullDumpCleanupReason::RecoveryRetained),
+            Err(_) => cleanup_reasons.push(FullDumpCleanupReason::RecoveryLocationUnavailable),
+            Ok(None) => {}
+        }
         if published {
             // Stage and ledger binding checks can both describe the same
             // failed cleanup attempt. Report it once and preserve every detail.
@@ -2051,7 +2094,12 @@ impl VerifiedFullDumpPublication {
                     warnings.push(note);
                 }
             }
-            return Ok(FullDumpFinish { warnings, retained });
+            return Ok(FullDumpFinish {
+                recovery_origin: Some(self.prepared.private.root.clone()),
+                warnings,
+                retained,
+                cleanup_reasons,
+            });
         }
         if !errors.is_empty() || !matches!(&retained, Ok(None)) {
             let mut failure = FullDumpFailure::new(
@@ -2067,6 +2115,8 @@ impl VerifiedFullDumpPublication {
                 },
             );
             failure.publication_uncertain = self.prepared.private.publication_uncertain;
+            failure.report.cleanup_reasons = cleanup_reasons;
+            failure.report.recovery_origin = Some(self.prepared.private.root.clone());
             failure.recovery = match retained {
                 Ok(None) => Ok(self
                     .prepared
@@ -2078,6 +2128,8 @@ impl VerifiedFullDumpPublication {
             return Err(failure);
         }
         Ok(FullDumpFinish {
+            recovery_origin: None,
+            cleanup_reasons,
             warnings: Vec::new(),
             retained: Ok(None),
         })
@@ -2138,17 +2190,28 @@ impl DumpPreparationFailure {
                 detail,
                 mut private,
             } => {
+                let mut cleanup_reasons = Vec::new();
                 let detail = match private.cleanup_now() {
                     Ok(()) => detail,
                     Err(cleanup) => {
                         // Match canonical finish: a reported recovery location
                         // must survive a later Drop retry of private cleanup.
                         private.retention = PrivateRetention::EntireStage;
+                        cleanup_reasons.push(FullDumpCleanupReason::CleanupPrivateStage);
                         format!("{detail}; {cleanup}")
                     }
                 };
                 let mut failure = FullDumpFailure::new(phase, detail);
                 failure.recovery = private.retained_location();
+                match &failure.recovery {
+                    Ok(Some(_)) => cleanup_reasons.push(FullDumpCleanupReason::RecoveryRetained),
+                    Err(_) => {
+                        cleanup_reasons.push(FullDumpCleanupReason::RecoveryLocationUnavailable)
+                    }
+                    Ok(None) => {}
+                }
+                failure.report.cleanup_reasons = cleanup_reasons;
+                failure.report.recovery_origin = Some(private.root.clone());
                 failure.publication_uncertain = private.publication_uncertain;
                 failure
             }
@@ -6320,7 +6383,8 @@ fn validate_staged_dump_with(
     validator: &dyn DumpSemanticValidator,
 ) -> Result<TreeSnapshot, String> {
     let snapshot = TreeSnapshot::capture_target(root)?;
-    validate_staged_dump_snapshot(root, kind, &snapshot, validator)?;
+    validate_staged_dump_snapshot(root, kind, &snapshot, validator)
+        .map_err(|error| error.to_string())?;
     Ok(snapshot)
 }
 fn validate_staged_dump_snapshot(
@@ -6328,7 +6392,7 @@ fn validate_staged_dump_snapshot(
     kind: SourceSetKind,
     snapshot: &TreeSnapshot,
     validator: &dyn DumpSemanticValidator,
-) -> Result<(), String> {
+) -> Result<(), DumpValidationFailure> {
     let read = BoundDumpTree { root, snapshot };
     validator.validate_stage(&DumpTreeObservation::from_read_port(&read), kind)
 }
@@ -8079,6 +8143,7 @@ impl PreparedPublication {
             &captured.0,
             self.semantic_validator.as_ref(),
         )
+        .map_err(|error| error.to_string())
     }
     pub fn publish_legacy(
         &mut self,
@@ -8167,7 +8232,8 @@ pub fn inspect_and_validate_stage(
     validator: &dyn DumpSemanticValidator,
 ) -> Result<TreeSnapshot, String> {
     let snapshot = TreeSnapshot::capture_target(root)?;
-    validate_staged_dump_snapshot(root, kind, &snapshot, validator)?;
+    validate_staged_dump_snapshot(root, kind, &snapshot, validator)
+        .map_err(|error| error.to_string())?;
     Ok(snapshot)
 }
 

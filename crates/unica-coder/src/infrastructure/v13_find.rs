@@ -1,5 +1,6 @@
 use crate::application::v13::find::{
     normalize_layout_path, FindDocument, FindFact, FindFactKind, FindIndex, FindPathAlias,
+    NameRanker, RankedNames,
 };
 use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::event_sources::module_address_for_relative;
@@ -156,6 +157,14 @@ enum DescriptorHeadReadError {
     Local(io::ErrorKind),
 }
 
+/// The ranked names of one search and what its layout walk could not read.
+pub(crate) struct NameSearchOutcome {
+    pub(crate) names: RankedNames,
+    pub(crate) omissions: FindOmissions,
+    /// The watched addresses, such as the search scope, that exist.
+    pub(crate) present: HashSet<String>,
+}
+
 #[derive(Debug)]
 pub(crate) struct FindBuildOutcome {
     pub(crate) index: FindIndex,
@@ -187,6 +196,13 @@ struct DirectoryBuild {
     attempted_fact_bytes: usize,
     omissions: FindOmissions,
     include_module_aliases: bool,
+    /// A name search scores each document as it is read instead of keeping
+    /// the directory, so the directory budgets do not apply to it.
+    ranker: Option<NameRanker>,
+    /// Addresses already pushed for the kind being walked, kept only when
+    /// two collection directories of the source name that kind (they can
+    /// differ in letter case alone): the first document of an address wins.
+    repeated_kind: Option<HashSet<String>>,
 }
 
 impl DirectoryBuild {
@@ -279,8 +295,13 @@ impl WorkspaceFindDirectoryBuilder {
         cancellation: &CancellationToken,
         include_module_aliases: bool,
     ) -> Result<FindIndex, FindBuildError> {
-        let outcome =
-            self.build_internal(sources, deadline, cancellation, include_module_aliases)?;
+        let (outcome, _) = self.build_internal(
+            sources,
+            deadline,
+            cancellation,
+            include_module_aliases,
+            None,
+        )?;
         if outcome.omissions.total != 0 {
             return Err(FindBuildError::with_detail(
                 RefusalDetail::SourceUnreadable,
@@ -293,13 +314,59 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(outcome.index)
     }
 
+    #[cfg(test)]
     pub(crate) fn build_for_search(
         &self,
         sources: &[LayoutFindSource<'_>],
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<FindBuildOutcome, FindBuildError> {
-        self.build_internal(sources, deadline, cancellation, false)
+        self.build_internal(sources, deadline, cancellation, false, None)
+            .map(|(outcome, _)| outcome)
+    }
+
+    /// Search the names of `sources` by walking the layout: each document is
+    /// scored while it is read and dropped, and only the page's best
+    /// candidates stay (see [`NameRanker`]). Neither the directory entry
+    /// count nor its facts are budgeted. Nearest names take a second walk,
+    /// only when nothing matched directly. Each page walks the layout again
+    /// (#2106).
+    pub(crate) fn search_names(
+        &self,
+        sources: &[LayoutFindSource<'_>],
+        ranker: NameRanker,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<NameSearchOutcome, FindBuildError> {
+        let (mut outcome, ranker) =
+            self.build_internal(sources, deadline, cancellation, false, Some(ranker))?;
+        let mut ranker = ranker.expect("a name search keeps its ranker");
+        if ranker.needs_nearest_pass() {
+            let (second, nearest) = self.build_internal(
+                sources,
+                deadline,
+                cancellation,
+                false,
+                Some(ranker.into_nearest_pass()),
+            )?;
+            outcome = second;
+            ranker = nearest.expect("a name search keeps its ranker");
+        }
+        find_checkpoint(deadline, cancellation)?;
+        Ok(NameSearchOutcome {
+            present: ranker.watched_presence(),
+            names: ranker.finish(),
+            omissions: outcome.omissions,
+        })
+    }
+
+    /// A name search lists a collection whole; the layout directory that
+    /// address resolution and call-graph neighbours hold keeps its limit.
+    fn collection_limit(&self, build: &DirectoryBuild) -> Option<usize> {
+        build
+            .ranker
+            .is_none()
+            .then_some(self.max_collection_entries)
     }
 
     fn build_internal(
@@ -308,7 +375,8 @@ impl WorkspaceFindDirectoryBuilder {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
         include_module_aliases: bool,
-    ) -> Result<FindBuildOutcome, FindBuildError> {
+        ranker: Option<NameRanker>,
+    ) -> Result<(FindBuildOutcome, Option<NameRanker>), FindBuildError> {
         if sources.len() > MAX_SOURCE_SETS {
             return Err(FindBuildError::new(
                 RefusalCode::ProviderLimitExceeded,
@@ -322,6 +390,8 @@ impl WorkspaceFindDirectoryBuilder {
             attempted_fact_bytes: 0,
             omissions: FindOmissions::default(),
             include_module_aliases,
+            ranker,
+            repeated_kind: None,
         };
         let result = (|| {
             for source in sources {
@@ -344,10 +414,13 @@ impl WorkspaceFindDirectoryBuilder {
             }
         }
         result?;
-        Ok(FindBuildOutcome {
-            index: FindIndex::new(build.documents),
-            omissions: build.omissions,
-        })
+        Ok((
+            FindBuildOutcome {
+                index: FindIndex::new(build.documents),
+                omissions: build.omissions,
+            },
+            build.ranker,
+        ))
     }
 
     /// Resolve only paths that could be the requested object. The name-search
@@ -1257,6 +1330,8 @@ impl WorkspaceFindDirectoryBuilder {
             attempted_fact_bytes: 0,
             omissions: FindOmissions::default(),
             include_module_aliases: false,
+            ranker: None,
+            repeated_kind: None,
         };
         let head = self.read_descriptor_head(
             file,
@@ -1340,13 +1415,21 @@ impl WorkspaceFindDirectoryBuilder {
                 configuration,
             )?;
         }
-        for entry in immediate_names(
+        let collections = immediate_names(
             source.root,
-            self.max_collection_entries,
+            self.collection_limit(build),
             deadline,
             cancellation,
             self.capacity_observer.as_deref(),
-        )? {
+        )?;
+        let mut kind_directories = HashMap::<&str, usize>::new();
+        for entry in &collections {
+            if let Some(layout) = entry.to_str().and_then(metadata_kind_by_directory) {
+                *kind_directories.entry(layout.tag).or_default() += 1;
+            }
+        }
+        let mut repeated_kinds = HashMap::<&str, HashSet<String>>::new();
+        for entry in collections {
             find_checkpoint(deadline, cancellation)?;
             let Some(directory) = entry.to_str() else {
                 continue;
@@ -1354,6 +1437,8 @@ impl WorkspaceFindDirectoryBuilder {
             let Some(layout) = metadata_kind_by_directory(directory) else {
                 continue;
             };
+            build.repeated_kind = (kind_directories[layout.tag] > 1)
+                .then(|| repeated_kinds.remove(layout.tag).unwrap_or_default());
             let collection =
                 match retain_enumerated_child(source.root, &entry, deadline, cancellation)? {
                     SourceEntry::Directory(collection) => collection,
@@ -1364,7 +1449,7 @@ impl WorkspaceFindDirectoryBuilder {
             let mut unsafe_owner_directories = HashSet::new();
             for owner in immediate_names(
                 &collection,
-                self.max_collection_entries,
+                self.collection_limit(build),
                 deadline,
                 cancellation,
                 self.capacity_observer.as_deref(),
@@ -1512,6 +1597,9 @@ impl WorkspaceFindDirectoryBuilder {
                     )?;
                 }
             }
+            if let Some(seen) = build.repeated_kind.take() {
+                repeated_kinds.insert(layout.tag, seen);
+            }
         }
         Ok(())
     }
@@ -1532,7 +1620,7 @@ impl WorkspaceFindDirectoryBuilder {
         };
         for entry in immediate_names(
             source.root,
-            self.max_collection_entries,
+            self.collection_limit(build),
             deadline,
             cancellation,
             self.capacity_observer.as_deref(),
@@ -1621,9 +1709,12 @@ impl WorkspaceFindDirectoryBuilder {
                 Some(_) => return Err(unsafe_layout_entry()),
                 None => continue,
             };
+            // A command is named by its directory and by a stray `.xml`
+            // alike: the first of them in the listing is the command.
+            let mut family_names = HashSet::new();
             for entry in immediate_names(
                 &family,
-                self.max_collection_entries,
+                self.collection_limit(build),
                 deadline,
                 cancellation,
                 self.capacity_observer.as_deref(),
@@ -1685,6 +1776,9 @@ impl WorkspaceFindDirectoryBuilder {
                     }
                     descriptor_identity(&head).1
                 };
+                if !family_names.insert(child_name.clone()) {
+                    continue;
+                }
                 self.push(
                     build,
                     source,
@@ -1719,6 +1813,11 @@ impl WorkspaceFindDirectoryBuilder {
             // object; the layout simply does not describe it.
             return Ok(());
         }
+        if let Some(seen) = build.repeated_kind.as_mut() {
+            if !seen.insert(at.to_string()) {
+                return Ok(());
+            }
+        }
         let _ = source;
         let path = path_text(relative);
         let mut facts = vec![
@@ -1730,6 +1829,14 @@ impl WorkspaceFindDirectoryBuilder {
         }
         let title = synonym.filter(|value| !value.is_empty()).unwrap_or(name);
         let document = FindDocument::new(at, kind, title, facts).with_path(path);
+        if let Some(ranker) = build.ranker.as_mut() {
+            build.attempted_entries = build.attempted_entries.saturating_add(1);
+            build.attempted_fact_bytes = build
+                .attempted_fact_bytes
+                .saturating_add(document.estimated_identity_bytes());
+            ranker.offer(document);
+            return Ok(());
+        }
         let next_total = build
             .fact_bytes
             .saturating_add(document.estimated_identity_bytes());
@@ -2264,13 +2371,13 @@ fn unsafe_layout_entry() -> FindBuildError {
 
 fn immediate_names(
     directory: &SourceDirectory,
-    maximum_entries: usize,
+    maximum_entries: Option<usize>,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
     observer: Option<&CapacityObserver>,
 ) -> Result<Vec<std::ffi::OsString>, FindBuildError> {
     directory
-        .read_immediate_names_bounded(maximum_entries, || {
+        .read_immediate_names_with_limit(maximum_entries, || {
             find_checkpoint(deadline, cancellation)
                 .map_err(|error| std::io::Error::other(error.to_string()))
         })
@@ -2294,7 +2401,10 @@ fn immediate_names(
                 )
             } else if error.kind() == io::ErrorKind::FileTooLarge {
                 if let Some(observer) = observer {
-                    observer.record_find_collection(maximum_entries as u64 + 1, false);
+                    // Only a bounded listing refuses for its size.
+                    if let Some(entries) = maximum_entries {
+                        observer.record_find_collection(entries as u64 + 1, false);
+                    }
                 }
                 FindBuildError::new(
                     RefusalCode::ProviderLimitExceeded,
@@ -4255,6 +4365,8 @@ mod tests {
             attempted_fact_bytes: 0,
             omissions: super::FindOmissions::default(),
             include_module_aliases: false,
+            ranker: None,
+            repeated_kind: None,
         };
         for _ in 0..=super::MAX_OMISSION_DETAILS {
             build.record_omission("main", "descriptor_unreadable");
@@ -4422,6 +4534,135 @@ mod tests {
             let error = build(&builder, count).expect_err(label);
             assert_eq!(error.code().as_str(), "provider_limit_exceeded", "{label}");
         }
+    }
+
+    /// The one-pass name search answers exactly what ranking the whole
+    /// directory answers: direct and nearest matches, kind and scope.
+    #[test]
+    fn name_search_ranks_like_the_full_directory() {
+        use crate::application::v13::find::NameRanker;
+        use unica_address::address::QualifiedAddress;
+
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("Catalogs/Валютные.xml"),
+            &owner("Валютные", "Catalog", "Валютные счета", ""),
+        );
+        // A stray descriptor next to a command directory names the same
+        // command: the layout offers that address once.
+        write(
+            &fixture.source.join("Catalogs/Валюты/Commands/Обновить.xml"),
+            &owner("Обновить", "Command", "Обновить", ""),
+        );
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
+        let sources = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let deadline = || ProviderDeadline::from_budget(Duration::from_secs(7));
+        let directory = WorkspaceFindDirectoryBuilder::default()
+            .build_for_search(&sources, deadline(), &CancellationToken::new())
+            .unwrap()
+            .index;
+        let scope = QualifiedAddress::parse("main:Catalog.Валюты").unwrap();
+        let requests = [
+            FindRequest::new("Валют").unwrap(),
+            FindRequest::new("валюты и курсы").unwrap(),
+            FindRequest::new("Форма").unwrap(),
+            FindRequest::new("Печать").unwrap(),
+            FindRequest::new("Вылюты").unwrap(),
+            FindRequest::new("нет такого").unwrap(),
+            FindRequest::new("Валют")
+                .unwrap()
+                .with_kind("Catalog")
+                .unwrap(),
+            FindRequest::new("Форма").unwrap().with_scope(scope.clone()),
+            FindRequest::new("Catalogs/Валюты.xml").unwrap(),
+            FindRequest::new("Обновить").unwrap(),
+        ];
+        for request in requests {
+            let expected = directory
+                .find_all_checked(request.clone(), deadline(), &CancellationToken::new())
+                .unwrap();
+            let search = |keep, after: Option<(usize, String)>| {
+                WorkspaceFindDirectoryBuilder::default()
+                    .search_names(
+                        &sources,
+                        NameRanker::new(request.clone(), [scope.to_string()], keep, after),
+                        deadline(),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+            };
+            let candidates = |names: &crate::application::v13::find::RankedNames| {
+                names
+                    .candidates
+                    .iter()
+                    .map(|(_, candidate)| candidate.clone())
+                    .collect::<Vec<_>>()
+            };
+            let searched = search(usize::MAX, None);
+            assert_eq!(
+                candidates(&searched.names),
+                expected.candidates(),
+                "{request:?}"
+            );
+            assert_eq!(searched.names.nearest, expected.is_nearest(), "{request:?}");
+            assert_eq!(searched.names.matched, expected.candidates().len());
+            // Pages of one candidate, each resuming after the last one shown,
+            // walk the whole answer in order; every page counts and
+            // fingerprints all matches as the whole answer does.
+            let mut paged = Vec::new();
+            let mut after = None;
+            loop {
+                let page = search(1, after.clone());
+                assert_eq!(page.names.matched, searched.names.matched);
+                assert_eq!(page.names.fingerprint, searched.names.fingerprint);
+                assert_eq!(
+                    page.names.largest_item_bytes,
+                    searched.names.largest_item_bytes
+                );
+                assert!(page.names.candidates.len() <= 1);
+                let Some((score, candidate)) = page.names.candidates.first() else {
+                    break;
+                };
+                after = Some((*score, candidate.at().to_owned()));
+                paged.push(candidate.clone());
+            }
+            assert_eq!(paged, expected.candidates(), "{request:?}");
+            if request == FindRequest::new("Вылюты").unwrap() {
+                assert!(expected.is_nearest() && !expected.candidates().is_empty());
+            }
+            if request == FindRequest::new("Валют").unwrap() {
+                assert!(expected.candidates().len() >= 2);
+            }
+            assert!(searched.present.contains("main:Catalog.Валюты"));
+            assert!(!searched.present.contains("main:Catalog.Нет"));
+        }
+    }
+
+    #[test]
+    fn name_search_lists_a_collection_whole() {
+        use crate::application::v13::find::NameRanker;
+
+        let fixture = Fixture::new();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
+        let sources = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let builder = WorkspaceFindDirectoryBuilder::default().with_collection_limit_for_test(1);
+        let searched = builder
+            .search_names(
+                &sources,
+                NameRanker::new(FindRequest::new("Валюты").unwrap(), [], 1, None),
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect("a name search is not bounded by the layout collection limit");
+        assert_eq!(searched.names.candidates[0].1.at(), "main:Catalog.Валюты");
     }
 
     #[test]

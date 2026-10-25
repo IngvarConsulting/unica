@@ -947,6 +947,10 @@ pub(crate) mod tests {
                     .as_slice(),
             ),
             (
+                "additional-indexes",
+                include_bytes!("../../../../tests/fixtures/platform_8_3_27/additional_indexes/AdditionalIndexes.xml").as_slice(),
+            ),
+            (
                 "job-schedule",
                 br#"<JobSchedule xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#
                     .as_slice(),

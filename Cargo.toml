@@ -55,6 +55,7 @@ tempfile = "3"
 # зависимостью `flate2` у крейта-потребителя.
 zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
 regex = "1"
+regex-syntax = "0.8"
 ureq = { version = "2.12", features = ["json"] }
 rustls = { version = "0.23.27", default-features = false, features = ["std", "ring", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"

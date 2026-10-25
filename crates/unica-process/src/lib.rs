@@ -7,7 +7,7 @@ pub use platform::process::{
     ManagedCommand, ManagedLineOutput, ManagedOutput, ManagedSpawnFailure, ManagedStartupChild,
     PendingProcessHandoff, PendingRunFailure, ProcessLineReply, RuntimeProcessTreeHandle,
     RuntimeProcessTreeState, StreamControl, STDERR_CAPTURE_LIMIT, STDOUT_CAPTURE_LIMIT,
-    STREAM_LINE_TOO_LONG_ERROR,
+    STREAM_LINE_TOO_LONG_ERROR, STREAM_RECORD_UNTERMINATED_ERROR,
 };
 pub use platform::process_metrics::process_peak_rss_bytes;
 #[cfg(any(test, feature = "test-support"))]

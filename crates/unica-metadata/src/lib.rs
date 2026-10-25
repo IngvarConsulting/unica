@@ -75,3 +75,5 @@ pub mod event_input;
 
 pub mod configuration;
 pub mod extension;
+
+mod source_contracts;

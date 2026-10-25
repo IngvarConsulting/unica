@@ -184,18 +184,22 @@ pub(crate) fn read_typed_meta_info(
     )
 }
 impl unica_metadata_designer::info_read::MetadataInfoRead for MetadataDependencyReadAdapter<'_> {
-    fn capture_regular_files(
+    fn visit_regular_files(
         &self,
         root: &Path,
         start: &Path,
         limits: unica_source_contract::read::SecureTreeCaptureLimits,
         descend: fn(&Path) -> bool,
         select: fn(&Path) -> bool,
+        visit: &mut dyn FnMut(
+            unica_source_contract::read::SecureFileSnapshotEntry,
+        ) -> std::io::Result<()>,
         checkpoint: &mut dyn FnMut() -> std::io::Result<()>,
-    ) -> std::io::Result<unica_source_contract::read::SecureFileSnapshot> {
-        unica_workspace::read::capture_root_relative_regular_files(
-            root, start, limits, descend, select, checkpoint,
+    ) -> std::io::Result<bool> {
+        unica_workspace::read::visit_root_relative_regular_files(
+            root, start, limits, descend, select, visit, checkpoint,
         )
+        .map(|visited| visited.start_missing)
     }
     fn open_retained_read(
         &self,

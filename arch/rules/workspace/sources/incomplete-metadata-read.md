@@ -2,7 +2,7 @@
 id: INV.SOURCE.INCOMPLETE-METADATA-READ
 check:
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_damage_is_local_in_owner_row_and_detail
-  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_absence_and_explicit_empty_values_remain_distinct
+  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_empty_set_reads_as_absence_but_an_empty_translation_survives
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_damage_limits_only_the_named_fact_in_owner_row_and_detail
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_absence_is_not_filled_from_parent_sibling_or_template
   - crates/unica-metadata/src/member_read_profile/tests.rs::member_profile_owns_only_exact_context_property_diagnostics
@@ -24,9 +24,12 @@ check:
 # Неполное описание сохраняет независимые локальные сведения
 
 Чтение метаданных различает присутствующее корректное значение, отсутствие
-свойства и ошибку его представления. Явные `false`, допустимые пустые значения
-и `nil` сохраняются. Допустимость отсутствия определяется видом объекта и
-свойством в профиле чтения, независимо от разрешений на изменение.
+свойства и ошибку его представления. Явные `false` и допустимые пустые строки
+сохраняются; `nil`, пустое значение и многоязычная строка без переводов в
+ответе `view` свойства не создают, как описано в
+[metadata-node-properties.md](metadata-node-properties.md). Допустимость
+отсутствия определяется видом объекта и свойством в профиле чтения,
+независимо от разрешений на изменение.
 
 Отсутствующее значение не подставляется из шаблона создания или родителя.
 Если для зависимого вывода недостаточно сведений, ответ сообщает ограничение
@@ -55,7 +58,8 @@ check:
 значение по умолчанию; пустой тег этих enum-свойств считается повреждением.
 
 Локализованный `ToolTip` прямого прикладного реквизита того же профиля
-различает отсутствие, пустой контейнер и повреждение. Голый текст вместо
+различает подсказку с переводами, её отсутствие и повреждение; пустой
+контейнер читается как отсутствие. Голый текст вместо
 локализованной структуры, повтор языка и некорректные узлы не превращаются
 в пустую подсказку. Повреждение ограничивает этот факт у владельца, в строке
 коллекции и в детали, сохраняя остальные сведения реквизита.

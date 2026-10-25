@@ -89,7 +89,7 @@ ARGS_TITLES = {
     "Values": "`values`",
     "Items": "`items`",
     "Text": "`text`",
-    "Target": "только `at`",
+    "Target": "без аргументов; цель задаёт `at` вызова",
 }
 
 
@@ -337,7 +337,9 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     agent_count = sum(s.get("profile") == "agent-evaluation" for s in scenarios)
     fault_count = sum(s.get("driver") == "analyzer-jsonl-fault" for s in scenarios)
     delivery_failure_count = sum(s.get("driver") == "analyzer-delivery-failure" for s in scenarios)
-    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}; `fault-injection/analyzer-jsonl-fault` — {fault_count}; `fault-injection/analyzer-delivery-failure` — {delivery_failure_count}. "
+    runtime_fault_count = sum(s.get("profile") == "runtime-fault" for s in scenarios)
+    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}; `fault-injection/analyzer-jsonl-fault` — {fault_count}; `fault-injection/analyzer-delivery-failure` — {delivery_failure_count}; `runtime-fault/pull-validation-fault` — {runtime_fault_count}. "
+        "Runtime-fault запускается явно на POSIX с настоящей локальной платформой 8.3.27 для аттестации; управляемый provider проверяет отказы pull. Отсутствие платформы означает отказ, а не skip. Этот профиль не входит в обычный CI. "
         "Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной "
         "синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. "
         "По решению владельца агентный профиль не входит в CI: его запускают локально при изменении проверяемых навыков или поверхности. "
