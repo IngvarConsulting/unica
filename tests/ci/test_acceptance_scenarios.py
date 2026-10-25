@@ -777,7 +777,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     METADATA_CONTEXT = [
         ("ObjectBorrow", "object.borrow", "ExtensionRoot", "From"),
         ("ObjectCreate", "object.create", "Configuration", "Values"),
-        ("ObjectRemove", "object.remove", "Metadata", "Target"),
+        ("ObjectRemove", "object.remove", "MetadataOrCommonTemplate", "Target"),
         ("ContentSet", "content.set", "ExchangePlan", "Items"),
         ("RelationAdd", "relation.add", "Metadata", "Values"),
         ("RelationRemove", "relation.remove", "Metadata", "Values"),

@@ -86,6 +86,45 @@ pub fn read_registered_subsystem_topology(
     })
 }
 
+/// Разделы командного интерфейса: подсистемы верхнего уровня из
+/// `Configuration.xml`, включённые в интерфейс, в порядке регистрации.
+/// Ими ограничен порядок разделов, пока он ещё не задан.
+pub fn command_interface_sections<E>(
+    configuration: &[u8],
+    mut descriptor: impl FnMut(&Path) -> Result<Option<Vec<u8>>, E>,
+) -> Result<Vec<String>, CommandInterfaceSectionsError<E>> {
+    let registrations = parse_configuration_registrations(configuration)?;
+    reject_duplicate_names(&registrations, &[])?;
+    let mut sections = Vec::new();
+    for name in registrations {
+        let logical_path = descriptor_logical_path(std::slice::from_ref(&name));
+        let bytes = descriptor(Path::new(&logical_path))
+            .map_err(CommandInterfaceSectionsError::Read)?
+            .ok_or_else(|| {
+                SubsystemTopologyError::new(format!(
+                    "registered subsystem descriptor `{logical_path}` is missing"
+                ))
+            })?;
+        if parse_subsystem_descriptor(&bytes, &name, &logical_path)?.include {
+            sections.push(name);
+        }
+    }
+    Ok(sections)
+}
+
+/// Отказ чтения разделов: исходники противоречат топологии или не читаются.
+#[derive(Debug)]
+pub enum CommandInterfaceSectionsError<E> {
+    Topology(SubsystemTopologyError),
+    Read(E),
+}
+
+impl<E> From<SubsystemTopologyError> for CommandInterfaceSectionsError<E> {
+    fn from(error: SubsystemTopologyError) -> Self {
+        Self::Topology(error)
+    }
+}
+
 fn parse_configuration_registrations(bytes: &[u8]) -> Result<Vec<String>, SubsystemTopologyError> {
     let document = parse_document(bytes, "Configuration.xml")?;
     let configuration = single_object(&document, "Configuration", "Configuration.xml")?;

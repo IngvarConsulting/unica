@@ -12,6 +12,7 @@ use unica_metadata::property_input::DescriptorPropertyValue;
 use unica_metadata::{MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetadataKind};
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::proposal::{
     empty_apply_family_batch, ApplyPlanError, ApplyPlanErrorKind, ApplyProposal,
     ApplySourceAuthority, IndexedPlanOperation, ProvisionalApplyEffect, StagedFileState,
@@ -296,13 +297,17 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 )?;
                 continue;
             }
-            MetadataPlanKind::Remove { target, kind, name } => {
+            MetadataPlanKind::Remove {
+                target,
+                layout,
+                name,
+            } => {
                 stage_object_remove(
                     reader,
                     staged,
                     authority,
                     target,
-                    *kind,
+                    layout,
                     name,
                     op_index,
                     &mut provisional,
@@ -787,7 +792,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                             ApplyPlanErrorKind::InvalidState,
                             format!(
                                 "prerequisite `{}` changed while planning the new object",
-                                relative.display()
+                                relative.portable()
                             ),
                         )
                         .at_path(at_path));
@@ -814,7 +819,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                                     ApplyPlanErrorKind::InvalidState,
                                     format!(
                                     "prerequisite `{}` cannot accept the change of the new object",
-                                    relative.display()
+                                    relative.portable()
                                 ),
                                 )
                                 .at_path(at_path.clone())
@@ -825,7 +830,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
                                 ApplyPlanErrorKind::InvalidState,
                                 format!(
                                     "prerequisite `{}` changed while planning the new object",
-                                    relative.display()
+                                    relative.portable()
                                 ),
                             )
                             .at_path(at_path));
@@ -888,7 +893,7 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
     target: &MetadataAddress,
-    kind: MetadataKind,
+    layout: &'static unica_source_designer::layout::MetadataLayout,
     name: &str,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
@@ -906,7 +911,7 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         &at_path,
     )?;
     let root = authority.source_root();
-    let layout = metadata_layout(kind);
+    let kind = layout.tag;
     let descriptor_relative = PathBuf::from(layout.directory).join(format!("{name}.xml"));
     let descriptor_preimage = staged
         .read(&descriptor_relative)
@@ -923,7 +928,7 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     let files = staged
         .enumerate_tree(Path::new(""))
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-    let code_patterns = meta_remove_search_patterns(kind.as_str(), name, layout.directory);
+    let code_patterns = meta_remove_search_patterns(kind, name, layout.directory);
     // The bare `X.` of a common module is a call in code; in XML it would
     // match a synonym such as «X.Печать» rather than the module.
     let bare = format!("{name}.");
@@ -932,11 +937,11 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         .filter(|pattern| **pattern != bare)
         .cloned()
         .collect::<Vec<_>>();
-    metadata_patterns.push(format!("{}.{name}", kind.as_str()));
+    metadata_patterns.push(format!("{}.{name}", kind));
     // A query names a table by the kind in either language: `Catalog.X`,
     // `Справочник.X`.
-    let spellings = unica_address::source_target::metadata_address_kind_spellings(kind.as_str())
-        .unwrap_or_default();
+    let spellings =
+        unica_address::source_target::metadata_address_kind_spellings(kind).unwrap_or_default();
     let mut query_patterns = metadata_patterns.clone();
     query_patterns.extend(
         spellings
@@ -947,8 +952,14 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     // type names, the kind spelling followed by `Ссылка` or `Объект`.
     let mut code_patterns = code_patterns;
     code_patterns.extend(query_patterns.iter().cloned());
-    for reference in crate::remove::meta_remove_type_ref_names(kind.as_str()).unwrap_or_default() {
-        let suffix = match reference.strip_prefix(kind.as_str()) {
+    if kind == "CommonTemplate" {
+        // Code takes a common template by its name in a string; in XML the
+        // same text is not a reference.
+        code_patterns.push(format!("ПолучитьОбщийМакет(\"{name}\")"));
+        code_patterns.push(format!("GetCommonTemplate(\"{name}\")"));
+    }
+    for reference in crate::remove::meta_remove_type_ref_names(kind).unwrap_or_default() {
+        let suffix = match reference.strip_prefix(kind) {
             Some("Ref") => "Ссылка",
             Some("Object") => "Объект",
             _ => continue,
@@ -964,7 +975,7 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     code_patterns.dedup();
     let source_set = authority.source_set_name();
     let removed = format!("{source_set}:{}", target.as_str());
-    let qualified = format!("{}.{name}", kind.as_str());
+    let qualified = format!("{}.{name}", kind);
     let mut metadata_references = Vec::new();
     let mut code_references = Vec::new();
     // Compositions that list the object — role rights, command interfaces,
@@ -1165,7 +1176,7 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         })?;
     let Some(owner_postimage) = unica_source_designer::registration::owner_registration_image(
         &owner_preimage,
-        kind.as_str(),
+        kind,
         name,
         false,
         op_index,
@@ -1399,7 +1410,7 @@ fn stage_descriptor_properties(
         ) => {
             // Prove the descriptor before its existing local XML edits. The
             // typed patch changes only the configuration's default language.
-            crate::subsystem::parse_subsystem_edit_model(&source, &relative.display().to_string())
+            crate::subsystem::parse_subsystem_edit_model(&source, &relative.portable().to_string())
                 .map_err(|message| {
                     ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
                         .at_path(at_path.clone())
@@ -1912,7 +1923,7 @@ fn stage_template_add(
             {
                 return Err(ApplyPlanError::new(
                     ApplyPlanErrorKind::InvalidState,
-                    format!("`{}` already exists", relative.display()),
+                    format!("`{}` already exists", relative.portable()),
                 )
                 .at_path(name_path));
             }
