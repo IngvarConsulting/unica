@@ -844,8 +844,8 @@ fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
     let constant = service.view(ViewRequest::new("main:Constant.MainCurrency").unwrap());
     assert!(constant.ok, "{:?}", refusal_codes(&constant));
     let ty = &constant.data.as_ref().unwrap()["props"]["type"];
-    assert!(ty.is_object(), "constant type arrives as nested JSON: {ty}");
-    assert_eq!(ty["variants"][0]["kind"], json!("string"), "{ty}");
+    assert!(ty.is_object(), "constant type arrives as nested JSON");
+    assert_eq!(ty["variants"][0]["kind"], json!("string"));
 }
 
 /// Сервис в том виде, в каком его выгружает Конфигуратор 8.3.27: у шаблона
