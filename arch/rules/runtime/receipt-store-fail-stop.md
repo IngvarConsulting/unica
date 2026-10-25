@@ -13,6 +13,8 @@ check:
   - crates/unica-execution/src/receipt_ledger_actor.rs::step_begun_late_in_its_deadline_gets_the_running_floor_from_its_start
   - crates/unica-coder/tests/platform/receipt_runtime.rs::fail_stop_by_another_call_during_prepare_never_enters_the_provider
   - crates/unica-coder/tests/platform/receipt_runtime.rs::fail_stop_signals_cancellation_to_running_subject_work
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::fail_stop_before_the_long_phase_never_enters_the_provider
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::direct_terminal_preparation_queue_and_store_share_one_publication_deadline
 gap: https://github.com/IngvarConsulting/unica/issues/984
 ---
 

@@ -327,7 +327,9 @@ def pins_published_file(assertion) -> bool:
         return assertion.get("eq") is False
     if assertion["kind"] == "sha256":
         return isinstance(assertion.get("eq"), str) and not assertion["eq"].startswith("$")
-    return assertion["kind"] in {"xml", "xmlTags"} and ("eq" in assertion or "contains" in assertion)
+    return assertion["kind"] in {"xml", "xmlTags"} and (
+        "eq" in assertion or "contains" in assertion or "sameItems" in assertion
+    )
 
 
 def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str]]:
@@ -369,7 +371,10 @@ def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str
                 name = operation["op"]
                 candidates = families.get(name, [])
                 if len(candidates) > 1:
-                    target = (operation.get("args") or {}).get("at") or step["args"]["at"]
+                    # Args captured from an earlier answer (`$capture.*`) are
+                    # not known statically; the step address names the target.
+                    args = operation.get("args")
+                    target = (args.get("at") if isinstance(args, dict) else None) or step["args"]["at"]
                     on_form = names_form(target)
                     candidates = [row for row in candidates if (row[1] == "Form") == on_form]
                     if on_form is None or len(candidates) != 1:
@@ -864,10 +869,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("type.remove", "Xdto", "XdtoType", "Target"),
         ("property.remove", "Xdto", "XdtoProperty", "Target"),
         ("property.rename", "Xdto", "XdtoProperty", "Values"),
+        ("type.set", "Xdto", "XdtoType", "Values"),
     ]
     XDTO_REGISTRATIONS = "".join(
         f"(XdtoOperation::{variant})," for variant in
-        ["AddValueType", "AddObjectType", "AddProperty", "RemoveType", "RemoveProperty", "RenameProperty"]
+        ["AddValueType", "AddObjectType", "AddProperty", "RemoveType", "RemoveProperty", "RenameProperty", "SetType"]
     )
 
     def renderer(self):
@@ -911,15 +917,52 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertIn(operation, implemented)
             self.assertIn(f"| `{operation}` | `{args}` | да | ", rendered)
 
-    def registration_fixture(self, table, metadata, additional_metadata=None, *, complete_support=True, complete_context=True, complete_mxl_event=True, complete_dcs=True, complete_properties=True, complete_xdto=True):
-        # These focused parser fixtures exercise the original nine families,
-        # including raw unrelated neighbors. The product map includes all twelve.
+    SOURCE_ROWS = [
+        ("code.insert", "Code", "CodeInsert", "Text"),
+        ("code.replace", "Code", "Code", "Text"),
+        ("subsystem.create", "Subsystem", "Configuration", "Values"),
+        ("content.add", "Subsystem", "Subsystem", "Items"),
+        ("content.remove", "Subsystem", "Subsystem", "Items"),
+        ("childSubsystem.add", "Subsystem", "Subsystem", "Items"),
+        ("childSubsystem.remove", "Subsystem", "NestedSubsystem", "Target"),
+        ("commandVisibility.set", "Interface", "Interface", "Items"),
+        ("commandPlacement.set", "Interface", "Interface", "Items"),
+        ("commandOrder.set", "Interface", "InterfaceGroup", "Values"),
+        ("groupOrder.set", "Interface", "Interface", "Values"),
+        ("subsystemOrder.set", "Interface", "Configuration", "Values"),
+    ]
+
+    SOURCE_REGISTRATIONS = """
+        (CodeOperation::Insert), (CodeOperation::Replace),
+        (SubsystemOperation::Create), (SubsystemOperation::ContentAdd),
+        (SubsystemOperation::ContentRemove), (SubsystemOperation::ChildAdd),
+        (SubsystemOperation::ChildRemove), (InterfaceOperation::VisibilitySet),
+        (InterfaceOperation::PlacementSet), (InterfaceOperation::CommandOrderSet),
+        (InterfaceOperation::GroupOrderSet), (InterfaceOperation::SubsystemOrderSet),
+    """
+
+    def test_source_operations_fail_closed_when_typed_registration_is_incomplete(self):
+        metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
+        roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
+        table = roles + self.SOURCE_REGISTRATIONS
+        registry, _ = self.registration_fixture(table, metadata, complete_source=False)
+        self.assertEqual(len([entry for entry in registry if entry[1] in {"Code", "Subsystem", "Interface"}]), 12)
+        for typed, raw in [
+            ("(CodeOperation::Insert)", '("code.insert", Code, CodeInsert, Text)'),
+            ("(SubsystemOperation::Create)", '("subsystem.create", Subsystem, Configuration, Values)'),
+            ("(InterfaceOperation::VisibilitySet)", '("commandVisibility.set", Interface, Interface, Items)'),
+        ]:
+            for broken in [table.replace(typed + ",", ""), table + typed + ",", table.replace(typed, raw), table.replace(typed, typed.replace("::", "::Unknown"))]:
+                with self.subTest(typed=typed, broken=broken), self.assertRaises(RuntimeError):
+                    self.registration_fixture(broken, metadata, complete_source=False)
+
+    def registration_fixture(self, table, metadata, additional_metadata=None, *, complete_support=True, complete_context=True, complete_mxl_event=True, complete_dcs=True, complete_properties=True, complete_xdto=True, complete_source=True):
+        # A family-focused fixture keeps unrelated typed families complete.
         module = self.renderer()
-        families = {family: operation for family, operation in module.TYPED_FAMILIES.items()
-                    if family not in {"Code", "Subsystem", "Interface"}}
+        families = dict(module.TYPED_FAMILIES)
         sources = dict(additional_metadata or {})
         sources.setdefault("dcs_operation.rs", self.DCS_FIXTURE_METADATA)
-        for family in ["support", "metadata", "form", "mxl", "event", "properties", "xdto"]:
+        for family in ["support", "metadata", "form", "mxl", "event", "properties", "xdto", "code", "subsystem", "interface"]:
             filename = f"{family}_operation.rs"
             if filename not in sources:
                 sources[filename] = self.family_source(family.title())
@@ -935,6 +978,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             table += "\n(PropertiesOperation::Set),"
         if complete_xdto:
             table += "\n" + self.XDTO_REGISTRATIONS
+        if complete_source:
+            table += "\n" + self.SOURCE_REGISTRATIONS
+        module = self.renderer()
         with tempfile.TemporaryDirectory(prefix="typed-registry-") as raw:
             root = Path(raw)
             registry = root / "apply.rs"
@@ -978,7 +1024,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             "Subsystem": [
                 ("subsystem.create", "Subsystem", "Configuration", "Values"),
                 ("content.add", "Subsystem", "Subsystem", "Items"),
-                ("content.remove", "Subsystem", "Subsystem", "Target"),
+                ("content.remove", "Subsystem", "Subsystem", "Items"),
                 ("childSubsystem.add", "Subsystem", "Subsystem", "Items"),
                 ("childSubsystem.remove", "Subsystem", "NestedSubsystem", "Target"),
             ],
@@ -997,9 +1043,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         for family, rows in expected.items():
             with self.subTest(family=family):
                 self.assertEqual([row for row in registry if row[1] == family], rows)
-        self.assertEqual(registry[110:115], expected["Subsystem"])
-        self.assertEqual(registry[117:122], expected["Interface"])
-        self.assertEqual(registry[122:124], expected["Code"])
+        self.assertEqual(registry[111:116], expected["Subsystem"])
+        self.assertEqual(registry[118:123], expected["Interface"])
+        self.assertEqual(registry[123:125], expected["Code"])
 
     def test_every_registered_apply_operation_has_a_published_integration_case(self) -> None:
         # The inventory is the closed `apply` registry of all typed families
@@ -1100,8 +1146,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 [row for row in registry if row[1] == "Metadata"],
                 [row for row in self.CONTEXT_ROWS if row[1] == "Metadata"],
             )
-            self.assertEqual(len(registry), 125)
-            self.assertEqual(len({row[0] for row in registry}), 122)
+            self.assertEqual(len(registry), 126)
+            self.assertEqual(len({row[0] for row in registry}), 123)
             registration = f"({operation}::ObjectBorrow),"
             self.assertEqual(original.count(registration), 1)
             replacements = {
@@ -1162,7 +1208,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         table = roles + self.XDTO_REGISTRATIONS
         registry, implemented = self.renderer().load_apply_registry()
         self.assertEqual([entry for entry in registry if entry[1] == "Xdto"], self.XDTO_ROWS)
-        self.assertEqual(registry[104:110], self.XDTO_ROWS)
+        self.assertEqual(registry[104:111], self.XDTO_ROWS)
         self.assertLessEqual({entry[0] for entry in self.XDTO_ROWS}, implemented)
         row = 'AddValueType => ("valueType.add", XdtoPackage, Values)'
         self.assertIn(row, metadata)
@@ -1226,7 +1272,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         registry, _ = self.registration_fixture(
             '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
             '(SupportOperation::CapabilitySet),\n'
-            '("content.add", Subsystem, Subsystem, Items),\n'
+            '("probe.add", Probe, Subsystem, Items),\n'
             '(SupportOperation::RuleSet),',
             metadata,
             {"support_operation.rs": support_metadata},
@@ -1237,9 +1283,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.add", "Role", "Role", "Items"),
             ("right.set", "Role", "RoleRight", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
-            ("content.add", "Subsystem", "Subsystem", "Items"),
+            ("probe.add", "Probe", "Subsystem", "Items"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_support_rows_keep_their_arguments_order_and_implemented_status(self) -> None:
         module = self.renderer()
@@ -1263,7 +1309,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             '(unica_metadata::apply_operations::MetadataOperation::AttributeAdd),\n'
             '(unica_metadata::apply_operations::MetadataOperation::AttributeSet),\n'
             '(unica_metadata::apply_operations::MetadataOperation::ObjectCreate),\n'
-            '("content.add", Subsystem, Subsystem, Items),\n'
+            '("probe.add", Probe, Subsystem, Items),\n'
             '(FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),\n'
             '(FormOperation::AttributeAdd),\n'
             '(unica_metadata::apply_operations::MetadataOperation::AttributeRemove),\n'
@@ -1294,7 +1340,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
             ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
             ("object.create", "Metadata", "Configuration", "Values"),
-            ("content.add", "Subsystem", "Subsystem", "Items"),
+            ("probe.add", "Probe", "Subsystem", "Items"),
             ("form.add", "Form", "MetadataForms", "Items"),
             ("form.set", "Form", "MetadataForms", "Values"),
             ("form.remove", "Form", "Form", "Target"),
@@ -1311,7 +1357,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("props.set", "Form", "Form", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS)
+        ] + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_fully_typed_metadata_and_form_keep_registry_rows(self) -> None:
         module = self.renderer()
@@ -1328,8 +1374,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertLessEqual(migrated_names, implemented)
         self.assertIn(("content.set", "Metadata", "ExchangePlan", "Items"), registry)
         self.assertIn("content.set", implemented)
-        self.assertEqual(len(registry), 125)
-        self.assertEqual(len({entry[0] for entry in registry}), 122)
+        self.assertEqual(len(registry), 126)
+        self.assertEqual(len({entry[0] for entry in registry}), 123)
 
     def test_dcs_rows_keep_all_53_metadata_and_original_registry_positions(self) -> None:
         module = self.renderer()
@@ -1402,8 +1448,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         role_source = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
         registry, _ = self.registration_fixture(
             '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
-            '(Primitive::QuerySet), ("content.add", Subsystem, Subsystem, Items),\n'
-            '(Primitive::DataSetRemove), ("code.replace", Code, Code, Text),\n'
+            '(Primitive::QuerySet), ("probe.add", Probe, Subsystem, Items),\n'
+            '(Primitive::DataSetRemove), ("probe.replace", Probe, Code, Text),\n'
             '(Primitive::DataSourceAdd),',
             role_source, complete_dcs=False,
         )
@@ -1412,13 +1458,13 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.add", "Role", "Role", "Items"),
             ("right.set", "Role", "RoleRight", "Values"),
             ("query.set", "Dcs", "DcsQuery", "Values"),
-            ("content.add", "Subsystem", "Subsystem", "Items"),
+            ("probe.add", "Probe", "Subsystem", "Items"),
             ("dataSet.remove", "Dcs", "DcsData", "Target"),
-            ("code.replace", "Code", "Code", "Text"),
+            ("probe.replace", "Probe", "Code", "Text"),
             ("dataSource.add", "Dcs", "DcsSchema", "Items"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_dcs_metadata_and_registrations_are_complete_and_fail_closed(self) -> None:
         role_source = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
@@ -1585,31 +1631,31 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                         self.registration_fixture(source, role_source, {filename: changed_metadata}, complete_mxl_event=False)
         registry, _ = self.renderer().load_apply_registry()
         self.assertEqual(registry[102:104], self.MXL_EVENT_ROWS[:2])
-        self.assertEqual(registry[124], self.MXL_EVENT_ROWS[2])
+        self.assertEqual(registry[125], self.MXL_EVENT_ROWS[2])
         self.assertEqual(registry[101][0], "dataSetLink.remove")
         self.assertEqual(registry[104][0], "valueType.add")
-        self.assertEqual(registry[123][0], "code.replace")
+        self.assertEqual(registry[124][0], "code.replace")
 
     def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
         registry, _ = self.registration_fixture(
-            '("content.add", Subsystem, Subsystem, Items),\n'
+            '("probe.add", Probe, Subsystem, Items),\n'
             '(RoleOperation::Create),\n'
             '(RoleOperation::RightAdd),\n'
             '// A comment is not a descriptor: (OtherOperation::Hidden),\n'
             '(RoleOperation::RightSet),\n'
-            '("code.replace", Code, Code, Text),',
+            '("probe.replace", Probe, Code, Text),',
             metadata,
         )
         self.assertEqual(registry, [
-            ("content.add", "Subsystem", "Subsystem", "Items"),
+            ("probe.add", "Probe", "Subsystem", "Items"),
             ("role.create", "Role", "Configuration", "Values"),
             ("right.add", "Role", "Role", "Items"),
             ("right.set", "Role", "RoleRight", "Values"),
-            ("code.replace", "Code", "Code", "Text"),
+            ("probe.replace", "Probe", "Code", "Text"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_role_metadata_survives_split_impls_and_unrelated_helpers(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
@@ -1633,11 +1679,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.set", "Role", "RoleRight", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_unknown_or_incomplete_typed_metadata_cannot_silently_drop_a_role(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
-        table = '("content.add", Subsystem, Subsystem, Items),\n' + "\n".join(
+        table = '("probe.add", Probe, Subsystem, Items),\n' + "\n".join(
             f"(RoleOperation::{variant})," for variant in ["Create", "RightAdd", "RightSet"]
         )
         last_row = '    RightSet => ("right.set", RoleRight, Values),\n'
@@ -1646,7 +1692,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             "unknown typed family": (table.replace("RoleOperation::Create", "OtherOperation::Create"), metadata),
             "unknown variant": (table.replace("RoleOperation::Create", "RoleOperation::Missing"), metadata),
             "missing registration": (table.replace("(RoleOperation::RightSet),", ""), metadata),
-            "all typed registrations missing": ('("content.add", Subsystem, Subsystem, Items),', metadata),
+            "all typed registrations missing": ('("probe.add", Probe, Subsystem, Items),', metadata),
             "duplicate registration": (table + "\n(RoleOperation::Create),", metadata),
             "missing metadata file": (table, None),
             "missing metadata table": (table, metadata.replace("\nrole_operations!(", "\nprevious_role_operations!(")),
