@@ -19,6 +19,7 @@ use super::v13_call_graph::{
 use super::v13_read_modes::{attach_can, operation_node_with, search_scope_prefix, source_backed};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
+use crate::application::v13::check::{DEFAULT_CHECK_LIMIT, MAX_CHECK_LIMIT};
 use crate::application::v13::diff::{
     DiffError, DiffHandler, DiffPage, DiffRequest, DiffSource, DEFAULT_DIFF_LIMIT, MAX_DIFF_LIMIT,
 };
@@ -2231,15 +2232,15 @@ impl CanonicalV13ReadService {
                 return error_result(None, RefusalCode::BadValue, "check at must be a string");
             };
             let limit = match arguments.get("limit") {
-                None => 20,
-                Some(value) => match bounded_usize(value).filter(|limit| *limit <= 50) {
+                None => DEFAULT_CHECK_LIMIT,
+                Some(value) => match bounded_usize(value).filter(|limit| *limit <= MAX_CHECK_LIMIT)
+                {
                     Some(limit) => limit,
                     None => {
-                        return error_result(
-                            Some(at.to_string()),
-                            RefusalCode::BadValue,
-                            "check limit must be an integer from 1 through 50",
-                        )
+                        let message = format!(
+                            "check limit must be an integer from 1 through {MAX_CHECK_LIMIT}"
+                        );
+                        return error_result(Some(at.to_string()), RefusalCode::BadValue, message);
                     }
                 },
             };

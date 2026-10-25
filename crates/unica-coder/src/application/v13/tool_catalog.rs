@@ -336,15 +336,15 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "check",
-                    description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node diagnostics are returned in stable pages.",
+                    description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node findings and workspace diagnostic groups are returned in stable pages; every page repeats the whole verdict.",
                     input_schema: schema(
                         json!({
                             // One type per field and no schema `default` (#1210, #1211):
                             // some clients refuse type arrays, form clients send defaults.
                             // An explicit null is still accepted as an omitted field.
                             "at": logical_address_with("Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit to check workspace source-set admission; null is treated as omitted."),
-                            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum diagnostics in one node-check page, from 1 to 50; valid only with at. Omit for 20; null is treated as omitted."},
-                            "cursor": cursor("Continuation cursor from an earlier check of the same node; valid only with at. Omit, or pass an empty string or null, for the first page."),
+                            "limit": {"type": "integer", "minimum": 1, "maximum": super::check::MAX_CHECK_LIMIT, "description": format!("Maximum diagnostics in one page, from 1 to {}: node findings, or workspace diagnostic groups without at. Omit for {}; null is treated as omitted. Pages are also bounded by encoded bytes.", super::check::MAX_CHECK_LIMIT, super::check::DEFAULT_CHECK_LIMIT)},
+                            "cursor": cursor("Continue the same check with the same limit: the same node with at, or the same workspace verdict without it; later pages read the result saved by the first page. Omit, or pass an empty string or null, for the first page."),
                         }),
                         json!([]),
                     ),

@@ -518,6 +518,7 @@ pub(super) struct V5CanonicalInvocationRuntime {
     documentation_cursors: Arc<unica_navigation::result_store::SearchCursorStore>,
     root_check_continuations:
         Arc<unica_project_health::inspection::resources::RootCheckContinuationStore>,
+    root_check_pages: Arc<crate::application::v13::check::RootCheckPages>,
     workspace_actors: WorkspaceActorRegistry,
     deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
@@ -852,6 +853,16 @@ impl V5CanonicalInvocationRuntime {
         self
     }
 
+    /// Root check pages saved in `pages`, for a test that bounds the store.
+    #[cfg(test)]
+    pub(crate) fn with_root_check_pages(
+        mut self,
+        pages: crate::application::v13::check::RootCheckPages,
+    ) -> Self {
+        self.root_check_pages = Arc::new(pages);
+        self
+    }
+
     pub(super) fn has_retained_workspace_work(&self) -> bool {
         self.workspace_actors.has_retained_work()
     }
@@ -870,6 +881,7 @@ impl V5CanonicalInvocationRuntime {
             root_check_continuations: Arc::new(
                 unica_project_health::inspection::resources::RootCheckContinuationStore::default(),
             ),
+            root_check_pages: Arc::default(),
             workspace_actors,
             deliveries: Arc::new(unica_artifact_delivery::desk::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
@@ -959,6 +971,7 @@ impl V5CanonicalInvocationRuntime {
             &request,
             response_deadline.clone(),
             &self.root_check_continuations,
+            &self.root_check_pages,
         ) {
             super::v13_workspace_bootstrap::Preparation::NotApplicable => {}
             super::v13_workspace_bootstrap::Preparation::Rejected(result) => {
@@ -5988,6 +6001,249 @@ fn main() {
     /// `view {}` reports facts: it starts no repository process, runs no
     /// project-health inspection and opens no object descriptor, while
     /// `check {}` on the same workspace still computes the verdict (#1457).
+    /// A Git workspace whose root check reports three diagnostic groups per
+    /// extension set and three more: generated content and an unclassified
+    /// dump inside each long-named set root.
+    pub(crate) fn root_check_groups_fixture(extensions: usize) -> tempfile::TempDir {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let mut project = String::from(
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        );
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
+        for n in 0..extensions {
+            let path = format!("ext{n:02}{}", "x".repeat(200));
+            project.push_str(&format!(
+                "  - name: ext{n:02}\n    type: EXTENSION\n    path: {path}\n"
+            ));
+            std::fs::create_dir_all(root.join(&path).join(".build")).unwrap();
+            std::fs::write(root.join(&path).join("ConfigDumpInfo.xml"), "x").unwrap();
+        }
+        std::fs::write(root.join("v8project.yaml"), project).unwrap();
+        for args in [&["init", "--quiet"][..], &["add", "."][..]] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success());
+        }
+        workspace
+    }
+
+    /// Walks a root check from its first page by cursor and returns the pages.
+    fn walk_root_check(
+        runtime: &V5CanonicalInvocationRuntime,
+        workspace: &std::path::Path,
+        limit: usize,
+    ) -> Vec<DomainResult> {
+        let first = serde_json::json!({"limit": limit});
+        let mut pages = vec![submit_canonical(
+            runtime,
+            workspace,
+            ToolIdentity::Check,
+            first,
+        )];
+        while let Some(cursor) = pages.last().unwrap().cursor.clone() {
+            let next = &pages.last().unwrap().next[0];
+            assert_eq!(next["tool"], "unica.check", "{next}");
+            assert_eq!(
+                next["args"],
+                serde_json::json!({"limit": limit, "cursor": cursor}),
+                "the continuation repeats the question"
+            );
+            let page = submit_canonical(
+                runtime,
+                workspace,
+                ToolIdentity::Check,
+                next["args"].clone(),
+            );
+            assert!(page.ok, "{page:?}");
+            pages.push(page);
+            assert!(pages.len() < 100, "a walk must end");
+        }
+        pages
+    }
+
+    fn verdict_without_groups(page: &DomainResult) -> serde_json::Value {
+        let mut data = page.data.clone().unwrap();
+        data.as_object_mut().unwrap().remove("diagnostics");
+        data
+    }
+
+    fn groups(page: &DomainResult) -> Vec<serde_json::Value> {
+        page.data.as_ref().unwrap()["diagnostics"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    /// #1119 (9c): a root check pages its diagnostic groups by count and by
+    /// encoded size. Every page carries the whole verdict and the number of
+    /// groups; the walk returns every group once, in the first answer's order,
+    /// and a continuation reads the saved verdict without inspecting again.
+    #[test]
+    fn root_check_pages_its_groups_by_count_and_bytes_with_the_whole_verdict() {
+        use unica_project_health::inspection::health_inspection_probe::inspections_for_test;
+
+        let workspace = root_check_groups_fixture(20);
+        let runtime = bootstrap_runtime();
+        let whole = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Check,
+            serde_json::json!({"limit": 50}),
+        );
+        assert!(whole.ok, "{whole:?}");
+        let count = whole.data.as_ref().unwrap()["diagnosticCount"]
+            .as_u64()
+            .unwrap() as usize;
+        assert!(count > 50, "the fixture needs more groups than a page");
+
+        for (limit, stop) in [(7, "limit"), (50, "bytes")] {
+            let inspected = inspections_for_test(workspace.path());
+            let pages = walk_root_check(&runtime, workspace.path(), limit);
+            assert_eq!(
+                inspections_for_test(workspace.path()),
+                inspected + 1,
+                "continuations read the saved verdict"
+            );
+            assert!(pages.len() > 1, "limit {limit}: one page holds everything");
+            let verdict = verdict_without_groups(&pages[0]);
+            assert_eq!(verdict["diagnosticCount"], count);
+            assert_eq!(verdict["status"], "failed");
+            let mut walked = Vec::new();
+            for (index, page) in pages.iter().enumerate() {
+                assert_eq!(verdict_without_groups(page), verdict, "page {index}");
+                let last = index + 1 == pages.len();
+                let stopped = &page.page.as_ref().unwrap()["stoppedBy"];
+                assert_eq!(
+                    stopped,
+                    if last { "complete" } else { stop },
+                    "page {index}"
+                );
+                assert_eq!(page.cursor.is_none(), last, "page {index}");
+                let size = serde_json::to_vec(page).unwrap().len();
+                if !last && stop == "bytes" {
+                    assert!(size <= 64 * 1024, "page {index}: {size} bytes");
+                    assert!(groups(page).len() > 1, "small groups share a page");
+                }
+                if stop == "limit" && !last {
+                    assert_eq!(groups(page).len(), limit, "page {index}");
+                }
+                walked.extend(groups(page));
+            }
+            let mut first_answer = groups(&whole);
+            first_answer.extend(
+                walk_root_check(&runtime, workspace.path(), 50)
+                    .iter()
+                    .skip(1)
+                    .flat_map(groups),
+            );
+            assert_eq!(
+                walked.len(),
+                count,
+                "limit {limit}: groups lost or repeated"
+            );
+            assert_eq!(walked, first_answer, "limit {limit}: the order holds");
+        }
+    }
+
+    /// #1119 (9c): a root check cursor answers only its own question. A forged
+    /// cursor, another workspace or another limit refuse it; an empty cursor
+    /// opens page one, and a limit over 50 is refused.
+    #[test]
+    fn root_check_cursor_answers_only_the_question_that_issued_it() {
+        let workspace = root_check_groups_fixture(3);
+        let other = root_check_groups_fixture(3);
+        let runtime = bootstrap_runtime();
+        let call = |workspace: &std::path::Path, arguments| {
+            submit_canonical(&runtime, workspace, ToolIdentity::Check, arguments)
+        };
+        let first = call(workspace.path(), serde_json::json!({"limit": 2}));
+        let cursor = first.cursor.clone().expect("a cut page issues a cursor");
+        assert_eq!(
+            call(
+                workspace.path(),
+                serde_json::json!({"limit": 2, "cursor": ""})
+            ),
+            first,
+            "an empty cursor opens page one"
+        );
+        assert_eq!(
+            call(
+                workspace.path(),
+                serde_json::json!({"limit": 2, "cursor": null})
+            ),
+            first,
+            "a null cursor opens page one"
+        );
+        let (prefix, offset) = cursor.rsplit_once('.').unwrap();
+        let flipped = if prefix.ends_with('0') { '1' } else { '0' };
+        let forged = format!("{}{flipped}.{offset}", &prefix[..prefix.len() - 1]);
+        for (target, arguments) in [
+            (
+                workspace.path(),
+                serde_json::json!({"limit": 2, "cursor": "opaque"}),
+            ),
+            (
+                workspace.path(),
+                serde_json::json!({"limit": 2, "cursor": format!("{prefix}.{}", offset.parse::<usize>().unwrap() + 1)}),
+            ),
+            (
+                workspace.path(),
+                serde_json::json!({"limit": 2, "cursor": forged}),
+            ),
+            (
+                workspace.path(),
+                serde_json::json!({"limit": 3, "cursor": cursor}),
+            ),
+            (
+                other.path(),
+                serde_json::json!({"limit": 2, "cursor": cursor}),
+            ),
+        ] {
+            let refused = call(target, arguments.clone());
+            assert!(!refused.ok, "{arguments}: {refused:?}");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "invalid_cursor",
+                "{arguments}: {refused:?}"
+            );
+        }
+        for limit in [0, 51] {
+            let refused = call(workspace.path(), serde_json::json!({"limit": limit}));
+            assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+        }
+        let refused = call(workspace.path(), serde_json::json!({"cursor": 7}));
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+    }
+
+    /// #1119 (9c): a full cursor store evicts the oldest saved verdict; its
+    /// cursor is then refused, never answered as a complete page.
+    #[test]
+    fn an_evicted_root_check_cursor_is_refused_instead_of_ending_the_walk() {
+        let first = root_check_groups_fixture(3);
+        let second = root_check_groups_fixture(3);
+        let runtime = bootstrap_runtime().with_root_check_pages(
+            crate::application::v13::check::RootCheckPages::with_capacity(1),
+        );
+        let limited = serde_json::json!({"limit": 2});
+        let page = submit_canonical(&runtime, first.path(), ToolIdentity::Check, limited.clone());
+        let cursor = page.cursor.clone().unwrap();
+        let next = serde_json::json!({"limit": 2, "cursor": cursor});
+        let kept = submit_canonical(&runtime, first.path(), ToolIdentity::Check, next.clone());
+        assert!(kept.ok, "{kept:?}");
+        submit_canonical(&runtime, second.path(), ToolIdentity::Check, limited);
+        let evicted = submit_canonical(&runtime, first.path(), ToolIdentity::Check, next);
+        assert!(!evicted.ok, "{evicted:?}");
+        assert_eq!(evicted.diagnostics[0]["code"], "invalid_cursor");
+        assert!(
+            evicted.page.is_none() && evicted.data.is_none(),
+            "{evicted:?}"
+        );
+    }
+
     #[test]
     fn canonical_view_bootstrap_leaves_project_health_to_the_root_check() {
         use unica_process::runner::process_launch_probe::launches_under_for_test;

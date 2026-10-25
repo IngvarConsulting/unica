@@ -452,6 +452,131 @@ fn root_check_completes_the_whole_inspection_in_its_task() {
     root_inspection_survives_response_cutoff(V5ToolIdentity::Check);
 }
 
+/// #1119 (9c): a root check page is the same whether the daemon answers
+/// directly or hands the call to a Task, and a cursor from either path
+/// continues on the other. Each page is one call; the Task stores that page.
+#[test]
+fn root_check_pages_are_the_same_through_a_task_and_a_direct_call() {
+    let state = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(state.path()).unwrap();
+    let workspace =
+        crate::infrastructure::daemon::server::actor_capacity_tests::root_check_groups_fixture(2);
+    let workspace_root = std::fs::canonicalize(workspace.path()).unwrap();
+    let pause = RootInspectionPause::install(workspace_root.clone());
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        Arc::new(SourceAdmissionProbe::default()),
+        clock.clone(),
+    ));
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(30),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(Arc::new(InspectionHooks::default()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            (config).into_transport_config(),
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    let daemon = InspectionDaemon {
+        pause,
+        stop,
+        server: Some(server),
+    };
+    wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let request = |task_id, arguments: serde_json::Value| {
+        V5InvocationRequest::new(
+            InvocationId::new(),
+            task_id,
+            V5ToolIdentity::Check,
+            arguments.as_object().unwrap().clone(),
+            unica_bootstrap::ResolvedWorkspace::launch_cwd(
+                workspace_root.to_string_lossy().into_owned(),
+            ),
+            7_000,
+        )
+        .unwrap()
+    };
+    let direct = |owner: &mut V5DaemonProcessOwner, arguments| {
+        let response = owner
+            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .unwrap()
+            .submit_invocation(request(TaskId::new(), arguments))
+            .unwrap();
+        let V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Direct { receipt },
+        } = response
+        else {
+            panic!("the call did not complete directly");
+        };
+        let ReceiptTerminalOutcome::Completed { result } = receipt.terminal() else {
+            panic!("the direct call did not complete");
+        };
+        result.clone()
+    };
+
+    let first_page = serde_json::json!({"limit": 1});
+    let task_id = TaskId::new();
+    let submitted = {
+        let invocation = request(task_id, first_page.clone());
+        let mut submitter = owner
+            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        thread::spawn(move || submitter.submit_invocation(invocation))
+    };
+    daemon.pause.wait_until_entered();
+    clock.elapsed_ms.store(7_000, Ordering::SeqCst);
+    let V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Task { .. },
+    } = submitted.join().unwrap().unwrap()
+    else {
+        panic!("the paused root check did not hand off to a task");
+    };
+    daemon.pause.release();
+    let V5ServerResponse::Task {
+        snapshot: V5DaemonTaskSnapshot::Completed { result: tasked, .. },
+    } = owner.wait_task(task_id, 7_000).unwrap()
+    else {
+        panic!("the root check task did not complete");
+    };
+    let answered = direct(&mut owner, first_page);
+    assert!(tasked.ok, "{tasked:?}");
+    assert_eq!(
+        serde_json::to_vec(&tasked).unwrap(),
+        serde_json::to_vec(&answered).unwrap(),
+        "a Task and a direct call deliver the same first page"
+    );
+    let cursor = tasked.cursor.clone().expect("the first page is cut");
+    let next = direct(
+        &mut owner,
+        serde_json::json!({"limit": 1, "cursor": cursor}),
+    );
+    assert!(next.ok, "{next:?}");
+    assert_ne!(next.data, tasked.data, "the continuation moves on");
+    assert_eq!(
+        next.data.as_ref().unwrap()["diagnosticCount"],
+        tasked.data.as_ref().unwrap()["diagnosticCount"]
+    );
+    assert_eq!(daemon.pause.entries(), 2, "continuations inspect nothing");
+}
+
 #[test]
 fn cancel_during_actor_admission_after_handoff_never_begins_and_keeps_the_daemon() {
     let state = tempfile::tempdir().unwrap();

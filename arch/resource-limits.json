@@ -1069,6 +1069,84 @@
       "review": null
     },
     {
+      "id": "check.cursor-store-entries",
+      "class": "retention",
+      "resource": "Число одновременно хранимых вердиктов корневого check с продолжением в процессе.",
+      "unit": "count",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-coder/src/application/v13/check.rs",
+        "symbol": "MAX_ROOT_CHECK_CURSOR_ENTRIES"
+      },
+      "expr": "64",
+      "value": 64,
+      "applied": [
+        "crates/unica-coder/src/application/v13/check.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 (9c)",
+      "problem": null,
+      "onReach": "тихо: обход хранит один вердикт на все свои страницы; при сохранении нового вердикта вытесняется самый старый, и его продолжение затем отказывает как неизвестный курсор.",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "check.page-default-entries",
+      "class": "step",
+      "resource": "Число диагностик страницы check, когда limit не задан: находок узла или групп корневого вердикта.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/application/v13/check.rs",
+        "symbol": "DEFAULT_CHECK_LIMIT"
+      },
+      "expr": "20",
+      "value": 20,
+      "applied": [
+        "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 (9c)",
+      "problem": null,
+      "onReach": "Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "check.page-max-entries",
+      "class": "step",
+      "resource": "Наибольшее число диагностик одной страницы check.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/application/v13/check.rs",
+        "symbol": "MAX_CHECK_LIMIT"
+      },
+      "expr": "50",
+      "value": 50,
+      "applied": [
+        "crates/unica-coder/src/application/v13/check.rs",
+        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 (9c)",
+      "problem": null,
+      "onReach": "limit больше 50 получает bad_value; остаток доступен по cursor.",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "find.page-default-entries",
       "class": "step",
       "resource": "Число записей страницы find, когда limit не задан.",
