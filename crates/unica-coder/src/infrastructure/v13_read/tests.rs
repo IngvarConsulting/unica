@@ -5648,9 +5648,9 @@ fn external_leaf_reads_a_relative_file_whole_whatever_its_size() {
         external_leaf_descriptor("ExternalDataProcessor", "Large", 9 * 1024 * 1024).into_bytes();
     fs::write(source.join("Large.xml"), &bytes).unwrap();
     let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
-    assert_eq!(
-        reader.read_relative_whole(Path::new("Large.xml")).unwrap(),
-        bytes
+    assert!(
+        reader.read_relative_whole(Path::new("Large.xml")).unwrap() == bytes,
+        "large relative file differs from its source bytes"
     );
     assert_eq!(
         configuration_payload(&reader).unwrap()["registeredObjects"],
