@@ -81,3 +81,47 @@ class ObserverProtocolTests(unittest.TestCase):
         self.assertEqual(answer["sourceText"], "Возврат 1;\n")
         self.assertEqual(answer["task"]["polls"], 1)
         self.assertEqual(client.request.call_args.args[1]["name"], "unica.task.result")
+
+
+def structured(envelope: dict) -> dict:
+    return {"isError": not envelope["ok"], "structuredContent": envelope, "content": []}
+
+
+class ObserverDraftTests(unittest.TestCase):
+    def test_operation_without_published_contract_is_named_unavailable(self):
+        at = "main:Catalog.Items"
+        node = {"ok": True, "at": at, "data": {"at": at, "can": [{"op": "sample.set", "args": "values", "implemented": True}]}}
+        refusal = {"ok": False, "summary": "no detailed contract", "diagnostics": [{"code": observer.CONTRACT_UNAVAILABLE_CODE}]}
+        draft = observer.Observer(client_for(structured(node), structured(refusal))).draft({"at": at, "op": "sample.set"})
+        self.assertEqual(draft["contract"], "unavailable")
+        self.assertEqual(draft["note"], observer.CONTRACT_UNAVAILABLE_NOTE)
+        self.assertEqual(draft["draft"], {"at": at, "ops": [{"op": "sample.set", "args": {"values": {}}}]})
+
+    def test_order_draft_permutes_the_stored_sequence_across_pages(self):
+        at = "main:Subsystem.Sales.Interface.Group.NavigationPanelImportant"
+        can = [{"op": "commandOrder.set", "args": "values", "implemented": True}]
+        schema = {"type": "object", "additionalProperties": False, "required": ["values"], "properties": {
+            "values": {"type": "object", "additionalProperties": False, "required": ["commands"], "properties": {
+                "commands": {"type": "array", "minItems": 1, "items": {"type": "string"}}}}}}
+        contract = {"argsSchema": schema, "exampleArgs": {"values": {"commands": ["Catalog.Sample.StandardCommand.OpenList"]}}}
+        page = lambda names, cursor=None: structured({"ok": True, "at": at, **({"cursor": cursor} if cursor else {}),
+                                                      "data": {"at": at, "can": can, "items": [{"command": name} for name in names]}})
+        client = client_for(
+            page(["A"], "next"),
+            structured({"ok": True, "at": f"{at}.Can.commandOrder.set", "data": {"props": {"contract": contract}}}),
+            page(["A", "B"], "next"),
+            page(["C"]),
+        )
+        draft = observer.Observer(client).draft({"at": at, "op": "commandOrder.set"})
+        self.assertEqual(draft["draft"]["ops"][0]["args"], {"values": {"commands": ["A", "B", "C"]}})
+        self.assertEqual(draft["validation"], [])
+        self.assertEqual(
+            [call.args[1]["arguments"] for call in client.request.call_args_list],
+            [{"at": at}, {"at": f"{at}.Can.commandOrder.set"}, {"at": at}, {"at": at, "cursor": "next"}],
+        )
+
+    def test_stored_order_refuses_a_repeated_cursor(self):
+        at = "main:Subsystem.Sales.Interface.Group"
+        page = structured({"ok": True, "at": at, "cursor": "same", "data": {"at": at, "items": [{"title": "A"}]}})
+        with self.assertRaisesRegex(observer.ApiError, "repeats cursor"):
+            observer.Observer(client_for(page, page)).stored_sequence(at, "title")

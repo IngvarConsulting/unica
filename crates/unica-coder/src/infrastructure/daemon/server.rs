@@ -518,6 +518,9 @@ pub(super) struct V5CanonicalInvocationRuntime {
     documentation_cursors: Arc<unica_navigation::result_store::SearchCursorStore>,
     root_check_continuations:
         Arc<unica_project_health::inspection::resources::RootCheckContinuationStore>,
+    /// Saved check results, shared with the read service: one retention
+    /// budget covers node checks and the workspace verdict.
+    check_snapshots: Arc<unica_navigation::result_store::ViewCursorStore>,
     workspace_actors: WorkspaceActorRegistry,
     deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
@@ -723,7 +726,12 @@ impl RunEngineDelivery {
         };
         match delivery {
             Some(result) => result,
-            None => run(cancellation),
+            None => {
+                // #2124: the result never carries a secret of the project's
+                // configuration, however the runner repeated it.
+                let secrets = super::runner_secrets::project_secrets(&self.workspace_hint);
+                super::runner_secrets::redact_result(run(cancellation), &secrets)
+            }
         }
     }
 }
@@ -834,6 +842,14 @@ enum PreparedCanonicalInvocationState {
     },
 }
 
+/// Only a test stand-in service keeps no check snapshots; the workspace
+/// verdict then saves its pages in a store of its own. The product read
+/// service always shares its store, which
+/// `the_root_check_shares_the_read_service_check_snapshots` holds.
+fn detached_check_snapshots() -> Arc<unica_navigation::result_store::ViewCursorStore> {
+    Arc::new(super::v13_service::product_view_cursors())
+}
+
 impl V5CanonicalInvocationRuntime {
     pub(super) fn new(service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
         Self::with_workspace_actors(
@@ -852,6 +868,18 @@ impl V5CanonicalInvocationRuntime {
         self
     }
 
+    /// The workspace verdict saves its pages in `store` instead of the
+    /// service's check snapshots: a test that bounds the store detaches the
+    /// root check from the read service.
+    #[cfg(test)]
+    pub(crate) fn with_detached_check_snapshots(
+        mut self,
+        store: unica_navigation::result_store::ViewCursorStore,
+    ) -> Self {
+        self.check_snapshots = Arc::new(store);
+        self
+    }
+
     pub(super) fn has_retained_workspace_work(&self) -> bool {
         self.workspace_actors.has_retained_work()
     }
@@ -861,6 +889,9 @@ impl V5CanonicalInvocationRuntime {
         clock: Arc<dyn Clock>,
         workspace_actors: WorkspaceActorRegistry,
     ) -> Self {
+        let check_snapshots = service
+            .check_snapshots()
+            .unwrap_or_else(detached_check_snapshots);
         Self {
             service,
             clock,
@@ -870,6 +901,7 @@ impl V5CanonicalInvocationRuntime {
             root_check_continuations: Arc::new(
                 unica_project_health::inspection::resources::RootCheckContinuationStore::default(),
             ),
+            check_snapshots,
             workspace_actors,
             deliveries: Arc::new(unica_artifact_delivery::desk::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
@@ -959,6 +991,7 @@ impl V5CanonicalInvocationRuntime {
             &request,
             response_deadline.clone(),
             &self.root_check_continuations,
+            &self.check_snapshots,
         ) {
             super::v13_workspace_bootstrap::Preparation::NotApplicable => {}
             super::v13_workspace_bootstrap::Preparation::Rejected(result) => {
@@ -1599,6 +1632,9 @@ impl unica_daemon::transport::ObservationLifecycle for CapacityObservation {
 }
 
 #[cfg(test)]
+#[path = "apply_large_input_tests.rs"]
+mod apply_large_input_tests;
+#[cfg(test)]
 #[path = "code_target_tests.rs"]
 mod code_target_tests;
 #[cfg(test)]
@@ -1640,6 +1676,9 @@ mod legacy_inline_check_tests;
 
 #[cfg(test)]
 mod apply_answer_size_tests;
+
+#[cfg(test)]
+mod stored_secret_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
@@ -3835,8 +3874,8 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(one.records, 1);
         assert_eq!(one.unique_payloads, 1);
         assert!(
-            one.payload_bytes > 64 * 1024,
-            "the payload must dominate admission metadata"
+            one.payload_bytes > 16 * one.record_bytes,
+            "the payload must dominate admission metadata: {one:?}"
         );
         let index_slot = std::mem::size_of::<Arc<ViewCollectionSnapshot>>();
         let fixed_bytes = one.retained_bytes
@@ -4201,6 +4240,11 @@ pub(crate) mod actor_capacity_tests {
 
         fn runtime(&self) -> &V5CanonicalInvocationRuntime {
             &self.canonical
+        }
+
+        /// The daemon's private state directory: receipts, tasks and links.
+        pub(crate) fn state_directory(&self) -> std::path::PathBuf {
+            DaemonStateDirectory::path_for(&self.state_root, &CoreIdentity::production_v5())
         }
 
         /// The owner lease that keeps the daemon alive for the test.
@@ -5994,6 +6038,348 @@ fn main() {
     /// `view {}` reports facts: it starts no repository process, runs no
     /// project-health inspection and opens no object descriptor, while
     /// `check {}` on the same workspace still computes the verdict (#1457).
+    /// A Git workspace whose root check reports three diagnostic groups per
+    /// extension set and three more: generated content and an unclassified
+    /// dump inside each long-named set root.
+    pub(crate) fn root_check_groups_fixture(extensions: usize) -> tempfile::TempDir {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let mut project = String::from(
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        );
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
+        for n in 0..extensions {
+            let path = format!("ext{n:02}{}", "x".repeat(200));
+            project.push_str(&format!(
+                "  - name: ext{n:02}\n    type: EXTENSION\n    path: {path}\n"
+            ));
+            std::fs::create_dir_all(root.join(&path).join(".build")).unwrap();
+            std::fs::write(root.join(&path).join("ConfigDumpInfo.xml"), "x").unwrap();
+        }
+        std::fs::write(root.join("v8project.yaml"), project).unwrap();
+        for args in [&["init", "--quiet"][..], &["add", "."][..]] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success());
+        }
+        workspace
+    }
+
+    /// Walks a root check from its first page by cursor and returns the pages.
+    fn walk_root_check(
+        runtime: &V5CanonicalInvocationRuntime,
+        workspace: &std::path::Path,
+        limit: usize,
+    ) -> Vec<DomainResult> {
+        let first = serde_json::json!({"limit": limit});
+        let mut pages = vec![submit_canonical(
+            runtime,
+            workspace,
+            ToolIdentity::Check,
+            first,
+        )];
+        while let Some(cursor) = pages.last().unwrap().cursor.clone() {
+            let next = &pages.last().unwrap().next[0];
+            assert_eq!(next["tool"], "unica.check", "{next}");
+            assert_eq!(
+                next["args"],
+                serde_json::json!({"limit": limit, "cursor": cursor}),
+                "the continuation repeats the question"
+            );
+            let page = submit_canonical(
+                runtime,
+                workspace,
+                ToolIdentity::Check,
+                next["args"].clone(),
+            );
+            assert!(page.ok, "{page:?}");
+            pages.push(page);
+            assert!(pages.len() < 100, "a walk must end");
+        }
+        pages
+    }
+
+    fn verdict_without_groups(page: &DomainResult) -> serde_json::Value {
+        let mut data = page.data.clone().unwrap();
+        data.as_object_mut().unwrap().remove("diagnostics");
+        data
+    }
+
+    fn groups(page: &DomainResult) -> Vec<serde_json::Value> {
+        page.data.as_ref().unwrap()["diagnostics"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    /// #1119 (9c): a root check pages its diagnostic groups by count and by
+    /// encoded size. Every page carries the whole verdict and the number of
+    /// groups; the walk returns every group once, in the first answer's order,
+    /// and a continuation reads the saved verdict without inspecting again.
+    #[test]
+    fn root_check_pages_its_groups_by_count_and_bytes_with_the_whole_verdict() {
+        use unica_project_health::inspection::health_inspection_probe::inspections_for_test;
+
+        let workspace = root_check_groups_fixture(20);
+        let runtime = bootstrap_runtime();
+        let whole = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Check,
+            serde_json::json!({"limit": 50}),
+        );
+        assert!(whole.ok, "{whole:?}");
+        let count = whole.data.as_ref().unwrap()["diagnosticCount"]
+            .as_u64()
+            .unwrap() as usize;
+        assert!(count > 50, "the fixture needs more groups than a page");
+
+        for (limit, stop) in [(7, "limit"), (50, "bytes")] {
+            let inspected = inspections_for_test(workspace.path());
+            let pages = walk_root_check(&runtime, workspace.path(), limit);
+            assert_eq!(
+                inspections_for_test(workspace.path()),
+                inspected + 1,
+                "continuations read the saved verdict"
+            );
+            assert!(pages.len() > 1, "limit {limit}: one page holds everything");
+            let verdict = verdict_without_groups(&pages[0]);
+            assert_eq!(verdict["diagnosticCount"], count);
+            assert_eq!(verdict["status"], "failed");
+            let mut walked = Vec::new();
+            for (index, page) in pages.iter().enumerate() {
+                assert_eq!(verdict_without_groups(page), verdict, "page {index}");
+                let last = index + 1 == pages.len();
+                let stopped = &page.page.as_ref().unwrap()["stoppedBy"];
+                assert_eq!(
+                    stopped,
+                    if last { "complete" } else { stop },
+                    "page {index}"
+                );
+                assert_eq!(page.cursor.is_none(), last, "page {index}");
+                let size = serde_json::to_vec(page).unwrap().len();
+                if !last && stop == "bytes" {
+                    assert!(size <= 64 * 1024, "page {index}: {size} bytes");
+                    assert!(groups(page).len() > 1, "small groups share a page");
+                }
+                if stop == "limit" && !last {
+                    assert_eq!(groups(page).len(), limit, "page {index}");
+                }
+                walked.extend(groups(page));
+            }
+            let mut first_answer = groups(&whole);
+            first_answer.extend(
+                walk_root_check(&runtime, workspace.path(), 50)
+                    .iter()
+                    .skip(1)
+                    .flat_map(groups),
+            );
+            assert_eq!(
+                walked.len(),
+                count,
+                "limit {limit}: groups lost or repeated"
+            );
+            assert_eq!(walked, first_answer, "limit {limit}: the order holds");
+        }
+    }
+
+    /// #1119 (9c): a root check cursor answers only its own question. A forged
+    /// cursor, another workspace or another limit refuse it; an empty cursor
+    /// opens page one, and a limit over 50 is refused.
+    #[test]
+    fn root_check_cursor_answers_only_the_question_that_issued_it() {
+        let workspace = root_check_groups_fixture(3);
+        let other = root_check_groups_fixture(3);
+        let runtime = bootstrap_runtime();
+        let call = |workspace: &std::path::Path, arguments| {
+            submit_canonical(&runtime, workspace, ToolIdentity::Check, arguments)
+        };
+        let first = call(workspace.path(), serde_json::json!({"limit": 2}));
+        let cursor = first.cursor.clone().expect("a cut page issues a cursor");
+        assert_eq!(
+            call(
+                workspace.path(),
+                serde_json::json!({"limit": 2, "cursor": ""})
+            ),
+            first,
+            "an empty cursor opens page one"
+        );
+        assert_eq!(
+            call(
+                workspace.path(),
+                serde_json::json!({"limit": 2, "cursor": null})
+            ),
+            first,
+            "a null cursor opens page one"
+        );
+        // One flipped character of the authenticated token, and the token
+        // with a character more.
+        let flipped = if cursor.ends_with('0') { '1' } else { '0' };
+        let forged = format!("{}{flipped}", &cursor[..cursor.len() - 1]);
+        for (target, arguments) in [
+            (
+                workspace.path(),
+                serde_json::json!({"limit": 2, "cursor": "opaque"}),
+            ),
+            (
+                workspace.path(),
+                serde_json::json!({"limit": 2, "cursor": format!("{cursor}0")}),
+            ),
+            (
+                workspace.path(),
+                serde_json::json!({"limit": 2, "cursor": forged}),
+            ),
+            (
+                workspace.path(),
+                serde_json::json!({"limit": 3, "cursor": cursor}),
+            ),
+            (
+                other.path(),
+                serde_json::json!({"limit": 2, "cursor": cursor}),
+            ),
+        ] {
+            let refused = call(target, arguments.clone());
+            assert!(!refused.ok, "{arguments}: {refused:?}");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "invalid_cursor",
+                "{arguments}: {refused:?}"
+            );
+        }
+        for limit in [0, 51] {
+            let refused = call(workspace.path(), serde_json::json!({"limit": limit}));
+            assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+        }
+        let refused = call(workspace.path(), serde_json::json!({"cursor": 7}));
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+    }
+
+    /// #1119 (9c): a workspace verdict is saved in the check snapshot store.
+    /// A cursor whose verdict that store does not hold — as after a daemon
+    /// restart — is refused, never answered as a complete page; a verdict the
+    /// store cannot hold is refused before any cursor is promised.
+    #[test]
+    fn a_root_check_cursor_without_its_saved_verdict_is_refused() {
+        let workspace = root_check_groups_fixture(3);
+        let limited = serde_json::json!({"limit": 2});
+        let page = submit_canonical(
+            &bootstrap_runtime(),
+            workspace.path(),
+            ToolIdentity::Check,
+            limited.clone(),
+        );
+        let cursor = page.cursor.clone().unwrap();
+        let restarted = submit_canonical(
+            &bootstrap_runtime(),
+            workspace.path(),
+            ToolIdentity::Check,
+            serde_json::json!({"limit": 2, "cursor": cursor}),
+        );
+        assert!(!restarted.ok, "{restarted:?}");
+        assert_eq!(restarted.diagnostics[0]["code"], "invalid_cursor");
+        assert!(
+            restarted.page.is_none() && restarted.data.is_none(),
+            "{restarted:?}"
+        );
+
+        let full = bootstrap_runtime().with_detached_check_snapshots(
+            unica_navigation::result_store::ViewCursorStore::new(400),
+        );
+        let refused = submit_canonical(&full, workspace.path(), ToolIdentity::Check, limited);
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
+        assert!(refused.cursor.is_none(), "{refused:?}");
+    }
+
+    /// #1119 (9c): the product runtime saves the workspace verdict in the read
+    /// service's check snapshots, so one retention budget covers both.
+    #[test]
+    fn the_root_check_shares_the_read_service_check_snapshots() {
+        let runtime = bootstrap_runtime();
+        let service = runtime
+            .service
+            .check_snapshots()
+            .expect("the read service keeps check snapshots");
+        assert!(
+            Arc::ptr_eq(&runtime.check_snapshots, &service),
+            "the root check must save its pages in the read service store"
+        );
+    }
+
+    /// #1119 (9c): a cursor answers only the check that issued it. A
+    /// workspace verdict cursor does not continue a node check, and a node
+    /// check cursor does not continue the workspace verdict, although both
+    /// live in one store.
+    #[test]
+    fn root_and_node_check_cursors_do_not_continue_each_other() {
+        let workspace = tempfile::tempdir().unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-xdto-check");
+        copy_tree_for_test(&fixture, workspace.path());
+        for args in [&["init", "--quiet"][..], &["add", "."][..]] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .status()
+                .unwrap()
+                .success());
+        }
+        let runtime = bootstrap_runtime();
+        let call = |arguments| {
+            submit_canonical(&runtime, workspace.path(), ToolIdentity::Check, arguments)
+        };
+        let view = |at: &str| {
+            submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::View,
+                serde_json::json!({"at": at}),
+            )
+        };
+        let packages = view("main:Configuration").data.unwrap()["branches"][0]["at"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let node = view(&packages).data.unwrap()["items"][3]["at"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let node_page = call(serde_json::json!({"at": node, "limit": 1}));
+        let node_cursor = node_page.cursor.clone().expect("the node check is cut");
+        let root_page = call(serde_json::json!({"limit": 1}));
+        let root_cursor = root_page
+            .cursor
+            .clone()
+            .expect("the workspace verdict is cut");
+        for arguments in [
+            serde_json::json!({"at": node, "limit": 1, "cursor": root_cursor}),
+            serde_json::json!({"limit": 1, "cursor": node_cursor}),
+        ] {
+            let refused = call(arguments.clone());
+            assert!(!refused.ok, "{arguments}: {refused:?}");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "invalid_cursor",
+                "{arguments}: {refused:?}"
+            );
+        }
+    }
+
+    fn copy_tree_for_test(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree_for_test(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn canonical_view_bootstrap_leaves_project_health_to_the_root_check() {
         use unica_process::runner::process_launch_probe::launches_under_for_test;
@@ -16602,26 +16988,8 @@ struct ActorLogicalReadLease {"#,
     /// after entering the mutating step, so the test cancels at a known point.
     /// Compiling it in the test keeps the same path on Unix and Windows.
     pub(crate) fn install_cancellable_create_runner(root: &std::path::Path) {
-        use sha2::{Digest, Sha256};
-
-        for name in ["UNICA_PLUGIN_ROOT", "UNICA_ARTIFACT_CACHE"] {
-            assert!(
-                std::env::var_os(name).is_none(),
-                "the runner fixture must not resolve a binary from {name}"
-            );
-        }
-
-        let plugin = root.join("plugins/unica");
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
-        let binary_name = format!("v8-runner{}", std::env::consts::EXE_SUFFIX);
-        let relative = format!("bin/{target}/{binary_name}");
-        let binary = plugin.join(&relative);
-        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
-        std::fs::create_dir_all(plugin.join("skills")).unwrap();
-        let source = root.join("runner-probe.rs");
-        std::fs::write(
-            &source,
+        install_runner_probe(
+            root,
             r##"
 use std::{env, fs, io::Write, thread, time::{Duration, Instant}};
 fn main() {
@@ -16644,8 +17012,30 @@ fn main() {
     println!(r#"{{"ok":true,"command":"infobase create","duration_ms":0,"data":{{"ok":true,"provider_dispatched":{},"steps":[{{"target":"infobase","action":"create","status":"{}","message":"probe","duration_ms":0}},{{"target":"edt_workspace","action":"import","status":"skipped","message":"probe","duration_ms":0}}],"duration_ms":0}},"warnings":[],"steps":[]}}"#, !dry_run, status);
 }
 "##,
-        )
-        .unwrap();
+        );
+    }
+
+    /// Compiles `probe` as the pinned v8-runner of a plugin rooted at `root`.
+    pub(crate) fn install_runner_probe(root: &std::path::Path, probe: &str) {
+        use sha2::{Digest, Sha256};
+
+        for name in ["UNICA_PLUGIN_ROOT", "UNICA_ARTIFACT_CACHE"] {
+            assert!(
+                std::env::var_os(name).is_none(),
+                "the runner fixture must not resolve a binary from {name}"
+            );
+        }
+
+        let plugin = root.join("plugins/unica");
+        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let binary_name = format!("v8-runner{}", std::env::consts::EXE_SUFFIX);
+        let relative = format!("bin/{target}/{binary_name}");
+        let binary = plugin.join(&relative);
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        std::fs::create_dir_all(plugin.join("skills")).unwrap();
+        let source = root.join("runner-probe.rs");
+        std::fs::write(&source, probe).unwrap();
         let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
         let compiled = std::process::Command::new(rustc)
             .arg("--edition=2021")

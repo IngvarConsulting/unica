@@ -1,0 +1,188 @@
+{
+  "id": "S-1119-root-check-pages",
+  "issue": 1119,
+  "area": "Рабочее пространство",
+  "task": "Получить вердикт рабочего пространства страницами групп диагностик и дочитать остаток по курсору без повторной проверки",
+  "workspace": "tests/fixtures/acceptance/workspace-root-check-pages",
+  "profile": "source",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "failed"
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/checks/0/id",
+          "eq": "source.discovery"
+        },
+        {
+          "pointer": "/data/diagnostics/0/code",
+          "eq": "git.repository_absent"
+        },
+        {
+          "pointer": "/data/diagnostics/1",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.check"
+        },
+        {
+          "pointer": "/next/0/args/limit",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "c1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "limit": 1,
+        "cursor": "$capture.c1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "failed"
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/checks/0/id",
+          "eq": "source.discovery"
+        },
+        {
+          "pointer": "/data/diagnostics/0/code",
+          "eq": "source_set.path_missing"
+        },
+        {
+          "pointer": "/data/diagnostics/0/sourceSet",
+          "eq": "billing"
+        },
+        {
+          "pointer": "/data/diagnostics/1",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.check"
+        },
+        {
+          "pointer": "/next/0/args/limit",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "c2": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "limit": 1,
+        "cursor": "$capture.c2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "failed"
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/checks/0/id",
+          "eq": "source.discovery"
+        },
+        {
+          "pointer": "/data/diagnostics/0/code",
+          "eq": "source_set.path_missing"
+        },
+        {
+          "pointer": "/data/diagnostics/0/sourceSet",
+          "eq": "delivery"
+        },
+        {
+          "pointer": "/data/diagnostics/1",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "limit": 2,
+        "cursor": "$capture.c1"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_cursor: check cursor is invalid, its verdict is no longer held, or it belongs to another question",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_cursor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "limit": 51
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: check limit must be an integer from 1 through 50"
+    }
+  ]
+}

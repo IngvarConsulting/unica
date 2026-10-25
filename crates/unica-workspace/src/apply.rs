@@ -4,7 +4,8 @@ use crate::compile_transaction::{
 };
 use crate::paths::GENERATED_DIR_NAME;
 use crate::platform::filesystem::{
-    FileIdentity, RetainedChildCapability, RetainedChildNameComparator, RetainedDirectoryCapability,
+    CheckedReadError, FileIdentity, RetainedChildCapability, RetainedChildNameComparator,
+    RetainedDirectoryCapability,
 };
 use sha2::Digest;
 use std::ffi::{OsStr, OsString};
@@ -15,9 +16,9 @@ use unica_source_contract::portable_path::PortablePathExt;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
-/// The largest single source file an apply stages; planners never read past it.
-pub const MAX_APPLY_FILE_BYTES: usize = 32 * 1024 * 1024;
-pub(super) const MAX_APPLY_NAMESPACE_ENTRIES: usize = 1_000_000;
+// #1119: the configuration, not apply, decides file sizes and namespace
+// membership; depth still guards against cycles.
+pub(super) const MAX_APPLY_NAMESPACE_ENTRIES: usize = usize::MAX;
 pub(super) const MAX_APPLY_NAMESPACE_DEPTH: usize = 256;
 
 /// A filesystem call on the planned route failed: access denied, I/O, or
@@ -619,7 +620,7 @@ impl ApplyStagedState {
     }
 
     pub fn read(&mut self, relative: &Path) -> Result<Option<Vec<u8>>, ApplyStagingError> {
-        self.read_bounded(relative, MAX_APPLY_FILE_BYTES)
+        self.read_bounded(relative, usize::MAX)
     }
 
     /// The path that identifies this retained overlay entry in final changes.
@@ -662,7 +663,7 @@ impl ApplyStagedState {
         limit: usize,
     ) -> Result<Option<Vec<u8>>, ApplyStagingError> {
         let relative = strict_relative(relative)?;
-        let index = self.ensure_loaded_bounded(&relative, limit.min(MAX_APPLY_FILE_BYTES))?;
+        let index = self.ensure_loaded_bounded(&relative, limit)?;
         if matches!(&self.entries[index].current, StagedFileState::Bytes(bytes) if bytes.len() > limit)
         {
             return Err(ApplyStagingError::new(
@@ -805,12 +806,13 @@ impl ApplyStagedState {
             return Ok(current);
         }
         let bytes = file
-            .read_bounded(limit.min(MAX_APPLY_FILE_BYTES))
-            .map_err(|error| {
-                ApplyStagingError::new(
+            .read_checked(limit, || self.checkpoint("apply reference input read"))
+            .map_err(|error| match error {
+                CheckedReadError::Stopped(error) => error,
+                CheckedReadError::Io(error) => ApplyStagingError::new(
                     ApplyStagingErrorKind::UnsupportedProvider,
-                    format!("reference input fixed read bound failed: {error}"),
-                )
+                    format!("reference input read failed: {error}"),
+                ),
             })?;
         self.checkpoint("apply reference input result")?;
         let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
@@ -1133,7 +1135,7 @@ impl ApplyStagedState {
     }
 
     fn ensure_loaded(&mut self, relative: &Path) -> Result<usize, ApplyStagingError> {
-        self.ensure_loaded_bounded(relative, MAX_APPLY_FILE_BYTES)
+        self.ensure_loaded_bounded(relative, usize::MAX)
     }
 
     fn ensure_loaded_bounded(
@@ -1295,12 +1297,15 @@ impl ApplyStagedState {
                         ),
                     ));
                 }
-                let bytes = file.read_bounded(limit).map_err(|error| {
-                    ApplyStagingError::new(
-                        ApplyStagingErrorKind::UnsupportedProvider,
-                        format!("staged target fixed read bound failed: {error}"),
-                    )
-                })?;
+                let bytes = file
+                    .read_checked(limit, || self.checkpoint("apply staged target read"))
+                    .map_err(|error| match error {
+                        CheckedReadError::Stopped(error) => error,
+                        CheckedReadError::Io(error) => ApplyStagingError::new(
+                            ApplyStagingErrorKind::UnsupportedProvider,
+                            format!("staged target read failed: {error}"),
+                        ),
+                    })?;
                 let identity = file.identity();
                 let len = bytes.len() as u64;
                 let sha256 = sha2::Sha256::digest(&bytes).into();
@@ -1559,20 +1564,14 @@ fn strict_relative(relative: &Path) -> Result<PathBuf, ApplyStagingError> {
     Ok(relative.to_path_buf())
 }
 
-#[cfg(feature = "test-support")]
-#[path = "apply_budget_contract_tests.rs"]
-pub mod budget_contract_tests;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "../tests/support/apply.rs"]
 mod test_support;
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::test_support::*;
-    use super::{
-        ApplyStagedState, ApplyStagingErrorKind, StagedChangeKind, StagedFileState,
-        MAX_APPLY_FILE_BYTES,
-    };
+    use super::{ApplyStagedState, ApplyStagingErrorKind, StagedChangeKind, StagedFileState};
     use crate::platform::filesystem::{
         file_identity, inject_post_rename_sync_failure_for_test,
         set_before_identity_bound_directory_cleanup_mutation_hook,
@@ -3289,19 +3288,19 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// A file larger than the former 32 MiB staging bound is read whole: the
+    /// configuration, not apply, decides its size (#1119).
     #[test]
-    fn apply_staged_read_has_one_closed_bound_that_cannot_be_caller_bypassed() {
-        let root = temp_root("closed-read-bound");
+    fn apply_stages_a_file_larger_than_the_former_read_bound() {
+        const FORMER_BOUND: usize = 32 * 1024 * 1024;
+        let root = temp_root("unbounded-read");
         std::fs::create_dir_all(root.join("Ext")).unwrap();
-        std::fs::write(
-            root.join("Ext/oversized.bin"),
-            vec![0_u8; MAX_APPLY_FILE_BYTES + 1],
-        )
-        .unwrap();
+        let large = vec![b'a'; FORMER_BOUND + 1];
+        std::fs::write(root.join("Ext/large.bin"), &large).unwrap();
         let mut state = staged(&root);
 
-        let error = state.read(Path::new("Ext/oversized.bin")).unwrap_err();
-        assert_eq!(error.kind(), ApplyStagingErrorKind::UnsupportedProvider);
+        let read = state.read(Path::new("Ext/large.bin")).unwrap();
+        assert_eq!(read.as_deref(), Some(large.as_slice()));
         std::fs::remove_dir_all(root).unwrap();
     }
 

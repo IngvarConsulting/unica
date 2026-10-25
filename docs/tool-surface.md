@@ -45,21 +45,22 @@ Plan typed edits with at and ops without writing; execute that saved plan with e
 
 ### `unica.check`
 
-Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node diagnostics are returned in stable pages.
+Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node findings and workspace diagnostic groups are returned in stable pages; every page repeats the whole verdict.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit to check workspace source-set admission; null is treated as omitted. |
-| `cursor` | string | нет | Continuation cursor from an earlier check of the same node; valid only with at. Omit, or pass an empty string or null, for the first page. |
-| `limit` | integer | нет | Maximum diagnostics in one node-check page, from 1 to 50; valid only with at. Omit for 20; null is treated as omitted. |
+| `cursor` | string | нет | Continue the same check with the same limit: the same node with at, or the same workspace verdict without it; later pages read the result saved by the first page. Omit, or pass an empty string or null, for the first page. |
+| `limit` | integer | нет | Maximum diagnostics in one page, from 1 to 50: node findings, or workspace diagnostic groups without at. Omit for 20; null is treated as omitted. Pages are also bounded by encoded bytes. |
 
-**Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
+**Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. Корневой вердикт, `checks` и `diagnosticCount` приходят целиком на каждой странице, а группы диагностик — страницами до 20 групп по умолчанию (максимум 50) и около 64 КиБ; page.stoppedBy сообщает limit/bytes/complete, группа не режется, cursor привязан к рабочему пространству и limit и читает вердикт, сохранённый первой страницей. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
 **Целевой контракт:** Держать таблицу вид → валидаторы закрытой и доказанной корпусом; на проводе у `check` нет аргумента выбора валидатора
 
 **Сценарии:**
 
 - Проверить, что рабочее пространство и его source set допущены
+- Дочитать все страницы групп диагностик корневого вердикта
 - Проверить один логический узел всеми валидаторами его вида и дочитать все страницы диагностик
 - Проверить читаемость узла без валидаторов
 
@@ -114,20 +115,22 @@ Search bundled Unica and safe 1C documentation by topic, or open a document loca
 
 ### `unica.resolve`
 
-Emergency bridge between a logical address and the source layout, in both directions. Use it only when a path arrived from outside Unica - a diff, a build log, a stack trace - or when a file has to be opened outside Unica. To find an object by name use search; to read it use view.
+Bridge between a logical address and the source layout, in both directions. Use it when paths arrived from outside Unica - host grep hits, a diff, a build log, a stack trace - or when a file has to be opened outside Unica: `paths` turns many of them into addresses in one call. To find an object by name use search; to read it use view.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address whose source location is needed. |
 | `path` | string | нет | Path to a source file or object directory, absolute or relative to the workspace root. |
+| `paths` | array | нет | Batch of paths, each optionally `path:line` with a 1-based file line as `grep -n` prints it. Answers `data.items` in input order with `at` and `kind`; with a line, `line` is `inMethod` (`at` is the method holding it), `outsideMethod` (`at` is the module) or `notLineBased` (a tree file; `at` is its object). A failed item carries `code` and `message` instead; the others still resolve. |
 
-**Результат сейчас:** `data` несёт один предмет: `at`, `kind`, `path` и закрытый признак `lines`; ответ точный либо `not_found` и не несёт `rev` (отвечают типизированным `data`)
+**Результат сейчас:** `data` несёт один предмет: `at`, `kind`, `path` и закрытый признак `lines`; ответ точный либо `not_found` и не несёт `rev`. Пакет `paths` отвечает `data.items` по позиции входа: `at` и `kind`, у элемента со строкой — закрытый признак `line` (`inMethod`, `outsideMethod`, `notLineBased`); отказ элемента — его `code` и `message` на его позиции (отвечают типизированным `data`)
 
 **Целевой контракт:** Держать путь в одном редком инструменте: в частом ответе он звал бы читать файл мимо адреса
 
 **Сценарии:**
 
 - Узнать, какому объекту принадлежит путь, пришедший из диффа, лога сборки или трассы
+- Перевести совпадения поиска средствами хоста (`путь:строка`) в адреса методов одним вызовом
 - Получить путь к файлу или каталогу объекта, чтобы прочитать или починить его вне Unica
 - Узнать файл и диапазон строк метода, когда его открывают вне Unica
 
