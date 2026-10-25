@@ -4154,7 +4154,11 @@ fn diagnostic_module_scope_preserves_exact_common_module_and_catalog_roles() {
         let before = fs::read(&expected).unwrap();
         let scope = authority
             .diagnostic_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
-            .map(|mapping| mapping.module_scope())
+            .map(|mapping| {
+                mapping
+                    .module_scope()
+                    .expect("a module mapping has its scope")
+            })
             .unwrap();
         assert_eq!(scope.source_set, "main", "{at}");
         assert_eq!(scope.source_root, fixture.source, "{at}");
@@ -4180,9 +4184,60 @@ fn diagnostic_module_scope_refuses_foreign_source_object_and_unregistered_module
         assert!(
             authority
                 .diagnostic_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
-                .map(|mapping| mapping.module_scope())
+                .map(|mapping| mapping
+                    .module_scope()
+                    .expect("a module mapping has its scope"))
                 .is_err(),
             "invented module scope for {at}"
+        );
+    }
+}
+
+/// #1966: объект и корень проверяются как цель целиком — без модульной
+/// области и без выдуманного объекта; общий модуль как объект — тоже объект.
+#[test]
+fn diagnostic_node_mapping_proves_object_common_module_and_root_without_module_scope() {
+    use unica_address::source_target::TargetKind;
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    for (at, metadata_path, kind) in [
+        (
+            "main:Catalog.Items",
+            Some("Catalog.Items"),
+            TargetKind::MetadataObject,
+        ),
+        (
+            "main:CommonModule.РеактивныйСервер",
+            Some("CommonModule.РеактивныйСервер"),
+            TargetKind::MetadataObject,
+        ),
+        ("main:Configuration", None, TargetKind::SourceRoot),
+    ] {
+        let mapping = authority
+            .diagnostic_node_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
+            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
+        assert_eq!(
+            mapping
+                .target()
+                .metadata_path
+                .as_ref()
+                .map(MetadataAddress::as_str),
+            metadata_path,
+            "{at}"
+        );
+        assert_eq!(mapping.target().target_kind, kind, "{at}");
+        assert!(mapping.module_scope().is_none(), "{at}");
+    }
+    for at in [
+        "main:Catalog.Missing",
+        "other:Catalog.Items",
+        "main:CommonModule.РеактивныйСервер.Body",
+    ] {
+        assert!(
+            authority
+                .diagnostic_node_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
+                .is_err(),
+            "invented node target for {at}"
         );
     }
 }
@@ -4194,7 +4249,11 @@ fn diagnostic_module_scope_keeps_admitted_source_after_project_remap() {
     let at = QualifiedAddress::parse("main:CommonModule.РеактивныйСервер.Body").unwrap();
     let admitted = authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| {
+            mapping
+                .module_scope()
+                .expect("a module mapping has its scope")
+        })
         .unwrap();
     let replacement = fixture.root.path().join("replacement");
     write(
@@ -4204,7 +4263,11 @@ fn diagnostic_module_scope_keeps_admitted_source_after_project_remap() {
     fs::write(fixture.root.path().join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: replacement\n").unwrap();
     let retained = authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| {
+            mapping
+                .module_scope()
+                .expect("a module mapping has its scope")
+        })
         .unwrap();
     assert_eq!(retained.source_root, admitted.source_root);
     assert_eq!(retained.module_path, admitted.module_path);
@@ -4225,13 +4288,17 @@ fn diagnostic_module_scope_refuses_replaced_retained_root() {
     let at = QualifiedAddress::parse("main:CommonModule.РеактивныйСервер").unwrap();
     assert!(authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| mapping
+            .module_scope()
+            .expect("a module mapping has its scope"))
         .is_ok());
     fs::rename(&fixture.source, fixture.root.path().join("saved-source")).unwrap();
     fs::create_dir(&fixture.source).unwrap();
     assert!(authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| mapping
+            .module_scope()
+            .expect("a module mapping has its scope"))
         .is_err());
 }
 
@@ -4245,7 +4312,11 @@ fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
     let at = QualifiedAddress::parse("main:CommonModule.РеактивныйСервер").unwrap();
     let module = authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| {
+            mapping
+                .module_scope()
+                .expect("a module mapping has its scope")
+        })
         .unwrap()
         .module_path;
     let foreign = fixture.root.path().join("foreign.bsl");
@@ -4262,14 +4333,16 @@ fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
     }
     assert!(authority
         .diagnostic_mapping(&at, &fixture.context)
-        .map(|mapping| mapping.module_scope())
+        .map(|mapping| mapping
+            .module_scope()
+            .expect("a module mapping has its scope"))
         .is_err());
     assert_eq!(fs::read_to_string(foreign).unwrap(), "// foreign module\n");
 }
 
 mod canonical_module_diagnostics {
     use super::*;
-    use crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping;
+    use crate::infrastructure::diagnostics::CanonicalDiagnosticMapping;
     use std::time::Duration;
     use unica_address::source_target::TargetKind;
     use unica_diagnostics::coordinator::DiagnosticCoordinator;
@@ -4277,7 +4350,7 @@ mod canonical_module_diagnostics {
     use unica_diagnostics::model::*;
     use unica_source_contract::location::SourceLocation;
 
-    fn request(mapping: &CanonicalModuleDiagnosticMapping) -> DiagnosticRequest {
+    fn request(mapping: &CanonicalDiagnosticMapping) -> DiagnosticRequest {
         DiagnosticRequest {
             action: DiagnosticAction::Analyze,
             source_set: mapping.target().source_set.clone(),
