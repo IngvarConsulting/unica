@@ -1435,6 +1435,102 @@ fn continued_repository_eol_uses_bounded_git_batches() {
 }
 
 #[test]
+fn continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity() {
+    // 22 full pages of staged text resources and Configuration.xml: about 90
+    // 000 paths, past the roughly 80 000 text resources whose evidence fitted
+    // the former 32 MiB in memory. Working files are absent.
+    const PAGES: usize = 22;
+    const FIRST_RUN: usize = 11 * super::RESOURCE_PAGE_PATHS;
+
+    #[derive(Default)]
+    struct EolBatchCountingRunner {
+        eol_batches: Cell<usize>,
+    }
+
+    impl ProcessRunner for EolBatchCountingRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            if command.args.iter().any(|arg| arg == "--eol") {
+                self.eol_batches.set(self.eol_batches.get() + 1);
+            }
+            unica_process::runner::system_process_runner().run(command)
+        }
+
+        fn run_with_input(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+        ) -> Result<ProcessOutput, String> {
+            unica_process::runner::system_process_runner().run_with_input(command, input)
+        }
+    }
+
+    let fixture = policy_fixture();
+    fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+    git(&fixture.root, &["add", ".gitattributes", "src"]);
+    let files = PAGES * super::RESOURCE_PAGE_PATHS;
+    stage_synthetic_paths(
+        &fixture.root,
+        (0..files).map(|number| format!("src/Files/{number:05}.xml")),
+    );
+    let text_resources = files + 1;
+    let cancellation = CancellationToken::new();
+    let deadline = ProviderDeadline::no_deadline();
+    let layout = SourceLayoutInspector::inspect(
+        &fixture.context,
+        &cancellation,
+        deadline,
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(&fixture.context.workspace_root),
+    )
+    .unwrap();
+    let repository = GitRepositoryInspector::new()
+        .inspect_base(&fixture.context, &layout, &cancellation, deadline)
+        .unwrap();
+    let root = repository.repository_root.as_ref().unwrap();
+    let inspect = |runner: &EolBatchCountingRunner,
+                   continuation: &mut super::ResourceContinuation| {
+        SourceResourcePolicyInspector::with_process_runner(
+            runner,
+            crate::inspection::TEST_RESPONSE_HANDOFF_WINDOW,
+        )
+        .inspect_excluding_continued(
+            root,
+            &layout.roots,
+            &repository.entries,
+            &Default::default(),
+            &cancellation,
+            deadline,
+            Some(continuation),
+        )
+        .unwrap()
+    };
+    let index_eol_not_run = |inspection: &super::RepositoryPolicyInspection| {
+        inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIndexEol
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        })
+    };
+
+    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let first = EolBatchCountingRunner::default();
+    super::stop_staged_eol_after_for_test(FIRST_RUN);
+    assert!(index_eol_not_run(&inspect(&first, &mut continuation)));
+    assert_eq!(first.eol_batches.get(), FIRST_RUN / 64);
+    assert_eq!(continuation.index_eol_keys_for_test().len(), FIRST_RUN);
+
+    // A new continuation over the same cache finds the evidence on disk and
+    // inspects only the paths the first call did not reach.
+    let mut continued = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let second = EolBatchCountingRunner::default();
+    assert!(!index_eol_not_run(&inspect(&second, &mut continued)));
+    assert_eq!(
+        second.eol_batches.get(),
+        (text_resources - FIRST_RUN).div_ceil(64)
+    );
+    assert_eq!(continued.progress.staged_eol_retained, text_resources);
+    assert_eq!(continued.index_eol_keys_for_test().len(), text_resources);
+}
+
+#[test]
 fn continued_repository_eol_halves_a_timed_out_batch_on_retry() {
     struct TimeoutFirstBatchRunner {
         timed_out: Cell<bool>,
@@ -3256,4 +3352,35 @@ impl WorkingCheckpoint {
         self.evidence = evidence;
         result
     }
+}
+
+/// Stage `paths` with one shared blob and no working files, the way a
+/// large repository looks to the index without writing every file.
+fn stage_synthetic_paths(root: &Path, paths: impl Iterator<Item = String>) {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let blob = Command::new("git")
+        .args(["hash-object", "-w", "--stdin"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    blob.stdin.as_ref().unwrap().write_all(b"<A/>\n").unwrap();
+    let blob = blob.wait_with_output().unwrap();
+    assert!(blob.status.success(), "git hash-object failed");
+    let oid = String::from_utf8(blob.stdout).unwrap().trim().to_owned();
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(format!("100644 {oid}\t{path}\0").as_bytes());
+    }
+    let mut update = Command::new("git")
+        .args(["update-index", "-z", "--index-info"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    update.stdin.take().unwrap().write_all(&input).unwrap();
+    assert!(update.wait().unwrap().success(), "git update-index failed");
 }

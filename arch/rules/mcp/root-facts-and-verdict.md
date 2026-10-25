@@ -8,7 +8,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_leaves_project_health_to_the_root_check
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_inspection_discovers_sources_after_response_handoff
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint
-  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint
+  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_does_not_recommend_repeat_for_a_fixed_failure
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_eol_timeout_keeps_earlier_attribute_failure
   - crates/unica-project-health/tests/platform/project_health_resources.rs::continued_repository_eol_resumes_after_a_staged_timeout_and_rechecks_working_bytes
   - crates/unica-project-health/tests/platform/project_health_resources.rs::continued_working_eol_rejects_a_new_file_and_late_cancellation
@@ -17,6 +17,9 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_resumes_inside_working_file_without_losing_attribute_failure
   - crates/unica-project-health/tests/platform/project_health_resources.rs::continued_staged_eol_malformed_protocol_keeps_attribute_findings
   - crates/unica-project-health/tests/platform/project_health_resources.rs::final_index_change_invalidates_earlier_attribute_findings
+  - crates/unica-project-health/tests/platform/project_health_resources.rs::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity
+  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_inspects_resources_past_the_former_classification_count
+  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_streams_an_index_past_the_former_capture_limit
 ---
 
 # Факты о рабочем пространстве и его готовность запрашиваются отдельно

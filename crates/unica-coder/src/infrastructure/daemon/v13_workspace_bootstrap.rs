@@ -965,6 +965,120 @@ mod tests {
         (workspace, root)
     }
 
+    /// Stage `paths` with one shared blob and no working files, the way a
+    /// large repository looks to the index without writing every file.
+    fn stage_synthetic_paths(root: &std::path::Path, paths: impl Iterator<Item = String>) {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let blob = Command::new("git")
+            .args(["hash-object", "-w", "--stdin"])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        blob.stdin.as_ref().unwrap().write_all(b"x\n").unwrap();
+        let blob = blob.wait_with_output().unwrap();
+        assert!(blob.status.success(), "git hash-object failed");
+        let oid = String::from_utf8(blob.stdout).unwrap().trim().to_owned();
+        let mut input = Vec::new();
+        for path in paths {
+            input.extend_from_slice(format!("100644 {oid}\t{path}\0").as_bytes());
+        }
+        let mut update = Command::new("git")
+            .args(["update-index", "-z", "--index-info"])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        update.stdin.take().unwrap().write_all(&input).unwrap();
+        assert!(update.wait().unwrap().success(), "git update-index failed");
+    }
+
+    fn root_check(root: &std::path::Path) -> serde_json::Value {
+        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use std::sync::Arc;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_work_control::cancellation::CancellationToken;
+
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let Preparation::Ready(inspection) = prepare(
+            &request,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+            &RootCheckContinuationStore::default(),
+        ) else {
+            panic!("root check must prepare");
+        };
+        inspection
+            .execute(CancellationToken::new())
+            .unwrap()
+            .data
+            .unwrap()
+    }
+
+    fn assert_repository_checks_passed(data: &serde_json::Value) {
+        assert_eq!(data["readinessState"], "complete", "{data}");
+        assert_eq!(data["repositoryReady"], true, "{data}");
+        for check in data["checks"].as_array().unwrap() {
+            assert_eq!(check["status"], "passed", "{check}");
+        }
+    }
+
+    #[test]
+    fn root_check_inspects_resources_past_the_former_classification_count() {
+        // 65 537 staged binary resources pass the former 65 536-entry refusal.
+        // Their working files are absent, which the LFS advice reads as no size.
+        let (_workspace, root) = eol_check_fixture();
+        std::fs::write(
+            root.join(".gitattributes"),
+            "*.xml text eol=lf\n*.bin -text\n",
+        )
+        .unwrap();
+        let output = std::process::Command::new("git")
+            .args(["add", ".gitattributes"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        stage_synthetic_paths(
+            &root,
+            (0..65_537).map(|number| format!("src/Blobs/{number:05}.bin")),
+        );
+
+        assert_repository_checks_passed(&root_check(&root));
+    }
+
+    #[test]
+    fn root_check_streams_an_index_past_the_former_capture_limit() {
+        // 200 000 long staged paths make `git ls-files --stage -z` print more
+        // than the former 64 MiB capture of a Git command's output.
+        let (_workspace, root) = eol_check_fixture();
+        let directory = "d".repeat(300);
+        stage_synthetic_paths(
+            &root,
+            (0..200_000).map(|number| format!("other/{directory}/{number:06}.dat")),
+        );
+        let index = std::process::Command::new("git")
+            .args(["ls-files", "--stage", "-z"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(index.stdout.len() > 64 * 1024 * 1024);
+        drop(index);
+
+        assert_repository_checks_passed(&root_check(&root));
+    }
+
     #[test]
     fn root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
