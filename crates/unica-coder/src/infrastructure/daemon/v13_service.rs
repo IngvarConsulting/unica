@@ -31,7 +31,7 @@ use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::diff::{
     DiffError, DiffHandler, DiffPage, DiffRequest, DiffSource, DEFAULT_DIFF_LIMIT, MAX_DIFF_LIMIT,
 };
-use crate::application::v13::find::{FindIndex, FindRequest};
+use crate::application::v13::find::{public_name_match, FindIndex, FindRequest, NameRanker};
 use crate::application::v13::resolve::{
     LinePlace, ModuleLine, PathLine, ResolveError, ResolveRequest, ResolvedLines, ResolvedPath,
     ResolvedSource,
@@ -63,8 +63,8 @@ use unica_code_intelligence::model::SearchRequest;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
 use unica_navigation::result_store::{
-    SearchCursorBinding, SearchCursorError, SearchCursorStore, SearchResume, StoredSearchCursor,
-    ViewCursorBinding, ViewCursorStore,
+    SearchAfter, SearchCursorBinding, SearchCursorError, SearchCursorStore, SearchResume,
+    StoredSearchCursor, ViewCursorBinding, ViewCursorStore,
 };
 use unica_navigation::source_navigation::{
     SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
@@ -1393,7 +1393,7 @@ impl CanonicalV13ReadService {
         };
         let (offset, continuation) = match cursor_token {
             None => (0, TextContinuation::Start),
-            Some(token) => match self.search_cursors.verify_question(token, &binding) {
+            Some(token) => match self.search_cursors.resume_position(token, &binding) {
                 Ok((offset, resume)) if !resume.file.is_empty() => {
                     (offset, TextContinuation::Resume(resume))
                 }
@@ -1664,7 +1664,7 @@ impl CanonicalV13ReadService {
             .map(|hit| &hit.next.0)
             .chain(scan.time_next.as_ref().map(|next| &next.0))
             .map(|next| match next {
-                TextContinuation::Resume(resume) => 2 * resume.file.len(),
+                TextContinuation::Resume(resume) => 2 * (16 + resume.file.len()),
                 TextContinuation::Start => 0,
             })
             .max()
@@ -1732,11 +1732,11 @@ impl CanonicalV13ReadService {
             let issued = match stored {
                 Some(stored) => {
                     self.search_cursors
-                        .insert_next_answer(&stored, &binding, next_offset, resume)
+                        .insert_next_answer(&stored, &binding, next_offset, &resume)
                 }
                 None => self
                     .search_cursors
-                    .insert_first_resumable(binding, next_offset, resume),
+                    .insert_first_resumable(binding, next_offset, &resume),
             };
             match issued {
                 Ok(token) => result.cursor = Some(token),
@@ -1754,6 +1754,31 @@ impl CanonicalV13ReadService {
         summary: String,
         extra_data: Map<String, Value>,
     ) -> DomainResult {
+        self.search_page_keyed(
+            matches,
+            None,
+            &SearchCursorStore::token_probe(),
+            cursor,
+            binding,
+            summary,
+            extra_data,
+        )
+    }
+
+    /// One search page. With `keys`, the rank of each match, the next
+    /// continuation resumes after the last match shown instead of at an
+    /// offset into an answer held whole.
+    #[allow(clippy::too_many_arguments)]
+    fn search_page_keyed(
+        &self,
+        matches: Vec<Value>,
+        keys: Option<&[SearchAfter]>,
+        cursor_probe: &str,
+        cursor: Option<(&str, StoredSearchCursor)>,
+        binding: SearchCursorBinding,
+        summary: String,
+        extra_data: Map<String, Value>,
+    ) -> DomainResult {
         use crate::application::v13::view::PREFERRED_PAGE_BYTES;
         use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
@@ -1764,7 +1789,14 @@ impl CanonicalV13ReadService {
         let mut page_matches = Vec::new();
         let mut byte_stop = false;
         let measured_bytes = |items: &[Value]| {
-            search_page_probe_bytes(mode, items, &summary, &extra_data, revision.as_deref())
+            search_page_probe_bytes_with(
+                mode,
+                items,
+                &summary,
+                &extra_data,
+                revision.as_deref(),
+                cursor_probe,
+            )
         };
         if measured_bytes(&[]) > MAX_CANONICAL_RESULT_BYTES {
             return error_result(
@@ -1812,9 +1844,16 @@ impl CanonicalV13ReadService {
                 Ok(offset) => offset,
                 Err(error) => return error.into_result(None),
             };
+            let after =
+                keys.and_then(|keys| consumed.checked_sub(1).and_then(|last| keys.get(last)));
             let issued = match cursor {
-                Some((_, stored)) => self.search_cursors.insert_next(&stored, next_offset),
-                None => self.search_cursors.insert_first(binding, next_offset),
+                Some((_, stored)) => {
+                    self.search_cursors
+                        .insert_next_after(&stored, next_offset, after)
+                }
+                None => self
+                    .search_cursors
+                    .insert_first_after(binding, next_offset, after),
             };
             let issued = match issued {
                 Ok(token) => token,
@@ -2185,16 +2224,69 @@ impl CanonicalV13ReadService {
             .iter()
             .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
             .collect::<Vec<_>>();
-        let built = match self
-            .find_builder
-            .build_for_search(&layout, deadline, cancellation)
-        {
+        let scope_binding = scope.as_ref().map(ToString::to_string);
+        let binding_for = |result_fingerprint: Option<String>| SearchCursorBinding {
+            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
+            query: query.to_owned(),
+            scope: scope_binding.clone(),
+            mode: "names".to_owned(),
+            kind: arguments
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            source_sets: selected
+                .iter()
+                .map(|source| source.name().to_owned())
+                .collect(),
+            result_fingerprint,
+            page_limit: limit,
+        };
+        // The question half of a continuation is checked before the walk:
+        // the rank it resumes after decides which names the page keeps.
+        let after = match arguments.get("cursor") {
+            None => None,
+            Some(Value::String(token)) => {
+                match self
+                    .search_cursors
+                    .question_position(token, &binding_for(None))
+                {
+                    Ok((_, Some(after))) => match usize::try_from(after.score) {
+                        Ok(score) => Some((score, after.at)),
+                        Err(_) => return SearchCursorError::Invalid.into_result(None),
+                    },
+                    // A name continuation always carries its rank.
+                    Ok((_, None)) => return SearchCursorError::Invalid.into_result(None),
+                    Err(error) => return error.into_result(None),
+                }
+            }
+            Some(_) => {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search cursor must be a string",
+                )
+            }
+        };
+        // Walking the layout ranks the names and notes whether the scope
+        // exists; only this page's candidates and one more are kept.
+        let ranked_request = match &scope {
+            Some(scope) => request.clone().with_scope(scope.clone()),
+            None => request.clone(),
+        };
+        let watched = scope.as_ref().map(name_scope_witnesses).unwrap_or_default();
+        let built = match self.find_builder.search_names(
+            &layout,
+            NameRanker::new(ranked_request, watched, limit.saturating_add(1), after),
+            deadline,
+            cancellation,
+        ) {
             Ok(built) => built,
             Err(error) => return find_build_error_result(None, error),
         };
-        let scope_binding = scope.as_ref().map(ToString::to_string);
         if let Some(scope) = scope {
-            if let Err((code, message)) = validate_name_scope(&built.index, &scope, first.kind()) {
+            if let Err((code, message)) =
+                validate_name_scope(&|at| built.present.contains(at), &scope, first.kind())
+            {
                 if built.omissions.total != 0
                     && matches!(code, RefusalCode::NotFound | RefusalCode::InvalidState)
                 {
@@ -2206,15 +2298,8 @@ impl CanonicalV13ReadService {
                 }
                 return error_result(Some(scope.to_string()), code, message);
             }
-            request = request.with_scope(scope);
         }
-        let found = match built
-            .index
-            .find_all_checked(request, deadline, cancellation)
-        {
-            Ok(found) => found,
-            Err(error) => return error_result(None, error.code(), error.to_string()),
-        };
+        let found = built.names;
         let summary = if built.omissions.total == 0 {
             "name search completed".to_string()
         } else {
@@ -2234,8 +2319,12 @@ impl CanonicalV13ReadService {
         });
         let mut extra_data = Map::new();
         extra_data.insert("sourceCoverage".to_owned(), coverage.clone());
-        extra_data.insert("approximate".to_owned(), Value::Bool(found.is_nearest()));
-        let empty_page_bytes = search_page_probe_bytes("names", &[], &summary, &extra_data, None);
+        extra_data.insert("approximate".to_owned(), Value::Bool(found.nearest));
+        // A name continuation is keyed by the rank of its last item; the
+        // probe reserves a key as long as the longest address.
+        let cursor_probe = SearchCursorStore::keyed_token_probe(found.largest_address_bytes.max(1));
+        let empty_page_bytes =
+            search_page_probe_bytes_with("names", &[], &summary, &extra_data, None, &cursor_probe);
         if empty_page_bytes > unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES {
             return error_result(
                 None,
@@ -2243,94 +2332,63 @@ impl CanonicalV13ReadService {
                 "name search page metadata exceeds the transport limit",
             );
         }
-        // Names do not have a source revision lease. Rebuild the complete
-        // ranked answer on each page and bind the cursor to the public stream
-        // and coverage instead of claiming a source revision.
-        let mut hasher = Sha256::new();
-        hasher.update(b"unica-v13-names-result-v1\0");
-        for (index, candidate) in found.candidates().iter().enumerate() {
-            if index % 128 == 0 {
-                if let Some(refusal) = name_search_interruption(deadline, cancellation) {
-                    return refusal;
-                }
-            }
-            let public = json!({
-                "at": candidate.at(),
-                "kind": candidate.kind(),
-                "title": candidate.title(),
-                "reason": candidate.reason(),
-            });
-            let bytes = serde_json::to_vec(&public).expect("name match is serializable");
-            // An item after the first page must not receive a continuation
-            // that could never carry it. The empty probe includes every fixed
-            // response field and its cursor; adding one JSON array item adds
-            // exactly its serialized byte length.
-            if empty_page_bytes.saturating_add(bytes.len())
+        // An item after the first page must not receive a continuation that
+        // could never carry it. The empty probe includes every fixed response
+        // field and its cursor; adding one JSON array item adds exactly its
+        // serialized byte length, and the walk kept the largest one.
+        if found.matched != 0
+            && empty_page_bytes.saturating_add(found.largest_item_bytes)
                 > unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
-            {
-                return error_result(
-                    None,
-                    RefusalCode::ResultTooLarge,
-                    "one name search result exceeds the transport limit",
-                );
-            }
-            hasher.update((bytes.len() as u64).to_le_bytes());
-            hasher.update(&bytes);
+        {
+            return error_result(
+                None,
+                RefusalCode::ResultTooLarge,
+                "one name search result exceeds the transport limit",
+            );
         }
-        let evidence =
-            json!({"approximate": found.is_nearest(), "sourceCoverage": coverage.clone()});
+        // Names do not have a source revision lease. Every page walks the
+        // layout again and binds the cursor to the ranked answer — its count
+        // and order-free digest — and coverage instead of a source revision.
+        let mut hasher = Sha256::new();
+        hasher.update(b"unica-v13-names-result-v2\0");
+        hasher.update(found.fingerprint);
+        let evidence = json!({"approximate": found.nearest, "sourceCoverage": coverage.clone()});
         let bytes = serde_json::to_vec(&evidence).expect("name coverage is serializable");
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
         if let Some(refusal) = name_search_interruption(deadline, cancellation) {
             return refusal;
         }
-        let binding = SearchCursorBinding {
-            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
-            query: query.to_owned(),
-            scope: scope_binding,
-            mode: "names".to_owned(),
-            kind: arguments
-                .get("kind")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            source_sets: selected
-                .iter()
-                .map(|source| source.name().to_owned())
-                .collect(),
-            result_fingerprint: Some(format!("names-sha256-v1:{:x}", hasher.finalize())),
-            page_limit: limit,
-        };
-        let cursor = match arguments.get("cursor") {
+        let binding = binding_for(Some(format!("names-sha256-v2:{:x}", hasher.finalize())));
+        let cursor = match arguments.get("cursor").and_then(Value::as_str) {
             None => None,
-            Some(Value::String(token)) => match self.search_cursors.read(token, &binding) {
-                Ok(cursor) => Some((token.as_str(), cursor)),
+            Some(token) => match self.search_cursors.read(token, &binding) {
+                Ok(cursor) => Some((token, cursor)),
                 Err(error) => return error.into_result(None),
             },
-            Some(_) => {
-                return error_result(
-                    None,
-                    RefusalCode::BadValue,
-                    "search cursor must be a string",
-                )
-            }
         };
-        let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
-        let matches = found
-            .candidates()
+        let keys = found
+            .candidates
             .iter()
-            .skip(offset)
-            .take(limit + 1)
-            .map(|candidate| {
-                json!({
-                    "at": candidate.at(),
-                    "kind": candidate.kind(),
-                    "title": candidate.title(),
-                    "reason": candidate.reason(),
-                })
+            .map(|(score, candidate)| SearchAfter {
+                score: *score as u64,
+                at: candidate.at().to_owned(),
             })
+            .collect::<Vec<_>>();
+        let matches = found
+            .candidates
+            .iter()
+            .map(|(_, candidate)| public_name_match(candidate))
             .collect();
-        let result = self.search_page_with_data(matches, cursor, binding, summary, extra_data);
+        let result = self.search_page_keyed(
+            matches,
+            Some(&keys),
+            &cursor_probe,
+            cursor,
+            binding,
+            summary,
+            extra_data,
+        );
         if let Some(refusal) = name_search_interruption(deadline, cancellation) {
             return refusal;
         }
@@ -3897,12 +3955,30 @@ fn search_page_probe_bytes(
     extra_data: &Map<String, Value>,
     revision: Option<&str>,
 ) -> usize {
+    search_page_probe_bytes_with(
+        mode,
+        matches,
+        summary,
+        extra_data,
+        revision,
+        &SearchCursorStore::token_probe(),
+    )
+}
+
+fn search_page_probe_bytes_with(
+    mode: &str,
+    matches: &[Value],
+    summary: &str,
+    extra_data: &Map<String, Value>,
+    revision: Option<&str>,
+    cursor_probe: &str,
+) -> usize {
     let mut probe = DomainResult::success(summary.to_owned());
     probe.data = Some(search_page_data(mode, matches, extra_data));
     // "complete" is the longest terminal reason; a cursor also reserves
     // space even when this turns out to be the final page.
     probe.page = Some(json!({"stoppedBy": "complete"}));
-    probe.cursor = Some(SearchCursorStore::token_probe());
+    probe.cursor = Some(cursor_probe.to_owned());
     probe.rev = revision.map(str::to_owned);
     serde_json::to_vec(&probe).map_or(usize::MAX, |value| value.len())
 }
@@ -5440,8 +5516,25 @@ enum SearchCorpus {
     Names,
 }
 
+/// The addresses whose existence [`validate_name_scope`] asks about.
+fn name_scope_witnesses(scope: &QualifiedAddress) -> Vec<String> {
+    let mut witnesses = vec![
+        format!("{}:Configuration", scope.source_set()),
+        scope.to_string(),
+    ];
+    let first = &scope.segments()[0];
+    if let Some(name) = first.name() {
+        witnesses.push(format!(
+            "{}:{}.{name}",
+            scope.source_set(),
+            first.kind().as_str()
+        ));
+    }
+    witnesses
+}
+
 fn validate_name_scope(
-    directory: &FindIndex,
+    has_address: &dyn Fn(&str) -> bool,
     scope: &QualifiedAddress,
     source_kind: SourceSetKind,
 ) -> Result<(), (RefusalCode, &'static str)> {
@@ -5464,13 +5557,10 @@ fn validate_name_scope(
                 "external source sets have no Configuration root",
             ));
         }
-        return directory
-            .has_address(&scope.to_string())
-            .then_some(())
-            .ok_or((
-                RefusalCode::InvalidState,
-                "name search Configuration descriptor is unavailable",
-            ));
+        return has_address(&scope.to_string()).then_some(()).ok_or((
+            RefusalCode::InvalidState,
+            "name search Configuration descriptor is unavailable",
+        ));
     }
     if !supported_owner || segments.len() > 2 {
         return Err((
@@ -5481,7 +5571,7 @@ fn validate_name_scope(
     if matches!(
         source_kind,
         SourceSetKind::Configuration | SourceSetKind::Extension
-    ) && !directory.has_address(&format!("{}:Configuration", scope.source_set()))
+    ) && !has_address(&format!("{}:Configuration", scope.source_set()))
     {
         return Err((
             RefusalCode::InvalidState,
@@ -5507,7 +5597,7 @@ fn validate_name_scope(
             first.kind().as_str(),
             first.name().expect("checked owner name")
         );
-        if !directory.has_address(&owner) {
+        if !has_address(&owner) {
             return Err((
                 RefusalCode::NotFound,
                 "name search scope owner does not exist",
@@ -5517,7 +5607,7 @@ fn validate_name_scope(
     if segments
         .last()
         .is_some_and(|segment| segment.name().is_some())
-        && !directory.has_address(&scope.to_string())
+        && !has_address(&scope.to_string())
     {
         return Err((
             RefusalCode::NotFound,
@@ -6958,6 +7048,61 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A name search proves its scope only through the addresses it
+    /// watched while walking; a form scope needs its owner among them.
+    #[test]
+    fn name_scope_witnesses_cover_every_address_the_scope_check_asks_for() {
+        use unica_address::address::QualifiedAddress;
+        use unica_refusal::RefusalCode;
+        use unica_source_contract::SourceSetKind;
+
+        let scope = QualifiedAddress::parse("main:Catalog.Валюты.Form.ФормаЭлемента").unwrap();
+        let witnesses = super::name_scope_witnesses(&scope);
+        let mut asked = Vec::new();
+        let recorded = std::cell::RefCell::new(&mut asked);
+        let _ = super::validate_name_scope(
+            &|at| {
+                recorded.borrow_mut().push(at.to_string());
+                true
+            },
+            &scope,
+            SourceSetKind::Configuration,
+        );
+        assert!(!asked.is_empty());
+        for at in &asked {
+            assert!(witnesses.contains(at), "unwatched address {at}");
+        }
+        let present = |missing: &str| {
+            let witnesses = witnesses.clone();
+            let missing = missing.to_string();
+            move |at: &str| witnesses.iter().any(|known| known == at) && at != missing
+        };
+        assert!(
+            super::validate_name_scope(&present("none"), &scope, SourceSetKind::Configuration)
+                .is_ok()
+        );
+        assert_eq!(
+            super::validate_name_scope(
+                &present("main:Catalog.Валюты"),
+                &scope,
+                SourceSetKind::Configuration
+            )
+            .unwrap_err()
+            .0,
+            RefusalCode::NotFound
+        );
+        assert_eq!(
+            super::validate_name_scope(
+                &present("main:Configuration"),
+                &scope,
+                SourceSetKind::Configuration
+            )
+            .unwrap_err()
+            .0,
+            RefusalCode::InvalidState
+        );
     }
 
     /// Resolving a metadata object by its own place answers exactly what the

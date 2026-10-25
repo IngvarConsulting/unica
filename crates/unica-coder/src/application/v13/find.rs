@@ -1,8 +1,12 @@
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_refusal::RefusalCode;
+#[cfg(test)]
 use unica_work_control::cancellation::CancellationToken;
+#[cfg(test)]
 use unica_work_control::provider_deadline::ProviderDeadline;
 
 const DEFAULT_LIMIT: usize = 20;
@@ -329,6 +333,7 @@ impl FindIndex {
             .find(|document| document.at == at && document.path.is_some())
     }
 
+    #[cfg(test)]
     pub(crate) fn has_address(&self, at: &str) -> bool {
         self.documents
             .binary_search_by(|document| document.at.as_str().cmp(at))
@@ -401,8 +406,9 @@ impl FindIndex {
             .expect("an unchecked find cannot fail")
     }
 
-    /// Return the entire ranked stream for a paged public search. The
-    /// historical `find` limit remains intact for internal readers.
+    /// The entire ranked stream of a whole directory: the oracle a name
+    /// search ([`NameRanker`]) is checked against.
+    #[cfg(test)]
     pub(crate) fn find_all_checked(
         &self,
         request: FindRequest,
@@ -509,6 +515,221 @@ impl FindIndex {
             })
             .collect::<Vec<_>>();
         serde_json::to_vec(&facts).expect("find identity facts serialize")
+    }
+}
+
+/// One page of the ranked answer of [`FindIndex::find_all_checked`], built
+/// while the layout is walked. Each document is scored as it is read and
+/// dropped; only the `keep` best candidates ranked after the previous page's
+/// last item stay, so memory follows the page size at any depth. Every
+/// match still counts toward the total and a fingerprint that does not
+/// depend on the order it was met in.
+/// Nearest names are scored on a second walk, only when nothing matched
+/// directly.
+pub(crate) struct NameRanker {
+    request: FindRequest,
+    query: String,
+    watched: HashMap<String, bool>,
+    keep: usize,
+    /// The rank of the last item the previous page showed.
+    after: Option<(usize, String)>,
+    nearest_pass: bool,
+    best: BinaryHeap<Ranked>,
+    matched: usize,
+    fingerprint: [u64; 4],
+    largest_item_bytes: usize,
+    largest_address_bytes: usize,
+}
+
+/// The candidates of one page and what identifies the whole ranked answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RankedNames {
+    /// The `keep` best candidates after the previous page, in rank order,
+    /// with their rank scores.
+    pub(crate) candidates: Vec<(usize, FindCandidate)>,
+    pub(crate) nearest: bool,
+    pub(crate) matched: usize,
+    /// Count and order-free digest of every ranked match.
+    pub(crate) fingerprint: [u8; 32],
+    /// The largest public match, for the transport check of any page.
+    pub(crate) largest_item_bytes: usize,
+    /// The longest address, for the size of any continuation keyed by it.
+    pub(crate) largest_address_bytes: usize,
+}
+
+struct Ranked {
+    score: usize,
+    candidate: FindCandidate,
+}
+
+impl Ranked {
+    fn key(&self) -> (usize, &str) {
+        (self.score, &self.candidate.at)
+    }
+}
+
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for Ranked {}
+
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+/// The public shape of one name match, the same on every page.
+pub(crate) fn public_name_match(candidate: &FindCandidate) -> serde_json::Value {
+    serde_json::json!({
+        "at": candidate.at,
+        "kind": candidate.kind,
+        "title": candidate.title,
+        "reason": candidate.reason,
+    })
+}
+
+impl NameRanker {
+    /// `watched` are addresses whose presence the caller checks afterwards,
+    /// such as a search scope; `keep` is how many best candidates the page
+    /// needs.
+    pub(crate) fn new(
+        request: FindRequest,
+        watched: impl IntoIterator<Item = String>,
+        keep: usize,
+        after: Option<(usize, String)>,
+    ) -> Self {
+        Self {
+            query: normalize(&request.query),
+            request,
+            watched: watched.into_iter().map(|at| (at, false)).collect(),
+            keep,
+            after,
+            nearest_pass: false,
+            best: BinaryHeap::new(),
+            matched: 0,
+            fingerprint: [0; 4],
+            largest_item_bytes: 0,
+            largest_address_bytes: 0,
+        }
+    }
+
+    pub(crate) fn offer(&mut self, document: FindDocument) {
+        if !self.nearest_pass {
+            if let Some(present) = self.watched.get_mut(&document.at) {
+                *present = true;
+            }
+        }
+        let eligible = self
+            .request
+            .kind
+            .as_ref()
+            .is_none_or(|kind| kind == &document.kind)
+            && self.request.contains_address(&document.at);
+        if !eligible {
+            return;
+        }
+        let found = if self.nearest_pass {
+            nearest_match(&document, &self.query)
+        } else {
+            best_direct_match(&document, &self.query)
+        };
+        if let Some(found) = found {
+            self.admit(found.score, found.into_candidate());
+        }
+    }
+
+    /// The layout walk offers each address once (the first document of an
+    /// address wins there), so every match counts exactly once.
+    fn admit(&mut self, score: usize, candidate: FindCandidate) {
+        let public =
+            serde_json::to_vec(&public_name_match(&candidate)).expect("name match is serializable");
+        self.largest_item_bytes = self.largest_item_bytes.max(public.len());
+        let mut item = Sha256::new();
+        item.update((score as u64).to_le_bytes());
+        item.update(&public);
+        let digest = item.finalize();
+        let (chunks, _) = digest.as_chunks::<8>();
+        for (lane, chunk) in self.fingerprint.iter_mut().zip(chunks) {
+            *lane = lane.wrapping_add(u64::from_le_bytes(*chunk));
+        }
+        self.matched = self.matched.saturating_add(1);
+        self.largest_address_bytes = self.largest_address_bytes.max(candidate.at.len());
+        if self.keep == 0 {
+            return;
+        }
+        if self.after.as_ref().is_some_and(|(after_score, after_at)| {
+            (score, candidate.at.as_str()) <= (*after_score, after_at.as_str())
+        }) {
+            return;
+        }
+        let ranked = Ranked { score, candidate };
+        if self.best.len() == self.keep {
+            if self.best.peek().is_some_and(|worst| &ranked >= worst) {
+                return;
+            }
+            self.best.pop();
+        }
+        self.best.push(ranked);
+    }
+
+    /// Whether a second walk for nearest names is the answer.
+    pub(crate) fn needs_nearest_pass(&self) -> bool {
+        !self.nearest_pass && self.matched == 0
+    }
+
+    /// The same question for the second walk; watched addresses keep what
+    /// the first walk saw.
+    pub(crate) fn into_nearest_pass(self) -> Self {
+        Self {
+            nearest_pass: true,
+            best: BinaryHeap::new(),
+            matched: 0,
+            fingerprint: [0; 4],
+            largest_item_bytes: 0,
+            largest_address_bytes: 0,
+            ..self
+        }
+    }
+
+    /// The watched addresses the walk met.
+    pub(crate) fn watched_presence(&self) -> HashSet<String> {
+        self.watched
+            .iter()
+            .filter(|(_, present)| **present)
+            .map(|(at, _)| at.clone())
+            .collect()
+    }
+
+    pub(crate) fn finish(self) -> RankedNames {
+        let mut fingerprint = Sha256::new();
+        fingerprint.update(b"unica-v13-names-ranked-v2\0");
+        fingerprint.update((self.matched as u64).to_le_bytes());
+        for lane in self.fingerprint {
+            fingerprint.update(lane.to_le_bytes());
+        }
+        RankedNames {
+            candidates: self
+                .best
+                .into_sorted_vec()
+                .into_iter()
+                .map(|ranked| (ranked.score, ranked.candidate))
+                .collect(),
+            nearest: self.nearest_pass && self.matched > 0,
+            matched: self.matched,
+            fingerprint: fingerprint.finalize().into(),
+            largest_item_bytes: self.largest_item_bytes,
+            largest_address_bytes: self.largest_address_bytes,
+        }
     }
 }
 
