@@ -6262,12 +6262,23 @@ fn materialize_completed_task(
     .reserved_task_id()
 }
 
+/// Budget for preparing one source Task through the real receipt and Task
+/// stores. Preparation is not under test: the retirement tests assert what
+/// happens after it. Measured on windows-latest (#1786): 141–194 ms alone and
+/// at most 580 ms with four tests in parallel, against the former shared
+/// 5 s. The nightly refusals came from host stalls that expired the deadline
+/// in several independent test processes in the same instant; this budget
+/// keeps such a stall from passing for a defect of the code under test, and
+/// the stage trace still shows where the time went.
+const FIXTURE_PREPARATION_BUDGET: Duration = Duration::from_secs(60);
+
 /// Elapsed time of each fixture-preparation stage of one Task, so a refusal
 /// names the Task, the stage that refused and where the shared deadline went
 /// (#1786) instead of a bare ledger error.
 struct FixturePreparation<'a> {
     task: &'a str,
     started: Instant,
+    budget: Duration,
     deadline: Instant,
     stages: Vec<(&'static str, Duration)>,
 }
@@ -6284,13 +6295,14 @@ impl<'a> FixturePreparation<'a> {
         Self {
             task,
             started,
+            budget,
             deadline: started + budget,
             stages: Vec::new(),
         }
     }
 
     /// Run `stage`, recording its duration; a refusal panics with the trace.
-    fn step<T, E: std::fmt::Display>(
+    fn step<T, E: std::fmt::Debug>(
         &mut self,
         stage: &'static str,
         run: impl FnOnce(Instant) -> Result<T, E>,
@@ -6300,7 +6312,7 @@ impl<'a> FixturePreparation<'a> {
         self.stages.push((stage, begun.elapsed()));
         outcome.unwrap_or_else(|error| {
             panic!(
-                "fixture preparation of Task `{}` refused at `{stage}`: {error}; {}",
+                "fixture preparation of Task `{}` refused at `{stage}`: {error:?}; {}",
                 self.task,
                 self.trace()
             )
@@ -6319,7 +6331,7 @@ impl<'a> FixturePreparation<'a> {
         format!(
             "stages {stages}; {}ms of the {}ms budget elapsed",
             self.started.elapsed().as_millis(),
-            (self.deadline - self.started).as_millis()
+            self.budget.as_millis()
         )
     }
 }
@@ -6345,7 +6357,7 @@ fn materialize_completed_task_key(
             request_scope_hash(workspace).expect("request scope"),
         ),
     );
-    let mut preparation = FixturePreparation::new(summary, Duration::from_secs(5));
+    let mut preparation = FixturePreparation::new(summary, FIXTURE_PREPARATION_BUDGET);
     let reserved = preparation.step("reserve", |deadline| {
         receipt_actor_for_fixture(runtime)
             .reserve(
@@ -6353,9 +6365,9 @@ fn materialize_completed_task_key(
                 OriginalCutoffDescriptor::new(created_epoch_ms, 6_000).expect("valid cutoff"),
                 deadline,
             )
-            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("{error:?}"))?
             .into_reservation()
-            .map_err(|_| "the Task receipt already exists".to_string())
+            .map_err(|existing| format!("the Task receipt already exists: {existing:?}"))
     });
     let actor_bound = preparation.step("bind actor", |deadline| {
         receipt_actor_for_fixture(runtime).bind_reserved_actor(
@@ -6390,7 +6402,7 @@ fn materialize_completed_task_key(
             deadline,
             runtime.hooks().as_ref(),
         )
-        .map_err(|failure| failure.error().to_string())
+        .map_err(|failure| failure.error().clone())
     });
     let task_bound = preparation.step("complete handoff", |deadline| {
         receipt_actor_for_fixture(runtime).complete_bound_task_handoff(
@@ -6418,7 +6430,7 @@ fn materialize_completed_task_key(
             deadline,
             runtime.hooks().as_ref(),
         )
-        .map_err(|failure| failure.error().to_string())
+        .map_err(|failure| failure.error().clone())
     });
     key
 }
