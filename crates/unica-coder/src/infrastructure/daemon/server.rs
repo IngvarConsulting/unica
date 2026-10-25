@@ -1497,6 +1497,9 @@ impl DaemonServerConfig {
     }
 }
 
+/// The private child of the daemon state that holds root check continuations.
+const ROOT_CHECK_CONTINUATIONS: &str = "project-health";
+
 impl DaemonServerConfig {
     pub(crate) fn receipt_runtime_config(
         &self,
@@ -1509,17 +1512,30 @@ impl DaemonServerConfig {
             .runtime_hooks_for_v5()
             .unwrap_or_else(|| Arc::new(unica_execution::receipt_runtime::hooks::NoHooks));
         let source = self.clone();
-        // Continuations live in the daemon's own state, never in a workspace,
-        // and age out with the same idle period as stale daemon state.
+        // Continuations live in a private directory of the daemon's own
+        // state, never in a workspace, and age out with the same idle period
+        // as stale daemon state. Without that directory a root check starts
+        // from the beginning each time.
         let root_check_continuations = Arc::new(
-            unica_project_health::inspection::resources::RootCheckContinuationStore::in_directory(
-                unica_daemon::identity::DaemonStateDirectory::path_for(
-                    &self.state_root,
-                    &self.core_identity,
-                )
-                .join("project-health"),
-                unica_daemon::state_collection::STALE_DAEMON_STATE_IDLE,
-            ),
+            match unica_daemon::identity::DaemonStateDirectory::open(
+                &self.state_root,
+                &self.core_identity,
+            )
+            .and_then(|state| {
+                state.create_private_subdirectory(ROOT_CHECK_CONTINUATIONS)?;
+                Ok(state.path().join(ROOT_CHECK_CONTINUATIONS))
+            }) {
+                Ok(directory) => {
+                    unica_project_health::inspection::resources::RootCheckContinuationStore::in_directory(
+                        directory,
+                        unica_daemon::state_collection::STALE_DAEMON_STATE_IDLE,
+                    )
+                }
+                Err(_) => {
+                    eprintln!("root check continuation disabled: daemon state unavailable");
+                    Default::default()
+                }
+            },
         );
         let factory: Arc<dyn Fn() -> Arc<CanonicalInvocationHost> + Send + Sync> =
             Arc::new(move || {

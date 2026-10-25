@@ -118,9 +118,9 @@ struct ContinuationEntry {
 }
 
 impl RootCheckContinuationStore {
-    /// Keep continuations in `directory`. Files not rewritten for longer
-    /// than `retention` belong to abandoned workspaces and are removed now;
-    /// a file that cannot be removed only stays behind.
+    /// Keep continuations in the existing private `directory`. Files not
+    /// rewritten for longer than `retention` belong to abandoned workspaces
+    /// and are removed now; a file that cannot be removed only stays behind.
     pub fn in_directory(directory: PathBuf, retention: Duration) -> Self {
         remove_stale_continuations(&directory, retention);
         Self {
@@ -207,7 +207,7 @@ pub struct ResourceInspectionProgress {
 }
 
 /// Progress of the resource EOL inspection that a later call continues. The
-/// evidence itself is a file in the cache root, read and rewritten in path
+/// evidence itself is a file in the daemon state, read and rewritten in path
 /// order one page at a time; only the adaptive batch width and the progress of
 /// the current call stay in memory.
 pub struct ResourceContinuation {
@@ -531,11 +531,12 @@ impl EolGeneration {
             ));
         }
         if self.next.is_none() {
+            // The owner created this private directory; a missing one is an
+            // error, never a directory made here with default permissions.
             let directory = self
                 .file
                 .parent()
                 .ok_or_else(|| std::io::Error::other("continuation file has no directory"))?;
-            fs::create_dir_all(directory)?;
             let mut next = std::io::BufWriter::new(tempfile::NamedTempFile::new_in(directory)?);
             next.write_all(CONTINUATION_MAGIC)?;
             self.next = Some(next);
@@ -954,7 +955,8 @@ struct ResourcePass<'p, 'a> {
     attribute_facts: ProjectHealthFacts,
     index_eol_facts: ProjectHealthFacts,
     working_facts: ProjectHealthFacts,
-    facts: Vec<ProjectHealthFact>,
+    /// Per-file working EOL and LFS failures, one group per source set.
+    incomplete_facts: ProjectHealthFacts,
     index_stop: Option<IndexEolStop>,
     working_timed_out: bool,
     lfs_timed_out: bool,
@@ -1090,7 +1092,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             attribute_facts: ProjectHealthFacts::default(),
             index_eol_facts: ProjectHealthFacts::default(),
             working_facts: ProjectHealthFacts::default(),
-            facts: Vec::new(),
+            incomplete_facts: ProjectHealthFacts::default(),
             index_stop: None,
             working_timed_out: false,
             lfs_timed_out: false,
@@ -2191,11 +2193,13 @@ impl ResourcePass<'_, '_> {
                                 &resource.source_set,
                                 &reason,
                             );
-                            self.facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                                check: ProjectCheckId::RepositoryWorkingEol,
-                                source_set: Some(resource.source_set.clone()),
-                                reason,
-                            });
+                            self.incomplete_facts
+                                .push(ProjectHealthFact::GitInspectionIncomplete {
+                                    check: ProjectCheckId::RepositoryWorkingEol,
+                                    source_set: Some(resource.source_set.clone()),
+                                    reason,
+                                })
+                                .map_err(Stop::Fatal)?;
                             None
                         }
                     };
@@ -2227,11 +2231,13 @@ impl ResourcePass<'_, '_> {
                                 &resource.source_set,
                                 &reason,
                             );
-                            self.facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                                check: ProjectCheckId::RepositoryLfs,
-                                source_set: Some(resource.source_set.clone()),
-                                reason,
-                            });
+                            self.incomplete_facts
+                                .push(ProjectHealthFact::GitInspectionIncomplete {
+                                    check: ProjectCheckId::RepositoryLfs,
+                                    source_set: Some(resource.source_set.clone()),
+                                    reason,
+                                })
+                                .map_err(Stop::Fatal)?;
                         }
                     }
                 }
@@ -2321,7 +2327,7 @@ impl ResourcePass<'_, '_> {
             ProjectCheckId::RepositoryIndexEol,
             &incomplete,
         );
-        facts.append(&mut self.facts);
+        facts.extend(std::mem::take(&mut self.incomplete_facts).into_facts());
 
         let continued = self.continuation.is_some();
         if continued && !self.working_timed_out {
@@ -2427,14 +2433,22 @@ impl ResourcePass<'_, '_> {
         if self.cancellation.is_cancelled() {
             return Err(Stop::Cancelled);
         }
-        if continued
-            && !self.observations.iter().any(|observation| {
-                resource_check_ids().contains(&observation.id)
-                    && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
-            })
-        {
-            // A failed final fence cannot substantiate any earlier resource
-            // finding. The helpers restart NotRun at RepositoryAttributes and
+        let resource_outcomes = self
+            .observations
+            .iter()
+            .filter(|observation| resource_check_ids().contains(&observation.id))
+            .map(|observation| &observation.outcome);
+        let mut verdict = false;
+        let mut not_run = false;
+        for outcome in resource_outcomes {
+            verdict |= matches!(outcome, ProjectCheckOutcome::Completed);
+            not_run |= matches!(outcome, ProjectCheckOutcome::NotRun { .. });
+        }
+        if verdict && !not_run {
+            // Every published resource verdict, with or without a
+            // continuation, must belong to one index snapshot. A failed final
+            // fence cannot substantiate any earlier resource finding. The
+            // helpers restart NotRun at RepositoryAttributes and
             // intentionally discard the facts from the old index snapshot.
             if self.deadline.is_elapsed() {
                 return Err(self.protocol_stop(

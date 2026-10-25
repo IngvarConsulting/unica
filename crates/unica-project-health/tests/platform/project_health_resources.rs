@@ -1531,6 +1531,96 @@ fn continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity() 
 }
 
 #[test]
+fn inspection_without_continuation_rejects_an_index_changed_between_pages() {
+    // A check that holds no continuation still ends with the index fence:
+    // the index changes after the first of two pages was inspected.
+    struct IndexChangingRunner {
+        root: PathBuf,
+        attribute_probes: Cell<usize>,
+    }
+
+    impl ProcessRunner for IndexChangingRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            unica_process::runner::system_process_runner().run(command)
+        }
+
+        fn run_with_input(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+        ) -> Result<ProcessOutput, String> {
+            if command.args.iter().any(|arg| arg == "check-attr") {
+                let probe = self.attribute_probes.get() + 1;
+                self.attribute_probes.set(probe);
+                // Probes 1 and 2 belong to the first page.
+                if probe == 3 {
+                    stage_synthetic_paths(&self.root, std::iter::once("late.dat".to_string()));
+                }
+            }
+            unica_process::runner::system_process_runner().run_with_input(command, input)
+        }
+    }
+
+    let fixture = policy_fixture();
+    fs::write(
+        fixture.root.join(".gitattributes"),
+        "*.xml text eol=lf\n*.bin -text\n",
+    )
+    .unwrap();
+    git(&fixture.root, &["add", ".gitattributes", "src"]);
+    stage_synthetic_paths(
+        &fixture.root,
+        (0..super::RESOURCE_PAGE_PATHS).map(|number| format!("src/Blobs/{number:05}.bin")),
+    );
+    let cancellation = CancellationToken::new();
+    let deadline = ProviderDeadline::no_deadline();
+    let layout = SourceLayoutInspector::inspect(
+        &fixture.context,
+        &cancellation,
+        deadline,
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(&fixture.context.workspace_root),
+    )
+    .unwrap();
+    let repository = GitRepositoryInspector::new()
+        .inspect_base(&fixture.context, &layout, &cancellation, deadline)
+        .unwrap();
+    let runner = IndexChangingRunner {
+        root: fixture.root.clone(),
+        attribute_probes: Cell::new(0),
+    };
+
+    let inspection = SourceResourcePolicyInspector::with_process_runner(
+        &runner,
+        crate::inspection::TEST_RESPONSE_HANDOFF_WINDOW,
+    )
+    .inspect(
+        repository.repository_root.as_ref().unwrap(),
+        &layout.roots,
+        &repository.entries,
+        &cancellation,
+        deadline,
+    )
+    .unwrap();
+
+    assert!(
+        runner.attribute_probes.get() > 3,
+        "both pages were inspected"
+    );
+    assert!(inspection.observations.iter().any(|observation| {
+        observation.id == ProjectCheckId::RepositoryAttributes
+            && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+    }));
+    assert!(inspection.facts.iter().any(|fact| matches!(
+        fact,
+        ProjectHealthFact::GitInspectionIncomplete {
+            check: ProjectCheckId::RepositoryAttributes,
+            reason,
+            ..
+        } if reason == "Git index changed during resource inspection"
+    )));
+}
+
+#[test]
 fn root_check_continuations_live_in_their_directory_and_age_out() {
     let state = TempDir::new().unwrap();
     let directory = state.path().join("project-health");
@@ -1568,7 +1658,7 @@ fn root_check_continuations_live_in_their_directory_and_age_out() {
     assert!(super::RootCheckContinuationStore::default()
         .for_workspace(workspace.path())
         .is_none());
-    // A missing directory is not an error: it is created on the first write.
+    // A missing directory is no error for the cleanup.
     super::RootCheckContinuationStore::in_directory(
         state.path().join("absent"),
         Duration::from_secs(3600),

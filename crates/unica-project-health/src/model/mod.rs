@@ -351,6 +351,9 @@ pub struct ProjectHealthFacts {
 struct FactGroup {
     kept: BTreeMap<Vec<String>, ProjectHealthFact>,
     additional: usize,
+    /// A fact of this diagnostic, kept even when every pushed fact was an
+    /// `Additional`, so the count is never published without its kind.
+    like: ProjectHealthFact,
     evidence: BTreeSet<String>,
 }
 
@@ -364,6 +367,10 @@ impl ProjectHealthFacts {
             .or_insert_with(|| FactGroup {
                 kept: BTreeMap::new(),
                 additional: 0,
+                like: match &fact {
+                    ProjectHealthFact::Additional { like, .. } => like.as_ref().clone(),
+                    fact => fact.clone(),
+                },
                 evidence: BTreeSet::new(),
             });
         for evidence in seed.evidence {
@@ -411,23 +418,16 @@ impl ProjectHealthFacts {
         self.groups.retain(|key, _| keep(key.source_set.as_deref()));
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.groups.is_empty()
-    }
-
     pub fn into_facts(self) -> Vec<ProjectHealthFact> {
         let mut facts = Vec::new();
         for group in self.groups.into_values() {
-            let like = group.kept.values().next().cloned();
             facts.extend(group.kept.into_values());
             if group.additional > 0 {
-                if let Some(like) = like {
-                    facts.push(ProjectHealthFact::Additional {
-                        like: Box::new(like),
-                        count: group.additional,
-                        evidence: group.evidence.into_iter().collect(),
-                    });
-                }
+                facts.push(ProjectHealthFact::Additional {
+                    like: Box::new(group.like),
+                    count: group.additional,
+                    evidence: group.evidence.into_iter().collect(),
+                });
             }
         }
         facts
@@ -2104,6 +2104,30 @@ pub mod tests {
             .unwrap();
         assert_eq!(eol.count, 45);
         assert_eq!(eol.evidence, ["observed: crlf", "observed: mixed"]);
+    }
+
+    #[test]
+    fn aggregate_of_only_additional_facts_keeps_its_count() {
+        let like = ProjectHealthFact::IgnoreRuleMissing {
+            source_set: None,
+            path: "probe".into(),
+        };
+        let mut facts = ProjectHealthFacts::default();
+        facts
+            .push(ProjectHealthFact::Additional {
+                like: Box::new(like.clone()),
+                count: 7,
+                evidence: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            facts.into_facts(),
+            [ProjectHealthFact::Additional {
+                like: Box::new(like),
+                count: 7,
+                evidence: Vec::new(),
+            }]
+        );
     }
 
     #[test]

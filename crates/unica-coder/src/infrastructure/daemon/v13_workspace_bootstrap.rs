@@ -968,6 +968,7 @@ mod tests {
     /// A store over daemon state outside the workspace, as the daemon keeps it.
     fn continuation_store() -> (tempfile::TempDir, super::RootCheckContinuationStore) {
         let state = tempfile::tempdir().unwrap();
+        std::fs::create_dir(state.path().join("project-health")).unwrap();
         let store = super::RootCheckContinuationStore::in_directory(
             state.path().join("project-health"),
             std::time::Duration::from_secs(3600),
@@ -1103,6 +1104,7 @@ mod tests {
         let (_workspace, root) = eol_check_fixture();
         let state = tempfile::tempdir().unwrap();
         let directory = state.path().join("project-health");
+        std::fs::create_dir(&directory).unwrap();
         let request = InvocationRequest::new(
             ToolIdentity::Check,
             serde_json::json!({}),
