@@ -4229,6 +4229,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         let (admission_cancellation, admission_cancellation_guard) = self
             .active_task_cancellations
             .register(reservation.key().reserved_task_id())?;
+        self.hooks.pause(V5PausePoint::ActorBindEntered, deadline)?;
         let bound_actor =
             self.invocation_executor
                 .bind(invocation, response_deadline, &admission_cancellation);
