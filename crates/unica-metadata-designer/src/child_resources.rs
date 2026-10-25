@@ -700,9 +700,16 @@ pub fn observe_typed_child_resources(
             let inherited = payload.is_empty()
                 && directories.is_empty()
                 && crate::xml_model::descriptor_extends_parent(&descriptor);
+            // Макет двоичных данных без содержимого платформа выгружает одним
+            // описанием, без `Ext/Template.bin`: так его загружает и выгружает
+            // ibcmd 8.3.27 (#2027). Это макет без данных, а не потерянный файл.
+            let empty_binary_template = payload.is_empty()
+                && directories.is_empty()
+                && template_type
+                    == Some(unica_metadata::validation_subject::MetadataTemplateType::BinaryData);
             let footprint_profile = (|| {
                 let mut profile = typed_child_footprint_profile(collection, template_type, &child)?;
-                if inherited {
+                if inherited || empty_binary_template {
                     profile.required_files.clear();
                 }
                 if collection == MetaCollection::Forms {
