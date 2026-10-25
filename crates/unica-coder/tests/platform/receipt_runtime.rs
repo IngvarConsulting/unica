@@ -5303,12 +5303,13 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
         release: Arc::clone(&release),
     });
     let idle = Duration::from_millis(80);
-    let budget = Duration::from_millis(150);
+    let budget = Duration::from_millis(600);
     let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service.clone());
     let cleanup = IdleInvocationRelease(release);
     let invocation =
         view_catalog_request_within(TaskId::new(), &workspace, budget.as_millis() as u64);
     let mut owner = daemon.owner();
+    let submitted = Instant::now();
     write_json_line(
         &mut owner.0,
         &serde_json::to_value(V5ClientRequest::SubmitInvocation {
@@ -5320,19 +5321,25 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
     owner.0.shutdown(std::net::Shutdown::Both).unwrap();
     drop(owner);
     let disconnected = Instant::now();
+    assert!(
+        disconnected < submitted + budget,
+        "the client must leave before the window closes"
+    );
 
     // Well past the window: the attempt has been handed over by now.
-    let past_cutoff = disconnected + budget + idle * 3;
-    assert!(daemon.observe_until(past_cutoff));
+    let past_cutoff = submitted + budget + idle * 3;
+    assert!(daemon.observe_until(past_cutoff + idle * 3));
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
-    assert!(
-        !daemon.owners_since(past_cutoff - idle).is_empty(),
-        "the listener read no owner set after the handoff"
-    );
     assert_held_by(
         &daemon.owners_since(disconnected),
         |owners| owners.task_cancellations,
         "the inline attempt and then its Task, through one cancellation registration",
+    );
+    // After the handoff no client lease is left: the Task alone holds.
+    assert_held_by(
+        &daemon.owners_without_clients_since(past_cutoff),
+        |owners| owners.task_cancellations,
+        "the handed-over Task, through its cancellation registration",
     );
     let mut successor = daemon.owner();
     let V5ServerResponse::Task { snapshot: handed } = idle_request_over_tcp(
@@ -5360,50 +5367,6 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
     assert!(daemon.endpoint().is_none());
 }
 
-/// Holds an attempt where it waits for its workspace actor, and records the
-/// owner sets the listener reads.
-struct ActorBindHoldHooks {
-    observations: mpsc::Sender<(Instant, bool)>,
-    owners: ListenerOwnersLog,
-    bind: IdleIndexGate,
-    binding: mpsc::Sender<()>,
-}
-
-impl V5RuntimeHooks<CanonicalInvocationHost> for ActorBindHoldHooks {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn after_idle_owner_leases_read(&self, empty: bool) {
-        let _ = self.observations.send((Instant::now(), empty));
-    }
-
-    fn observes_listener_owners(&self) -> bool {
-        true
-    }
-
-    fn listener_owners_observed(&self, owners: V5ListenerOwners) {
-        self.owners.lock().unwrap().push((Instant::now(), owners));
-    }
-
-    fn pause(&self, point: V5PausePoint, _deadline: Instant) -> Result<(), ReceiptLedgerError> {
-        if point != V5PausePoint::ActorBindEntered {
-            return Ok(());
-        }
-        let _ = self.binding.send(());
-        let (open, changed) = &*self.bind;
-        let watchdog = Instant::now() + Duration::from_secs(10);
-        let mut open = open.lock().unwrap();
-        while !*open && Instant::now() < watchdog {
-            open = changed
-                .wait_timeout(open, watchdog.saturating_duration_since(Instant::now()))
-                .unwrap()
-                .0;
-        }
-        Ok(())
-    }
-}
-
 /// #980: the response window closes while the call still waits for its
 /// workspace actor, before the attempt begins. Its Task is promised without
 /// an actor and the client leaves. With no workspace work retained, the Task
@@ -5421,25 +5384,12 @@ fn daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retire
         release: Arc::new((Mutex::new(true), Condvar::new())),
     });
     let idle = Duration::from_millis(80);
-    let bind: IdleIndexGate = Arc::new((Mutex::new(false), Condvar::new()));
-    let (binding, bind_entered) = mpsc::channel();
-    let owners = ListenerOwnersLog::default();
-    let recorded = Arc::clone(&owners);
-    let hold = Arc::clone(&bind);
-    let mut daemon = PromisedWorkIdleDaemon::with_service_and_hooks(
-        idle,
-        service.clone(),
-        move |observations| {
-            Arc::new(ActorBindHoldHooks {
-                observations,
-                owners: recorded,
-                bind: hold,
-                binding,
-            })
-        },
-    );
-    daemon.owners = owners;
-    let open_bind = IdleInvocationRelease(bind);
+    let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service.clone());
+    // The attempt waits inside its real actor bind.
+    let admission =
+        crate::infrastructure::daemon::server::admission_test_control::AdmissionPause::install(
+            workspace.clone(),
+        );
     let invocation = view_catalog_request_within(TaskId::new(), &workspace, 100);
     let mut owner = daemon.owner();
     let promised = submitted_task_snapshot(Ok(idle_request_over_tcp(
@@ -5448,9 +5398,7 @@ fn daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retire
             invocation: invocation.clone(),
         },
     )));
-    bind_entered
-        .recv_timeout(Duration::from_secs(3))
-        .expect("the attempt waits for its actor");
+    admission.wait_until_entered();
     assert_eq!(promised.task_id(), invocation.reserved_task_id());
     assert!(
         matches!(promised, V5DaemonTaskSnapshot::Queued { .. }),
@@ -5468,7 +5416,7 @@ fn daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retire
     );
     assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
     let mut successor = daemon.owner();
-    open_bind.release();
+    admission.release();
     let terminal = idle_task_terminal_over_tcp(&mut successor, &invocation);
     assert!(
         matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. }

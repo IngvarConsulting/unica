@@ -104,9 +104,6 @@ pub struct V5ListenerOwners {
 pub enum V5PausePoint {
     ValidationEntered,
     AdmissionEntered,
-    /// The attempt has registered its cancellation and waits for its
-    /// workspace actor: the only stretch of admission that can last.
-    ActorBindEntered,
     ActorBound,
     BeforePrepare,
     PrepareEntered,
