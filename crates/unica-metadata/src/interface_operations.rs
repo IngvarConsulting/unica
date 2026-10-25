@@ -115,7 +115,7 @@ pub(crate) fn home_page_contract() -> OperationContract {
             target: "The configuration root `<set>:Configuration`; an extension has no home page of its own.",
             effect: "Replace the home page in `Ext/HomePageWorkArea.xml`.",
             notes: "values names the template and the forms of the left and right columns; `OneColumn` has only left. A form is `CommonForm.F` or `Kind.Name.Form.F`, a role `Role.R`; a reference the stored page lacks must exist in the set, so a form created in the same apply goes before this operation. common is the visibility for roles not listed. The page read from the root's `homePage` is accepted back as is. Preview writes nothing; execute only the saved execution token.",
-            example_args: json!({"values":{"template":"OneColumn","left":[{"form":"CommonForm.Desktop"}]}}),
+            example_args: json!({"values":{"template":"OneColumn","left":[]}}),
             help: "skills/cf-edit/SKILL.md",
             format_validators: &[],
         }
