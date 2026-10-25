@@ -2954,6 +2954,11 @@ fn form_edit_inserts_lines_with_the_form_line_ending() {
     assert!(lf.contains("<Attribute name=\"Строка\""), "{lf}");
     assert!(!lf.contains('\r'), "{lf:?}");
 
+    // A lone CR makes the endings mixed too: the inserted LF stays.
+    let lone_cr = form("\r\n").replacen("\r\n", "\r", 1);
+    let edited = edit(lone_cr);
+    assert!(has_bare_lf(&edited), "{edited:?}");
+
     let mixed = form("\r\n").replacen("\r\n", "\n", 1);
     let edited = edit(mixed.clone());
     assert!(edited.starts_with(&mixed[..mixed.find("<Form").unwrap()]));
