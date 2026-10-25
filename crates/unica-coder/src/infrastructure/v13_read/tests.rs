@@ -2265,8 +2265,12 @@ fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
     )
     .unwrap();
     let legacy = project_typed_payload(&route, legacy_payload.as_ref().clone()).unwrap();
-    let module_branch = super::module_branch_for_parent(route.at(), PlatformProfile::v8_3_27())
-        .expect("Configuration has a profile module branch");
+    let module_branch = super::module_branch_for_parent(
+        route.at(),
+        PlatformProfile::v8_3_27(),
+        SourceSetKind::Configuration,
+    )
+    .expect("Configuration has a profile module branch");
     let expected = serde_json::to_value(legacy.with_branch(module_branch)).unwrap();
 
     fs::write(

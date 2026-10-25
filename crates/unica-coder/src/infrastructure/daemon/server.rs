@@ -1599,6 +1599,12 @@ impl unica_daemon::transport::ObservationLifecycle for CapacityObservation {
 }
 
 #[cfg(test)]
+#[path = "apply_large_input_tests.rs"]
+mod apply_large_input_tests;
+#[cfg(test)]
+#[path = "code_target_tests.rs"]
+mod code_target_tests;
+#[cfg(test)]
 mod external_cache_apply_tests;
 #[cfg(test)]
 #[path = "form_lifecycle_tests.rs"]
@@ -1634,6 +1640,9 @@ mod form_add_owner_bytes_tests;
 
 #[cfg(test)]
 mod legacy_inline_check_tests;
+
+#[cfg(test)]
+mod apply_answer_size_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
@@ -3829,8 +3838,8 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(one.records, 1);
         assert_eq!(one.unique_payloads, 1);
         assert!(
-            one.payload_bytes > 64 * 1024,
-            "the payload must dominate admission metadata"
+            one.payload_bytes > 16 * one.record_bytes,
+            "the payload must dominate admission metadata: {one:?}"
         );
         let index_slot = std::mem::size_of::<Arc<ViewCollectionSnapshot>>();
         let fixed_bytes = one.retained_bytes
@@ -12871,7 +12880,10 @@ struct ActorLogicalReadLease {"#,
             assert!(applied.ok, "{applied:?}");
             let preview_data = preview.data.as_ref().unwrap();
             let applied_data = applied.data.as_ref().unwrap();
-            assert_eq!(preview_data["operations"], applied_data["operations"]);
+            assert_eq!(
+                preview_data["operationCount"],
+                applied_data["operationCount"]
+            );
             assert_eq!(preview_data["effects"], applied_data["effects"]);
             assert_eq!(preview.changed, applied.changed);
             assert_eq!(preview_data["planHash"], applied_data["planHash"]);
@@ -13147,8 +13159,8 @@ struct ActorLogicalReadLease {"#,
             assert!(real.ok, "real apply failed: {real:?}");
             assert_ne!(std::fs::read(&descriptor).unwrap(), before);
             assert_eq!(
-                dry.data.as_ref().unwrap()["operations"],
-                real.data.as_ref().unwrap()["operations"]
+                dry.data.as_ref().unwrap()["operationCount"],
+                real.data.as_ref().unwrap()["operationCount"]
             );
             assert_eq!(
                 dry.data.as_ref().unwrap()["effects"],

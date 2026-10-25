@@ -76,6 +76,13 @@ class ContentAssertionTests(unittest.TestCase):
         self.assertTrue(self.check({"pointer": "/data/value", "contains": {"at": "main:X"}}, {"value": [{"at": "main:X", "extra": 1}]}))
         self.assertTrue(self.check({"pointer": "/data/value", "contains": {"x": 1}}, {"value": {"x": 1}}))
 
+    def test_same_items_ignores_order_but_counts_each_element(self):
+        assertion = {"pointer": "/data/value", "sameItems": ["a", "b", "a"]}
+        self.assertEqual(self.check(assertion, {"value": ["b", "a", "a"]}), [])
+        for actual in (["a", "b"], ["a", "b", "b"], ["a", "b", "a", "c"], "aba", None):
+            with self.subTest(actual=actual):
+                self.assertTrue(self.check(assertion, {"value": actual}))
+
     def test_controls_reject_invalid_pointer_operator_and_extra_fields(self):
         for assertion in [{"pointer": "data/x", "eq": 1}, {"pointer": "/~2", "eq": 1},
                           {"pointer": "/x", "eq": 1, "notEq": 2}, {"pointer": "/x", "absent": False},

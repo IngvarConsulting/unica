@@ -13760,6 +13760,48 @@ fn oversized_result_and_uncertain_store_commit_fail_closed() {
         0
     );
 }
+/// #984: fail-stop delivers its closed error and nothing more. A known-long
+/// call whose Task creation is commit-uncertain stops the daemon before its
+/// long phase: the provider is never entered, no other attempt runs, and
+/// the stopped daemon continues nothing after the closed answer.
+#[test]
+fn fail_stop_before_the_long_phase_never_enters_the_provider() {
+    let report = execute(Scenario::fake(vec![
+        known_long_provider(),
+        Action::InjectStoreFault {
+            point: StoreFaultPoint::AfterTaskCreateRenameBeforeDirectorySync,
+        },
+        submit("uncertain"),
+        checkpoint_action("stopped"),
+    ]));
+    let stopped = checkpoint(&report, "stopped");
+    assert_eq!(
+        response(&report, "uncertain").error,
+        Some(ErrorCode::StoreCommitUncertain)
+    );
+    assert!(stopped.restart_requested);
+    assert!(!stopped.daemon_running);
+    assert_eq!(stopped.listener, ListenerState::Closed);
+    assert_eq!(count_event(&report, EventKind::PrepareEntered), 1);
+    assert_eq!(
+        count_event(&report, EventKind::ExecuteEntered),
+        0,
+        "the subject operation continued after fail-stop"
+    );
+    assert_eq!(stopped.fallback_executions, 0);
+    assert!(only_receipt(stopped).terminal.is_none());
+
+    // Without the fault the same call does enter its provider.
+    let healthy = execute(Scenario::fake(vec![
+        known_long_provider(),
+        submit("healthy"),
+        Action::WaitForEvent {
+            event: EventKind::ExecuteEntered,
+        },
+    ]));
+    assert_eq!(count_event(&healthy, EventKind::ExecuteEntered), 1);
+}
+
 #[test]
 fn acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly() {
     let report = execute(Scenario::fake(vec![

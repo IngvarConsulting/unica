@@ -85,7 +85,7 @@ pub fn reconcile_effects(
     provisional.sort_by_key(ProvisionalApplyEffect::operation_index);
     for candidate in provisional {
         for warning in candidate.warnings.iter().cloned() {
-            effects.push_warning(warning);
+            effects.push_operation_warning(candidate.operation_index, warning);
         }
         if !candidate.paths.is_empty()
             // Every file the effect stands for must still differ; planners
@@ -100,4 +100,33 @@ pub fn reconcile_effects(
         }
     }
     effects
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::DomainEventKind;
+
+    #[test]
+    fn reconciled_effects_name_only_the_operations_that_warned() {
+        let event = || DomainEvent::new(DomainEventKind::MetadataChanged, "main:Catalog.Items");
+        let effects = reconcile_effects(
+            Vec::new(),
+            vec![
+                ProvisionalApplyEffect::single("Catalogs/Items.xml", event(), 2)
+                    .with_warning(serde_json::json!({"code": "later"})),
+                ProvisionalApplyEffect::single("Catalogs/Items.xml", event(), 0),
+                ProvisionalApplyEffect::single("Catalogs/Items.xml", event(), 1),
+            ],
+        );
+        assert_eq!(
+            effects
+                .warned_operations()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+        assert_eq!(effects.warnings(), [serde_json::json!({"code": "later"})]);
+    }
 }
