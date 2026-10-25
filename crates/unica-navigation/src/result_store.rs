@@ -717,7 +717,7 @@ fn issue_search_cursor(
     let mut cipher = aes_siv::siv::Aes256Siv::new_from_slice(&owner.key[..])
         .map_err(|_| SearchCursorError::TokenUnavailable)?;
     let ciphertext = cipher
-        .encrypt([SEARCH_CURSOR_AAD], &payload[..])
+        .encrypt([SEARCH_CURSOR_AAD], payload)
         .map_err(|_| SearchCursorError::TokenUnavailable)?;
     if ciphertext.len() != payload.len() + 16 {
         return Err(SearchCursorError::TokenUnavailable);
@@ -739,7 +739,7 @@ fn encode_search_cursor(ciphertext: &[u8]) -> String {
 fn decode_search_cursor(token: &str) -> Result<Vec<u8>, SearchCursorError> {
     if token.len() < SEARCH_CURSOR_TOKEN_BYTES
         || token.len() > SEARCH_CURSOR_TOKEN_BYTES + 2 * SEARCH_RESUME_PATH_MAX_BYTES
-        || token.len() % 2 != 0
+        || !token.len().is_multiple_of(2)
         || !token.starts_with("sc2.")
     {
         return Err(SearchCursorError::Invalid);
