@@ -82,6 +82,21 @@ pub enum V5Stage {
     Execute,
 }
 
+/// The owners one idle iteration of the listener reads. The daemon stays
+/// while any of them holds and exits after its grace once none does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct V5ListenerOwners {
+    /// An authenticated client session holds its owner lease.
+    pub client_leases: bool,
+    /// A connection is still in its handshake.
+    pub handshakes: bool,
+    /// A Task or an inline attempt has registered its cancellation.
+    pub task_cancellations: bool,
+    /// Workspace work keeps an actor: a running producer, a needed lease or a
+    /// saved plan.
+    pub retained_workspace_work: bool,
+}
+
 /// Where the runtime can be held by an observer. A pause is a no-op unless
 /// the installed hooks hold that point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
@@ -115,6 +130,10 @@ pub enum V5PausePoint {
     /// A begun attempt has passed its early look for a Task the session
     /// handler materialized and has not claimed the cutoff yet.
     BeforeCutoffClaim,
+    /// The provider has entered its execution. The runtime never holds it:
+    /// a scenario provider does, so the answer that runs ahead of the work
+    /// is observable.
+    ExecuteEntered,
 }
 
 /// An injected workspace admission failure, in place of the real bind.
@@ -177,6 +196,15 @@ pub trait V5RuntimeHooks<H: InvocationHost>: Send + Sync {
     fn after_idle_owner_leases_read(&self, empty: bool) {}
 
     fn listener_ownership_observed(&self, no_active_work: bool) {}
+
+    /// Whether the listener should read every owner for
+    /// [`Self::listener_owners_observed`] in each idle iteration.
+    fn observes_listener_owners(&self) -> bool {
+        false
+    }
+
+    /// Observes which owners keep the listener alive in one idle iteration.
+    fn listener_owners_observed(&self, owners: V5ListenerOwners) {}
 
     fn stage_entered(&self, stage: V5Stage) {}
 

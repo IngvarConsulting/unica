@@ -4,7 +4,7 @@ use crate::inspection::{
 };
 use crate::{
     ProjectCheckId, ProjectCheckObservation, ProjectCheckOutcome, ProjectHealthFact,
-    ProjectHealthInspectionError,
+    ProjectHealthFacts, ProjectHealthInspectionError,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -14,6 +14,8 @@ use tempfile::TempDir;
 #[cfg(test)]
 use unica_process::runner::system_process_runner;
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
+use unica_process::StreamControl;
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::{SourceFormat, SourceSetKind};
 use unica_source_designer::probe::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
@@ -33,8 +35,6 @@ pub(crate) struct GitIndexEntry {
 const MAX_STAGED_IGNORE_FILES: usize = 1024;
 const MAX_STAGED_IGNORE_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_STAGED_IGNORE_BATCH_METADATA_BYTES: usize = MAX_STAGED_IGNORE_FILES * 128;
-const MAX_EXPANDED_REPOSITORY_FACTS: usize = 4096;
-const MAX_EXPANDED_REPOSITORY_FACT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AMBIGUOUS_OWNER_REASON_BYTES: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,141 +356,76 @@ impl<'a> GitRepositoryInspector<'a> {
 
         let mut observations = vec![completed(ProjectCheckId::RepositoryDiscovery)];
         let mut facts = Vec::new();
-        let index = match self.run(
+        let mut entries = Vec::new();
+        let index = read_git_index(
+            self.runner,
             &repository_root,
-            ["ls-files", "--cached", "--stage", "-z"],
             cancellation,
             deadline,
-        ) {
-            Ok(output) => output,
-            Err(_) if cancellation.is_cancelled() => {
-                return Err(ProjectHealthInspectionError::Cancelled)
-            }
-            Err(reason) => {
-                observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
-                facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryIndex,
-                    source_set: None,
-                    reason,
-                });
-                append_not_run_after_index(
-                    &mut observations,
-                    &layout.roots,
-                    "Git index inspection failed",
-                );
-                return Ok(GitRepositoryInspection {
-                    repository_root: Some(repository_root),
-                    entries: Vec::new(),
-                    resource_inspection_blocker: None,
-                    staged_config_dump_info_kinds: BTreeMap::new(),
-                    observations,
-                    facts,
-                });
-            }
-        };
-        if index.cancelled || cancellation.is_cancelled() {
-            return Err(ProjectHealthInspectionError::Cancelled);
-        }
-        if index.timed_out {
-            observations.push(not_run(
-                ProjectCheckId::RepositoryIndex,
-                "Git index inspection timed out",
-            ));
-            facts.push(ProjectHealthFact::GitInspectionTimeout {
-                check: ProjectCheckId::RepositoryIndex,
-                source_set: None,
-            });
-            append_not_run_after_index(
-                &mut observations,
-                &layout.roots,
-                "Git index inspection timed out",
-            );
-            return Ok(GitRepositoryInspection {
-                repository_root: Some(repository_root),
-                entries: Vec::new(),
-                resource_inspection_blocker: None,
-                staged_config_dump_info_kinds: BTreeMap::new(),
-                observations,
-                facts,
-            });
-        }
-        if !index.status_success || output_incomplete(&index) {
-            let reason = if output_incomplete(&index) {
-                completeness_reason(&index)
-            } else {
-                nonzero_reason(&index)
-            };
-            observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
-            facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                check: ProjectCheckId::RepositoryIndex,
-                source_set: None,
-                reason,
-            });
-            append_not_run_after_index(
-                &mut observations,
-                &layout.roots,
-                "Git index output is incomplete",
-            );
-            return Ok(GitRepositoryInspection {
-                repository_root: Some(repository_root),
-                entries: Vec::new(),
-                resource_inspection_blocker: None,
-                staged_config_dump_info_kinds: BTreeMap::new(),
-                observations,
-                facts,
-            });
-        }
-        let entries =
-            match parse_git_index_entries_controlled(&index.stdout, cancellation, deadline) {
-                Ok(entries) => entries,
-                Err(IndexParseError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(IndexParseError::TimedOut) => {
-                    observations.push(not_run(
-                        ProjectCheckId::RepositoryIndex,
-                        "Git index parsing exceeded the inspection deadline",
-                    ));
-                    facts.push(ProjectHealthFact::GitInspectionTimeout {
-                        check: ProjectCheckId::RepositoryIndex,
-                        source_set: None,
-                    });
-                    append_not_run_after_index(
-                        &mut observations,
-                        &layout.roots,
-                        "Git index parsing exceeded the inspection deadline",
-                    );
-                    return Ok(GitRepositoryInspection {
-                        repository_root: Some(repository_root),
-                        entries: Vec::new(),
-                        resource_inspection_blocker: None,
-                        staged_config_dump_info_kinds: BTreeMap::new(),
-                        observations,
-                        facts,
-                    });
-                }
-                Err(IndexParseError::Malformed(reason)) => {
-                    observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
-                    facts.push(ProjectHealthFact::GitInspectionIncomplete {
+            &mut |entry| entries.push(entry),
+        );
+        if let Err(error) = index {
+            let (observation_reason, fact, after_index) = match error {
+                IndexReadError::Cancelled => return Err(ProjectHealthInspectionError::Cancelled),
+                IndexReadError::Failed(reason) => (
+                    reason.clone(),
+                    ProjectHealthFact::GitInspectionIncomplete {
                         check: ProjectCheckId::RepositoryIndex,
                         source_set: None,
                         reason,
-                    });
-                    append_not_run_after_index(
-                        &mut observations,
-                        &layout.roots,
-                        "Git index records are malformed",
-                    );
-                    return Ok(GitRepositoryInspection {
-                        repository_root: Some(repository_root),
-                        entries: Vec::new(),
-                        resource_inspection_blocker: None,
-                        staged_config_dump_info_kinds: BTreeMap::new(),
-                        observations,
-                        facts,
-                    });
-                }
+                    },
+                    "Git index inspection failed",
+                ),
+                IndexReadError::Incomplete(reason) => (
+                    reason.clone(),
+                    ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                        reason,
+                    },
+                    "Git index output is incomplete",
+                ),
+                IndexReadError::ProcessTimedOut => (
+                    "Git index inspection timed out".into(),
+                    ProjectHealthFact::GitInspectionTimeout {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                    },
+                    "Git index inspection timed out",
+                ),
+                IndexReadError::ParseTimedOut => (
+                    "Git index parsing exceeded the inspection deadline".into(),
+                    ProjectHealthFact::GitInspectionTimeout {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                    },
+                    "Git index parsing exceeded the inspection deadline",
+                ),
+                IndexReadError::Malformed(reason) => (
+                    reason.clone(),
+                    ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                        reason,
+                    },
+                    "Git index records are malformed",
+                ),
             };
+            observations.push(not_run(
+                ProjectCheckId::RepositoryIndex,
+                &observation_reason,
+            ));
+            facts.push(fact);
+            append_not_run_after_index(&mut observations, &layout.roots, after_index);
+            return Ok(GitRepositoryInspection {
+                repository_root: Some(repository_root),
+                entries: Vec::new(),
+                resource_inspection_blocker: None,
+                staged_config_dump_info_kinds: BTreeMap::new(),
+                observations,
+                facts,
+            });
+        }
         observations.push(completed(ProjectCheckId::RepositoryIndex));
 
         if !layout.repository_targets_complete && layout.roots.is_empty() {
@@ -1081,242 +1016,12 @@ impl<'a> GitRepositoryInspector<'a> {
             }
             Err(error) => return Ok(Err(error)),
         };
-        let mut facts = Vec::new();
-        let mut fact_bytes = 0_usize;
-        let ConfigDumpInfoIndexInspection {
-            runtime_paths,
-            inconclusive_paths,
-            classifications,
-        } = inspection;
-        for (path, classification) in &classifications {
-            let descriptor_kind = match classification {
-                ConfigDumpInfoXmlKind::ExternalProcessor => SourceSetKind::ExternalProcessor,
-                ConfigDumpInfoXmlKind::ExternalReport => SourceSetKind::ExternalReport,
-                ConfigDumpInfoXmlKind::RuntimeSidecar
-                | ConfigDumpInfoXmlKind::MetadataDescriptor
-                | ConfigDumpInfoXmlKind::Other => continue,
-            };
-            let owners = match source_owners.owners_for_repo_path(path, cancellation, deadline) {
-                Ok(owners) => owners,
-                Err(GeneratedPathInspectionError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(GeneratedPathInspectionError::TimedOut) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
-                }
-                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            let Some(owners) = owners else {
-                continue;
-            };
-            for (owner_index, root) in owners.iter().enumerate() {
-                if owner_index.is_multiple_of(256) {
-                    if cancellation.is_cancelled() {
-                        return Err(ProjectHealthInspectionError::Cancelled);
-                    }
-                    if deadline.is_elapsed() {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
-                    }
-                }
-                if !matches!(
-                    root.source_set.kind,
-                    SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-                ) || root.source_set.kind == descriptor_kind
-                {
-                    continue;
-                }
-                let reason = format!(
-                    "staged {} descriptor does not match declared {} source-set kind",
-                    source_set_kind_label(descriptor_kind),
-                    source_set_kind_label(root.source_set.kind)
-                );
-                fact_bytes = match reserve_expanded_repository_fact_budget(
-                    facts.len(),
-                    fact_bytes,
-                    1,
-                    path.len()
-                        .saturating_add(root.source_set.name.len())
-                        .saturating_add(reason.len()),
-                    "ConfigDumpInfo",
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                    }
-                };
-                facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: Some(root.source_set.name.clone()),
-                    path: path.clone(),
-                    reason,
-                });
+        match config_dump_info_facts(inspection, source_owners, cancellation, deadline) {
+            Err(ConfigDumpInfoIndexInspectionError::Cancelled) => {
+                Err(ProjectHealthInspectionError::Cancelled)
             }
+            evaluation => Ok(evaluation),
         }
-        for path in runtime_paths {
-            let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
-                Ok(owners) => owners,
-                Err(GeneratedPathInspectionError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(GeneratedPathInspectionError::TimedOut) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
-                }
-                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            if let Some([root]) = owners {
-                fact_bytes = match reserve_expanded_repository_fact_budget(
-                    facts.len(),
-                    fact_bytes,
-                    1,
-                    path.len().saturating_add(root.source_set.name.len()),
-                    "ConfigDumpInfo",
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                    }
-                };
-                facts.push(ProjectHealthFact::RuntimeSidecarTracked {
-                    source_set: root.source_set.name.clone(),
-                    path,
-                });
-            } else {
-                let ambiguous_owners = owners.filter(|owners| owners.len() > 1);
-                let reason = ambiguous_owners
-                    .map(ambiguous_owner_reason)
-                    .unwrap_or_else(|| "runtime sidecar is outside a proven source root".into());
-                let additional_count =
-                    1_usize.saturating_add(ambiguous_owners.map_or(0, |owners| owners.len()));
-                let additional_bytes = path.len().saturating_add(reason.len()).saturating_add(
-                    ambiguous_owners.map_or(0, |owners| {
-                        owners.iter().fold(0_usize, |total, root| {
-                            total
-                                .saturating_add(path.len())
-                                .saturating_add(reason.len())
-                                .saturating_add(root.source_set.name.len())
-                        })
-                    }),
-                );
-                fact_bytes = match reserve_expanded_repository_fact_budget(
-                    facts.len(),
-                    fact_bytes,
-                    additional_count,
-                    additional_bytes,
-                    "ConfigDumpInfo",
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                    }
-                };
-                facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: None,
-                    path: path.clone(),
-                    reason: reason.clone(),
-                });
-                if let Some(owners) = ambiguous_owners {
-                    for (owner_index, root) in owners.iter().enumerate() {
-                        if owner_index.is_multiple_of(256) {
-                            if cancellation.is_cancelled() {
-                                return Err(ProjectHealthInspectionError::Cancelled);
-                            }
-                            if deadline.is_elapsed() {
-                                return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
-                            }
-                        }
-                        facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                            source_set: Some(root.source_set.name.clone()),
-                            path: path.clone(),
-                            reason: reason.clone(),
-                        });
-                    }
-                }
-            }
-        }
-        for path in inconclusive_paths {
-            let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
-                Ok(owners) => owners,
-                Err(GeneratedPathInspectionError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(GeneratedPathInspectionError::TimedOut) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
-                }
-                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            let reason = "staged blob classification is inconclusive";
-            let additional_count = match owners {
-                Some([_]) | None => 1,
-                Some(owners) => 1_usize.saturating_add(owners.len()),
-            };
-            let owner_bytes = match owners {
-                Some([root]) => root.source_set.name.len(),
-                Some(owners) => owners.iter().fold(0_usize, |total, root| {
-                    total
-                        .saturating_add(path.len())
-                        .saturating_add(reason.len())
-                        .saturating_add(root.source_set.name.len())
-                }),
-                None => 0,
-            };
-            fact_bytes = match reserve_expanded_repository_fact_budget(
-                facts.len(),
-                fact_bytes,
-                additional_count,
-                path.len()
-                    .saturating_add(reason.len())
-                    .saturating_add(owner_bytes),
-                "ConfigDumpInfo",
-            ) {
-                Ok(bytes) => bytes,
-                Err(reason) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            match owners {
-                Some([root]) => facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: Some(root.source_set.name.clone()),
-                    path,
-                    reason: reason.into(),
-                }),
-                Some(owners) => {
-                    facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                        source_set: None,
-                        path: path.clone(),
-                        reason: reason.into(),
-                    });
-                    for (owner_index, root) in owners.iter().enumerate() {
-                        if owner_index.is_multiple_of(256) {
-                            if cancellation.is_cancelled() {
-                                return Err(ProjectHealthInspectionError::Cancelled);
-                            }
-                            if deadline.is_elapsed() {
-                                return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
-                            }
-                        }
-                        facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                            source_set: Some(root.source_set.name.clone()),
-                            path: path.clone(),
-                            reason: reason.into(),
-                        });
-                    }
-                }
-                None => facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: None,
-                    path,
-                    reason: reason.into(),
-                }),
-            }
-        }
-        Ok(Ok(ConfigDumpInfoEvaluation {
-            facts,
-            classifications,
-        }))
     }
 
     fn run<const N: usize>(
@@ -1337,6 +1042,187 @@ impl<'a> GitRepositoryInspector<'a> {
             .run(&process_command(cwd, args, cancellation, deadline));
         sticky_process_result(result, cancellation)
     }
+}
+
+fn config_dump_info_facts(
+    inspection: ConfigDumpInfoIndexInspection,
+    source_owners: &SourceRootOwners<'_>,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<ConfigDumpInfoEvaluation, ConfigDumpInfoIndexInspectionError> {
+    let mut facts = ProjectHealthFacts::default();
+    let ConfigDumpInfoIndexInspection {
+        runtime_paths,
+        inconclusive_paths,
+        classifications,
+    } = inspection;
+    for (path, classification) in &classifications {
+        let descriptor_kind = match classification {
+            ConfigDumpInfoXmlKind::ExternalProcessor => SourceSetKind::ExternalProcessor,
+            ConfigDumpInfoXmlKind::ExternalReport => SourceSetKind::ExternalReport,
+            ConfigDumpInfoXmlKind::RuntimeSidecar
+            | ConfigDumpInfoXmlKind::MetadataDescriptor
+            | ConfigDumpInfoXmlKind::Other => continue,
+        };
+        let owners = match source_owners.owners_for_repo_path(path, cancellation, deadline) {
+            Ok(owners) => owners,
+            Err(GeneratedPathInspectionError::Cancelled) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Cancelled)
+            }
+            Err(GeneratedPathInspectionError::TimedOut) => {
+                return Err(ConfigDumpInfoIndexInspectionError::TimedOut)
+            }
+            Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason))
+            }
+        };
+        let Some(owners) = owners else {
+            continue;
+        };
+        for (owner_index, root) in owners.iter().enumerate() {
+            if owner_index.is_multiple_of(256) {
+                if cancellation.is_cancelled() {
+                    return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
+                }
+                if deadline.is_elapsed() {
+                    return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
+                }
+            }
+            if !matches!(
+                root.source_set.kind,
+                SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+            ) || root.source_set.kind == descriptor_kind
+            {
+                continue;
+            }
+            let reason = format!(
+                "staged {} descriptor does not match declared {} source-set kind",
+                source_set_kind_label(descriptor_kind),
+                source_set_kind_label(root.source_set.kind)
+            );
+            facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: Some(root.source_set.name.clone()),
+                    path: path.clone(),
+                    reason,
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+        }
+    }
+    for path in runtime_paths {
+        let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
+            Ok(owners) => owners,
+            Err(GeneratedPathInspectionError::Cancelled) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Cancelled)
+            }
+            Err(GeneratedPathInspectionError::TimedOut) => {
+                return Err(ConfigDumpInfoIndexInspectionError::TimedOut)
+            }
+            Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason))
+            }
+        };
+        if let Some([root]) = owners {
+            facts
+                .push(ProjectHealthFact::RuntimeSidecarTracked {
+                    source_set: root.source_set.name.clone(),
+                    path,
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+        } else {
+            let ambiguous_owners = owners.filter(|owners| owners.len() > 1);
+            let reason = ambiguous_owners
+                .map(ambiguous_owner_reason)
+                .unwrap_or_else(|| "runtime sidecar is outside a proven source root".into());
+            facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: None,
+                    path: path.clone(),
+                    reason: reason.clone(),
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+            if let Some(owners) = ambiguous_owners {
+                for (owner_index, root) in owners.iter().enumerate() {
+                    if owner_index.is_multiple_of(256) {
+                        if cancellation.is_cancelled() {
+                            return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
+                        }
+                        if deadline.is_elapsed() {
+                            return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
+                        }
+                    }
+                    facts
+                        .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                            source_set: Some(root.source_set.name.clone()),
+                            path: path.clone(),
+                            reason: reason.clone(),
+                        })
+                        .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+                }
+            }
+        }
+    }
+    for path in inconclusive_paths {
+        let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
+            Ok(owners) => owners,
+            Err(GeneratedPathInspectionError::Cancelled) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Cancelled)
+            }
+            Err(GeneratedPathInspectionError::TimedOut) => {
+                return Err(ConfigDumpInfoIndexInspectionError::TimedOut)
+            }
+            Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason))
+            }
+        };
+        let reason = "staged blob classification is inconclusive";
+        match owners {
+            Some([root]) => facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: Some(root.source_set.name.clone()),
+                    path,
+                    reason: reason.into(),
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?,
+            Some(owners) => {
+                facts
+                    .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                        source_set: None,
+                        path: path.clone(),
+                        reason: reason.into(),
+                    })
+                    .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+                for (owner_index, root) in owners.iter().enumerate() {
+                    if owner_index.is_multiple_of(256) {
+                        if cancellation.is_cancelled() {
+                            return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
+                        }
+                        if deadline.is_elapsed() {
+                            return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
+                        }
+                    }
+                    facts
+                        .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                            source_set: Some(root.source_set.name.clone()),
+                            path: path.clone(),
+                            reason: reason.into(),
+                        })
+                        .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+                }
+            }
+            None => facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: None,
+                    path,
+                    reason: reason.into(),
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?,
+        }
+    }
+    Ok(ConfigDumpInfoEvaluation {
+        facts: facts.into_facts(),
+        classifications,
+    })
 }
 
 fn sticky_process_result(
@@ -1705,15 +1591,7 @@ fn completeness_reason(output: &ProcessOutput) -> String {
 }
 
 fn nonzero_reason(output: &ProcessOutput) -> String {
-    if output.stderr.trim().is_empty() {
-        format!("Git exited with {}", output.status)
-    } else {
-        format!(
-            "Git exited with {}: {}",
-            output.status,
-            output.stderr.trim()
-        )
-    }
+    stream_nonzero_reason(&output.status, &output.stderr)
 }
 
 fn status_is_no_match(output: &ProcessOutput) -> bool {
@@ -1851,95 +1729,241 @@ fn append_not_run_after_index(
 
 #[cfg(test)]
 pub(crate) fn parse_git_index_entries(stdout: &str) -> Result<Vec<GitIndexEntry>, String> {
-    parse_git_index_entries_with_checkpoint(stdout, &mut || Ok(())).map_err(|error| match error {
-        IndexParseError::Malformed(reason) => reason,
-        IndexParseError::Cancelled => "Git index parsing was cancelled".into(),
-        IndexParseError::TimedOut => "Git index parsing timed out".into(),
-    })
+    let Some(records) = stdout
+        .strip_suffix('\0')
+        .or(stdout.is_empty().then_some(""))
+    else {
+        return Err("Git index output is missing its terminal NUL".into());
+    };
+    let mut parser = GitIndexRecords::default();
+    let mut entries = Vec::new();
+    for record in records.split_terminator('\0') {
+        entries.extend(parser.push(record.as_bytes())?);
+    }
+    entries.extend(parser.finish());
+    Ok(entries)
 }
 
-pub(super) enum IndexParseError {
-    Malformed(String),
+/// Why the staged index could not be read completely.
+pub(crate) enum IndexReadError {
     Cancelled,
-    TimedOut,
+    /// Git could not be run.
+    Failed(String),
+    /// Git exited unsuccessfully or its output stream is incomplete.
+    Incomplete(String),
+    /// The Git process exceeded the inspection deadline.
+    ProcessTimedOut,
+    /// Reading the records reached the inspection deadline.
+    ParseTimedOut,
+    Malformed(String),
 }
 
-pub(super) fn parse_git_index_entries_controlled(
-    stdout: &str,
-    cancellation: &CancellationToken,
-    deadline: ProviderDeadline,
-) -> Result<Vec<GitIndexEntry>, IndexParseError> {
-    parse_git_index_entries_with_checkpoint(stdout, &mut || {
-        if cancellation.is_cancelled() {
-            Err(IndexParseError::Cancelled)
-        } else if deadline.is_elapsed() {
-            Err(IndexParseError::TimedOut)
-        } else {
-            Ok(())
-        }
-    })
+/// Merges the stage records of one path from `git ls-files --stage -z` into
+/// one entry. Git lists the index in byte order of paths, so the records of a
+/// path are adjacent and only one pending path is held.
+#[derive(Default)]
+pub(crate) struct GitIndexRecords {
+    pending: Option<PendingIndexPath>,
 }
 
-fn parse_git_index_entries_with_checkpoint(
-    stdout: &str,
-    checkpoint: &mut dyn FnMut() -> Result<(), IndexParseError>,
-) -> Result<Vec<GitIndexEntry>, IndexParseError> {
-    #[derive(Default)]
-    struct State {
-        records: usize,
-        blob_oid: Option<String>,
-        mode: Option<String>,
-    }
-    if !stdout.is_empty() && !stdout.ends_with('\0') {
-        return Err(IndexParseError::Malformed(
-            "Git index output is missing its terminal NUL".into(),
-        ));
-    }
-    let mut entries = BTreeMap::<String, State>::new();
-    checkpoint()?;
-    for (record_index, record) in stdout.split_terminator('\0').enumerate() {
-        if record_index % 256 == 0 {
-            checkpoint()?;
-        }
-        let (metadata, path) = record.split_once('\t').ok_or_else(|| {
-            IndexParseError::Malformed("Git index record has no tab separator".into())
-        })?;
+struct PendingIndexPath {
+    repo_path: String,
+    records: usize,
+    blob: Option<(String, String)>,
+}
+
+impl GitIndexRecords {
+    /// Accept one record; returns the previous path once it is complete.
+    pub(crate) fn push(&mut self, record: &[u8]) -> Result<Option<GitIndexEntry>, String> {
+        let record = std::str::from_utf8(record)
+            .map_err(|_| "Git index output contained invalid UTF-8".to_string())?;
+        let (metadata, path) = record
+            .split_once('\t')
+            .ok_or_else(|| "Git index record has no tab separator".to_string())?;
         if path.is_empty() {
-            return Err(IndexParseError::Malformed(
-                "Git index record has an empty path".into(),
-            ));
+            return Err("Git index record has an empty path".into());
         }
-        let fields = metadata.split_whitespace().collect::<Vec<_>>();
-        if fields.len() != 3 {
-            return Err(IndexParseError::Malformed(
-                "Git index record has invalid metadata".into(),
-            ));
-        }
-        let (mode, oid, stage) = (fields[0], fields[1], fields[2]);
+        let mut fields = metadata.split_whitespace();
+        let (Some(mode), Some(oid), Some(stage), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err("Git index record has invalid metadata".into());
+        };
         let usable = matches!(mode, "100644" | "100755")
             && stage == "0"
             && !oid.is_empty()
             && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
             && oid.bytes().any(|byte| byte != b'0');
-        let state = entries.entry(path.into()).or_default();
-        state.records += 1;
-        if state.records == 1 && usable {
-            state.blob_oid = Some(oid.into());
-            state.mode = Some(mode.into());
-        } else {
-            state.blob_oid = None;
-            state.mode = None;
+        if let Some(pending) = self.pending.as_mut() {
+            match path.cmp(pending.repo_path.as_str()) {
+                std::cmp::Ordering::Equal => {
+                    pending.records += 1;
+                    pending.blob = None;
+                    return Ok(None);
+                }
+                std::cmp::Ordering::Less => {
+                    return Err("Git index records are not in path order".into());
+                }
+                std::cmp::Ordering::Greater => {}
+            }
+        }
+        let next = PendingIndexPath {
+            repo_path: path.to_owned(),
+            records: 1,
+            blob: usable.then(|| (oid.to_owned(), mode.to_owned())),
+        };
+        Ok(self.pending.replace(next).map(PendingIndexPath::into_entry))
+    }
+
+    /// The last path, after the stream ended.
+    pub(crate) fn finish(self) -> Option<GitIndexEntry> {
+        self.pending.map(PendingIndexPath::into_entry)
+    }
+}
+
+impl PendingIndexPath {
+    fn into_entry(self) -> GitIndexEntry {
+        let (blob_oid, mode) = match self.blob.filter(|_| self.records == 1) {
+            Some((oid, mode)) => (Some(oid), Some(mode)),
+            None => (None, None),
+        };
+        GitIndexEntry {
+            repo_path: self.repo_path,
+            blob_oid,
+            mode,
         }
     }
-    checkpoint()?;
-    Ok(entries
-        .into_iter()
-        .map(|(repo_path, state)| GitIndexEntry {
-            repo_path,
-            blob_oid: state.blob_oid,
-            mode: state.mode,
-        })
-        .collect())
+}
+
+/// SHA-256 over parsed index entries in order. Equal digests prove the same
+/// staged index without keeping a second copy of its entries.
+pub(crate) struct GitIndexDigest(sha2::Sha256);
+
+impl Default for GitIndexDigest {
+    fn default() -> Self {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"unica-git-index-entries-v1\0");
+        Self(hasher)
+    }
+}
+
+impl GitIndexDigest {
+    pub(crate) fn update(&mut self, entry: &GitIndexEntry) {
+        use sha2::Digest;
+        for field in [
+            Some(entry.repo_path.as_str()),
+            entry.blob_oid.as_deref(),
+            entry.mode.as_deref(),
+        ] {
+            match field {
+                Some(field) => {
+                    self.0.update([1]);
+                    self.0.update((field.len() as u64).to_be_bytes());
+                    self.0.update(field.as_bytes());
+                }
+                None => self.0.update([0]),
+            }
+        }
+    }
+
+    pub(crate) fn finish(self) -> [u8; 32] {
+        use sha2::Digest;
+        self.0.finalize().into()
+    }
+}
+
+/// Stream the staged index of `repository_root` to `on_entry`, one merged
+/// entry per path in path order. Entries may already have been delivered when
+/// an error is returned; a caller keeps them only after `Ok`.
+pub(crate) fn read_git_index(
+    runner: &dyn ProcessRunner,
+    repository_root: &Path,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+    on_entry: &mut dyn FnMut(GitIndexEntry),
+) -> Result<(), IndexReadError> {
+    if cancellation.is_cancelled() {
+        return Err(IndexReadError::Cancelled);
+    }
+    if deadline.is_elapsed() {
+        return Err(IndexReadError::ProcessTimedOut);
+    }
+    let command = process_command(
+        repository_root,
+        ["ls-files", "--cached", "--stage", "-z"],
+        cancellation,
+        deadline,
+    );
+    let mut parser = GitIndexRecords::default();
+    let mut stopped = None;
+    let mut records = 0_usize;
+    let output = runner.run_streaming_records(&command, &[], 0, &mut |record| {
+        if records.is_multiple_of(256) {
+            if cancellation.is_cancelled() {
+                stopped = Some(IndexReadError::Cancelled);
+                return StreamControl::Stop;
+            }
+            if deadline.is_elapsed() {
+                stopped = Some(IndexReadError::ParseTimedOut);
+                return StreamControl::Stop;
+            }
+        }
+        records += 1;
+        match parser.push(record) {
+            Ok(entry) => {
+                entry.map(&mut *on_entry);
+                StreamControl::Continue
+            }
+            Err(reason) => {
+                stopped = Some(IndexReadError::Malformed(reason));
+                StreamControl::Stop
+            }
+        }
+    });
+    if cancellation.is_cancelled() {
+        return Err(IndexReadError::Cancelled);
+    }
+    let output = output.map_err(IndexReadError::Failed)?;
+    if let Some(error) = stopped {
+        return Err(error);
+    }
+    if output.cancelled {
+        return Err(IndexReadError::Cancelled);
+    }
+    if output.timed_out {
+        return Err(IndexReadError::ProcessTimedOut);
+    }
+    match output.line_error {
+        Some((_, error)) if error == unica_process::STREAM_RECORD_UNTERMINATED_ERROR => {
+            return Err(IndexReadError::Malformed(
+                "Git index output is missing its terminal NUL".into(),
+            ));
+        }
+        Some((_, error)) => return Err(IndexReadError::Incomplete(error)),
+        None => {}
+    }
+    if !output.status_success {
+        return Err(IndexReadError::Incomplete(stream_nonzero_reason(
+            &output.status,
+            &output.stderr,
+        )));
+    }
+    if deadline.is_elapsed() {
+        return Err(IndexReadError::ParseTimedOut);
+    }
+    if let Some(entry) = parser.finish() {
+        on_entry(entry);
+    }
+    Ok(())
+}
+
+fn stream_nonzero_reason(status: &str, stderr: &str) -> String {
+    if stderr.trim().is_empty() {
+        format!("Git exited with {status}")
+    } else {
+        format!("Git exited with {status}: {}", stderr.trim())
+    }
 }
 
 #[cfg(test)]
@@ -2495,7 +2519,7 @@ fn materialize_exact_git_directories(
         let Component::Normal(component) = component else {
             return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                 "staged Git ignore path is not repository-relative: {}",
-                relative.display()
+                relative.portable()
             )));
         };
         logical.push(component);
@@ -2508,13 +2532,13 @@ fn materialize_exact_git_directories(
                 let directory = open_read_directory_nofollow(&physical).map_err(|error| {
                     StagedIgnoreMaterializationError::Incomplete(format!(
                         "open staged Git ignore path {} after creation: {error}",
-                        logical.display()
+                        logical.portable()
                     ))
                 })?;
                 let identity = directory.identity().map_err(|error| {
                     StagedIgnoreMaterializationError::Incomplete(format!(
                         "identify staged Git ignore path {}: {error}",
-                        logical.display()
+                        logical.portable()
                     ))
                 })?;
                 if let Some(first) = materialized.identities.insert(identity, subject.clone()) {
@@ -2529,19 +2553,19 @@ fn materialize_exact_git_directories(
                 let directory = open_read_directory_nofollow(&physical).map_err(|error| {
                     StagedIgnoreMaterializationError::Incomplete(format!(
                         "open colliding staged Git ignore path {}: {error}",
-                        logical.display()
+                        logical.portable()
                     ))
                 })?;
                 let identity = directory.identity().map_err(|error| {
                     StagedIgnoreMaterializationError::Incomplete(format!(
                         "identify colliding staged Git ignore path {}: {error}",
-                        logical.display()
+                        logical.portable()
                     ))
                 })?;
                 let Some(first) = materialized.identities.get(&identity).cloned() else {
                     return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                         "staged Git ignore path {} unexpectedly resolves to an untracked host identity",
-                        logical.display()
+                        logical.portable()
                     )));
                 };
                 return Err(StagedIgnoreMaterializationError::PathIdentityCollision {
@@ -2552,7 +2576,7 @@ fn materialize_exact_git_directories(
             Err(error) => {
                 return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                     "create staged Git ignore path {}: {error}",
-                    logical.display()
+                    logical.portable()
                 )));
             }
         }
@@ -2641,8 +2665,7 @@ fn tracked_generated_facts(
     deadline: ProviderDeadline,
 ) -> Result<Vec<ProjectHealthFact>, GeneratedPathInspectionError> {
     let cache = repo_path(repository_root, &context.cache_root);
-    let mut facts = Vec::new();
-    let mut fact_bytes = 0_usize;
+    let mut facts = ProjectHealthFacts::default();
     for (entry_index, entry) in entries.iter().enumerate() {
         if entry_index % 256 == 0 {
             if cancellation.is_cancelled() {
@@ -2678,19 +2701,6 @@ fn tracked_generated_facts(
         if generated {
             match source_owners.owners_for_repo_path(&entry.repo_path, cancellation, deadline)? {
                 Some(owners) if !owners.is_empty() => {
-                    let additional_bytes = owners.iter().fold(0_usize, |total, root| {
-                        total
-                            .saturating_add(entry.repo_path.len())
-                            .saturating_add(root.source_set.name.len())
-                    });
-                    fact_bytes = reserve_expanded_repository_fact_budget(
-                        facts.len(),
-                        fact_bytes,
-                        owners.len(),
-                        additional_bytes,
-                        "generated path",
-                    )
-                    .map_err(GeneratedPathInspectionError::Incomplete)?;
                     for (owner_index, root) in owners.iter().enumerate() {
                         if owner_index.is_multiple_of(256) {
                             if cancellation.is_cancelled() {
@@ -2700,48 +2710,24 @@ fn tracked_generated_facts(
                                 return Err(GeneratedPathInspectionError::TimedOut);
                             }
                         }
-                        facts.push(ProjectHealthFact::GeneratedPathTracked {
-                            source_set: Some(root.source_set.name.clone()),
-                            path: entry.repo_path.clone(),
-                        });
+                        facts
+                            .push(ProjectHealthFact::GeneratedPathTracked {
+                                source_set: Some(root.source_set.name.clone()),
+                                path: entry.repo_path.clone(),
+                            })
+                            .map_err(GeneratedPathInspectionError::Incomplete)?;
                     }
                 }
-                _ => {
-                    fact_bytes = reserve_expanded_repository_fact_budget(
-                        facts.len(),
-                        fact_bytes,
-                        1,
-                        entry.repo_path.len(),
-                        "generated path",
-                    )
-                    .map_err(GeneratedPathInspectionError::Incomplete)?;
-                    facts.push(ProjectHealthFact::GeneratedPathTracked {
+                _ => facts
+                    .push(ProjectHealthFact::GeneratedPathTracked {
                         source_set: None,
                         path: entry.repo_path.clone(),
-                    });
-                }
+                    })
+                    .map_err(GeneratedPathInspectionError::Incomplete)?,
             }
         }
     }
-    Ok(facts)
-}
-
-fn reserve_expanded_repository_fact_budget(
-    current_count: usize,
-    current_bytes: usize,
-    additional_count: usize,
-    additional_bytes: usize,
-    fact_kind: &str,
-) -> Result<usize, String> {
-    let next_count = current_count.saturating_add(additional_count);
-    let next_bytes = current_bytes.saturating_add(additional_bytes);
-    if next_count > MAX_EXPANDED_REPOSITORY_FACTS || next_bytes > MAX_EXPANDED_REPOSITORY_FACT_BYTES
-    {
-        return Err(format!(
-            "{fact_kind} fact budget exceeded while expanding source-set ownership"
-        ));
-    }
-    Ok(next_bytes)
+    Ok(facts.into_facts())
 }
 
 fn ambiguous_owner_reason(owners: &[&InspectedSourceRoot]) -> String {
