@@ -1202,13 +1202,13 @@ fn project_health_index_eol_accepts_large_aggregate_of_bounded_blobs() {
         &LargeBlobMetadataRunner,
         crate::inspection::TEST_RESPONSE_HANDOFF_WINDOW,
     )
-    .validate_resource_blob_sizes(
+    .resource_blob_sizes(
         root.path(),
         &resources.iter().collect::<Vec<_>>(),
         &CancellationToken::new(),
         ProviderDeadline::from_budget(Duration::from_secs(2)),
     )
-    .expect("nine 31 MiB blobs fit the per-file bound without a total-memory bound");
+    .expect("nine 31 MiB blobs are measured without a total-memory bound");
 }
 
 #[test]
@@ -1618,6 +1618,295 @@ fn inspection_without_continuation_rejects_an_index_changed_between_pages() {
             ..
         } if reason == "Git index changed during resource inspection"
     )));
+}
+
+#[test]
+fn index_eol_scanner_matches_git_ls_files_eol_at_every_piece_boundary() {
+    let mut cases: Vec<(&str, Vec<u8>)> = vec![
+        ("empty", Vec::new()),
+        ("lf", b"a\nb\n".to_vec()),
+        ("crlf", b"a\r\nb\r\n".to_vec()),
+        ("mixed", b"a\r\nb\n".to_vec()),
+        ("lone-cr", b"a\rb".to_vec()),
+        ("trailing-cr", b"a\r".to_vec()),
+        ("only-cr", b"\r".to_vec()),
+        ("cr-cr-lf", b"a\r\r\n".to_vec()),
+        ("lf-crlf", b"\n\r\n".to_vec()),
+        ("nul", b"a\0b\n".to_vec()),
+        ("eof-only", b"\x1a".to_vec()),
+        ("eof-tail", b"abc\n\x1a".to_vec()),
+        ("eof-twice", b"\x1a\x1a".to_vec()),
+        ("eof-inside", b"a\x1ab\n".to_vec()),
+        ("del", b"a\x7f\n".to_vec()),
+        ("printable-controls", b"\x1b\t\x08\x0c ok\n".to_vec()),
+        ("high-bytes", (0x80..=0xff_u8).chain(*b"\n").collect()),
+        ("no-eol", b"plain".to_vec()),
+    ];
+    for (name, nonprintable) in [("ratio-at", 1_usize), ("ratio-over", 2)] {
+        let mut bytes = vec![b'x'; 128];
+        bytes.extend(std::iter::repeat_n(1_u8, nonprintable));
+        bytes.push(b'\n');
+        cases.push((name, bytes));
+    }
+    let mut bytes = vec![b'x'; 127];
+    bytes.extend_from_slice(b"\x01\n");
+    cases.push(("ratio-under", bytes));
+
+    let repository = TempDir::new().unwrap();
+    git(repository.path(), &["init"]);
+    for (name, bytes) in &cases {
+        fs::write(repository.path().join(name), bytes).unwrap();
+    }
+    git(
+        repository.path(),
+        &["-c", "core.autocrlf=false", "add", "."],
+    );
+    let listing = Command::new("git")
+        .args(["ls-files", "--eol", "-z"])
+        .current_dir(repository.path())
+        .output()
+        .unwrap();
+    assert!(listing.status.success());
+    let expected = String::from_utf8(listing.stdout)
+        .unwrap()
+        .split_terminator('\0')
+        .map(|record| {
+            let (metadata, path) = record.split_once('\t').unwrap();
+            let index = metadata.split_whitespace().next().unwrap();
+            (
+                path.to_owned(),
+                index.strip_prefix("i/").unwrap().to_owned(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for (name, bytes) in &cases {
+        // Every split point, so a CR, LF or ^Z lands on a piece boundary.
+        for split in 0..=bytes.len() {
+            let mut scanner = super::IndexEolScanner::default();
+            scanner.push(&bytes[..split]);
+            scanner.push(&bytes[split..]);
+            assert_eq!(
+                scanner.finish().as_git(),
+                expected[*name],
+                "{name} split at {split}"
+            );
+        }
+        let mut scanner = super::IndexEolScanner::default();
+        for byte in bytes {
+            scanner.push(std::slice::from_ref(byte));
+        }
+        assert_eq!(
+            scanner.finish().as_git(),
+            expected[*name],
+            "{name} byte by byte"
+        );
+    }
+}
+
+#[test]
+fn index_eol_of_staged_text_past_the_former_file_limit_is_a_finding() {
+    // 33 MiB staged texts: larger than a whole `ls-files --eol` batch, so they
+    // are scanned as streams, where the former 32 MiB limit left the index
+    // EOL check incomplete.
+    let fixture = policy_fixture();
+    fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+    let line = b"<Element attribute=\"value\">text</Element>";
+    let mut crlf = Vec::new();
+    let mut mixed = Vec::new();
+    while crlf.len() <= 33 * 1024 * 1024 {
+        crlf.extend_from_slice(line);
+        crlf.extend_from_slice(b"\r\n");
+        mixed.extend_from_slice(line);
+        mixed.extend_from_slice(b"\r\n");
+    }
+    mixed.extend_from_slice(b"tail\n");
+    fs::write(fixture.root.join("src/Crlf.xml"), &crlf).unwrap();
+    fs::write(fixture.root.join("src/Mixed.xml"), &mixed).unwrap();
+    // Stage the bytes as they are; the policy is what the check judges.
+    git(
+        &fixture.root,
+        &[
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.safecrlf=false",
+            "add",
+            "--",
+            ".gitattributes",
+        ],
+    );
+    let oid = |bytes: &[u8]| {
+        let mut child = Command::new("git")
+            .args(["hash-object", "-w", "--stdin"])
+            .current_dir(&fixture.root)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(child.stdin.as_mut().unwrap(), bytes).unwrap();
+        let output = child.wait_with_output().unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let (crlf_oid, mixed_oid) = (oid(&crlf), oid(&mixed));
+    git(
+        &fixture.root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{crlf_oid},src/Crlf.xml"),
+        ],
+    );
+    git(
+        &fixture.root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{mixed_oid},src/Mixed.xml"),
+        ],
+    );
+    git(&fixture.root, &["add", "src/Configuration.xml"]);
+    let cancellation = CancellationToken::new();
+    let deadline = ProviderDeadline::no_deadline();
+    let layout = SourceLayoutInspector::inspect(
+        &fixture.context,
+        &cancellation,
+        deadline,
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(&fixture.context.workspace_root),
+    )
+    .unwrap();
+    let repository = GitRepositoryInspector::new()
+        .inspect_base(&fixture.context, &layout, &cancellation, deadline)
+        .unwrap();
+    let root = repository.repository_root.as_ref().unwrap();
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
+    for continued in [false, true] {
+        let inspection = SourceResourcePolicyInspector::new()
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                deadline,
+                continued.then_some(&mut continuation),
+            )
+            .unwrap();
+        assert!(
+            inspection.observations.iter().any(|observation| {
+                observation.id == ProjectCheckId::RepositoryIndexEol
+                    && observation.source_set.is_none()
+                    && matches!(observation.outcome, ProjectCheckOutcome::Completed)
+            }),
+            "continued={continued}: {:?}",
+            inspection.observations
+        );
+        for (path, expected) in [("src/Crlf.xml", "crlf"), ("src/Mixed.xml", "mixed")] {
+            assert!(
+                inspection.facts.iter().any(|fact| matches!(
+                    fact,
+                    ProjectHealthFact::IndexEolNotLf { path: actual, observed, .. }
+                        if actual == path && observed == expected
+                )),
+                "continued={continued}, {path}: {:?}",
+                inspection.facts
+            );
+        }
+    }
+}
+
+fn inspect_staged_policy(fixture: &PolicyFixture) -> super::RepositoryPolicyInspection {
+    let cancellation = CancellationToken::new();
+    let deadline = ProviderDeadline::no_deadline();
+    let layout = SourceLayoutInspector::inspect(
+        &fixture.context,
+        &cancellation,
+        deadline,
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(&fixture.context.workspace_root),
+    )
+    .unwrap();
+    let repository = GitRepositoryInspector::new()
+        .inspect_base(&fixture.context, &layout, &cancellation, deadline)
+        .unwrap();
+    SourceResourcePolicyInspector::new()
+        .inspect(
+            repository.repository_root.as_ref().unwrap(),
+            &layout.roots,
+            &repository.entries,
+            &cancellation,
+            deadline,
+        )
+        .unwrap()
+}
+
+#[test]
+fn staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked() {
+    // 1025 staged .gitattributes and more than 8 MiB of policy, past the
+    // former 1024-file and 8 MiB refusals: Git reads the policy itself.
+    let fixture = policy_fixture();
+    let padding = "# portable text policy\n".repeat(9 * 1024 * 1024 / 23);
+    fs::write(
+        fixture.root.join(".gitattributes"),
+        format!("*.xml text eol=lf\n{padding}"),
+    )
+    .unwrap();
+    for number in 0..1024 {
+        let directory = fixture.root.join(format!("policy/{number:04}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(".gitattributes"), "*.dat -text\n").unwrap();
+    }
+    git(&fixture.root, &["add", ".gitattributes", "policy", "src"]);
+
+    let inspection = inspect_staged_policy(&fixture);
+
+    assert!(
+        inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryAttributes
+                && observation.source_set.is_none()
+                && matches!(observation.outcome, ProjectCheckOutcome::Completed)
+        }),
+        "{:?}",
+        inspection.observations
+    );
+    assert!(!inspection
+        .facts
+        .iter()
+        .any(|fact| matches!(fact, ProjectHealthFact::TextPolicyMissing { .. })));
+}
+
+#[test]
+fn attribute_policy_that_git_skips_is_reported_not_trusted() {
+    // Git ignores an attribute line over 2048 bytes (and a file of 100 MiB
+    // or more) with a warning. The skipped rule is the only text policy, so
+    // trusting the answer would report missing policy for a project that
+    // has one; the check must say the policy could not be read instead.
+    let fixture = policy_fixture();
+    fs::write(
+        fixture.root.join(".gitattributes"),
+        format!("*.xml text eol=lf {}\n", "x".repeat(3000)),
+    )
+    .unwrap();
+    git(&fixture.root, &["add", ".gitattributes", "src"]);
+
+    let inspection = inspect_staged_policy(&fixture);
+
+    assert!(
+        inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryAttributes,
+                reason,
+                ..
+            } if reason.contains("ignoring overly long attributes line")
+        )),
+        "{:?}",
+        inspection.facts
+    );
+    assert!(!inspection
+        .facts
+        .iter()
+        .any(|fact| matches!(fact, ProjectHealthFact::TextPolicyMissing { .. })));
 }
 
 #[test]

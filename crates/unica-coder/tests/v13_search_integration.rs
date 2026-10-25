@@ -2437,6 +2437,21 @@ fn literal_search_pages_past_two_hundred_matches(git: bool) {
             arguments.clone(),
         ));
         assert_eq!(page["ok"], true, "git {git}: {page:#}");
+        // The first answer counts the whole scope; a continuation does not.
+        if cursors.is_empty() {
+            assert_eq!(
+                page["data"]["totals"],
+                json!({
+                    "matches": 450,
+                    "files": 1,
+                    "kinds": {"CommonModule": {"matches": 450, "files": 1}},
+                    "modules": [{"at": "main:CommonModule.Main", "matches": 450}],
+                }),
+                "git {git}: {page:#}"
+            );
+        } else {
+            assert!(page["data"].get("totals").is_none(), "git {git}: {page:#}");
+        }
         lines.extend(
             page["data"]["matches"]
                 .as_array()

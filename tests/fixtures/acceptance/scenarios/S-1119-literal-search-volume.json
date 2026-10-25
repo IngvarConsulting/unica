@@ -1,0 +1,60 @@
+{
+  "id": "S-1119-literal-search-volume",
+  "issue": 1119,
+  "area": "Поиск",
+  "task": "Оценить объём буквального поиска по всем наборам до выкачивания страниц: первый ответ называет точное число совпадений и файлов, раскладку по видам объектов и модули-лидеры с адресами, даже когда страница вмещает одно совпадение.",
+  "workspace": "tests/fixtures/acceptance/workspace-code",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "insertion point",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/totals",
+          "eq": {
+            "matches": 6,
+            "files": 3,
+            "kinds": {
+              "CommonModule": {
+                "matches": 4,
+                "files": 2
+              },
+              "Catalog": {
+                "matches": 2,
+                "files": 1
+              }
+            },
+            "modules": [
+              {
+                "at": "ext:CommonModule.ПР_Пример",
+                "matches": 2
+              },
+              {
+                "at": "main:Catalog.Пример.Module.Object",
+                "matches": 2
+              },
+              {
+                "at": "main:CommonModule.Пример",
+                "matches": 2
+              }
+            ]
+          }
+        },
+        {
+          "pointer": "/data/matches/1",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ]
+    }
+  ]
+}

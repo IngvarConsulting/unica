@@ -33,9 +33,6 @@ use unica_workspace::read::{
 
 pub(crate) const LFS_SINGLE_FILE_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
 pub(crate) const LFS_AGGREGATE_THRESHOLD_BYTES: u64 = 100 * 1024 * 1024;
-const MAX_STAGED_POLICY_FILES: usize = 1024;
-const MAX_STAGED_POLICY_TOTAL_BYTES: usize = 8 * 1024 * 1024;
-const MAX_INDEX_EOL_FILE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INDEX_EOL_BATCH_FILES: usize = 64;
 const MAX_INDEX_EOL_BATCH_BLOB_BYTES: usize = 32 * 1024 * 1024;
 /// Resources inspected together. A step of the inspection, not a bound of the
@@ -255,6 +252,77 @@ impl IndexEol {
         [Self::Lf, Self::CrLf, Self::Mixed, Self::None, Self::Binary]
             .into_iter()
             .find(|eol| *eol as u8 == value)
+    }
+}
+
+/// The statistics of Git's `gather_stats` (convert.c), fed in pieces of any
+/// size, and the `i/` value `git ls-files --eol` derives from them with
+/// `convert_is_binary`. Git keeps the counters in 32-bit `unsigned`; they
+/// wrap here the same way.
+#[derive(Debug, Default)]
+struct IndexEolScanner {
+    size: u64,
+    pending_cr: bool,
+    last: Option<u8>,
+    nul: u32,
+    lone_cr: u32,
+    lone_lf: u32,
+    crlf: u32,
+    printable: u32,
+    nonprintable: u32,
+}
+
+impl IndexEolScanner {
+    fn push(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.size += 1;
+            self.last = Some(byte);
+            if std::mem::take(&mut self.pending_cr) {
+                if byte == b'\n' {
+                    self.crlf = self.crlf.wrapping_add(1);
+                    continue;
+                }
+                self.lone_cr = self.lone_cr.wrapping_add(1);
+            }
+            match byte {
+                b'\r' => self.pending_cr = true,
+                b'\n' => self.lone_lf = self.lone_lf.wrapping_add(1),
+                // DEL
+                127 => self.nonprintable = self.nonprintable.wrapping_add(1),
+                // BS, HT, ESC and FF
+                b'\x08' | b'\t' | b'\x1b' | b'\x0c' => {
+                    self.printable = self.printable.wrapping_add(1)
+                }
+                0 => {
+                    self.nul = self.nul.wrapping_add(1);
+                    self.nonprintable = self.nonprintable.wrapping_add(1);
+                }
+                byte if byte < 32 => self.nonprintable = self.nonprintable.wrapping_add(1),
+                _ => self.printable = self.printable.wrapping_add(1),
+            }
+        }
+    }
+
+    fn finish(mut self) -> IndexEol {
+        if self.pending_cr {
+            self.lone_cr = self.lone_cr.wrapping_add(1);
+        }
+        if self.size == 0 {
+            return IndexEol::None;
+        }
+        // A file that ends with ^Z does not count that EOF as nonprintable.
+        if self.last == Some(0x1a) {
+            self.nonprintable = self.nonprintable.wrapping_sub(1);
+        }
+        let binary =
+            self.lone_cr != 0 || self.nul != 0 || (self.printable >> 7) < self.nonprintable;
+        match (binary, self.crlf != 0, self.lone_lf != 0) {
+            (true, _, _) => IndexEol::Binary,
+            (false, true, true) => IndexEol::Mixed,
+            (false, true, false) => IndexEol::CrLf,
+            (false, false, true) => IndexEol::Lf,
+            (false, false, false) => IndexEol::None,
+        }
     }
 }
 
@@ -1142,29 +1210,35 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         sticky_process_result(result, cancellation)
     }
 
-    /// Run one Git command and hand each `delimiter`-terminated record of its
-    /// output to `on_record`, without capturing the output.
+    /// Run one Git command and hand its output to `on_record` without
+    /// capturing it: each `delimiter`-terminated record, or with no
+    /// delimiter the raw bytes in pieces. Returns the captured stderr.
     fn stream(
         &self,
         command: &ProcessCommand,
         input: &[u8],
-        delimiter: u8,
+        delimiter: Option<u8>,
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
         on_record: &mut dyn FnMut(&[u8]) -> Result<(), ResourceProtocolParseError>,
-    ) -> Result<(), ResourceProtocolParseError> {
+    ) -> Result<String, ResourceProtocolParseError> {
         let mut failed = None;
-        let output =
-            self.runner
-                .run_streaming_records(command, input, delimiter, &mut |record| match on_record(
-                    record,
-                ) {
-                    Ok(()) => StreamControl::Continue,
-                    Err(error) => {
-                        failed = Some(error);
-                        StreamControl::Stop
-                    }
-                });
+        let mut consume = |record: &[u8]| match on_record(record) {
+            Ok(()) => StreamControl::Continue,
+            Err(error) => {
+                failed = Some(error);
+                StreamControl::Stop
+            }
+        };
+        let output = match delimiter {
+            Some(delimiter) => {
+                self.runner
+                    .run_streaming_records(command, input, delimiter, &mut consume)
+            }
+            None => self
+                .runner
+                .run_streaming_bytes(command, input, &mut consume),
+        };
         if cancellation.is_cancelled() {
             return Err(ResourceProtocolParseError::Cancelled);
         }
@@ -1194,11 +1268,14 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 },
             ))
         } else {
-            Ok(())
+            Ok(output.stderr)
         }
     }
 
     /// `git check-attr` of `paths` with `command`, one triple per attribute.
+    /// Git skips an attribute file of 100 MiB or more and an attribute line
+    /// over 2048 bytes with a warning; the policy it answers from is then
+    /// partial, so such a warning makes the answer incomplete.
     fn attributes(
         &self,
         command: &ProcessCommand,
@@ -1208,10 +1285,10 @@ impl<'a> SourceResourcePolicyInspector<'a> {
     ) -> Result<BTreeMap<String, AttributeValues>, ResourceProtocolParseError> {
         let checkpoint = &mut || resource_protocol_checkpoint(cancellation, deadline);
         let mut records = AttributeRecords::new(paths, checkpoint)?;
-        self.stream(
+        let stderr = self.stream(
             command,
             &nul_input(paths),
-            0,
+            Some(0),
             cancellation,
             deadline,
             &mut |field| {
@@ -1220,6 +1297,14 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 })
             },
         )?;
+        if let Some(warning) = stderr.lines().find(|line| {
+            line.starts_with("warning: ignoring overly large gitattributes")
+                || line.starts_with("warning: ignoring overly long attributes line")
+        }) {
+            return Err(ResourceProtocolParseError::Malformed(format!(
+                "Git ignored part of the attribute policy: {warning}"
+            )));
+        }
         records.finish(checkpoint)
     }
 
@@ -1294,6 +1379,40 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     "Git omitted staged text blob metadata for {path}"
                 ))
             })?;
+            if size > MAX_INDEX_EOL_BATCH_BLOB_BYTES {
+                // Larger than a whole batch: scanned as a stream, never held
+                // by `ls-files --eol`. Its evidence is committed on its own,
+                // after the batch gathered before it.
+                // The root check runs without a deadline, so only cancellation
+                // stops a scan; the scan then restarts from the blob's start.
+                if !pending.is_empty() {
+                    self.commit_index_eol_batch(
+                        repository_root,
+                        &pending,
+                        records,
+                        continuation,
+                        &mut result,
+                        cancellation,
+                        deadline,
+                        completed_batches == 0,
+                    )?;
+                    completed_batches += 1;
+                    pending.clear();
+                    pending_bytes = 0;
+                }
+                let index_eol =
+                    self.scan_index_eol(repository_root, resource, cancellation, deadline)?;
+                records.entry(path.clone()).or_default().index = Some((key, index_eol));
+                continuation.progress.staged_eol_retained += 1;
+                result.insert(
+                    path.clone(),
+                    EolValues {
+                        index: index_eol.as_git().into(),
+                        worktree: String::new(),
+                    },
+                );
+                continue;
+            }
             if !pending.is_empty()
                 && (pending.len() >= continuation.index_eol_batch_files()
                     || pending_bytes.saturating_add(size) > MAX_INDEX_EOL_BATCH_BLOB_BYTES)
@@ -1409,11 +1528,18 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         );
         let checkpoint = &mut || resource_protocol_checkpoint(cancellation, deadline);
         let mut records = EolRecords::new(checkpoint)?;
-        self.stream(&command, &[], 0, cancellation, deadline, &mut |record| {
-            records.push(record, &mut || {
-                resource_protocol_checkpoint(cancellation, deadline)
-            })
-        })?;
+        self.stream(
+            &command,
+            &[],
+            Some(0),
+            cancellation,
+            deadline,
+            &mut |record| {
+                records.push(record, &mut || {
+                    resource_protocol_checkpoint(cancellation, deadline)
+                })
+            },
+        )?;
         if deadline.is_elapsed() {
             return Err(ResourceProtocolParseError::TimedOut);
         }
@@ -1444,7 +1570,80 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         Ok(inspected)
     }
 
-    fn validate_resource_blob_sizes(
+    /// Index EOL of one page without a continuation: blobs larger than a
+    /// batch are scanned as streams, the rest go to one `ls-files --eol`.
+    fn page_index_eol(
+        &self,
+        repository_root: &Path,
+        text: &[&RepositoryResource],
+        blob_sizes: &BTreeMap<String, usize>,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<BTreeMap<String, EolValues>, ResourceProtocolParseError> {
+        let mut batched = Vec::new();
+        let mut result = BTreeMap::new();
+        for resource in text {
+            let size = *blob_sizes.get(&resource.blob_oid).ok_or_else(|| {
+                ResourceProtocolParseError::Malformed(format!(
+                    "Git omitted staged text blob metadata for {}",
+                    resource.repo_path
+                ))
+            })?;
+            if size > MAX_INDEX_EOL_BATCH_BLOB_BYTES {
+                let index_eol =
+                    self.scan_index_eol(repository_root, resource, cancellation, deadline)?;
+                result.insert(
+                    resource.repo_path.clone(),
+                    EolValues {
+                        index: index_eol.as_git().into(),
+                        worktree: String::new(),
+                    },
+                );
+            } else {
+                batched.push(*resource);
+            }
+        }
+        if !batched.is_empty() {
+            let inspected =
+                self.inspect_index_eol_batch(repository_root, &batched, cancellation, deadline)?;
+            for (resource, (_, eol)) in batched.iter().zip(inspected) {
+                result.insert(resource.repo_path.clone(), eol);
+            }
+        }
+        Ok(result)
+    }
+
+    /// The `i/` EOL Git reports for the staged blob of `resource`, read as a
+    /// stream of `git cat-file blob`. Only the current piece is held here;
+    /// the Git child still inflates a deltified blob in its own memory.
+    fn scan_index_eol(
+        &self,
+        repository_root: &Path,
+        resource: &RepositoryResource,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<IndexEol, ResourceProtocolParseError> {
+        let command = process_command(
+            repository_root,
+            vec![
+                "--no-replace-objects".into(),
+                "cat-file".into(),
+                "blob".into(),
+                resource.blob_oid.clone(),
+            ],
+            cancellation,
+            deadline,
+        );
+        let mut scanner = IndexEolScanner::default();
+        self.stream(&command, &[], None, cancellation, deadline, &mut |chunk| {
+            resource_protocol_checkpoint(cancellation, deadline)?;
+            scanner.push(chunk);
+            Ok(())
+        })?;
+        Ok(scanner.finish())
+    }
+
+    fn resource_blob_sizes(
         &self,
         repository_root: &Path,
         resources: &[&RepositoryResource],
@@ -1459,24 +1658,21 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 mode: Some("100644".into()),
             })
             .collect::<Vec<_>>();
-        self.validate_blob_sizes(
+        self.staged_blob_sizes(
             repository_root,
             &entries.iter().collect::<Vec<_>>(),
-            MAX_INDEX_EOL_FILE_BYTES,
-            None,
             "staged text resource policy",
             cancellation,
             deadline,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn validate_blob_sizes(
+    /// Sizes of the regular stage-0 blobs of `entries`, proving every blob
+    /// exists in the object store.
+    fn staged_blob_sizes(
         &self,
         repository_root: &Path,
         entries: &[&GitIndexEntry],
-        max_file_bytes: usize,
-        max_total_bytes: Option<usize>,
         label: &str,
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
@@ -1527,7 +1723,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             self.stream(
                 &command,
                 &input,
-                b'\n',
+                Some(b'\n'),
                 cancellation,
                 deadline,
                 &mut |line| {
@@ -1566,26 +1762,6 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 || unique_oids.iter().any(|oid| !by_oid.contains_key(oid))
             {
                 return Err(format!("Git omitted {label} blob metadata"));
-            }
-        }
-        let mut total = 0_usize;
-        for entry in entries {
-            let oid = entry
-                .blob_oid
-                .as_deref()
-                .expect("validated staged blob has an object id");
-            let size = by_oid[oid];
-            if size > max_file_bytes {
-                return Err(format!(
-                    "{label} path {} is {size} bytes; inspection supports at most {max_file_bytes} bytes per file",
-                    entry.repo_path
-                ));
-            }
-            total = total.saturating_add(size);
-            if let Some(max_total_bytes) = max_total_bytes.filter(|bound| total > *bound) {
-                return Err(format!(
-                    "{label} is {total} bytes; inspection supports at most {max_total_bytes} bytes in total"
-                ));
             }
         }
         Ok(by_oid)
@@ -1909,23 +2085,11 @@ impl ResourcePass<'_, '_> {
                         == Some(".gitattributes")
                 })
                 .collect::<Vec<_>>();
-            if staged_attribute_entries.len() > MAX_STAGED_POLICY_FILES {
-                return Err(Stop::Answer(incomplete_policy(
-                    std::mem::take(&mut self.observations),
-                    ProjectCheckId::RepositoryAttributes,
-                    format!(
-                        "staged attribute policy contains {} .gitattributes files; inspection supports at most {MAX_STAGED_POLICY_FILES}",
-                        staged_attribute_entries.len()
-                    ),
-                )));
-            }
             let prepared = self
                 .inspector
-                .validate_blob_sizes(
+                .staged_blob_sizes(
                     self.repository_root,
                     &staged_attribute_entries,
-                    MAX_STAGED_POLICY_TOTAL_BYTES,
-                    Some(MAX_STAGED_POLICY_TOTAL_BYTES),
                     "staged attribute policy",
                     self.cancellation,
                     self.deadline,
@@ -2028,7 +2192,7 @@ impl ResourcePass<'_, '_> {
         if let Some(state) = self.continuation.as_deref_mut() {
             state.progress.text_resources += text.len();
         }
-        let blob_sizes = match self.inspector.validate_resource_blob_sizes(
+        let blob_sizes = match self.inspector.resource_blob_sizes(
             self.repository_root,
             &text,
             self.cancellation,
@@ -2061,20 +2225,13 @@ impl ResourcePass<'_, '_> {
                     self.deadline,
                 )
             }
-            _ => self
-                .inspector
-                .inspect_index_eol_batch(
-                    self.repository_root,
-                    &text,
-                    self.cancellation,
-                    self.deadline,
-                )
-                .map(|inspected| {
-                    text.iter()
-                        .zip(inspected)
-                        .map(|(resource, (_, eol))| (resource.repo_path.clone(), eol))
-                        .collect()
-                }),
+            _ => self.inspector.page_index_eol(
+                self.repository_root,
+                &text,
+                &blob_sizes,
+                self.cancellation,
+                self.deadline,
+            ),
         };
         let eol = match inspected {
             Ok(eol) => eol,

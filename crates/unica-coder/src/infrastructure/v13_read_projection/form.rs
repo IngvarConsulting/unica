@@ -19,6 +19,7 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "events",
     "autoCommandBar",
     "commandBarLocation",
+    "conditionalAppearance",
     "elements",
     "attributes",
     "parameters",
@@ -63,6 +64,12 @@ pub(super) fn project_form(
     suffix: &[AddressSegment],
     semantic_events: Option<&[EventProjection]>,
 ) -> Result<NodeViewData, ViewError> {
+    if suffix
+        .first()
+        .is_some_and(|part| part.kind() == NodeKind::Setting)
+    {
+        return super::form_appearance::project(address, payload, suffix);
+    }
     if let Some(events) = semantic_events.filter(|_| {
         suffix
             .last()
@@ -96,7 +103,7 @@ pub(super) fn project_form(
                 &["supportRule", "supportRuleReason", "directEditSafe"],
             ));
         }
-        let branches = BRANCH_KINDS
+        let mut branches = BRANCH_KINDS
             .iter()
             .copied()
             .filter_map(|kind| {
@@ -113,6 +120,12 @@ pub(super) fn project_form(
                 (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             })
             .collect::<Vec<_>>();
+        if payload
+            .get("conditionalAppearance")
+            .is_some_and(Value::is_object)
+        {
+            branches.push(BranchRef::new(format!("{address}.Setting"), 1));
+        }
         return Ok(NodeViewData::Node(
             NodeView::new(
                 address.to_string(),

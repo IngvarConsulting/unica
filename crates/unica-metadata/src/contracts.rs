@@ -104,6 +104,17 @@ fn fill_value_allowed(collection: crate::MetaCollection, site: Option<MetadataSi
     }
 }
 
+/// `DenyIncompleteValues` is published for the dimensions of the register
+/// kinds whose 8.3.27 dimensions carry it in this slice; a contract without
+/// a node does not know its owner and does not offer it.
+fn deny_incomplete_values_allowed(
+    collection: crate::MetaCollection,
+    site: Option<MetadataSite>,
+) -> bool {
+    collection == crate::MetaCollection::Dimensions
+        && site.is_some_and(|site| crate::metadata_deny_incomplete_values_is_allowed(site.owner))
+}
+
 pub const IDENTIFIER_PATTERN: &str = r"^[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$";
 
 /// Field definitions for both the raw typed input and the contextual Can.
@@ -172,6 +183,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
             }
         } else {
             fields.remove("templateType");
+            fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
@@ -216,6 +228,9 @@ fn metadata_element_schema(
         })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
+    if update && deny_incomplete_values_allowed(collection, site) {
+        fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
+    }
     let selector = if update { "newName" } else { "name" };
     fields[selector]
         .as_object_mut()

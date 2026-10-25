@@ -77,7 +77,9 @@ struct LaunchArguments {
     /// абсолютный для раннера. Проверена как обычный файл внутри рабочего
     /// пространства до вызова: превью раннера существование не проверяет.
     execute: Option<(PathBuf, PathBuf)>,
-    /// Ожидание выхода клиента с обработкой; у раннера флаг и срок обязательны
+    /// Passed unchanged as a single typed /C value, never echoed in receipts.
+    application_parameter: Option<String>,
+    /// Ожидание выхода клиента; у раннера флаг и срок обязательны
     /// вместе, поэтому здесь один слот.
     wait_timeout_ms: Option<u64>,
 }
@@ -161,11 +163,17 @@ fn parse_launch_arguments(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<LaunchArguments, DomainResult> {
-    const ACCEPTED: [&str; 4] = ["clientMode", "execute", "waitForExit", "waitTimeoutMs"];
+    const ACCEPTED: [&str; 5] = [
+        "clientMode",
+        "execute",
+        "applicationParameter",
+        "waitForExit",
+        "waitTimeoutMs",
+    ];
     if let Some(unknown) = args.keys().find(|key| !ACCEPTED.contains(&key.as_str())) {
         return Err(reject(
             RefusalCode::BadValue,
-            format!("launch does not accept `{unknown}`; the closed args are clientMode, execute, waitForExit and waitTimeoutMs"),
+            format!("launch does not accept `{unknown}`; the closed args are clientMode, execute, applicationParameter, waitForExit and waitTimeoutMs"),
         ));
     }
     let mode = args
@@ -178,6 +186,17 @@ fn parse_launch_arguments(
                 "launch clientMode must be one of designer, thin, thick, ordinary",
             )
         })?;
+    let application_parameter =
+        match args.get("applicationParameter") {
+            None => None,
+            Some(Value::String(value)) if mode != ClientMode::Designer && !value.contains('\0') => {
+                Some(value.clone())
+            }
+            Some(_) => return Err(reject(
+                RefusalCode::BadValue,
+                "launch applicationParameter must be a string without NUL for an enterprise client",
+            )),
+        };
     let execute = match args.get("execute") {
         None => None,
         Some(Value::String(value)) => {
@@ -255,10 +274,12 @@ fn parse_launch_arguments(
                 })?,
         ),
     };
-    // Раннер требует срок вместе с ожиданием и отказывает на каждом из них
-    // порознь; ожидание без обработки — ожидание интерактивного сеанса, и
-    // терминального результата у него нет.
-    match (wait_for_exit, wait_timeout_ms.is_some(), execute.is_some()) {
+    // Both wait forms require an explicit bounded deadline.
+    match (
+        wait_for_exit,
+        wait_timeout_ms.is_some(),
+        execute.is_some() || application_parameter.is_some(),
+    ) {
         (true, false, _) => {
             return Err(reject(
                 RefusalCode::BadValue,
@@ -274,7 +295,7 @@ fn parse_launch_arguments(
         (true, true, false) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "launch waitForExit needs execute: only an external processor session has an exit to wait for",
+                "launch waitForExit needs execute or applicationParameter",
             ))
         }
         _ => {}
@@ -291,7 +312,7 @@ fn parse_launch_arguments(
             .and_then(|(relative, _)| relative.extension())
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("epf"));
-        if !is_epf {
+        if execute.is_some() && !is_epf {
             return Err(reject(
                 RefusalCode::BadValue,
                 "launch waitForExit requires execute to name an .epf file",
@@ -301,6 +322,7 @@ fn parse_launch_arguments(
     Ok(LaunchArguments {
         mode,
         execute,
+        application_parameter,
         wait_timeout_ms: if wait_for_exit { wait_timeout_ms } else { None },
     })
 }
@@ -365,6 +387,8 @@ fn execute_with_resolved_runner(
         if data["ok"] != true
             || data["provider_dispatched"] != false
             || !data["pid"].is_null()
+            || !data["client_wait"].is_null()
+            || !data["external_epf_wait"].is_null()
             || data["plan"]["program"].as_str().is_none_or(str::is_empty)
         {
             return reject(
@@ -386,15 +410,18 @@ fn execute_with_resolved_runner(
             "providerDispatched": false,
             "requiresPlatform": true,
         }));
-        result.next.push(json!({
-            "tool": "unica.run",
-            "args": {
-                "op": OPERATION,
-                "args": public_arguments(prepared),
-                "dryRun": false,
-            },
-            "reason": "launch exactly this previewed client session"
-        }));
+        // A runnable continuation must not silently drop /C, nor expose its value.
+        if prepared.arguments.application_parameter.is_none() {
+            result.next.push(json!({
+                "tool": "unica.run",
+                "args": {
+                    "op": OPERATION,
+                    "args": public_arguments(prepared),
+                    "dryRun": false,
+                },
+                "reason": "launch exactly this previewed client session"
+            }));
+        }
         return result;
     }
     let ValidatedLaunchReceipt {
@@ -407,7 +434,7 @@ fn execute_with_resolved_runner(
     };
     let summary = match &waited {
         Some(waited) => format!(
-            "launch ran the processor in a {} session; it exited with code {}",
+            "launch waited for a {} session; it exited with code {}",
             prepared.arguments.mode.as_str(),
             waited["exitCode"]
         ),
@@ -421,7 +448,7 @@ fn execute_with_resolved_runner(
         RunnerOutcome::StructuralWaitTimeout => reject(
             RefusalCode::ProviderFailed,
             format!(
-                "launch exceeded the {} ms processor wait; v8-runner terminated the client (pid {pid})",
+                "launch exceeded the {} ms client wait; v8-runner terminated the client (pid {pid})",
                 prepared.arguments.wait_timeout_ms.unwrap_or_default()
             ),
         ),
@@ -506,7 +533,18 @@ impl ValidatedLaunchReceipt {
                     "v8-runner dispatched the client without reporting its process",
                 )
             })?;
-        let wait = &data["external_epf_wait"];
+        let (expected_wait, unexpected_wait) = if prepared.arguments.execute.is_some() {
+            ("external_epf_wait", "client_wait")
+        } else {
+            ("client_wait", "external_epf_wait")
+        };
+        if !data[unexpected_wait].is_null() {
+            return Err(reject(
+                RefusalCode::InvalidResult,
+                "v8-runner returned an unexpected wait result variant",
+            ));
+        }
+        let wait = &data[expected_wait];
         let waited = if prepared.arguments.wait_timeout_ms.is_some() {
             if wait["pid"].as_u64() != Some(u64::from(pid)) {
                 return Err(reject(
@@ -519,9 +557,11 @@ impl ValidatedLaunchReceipt {
                 .execute
                 .as_ref()
                 .map(|(_, absolute)| absolute.to_string_lossy().replace('\\', "/"));
-            if expected_execute.is_none()
-                || wait["execute_path"].as_str() != expected_execute.as_deref()
-            {
+            let execute_matches = match expected_execute.as_deref() {
+                Some(path) => wait["execute_path"].as_str() == Some(path),
+                None => wait.get("execute_path").is_none(),
+            };
+            if !execute_matches {
                 return Err(reject(
                     RefusalCode::InvalidResult,
                     "v8-runner wait result names a different external processor",
@@ -610,6 +650,9 @@ fn invoke_runner(
     ];
     if let Some((_, absolute)) = &prepared.arguments.execute {
         args.extend(["--execute".to_string(), absolute.display().to_string()]);
+    }
+    if let Some(value) = &prepared.arguments.application_parameter {
+        args.push(format!("--c={value}"));
     }
     let log_directory = if !prepared.dry_run && prepared.arguments.wait_timeout_ms.is_some() {
         let directory = tempfile::Builder::new()
@@ -764,7 +807,8 @@ fn parse_runner_output(
             && envelope["ok"] == false
             && envelope["error"]["code"] == "runtime_failure"
             && envelope["error"]["kind"] == "runtime"
-            && envelope["data"]["external_epf_wait"].is_object()
+            && (envelope["data"]["external_epf_wait"].is_object()
+                || envelope["data"]["client_wait"].is_object())
         {
             return Ok((envelope, RunnerOutcome::StructuralWaitTimeout));
         }
@@ -1515,6 +1559,177 @@ fn main() {
             let result = parse_launch_arguments(args.as_object().unwrap(), &context(root.path()))
                 .unwrap_err();
             assert_eq!(result.diagnostics[0]["code"], "bad_value");
+        }
+    }
+
+    #[test]
+    fn application_parameter_uses_exact_argv_and_private_receipts() {
+        let root = workspace();
+        for value in [
+            "",
+            "Обновить базу \"точно\"",
+            "--execute=ignored",
+            "$(touch NEVER)",
+        ] {
+            for timeout in [false, true] {
+                let prepared = prepared(
+                    root.path(),
+                    json!({"clientMode":"thin",
+                    "applicationParameter":value,"waitForExit":true,"waitTimeoutMs":1500}),
+                    false,
+                );
+                let mut envelope = launched_envelope("thin", 77, None);
+                envelope["data"]["client_wait"] = json!({"pid":77,
+                    "exit_code":if timeout {Value::Null} else {json!(7)}, "timed_out":timeout});
+                if timeout {
+                    envelope["ok"] = json!(false);
+                    envelope["data"]["ok"] = json!(false);
+                    envelope["error"] = json!({"kind":"runtime","code":"runtime_failure"});
+                }
+                let runner = SequenceRunner::new(vec![process(envelope, !timeout)]);
+                let result = execute_with_resolved_runner(
+                    &prepared,
+                    &runner,
+                    CancellationToken::new(),
+                    &tool(root.path()),
+                );
+                assert_eq!(result.ok, !timeout, "{result:?}");
+                let data = result.data.as_ref().expect("terminal receipt");
+                assert_eq!(data["wait"]["timedOut"], timeout);
+                assert_eq!(
+                    data["wait"]["exitCode"],
+                    if timeout { Value::Null } else { json!(7) }
+                );
+                assert!(data.get("applicationParameter").is_none());
+                assert!(data["args"].get("applicationParameter").is_none());
+                let calls = runner.calls.lock().unwrap();
+                assert_eq!(
+                    calls[0]
+                        .args
+                        .iter()
+                        .filter(|arg| arg.starts_with("--c="))
+                        .collect::<Vec<_>>(),
+                    vec![&format!("--c={value}")]
+                );
+                assert!(!calls[0].args.iter().any(|arg| arg == "--execute"));
+                if !value.is_empty() {
+                    assert!(!serde_json::to_string(&result).unwrap().contains(value));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn application_parameter_preview_does_not_echo_or_drop_the_parameter_in_a_continuation() {
+        let root = workspace();
+        let prepared = prepared(
+            root.path(),
+            json!({"clientMode":"thin",
+            "applicationParameter":"private-value","waitForExit":true,"waitTimeoutMs":1500}),
+            true,
+        );
+        let runner = SequenceRunner::new(vec![process(preview_envelope("thin", None), true)]);
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool(root.path()),
+        );
+        assert!(result.ok, "{result:?}");
+        assert!(result.next.is_empty());
+        assert!(!serde_json::to_string(&result)
+            .unwrap()
+            .contains("private-value"));
+        let calls = runner.calls.lock().unwrap();
+        assert!(calls[0].args.contains(&"--c=private-value".into()));
+        assert!(calls[0].args.contains(&"--dry-run".into()));
+        assert!(!calls[0].args.contains(&"--wait-for-exit".into()));
+    }
+
+    #[test]
+    fn application_parameter_rejects_invalid_inputs_and_wrong_wait_variants() {
+        let root = workspace();
+        for args in [
+            json!({"clientMode":"designer","applicationParameter":""}),
+            json!({"clientMode":"thin","applicationParameter":null}),
+            json!({"clientMode":"thin","applicationParameter":12}),
+            json!({"clientMode":"thin","applicationParameter":"bad\0value"}),
+            json!({"clientMode":"thick","applicationParameter":"","waitForExit":true,"waitTimeoutMs":100}),
+        ] {
+            assert!(
+                parse_launch_arguments(args.as_object().unwrap(), &context(root.path())).is_err()
+            );
+        }
+        for with_epf in [false, true] {
+            let mut args = json!({"clientMode":"thin","applicationParameter":"",
+                "waitForExit":true,"waitTimeoutMs":1500});
+            if with_epf {
+                args["execute"] = json!("tools/Report.epf");
+            }
+            let prepared = prepared(root.path(), args, false);
+            let key = if with_epf {
+                "external_epf_wait"
+            } else {
+                "client_wait"
+            };
+            let other = if with_epf {
+                "client_wait"
+            } else {
+                "external_epf_wait"
+            };
+            let mut valid = launched_envelope("thin", 77, None);
+            valid["data"][key] = json!({"pid":77,"exit_code":0,"timed_out":false});
+            if with_epf {
+                valid["data"][key]["execute_path"] = json!(runner_payload_path(
+                    &prepared.arguments.execute.as_ref().unwrap().1
+                ));
+            }
+            assert!(ValidatedLaunchReceipt::parse(
+                &prepared,
+                &valid["data"],
+                RunnerOutcome::Completed
+            )
+            .is_ok());
+            for defect in ["both", "wrong", "path", "pid", "terminal"] {
+                let mut invalid = valid.clone();
+                match defect {
+                    "both" => invalid["data"][other] = invalid["data"][key].clone(),
+                    "wrong" => {
+                        invalid["data"][other] = invalid["data"][key].clone();
+                        invalid["data"].as_object_mut().unwrap().remove(key);
+                    }
+                    "path" => invalid["data"][key]["execute_path"] = Value::Null,
+                    "pid" => invalid["data"][key]["pid"] = json!(78),
+                    "terminal" => invalid["data"][key]["timed_out"] = json!(true),
+                    _ => unreachable!(),
+                }
+                assert!(
+                    ValidatedLaunchReceipt::parse(
+                        &prepared,
+                        &invalid["data"],
+                        RunnerOutcome::Completed
+                    )
+                    .is_err(),
+                    "{defect}: {invalid}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn application_parameter_allows_a_bounded_wait_without_execute() {
+        let root = workspace();
+        for value in ["", "Обновить базу \"точно\"", "--execute=ignored"] {
+            let result = parse_launch_arguments(
+                json!({"clientMode": "thin", "applicationParameter": value,
+                    "waitForExit": true, "waitTimeoutMs": 1500})
+                .as_object()
+                .unwrap(),
+                &context(root.path()),
+            )
+            .unwrap();
+            assert!(result.execute.is_none());
+            assert_eq!(result.wait_timeout_ms, Some(1500));
         }
     }
 

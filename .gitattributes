@@ -105,6 +105,9 @@ tests/fixtures/acceptance/workspace-pull-validation/src/Configuration.xml -text 
 crates/unica-metadata-designer/tests/platform/dump_parity/*.xml -text -whitespace
 crates/unica-forms-designer/tests/platform/dump_parity/*.xml -text -whitespace
 
+# The job schedule fixture keeps the BOM and CRLF an 8.3.27 dump writes.
+tests/fixtures/platform_8_3_27/job_schedule/*.xml -text -whitespace
+
 # Spliced by tests with newline-prefixed patterns; keep their LF bytes on every host.
 /tests/fixtures/platform_8_3_27/mxl/** -text -whitespace
 /tests/fixtures/unica_mcp_script_parity/dcs-validate/** -text -whitespace

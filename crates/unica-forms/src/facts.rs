@@ -34,10 +34,36 @@ pub struct FormInfoData {
     pub attributes: Vec<FormInfoAttribute>,
     pub parameters: Vec<FormInfoParameter>,
     pub commands: Vec<FormInfoCommand>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditional_appearance: Option<FormInfoConditionalAppearance>,
     /// Parsed semantic context retained for the hidden V13 event projector.
     /// V12 `form.info` keeps its established public JSON shape.
     #[serde(skip)]
     pub event_context: FormEventContext,
+}
+
+/// `Attributes/ConditionalAppearance` of a managed form: rules in XML order
+/// with bounded typed facts and the limits that withheld the rest.
+#[derive(Debug, Serialize)]
+pub struct FormInfoConditionalAppearance {
+    pub rules: Vec<FormInfoConditionalAppearanceRule>,
+    pub limits: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FormInfoConditionalAppearanceRule {
+    pub name: String,
+    #[serde(rename = "use", skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<serde_json::Value>,
+    pub limits: Vec<String>,
 }
 
 /// Own UUID rule is independent of configuration and owner restrictions.

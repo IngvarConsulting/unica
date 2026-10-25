@@ -2836,6 +2836,7 @@ dependencies = [
 name = "unica-metadata-designer"
 version = "0.14.0-rc.1"
 dependencies = [
+ "chrono",
  "roxmltree",
  "serde_json",
  "sha2",

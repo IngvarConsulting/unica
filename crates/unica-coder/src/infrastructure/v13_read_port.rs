@@ -1,3 +1,4 @@
+mod job_schedule;
 use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
 use unica_execution_contract::view_error::ViewError;
 use unica_metadata::configuration::{CfHomePageData, CfInterfaceData};
@@ -1568,7 +1569,17 @@ impl ProviderReadAuthority {
     }
 
     pub(crate) fn form_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
-        self.relative_source_exists(&self.attached_resource_relative(target, "Form.xml")?)
+        self.attached_resource_exists(target, "Form.xml")
+    }
+
+    /// Whether the owner's attached resource is a local regular file. A path
+    /// built from the layout alone does not prove that the file exists.
+    pub(crate) fn attached_resource_exists(
+        &self,
+        target: &MetadataAddress,
+        resource: &str,
+    ) -> Result<bool, ViewError> {
+        self.relative_source_exists(&self.attached_resource_relative(target, resource)?)
     }
 
     fn relative_source_exists(&self, relative: &Path) -> Result<bool, ViewError> {

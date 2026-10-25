@@ -1840,7 +1840,7 @@
     {
       "id": "search.walk-page-response-share",
       "class": "deadline",
-      "resource": "Доля оставшегося бюджета прямого ответа, которую страница буквального поиска, читающая исходники своим обходом (каждое продолжение и первая страница вне Git), тратит на обход, прежде чем отдать продолжение курсору.",
+      "resource": "Доля оставшегося бюджета прямого ответа, которую продолжение буквального поиска, читающее исходники своим обходом, тратит на обход, прежде чем отдать продолжение курсору. Первая страница считает весь корпус и по времени не заканчивается.",
       "unit": "count",
       "scope": "request",
       "source": {
@@ -1861,6 +1861,37 @@
       "evidence": [],
       "decision": null,
       "review": "Половина оставляет вторую половину бюджета на сужение адресов и сериализацию страницы; замер страницы на УТ 11 — в описании PR."
+    },
+    {
+      "id": "search.totals-leading-modules",
+      "class": "result",
+      "resource": "Число модулей с наибольшим числом совпадений, которые сводка объёма первого ответа буквального поиска называет по адресу; остальные модули сводка сообщает одной строкой счёта.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
+        "symbol": "MAX_TEXT_TOTALS_LEADING_MODULES"
+      },
+      "expr": "20",
+      "value": 20,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
+      ],
+      "status": "justified",
+      "origin": "#1119 PR-C: сводка объёма первого ответа буквального поиска",
+      "problem": "Список всех модулей с совпадениями на широком запросе крупной конфигурации растёт до тысяч строк и вытесняет из ответа первую страницу совпадений; агенту для решения, сужать ли область, нужны лидеры и общий счёт.",
+      "onReach": "Не отказ и не потеря счёта: модули сверх двадцати входят в строку rest (число модулей и их совпадений); общий счёт, раскладка по видам и первая страница остаются точными.",
+      "issue": "#1119",
+      "evidence": [
+        "Клон выгрузки УТ 11 (Sendbox), release, 25.10.2026: первый ответ с двадцатью лидерами — 11,9 КиБ на 411 совпадениях в 231 файле и 12,0 КиБ на 162 307 совпадениях в 10 684 файлах; сама сводка — 2,9 и 3,3 КиБ, около 120–130 байт на модуль. Полный список модулей на «Процедура» занял бы около 1,2 МиБ, больше предела страницы 64 КиБ."
+      ],
+      "decision": {
+        "date": "2026-10-25",
+        "text": "Первый ответ буквального поиска всегда несёт сводку объёма: точный счёт совпадений и файлов, раскладку по видам объектов, до 20 модулей-лидеров с адресами.",
+        "source": "#1119, решение владельца для PR-C"
+      },
+      "review": "Счётчики сводки занимают память по числу модулей с совпадениями, а не по числу совпадений; предела на них нет, число модулей конфигурации конечно."
     },
     {
       "id": "view.call-graph-initial-page",
@@ -5453,79 +5484,6 @@
       "review": null
     },
     {
-      "id": "project-health.staged-ignore-batch-metadata-bytes",
-      "class": "corpus",
-      "resource": "Захват вывода `git cat-file --batch-check` по индексированным .gitignore (128 байт на файл).",
-      "unit": "bytes",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/git.rs",
-        "symbol": "MAX_STAGED_IGNORE_BATCH_METADATA_BYTES"
-      },
-      "expr": "MAX_STAGED_IGNORE_FILES * 128",
-      "value": 131072,
-      "derived": true,
-      "applied": [
-        "crates/unica-project-health/src/inspection/git.rs"
-      ],
-      "status": "unproven",
-      "origin": "#1114",
-      "problem": null,
-      "onReach": "вывод сверх предела усекается, проверка политики ignore помечается неполной",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
-    },
-    {
-      "id": "project-health.staged-ignore-bytes",
-      "class": "corpus",
-      "resource": "Суммарный объём индексированных файлов .gitignore, читаемых проверкой здоровья проекта.",
-      "unit": "bytes",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/git.rs",
-        "symbol": "MAX_STAGED_IGNORE_TOTAL_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-project-health/src/inspection/git.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "неполнота: «staged .gitignore policy exceeds 8388608 bytes»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
-    },
-    {
-      "id": "project-health.staged-ignore-files",
-      "class": "corpus",
-      "resource": "Число индексированных файлов .gitignore, разбираемых проверкой здоровья проекта.",
-      "unit": "count",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/git.rs",
-        "symbol": "MAX_STAGED_IGNORE_FILES"
-      },
-      "expr": "1024",
-      "value": 1024,
-      "applied": [
-        "crates/unica-project-health/src/inspection/git.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "неполнота: «staged ignore policy contains N .gitignore files; inspection supports at most 1024»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
-    },
-    {
       "id": "project-health.continuation-ttl",
       "class": "retention",
       "resource": "Срок удержания в памяти незанятого держателя продолжения проверки EOL между вызовами check.",
@@ -5591,7 +5549,7 @@
       "status": "unproven",
       "origin": "#1115",
       "problem": null,
-      "onReach": "порция фиксируется и начинается следующая",
+      "onReach": "порция фиксируется и начинается следующая; блоб больше порции читается потоком git cat-file blob без ls-files --eol",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -5622,30 +5580,6 @@
       "review": null
     },
     {
-      "id": "project-health.index-eol-file-bytes",
-      "class": "corpus",
-      "resource": "Размер одного индексированного текстового файла при проверке окончаний строк.",
-      "unit": "bytes",
-      "scope": "file",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/resources.rs",
-        "symbol": "MAX_INDEX_EOL_FILE_BYTES"
-      },
-      "expr": "32 * 1024 * 1024",
-      "value": 33554432,
-      "applied": [
-        "crates/unica-project-health/src/inspection/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "неполнота политики текстовых ресурсов: проверка EOL не выполнена",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
-    },
-    {
       "id": "project-health.resource-ownership-reason-bytes",
       "class": "format",
       "resource": "Длина текста причины о неоднозначном владении ресурсом в проверке здоровья проекта.",
@@ -5668,54 +5602,6 @@
       "evidence": [],
       "decision": null,
       "review": null
-    },
-    {
-      "id": "project-health.staged-attributes-bytes",
-      "class": "corpus",
-      "resource": "Суммарный объём индексированных файлов .gitattributes, читаемых проверкой здоровья проекта.",
-      "unit": "bytes",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/resources.rs",
-        "symbol": "MAX_STAGED_POLICY_TOTAL_BYTES"
-      },
-      "expr": "8 * 1024 * 1024",
-      "value": 8388608,
-      "applied": [
-        "crates/unica-project-health/src/inspection/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "неполнота политики атрибутов: проверка RepositoryAttributes не выполнена",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
-    },
-    {
-      "id": "project-health.staged-attributes-files",
-      "class": "corpus",
-      "resource": "Число индексированных файлов .gitattributes, разбираемых проверкой здоровья проекта.",
-      "unit": "count",
-      "scope": "repository",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/resources.rs",
-        "symbol": "MAX_STAGED_POLICY_FILES"
-      },
-      "expr": "1024",
-      "value": 1024,
-      "applied": [
-        "crates/unica-project-health/src/inspection/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 6ab5b211d (harden typed health inspection)",
-      "problem": null,
-      "onReach": "неполнота RepositoryAttributes: «staged attribute policy contains N .gitattributes files; inspection supports at most 1024»",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": "снимается в #1119 PR3b"
     },
     {
       "id": "project-health.diagnostic-evidence",
@@ -6309,6 +6195,30 @@
       "problem": null,
       "onReach": "тихо: устаревший каталог или файл продолжения удаляется; следующая корневая проверка такого проекта идёт с начала",
       "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "process.byte-stream-chunk-bytes",
+      "class": "step",
+      "resource": "Размер одного чтения потока байтов stdout, который отдаётся потребителю целиком, например сканеру EOL большого staged-блоба.",
+      "unit": "bytes",
+      "scope": "process",
+      "source": {
+        "file": "crates/unica-process/src/platform/process.rs",
+        "symbol": "BYTE_STREAM_CHUNK_BYTES"
+      },
+      "expr": "64 * 1024",
+      "value": 65536,
+      "applied": [
+        "crates/unica-process/src/platform/process.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119",
+      "problem": null,
+      "onReach": "кусок передаётся потребителю и читается следующий; общий объём потока не ограничивается",
+      "issue": "#1119",
       "evidence": [],
       "decision": null,
       "review": null

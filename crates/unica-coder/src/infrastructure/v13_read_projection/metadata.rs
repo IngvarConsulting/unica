@@ -122,6 +122,9 @@ fn project_metadata(
             })
             .collect::<Vec<_>>();
         let relations = metadata_relations(address, payload);
+        if matches!(address.segments(), [owner] if owner.kind() == NodeKind::ScheduledJob) {
+            branches.push(BranchRef::new(format!("{address}.Schedule"), 1));
+        }
         if !relations.is_empty() {
             branches.push(BranchRef::new(
                 format!("{}.{}", address, NodeKind::Relation.as_str()),
@@ -156,6 +159,58 @@ fn project_metadata(
         ));
     }
     let first = &suffix[0];
+    if matches!(address.segments(), [owner, schedule]
+        if owner.kind() == NodeKind::ScheduledJob && schedule.kind() == NodeKind::Schedule)
+    {
+        let properties = payload
+            .get("properties")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "schedule reader returned a non-object payload",
+                )
+            })?;
+        let mut props = selected_scalar_props(
+            &Value::Object(properties.clone()),
+            &[
+                "state",
+                "BeginDate",
+                "EndDate",
+                "BeginTime",
+                "EndTime",
+                "CompletionTime",
+                "CompletionInterval",
+                "RepeatPeriodInDay",
+                "RepeatPause",
+                "WeekDayInMonth",
+                "DayInMonth",
+                "WeeksPeriod",
+                "DaysRepeatPeriod",
+                "WeekDays",
+                "Months",
+            ],
+        );
+        // Детальные расписания дня — массив тех же фактов, вложенным JSON
+        // без упаковки в строку и в общем пределе размера свойства (#2031).
+        let mut limits = Vec::new();
+        if let Some(detailed) = properties
+            .get("detailedDailySchedules")
+            .filter(|value| value.is_array())
+        {
+            place_prop(
+                &mut props,
+                &mut limits,
+                "detailedDailySchedules",
+                detailed,
+                false,
+                "schedule detailedDailySchedules",
+            );
+        }
+        return Ok(NodeViewData::Node(
+            NodeView::new(address.to_string(), "Schedule", "Schedule", props).with_limits(limits),
+        ));
+    }
     if first.kind() == NodeKind::Relation {
         if suffix.len() > 1 || first.name().is_some() {
             return Err(ViewError::new(

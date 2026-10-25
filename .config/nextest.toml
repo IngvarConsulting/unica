@@ -24,8 +24,8 @@ fail-fast = false
 # Срок на тест — то, чем размер держится честным. Пока размеры не расставлены,
 # всем достаётся срок `small`: 60 с до пометки SLOW, остановка после второго
 # периода. Замер 05.09.2026 на main: самый долгий тест 16,4 с, p99 — 1,8 с.
-# Сроки `medium` (300 с) и `large` (900 с) придут переопределениями по
-# выражению размера вместе с расстановкой размеров.
+# Сроки `medium` (300 с) и `large` (900 с) задают переопределения ниже по
+# выражениям размера.
 slow-timeout = { period = "60s", terminate-after = 2 }
 
 [profile.default.junit]
@@ -170,7 +170,9 @@ binary(unica_coder) & (
 )
 ) | (
 binary(unica_project_health) & (
-    test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    test(/^inspection::git::tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
+    | test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    | test(/^inspection::resources::tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
 )
 ) | (
 binary(unica_workspace) & (
@@ -213,7 +215,9 @@ binary(unica_coder) & (
 )
 ) | (
 binary(unica_project_health) & (
-    test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    test(/^inspection::git::tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
+    | test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    | test(/^inspection::resources::tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
 )
 ) | (
 binary(unica_workspace) & (
@@ -315,6 +319,7 @@ default-filter = '''(
     | (binary(unica_metadata_designer) & test(/^borrowed_enum_value::tests::/))
     | (binary(unica_metadata_designer) & test(/^borrowed_object::tests::/))
     | (binary(unica_metadata_designer) & test(/^configuration::tests::/))
+    | (binary(unica_metadata_designer) & test(/^edit::dimension_deny_tests::/))
     | (binary(unica_metadata_designer) & test(/^edit::dump_parity_tests::/))
     | (binary(unica_metadata_designer) & test(/^edit::empty_child_objects_tests::/))
     | (binary(unica_metadata_designer) & test(/^extension::tests::/))
@@ -395,7 +400,9 @@ binary(unica_coder) & (
 )
 ) | (
 binary(unica_project_health) & (
-    test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    test(/^inspection::git::tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
+    | test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    | test(/^inspection::resources::tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
 )
 ) | (
 binary(unica_workspace) & (
@@ -435,7 +442,9 @@ binary(unica_coder) & (
 )
 ) | (
 binary(unica_project_health) & (
-    test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    test(/^inspection::git::tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
+    | test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    | test(/^inspection::resources::tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
 )
 ) | (
 binary(unica_workspace) & (
@@ -500,11 +509,6 @@ default-filter = 'all()'
 # `large` profile below remains the size catalogue used by queue/size guards.
 [profile.nightly-full]
 default-filter = 'all()'
-
-# Windows-исключение то же, что у `large` ниже; снятие — #1879.
-[[profile.nightly-full.overrides]]
-platform = 'cfg(windows)'
-default-filter = 'all() - test(/^deterministic_horizon_load_does_not_saturate$/)'
 
 # Только ночь: интеграционные тесты, возвращённые из `#[ignore = "daemon tier"]`
 # (#1835). Их отключили 04.09.2026, потому что демона было некому остановить;
@@ -585,7 +589,9 @@ binary(unica_coder) & (
 )
 ) | (
 binary(unica_project_health) & (
-    test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    test(/^inspection::git::tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
+    | test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    | test(/^inspection::resources::tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
 )
 ) | (
 binary(unica_workspace) & (
@@ -604,17 +610,67 @@ binary(selection) & (
 
 # Ночью Windows гоняет весь набор: с матрицы pull request и main он снят за
 # нестабильность раннера, а в ночном ярусе сбой виден и никого не блокирует.
-# Исключение одно: детерминированная модель горизонта нагрузки — тест с
-# управляемыми часами, платформе безразличный; на двухъядерном Windows он не
-# укладывается и в два срока `large` (замер 07.09.2026: ubuntu 415 с, macOS
-# 465 с, Windows — остановлен на 1800 с), а доказан он двумя другими ОС.
-# Снятие исключения — #1879; прочие известные отказы Windows large — #1523.
-[[profile.large.overrides]]
-platform = 'cfg(windows)'
-default-filter = 'all() - test(/^deterministic_horizon_load_does_not_saturate$/)'
+# Модель горизонта нагрузки квитанций на Windows идёт около 800 с: допуск
+# исходников на каждом вызове и контрольные чтения каталога квитанций стоят
+# там в 5–29 раз дороже, чем на Linux (замер 24.10.2026: windows-latest 799 с,
+# ubuntu 220 с; #2038). Срок `large` её вмещает; прежде её останавливал на
+# 600 с срок `medium`, стоявший раньше (#1879).
+# Известные отказы Windows large — #1523.
+
+# Срок `large` — 900 с, остановка после второго периода, и вся машина одному
+# тесту: нагрузочные ворота меряют p99 задержки записи, и соседний тест на
+# том же ядре красит их без вины кода.
+# Блок стоит раньше срока `medium`: nextest берёт для каждой настройки первое
+# совпавшее переопределение, а почти все тесты `large` совпадают и с выражением
+# срока `medium` (`kind(test)` и термы модулей). В обратном порядке 14 из 16
+# тестов `large` останавливались на 600 с вместо 1800 с на всех ОС (#1879).
+# >>> размер large (срок)
+[[profile.default.overrides]]
+filter = '''
+(
+binary(daemon_receipt_ledger) & (
+    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
+    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
+    | test(/^deterministic_horizon_load_does_not_saturate$/)
+    | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
+    | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
+    | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
+    | test(/^task_handoff_before_begun_materializes_past_former_link_quota_without_callback$/)
+    | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
+    | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
+    | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
+)
+) | (
+binary(unica_coder) & (
+    test(/^infrastructure::daemon::receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::daemon::v13_workspace_bootstrap::tests::root_check_streams_an_index_past_the_former_capture_limit$/)
+)
+) | (
+binary(unica_project_health) & (
+    test(/^inspection::git::tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
+    | test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
+    | test(/^inspection::resources::tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
+)
+) | (
+binary(unica_workspace) & (
+    test(/^selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
+    | test(/^selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+)
+) | (
+binary(selection) & (
+    test(/^aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    | test(/^aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
+    | test(/^aggregate_selection_membership_crosses_former_16384_across_sources$/)
+)
+)
+'''
+slow-timeout = { period = "900s", terminate-after = 2 }
+threads-required = "num-cpus"
+# <<< размер large (срок)
 
 # Срок `medium` — 300 с, остановка после второго периода; `small` остаётся на
-# сроке `default`. Выражение — то же, что у ворот `pr`.
+# сроке `default`. Выражение — то же, что исключают ворота `pr`; тесты `large`
+# из него забирает срок `large` выше.
 # >>> размер medium (срок): пишет scripts/ci/size-filters.py --write
 [[profile.default.overrides]]
 filter = '''
@@ -721,51 +777,6 @@ kind(test)
 '''
 slow-timeout = { period = "300s", terminate-after = 2 }
 # <<< размер medium (срок)
-
-# Срок `large` — 900 с, остановка после второго периода, и вся машина одному
-# тесту: нагрузочные ворота меряют p99 задержки записи, и соседний тест на
-# том же ядре красит их без вины кода.
-# >>> размер large (срок)
-[[profile.default.overrides]]
-filter = '''
-(
-binary(daemon_receipt_ledger) & (
-    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
-    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
-    | test(/^deterministic_horizon_load_does_not_saturate$/)
-    | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
-    | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
-    | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
-    | test(/^task_handoff_before_begun_materializes_past_former_link_quota_without_callback$/)
-    | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
-    | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
-    | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-)
-) | (
-binary(unica_coder) & (
-    test(/^infrastructure::daemon::receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
-    | test(/^infrastructure::daemon::v13_workspace_bootstrap::tests::root_check_streams_an_index_past_the_former_capture_limit$/)
-)
-) | (
-binary(unica_project_health) & (
-    test(/^inspection::resources::tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
-)
-) | (
-binary(unica_workspace) & (
-    test(/^selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
-    | test(/^selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
-)
-) | (
-binary(selection) & (
-    test(/^aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
-    | test(/^aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
-    | test(/^aggregate_selection_membership_crosses_former_16384_across_sources$/)
-)
-)
-'''
-slow-timeout = { period = "900s", terminate-after = 2 }
-threads-required = "num-cpus"
-# <<< размер large (срок)
 
 # Тесты живого демона v5 поднимают каждый свой демон с хранилищем на диске и
 # собственными сроками шагов в 2 с. Без предела модуль сам перегружает машину,

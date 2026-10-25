@@ -381,6 +381,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 ));
             }
         }
+        // An absent schedule is a successful `view` answer (`state: absent`),
+        // but the path its layout names is not a source file to resolve to.
+        if route.reader() == LogicalReader::Metadata
+            && matches!(at.segments(), [owner, schedule]
+                if owner.kind() == NodeKind::ScheduledJob && schedule.kind() == NodeKind::Schedule)
+        {
+            let target = route.reader_metadata_path().ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "schedule route has no target")
+            })?;
+            if !self.read.attached_resource_exists(target, "Schedule.xml")? {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the local Schedule.xml source file does not exist",
+                ));
+            }
+        }
         if requested_path.is_some_and(|requested| requested != path) {
             return Err(ViewError::new(
                 RefusalCode::NotFound,
@@ -940,6 +956,16 @@ impl<'a> LogicalViewReadAuthority<'a> {
         ) {
             if let Some(target) = route.reader_metadata_path() {
                 self.verify_registered_owner(target, admitted)?;
+                // The companion has its own changing bytes; an owner payload
+                // cached by admission identity cannot describe this observation.
+                if matches!(route.at().segments(), [owner, schedule]
+                    if owner.kind() == NodeKind::ScheduledJob && schedule.kind() == NodeKind::Schedule)
+                {
+                    let schedule = self
+                        .read
+                        .job_schedule(target, &mut || self.read_checkpoint())?;
+                    return Ok(json!({"properties": schedule}));
+                }
                 let key = TypedPayloadCacheKey {
                     revision: RevisionCacheKey {
                         source_set_identity: admitted.source_set_identity.clone(),
@@ -2041,6 +2067,13 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let target_depth = target.as_str().split('.').count().div_ceil(2);
         let is_detail = at.segments().len() > target_depth;
         let path = match route.reader() {
+            LogicalReader::Metadata
+                if matches!(at.segments(), [owner, schedule]
+                if owner.kind() == NodeKind::ScheduledJob && schedule.kind() == NodeKind::Schedule) =>
+            {
+                self.read
+                    .attached_resource_export_path(target, "Schedule.xml")?
+            }
             LogicalReader::Form => self
                 .read
                 .attached_resource_export_path(target, "Form.xml")?,

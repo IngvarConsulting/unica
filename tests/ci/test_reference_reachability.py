@@ -66,13 +66,9 @@ KNOWN_UNREACHABLE = frozenset(
     {
         "README.md",
         "specs/README.md",
-        "specs/web-spec.md",
-        "tooling/runtime-build.md",
-        "use-cases/autonomous-server-debug.md",
         "use-cases/extensions-cfe.md",
         "use-cases/integrations.md",
         "use-cases/metadata-modeling.md",
-        "use-cases/workspace-runtime.md",
     }
 )
 

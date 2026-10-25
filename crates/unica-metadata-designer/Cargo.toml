@@ -24,3 +24,4 @@ unica-address = { path = "../unica-address" }
 unica-metadata = { path = "../unica-metadata" }
 unica-source-designer = { path = "../unica-source-designer" }
 roxmltree.workspace = true
+chrono.workspace = true

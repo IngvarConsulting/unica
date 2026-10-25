@@ -147,7 +147,10 @@ class ComponentSourceOwnershipTests(unittest.TestCase):
 class SizeGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = tomllib.loads(NEXTEST_TOML.read_text(encoding="utf-8"))
-        self.deadline = next(o for o in self.config["profile"]["default"]["overrides"] if "slow-timeout" in o)
+        self.deadline = next(
+            o for o in self.config["profile"]["default"]["overrides"]
+            if "slow-timeout" in o and "threads-required" not in o
+        )
         self.medium = self.deadline["filter"].strip()
 
     def test_pr_gate_excludes_the_shared_medium_and_large_expressions(self) -> None:

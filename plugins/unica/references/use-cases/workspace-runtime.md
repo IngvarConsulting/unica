@@ -136,10 +136,21 @@ source-set path itself has no stronger structural evidence.
 | Build a `.cf`/`.cfe`/`.epf`/`.erf` from sources | `make`, `output`; for CF/CFE optional `sourceSet` and `extension` (CFE); EPF/ERF require `sourceSet` naming a singleton matching Designer external source set and a declared main configuration |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
-| Launch a 1C client | `launch`, `clientMode`, optional `execute`; `waitForExit` with `waitTimeoutMs` supports `thin` + `.epf`; terminal, no preview required |
+| Launch a 1C client | `launch`, `clientMode`, optional `execute` and `applicationParameter`; bounded `waitForExit` with `waitTimeoutMs` supports `thin` + `.epf` or an explicit application parameter; terminal, no preview required |
 | Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
 | Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
 | Apply or discard pending configuration changes | `apply` and `reset` — unavailable until the runner supports them ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
+
+For `launch`, `applicationParameter` passes one exact `/C` string to an enterprise
+client. Empty is distinct from omitted; NUL and `designer` are rejected. It may
+accompany `execute`; when waiting, that file must be `.epf`. Inspect `wait.exitCode`
+and `wait.timedOut`: completion alone does not prove an application update succeeded.
+The parameter and raw runner command are not echoed in the response. The pinned
+runner encodes the value for the 1C command-line parser on every OS, so quotes,
+spaces, tabs, line breaks and `/Execute` inside it reach `ПараметрЗапуска` as
+exactly one value and never become another launch key; an external processor
+opens only through `execute`. Delivery of 23 values, empty and quote-boundary ones
+included, is live-verified on macOS 8.3.27.2074; Windows and Linux are not measured live.
 
 A previewApply operation requires explicit boolean `dryRun`: `true` shows the
 plan without execution, and `false` executes using the current inputs. The API

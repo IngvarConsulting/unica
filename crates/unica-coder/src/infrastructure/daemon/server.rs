@@ -6054,7 +6054,10 @@ fn main() {
         std::fs::create_dir(root.join("src")).unwrap();
         std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
         for n in 0..extensions {
-            let path = format!("ext{n:02}{}", "x".repeat(200));
+            // Long set roots make each group heavy enough to stop a page by
+            // bytes; deeper than 150 characters Git for Windows refuses the
+            // paths without `core.longpaths` once the temporary root is added.
+            let path = format!("ext{n:02}{}", "x".repeat(150));
             project.push_str(&format!(
                 "  - name: ext{n:02}\n    type: EXTENSION\n    path: {path}\n"
             ));

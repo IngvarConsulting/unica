@@ -182,12 +182,35 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
     std::fs::write(source.join(module), retained_bsl).unwrap();
     std::fs::create_dir_all(source.join(sidecar).parent().unwrap()).unwrap();
     std::fs::write(source.join(sidecar), b"\0\xffform sidecar\r\n").unwrap();
+    // #2144: the owner is a CRLF file whose text value holds a bare LF, as the
+    // platform writes multi-line texts; form.set changes only its own slot.
+    // Every element sits on its own CRLF line, as in a platform export.
+    let owner = source.join("Documents/Order.xml");
+    let crlf_owner = std::fs::read_to_string(&owner)
+        .unwrap()
+        .replace("><", ">\r\n<")
+        .replacen(
+            "<Comment/>",
+            "<Comment>first line\nsecond line</Comment>",
+            1,
+        );
+    let crlf_owner = format!("\u{feff}{}", crlf_owner.trim_start_matches('\u{feff}'));
+    std::fs::write(&owner, &crlf_owner).unwrap();
     let prepared = unica_workspace::test_support::tree_snapshot(&source);
     apply_pair(
         "main:Document.Order",
         serde_json::json!([{"op":"form.set","args":{"values":{"defaultChoiceForm":"Main"}}}]),
     );
     let mut image = assert_exact_effects(&source, &prepared, &[], &["Documents/Order.xml"], &[]);
+    assert_eq!(
+        std::fs::read_to_string(&owner).unwrap(),
+        crlf_owner.replacen(
+            "<DefaultChoiceForm/>",
+            "<DefaultChoiceForm>Document.Order.Form.Main</DefaultChoiceForm>",
+            1
+        ),
+        "form.set rewrote bytes outside its own slot"
+    );
     let (forms, slots) = owner_forms_and_slots(&source);
     assert_eq!(forms, ["Main"]);
     assert_eq!(slots["DefaultObjectForm"], "Document.Order.Form.Main");

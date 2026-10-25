@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Independent reduced reproduction of the form structure in #1575; not a platform export. -->
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <ChildItems><InputField name="ДополнительныеРеквизитыКонтрагент" id="1"><DataPath>ДополнительныеРеквизиты.Контрагент</DataPath></InputField></ChildItems>
+  <Attributes>
+    <Attribute name="ДополнительныеРеквизиты" id="1"><Type><v8:Type>v8:ValueTable</v8:Type></Type></Attribute>
+    <Attribute name="А" id="2"><Type><v8:Type>xs:string</v8:Type></Type></Attribute>
+    <Attribute name="Б" id="3"><Type><v8:Type>xs:boolean</v8:Type></Type></Attribute>
+    <Attribute name="В" id="4"><Type><v8:Type>xs:decimal</v8:Type></Type></Attribute>
+    <ConditionalAppearance>
+      <dcsset:item>
+        <dcsset:selection><dcsset:item><dcsset:field>ДополнительныеРеквизитыКонтрагент</dcsset:field></dcsset:item></dcsset:selection>
+        <dcsset:filter><dcsset:item xsi:type="dcsset:FilterItemComparison"><dcsset:left xsi:type="dcscor:Field">ДополнительныеРеквизиты.Контрагент</dcsset:left><dcsset:comparisonType>NotFilled</dcsset:comparisonType></dcsset:item></dcsset:filter>
+        <dcsset:appearance>
+          <dcscor:item xsi:type="dcsset:SettingsParameterValue"><dcscor:parameter>ЦветТекста</dcscor:parameter><dcscor:value xsi:type="v8ui:Color">win:DisabledText</dcscor:value></dcscor:item>
+          <dcscor:item xsi:type="dcsset:SettingsParameterValue"><dcscor:parameter>Текст</dcscor:parameter><dcscor:value xsi:type="v8:LocalStringType"><v8:item><v8:lang>ru</v8:lang><v8:content>Все контрагенты</v8:content></v8:item></dcscor:value></dcscor:item>
+        </dcsset:appearance>
+      </dcsset:item>
+    </ConditionalAppearance>
+  </Attributes>
+</Form>
