@@ -2036,6 +2036,32 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// #1119: a child tree past the former 64 MiB is read whole; its size is
+    /// no reason to refuse.
+    #[test]
+    fn typed_child_tree_reads_past_the_former_byte_cap() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-child-large-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        std::fs::write(root.join("Ext/small.bin"), b"x").unwrap();
+        std::fs::File::create(root.join("large.bin"))
+            .unwrap()
+            .set_len(65 * 1024 * 1024)
+            .unwrap();
+
+        let (read, _) = read_typed_child_tree(&root).unwrap();
+
+        assert_eq!(read.len(), 2);
+        let large = read
+            .iter()
+            .find(|(path, _)| path == std::path::Path::new("large.bin"))
+            .unwrap();
+        assert_eq!(large.1.len(), 65 * 1024 * 1024);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn typed_operations_are_ordered_support_scoped_attributes_and_emit_structured_types() {
         let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");

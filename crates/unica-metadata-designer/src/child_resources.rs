@@ -1108,7 +1108,6 @@ pub fn read_typed_child_tree(
         depth: usize,
         files: &mut Vec<(PathBuf, Vec<u8>)>,
         directories: &mut Vec<PathBuf>,
-        budget: &mut TypedChildTreeBudget,
     ) -> Result<(), TypedChildTreeError> {
         if depth > TYPED_CHILD_TREE_MAX_DEPTH {
             return Err(TypedChildTreeError::Unavailable);
@@ -1118,11 +1117,6 @@ pub fn read_typed_child_tree(
             .map_err(|_| TypedChildTreeError::Unavailable)?;
         for entry in entries {
             let entry = entry.map_err(|_| TypedChildTreeError::Unavailable)?;
-            budget.entries = budget
-                .entries
-                .checked_add(1)
-                .filter(|count| *count <= TYPED_CHILD_TREE_MAX_ENTRIES)
-                .ok_or(TypedChildTreeError::Unavailable)?;
             let file_type = entry
                 .file_type()
                 .map_err(|_| TypedChildTreeError::Unavailable)?;
@@ -1131,36 +1125,15 @@ pub fn read_typed_child_tree(
             }
             if file_type.is_dir() {
                 directories.push(entry.path().strip_prefix(root).unwrap().to_path_buf());
-                visit(
-                    reader,
-                    root,
-                    &entry.path(),
-                    depth + 1,
-                    files,
-                    directories,
-                    budget,
-                )?;
+                visit(reader, root, &entry.path(), depth + 1, files, directories)?;
             } else if file_type.is_file() {
-                budget.files = budget
-                    .files
-                    .checked_add(1)
-                    .filter(|count| *count <= TYPED_CHILD_TREE_MAX_FILES)
-                    .ok_or(TypedChildTreeError::Unavailable)?;
                 let path = entry.path();
-                let remaining = TYPED_CHILD_TREE_MAX_BYTES
-                    .checked_sub(budget.bytes)
-                    .ok_or(TypedChildTreeError::Unavailable)?;
                 let mut bytes = Vec::new();
                 reader
                     .open_input(&path)
                     .map_err(|_| TypedChildTreeError::Unavailable)?
-                    .take((remaining as u64).saturating_add(1))
                     .read_to_end(&mut bytes)
                     .map_err(|_| TypedChildTreeError::Unavailable)?;
-                if bytes.len() > remaining {
-                    return Err(TypedChildTreeError::Unavailable);
-                }
-                budget.bytes += bytes.len();
                 files.push((path.strip_prefix(root).unwrap().to_path_buf(), bytes));
             } else {
                 return Err(TypedChildTreeError::UnsupportedNode);
@@ -1170,15 +1143,7 @@ pub fn read_typed_child_tree(
     }
     let mut files = Vec::new();
     let mut directories = vec![PathBuf::new()];
-    visit(
-        reader,
-        root,
-        root,
-        0,
-        &mut files,
-        &mut directories,
-        &mut TypedChildTreeBudget::default(),
-    )?;
+    visit(reader, root, root, 0, &mut files, &mut directories)?;
     files.sort_by(|left, right| left.0.cmp(&right.0));
     directories.sort();
     Ok((files, directories))
@@ -1303,16 +1268,3 @@ impl TypedChildTreeError {
 pub type TypedChildTree = (Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>);
 
 const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;
-
-const TYPED_CHILD_TREE_MAX_ENTRIES: usize = 20_000;
-
-const TYPED_CHILD_TREE_MAX_FILES: usize = 20_000;
-
-const TYPED_CHILD_TREE_MAX_BYTES: usize = 64 * 1024 * 1024;
-
-#[derive(Default)]
-struct TypedChildTreeBudget {
-    entries: usize,
-    files: usize,
-    bytes: usize,
-}
