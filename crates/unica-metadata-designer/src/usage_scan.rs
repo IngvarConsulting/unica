@@ -25,17 +25,38 @@ use unica_metadata::{
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_work_control::cancellation::CancellationToken;
 
-/// Largest single descriptor the usage scan will read.
-const USAGE_FILE_MAX_BYTES: usize = 8 * 1024 * 1024;
-
-/// Largest number of descriptors one section will open.
+/// Source files a section could not read, so its list may miss entries.
 ///
-/// The dump this was measured against holds 2172 role right-sets, so the bound
-/// is set well above a real configuration and exists to stop a pathological
-/// tree, not to shape ordinary answers. A section that hits it reports what it
-/// found rather than failing: an incomplete usage list is still useful, and the
-/// caller can see the count.
-const USAGE_SECTION_MAX_FILES: usize = 8192;
+/// The entries that were read are kept, and the gap is an error naming the
+/// files, as for any other unavailable child resource: a list that silently
+/// skipped them would claim to be complete (#1119).
+#[derive(Default)]
+struct SectionGaps(Vec<String>);
+
+impl SectionGaps {
+    fn note(&mut self, source_root: &Path, path: &Path) {
+        let relative = path.strip_prefix(source_root).unwrap_or(path);
+        self.0.push(relative.to_string_lossy().replace('\\', "/"));
+    }
+
+    fn report(self, field: &str, metadata_path: &MetadataAddress) -> Option<MetaDiagnostic> {
+        if self.0.is_empty() {
+            return None;
+        }
+        Some(
+            MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                format!(
+                    "{field} is incomplete: {} source file(s) cannot be read: {}",
+                    self.0.len(),
+                    self.0.join(", ")
+                ),
+            )
+            .with_metadata_path(metadata_path.clone())
+            .with_field(field),
+        )
+    }
+}
 
 /// What a local read adds to a metadata answer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -83,24 +104,47 @@ pub fn scan_local_enrichment(
         .expect("a parsed metadata address has an object name");
     let mut enrichment = LocalEnrichment::default();
     if sections.contains(&LocalSection::Roles) && !cancellation.is_cancelled() {
-        enrichment.usage.roles = Some(scan_roles(reader, resources, source_root, target));
-    }
-    if sections.contains(&LocalSection::FunctionalOptions) && !cancellation.is_cancelled() {
-        enrichment.usage.functional_options = Some(scan_functional_options(
+        let mut gaps = SectionGaps::default();
+        enrichment.usage.roles = scan_roles(
             reader,
             resources,
             source_root,
             target,
-        ));
+            &mut gaps,
+            cancellation,
+        );
+        enrichment
+            .diagnostics
+            .extend(gaps.report("roles", metadata_path));
+    }
+    if sections.contains(&LocalSection::FunctionalOptions) && !cancellation.is_cancelled() {
+        let mut gaps = SectionGaps::default();
+        enrichment.usage.functional_options = scan_functional_options(
+            reader,
+            resources,
+            source_root,
+            target,
+            &mut gaps,
+            cancellation,
+        );
+        enrichment
+            .diagnostics
+            .extend(gaps.report("functionalOptions", metadata_path));
     }
     if sections.contains(&LocalSection::Subscriptions) && !cancellation.is_cancelled() {
-        enrichment.usage.subscriptions = Some(scan_subscriptions(
+        let mut gaps = SectionGaps::default();
+        enrichment.usage.subscriptions = scan_subscriptions(
             reader,
             resources,
             source_root,
             kind,
             name,
-        ));
+            &mut gaps,
+            cancellation,
+        );
+        enrichment
+            .diagnostics
+            .extend(gaps.report("subscriptions", metadata_path));
     }
     if sections.contains(&LocalSection::PredefinedItems) && !cancellation.is_cancelled() {
         if !unica_metadata::metadata_kind_collections(kind)
@@ -145,14 +189,20 @@ fn scan_roles(
     resources: &dyn PredefinedResourceRead,
     source_root: &Path,
     target: &str,
-) -> Vec<Value> {
+    gaps: &mut SectionGaps,
+    cancellation: &CancellationToken,
+) -> Option<Vec<Value>> {
     let mut found = BTreeSet::new();
-    for (role, path) in child_directories(reader, source_root, "Roles") {
+    for (role, path) in child_directories(reader, source_root, "Roles", gaps) {
+        if cancellation.is_cancelled() {
+            return None;
+        }
         let rights = path.join("Ext").join("Rights.xml");
-        let Some(text) = read_descriptor(resources, source_root, &rights) else {
+        let Some(text) = read_descriptor(resources, source_root, &rights, gaps) else {
             continue;
         };
         let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
+            gaps.note(source_root, &rights);
             continue;
         };
         let referenced = document
@@ -164,10 +214,12 @@ fn scan_roles(
             found.insert(role);
         }
     }
-    found
-        .into_iter()
-        .map(|role| json!({"name": format!("Role.{role}")}))
-        .collect()
+    Some(
+        found
+            .into_iter()
+            .map(|role| json!({"name": format!("Role.{role}")}))
+            .collect(),
+    )
 }
 
 /// Functional options whose content includes the object.
@@ -181,13 +233,19 @@ fn scan_functional_options(
     resources: &dyn PredefinedResourceRead,
     source_root: &Path,
     target: &str,
-) -> Vec<Value> {
+    gaps: &mut SectionGaps,
+    cancellation: &CancellationToken,
+) -> Option<Vec<Value>> {
     let mut found = BTreeSet::new();
-    for (option, path) in child_descriptors(reader, source_root, "FunctionalOptions") {
-        let Some(text) = read_descriptor(resources, source_root, &path) else {
+    for (option, path) in child_descriptors(reader, source_root, "FunctionalOptions", gaps) {
+        if cancellation.is_cancelled() {
+            return None;
+        }
+        let Some(text) = read_descriptor(resources, source_root, &path, gaps) else {
             continue;
         };
         let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
+            gaps.note(source_root, &path);
             continue;
         };
         let controls = document
@@ -201,10 +259,12 @@ fn scan_functional_options(
             found.insert(option);
         }
     }
-    found
-        .into_iter()
-        .map(|option| json!({"name": format!("FunctionalOption.{option}")}))
-        .collect()
+    Some(
+        found
+            .into_iter()
+            .map(|option| json!({"name": format!("FunctionalOption.{option}")}))
+            .collect(),
+    )
 }
 
 /// Event subscriptions whose source includes the object.
@@ -219,23 +279,30 @@ fn scan_subscriptions(
     source_root: &Path,
     kind: MetadataKind,
     name: &str,
-) -> Vec<Value> {
+    gaps: &mut SectionGaps,
+    cancellation: &CancellationToken,
+) -> Option<Vec<Value>> {
     let spellings = metadata_kind_value_types(kind);
     if spellings.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
     }
     let direct = spellings
         .iter()
         .map(|spelling| format!("{spelling}.{name}"))
         .collect::<BTreeSet<_>>();
-    let indirect = defined_types_including(reader, resources, source_root, &direct);
+    let indirect =
+        defined_types_including(reader, resources, source_root, &direct, gaps, cancellation)?;
 
     let mut found = Vec::new();
-    for (subscription, path) in child_descriptors(reader, source_root, "EventSubscriptions") {
-        let Some(text) = read_descriptor(resources, source_root, &path) else {
+    for (subscription, path) in child_descriptors(reader, source_root, "EventSubscriptions", gaps) {
+        if cancellation.is_cancelled() {
+            return None;
+        }
+        let Some(text) = read_descriptor(resources, source_root, &path, gaps) else {
             continue;
         };
         let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
+            gaps.note(source_root, &path);
             continue;
         };
         let Some(source) = document
@@ -287,7 +354,7 @@ fn scan_subscriptions(
         found.push(item);
     }
     found.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
-    found
+    Some(found)
 }
 
 /// Defined types whose own type list contains one of the object's spellings.
@@ -296,13 +363,19 @@ fn defined_types_including(
     resources: &dyn PredefinedResourceRead,
     source_root: &Path,
     direct: &BTreeSet<String>,
-) -> BTreeSet<String> {
+    gaps: &mut SectionGaps,
+    cancellation: &CancellationToken,
+) -> Option<BTreeSet<String>> {
     let mut including = BTreeSet::new();
-    for (defined, path) in child_descriptors(reader, source_root, "DefinedTypes") {
-        let Some(text) = read_descriptor(resources, source_root, &path) else {
+    for (defined, path) in child_descriptors(reader, source_root, "DefinedTypes", gaps) {
+        if cancellation.is_cancelled() {
+            return None;
+        }
+        let Some(text) = read_descriptor(resources, source_root, &path, gaps) else {
             continue;
         };
         let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
+            gaps.note(source_root, &path);
             continue;
         };
         let contains = document
@@ -315,7 +388,7 @@ fn defined_types_including(
             including.insert(defined);
         }
     }
-    including
+    Some(including)
 }
 
 /// Predefined items declared by the object itself.
@@ -333,7 +406,7 @@ fn read_predefined_items(
         .join(name)
         .join("Ext")
         .join("Predefined.xml");
-    let bytes = match resources.read_bounded_resource(source_root, &path, USAGE_FILE_MAX_BYTES) {
+    let bytes = match resources.read_whole_resource(source_root, &path) {
         Ok(read) => read,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(MetaPredefinedItemsData {
@@ -402,22 +475,51 @@ fn child_text(document: &Document<'_>, tag: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Every entry of `<root>/<group>`; an absent group has none, and a listing
+/// that cannot be read completely is a gap.
+fn group_entries(
+    reader: &dyn ProjectDiscoveryRead,
+    source_root: &Path,
+    group: &str,
+    gaps: &mut SectionGaps,
+) -> Vec<unica_source_contract::discovery::DiscoveryEntry> {
+    let directory = source_root.join(group);
+    let listing = match reader.read_entries(&directory) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(_) => {
+            gaps.note(source_root, &directory);
+            return Vec::new();
+        }
+    };
+    let mut entries = Vec::new();
+    for entry in listing {
+        match entry {
+            Ok(entry) => entries.push(entry),
+            Err(_) => {
+                gaps.note(source_root, &directory);
+                break;
+            }
+        }
+    }
+    entries
+}
+
 /// `<root>/<group>/<Name>.xml` descriptors, by name.
 fn child_descriptors(
     reader: &dyn ProjectDiscoveryRead,
     source_root: &Path,
     group: &str,
+    gaps: &mut SectionGaps,
 ) -> Vec<(String, PathBuf)> {
     let mut entries = Vec::new();
-    let Ok(listing) = reader.read_entries(&source_root.join(group)) else {
-        return entries;
-    };
-    for entry in listing.flatten().take(USAGE_SECTION_MAX_FILES) {
+    for entry in group_entries(reader, source_root, group, gaps) {
         let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("xml") {
+        if path.extension() != Some(std::ffi::OsStr::new("xml")) {
             continue;
         }
         let Some(name) = path.file_stem().and_then(|value| value.to_str()) else {
+            gaps.note(source_root, &path);
             continue;
         };
         entries.push((name.to_string(), path));
@@ -430,17 +532,21 @@ fn child_directories(
     reader: &dyn ProjectDiscoveryRead,
     source_root: &Path,
     group: &str,
+    gaps: &mut SectionGaps,
 ) -> Vec<(String, PathBuf)> {
     let mut entries = Vec::new();
-    let Ok(listing) = reader.read_entries(&source_root.join(group)) else {
-        return entries;
-    };
-    for entry in listing.flatten().take(USAGE_SECTION_MAX_FILES) {
+    for entry in group_entries(reader, source_root, group, gaps) {
         let path = entry.path();
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => {}
+            Ok(kind) if kind.is_file() => continue,
+            _ => {
+                gaps.note(source_root, &path);
+                continue;
+            }
         }
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            gaps.note(source_root, &path);
             continue;
         };
         entries.push((name.to_string(), path));
@@ -448,19 +554,29 @@ fn child_directories(
     entries
 }
 
-/// Read one descriptor bound to the source root, or skip it.
+/// Read one whole descriptor bound to the source root.
 ///
-/// A usage scan reports what the configuration says; it does not gate a
-/// mutation, so a descriptor that cannot be read is skipped rather than
-/// failing the whole answer. The read is still root-relative and bounded, so a
-/// link pointing out of the tree contributes nothing instead of being followed.
+/// The read is root-relative, so a link pointing out of the tree contributes
+/// nothing instead of being followed. An absent file has nothing to say; any
+/// other failure is a gap in the section, not a silent skip.
 fn read_descriptor(
     resources: &dyn PredefinedResourceRead,
     source_root: &Path,
     path: &Path,
+    gaps: &mut SectionGaps,
 ) -> Option<String> {
-    let read = resources
-        .read_bounded_resource(source_root, path, USAGE_FILE_MAX_BYTES)
-        .ok()?;
-    String::from_utf8(read).ok()
+    match resources.read_whole_resource(source_root, path) {
+        Ok(read) => match String::from_utf8(read) {
+            Ok(text) => Some(text),
+            Err(_) => {
+                gaps.note(source_root, path);
+                None
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => {
+            gaps.note(source_root, path);
+            None
+        }
+    }
 }

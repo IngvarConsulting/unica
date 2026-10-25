@@ -33,6 +33,7 @@ check:
 Поля `ready`, `discoveredReady`, `repositoryReady`, `readinessState`,
 `checks` и `diagnostics` принадлежат корневому `check` и в `view` не выдаются.
 Корневой `check` не возвращает перечень наборов или ревизию исходников.
+Группы диагностик приходят страницами по [контракту страниц check](check-diagnostic-pages.md).
 
 Неготовое рабочее пространство получает успешный ответ `check` с
 `status: "failed"` и диагностикой причины. Успешный `view` всегда предлагает

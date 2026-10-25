@@ -191,6 +191,8 @@ pub struct PlannedApplyEffects {
     /// Typed warnings a planner attaches to a plan that still executes: a
     /// forced removal names the files that keep referring to the object.
     warnings: Vec<serde_json::Value>,
+    /// Request operations that attached a warning, by their index in `ops`.
+    warned_operations: std::collections::BTreeSet<usize>,
     borrowing: Vec<BorrowPlanDetail>,
     /// Facts a family reports about the final plan, by the family's key. The
     /// contract carries the section without knowing its rows.
@@ -241,6 +243,16 @@ impl PlannedApplyEffects {
 
     pub fn push_warning(&mut self, warning: serde_json::Value) {
         self.warnings.push(warning);
+    }
+
+    /// A warning attached by one request operation, which the answer names.
+    pub fn push_operation_warning(&mut self, operation_index: usize, warning: serde_json::Value) {
+        self.warned_operations.insert(operation_index);
+        self.warnings.push(warning);
+    }
+
+    pub fn warned_operations(&self) -> &std::collections::BTreeSet<usize> {
+        &self.warned_operations
     }
 
     pub fn into_events(self) -> Vec<DomainEvent> {

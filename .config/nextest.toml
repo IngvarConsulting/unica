@@ -66,8 +66,11 @@ kind(test)
     | (binary(unica_coder) & test(/^infrastructure::daemon::receipt_runtime_tests::[^:]+$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::receipt_runtime_tests::idle_observation::[^:]+$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::server::(actor_capacity_tests|finite_deadline_guard)::/))
+    | (binary(unica_coder) & test(/^infrastructure::daemon::server::apply_large_input_tests::apply_edits_a_descriptor_larger_than_the_former_staging_bound$/))
+    | (binary(unica_coder) & test(/^infrastructure::daemon::server::apply_large_input_tests::object_remove_scans_a_module_larger_than_the_former_bound$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::server::external_cache_apply_tests::[^:]+$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::server::invocation_service::registration_cache_tests::logical_read_retains_root_artifacts_across_calls_and_isolates_sources$/))
+    | (binary(unica_coder) & test(/^infrastructure::daemon::server::stored_secret_tests::[^:]+$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::tests::canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::tests::daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::tests::injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities$/))
@@ -308,9 +311,11 @@ default-filter = '''(
     | (binary(unica_execution) & test(/^store::receipt_fork_tests::/))
     | (binary(unica_execution) & test(/^store::windows_durability_tests::/))
     | (binary(unica_forms_designer) & test(/^codec::tests::/))
+    | (binary(unica_forms_designer) & test(/^planner::dump_parity_tests::/))
     | (binary(unica_metadata_designer) & test(/^borrowed_enum_value::tests::/))
     | (binary(unica_metadata_designer) & test(/^borrowed_object::tests::/))
     | (binary(unica_metadata_designer) & test(/^configuration::tests::/))
+    | (binary(unica_metadata_designer) & test(/^edit::dump_parity_tests::/))
     | (binary(unica_metadata_designer) & test(/^edit::empty_child_objects_tests::/))
     | (binary(unica_metadata_designer) & test(/^extension::tests::/))
     | (binary(unica_metadata_designer) & test(/^info_projection::tests::/))
@@ -673,8 +678,11 @@ kind(test)
     | (binary(unica_coder) & test(/^infrastructure::daemon::receipt_runtime_tests::[^:]+$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::receipt_runtime_tests::idle_observation::[^:]+$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::server::(actor_capacity_tests|finite_deadline_guard)::/))
+    | (binary(unica_coder) & test(/^infrastructure::daemon::server::apply_large_input_tests::apply_edits_a_descriptor_larger_than_the_former_staging_bound$/))
+    | (binary(unica_coder) & test(/^infrastructure::daemon::server::apply_large_input_tests::object_remove_scans_a_module_larger_than_the_former_bound$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::server::external_cache_apply_tests::[^:]+$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::server::invocation_service::registration_cache_tests::logical_read_retains_root_artifacts_across_calls_and_isolates_sources$/))
+    | (binary(unica_coder) & test(/^infrastructure::daemon::server::stored_secret_tests::[^:]+$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::tests::canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::tests::daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it$/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::tests::injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities$/))
@@ -756,6 +764,24 @@ kind(test)
 '''
 slow-timeout = { period = "300s", terminate-after = 2 }
 # <<< размер medium (срок)
+
+# Тесты живого демона v5 поднимают каждый свой демон с хранилищем на диске и
+# собственными сроками шагов в 2 с. Без предела модуль сам перегружает машину,
+# и сроки демона истекают от голода процессора и fsync, а не от поведения
+# (#2111). Группа ограничивает только одновременность, сроки не меняются.
+[test-groups]
+receipt-runtime = { max-threads = 4 }
+
+# Гонка отмены со стартом задания держит отмену, пока задание стартует с
+# записью на диск; срок самой отмены — 2 с. Тест занимает машину целиком,
+# чтобы старт не делил её с соседями по прогону.
+[[profile.default.overrides]]
+filter = 'binary(unica_coder) & test(/^infrastructure::daemon::receipt_runtime_tests::(exact|task_id)_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled$/)'
+threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = 'binary(unica_coder) & test(/^infrastructure::daemon::receipt_runtime_tests::/)'
+test-group = "receipt-runtime"
 
 # Публичная задержка отмены при Windows Job attach должна остаться в логе
 # успешного прогона: общая длительность теста включает подготовку раннера.

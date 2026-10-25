@@ -156,10 +156,3 @@ fn symlink_targets_are_rejected() {
         unica_source_designer::registration::cf_edit_add_child_object_text,
     );
 }
-
-#[test]
-fn reference_scan_refuses_a_file_larger_than_the_per_file_budget() {
-    unica_workspace::apply::budget_contract_tests::reference_scan_refuses_a_file_larger_than_the_per_file_budget(
-        unica_metadata_designer::remove::META_REMOVE_REFERENCE_FILE_MAX_BYTES,
-    );
-}

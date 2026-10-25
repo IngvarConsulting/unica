@@ -1,4 +1,7 @@
 use super::protocol::InvocationRequest;
+use crate::application::v13::check::{
+    page_root_verdict, RootCheckQuestion, DEFAULT_CHECK_LIMIT, MAX_CHECK_LIMIT,
+};
 use unica_execution::invocation::{InvocationResponseDeadline, INVOCATION_HANDOFF_WINDOW};
 use unica_execution::invocation_store::ToolIdentity;
 use unica_project_health::evaluate_project_health;
@@ -14,6 +17,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use unica_address::address::QualifiedAddress;
 use unica_execution_contract::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
+use unica_navigation::result_store::ViewCursorStore;
 use unica_project_health::inspection::{
     inspect_project_health_continued,
     resources::{ResourceContinuation, RootCheckContinuationStore},
@@ -58,6 +62,9 @@ pub(super) struct PreparedWorkspaceInspection {
     response_deadline: InvocationResponseDeadline,
     workspace_identity_hash: SafeIdentityHash,
     continuation: Option<Arc<Mutex<ResourceContinuation>>>,
+    pages: Arc<ViewCursorStore>,
+    limit: usize,
+    cursor: Option<String>,
 }
 
 pub(super) enum Preparation {
@@ -70,6 +77,7 @@ pub(super) fn prepare(
     request: &InvocationRequest,
     response_deadline: InvocationResponseDeadline,
     continuations: &RootCheckContinuationStore,
+    pages: &Arc<ViewCursorStore>,
 ) -> Preparation {
     if request.arguments().contains_key("at") {
         return Preparation::NotApplicable;
@@ -79,25 +87,29 @@ pub(super) fn prepare(
         ToolIdentity::Check => RootQuestion::Verdict,
         _ => return Preparation::NotApplicable,
     };
-    if !request.arguments().is_empty() {
-        let (tool, summary) = match question {
-            RootQuestion::Facts => (
-                "unica.view",
-                "view limit and cursor require logical argument `at`; call unica.view with an empty object to inspect the workspace",
-            ),
-            RootQuestion::Verdict => (
-                "unica.check",
-                "check limit and cursor require `at`; call unica.check with an empty object for the workspace verdict",
-            ),
-        };
-        let mut result = DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary);
+    if question == RootQuestion::Facts && !request.arguments().is_empty() {
+        let mut result = DomainResult::canonical_rejection(
+            None,
+            RefusalCode::BadValue,
+            "view limit and cursor require logical argument `at`; call unica.view with an empty object to inspect the workspace",
+        );
         result.next.push(next_action(
-            tool,
+            "unica.view",
             Value::Object(Map::new()),
             "discover source sets and canonical logical addresses",
         ));
         return Preparation::Rejected(Box::new(result));
     }
+    let (limit, cursor) = match root_check_page(request.arguments()) {
+        Ok(page) => page,
+        Err(summary) => {
+            return Preparation::Rejected(Box::new(DomainResult::canonical_rejection(
+                None,
+                RefusalCode::BadValue,
+                summary,
+            )))
+        }
+    };
 
     let discovered =
         discover_workspace(Some(PathBuf::from(request.workspace_hint()))).and_then(|context| {
@@ -117,7 +129,8 @@ pub(super) fn prepare(
     let mut hasher = Sha256::new();
     hasher.update(b"unica-v13-workspace-inspection-v1\0");
     hasher.update(canonical_root.as_os_str().as_encoded_bytes());
-    let continuation = (question == RootQuestion::Verdict)
+    // A continuation reads the saved verdict and inspects nothing.
+    let continuation = (question == RootQuestion::Verdict && cursor.is_none())
         .then(|| continuations.for_workspace(&canonical_root))
         .flatten();
     Preparation::Ready(Arc::new(PreparedWorkspaceInspection {
@@ -128,7 +141,39 @@ pub(super) fn prepare(
         response_deadline,
         workspace_identity_hash: SafeIdentityHash::from_sha256(hasher.finalize().into()),
         continuation,
+        pages: Arc::clone(pages),
+        limit,
+        cursor,
     }))
+}
+
+/// The page a root check asks for: `limit` and `cursor`, nothing else. An
+/// empty or null cursor is omitted before this point and opens page one.
+fn root_check_page(arguments: &Map<String, Value>) -> Result<(usize, Option<String>), String> {
+    if let Some(unknown) = arguments
+        .keys()
+        .find(|name| !matches!(name.as_str(), "limit" | "cursor"))
+    {
+        return Err(format!(
+            "root check does not accept `{unknown}`; call unica.check with an empty object for the workspace verdict"
+        ));
+    }
+    let limit = match arguments.get("limit") {
+        None => DEFAULT_CHECK_LIMIT,
+        Some(value) => value
+            .as_u64()
+            .and_then(|limit| usize::try_from(limit).ok())
+            .filter(|limit| (1..=MAX_CHECK_LIMIT).contains(limit))
+            .ok_or_else(|| {
+                format!("check limit must be an integer from 1 through {MAX_CHECK_LIMIT}")
+            })?,
+    };
+    let cursor = match arguments.get("cursor") {
+        None => None,
+        Some(Value::String(cursor)) => Some(cursor.clone()),
+        Some(_) => return Err("check cursor must be a string".to_string()),
+    };
+    Ok((limit, cursor))
 }
 
 impl PreparedWorkspaceInspection {
@@ -144,8 +189,21 @@ impl PreparedWorkspaceInspection {
         &self,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
+        let question = RootCheckQuestion::new(self.workspace_identity_hash.as_str(), self.limit);
+        if let Some(cursor) = &self.cursor {
+            check_cancellation(&cancellation)?;
+            return Ok(page_root_verdict(
+                &self.pages,
+                &question,
+                None,
+                Some(cursor),
+            ));
+        }
         let mut result = self.inspect(cancellation)?;
         annotate_workspace_origin(&mut result, &self.requested_directory, self.origin.as_ref());
+        if self.question == RootQuestion::Verdict {
+            result = page_root_verdict(&self.pages, &question, Some(result), None);
+        }
         Ok(result)
     }
 
@@ -1027,6 +1085,7 @@ mod tests {
             &request,
             InvocationResponseDeadline::capture(Arc::new(TokioClock)),
             &RootCheckContinuationStore::default(),
+            &Default::default(),
         ) else {
             panic!("root check must prepare");
         };
@@ -1126,6 +1185,7 @@ mod tests {
                 &request,
                 InvocationResponseDeadline::capture(Arc::new(TokioClock)),
                 &store,
+                &Default::default(),
             ) else {
                 panic!("root check must prepare");
             };
@@ -1182,6 +1242,7 @@ mod tests {
             &request,
             InvocationResponseDeadline::capture(Arc::new(TokioClock)),
             &continuations,
+            &Default::default(),
         ) else {
             panic!("first root check must prepare");
         };
@@ -1201,6 +1262,7 @@ mod tests {
             &request,
             InvocationResponseDeadline::capture(Arc::new(TokioClock)),
             &continuations,
+            &Default::default(),
         ) else {
             panic!("repeated root check must prepare");
         };
@@ -1245,6 +1307,7 @@ mod tests {
             &request,
             InvocationResponseDeadline::capture(Arc::new(TokioClock)),
             &continuations,
+            &Default::default(),
         ) else {
             panic!("root check must prepare");
         };
@@ -1313,6 +1376,7 @@ mod tests {
                 &request,
                 InvocationResponseDeadline::capture(Arc::new(TokioClock)),
                 &continuations,
+                &Default::default(),
             ) else {
                 panic!("root check must prepare");
             };
@@ -1373,6 +1437,7 @@ mod tests {
             &request,
             InvocationResponseDeadline::capture(Arc::new(TokioClock)),
             &RootCheckContinuationStore::default(),
+            &Default::default(),
         ) else {
             panic!("root check must prepare even for a broken index");
         };
@@ -1439,6 +1504,7 @@ mod tests {
                     &request,
                     InvocationResponseDeadline::capture(clock.clone()),
                     &continuations,
+                    &Default::default(),
                 ) else {
                     panic!("root inspection must prepare before response handoff");
                 };
@@ -1502,6 +1568,7 @@ mod tests {
             &request,
             InvocationResponseDeadline::capture(Arc::new(TokioClock)),
             &RootCheckContinuationStore::default(),
+            &Default::default(),
         ) else {
             panic!("root inspection must prepare before source admission");
         };

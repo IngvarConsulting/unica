@@ -119,7 +119,7 @@ fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_rece
     // actual response-deadline capture may satisfy the strict observer.
     clock_reads.store(0, Ordering::SeqCst);
     let before = receipt_actor_for_fixture(&runtime)
-        .generation(Instant::now() + Duration::from_secs(2))
+        .generation(Instant::now() + TEST_STEP)
         .expect("read receipt generation before strict refusal");
     let foreign: CoreIdentity = "ab".repeat(32).parse().expect("foreign core identity");
     assert_ne!(foreign, identity);
@@ -133,7 +133,7 @@ fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_rece
             entered: Arc::clone(&entered),
         },
         1_000,
-        Instant::now() + Duration::from_secs(2),
+        Instant::now() + TEST_STEP,
     );
     assert!(matches!(
         submitted,
@@ -143,7 +143,7 @@ fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_rece
     assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
     assert_eq!(
         receipt_actor_for_fixture(&runtime)
-            .generation(Instant::now() + Duration::from_secs(2))
+            .generation(Instant::now() + TEST_STEP)
             .expect("read receipt generation after strict refusal"),
         before,
         "strict refusal must not reserve an attempt"
@@ -217,6 +217,13 @@ impl Clock for InspectionClock {
 /// Far past the former 120 s operation budget and the former 2 s fail-stop
 /// grace: no automatic cutoff may fire at this reading (#1251).
 const FAR_PAST_FORMER_DEADLINES_MS: u64 = 600_000;
+
+/// A protective bound for one test step on the wall clock: how long a test
+/// waits for the daemon, a channel or a socket before it calls the step lost,
+/// and the deadline of a fixture call whose timing the test does not check.
+/// No deadline under test takes it, so a loaded machine slows a test down
+/// instead of failing it (#2111).
+const TEST_STEP: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct InspectionHooks {
@@ -363,7 +370,7 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
         .elapsed_ms
         .store(FAR_PAST_FORMER_DEADLINES_MS, Ordering::SeqCst);
     let independent = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .map_err(|error| error.to_string())
         .and_then(|mut peer| {
             peer.submit_invocation(
@@ -396,9 +403,21 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
         matches!(receipt.terminal(), ReceiptTerminalOutcome::Completed { result } if result.ok)
     );
 
-    let settled = owner
-        .wait_task(task_id, 7_000)
-        .expect("same root task remains reachable");
+    // One wait is bounded by the protocol's 7 s; a loaded machine may need
+    // several before the inspection ends.
+    let until = Instant::now() + TEST_STEP;
+    let settled = loop {
+        let settled = owner
+            .wait_task(task_id, 7_000)
+            .expect("same root task remains reachable");
+        if !matches!(
+            &settled,
+            V5ServerResponse::Task { snapshot } if !task_snapshot_is_terminal(snapshot)
+        ) || Instant::now() >= until
+        {
+            break settled;
+        }
+    };
     let V5ServerResponse::Task {
         snapshot:
             V5DaemonTaskSnapshot::Completed {
@@ -450,6 +469,134 @@ fn root_view_keeps_the_same_task_and_daemon_past_the_former_deadlines() {
 #[test]
 fn root_check_completes_the_whole_inspection_in_its_task() {
     root_inspection_survives_response_cutoff(V5ToolIdentity::Check);
+}
+
+/// #1119 (9c): a root check page is the same whether the daemon answers
+/// directly or hands the call to a Task, and a cursor from either path
+/// continues on the other. Each page is one call; the Task stores that page.
+#[test]
+fn root_check_pages_are_the_same_through_a_task_and_a_direct_call() {
+    let state = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(state.path()).unwrap();
+    let workspace =
+        crate::infrastructure::daemon::server::actor_capacity_tests::root_check_groups_fixture(2);
+    let workspace_root = std::fs::canonicalize(workspace.path()).unwrap();
+    let pause = RootInspectionPause::install(workspace_root.clone());
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        Arc::new(SourceAdmissionProbe::default()),
+        clock.clone(),
+    ));
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(30),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(Arc::new(InspectionHooks::default()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            (config).into_transport_config(),
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    let daemon = InspectionDaemon {
+        pause,
+        stop,
+        server: Some(server),
+    };
+    wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let request = |task_id, arguments: serde_json::Value| {
+        V5InvocationRequest::new(
+            InvocationId::new(),
+            task_id,
+            V5ToolIdentity::Check,
+            arguments.as_object().unwrap().clone(),
+            unica_bootstrap::ResolvedWorkspace::launch_cwd(
+                workspace_root.to_string_lossy().into_owned(),
+            ),
+            7_000,
+        )
+        .unwrap()
+    };
+    let direct = |owner: &mut V5DaemonProcessOwner, arguments| {
+        let response = owner
+            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .unwrap()
+            .submit_invocation(request(TaskId::new(), arguments))
+            .unwrap();
+        let V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Direct { receipt },
+        } = response
+        else {
+            panic!("the call did not complete directly");
+        };
+        let ReceiptTerminalOutcome::Completed { result } = receipt.terminal() else {
+            panic!("the direct call did not complete");
+        };
+        result.clone()
+    };
+
+    let first_page = serde_json::json!({"limit": 1});
+    let task_id = TaskId::new();
+    let submitted = {
+        let invocation = request(task_id, first_page.clone());
+        let mut submitter = owner
+            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        thread::spawn(move || submitter.submit_invocation(invocation))
+    };
+    daemon.pause.wait_until_entered();
+    clock.elapsed_ms.store(7_000, Ordering::SeqCst);
+    let V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Task { .. },
+    } = submitted.join().unwrap().unwrap()
+    else {
+        panic!("the paused root check did not hand off to a task");
+    };
+    daemon.pause.release();
+    // Under load the inspection may outlast one wait; the Task stays the same.
+    let tasked = (0..10)
+        .find_map(|_| match owner.wait_task(task_id, 7_000).unwrap() {
+            V5ServerResponse::Task {
+                snapshot: V5DaemonTaskSnapshot::Completed { result, .. },
+            } => Some(result),
+            _ => None,
+        })
+        .expect("the root check task did not complete");
+    let answered = direct(&mut owner, first_page);
+    assert!(tasked.ok, "{tasked:?}");
+    assert_eq!(
+        serde_json::to_vec(&tasked).unwrap(),
+        serde_json::to_vec(&answered).unwrap(),
+        "a Task and a direct call deliver the same first page"
+    );
+    let cursor = tasked.cursor.clone().expect("the first page is cut");
+    let next = direct(
+        &mut owner,
+        serde_json::json!({"limit": 1, "cursor": cursor}),
+    );
+    assert!(next.ok, "{next:?}");
+    assert_ne!(next.data, tasked.data, "the continuation moves on");
+    assert_eq!(
+        next.data.as_ref().unwrap()["diagnosticCount"],
+        tasked.data.as_ref().unwrap()["diagnosticCount"]
+    );
+    assert_eq!(daemon.pause.entries(), 2, "continuations inspect nothing");
 }
 
 #[test]
@@ -564,7 +711,7 @@ fn cancel_during_actor_admission_after_handoff_never_begins_and_keeps_the_daemon
     );
 
     let independent = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .map_err(|error| error.to_string())
         .and_then(|mut peer| {
             peer.submit_invocation(
@@ -727,7 +874,7 @@ fn committed_canonical_apply_and_saved_replay_keep_their_receipts_after_task_can
             },
         )));
         assert_eq!(initial.task_id(), invocation.reserved_task_id());
-        let result = results.recv_timeout(Duration::from_secs(5)).unwrap();
+        let result = results.recv_timeout(TEST_STEP).unwrap();
         assert!(
             result.ok,
             "{attempt}: canonical Apply must finish before the safe point"
@@ -990,15 +1137,25 @@ fn cancel_task_signals_the_running_v5_canonical_execution() {
         } => task_id,
         other => panic!("known-long submission did not return Working: {other:?}"),
     };
-    if entered_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+    if entered_rx.recv_timeout(TEST_STEP).is_err() {
         let snapshot = owner.get_task(task_id).expect("inspect stalled Task");
         panic!("canonical execution did not enter: {snapshot:?}");
     }
 
     owner.cancel_task(task_id).expect("cancel running Task");
-    let terminal = owner
-        .wait_task(task_id, 7_000)
-        .expect("wait for cancellation");
+    let until = Instant::now() + TEST_STEP;
+    let terminal = loop {
+        let terminal = owner
+            .wait_task(task_id, 7_000)
+            .expect("wait for cancellation");
+        if !matches!(
+            &terminal,
+            V5ServerResponse::Task { snapshot } if !task_snapshot_is_terminal(snapshot)
+        ) || Instant::now() >= until
+        {
+            break terminal;
+        }
+    };
     assert!(matches!(
         terminal,
         V5ServerResponse::Task {
@@ -1317,6 +1474,50 @@ fn commit_uncertain_is_returned_before_process_owned_fail_stop_retains_endpoint(
     );
 }
 
+/// A submit's answer is due at its own response budget plus one
+/// serialization margin, computed once from receipt. The largest
+/// budget a submit may carry keeps that deadline under the 10 s safety cap,
+/// so the cap never shortens it.
+#[test]
+fn submit_response_deadline_is_its_budget_plus_one_margin_under_the_safety_cap() {
+    let submit = |budget_ms: u64| {
+        V5InvocationRequest::new(
+            InvocationId::new(),
+            TaskId::new(),
+            V5ToolIdentity::View,
+            serde_json::Map::new(),
+            unica_bootstrap::ResolvedWorkspace::launch_cwd("workspace-a".to_owned()),
+            budget_ms,
+        )
+    };
+    for budget_ms in [0, 100, 7_000] {
+        let decoded = decode_v5_request_frame(
+            serde_json::to_vec(&V5ClientRequest::SubmitInvocation {
+                invocation: submit(budget_ms).unwrap(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let received = Instant::now();
+        let deadlines = v5_request_deadlines(&decoded, received).unwrap();
+        assert_eq!(
+            deadlines.operation().duration_since(received),
+            Duration::from_millis(budget_ms),
+            "{budget_ms}: the operation keeps its budget"
+        );
+        assert_eq!(
+            deadlines.response().duration_since(deadlines.operation()),
+            RESPONSE_SERIALIZATION_MARGIN,
+            "{budget_ms}: the answer gets exactly one margin"
+        );
+        assert!(
+            deadlines.response().duration_since(received) < Duration::from_secs(10),
+            "{budget_ms}: the safety cap does not shorten the answer"
+        );
+    }
+    assert!(submit(7_001).is_err(), "no submit budget reaches the cap");
+}
+
 #[test]
 fn running_mutation_timeout_preserves_response_margin_or_closes_after_it() {
     let root = tempfile::tempdir().expect("temporary timeout fail-stop state root");
@@ -1383,7 +1584,7 @@ fn running_mutation_timeout_preserves_response_margin_or_closes_after_it() {
     let response = owner.cancel_invocation(key);
     let response_completed_at = Instant::now();
     let operation_deadline = operation_deadline_rx
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(TEST_STEP)
         .expect("observe the live cancel operation deadline")
         .as_instant()
         .expect("existing runtime deadline is finite");
@@ -1649,11 +1850,11 @@ fn cancel_existing_reserved_receipt_returns_the_typed_pending_winner() {
     );
     let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff");
     receipt_actor_for_fixture(&runtime)
-        .reserve(key.clone(), cutoff, Instant::now() + Duration::from_secs(2))
+        .reserve(key.clone(), cutoff, Instant::now() + TEST_STEP)
         .expect("reserve exact receipt");
 
     let reply = runtime
-        .cancel_invocation(key.clone(), 2_000, Instant::now() + Duration::from_secs(2))
+        .cancel_invocation(key.clone(), 2_000, Instant::now() + TEST_STEP)
         .expect("return the existing reserved winner");
 
     assert!(matches!(
@@ -1723,7 +1924,7 @@ fn startup_terminalizes_pre_task_receipts_without_replaying_domain_work() {
                 request_scope_hash("workspace-a").expect("request scope"),
             ),
         );
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + TEST_STEP;
         let reserved = receipt_actor_for_fixture(&runtime)
             .reserve(
                 key.clone(),
@@ -1775,7 +1976,7 @@ fn startup_terminalizes_pre_task_receipts_without_replaying_domain_work() {
         let reopened = V5ReceiptRuntime::open(&state, &(config).receipt_runtime_config())
             .expect("reconcile startup");
         let recovered = receipt_actor_for_fixture(&reopened)
-            .recover(key, Instant::now() + Duration::from_secs(2))
+            .recover(key, Instant::now() + TEST_STEP)
             .expect("read reconciled startup receipt");
         let ReceiptState::DirectTerminalUnacked(receipt) = recovered else {
             panic!("startup must publish one direct terminal")
@@ -1817,7 +2018,7 @@ fn startup_terminalizes_unbound_promised_task_without_task_store_create() {
                 request_scope_hash("workspace-a").expect("request scope"),
             ),
         );
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + TEST_STEP;
         let reserved = receipt_actor_for_fixture(&runtime)
             .reserve(
                 key.clone(),
@@ -1851,7 +2052,7 @@ fn startup_terminalizes_unbound_promised_task_without_task_store_create() {
         let reopened = V5ReceiptRuntime::open(&state, &(config).receipt_runtime_config())
             .expect("reconcile startup");
         let recovered = receipt_actor_for_fixture(&reopened)
-            .recover(key, Instant::now() + Duration::from_secs(2))
+            .recover(key, Instant::now() + TEST_STEP)
             .expect("read reconciled promised Task receipt");
         let ReceiptState::TaskTerminalReceiptBacked(receipt) = recovered else {
             panic!("startup must publish one receipt-backed Task terminal")
@@ -1886,7 +2087,7 @@ fn startup_materializes_and_terminalizes_actor_bound_promised_task() {
                 request_scope_hash("workspace-a").expect("request scope"),
             ),
         );
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + TEST_STEP;
         let reserved = receipt_actor_for_fixture(&runtime)
             .reserve(
                 key.clone(),
@@ -1928,15 +2129,11 @@ fn startup_materializes_and_terminalizes_actor_bound_promised_task() {
         let reopened = V5ReceiptRuntime::open(&state, &(config).receipt_runtime_config())
             .expect("reconcile startup");
         assert_eq!(
-            receipt_actor_for_fixture(&reopened)
-                .recover(key.clone(), Instant::now() + Duration::from_secs(2)),
+            receipt_actor_for_fixture(&reopened).recover(key.clone(), Instant::now() + TEST_STEP),
             Err(ReceiptLedgerError::ReceiptNotFound)
         );
         let snapshot = reopened
-            .resolve_task(
-                key.reserved_task_id(),
-                Instant::now() + Duration::from_secs(2),
-            )
+            .resolve_task(key.reserved_task_id(), Instant::now() + TEST_STEP)
             .expect("resolve recovered actor-bound Task");
         match (cancel_requested, snapshot) {
             (
@@ -1989,7 +2186,7 @@ fn startup_materializes_handoff_without_replaying_begun_work() {
                 request_scope_hash("workspace-a").expect("request scope"),
             ),
         );
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + TEST_STEP;
         let reserved = receipt_actor_for_fixture(&runtime)
             .reserve(
                 key.clone(),
@@ -2038,15 +2235,11 @@ fn startup_materializes_handoff_without_replaying_begun_work() {
         let reopened = V5ReceiptRuntime::open(&state, &(config).receipt_runtime_config())
             .expect("reconcile startup");
         assert_eq!(
-            receipt_actor_for_fixture(&reopened)
-                .recover(key.clone(), Instant::now() + Duration::from_secs(2)),
+            receipt_actor_for_fixture(&reopened).recover(key.clone(), Instant::now() + TEST_STEP),
             Err(ReceiptLedgerError::ReceiptNotFound)
         );
         let snapshot = reopened
-            .resolve_task(
-                key.reserved_task_id(),
-                Instant::now() + Duration::from_secs(2),
-            )
+            .resolve_task(key.reserved_task_id(), Instant::now() + TEST_STEP)
             .expect("resolve recovered handoff Task");
         match (phase, cancel_requested, snapshot) {
             (
@@ -2129,7 +2322,7 @@ fn startup_completes_handoff_whose_link_is_already_task_bound() {
                 request_scope_hash("workspace-a").expect("request scope"),
             ),
         );
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + TEST_STEP;
         let reserved = receipt_actor_for_fixture(&runtime)
             .reserve(
                 key.clone(),
@@ -2212,15 +2405,11 @@ fn startup_completes_handoff_whose_link_is_already_task_bound() {
                 )
             });
         assert_eq!(
-            receipt_actor_for_fixture(&reopened)
-                .recover(key.clone(), Instant::now() + Duration::from_secs(2)),
+            receipt_actor_for_fixture(&reopened).recover(key.clone(), Instant::now() + TEST_STEP),
             Err(ReceiptLedgerError::ReceiptNotFound)
         );
         let snapshot = reopened
-            .resolve_task(
-                key.reserved_task_id(),
-                Instant::now() + Duration::from_secs(2),
-            )
+            .resolve_task(key.reserved_task_id(), Instant::now() + TEST_STEP)
             .expect("resolve recovered bound handoff Task");
         match (phase, cancel_requested, snapshot) {
             (
@@ -2264,7 +2453,7 @@ fn startup_completes_handoff_whose_link_is_already_task_bound() {
             .get(
                 key.reserved_task_id(),
                 unica_work_control::provider_deadline::ProviderDeadline::new(
-                    Instant::now() + Duration::from_secs(2),
+                    Instant::now() + TEST_STEP,
                 ),
             )
             .expect("read recovered bound handoff Task");
@@ -2309,7 +2498,7 @@ fn startup_refuses_not_begun_handoff_whose_bound_task_is_working() {
             request_scope_hash("workspace-a").expect("request scope"),
         ),
     );
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + TEST_STEP;
     let reserved = receipt_actor_for_fixture(&runtime)
         .reserve(
             key.clone(),
@@ -2372,9 +2561,7 @@ fn startup_refuses_not_begun_handoff_whose_bound_task_is_working() {
     let (store, _) = FileInvocationStoreV5::open_retained_directory_inspect_only(
         task_root,
         Arc::new(SystemEpochMillisClock),
-        unica_work_control::provider_deadline::ProviderDeadline::new(
-            Instant::now() + Duration::from_secs(2),
-        ),
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP),
     )
     .expect("inspect TaskStore after refused startup");
     assert_eq!(
@@ -2382,7 +2569,7 @@ fn startup_refuses_not_begun_handoff_whose_bound_task_is_working() {
             .get(
                 key.reserved_task_id(),
                 unica_work_control::provider_deadline::ProviderDeadline::new(
-                    Instant::now() + Duration::from_secs(2),
+                    Instant::now() + TEST_STEP,
                 ),
             )
             .expect("read unchanged Task"),
@@ -2475,7 +2662,7 @@ fn prepare_staged_startup_handoff(
             request_scope_hash("workspace-a").expect("request scope"),
         ),
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TEST_STEP;
     let reserved = receipt_actor_for_fixture(runtime)
         .reserve(
             key.clone(),
@@ -2533,7 +2720,7 @@ fn staged_startup_crash_fixture() -> StagedStartupCrashFixture {
     .expect("open original staged runtime");
     let handoff = prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun);
     let key = handoff.key().clone();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TEST_STEP;
     let winner = canonical_v5_terminal(
         &ReceiptTerminalOutcome::Completed {
             result: Box::new(DomainResult::success("durable staged winner")),
@@ -2624,7 +2811,7 @@ fn assert_staged_startup_preserves_exact_winner(fixture: StagedStartupCrashFixtu
             clock.clone(),
         )
         .unwrap_or_else(|error| panic!("startup refused the committed staged winner: {error}"));
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + TEST_STEP;
         let provider_deadline =
             unica_work_control::provider_deadline::ProviderDeadline::new(deadline);
         assert_eq!(
@@ -2667,7 +2854,7 @@ fn startup_completes_exact_staged_terminal_after_post_store_crash_without_replay
 }
 
 fn finish_staged_crash_lifecycle_link(fixture: &StagedStartupCrashFixture) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TEST_STEP;
     let provider_deadline = unica_work_control::provider_deadline::ProviderDeadline::new(deadline);
     let link = lifecycle_links_for_fixture(&fixture.runtime)
         .read_by_task_id(fixture.key.reserved_task_id(), provider_deadline)
@@ -2778,7 +2965,7 @@ fn startup_refuses_changed_staged_winner_metadata_before_any_store_mutation() {
             }
             let bytes = serde_json::to_vec(&changed).unwrap();
             std::fs::write(&fixture.task_path, bytes).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + TEST_STEP;
             assert_eq!(
                 task_store_for_fixture(&fixture.runtime)
                     .get(
@@ -2815,7 +3002,7 @@ fn materialize_saved_staged_startup_owner(
     V5StoredInvocationRecord,
     TaskBoundReceipt,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TEST_STEP;
     let certificate = canonical_staged_transfer_certificate(
         handoff.key(),
         handoff.key_digest(),
@@ -2891,7 +3078,7 @@ fn startup_publishes_saved_staged_winner_from_exact_provisional_without_replay()
             clock.clone(),
         )
         .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + TEST_STEP;
         let provider_deadline =
             unica_work_control::provider_deadline::ProviderDeadline::new(deadline);
         let stored = task_store_for_fixture(&reopened)
@@ -2964,7 +3151,7 @@ fn startup_validates_all_staged_owners_before_completing_any_receipt_or_link() {
         unica_bootstrap::MAX_RESPONSE_BUDGET,
     )
     .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TEST_STEP;
     let provider_deadline = unica_work_control::provider_deadline::ProviderDeadline::new(deadline);
     let mut committed = Vec::new();
     for handoff in handoffs {
@@ -3036,7 +3223,7 @@ fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: Receipt
             request_scope_hash("staged-transfer-workspace").unwrap(),
         ),
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TEST_STEP;
     let reserved = receipt_actor_for_fixture(&runtime)
         .reserve(
             key.clone(),
@@ -3126,22 +3313,18 @@ fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: Receipt
         .get(
             key.reserved_task_id(),
             unica_work_control::provider_deadline::ProviderDeadline::new(
-                Instant::now() + Duration::from_secs(5),
+                Instant::now() + TEST_STEP,
             ),
         )
         .unwrap();
     assert_eq!(stored.updated_at_epoch_ms, 1_100);
     assert_eq!(stored.task.terminal_digest(), Some(terminal.digest()));
     assert!(matches!(
-        receipt_actor_for_fixture(&runtime)
-            .recover(key.clone(), Instant::now() + Duration::from_secs(5)),
+        receipt_actor_for_fixture(&runtime).recover(key.clone(), Instant::now() + TEST_STEP),
         Err(ReceiptLedgerError::ReceiptNotFound)
     ));
     let snapshot = runtime
-        .resolve_task(
-            key.reserved_task_id(),
-            Instant::now() + Duration::from_secs(5),
-        )
+        .resolve_task(key.reserved_task_id(), Instant::now() + TEST_STEP)
         .unwrap();
     assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
     drop(runtime);
@@ -3149,10 +3332,7 @@ fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: Receipt
     let reopened = V5ReceiptRuntime::open(&state, &(config).receipt_runtime_config()).unwrap();
     assert_eq!(
         reopened
-            .resolve_task(
-                key.reserved_task_id(),
-                Instant::now() + Duration::from_secs(5),
-            )
+            .resolve_task(key.reserved_task_id(), Instant::now() + TEST_STEP)
             .unwrap(),
         snapshot
     );
@@ -3161,7 +3341,7 @@ fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: Receipt
             .get(
                 key.reserved_task_id(),
                 unica_work_control::provider_deadline::ProviderDeadline::new(
-                    Instant::now() + Duration::from_secs(5),
+                    Instant::now() + TEST_STEP,
                 ),
             )
             .unwrap(),
@@ -3223,7 +3403,7 @@ fn materialize_startup_task_bound(
             request_scope_hash("workspace-a").expect("request scope"),
         ),
     );
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + TEST_STEP;
     let reserved = receipt_actor_for_fixture(runtime)
         .reserve(
             key.clone(),
@@ -3315,9 +3495,8 @@ fn concurrent_terminal_retirement_is_idempotent() {
     let (_key, queued, task_bound) =
         materialize_startup_task_bound(&runtime, &identity, AttemptPhase::NotBegun);
     clock.set(2_000);
-    let provider_deadline = unica_work_control::provider_deadline::ProviderDeadline::new(
-        Instant::now() + Duration::from_secs(2),
-    );
+    let provider_deadline =
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP);
     let terminal = task_store_for_fixture(&runtime)
         .terminalize_recovered_exact(
             &queued.identity(),
@@ -3353,10 +3532,7 @@ fn concurrent_terminal_retirement_is_idempotent() {
         .map(|_| {
             let runtime = Arc::clone(&runtime);
             thread::spawn(move || {
-                retire_expired_terminal_tasks_for_fixture(
-                    &runtime,
-                    Instant::now() + Duration::from_secs(2),
-                )
+                retire_expired_terminal_tasks_for_fixture(&runtime, Instant::now() + TEST_STEP)
             })
         })
         .collect::<Vec<_>>();
@@ -3392,7 +3568,7 @@ fn startup_terminalizes_already_materialized_not_begun_task_bound() {
             cancel_bound_task_for_fixture(
                 &runtime,
                 key.reserved_task_id(),
-                Instant::now() + Duration::from_secs(2),
+                Instant::now() + TEST_STEP,
                 runtime.hooks().as_ref(),
             )
             .unwrap_or_else(|failure| {
@@ -3408,10 +3584,7 @@ fn startup_terminalizes_already_materialized_not_begun_task_bound() {
         let reopened = V5ReceiptRuntime::open(&state, &(config).receipt_runtime_config())
             .expect("reconcile already materialized TaskBound");
         let snapshot = reopened
-            .resolve_task(
-                key.reserved_task_id(),
-                Instant::now() + Duration::from_secs(2),
-            )
+            .resolve_task(key.reserved_task_id(), Instant::now() + TEST_STEP)
             .expect("resolve reconciled materialized Task");
         match (cancel_requested, snapshot) {
             (
@@ -3449,23 +3622,16 @@ fn startup_terminalizes_exact_working_begun_task_bound_as_outcome_uncertain() {
         .expect("open initial runtime");
     let (key, record, task_bound) =
         materialize_startup_task_bound(&runtime, &identity, AttemptPhase::Begun);
-    let (_working, _working_bound) = start_bound_task_for_fixture(
-        &runtime,
-        &task_bound,
-        record,
-        Instant::now() + Duration::from_secs(2),
-    )
-    .unwrap_or_else(|failure| panic!("start exact begun Task: {}", failure.error()));
+    let (_working, _working_bound) =
+        start_bound_task_for_fixture(&runtime, &task_bound, record, Instant::now() + TEST_STEP)
+            .unwrap_or_else(|failure| panic!("start exact begun Task: {}", failure.error()));
     drop(runtime);
 
     let reopened = V5ReceiptRuntime::open(&state, &(config).receipt_runtime_config())
         .expect("reconcile exact begun TaskBound");
     assert!(matches!(
         reopened
-            .resolve_task(
-                key.reserved_task_id(),
-                Instant::now() + Duration::from_secs(2)
-            )
+            .resolve_task(key.reserved_task_id(), Instant::now() + TEST_STEP)
             .expect("resolve reconciled begun Task"),
         unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot::Failed {
             reason: V5SafeFailureReason::OutcomeUncertain,
@@ -3497,7 +3663,7 @@ fn startup_rejects_queued_begun_task_bound_without_mutation() {
             queued.version,
             queued.updated_at_epoch_ms,
             unica_work_control::provider_deadline::ProviderDeadline::new(
-                Instant::now() + Duration::from_secs(2),
+                Instant::now() + TEST_STEP,
             ),
         )
         .expect("mark lifecycle link begun without advancing the queued Task fixture");
@@ -3514,9 +3680,7 @@ fn startup_rejects_queued_begun_task_bound_without_mutation() {
     let (store, recovery) = FileInvocationStoreV5::open_retained_directory_inspect_only(
         task_root,
         Arc::new(SystemEpochMillisClock),
-        unica_work_control::provider_deadline::ProviderDeadline::new(
-            Instant::now() + Duration::from_secs(2),
-        ),
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP),
     )
     .expect("inspect TaskStore after failed startup");
     assert_eq!(
@@ -3524,7 +3688,7 @@ fn startup_rejects_queued_begun_task_bound_without_mutation() {
             .get(
                 key.reserved_task_id(),
                 unica_work_control::provider_deadline::ProviderDeadline::new(
-                    Instant::now() + Duration::from_secs(2),
+                    Instant::now() + TEST_STEP,
                 ),
             )
             .expect("read unchanged queued Task"),
@@ -3575,7 +3739,7 @@ fn startup_rejects_active_task_without_lifecycle_link_without_mutation() {
             )
             .with_initial_epoch_ms(1_009),
             unica_work_control::provider_deadline::ProviderDeadline::new(
-                Instant::now() + Duration::from_secs(2),
+                Instant::now() + TEST_STEP,
             ),
         )
         .expect("create orphan startup Task");
@@ -3595,9 +3759,7 @@ fn startup_rejects_active_task_without_lifecycle_link_without_mutation() {
     let (store, recovery) = FileInvocationStoreV5::open_retained_directory_inspect_only(
         task_root,
         Arc::new(SystemEpochMillisClock),
-        unica_work_control::provider_deadline::ProviderDeadline::new(
-            Instant::now() + Duration::from_secs(2),
-        ),
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP),
     )
     .expect("inspect orphan TaskStore after failed startup");
     assert_eq!(
@@ -3605,7 +3767,7 @@ fn startup_rejects_active_task_without_lifecycle_link_without_mutation() {
             .get(
                 key.reserved_task_id(),
                 unica_work_control::provider_deadline::ProviderDeadline::new(
-                    Instant::now() + Duration::from_secs(2),
+                    Instant::now() + TEST_STEP,
                 ),
             )
             .expect("read unchanged orphan Task"),
@@ -3638,7 +3800,7 @@ fn startup_receipt_loop_completes_exact_reserved_link_with_preexisting_queued_ta
             request_scope_hash("workspace-a").expect("request scope"),
         ),
     );
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + TEST_STEP;
     let reserved = receipt_actor_for_fixture(&runtime)
         .reserve(
             key.clone(),
@@ -3699,10 +3861,7 @@ fn startup_receipt_loop_completes_exact_reserved_link_with_preexisting_queued_ta
         .expect("receipt loop completes preexisting handoff");
     assert!(matches!(
         reopened
-            .resolve_task(
-                key.reserved_task_id(),
-                Instant::now() + Duration::from_secs(2)
-            )
+            .resolve_task(key.reserved_task_id(), Instant::now() + TEST_STEP)
             .expect("resolve preexisting handoff Task"),
         unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot::Failed {
             reason: V5SafeFailureReason::Interrupted,
@@ -3735,7 +3894,7 @@ fn startup_rejects_preexisting_handoff_task_without_prior_link_reservation() {
             request_scope_hash("workspace-a").expect("request scope"),
         ),
     );
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + TEST_STEP;
     let reserved = receipt_actor_for_fixture(&runtime)
         .reserve(
             key.clone(),
@@ -3805,9 +3964,7 @@ fn startup_rejects_preexisting_handoff_task_without_prior_link_reservation() {
     let (store, _) = FileInvocationStoreV5::open_retained_directory_inspect_only(
         task_root,
         Arc::new(SystemEpochMillisClock),
-        unica_work_control::provider_deadline::ProviderDeadline::new(
-            Instant::now() + Duration::from_secs(2),
-        ),
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP),
     )
     .expect("inspect handoff TaskStore after failed startup");
     assert_eq!(
@@ -3815,7 +3972,7 @@ fn startup_rejects_preexisting_handoff_task_without_prior_link_reservation() {
             .get(
                 key.reserved_task_id(),
                 unica_work_control::provider_deadline::ProviderDeadline::new(
-                    Instant::now() + Duration::from_secs(2),
+                    Instant::now() + TEST_STEP,
                 ),
             )
             .expect("read unchanged handoff Task"),
@@ -3823,15 +3980,11 @@ fn startup_rejects_preexisting_handoff_task_without_prior_link_reservation() {
     );
     let links = TaskLifecycleLinkStoreV5::open(
         state.path().join("task-lifecycle-links"),
-        unica_work_control::provider_deadline::ProviderDeadline::new(
-            Instant::now() + Duration::from_secs(2),
-        ),
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP),
     )
     .expect("inspect lifecycle store after failed startup")
     .catalog_snapshot(
-        unica_work_control::provider_deadline::ProviderDeadline::new(
-            Instant::now() + Duration::from_secs(2),
-        ),
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP),
     )
     .expect("snapshot unchanged lifecycle store");
     assert!(links.entries().is_empty());
@@ -3870,9 +4023,8 @@ fn startup_rejects_task_terminal_bound_that_does_not_confirm_exact_terminal_task
         .expect("open initial runtime");
     let (key, queued, task_bound) =
         materialize_startup_task_bound(&runtime, &identity, AttemptPhase::NotBegun);
-    let deadline = unica_work_control::provider_deadline::ProviderDeadline::new(
-        Instant::now() + Duration::from_secs(2),
-    );
+    let deadline =
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP);
     let terminal = task_store_for_fixture(&runtime)
         .terminalize_recovered_exact(
             &queued.identity(),
@@ -3914,9 +4066,7 @@ fn startup_rejects_task_terminal_bound_that_does_not_confirm_exact_terminal_task
     let (store, _) = FileInvocationStoreV5::open_retained_directory_inspect_only(
         task_root,
         Arc::new(SystemEpochMillisClock),
-        unica_work_control::provider_deadline::ProviderDeadline::new(
-            Instant::now() + Duration::from_secs(2),
-        ),
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP),
     )
     .expect("inspect terminal TaskStore after failed startup");
     assert_eq!(
@@ -3924,7 +4074,7 @@ fn startup_rejects_task_terminal_bound_that_does_not_confirm_exact_terminal_task
             .get(
                 key.reserved_task_id(),
                 unica_work_control::provider_deadline::ProviderDeadline::new(
-                    Instant::now() + Duration::from_secs(2),
+                    Instant::now() + TEST_STEP,
                 ),
             )
             .expect("read unchanged terminal Task"),
@@ -4128,7 +4278,7 @@ fn wait_for_v5_record(
     state_root: &std::path::Path,
     core_identity: &CoreIdentity,
 ) -> V5EndpointRecord {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TEST_STEP;
     loop {
         let state = DaemonStateDirectory::open(state_root, core_identity)
             .expect("open v5 daemon state while waiting");
@@ -4151,7 +4301,7 @@ fn connect_v5_owner(
     let mut stream = TcpStream::connect(record.loopback_addr().expect("v5 loopback address"))
         .expect("connect v5 daemon owner");
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(TEST_STEP))
         .expect("bound v5 owner response read");
     let mut reader = BufReader::new(stream.try_clone().expect("clone v5 owner stream"));
     write_json_line(
@@ -4270,7 +4420,7 @@ fn admitted_owner_cancel_and_recover(
     let mut stream =
         TcpStream::connect(record.loopback_addr().unwrap()).map_err(|error| error.to_string())?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(TEST_STEP))
         .map_err(|error| error.to_string())?;
     daemon
         .sockets
@@ -4369,7 +4519,7 @@ fn cancellation_owner_crosses_admission_count(held_handshakes: usize, held_owner
     for _ in 0..held_handshakes {
         observed_ports.insert(
             started_rx
-                .recv_timeout(Duration::from_secs(2))
+                .recv_timeout(TEST_STEP)
                 .expect("actual accepted handshake handler entered gate"),
         );
     }
@@ -4482,6 +4632,30 @@ impl PromisedWorkIdleDaemon {
         daemon
     }
 
+    /// The daemon whose invocation clock the test moves: it decides when an
+    /// unfinished inline attempt passes into its Task.
+    fn with_service_and_clock(
+        idle_grace: Duration,
+        service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+        clock: Arc<InspectionClock>,
+    ) -> Self {
+        let owners = ListenerOwnersLog::default();
+        let recorded = Arc::clone(&owners);
+        let mut daemon = Self::start_configured(
+            idle_grace,
+            service,
+            |observations| {
+                Arc::new(PromisedWorkIdleHooks {
+                    observations,
+                    owners: recorded,
+                })
+            },
+            Some(clock),
+        );
+        daemon.owners = owners;
+        daemon
+    }
+
     fn with_service_and_hooks(
         idle_grace: Duration,
         service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
@@ -4489,14 +4663,30 @@ impl PromisedWorkIdleDaemon {
             mpsc::Sender<(Instant, bool)>,
         ) -> Arc<dyn V5RuntimeHooks<CanonicalInvocationHost>>,
     ) -> Self {
+        Self::start_configured(idle_grace, service, hooks, None)
+    }
+
+    fn start_configured(
+        idle_grace: Duration,
+        service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+        hooks: impl FnOnce(
+            mpsc::Sender<(Instant, bool)>,
+        ) -> Arc<dyn V5RuntimeHooks<CanonicalInvocationHost>>,
+        clock: Option<Arc<InspectionClock>>,
+    ) -> Self {
         let state = tempfile::tempdir().unwrap();
         let state_root = std::fs::canonicalize(state.path()).unwrap();
         let identity = CoreIdentity::production_v5();
         let (observations, observed) = mpsc::channel();
         let (exit, exited) = mpsc::channel();
-        let config = DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace)
-            .with_invocation_service(service)
-            .with_runtime_hooks_for_test(hooks(observations));
+        let config = DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace);
+        let config = match clock {
+            Some(clock) => config.with_canonical_runtime_for_test(Arc::new(
+                V5CanonicalInvocationRuntime::new(service, clock),
+            )),
+            None => config.with_invocation_service(service),
+        }
+        .with_runtime_hooks_for_test(hooks(observations));
         let stop = Arc::new(AtomicBool::new(false));
         let server_stop = Arc::clone(&stop);
         let server = thread::spawn(move || {
@@ -4536,6 +4726,23 @@ impl PromisedWorkIdleDaemon {
             .collect()
     }
 
+    /// Observe the listener until it reads an owner set without a client
+    /// lease after `since`, so a slow handler that still holds its lease
+    /// does not leave the check empty.
+    fn observe_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
+        let watchdog = Instant::now() + TEST_STEP;
+        loop {
+            let observed = self.owners_without_clients_since(since);
+            if !observed.is_empty() || Instant::now() >= watchdog {
+                return observed;
+            }
+            assert!(
+                self.observe_until(Instant::now() + Duration::from_millis(20)),
+                "the daemon exited while its work was still owned"
+            );
+        }
+    }
+
     /// The owner sets the listener read after `since` with no client lease:
     /// what kept the daemon once every client had left.
     fn owners_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
@@ -4568,7 +4775,7 @@ impl PromisedWorkIdleDaemon {
     /// Observe the actual listener past the requested interval. Its exit drops
     /// the sole sender, so an early idle exit is also observed without sleeping.
     fn observe_until(&self, threshold: Instant) -> bool {
-        let watchdog = Instant::now() + Duration::from_secs(3);
+        let watchdog = Instant::now() + TEST_STEP;
         loop {
             match self
                 .observations
@@ -4588,7 +4795,7 @@ impl PromisedWorkIdleDaemon {
     /// owner registry after Release, excluding startup and buffered events.
     fn observe_idle_interval(&self, interval: Duration) -> bool {
         let released_at = Instant::now();
-        let watchdog = released_at + Duration::from_secs(3);
+        let watchdog = released_at + TEST_STEP;
         let mut empty_since = None;
         loop {
             match self
@@ -4615,7 +4822,7 @@ impl PromisedWorkIdleDaemon {
     }
 
     fn await_idle_exit(&self) {
-        self.await_idle_exit_before(Instant::now() + Duration::from_secs(3));
+        self.await_idle_exit_before(Instant::now() + TEST_STEP);
     }
 
     /// Lease observations precede the idle decision, and visible terminal
@@ -4805,7 +5012,7 @@ fn daemon_idle_saved_apply_plan_does_not_prevent_explicit_stop() {
     daemon.guard.stop.store(true, Ordering::SeqCst);
     daemon
         .exited
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(TEST_STEP)
         .expect("explicit stop must exit despite a pending apply plan");
     assert!(daemon.guard.stop.load(Ordering::SeqCst));
     daemon.join();
@@ -4907,7 +5114,7 @@ impl Drop for IdleIndexProducerCleanup {
         self.release();
         // Also settle the cooperative producer on a RED assertion before the
         // follower is obtained; the normal path verifies actual Ready below.
-        let _ = self.exited.recv_timeout(Duration::from_secs(3));
+        let _ = self.exited.recv_timeout(TEST_STEP);
     }
 }
 
@@ -4950,7 +5157,7 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
     };
     assert!(call(&mut owner).ok);
     started
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(TEST_STEP)
         .expect("the real SharedWork producer starts");
     release_promised_work_owner(owner);
     let released = Instant::now();
@@ -4969,14 +5176,14 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
     let mut successor = daemon.owner();
     assert!(call(&mut successor).ok);
     let lease = joined
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(TEST_STEP)
         .expect("second real RPC attaches to the same exact index work");
     assert_eq!(producers.load(Ordering::SeqCst), 1);
     release_promised_work_owner(successor);
     cleanup.release();
     assert!(
         matches!(
-            lease.wait_timeout(Duration::from_secs(2)),
+            lease.wait_timeout(TEST_STEP),
             unica_work_control::shared_work::SharedWorkSnapshot::Ready(_)
         ),
         "producer must actually settle before its last lease is released"
@@ -5057,7 +5264,7 @@ fn idle_task_terminal_over_tcp(
     owner: &mut (TcpStream, BufReader<TcpStream>),
     invocation: &V5InvocationRequest,
 ) -> V5DaemonTaskSnapshot {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + TEST_STEP;
     loop {
         let response = idle_request_over_tcp(
             owner,
@@ -5104,7 +5311,7 @@ fn daemon_idle_live_task_after_client_release_preserves_attempt_then_retires() {
     )));
     assert_eq!(initial.task_id(), invocation.reserved_task_id());
     assert_eq!(initial.invocation_id(), invocation.invocation_id());
-    executing.recv_timeout(Duration::from_secs(3)).unwrap();
+    executing.recv_timeout(TEST_STEP).unwrap();
     release_promised_work_owner(owner);
     let released = Instant::now();
 
@@ -5170,7 +5377,7 @@ fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
         })
         .unwrap(),
     );
-    executing.recv_timeout(Duration::from_secs(3)).unwrap();
+    executing.recv_timeout(TEST_STEP).unwrap();
     owner.0.shutdown(std::net::Shutdown::Both).unwrap();
     drop(owner);
     let disconnected = Instant::now();
@@ -5192,7 +5399,7 @@ fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
     // arrives; the daemon then answers `ReceiptPending` for the same key, and a
     // client repeats the exact call, as after `receipt_pending`. The repeat
     // still has to recover this attempt, not run a second one.
-    let settles_by = Instant::now() + Duration::from_secs(5);
+    let settles_by = Instant::now() + TEST_STEP;
     let recovered = loop {
         let response = idle_request_over_tcp(
             &mut successor,
@@ -5266,6 +5473,192 @@ fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
     assert!(daemon.endpoint().is_none());
 }
 
+fn view_catalog_request_within(
+    task_id: TaskId,
+    workspace: &std::path::Path,
+    response_budget_ms: u64,
+) -> V5InvocationRequest {
+    V5InvocationRequest::new(
+        InvocationId::new(),
+        task_id,
+        V5ToolIdentity::View,
+        serde_json::Map::from_iter([(
+            "at".to_owned(),
+            serde_json::Value::String("main:Catalog.Items".to_owned()),
+        )]),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace.to_string_lossy().into_owned()),
+        response_budget_ms,
+    )
+    .expect("valid view invocation")
+}
+
+/// #980: the client leaves before the response window closes, and the begun
+/// inline attempt passes into its Task while nobody is connected. Every owner
+/// set read from the client's departure through the handoff holds the
+/// daemon by the attempt's cancellation registration, so the attempt never
+/// stands without an owner; its Task then ends once and the daemon retires.
+#[test]
+fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughout() {
+    let (_workspace, workspace) = catalog_workspace();
+    let (entered, executing) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let service = Arc::new(IdleInvocationService {
+        known_long: false,
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered,
+        release: Arc::clone(&release),
+    });
+    let idle = Duration::from_millis(80);
+    let budget = Duration::from_millis(600);
+    // The invocation clock stands still until the test moves it past the
+    // window, so the client leaves before the cutoff however slowly the
+    // machine schedules the execution.
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let mut daemon =
+        PromisedWorkIdleDaemon::with_service_and_clock(idle, service.clone(), Arc::clone(&clock));
+    let cleanup = IdleInvocationRelease(release);
+    let invocation =
+        view_catalog_request_within(TaskId::new(), &workspace, budget.as_millis() as u64);
+    let mut owner = daemon.owner();
+    write_json_line(
+        &mut owner.0,
+        &serde_json::to_value(V5ClientRequest::SubmitInvocation {
+            invocation: invocation.clone(),
+        })
+        .unwrap(),
+    );
+    executing.recv_timeout(TEST_STEP).unwrap();
+    owner.0.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(owner);
+    let disconnected = Instant::now();
+    assert!(daemon.observe_until(disconnected + idle * 3));
+    let past_cutoff = Instant::now();
+    clock
+        .elapsed_ms
+        .store(budget.as_millis() as u64 + 1, Ordering::SeqCst);
+    assert!(daemon.observe_until(past_cutoff + idle * 3));
+    assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
+    assert_held_by(
+        &daemon.owners_since(disconnected),
+        |owners| owners.task_cancellations,
+        "the inline attempt and then its Task, through one cancellation registration",
+    );
+    // After the handoff no client lease is left: the Task alone holds.
+    assert_held_by(
+        &daemon.observe_without_clients_since(past_cutoff),
+        |owners| owners.task_cancellations,
+        "the handed-over Task, through its cancellation registration",
+    );
+    let mut successor = daemon.owner();
+    let V5ServerResponse::Task { snapshot: handed } = idle_request_over_tcp(
+        &mut successor,
+        V5ClientRequest::GetTask {
+            task_id: invocation.reserved_task_id(),
+        },
+    ) else {
+        panic!("the attempt must have passed into its reserved Task");
+    };
+    assert_eq!(handed.invocation_id(), invocation.invocation_id());
+    assert!(!task_snapshot_is_terminal(&handed));
+    cleanup.release();
+    let terminal = idle_task_terminal_over_tcp(&mut successor, &invocation);
+    assert!(
+        matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. }
+        if result.ok && result.data == Some(json!({"attempt": 1}))),
+        "{terminal:?}"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+    release_promised_work_owner(successor);
+    daemon.await_idle_exit();
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
+}
+
+/// #980: the response window closes while the call still waits for its
+/// workspace actor, before the attempt begins. Its Task is promised without
+/// an actor and the client leaves. With no workspace work retained, the Task
+/// alone holds the daemon through its cancellation registration; once bound,
+/// the same Task runs once and the daemon retires.
+#[test]
+fn daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retires() {
+    let (_workspace, workspace) = catalog_workspace();
+    let (entered, _executing) = mpsc::channel();
+    let service = Arc::new(IdleInvocationService {
+        known_long: false,
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered,
+        release: Arc::new((Mutex::new(true), Condvar::new())),
+    });
+    let idle = Duration::from_millis(80);
+    let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service.clone());
+    // The attempt waits inside its real actor bind.
+    let admission =
+        crate::infrastructure::daemon::server::admission_test_control::AdmissionPause::install(
+            workspace.clone(),
+        );
+    let invocation = view_catalog_request_within(TaskId::new(), &workspace, 100);
+    let mut owner = daemon.owner();
+    let submitted = Instant::now();
+    // The answer that names the promised Task may be lost (#2089): the
+    // durable promise can outlast its write window. Nothing reads it here;
+    // the Task is read by its reserved id below.
+    write_json_line(
+        &mut owner.0,
+        &serde_json::to_value(V5ClientRequest::SubmitInvocation {
+            invocation: invocation.clone(),
+        })
+        .unwrap(),
+    );
+    admission.wait_until_entered();
+    assert!(daemon.observe_until(submitted + Duration::from_millis(100) + idle * 3));
+    // The daemon may already have closed a session whose answer it lost.
+    let _ = owner.0.shutdown(std::net::Shutdown::Both);
+    drop(owner);
+    let released = Instant::now();
+
+    assert_held_by(
+        &daemon.observe_without_clients_since(released),
+        |owners| owners.task_cancellations && !owners.retained_workspace_work,
+        "the Task promised during admission, through its cancellation registration alone",
+    );
+    assert!(daemon.observe_until(Instant::now() + idle * 3));
+    assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
+    let mut successor = daemon.owner();
+    let V5ServerResponse::Task { snapshot: promised } = idle_request_over_tcp(
+        &mut successor,
+        V5ClientRequest::GetTask {
+            task_id: invocation.reserved_task_id(),
+        },
+    ) else {
+        panic!("the call must have been promised as its reserved Task");
+    };
+    assert_eq!(promised.invocation_id(), invocation.invocation_id());
+    assert!(
+        matches!(promised, V5DaemonTaskSnapshot::Queued { .. }),
+        "a Task promised before the attempt begins is queued: {promised:?}"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+    admission.release();
+    let terminal = idle_task_terminal_over_tcp(&mut successor, &invocation);
+    assert!(
+        matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. }
+        if result.ok && result.data == Some(json!({"attempt": 1}))),
+        "{terminal:?}"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+    release_promised_work_owner(successor);
+    daemon.await_idle_exit();
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
+}
+
 #[test]
 fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
     let workspace =
@@ -5302,12 +5695,12 @@ fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
         )
     };
     assert!(call(&mut owner).ok);
-    started.recv_timeout(Duration::from_secs(2)).unwrap();
-    let lease = joined.recv_timeout(Duration::from_secs(2)).unwrap();
+    started.recv_timeout(TEST_STEP).unwrap();
+    let lease = joined.recv_timeout(TEST_STEP).unwrap();
     release_promised_work_owner(owner);
     cleanup.release();
     let unica_work_control::shared_work::SharedWorkSnapshot::Ready(original) =
-        lease.wait_timeout(Duration::from_secs(2))
+        lease.wait_timeout(TEST_STEP)
     else {
         panic!("the producer must finish before the lease-only idle interval");
     };
@@ -5322,7 +5715,7 @@ fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
     let mut successor = daemon.owner();
     assert!(call(&mut successor).ok);
-    let follower = joined.recv_timeout(Duration::from_secs(2)).unwrap();
+    let follower = joined.recv_timeout(TEST_STEP).unwrap();
     let unica_work_control::shared_work::SharedWorkSnapshot::Ready(reused) = follower.snapshot()
     else {
         panic!("successor must receive the completed original shared work");
@@ -5354,7 +5747,7 @@ fn exact_v5_runtime_opens_receipt_ledger_and_serves_real_handshake_and_ping() {
     let mut stream = TcpStream::connect(record.loopback_addr().expect("v5 loopback address"))
         .expect("connect v5 daemon");
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(TEST_STEP))
         .expect("bound v5 response read");
     write_json_line(
         &mut stream,
@@ -5796,15 +6189,11 @@ fn owner_handoff_between_idle_reads_keeps_listener_and_exact_owner_alive() {
     };
     let record = wait_for_v5_record(&state_root, &identity);
     let mut owner = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
-    owner
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
+    owner.set_read_timeout(Some(TEST_STEP)).unwrap();
     daemon.transports.push(owner.try_clone().unwrap());
     let mut owner_reader = BufReader::new(owner.try_clone().unwrap());
     assert!(
-        owner_read_wait
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap(),
+        owner_read_wait.recv_timeout(TEST_STEP).unwrap(),
         "listener did not read the genuinely empty owner registry before handoff"
     );
     // Keep the real listener between its two ownership reads beyond its idle
@@ -5827,7 +6216,7 @@ fn owner_handoff_between_idle_reads_keeps_listener_and_exact_owner_alive() {
     // Ready is written after lease acquisition and handshake-slot release.
     release_idle_handoff_gate(&hooks.listener_gate);
     assert!(
-        !decision_wait.recv_timeout(Duration::from_secs(2)).unwrap(),
+        !decision_wait.recv_timeout(TEST_STEP).unwrap(),
         "idle observation lost an authenticated owner during handshake handoff"
     );
     write_json_line(&mut owner, &json!({"kind": "ping"}));
@@ -5897,7 +6286,7 @@ fn wait_task_terminal(
         // A fresh session per poll: a session idle across a moved daemon
         // clock is not what this helper tests.
         let mut peer = owner
-            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .connect_peer_before(Instant::now() + TEST_STEP)
             .expect("connect a polling session");
         let response = peer.wait_task(task_id, 1_000).expect("poll the Task");
         let V5ServerResponse::Task { snapshot } = response else {
@@ -6017,7 +6406,7 @@ fn promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks() {
         (owner, response)
     });
     entered_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the inline execution starts");
     clock.elapsed_ms.store(7_000, Ordering::SeqCst);
     let (mut owner, inline) = inline_submit.join().expect("inline submit thread");
@@ -6036,7 +6425,7 @@ fn promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks() {
     let admitted_task = TaskId::new();
     let admitted_request = view_catalog_request(admitted_task, &admitted_root);
     let mut admitted_owner = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .expect("connect a second session");
     let admitted_submit = thread::spawn(move || {
         let response = admitted_owner.submit_invocation(admitted_request);
@@ -6168,7 +6557,7 @@ fn noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others() {
         .submit_invocation(stuck)
         .expect("submit the stuck read");
     entered_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the stuck execution starts");
     owner
         .cancel_task(stuck_task)
@@ -6274,7 +6663,7 @@ fn cancel_during_inline_admission_before_handoff_publishes_cancelled() {
         ),
     );
     let mut canceller = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .unwrap();
     let submit = thread::spawn(move || {
         let mut owner = owner;
@@ -6461,7 +6850,7 @@ fn materialize_completed_task_key(
             request_scope_hash(workspace).expect("request scope"),
         ),
     );
-    let mut preparation = FixturePreparation::new(summary, Duration::from_secs(5));
+    let mut preparation = FixturePreparation::new(summary, TEST_STEP);
     let reserved = preparation.step("reserve", |deadline| {
         receipt_actor_for_fixture(runtime)
             .reserve(
@@ -6587,7 +6976,7 @@ fn an_unjoined_task_reply_does_not_read_its_canonical_store_again() {
         "canonical result",
     );
     let before = capture_holder_reply(&runtime, task);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TEST_STEP;
     let canonical = runtime.resolve_task(task, deadline).unwrap();
     hooks.armed.store(true, Ordering::SeqCst);
     let reply = project_holder_reply(
@@ -6611,9 +7000,8 @@ fn an_unjoined_task_reply_does_not_read_its_canonical_store_again() {
 }
 
 fn retirement_link(runtime: &V5ReceiptRuntime, task_id: TaskId) -> Option<TaskLifecycleLinkRecord> {
-    let deadline = unica_work_control::provider_deadline::ProviderDeadline::new(
-        Instant::now() + Duration::from_secs(5),
-    );
+    let deadline =
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP);
     match lifecycle_links_for_fixture(runtime).read_by_task_id(task_id, deadline) {
         Ok(link) => Some(link),
         Err(TaskLifecycleLinkStoreError::NotFound { .. }) => None,
@@ -6622,9 +7010,8 @@ fn retirement_link(runtime: &V5ReceiptRuntime, task_id: TaskId) -> Option<TaskLi
 }
 
 fn retirement_task_present(runtime: &V5ReceiptRuntime, task_id: TaskId) -> bool {
-    let deadline = unica_work_control::provider_deadline::ProviderDeadline::new(
-        Instant::now() + Duration::from_secs(5),
-    );
+    let deadline =
+        unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now() + TEST_STEP);
     match task_store_for_fixture(runtime).get(task_id, deadline) {
         Ok(_) => true,
         Err(V5TaskStoreError::NotFound { .. }) => false,
@@ -6635,7 +7022,7 @@ fn retirement_task_present(runtime: &V5ReceiptRuntime, task_id: TaskId) -> bool 
 /// `tasks/get`, `tasks/result` (a wait) and `tasks/cancel` of the live Task
 /// all answer its completed result, and the process keeps admitting work.
 fn assert_live_task_answers(runtime: &V5ReceiptRuntime, live: TaskId, context: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TEST_STEP;
     for (operation, answer) in [
         ("get", runtime.resolve_task(live, deadline)),
         ("wait", runtime.wait_task(live, 0, deadline)),
@@ -6793,7 +7180,7 @@ fn reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirm
         "neighbor result",
     );
     clock.set(RETIREMENT_TEST_OBSERVED_EPOCH_MS);
-    let deadline = || Instant::now() + Duration::from_secs(5);
+    let deadline = || Instant::now() + TEST_STEP;
     let provider_deadline =
         || unica_work_control::provider_deadline::ProviderDeadline::new(deadline());
     let terminal = match retirement_link(&runtime, key.reserved_task_id()).unwrap() {
@@ -6967,7 +7354,7 @@ fn assert_unretirable_record_stays_confined(step: V5RetirementStep) {
     );
     // Reading the record that could not be retired does not close the daemon
     // either, even when its Task is already deleted and only the link remains.
-    let foreign = runtime.resolve_task(store.foreign, Instant::now() + Duration::from_secs(5));
+    let foreign = runtime.resolve_task(store.foreign, Instant::now() + TEST_STEP);
     if step == V5RetirementStep::Finalize {
         assert!(
             matches!(foreign, Err(ReceiptLedgerError::ReceiptNotFound)),
@@ -7101,7 +7488,7 @@ fn retirement_failure_after_uncertain_link_commit_serves_the_durable_catalog() {
                 64,
                 64,
                 unica_work_control::provider_deadline::ProviderDeadline::new(
-                    Instant::now() + Duration::from_secs(5),
+                    Instant::now() + TEST_STEP,
                 ),
             )
             .expect("commit the intent to retire");
@@ -7337,6 +7724,123 @@ fn submitted_task_snapshot(response: Result<V5ServerResponse, String>) -> V5Daem
     }
 }
 
+/// Records the runtime's steps in order, beside the listener's owner sets.
+struct StepOrderHooks {
+    observations: mpsc::Sender<(Instant, bool)>,
+    steps: Arc<Mutex<Vec<V5ReceiptRuntimeEventKind>>>,
+}
+
+impl V5RuntimeHooks<CanonicalInvocationHost> for StepOrderHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn after_idle_owner_leases_read(&self, empty: bool) {
+        let _ = self.observations.send((Instant::now(), empty));
+    }
+
+    fn event(&self, event: V5ReceiptRuntimeEventKind, _epoch_ms: u64) {
+        self.steps.lock().unwrap().push(event);
+    }
+}
+
+/// #980: with a zero direct-response budget the call passes into its durable
+/// Task before the provider runs: the TaskStore record and its binding are
+/// committed before the provider is entered, and the same attempt then ends
+/// that Task, once.
+#[test]
+fn zero_budget_call_is_a_durable_task_before_the_provider_runs() {
+    let (_workspace, workspace) = catalog_workspace();
+    let (entered, executing) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let service = Arc::new(IdleInvocationService {
+        known_long: false,
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered,
+        release: Arc::clone(&release),
+    });
+    let running = IdleInvocationRelease(release);
+    let steps = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&steps);
+    let mut daemon = PromisedWorkIdleDaemon::with_service_and_hooks(
+        Duration::from_secs(5),
+        service.clone(),
+        move |observations| {
+            Arc::new(StepOrderHooks {
+                observations,
+                steps: recorded,
+            })
+        },
+    );
+    let invocation = V5InvocationRequest::new(
+        InvocationId::new(),
+        TaskId::new(),
+        V5ToolIdentity::View,
+        serde_json::Map::from_iter([(
+            "at".to_owned(),
+            serde_json::Value::String("main:Catalog.Items".to_owned()),
+        )]),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace.to_string_lossy().into_owned()),
+        0,
+    )
+    .expect("a zero response budget is valid");
+    let mut owner = daemon.owner();
+    // The answer may be lost (#2089); the Task is read by its reserved id.
+    write_json_line(
+        &mut owner.0,
+        &serde_json::to_value(V5ClientRequest::SubmitInvocation {
+            invocation: invocation.clone(),
+        })
+        .unwrap(),
+    );
+    // While the provider runs, a client already reads the same Task.
+    executing.recv_timeout(TEST_STEP).unwrap();
+    let mut reader = daemon.owner();
+    let V5ServerResponse::Task { snapshot: working } = idle_request_over_tcp(
+        &mut reader,
+        V5ClientRequest::GetTask {
+            task_id: invocation.reserved_task_id(),
+        },
+    ) else {
+        panic!("the running attempt must already be its reserved Task");
+    };
+    assert_eq!(working.invocation_id(), invocation.invocation_id());
+    assert!(
+        matches!(working, V5DaemonTaskSnapshot::Working { .. }),
+        "{working:?}"
+    );
+    running.release();
+    let terminal = idle_task_terminal_over_tcp(&mut reader, &invocation);
+    assert!(
+        matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. }
+        if result.ok && result.data == Some(json!({"attempt": 1}))),
+        "{terminal:?}"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+    let steps = steps.lock().unwrap().clone();
+    let at = |kind| {
+        steps
+            .iter()
+            .position(|step| *step == kind)
+            .unwrap_or_else(|| panic!("{kind:?} never happened: {steps:?}"))
+    };
+    let executed = at(V5ReceiptRuntimeEventKind::ExecuteEntered);
+    assert!(
+        at(V5ReceiptRuntimeEventKind::TaskStoreCreated) < executed
+            && at(V5ReceiptRuntimeEventKind::TaskBoundCommitted) < executed,
+        "the provider ran before its Task was durable: {steps:?}"
+    );
+    assert!(
+        at(V5ReceiptRuntimeEventKind::PrepareEntered)
+            > at(V5ReceiptRuntimeEventKind::TaskBoundCommitted),
+        "no subject step precedes the Task: {steps:?}"
+    );
+    drop(owner);
+    release_promised_work_owner(reader);
+}
+
 /// #1384: the exact repeat of a submit whose receipt already passed into its
 /// Task reads that Task — while it runs and after it ends. The key is never
 /// reserved again, nothing is prepared a second time, and the daemon keeps
@@ -7386,7 +7890,7 @@ fn exact_repeat_submit_reads_its_bound_task_without_a_second_attempt() {
     let first = submitted_task_snapshot(owner.submit_invocation(call.clone()));
     assert_eq!(first.task_id(), task_id);
     entered_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the bound Task starts its execution");
 
     let running = submitted_task_snapshot(owner.submit_invocation(call.clone()));
@@ -7631,7 +8135,7 @@ fn tiny_submit_budget_after_an_early_cancel_keeps_the_daemon() {
     .expect("connect owner");
     for budget_ms in [1_u64, 50] {
         let mut session = owner
-            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .connect_peer_before(Instant::now() + TEST_STEP)
             .expect("open a session for the call");
         let arguments = serde_json::Map::new();
         let invocation_id = InvocationId::new();
@@ -7680,7 +8184,7 @@ fn tiny_submit_budget_after_an_early_cancel_keeps_the_daemon() {
             "a {budget_ms} ms submit made the commit uncertain"
         );
         let mut peer = owner
-            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .connect_peer_before(Instant::now() + TEST_STEP)
             .expect("the daemon still admits sessions");
         let recovered = peer
             .recover_invocation_receipt(key.clone())
@@ -7823,20 +8327,20 @@ fn exact_repeat_racing_the_handoff_completion_reads_the_same_task() {
     let call = view_catalog_request(task_id, &root);
 
     let mut first_session = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .expect("connect the first session");
     let first_call = call.clone();
     let first = thread::spawn(move || first_session.submit_invocation(first_call));
     held_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the handoff stops before its Task exists");
     let mut repeat_session = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .expect("connect the repeat session");
     let repeat_call = call.clone();
     let repeat = thread::spawn(move || repeat_session.submit_invocation(repeat_call));
     repeat_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the repeat found no link and stands before its reservation");
     {
         let (lock, changed) = &hooks.handoff_gate;
@@ -7850,7 +8354,7 @@ fn exact_repeat_racing_the_handoff_completion_reads_the_same_task() {
     assert_eq!(repeated.task_id(), task_id);
     assert_eq!(repeated.invocation_id(), call.invocation_id());
     entered_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the single attempt executes");
     release_tx.send(()).expect("release the execution");
     let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
@@ -7933,7 +8437,7 @@ fn exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing() {
     // its Task gone, until the retry pause ends.
     task_store_for_fixture(&runtime)
         .inject_next_publication_failure(PublicationFailure::AfterDeleteBeforeSync);
-    let _ = runtime.resolve_task(task_id, Instant::now() + Duration::from_secs(5));
+    let _ = runtime.resolve_task(task_id, Instant::now() + TEST_STEP);
     assert!(
         matches!(
             retirement_link(&runtime, task_id),
@@ -7959,7 +8463,7 @@ fn exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing() {
     let repeat = runtime.submit_invocation(
         unica_daemon::protocol_v5::DecodedSubmitAdapter::new(decoded, identity.clone()),
         RETIREMENT_TEST_OBSERVED_EPOCH_MS,
-        Instant::now() + Duration::from_secs(5),
+        Instant::now() + TEST_STEP,
     );
 
     assert!(
@@ -7969,8 +8473,7 @@ fn exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing() {
     );
     assert!(
         matches!(
-            receipt_actor_for_fixture(&runtime)
-                .recover(key, Instant::now() + Duration::from_secs(5)),
+            receipt_actor_for_fixture(&runtime).recover(key, Instant::now() + TEST_STEP),
             Err(ReceiptLedgerError::ReceiptNotFound)
         ),
         "the key was reserved again"
@@ -8018,7 +8521,7 @@ fn staged_handoff_completion_waits_for_the_key_lock() {
                 handoff,
                 winner,
                 1_009,
-                Instant::now() + Duration::from_secs(10),
+                Instant::now() + TEST_STEP,
             )
         })
     };
@@ -8034,8 +8537,7 @@ fn staged_handoff_completion_waits_for_the_key_lock() {
         thread::sleep(Duration::from_millis(10));
     }
     thread::sleep(Duration::from_millis(200));
-    let held = receipt_actor_for_fixture(&runtime)
-        .recover(key.clone(), Instant::now() + Duration::from_secs(5));
+    let held = receipt_actor_for_fixture(&runtime).recover(key.clone(), Instant::now() + TEST_STEP);
     assert!(
         matches!(held, Ok(ReceiptState::TaskHandoffActorBound(_))),
         "the receipt row left the ledger while its key was locked: {held:?}"
@@ -8054,7 +8556,7 @@ fn staged_handoff_completion_waits_for_the_key_lock() {
         })
     ));
     assert!(matches!(
-        receipt_actor_for_fixture(&runtime).recover(key, Instant::now() + Duration::from_secs(5)),
+        receipt_actor_for_fixture(&runtime).recover(key, Instant::now() + TEST_STEP),
         Err(ReceiptLedgerError::ReceiptNotFound)
     ));
     assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
@@ -8127,20 +8629,20 @@ fn exact_cancel_racing_the_handoff_completion_cancels_the_task() {
     );
 
     let mut first_session = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .expect("connect the first session");
     let first_call = call.clone();
     let first = thread::spawn(move || first_session.submit_invocation(first_call));
     held_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the handoff stops before its Task exists");
     let mut cancel_session = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .expect("connect the cancel session");
     let cancel_key = key.clone();
     let cancel = thread::spawn(move || cancel_session.cancel_invocation(cancel_key));
     cancel_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the cancel found no link and stands before its ledger write");
     {
         let (lock, changed) = &hooks.handoff_gate;
@@ -8208,7 +8710,7 @@ fn bound_handoff_completion_waits_for_the_key_lock() {
     );
     let handoff = prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun);
     let key = handoff.key().clone();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + TEST_STEP;
     let (_record, task_bound) = materialize_bound_handoff_for_fixture(
         &runtime,
         &handoff,
@@ -8230,8 +8732,7 @@ fn bound_handoff_completion_waits_for_the_key_lock() {
     };
     // A completion that ignored the lock would be done long before this.
     thread::sleep(Duration::from_millis(200));
-    let held = receipt_actor_for_fixture(&runtime)
-        .recover(key.clone(), Instant::now() + Duration::from_secs(5));
+    let held = receipt_actor_for_fixture(&runtime).recover(key.clone(), Instant::now() + TEST_STEP);
     assert!(
         matches!(held, Ok(ReceiptState::TaskHandoffActorBound(_))),
         "the receipt row left the ledger while its key was locked: {held:?}"
@@ -8244,7 +8745,7 @@ fn bound_handoff_completion_waits_for_the_key_lock() {
         .expect("completion thread")
         .expect("the handoff completes");
     assert!(matches!(
-        receipt_actor_for_fixture(&runtime).recover(key, Instant::now() + Duration::from_secs(5)),
+        receipt_actor_for_fixture(&runtime).recover(key, Instant::now() + TEST_STEP),
         Err(ReceiptLedgerError::ReceiptNotFound)
     ));
 }
@@ -8325,7 +8826,7 @@ fn committed_handoff_starts_its_task_after_the_deadline_was_spent() {
         submitted_task_snapshot(owner.submit_invocation(view_catalog_request(task_id, &root)));
     assert_eq!(first.task_id(), task_id);
     entered_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the Task starts its execution");
     release_tx.send(()).expect("release the execution");
     let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
@@ -8359,7 +8860,7 @@ fn recovery_terminalizes_a_bound_task_after_the_startup_deadline_was_spent() {
         V5ReceiptRuntime::open_with_epoch_clock(&state, &(config).receipt_runtime_config(), clock)
             .expect("open recovery runtime");
     let handoff = prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + TEST_STEP;
     let (record, task_bound) = materialize_bound_handoff_for_fixture(
         &runtime,
         &handoff,
@@ -8464,7 +8965,7 @@ fn promised_continuation_runs_its_task_after_the_deadline_was_spent() {
     );
     admission.release();
     entered_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the continuation executes the Task");
     release_tx.send(()).expect("release the execution");
     let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
@@ -8752,16 +9253,16 @@ fn cancel_during_task_materialization_by(
     );
 
     let mut submit_session = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .expect("connect the submit session");
     let submit = thread::spawn(move || submit_session.submit_invocation(call));
     match race {
         MaterializationRace::PromotedBegun | MaterializationRace::PromotedActorBound => held_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(TEST_STEP)
             .expect("the attempt stops before the cutoff"),
         MaterializationRace::InlineCutoff | MaterializationRace::InlineCutoffMarkedBeforeTask => {
             entered_rx
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(TEST_STEP)
                 .expect("the inline execution runs")
         }
         MaterializationRace::PromisedAdmission => admission
@@ -8790,11 +9291,11 @@ fn cancel_during_task_materialization_by(
         }
     }
     materializing_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the handoff stands before its Task link");
 
     let mut cancel_session = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .expect("connect the cancel session");
     let cancel_key = key.clone();
     let cancel = thread::spawn(move || match cancel_by {
@@ -8806,11 +9307,11 @@ fn cancel_during_task_materialization_by(
     MaterializationRaceHooks::open_gate(&hooks.materialize_gate);
     if cancel_races_start {
         cancel_write_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(TEST_STEP)
             .expect("the cancel read the Task");
         MaterializationRaceHooks::open_gate(&hooks.start_gate);
         started_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(TEST_STEP)
             .expect("the Task started under the cancel");
         MaterializationRaceHooks::open_gate(&hooks.cancel_write_gate);
     }
@@ -9052,18 +9553,16 @@ fn task_id_cancel_waits_for_the_staged_handoff_completion() {
                     handoff,
                     winner,
                     1_009,
-                    Instant::now() + Duration::from_secs(10),
+                    Instant::now() + TEST_STEP,
                 )
             })
         };
         linked_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(TEST_STEP)
             .expect("the staged Task link is published");
         let canceller = {
             let runtime = Arc::clone(&runtime);
-            thread::spawn(move || {
-                runtime.cancel_task(task_id, Instant::now() + Duration::from_secs(10))
-            })
+            thread::spawn(move || runtime.cancel_task(task_id, Instant::now() + TEST_STEP))
         };
         // A cancel that ignores the key's lock finishes in the window now.
         let until = Instant::now() + Duration::from_millis(500);
@@ -9179,11 +9678,11 @@ fn begun_promotion_after_the_early_look_executes_the_materialized_task() {
     let call = view_catalog_request(task_id, &root);
 
     let mut submit_session = owner
-        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .connect_peer_before(Instant::now() + TEST_STEP)
         .expect("connect the submit session");
     let submit = thread::spawn(move || submit_session.submit_invocation(call));
     held_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(TEST_STEP)
         .expect("the begun attempt passed its early look");
     clock.elapsed_ms.store(7_000, Ordering::SeqCst);
     // The handler promotes the begun attempt and answers with the working
@@ -9209,6 +9708,233 @@ fn begun_promotion_after_the_early_look_executes_the_materialized_task() {
     );
     drop(owner);
     stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
+
+/// Delays the preparation of a direct terminal — after its publication
+/// deadline is fixed and the terminal serialized, before the store command is
+/// queued — and counts what reached the store.
+#[derive(Default)]
+struct PublicationDelayHooks {
+    delay_ms: AtomicU64,
+    serialized: AtomicUsize,
+    prepared: AtomicUsize,
+    published: AtomicUsize,
+    fail_stopped: AtomicBool,
+}
+
+impl V5RuntimeHooks<CanonicalInvocationHost> for PublicationDelayHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn event(&self, event: V5ReceiptRuntimeEventKind, _epoch_ms: u64) {
+        if event == V5ReceiptRuntimeEventKind::ResultSerialized {
+            self.serialized.fetch_add(1, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(self.delay_ms.load(Ordering::SeqCst)));
+            self.prepared.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn direct_publication(
+        &self,
+        _publication: &CommittedDirectPublication,
+        _response_kind: &'static str,
+        origin: &'static str,
+        _oversized_candidate: Option<&DomainResult>,
+    ) {
+        // Only the first write of a terminal; recovery re-reads it.
+        if origin == "immediate_publication" {
+            self.published.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn forced_process_exit(&self, _grace: Option<Duration>) {
+        self.fail_stopped.store(true, Ordering::SeqCst);
+    }
+
+    fn releases_authority_on_fail_stop(&self) -> bool {
+        true
+    }
+}
+
+/// #984: preparing a direct answer, waiting in the store queue and the store
+/// step spend one publication deadline fixed before the preparation. A
+/// preparation that outlasts it leaves no budget for the store: the terminal is
+/// not written, no new budget is granted at the queue, and the daemon keeps
+/// serving. A short preparation still publishes the same terminal.
+#[test]
+fn direct_terminal_preparation_queue_and_store_share_one_publication_deadline() {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, workspace_root) = catalog_workspace();
+    let workspace_text = workspace_root.to_string_lossy().into_owned();
+    // A frozen invocation clock keeps every call on the direct path: the
+    // answer is the direct terminal, never a Task handed off at the cutoff.
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()),
+        clock,
+    ));
+    let hooks = Arc::new(PublicationDelayHooks::default());
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(60),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            (config).into_transport_config(),
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity.clone(),
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect owner");
+    let arguments = serde_json::Map::from_iter([(
+        "at".to_owned(),
+        serde_json::Value::String("main:Catalog.Items".to_owned()),
+    )]);
+    // A one-second answer budget: the publication deadline is the daemon's
+    // two-second durable floor from the frame, `DURABLE_STEP_BUDGET`.
+    let calls = AtomicUsize::new(0);
+    let call = |delay: Duration| {
+        let number = calls.fetch_add(1, Ordering::SeqCst) + 1;
+        hooks
+            .delay_ms
+            .store(delay.as_millis() as u64, Ordering::SeqCst);
+        let invocation_id = InvocationId::new();
+        let task_id = TaskId::new();
+        let key = ReceiptKey::new(
+            invocation_id,
+            task_id,
+            RequestIdentity::new(
+                identity.digest().clone(),
+                V5ToolIdentity::View,
+                normalized_arguments_hash(&arguments),
+                request_scope_hash(&workspace_text).expect("request scope"),
+            ),
+        );
+        let invocation = V5InvocationRequest::new(
+            invocation_id,
+            task_id,
+            V5ToolIdentity::View,
+            arguments.clone(),
+            unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace_text.clone()),
+            1_000,
+        )
+        .expect("valid view invocation");
+        let mut session = owner
+            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .expect("open a session for the call");
+        let submitted = session.submit_invocation(invocation);
+        // The caller may stop reading first; the verdict is what the daemon
+        // did once this call's preparation ended and its store step settled.
+        let until = Instant::now() + Duration::from_secs(30);
+        while hooks.prepared.load(Ordering::SeqCst) < number {
+            assert!(
+                Instant::now() < until,
+                "the preparation of call {number} never ended"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(500));
+        let mut peer = owner
+            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .expect("the daemon still admits sessions");
+        let recovered = peer
+            .recover_invocation_receipt(key.clone())
+            .expect("the daemon still answers recovery");
+        (submitted, recovered)
+    };
+
+    // Control: preparation well inside the deadline publishes the terminal.
+    // A loaded host may answer after the caller's budget; recovery reads it.
+    let (submitted, recovered) = call(Duration::from_millis(300));
+    assert!(
+        matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { receipt }
+            } if matches!(receipt.terminal(), ReceiptTerminalOutcome::Completed { result } if result.ok)
+        ),
+        "a short preparation publishes the direct terminal: {submitted:?} / {recovered:?}"
+    );
+    if let Ok(answered) = &submitted {
+        assert_eq!(answered, &recovered, "recovery reads the answered terminal");
+    }
+    assert_eq!(hooks.published.load(Ordering::SeqCst), 1);
+
+    // Preparation past the caller's answer budget (one second plus the
+    // serialization margin) but inside the publication deadline: the caller
+    // stops reading, yet the store still gets the rest of that deadline.
+    let (submitted, recovered) = call(Duration::from_millis(1_400));
+    assert!(
+        matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { receipt }
+            } if matches!(receipt.terminal(), ReceiptTerminalOutcome::Completed { result } if result.ok)
+        ),
+        "the rest of the publication deadline still writes the terminal: {submitted:?} / {recovered:?}"
+    );
+    assert_eq!(hooks.published.load(Ordering::SeqCst), 2);
+
+    // Preparation outlasts the publication deadline before the command is
+    // queued: the store must not get a fresh budget for the write.
+    let (submitted, recovered) = call(DURABLE_STEP_BUDGET + Duration::from_millis(300));
+    assert_eq!(hooks.serialized.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        hooks.published.load(Ordering::SeqCst),
+        2,
+        "a terminal prepared past its deadline reached the store: {submitted:?} / {recovered:?}"
+    );
+    assert!(
+        !matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { .. }
+            }
+        ),
+        "recovery shows no published terminal: {recovered:?}"
+    );
+    assert!(
+        !hooks.fail_stopped.load(Ordering::SeqCst),
+        "a deadline spent before the store is not an uncertain commit"
+    );
+
+    // The daemon keeps serving: the next call publishes normally.
+    let (submitted, recovered) = call(Duration::ZERO);
+    assert!(
+        matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { .. }
+            }
+        ),
+        "the daemon serves after the spent deadline: {submitted:?} / {recovered:?}"
+    );
+    assert_eq!(hooks.published.load(Ordering::SeqCst), 3);
+
+    stop.store(true, Ordering::SeqCst);
+    drop(owner);
     server
         .join()
         .expect("daemon thread did not panic")
