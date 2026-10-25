@@ -20,8 +20,10 @@ pub struct MetaRemoveTextRead {
     pub raw: Vec<u8>,
 }
 
+// #1119: the reference scan visits the whole source root, however many
+// entries the configuration holds; depth still guards against cycles.
 const META_REMOVE_MAX_TRAVERSAL_DEPTH: usize = 256;
-const META_REMOVE_MAX_TRAVERSAL_ENTRIES: usize = 1_000_000;
+const META_REMOVE_MAX_TRAVERSAL_ENTRIES: usize = usize::MAX;
 
 #[derive(Clone, Copy)]
 pub struct MetaRemoveTraversalLimits {
@@ -503,14 +505,6 @@ pub fn plan_meta_remove_subsystem_replacements_bounded(
 
     Ok(())
 }
-
-/// Largest single source file the reference scan will read.
-///
-/// The scan decides whether an object may be removed, so it reads every XML and
-/// BSL file under the source root. Without a per-file bound one oversized file
-/// would size the whole operation, and the traversal limits above only bound
-/// how many entries are visited, not how big each one is.
-pub const META_REMOVE_REFERENCE_FILE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 pub fn meta_remove_should_skip_file(
     file: &Path,
