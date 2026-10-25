@@ -1,6 +1,7 @@
 ---
 id: INV.RUNTIME.STORED-TASK-SECRETS
-check: []
+check:
+  - crates/unica-coder/src/infrastructure/daemon/server/stored_secret_tests.rs::a_connection_secret_from_configuration_and_runner_answer_is_not_stored_or_read_back
 gap: https://github.com/IngvarConsulting/unica/issues/980
 ---
 

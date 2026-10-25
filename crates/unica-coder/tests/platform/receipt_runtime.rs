@@ -9573,3 +9573,230 @@ fn begun_promotion_after_the_early_look_executes_the_materialized_task() {
         .expect("daemon thread did not panic")
         .expect("daemon exits cleanly");
 }
+
+/// Delays the preparation of a direct terminal — after its publication
+/// deadline is fixed and the terminal serialized, before the store command is
+/// queued — and counts what reached the store.
+#[derive(Default)]
+struct PublicationDelayHooks {
+    delay_ms: AtomicU64,
+    serialized: AtomicUsize,
+    prepared: AtomicUsize,
+    published: AtomicUsize,
+    fail_stopped: AtomicBool,
+}
+
+impl V5RuntimeHooks<CanonicalInvocationHost> for PublicationDelayHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn event(&self, event: V5ReceiptRuntimeEventKind, _epoch_ms: u64) {
+        if event == V5ReceiptRuntimeEventKind::ResultSerialized {
+            self.serialized.fetch_add(1, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(self.delay_ms.load(Ordering::SeqCst)));
+            self.prepared.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn direct_publication(
+        &self,
+        _publication: &CommittedDirectPublication,
+        _response_kind: &'static str,
+        origin: &'static str,
+        _oversized_candidate: Option<&DomainResult>,
+    ) {
+        // Only the first write of a terminal; recovery re-reads it.
+        if origin == "immediate_publication" {
+            self.published.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn forced_process_exit(&self, _grace: Option<Duration>) {
+        self.fail_stopped.store(true, Ordering::SeqCst);
+    }
+
+    fn releases_authority_on_fail_stop(&self) -> bool {
+        true
+    }
+}
+
+/// #984: preparing a direct answer, waiting in the store queue and the store
+/// step spend one publication deadline fixed before the preparation. A
+/// preparation that outlasts it leaves no budget for the store: the terminal is
+/// not written, no new budget is granted at the queue, and the daemon keeps
+/// serving. A short preparation still publishes the same terminal.
+#[test]
+fn direct_terminal_preparation_queue_and_store_share_one_publication_deadline() {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, workspace_root) = catalog_workspace();
+    let workspace_text = workspace_root.to_string_lossy().into_owned();
+    // A frozen invocation clock keeps every call on the direct path: the
+    // answer is the direct terminal, never a Task handed off at the cutoff.
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()),
+        clock,
+    ));
+    let hooks = Arc::new(PublicationDelayHooks::default());
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(60),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            (config).into_transport_config(),
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity.clone(),
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect owner");
+    let arguments = serde_json::Map::from_iter([(
+        "at".to_owned(),
+        serde_json::Value::String("main:Catalog.Items".to_owned()),
+    )]);
+    // A one-second answer budget: the publication deadline is the daemon's
+    // two-second durable floor from the frame, `DURABLE_STEP_BUDGET`.
+    let calls = AtomicUsize::new(0);
+    let call = |delay: Duration| {
+        let number = calls.fetch_add(1, Ordering::SeqCst) + 1;
+        hooks
+            .delay_ms
+            .store(delay.as_millis() as u64, Ordering::SeqCst);
+        let invocation_id = InvocationId::new();
+        let task_id = TaskId::new();
+        let key = ReceiptKey::new(
+            invocation_id,
+            task_id,
+            RequestIdentity::new(
+                identity.digest().clone(),
+                V5ToolIdentity::View,
+                normalized_arguments_hash(&arguments),
+                request_scope_hash(&workspace_text).expect("request scope"),
+            ),
+        );
+        let invocation = V5InvocationRequest::new(
+            invocation_id,
+            task_id,
+            V5ToolIdentity::View,
+            arguments.clone(),
+            unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace_text.clone()),
+            1_000,
+        )
+        .expect("valid view invocation");
+        let mut session = owner
+            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .expect("open a session for the call");
+        let submitted = session.submit_invocation(invocation);
+        // The caller may stop reading first; the verdict is what the daemon
+        // did once this call's preparation ended and its store step settled.
+        let until = Instant::now() + Duration::from_secs(30);
+        while hooks.prepared.load(Ordering::SeqCst) < number {
+            assert!(
+                Instant::now() < until,
+                "the preparation of call {number} never ended"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(500));
+        let mut peer = owner
+            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .expect("the daemon still admits sessions");
+        let recovered = peer
+            .recover_invocation_receipt(key.clone())
+            .expect("the daemon still answers recovery");
+        (submitted, recovered)
+    };
+
+    // Control: preparation well inside the deadline publishes the terminal.
+    // A loaded host may answer after the caller's budget; recovery reads it.
+    let (submitted, recovered) = call(Duration::from_millis(300));
+    assert!(
+        matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { receipt }
+            } if matches!(receipt.terminal(), ReceiptTerminalOutcome::Completed { result } if result.ok)
+        ),
+        "a short preparation publishes the direct terminal: {submitted:?} / {recovered:?}"
+    );
+    if let Ok(answered) = &submitted {
+        assert_eq!(answered, &recovered, "recovery reads the answered terminal");
+    }
+    assert_eq!(hooks.published.load(Ordering::SeqCst), 1);
+
+    // Preparation past the caller's answer budget (one second plus the
+    // serialization margin) but inside the publication deadline: the caller
+    // stops reading, yet the store still gets the rest of that deadline.
+    let (submitted, recovered) = call(Duration::from_millis(1_400));
+    assert!(
+        matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { receipt }
+            } if matches!(receipt.terminal(), ReceiptTerminalOutcome::Completed { result } if result.ok)
+        ),
+        "the rest of the publication deadline still writes the terminal: {submitted:?} / {recovered:?}"
+    );
+    assert_eq!(hooks.published.load(Ordering::SeqCst), 2);
+
+    // Preparation outlasts the publication deadline before the command is
+    // queued: the store must not get a fresh budget for the write.
+    let (submitted, recovered) = call(DURABLE_STEP_BUDGET + Duration::from_millis(300));
+    assert_eq!(hooks.serialized.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        hooks.published.load(Ordering::SeqCst),
+        2,
+        "a terminal prepared past its deadline reached the store: {submitted:?} / {recovered:?}"
+    );
+    assert!(
+        !matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { .. }
+            }
+        ),
+        "recovery shows no published terminal: {recovered:?}"
+    );
+    assert!(
+        !hooks.fail_stopped.load(Ordering::SeqCst),
+        "a deadline spent before the store is not an uncertain commit"
+    );
+
+    // The daemon keeps serving: the next call publishes normally.
+    let (submitted, recovered) = call(Duration::ZERO);
+    assert!(
+        matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { .. }
+            }
+        ),
+        "the daemon serves after the spent deadline: {submitted:?} / {recovered:?}"
+    );
+    assert_eq!(hooks.published.load(Ordering::SeqCst), 3);
+
+    stop.store(true, Ordering::SeqCst);
+    drop(owner);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}

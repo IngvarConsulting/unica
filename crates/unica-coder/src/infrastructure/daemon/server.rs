@@ -723,7 +723,12 @@ impl RunEngineDelivery {
         };
         match delivery {
             Some(result) => result,
-            None => run(cancellation),
+            None => {
+                // #2124: the result never carries a secret of the project's
+                // configuration, however the runner repeated it.
+                let secrets = super::runner_secrets::project_secrets(&self.workspace_hint);
+                super::runner_secrets::redact_result(run(cancellation), &secrets)
+            }
         }
     }
 }
@@ -1643,6 +1648,9 @@ mod legacy_inline_check_tests;
 
 #[cfg(test)]
 mod apply_answer_size_tests;
+
+#[cfg(test)]
+mod stored_secret_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
@@ -4204,6 +4212,11 @@ pub(crate) mod actor_capacity_tests {
 
         fn runtime(&self) -> &V5CanonicalInvocationRuntime {
             &self.canonical
+        }
+
+        /// The daemon's private state directory: receipts, tasks and links.
+        pub(crate) fn state_directory(&self) -> std::path::PathBuf {
+            DaemonStateDirectory::path_for(&self.state_root, &CoreIdentity::production_v5())
         }
 
         /// The owner lease that keeps the daemon alive for the test.
@@ -16608,26 +16621,8 @@ struct ActorLogicalReadLease {"#,
     /// after entering the mutating step, so the test cancels at a known point.
     /// Compiling it in the test keeps the same path on Unix and Windows.
     pub(crate) fn install_cancellable_create_runner(root: &std::path::Path) {
-        use sha2::{Digest, Sha256};
-
-        for name in ["UNICA_PLUGIN_ROOT", "UNICA_ARTIFACT_CACHE"] {
-            assert!(
-                std::env::var_os(name).is_none(),
-                "the runner fixture must not resolve a binary from {name}"
-            );
-        }
-
-        let plugin = root.join("plugins/unica");
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
-        let binary_name = format!("v8-runner{}", std::env::consts::EXE_SUFFIX);
-        let relative = format!("bin/{target}/{binary_name}");
-        let binary = plugin.join(&relative);
-        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
-        std::fs::create_dir_all(plugin.join("skills")).unwrap();
-        let source = root.join("runner-probe.rs");
-        std::fs::write(
-            &source,
+        install_runner_probe(
+            root,
             r##"
 use std::{env, fs, io::Write, thread, time::{Duration, Instant}};
 fn main() {
@@ -16650,8 +16645,30 @@ fn main() {
     println!(r#"{{"ok":true,"command":"infobase create","duration_ms":0,"data":{{"ok":true,"provider_dispatched":{},"steps":[{{"target":"infobase","action":"create","status":"{}","message":"probe","duration_ms":0}},{{"target":"edt_workspace","action":"import","status":"skipped","message":"probe","duration_ms":0}}],"duration_ms":0}},"warnings":[],"steps":[]}}"#, !dry_run, status);
 }
 "##,
-        )
-        .unwrap();
+        );
+    }
+
+    /// Compiles `probe` as the pinned v8-runner of a plugin rooted at `root`.
+    pub(crate) fn install_runner_probe(root: &std::path::Path, probe: &str) {
+        use sha2::{Digest, Sha256};
+
+        for name in ["UNICA_PLUGIN_ROOT", "UNICA_ARTIFACT_CACHE"] {
+            assert!(
+                std::env::var_os(name).is_none(),
+                "the runner fixture must not resolve a binary from {name}"
+            );
+        }
+
+        let plugin = root.join("plugins/unica");
+        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let binary_name = format!("v8-runner{}", std::env::consts::EXE_SUFFIX);
+        let relative = format!("bin/{target}/{binary_name}");
+        let binary = plugin.join(&relative);
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        std::fs::create_dir_all(plugin.join("skills")).unwrap();
+        let source = root.join("runner-probe.rs");
+        std::fs::write(&source, probe).unwrap();
         let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
         let compiled = std::process::Command::new(rustc)
             .arg("--edition=2021")

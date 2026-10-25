@@ -42,8 +42,8 @@ use crate::platform::filesystem::{
     open_regular_child_nofollow, prepare_file_for_removal,
     remove_identity_bound_empty_directory_child, remove_identity_bound_regular_child,
     rename_identity_bound_regular_child_no_replace, rename_no_replace,
-    retain_regular_child_for_cleanup, FileIdentity, PortablePermissions, RetainedChildCapability,
-    RetainedDirectoryCapability,
+    retain_regular_child_for_cleanup, CheckedReadError, FileIdentity, PortablePermissions,
+    RetainedChildCapability, RetainedDirectoryCapability,
 };
 
 #[cfg(any(test, feature = "test-support"))]
@@ -3231,13 +3231,20 @@ fn validate_retained_apply_state_at_parent_typed(
                     ),
                 ));
             }
-            // #1119: the retained preimage is read whole, as apply staged it.
-            Some(file.read_bounded(usize::MAX).map_err(|error| {
-                RetainedApplyValidationError::new(
-                    RetainedApplyValidationErrorKind::UnsupportedProvider,
-                    format!("retained apply preimage cannot be read: {error}"),
-                )
-            })?)
+            // #1119: the file is compared with the expected image in chunks,
+            // without a second copy and within the operation's deadline.
+            Some(match expected {
+                None => false,
+                Some(expected) => file
+                    .matches_checked(expected, || retained_apply_entry_checkpoint(entry))
+                    .map_err(|error| match error {
+                        CheckedReadError::Stopped(error) => error,
+                        CheckedReadError::Io(error) => RetainedApplyValidationError::new(
+                            RetainedApplyValidationErrorKind::UnsupportedProvider,
+                            format!("retained apply preimage cannot be read: {error}"),
+                        ),
+                    })?,
+            })
         }
         Ok(RetainedChildCapability::ReparsePoint) => {
             return Err(RetainedApplyValidationError::new(
@@ -3273,7 +3280,13 @@ fn validate_retained_apply_state_at_parent_typed(
             ))
         }
     };
-    if observed != *expected {
+    // `observed` is whether a present file holds the expected image.
+    let unchanged = match (observed, expected) {
+        (None, None) => true,
+        (Some(matches), Some(_)) => matches,
+        _ => false,
+    };
+    if !unchanged {
         let kind = if expected.is_none() {
             RetainedApplyValidationErrorKind::AbsentChainOccupied
         } else if observed.is_none() {
@@ -3720,6 +3733,7 @@ fn publish_retained_apply_change_inner(
                 displaced: Some(displaced),
             });
             validate_displaced_apply_preimage_typed(
+                entry,
                 journal
                     .last()
                     .and_then(|change| change.displaced.as_ref())
@@ -3763,6 +3777,7 @@ fn publish_retained_apply_change_inner(
 }
 
 fn validate_displaced_apply_preimage_typed(
+    entry: &PlannedRetainedApplyChange,
     displaced: &crate::platform::filesystem::RetainedRegularFileCapability,
     expected: &[u8],
 ) -> Result<(), RetainedApplyPublishError> {
@@ -3776,13 +3791,17 @@ fn validate_displaced_apply_preimage_typed(
             "retained apply destination gained a hard-link alias",
         ));
     }
-    // #1119: the displaced preimage is compared whole.
-    let observed = displaced.read_bounded(usize::MAX).map_err(|error| {
-        RetainedApplyPublishError::provider(format!(
-            "retained apply displaced preimage read failed: {error}"
-        ))
-    })?;
-    if observed != expected {
+    // #1119: the displaced preimage is compared in chunks, without a second
+    // copy and within the operation's deadline.
+    let unchanged = displaced
+        .matches_checked(expected, || retained_apply_entry_checkpoint(entry))
+        .map_err(|error| match error {
+            CheckedReadError::Stopped(error) => error.into(),
+            CheckedReadError::Io(error) => RetainedApplyPublishError::provider(format!(
+                "retained apply displaced preimage read failed: {error}"
+            )),
+        })?;
+    if !unchanged {
         return Err(RetainedApplyPublishError::new(
             RetainedApplyPublishErrorKind::ConcurrentRevision,
             "retained apply destination preimage changed at mutation boundary",
