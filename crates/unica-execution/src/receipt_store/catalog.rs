@@ -137,6 +137,7 @@ pub(super) fn validate_catalog_insert_batch(
 }
 
 pub(super) fn commit_catalog_insert(catalog: &mut ReceiptCatalog, entry: CatalogEntry) {
+    let entry = entry.without_result_body();
     catalog.actual_bytes += entry.live_actual_bytes();
     catalog.reserved_result_bytes += entry.reserved_result_bytes();
     catalog.tombstone_bytes += entry.tombstone_bytes();
@@ -431,6 +432,7 @@ pub(super) fn validate_catalog_replace_batch(
 }
 
 pub(super) fn commit_catalog_replace(catalog: &mut ReceiptCatalog, replacement: CatalogEntry) {
+    let replacement = replacement.without_result_body();
     let digest = replacement.record.key_digest.clone();
     let replacement_live_actual_bytes = replacement.live_actual_bytes();
     let replacement_reserved_result_bytes = replacement.reserved_result_bytes();

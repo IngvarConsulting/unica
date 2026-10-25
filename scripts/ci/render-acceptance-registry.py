@@ -89,7 +89,7 @@ ARGS_TITLES = {
     "Values": "`values`",
     "Items": "`items`",
     "Text": "`text`",
-    "Target": "только `at`",
+    "Target": "без аргументов; цель задаёт `at` вызова",
 }
 
 

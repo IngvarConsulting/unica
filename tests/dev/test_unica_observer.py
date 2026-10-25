@@ -336,6 +336,9 @@ class UnicaObserverTests(unittest.TestCase):
             # Пример контракта связывает наборы Left и Right, а в схеме
             # фикстуры один набор данных: имена надо брать из узла.
             "dataSetLink": "contract example names data sets absent from the node",
+            # У корня фикстуры нет Ext/CommandInterface.xml: документа
+            # интерфейса нет, и операция невыполнима (#2010).
+            "subsystemOrder": "root interface without a stored subsystem order",
         }
         root = self.view()
         pending = deque(f"{entry['name']}:Configuration" for entry in root["data"]["sourceSets"])
@@ -386,8 +389,12 @@ class UnicaObserverTests(unittest.TestCase):
                     if isinstance(child, dict) and "at" in child and not child["at"].endswith((".Caller", ".Callee"))
                 )
         self.assertGreaterEqual(len(passed), 10, passed)
+        # Порядки проходят предпросмотр на хранимой перестановке узла.
+        self.assertLessEqual({"commandOrder", "groupOrder"}, set(passed), passed)
         self.assertEqual(set(failed), set(known_gaps), failed)
-        self.assertTrue(unavailable_ops, "the fixture has implemented operations without a contract")
+        # Ветку «контракт недоступен» закрепляет протокольный тест: в фикстуре
+        # каждая реализованная операция публикует контракт.
+        self.assertEqual(unavailable_ops, set(), "implemented operations without a contract")
         self.assertEqual(tree_digest(self.workspace), self.before, "previews must not change workspace files")
 
     def test_foreign_origin_and_bad_length_are_refused(self) -> None:

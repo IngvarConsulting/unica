@@ -8999,7 +8999,7 @@
      "assertions": [
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Configuration"
+       "eq": "main:Configuration.Can.subsystemOrder.set"
       }
      ]
     }
@@ -16542,7 +16542,7 @@
      "assertions": [
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:CommonModule.Пример.Method.ОбработатьПример"
+       "eq": "main:CommonModule.Пример.Method.ОбработатьПример.Can.code.insert"
       }
      ]
     },
@@ -20521,7 +20521,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции"
+       "eq": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции.Can.code.replace"
       },
       {
        "pointer": "/next/1/args/at",
@@ -33423,7 +33423,7 @@
        "kind": "xml",
        "path": "src/Documents/Реализация.xml",
        "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
-       "eq": [
+       "sameItems": [
         "AccumulationRegister.Продажи",
         "AccumulationRegister.Остатки",
         "AccumulationRegister.Обороты"
@@ -33526,7 +33526,7 @@
        "kind": "xml",
        "path": "src/Documents/Реализация.xml",
        "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
-       "eq": [
+       "sameItems": [
         "AccumulationRegister.Продажи",
         "AccumulationRegister.Остатки",
         "AccumulationRegister.Обороты",
@@ -33641,7 +33641,7 @@
        "kind": "xml",
        "path": "src/Documents/Реализация.xml",
        "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
-       "eq": [
+       "sameItems": [
         "AccumulationRegister.Продажи",
         "AccumulationRegister.Остатки",
         "AccumulationRegister.Обороты",
@@ -37024,7 +37024,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей"
+       "eq": "main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей.Can.childSubsystem.remove"
       },
       {
        "pointer": "/next/1/args/at",
@@ -38240,7 +38240,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки"
+       "eq": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки.Can.code.insert"
       },
       {
        "pointer": "/next/1/args/at",
@@ -38984,7 +38984,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы"
+       "eq": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы.Can.commandOrder.set"
       },
       {
        "pointer": "/next/1/args/at",

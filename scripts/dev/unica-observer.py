@@ -665,6 +665,13 @@ def enforce_policy(verb: str, arguments: dict[str, Any], own_tasks: frozenset[st
 SKELETON: dict[str, Any] = {"from": "", "items": [], "values": {}, "text": "", "at": ""}
 CONTRACT_UNAVAILABLE_NOTE = "контракт недоступен (#1468)"
 CONTRACT_UNAVAILABLE_CODE = "unsupported_section"
+# Порядок — полная перестановка хранимого состава, и пример контракта из
+# одного имени её не даёт. Черновик берёт текущий порядок: поле значения,
+# ветка узла с элементами и ключ имени в элементе.
+ORDER_SEQUENCES: dict[str, tuple[str, str, str]] = {
+    "commandOrder.set": ("commands", "", "command"),
+    "groupOrder.set": ("groups", ".Group", "title"),
+}
 _MISSING = object()
 
 
@@ -894,7 +901,11 @@ class Observer:
         else:
             status = "refused"
             note = f"контракт не прочитан: {result.get('summary')}"
-        draft = build_draft(data.get("at") or at, entry, contract, data.get("props"))
+        props = data.get("props")
+        if op in ORDER_SEQUENCES:
+            field, branch, name = ORDER_SEQUENCES[op]
+            props = {field: self.stored_sequence(f"{data.get('at') or at}{branch}", name)}
+        draft = build_draft(data.get("at") or at, entry, contract, props)
         validation: list[str] = []
         unchecked: list[str] = []
         if contract is not None:
@@ -912,6 +923,24 @@ class Observer:
             "validationUnchecked": unchecked,
             "contractAnswer": result,
         }
+
+    def stored_sequence(self, at: str, name: str) -> list[str]:
+        """Имена элементов коллекции `at` в хранимом порядке, по всем страницам."""
+        names: list[str] = []
+        cursors: set[str] = set()
+        arguments: dict[str, Any] = {"at": at}
+        while True:
+            result = self.client.call_tool("view", arguments)["result"]
+            if not result.get("ok"):
+                raise ApiError(HTTPStatus.CONFLICT, f"stored order {at} refused: {result.get('summary')}")
+            names += [item[name] for item in (result.get("data") or {}).get("items") or [] if name in item]
+            cursor = result.get("cursor")
+            if not cursor:
+                return names
+            if cursor in cursors:
+                raise ApiError(HTTPStatus.CONFLICT, f"stored order {at} repeats cursor {cursor}")
+            cursors.add(cursor)
+            arguments = {"at": at, "cursor": cursor}
 
     def handle(self, method: str, path: str, body: dict[str, Any]) -> dict[str, Any]:
         if method == "GET" and path == "/api/info":
