@@ -520,9 +520,8 @@ impl FindIndex {
 
 /// One page of the ranked answer of [`FindIndex::find_all_checked`], built
 /// while the layout is walked. Each document is scored as it is read and
-/// dropped; only the `keep` best candidates by rank stay — the requested page
-/// and those before it, so a deep page of a broad query keeps up to its
-/// offset. Every match still counts toward the
+/// dropped; only the `keep` best candidates ranked after the previous page's
+/// last item stay, so memory follows the page size at any depth. Every match still counts toward the
 /// total and a fingerprint that does not depend on the order it was met in.
 /// Nearest names are scored on a second walk, only when nothing matched
 /// directly.
@@ -531,24 +530,30 @@ pub(crate) struct NameRanker {
     query: String,
     watched: HashMap<String, bool>,
     keep: usize,
+    /// The rank of the last item the previous page showed.
+    after: Option<(usize, String)>,
     nearest_pass: bool,
     best: BinaryHeap<Ranked>,
     matched: usize,
     fingerprint: [u64; 4],
     largest_item_bytes: usize,
+    largest_address_bytes: usize,
 }
 
 /// The candidates of one page and what identifies the whole ranked answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RankedNames {
-    /// The `keep` best candidates in rank order.
-    pub(crate) candidates: Vec<FindCandidate>,
+    /// The `keep` best candidates after the previous page, in rank order,
+    /// with their rank scores.
+    pub(crate) candidates: Vec<(usize, FindCandidate)>,
     pub(crate) nearest: bool,
     pub(crate) matched: usize,
     /// Count and order-free digest of every ranked match.
     pub(crate) fingerprint: [u8; 32],
     /// The largest public match, for the transport check of any page.
     pub(crate) largest_item_bytes: usize,
+    /// The longest address, for the size of any continuation keyed by it.
+    pub(crate) largest_address_bytes: usize,
 }
 
 struct Ranked {
@@ -600,17 +605,20 @@ impl NameRanker {
         request: FindRequest,
         watched: impl IntoIterator<Item = String>,
         keep: usize,
+        after: Option<(usize, String)>,
     ) -> Self {
         Self {
             query: normalize(&request.query),
             request,
             watched: watched.into_iter().map(|at| (at, false)).collect(),
             keep,
+            after,
             nearest_pass: false,
             best: BinaryHeap::new(),
             matched: 0,
             fingerprint: [0; 4],
             largest_item_bytes: 0,
+            largest_address_bytes: 0,
         }
     }
 
@@ -654,7 +662,13 @@ impl NameRanker {
             *lane = lane.wrapping_add(u64::from_le_bytes(*chunk));
         }
         self.matched = self.matched.saturating_add(1);
+        self.largest_address_bytes = self.largest_address_bytes.max(candidate.at.len());
         if self.keep == 0 {
+            return;
+        }
+        if self.after.as_ref().is_some_and(|(after_score, after_at)| {
+            (score, candidate.at.as_str()) <= (*after_score, after_at.as_str())
+        }) {
             return;
         }
         let ranked = Ranked { score, candidate };
@@ -681,6 +695,7 @@ impl NameRanker {
             matched: 0,
             fingerprint: [0; 4],
             largest_item_bytes: 0,
+            largest_address_bytes: 0,
             ..self
         }
     }
@@ -706,12 +721,13 @@ impl NameRanker {
                 .best
                 .into_sorted_vec()
                 .into_iter()
-                .map(|ranked| ranked.candidate)
+                .map(|ranked| (ranked.score, ranked.candidate))
                 .collect(),
             nearest: self.nearest_pass && self.matched > 0,
             matched: self.matched,
             fingerprint: fingerprint.finalize().into(),
             largest_item_bytes: self.largest_item_bytes,
+            largest_address_bytes: self.largest_address_bytes,
         }
     }
 }

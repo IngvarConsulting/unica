@@ -4585,37 +4585,52 @@ mod tests {
             let expected = directory
                 .find_all_checked(request.clone(), deadline(), &CancellationToken::new())
                 .unwrap();
-            let search = |keep| {
+            let search = |keep, after: Option<(usize, String)>| {
                 WorkspaceFindDirectoryBuilder::default()
                     .search_names(
                         &sources,
-                        NameRanker::new(request.clone(), [scope.to_string()], keep),
+                        NameRanker::new(request.clone(), [scope.to_string()], keep, after),
                         deadline(),
                         &CancellationToken::new(),
                     )
                     .unwrap()
             };
-            let searched = search(usize::MAX);
+            let candidates = |names: &crate::application::v13::find::RankedNames| {
+                names
+                    .candidates
+                    .iter()
+                    .map(|(_, candidate)| candidate.clone())
+                    .collect::<Vec<_>>()
+            };
+            let searched = search(usize::MAX, None);
             assert_eq!(
-                searched.names.candidates,
+                candidates(&searched.names),
                 expected.candidates(),
                 "{request:?}"
             );
             assert_eq!(searched.names.nearest, expected.is_nearest(), "{request:?}");
             assert_eq!(searched.names.matched, expected.candidates().len());
-            // A page keeps only its best candidates, yet counts and
-            // fingerprints every match as the whole answer does.
-            let page = search(1);
-            assert_eq!(
-                page.names.candidates,
-                expected.candidates()[..expected.candidates().len().min(1)]
-            );
-            assert_eq!(page.names.matched, searched.names.matched);
-            assert_eq!(page.names.fingerprint, searched.names.fingerprint);
-            assert_eq!(
-                page.names.largest_item_bytes,
-                searched.names.largest_item_bytes
-            );
+            // Pages of one candidate, each resuming after the last one shown,
+            // walk the whole answer in order; every page counts and
+            // fingerprints all matches as the whole answer does.
+            let mut paged = Vec::new();
+            let mut after = None;
+            loop {
+                let page = search(1, after.clone());
+                assert_eq!(page.names.matched, searched.names.matched);
+                assert_eq!(page.names.fingerprint, searched.names.fingerprint);
+                assert_eq!(
+                    page.names.largest_item_bytes,
+                    searched.names.largest_item_bytes
+                );
+                assert!(page.names.candidates.len() <= 1);
+                let Some((score, candidate)) = page.names.candidates.first() else {
+                    break;
+                };
+                after = Some((*score, candidate.at().to_owned()));
+                paged.push(candidate.clone());
+            }
+            assert_eq!(paged, expected.candidates(), "{request:?}");
             if request == FindRequest::new("Вылюты").unwrap() {
                 assert!(expected.is_nearest() && !expected.candidates().is_empty());
             }
@@ -4642,12 +4657,12 @@ mod tests {
         let searched = builder
             .search_names(
                 &sources,
-                NameRanker::new(FindRequest::new("Валюты").unwrap(), [], 1),
+                NameRanker::new(FindRequest::new("Валюты").unwrap(), [], 1, None),
                 ProviderDeadline::from_budget(Duration::from_secs(7)),
                 &CancellationToken::new(),
             )
             .expect("a name search is not bounded by the layout collection limit");
-        assert_eq!(searched.names.candidates[0].at(), "main:Catalog.Валюты");
+        assert_eq!(searched.names.candidates[0].1.at(), "main:Catalog.Валюты");
     }
 
     #[test]

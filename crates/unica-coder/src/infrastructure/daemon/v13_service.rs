@@ -55,7 +55,8 @@ use unica_code_intelligence::model::SearchRequest;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
 use unica_navigation::result_store::{
-    SearchCursorBinding, SearchCursorStore, StoredSearchCursor, ViewCursorBinding, ViewCursorStore,
+    SearchAfter, SearchCursorBinding, SearchCursorError, SearchCursorStore, StoredSearchCursor,
+    ViewCursorBinding, ViewCursorStore,
 };
 use unica_navigation::source_navigation::{
     SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
@@ -1583,6 +1584,31 @@ impl CanonicalV13ReadService {
         summary: String,
         extra_data: Map<String, Value>,
     ) -> DomainResult {
+        self.search_page_keyed(
+            matches,
+            None,
+            &SearchCursorStore::token_probe(),
+            cursor,
+            binding,
+            summary,
+            extra_data,
+        )
+    }
+
+    /// One search page. With `keys`, the rank of each match, the next
+    /// continuation resumes after the last match shown instead of at an
+    /// offset into an answer held whole.
+    #[allow(clippy::too_many_arguments)]
+    fn search_page_keyed(
+        &self,
+        matches: Vec<Value>,
+        keys: Option<&[SearchAfter]>,
+        cursor_probe: &str,
+        cursor: Option<(&str, StoredSearchCursor)>,
+        binding: SearchCursorBinding,
+        summary: String,
+        extra_data: Map<String, Value>,
+    ) -> DomainResult {
         use crate::application::v13::view::PREFERRED_PAGE_BYTES;
         use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
@@ -1593,7 +1619,14 @@ impl CanonicalV13ReadService {
         let mut page_matches = Vec::new();
         let mut byte_stop = false;
         let measured_bytes = |items: &[Value]| {
-            search_page_probe_bytes(mode, items, &summary, &extra_data, revision.as_deref())
+            search_page_probe_bytes_with(
+                mode,
+                items,
+                &summary,
+                &extra_data,
+                revision.as_deref(),
+                cursor_probe,
+            )
         };
         if measured_bytes(&[]) > MAX_CANONICAL_RESULT_BYTES {
             return error_result(
@@ -1641,9 +1674,16 @@ impl CanonicalV13ReadService {
                 Ok(offset) => offset,
                 Err(error) => return error.into_result(None),
             };
+            let after =
+                keys.and_then(|keys| consumed.checked_sub(1).and_then(|last| keys.get(last)));
             let issued = match cursor {
-                Some((_, stored)) => self.search_cursors.insert_next(&stored, next_offset),
-                None => self.search_cursors.insert_first(binding, next_offset),
+                Some((_, stored)) => {
+                    self.search_cursors
+                        .insert_next_after(&stored, next_offset, after)
+                }
+                None => self
+                    .search_cursors
+                    .insert_first_after(binding, next_offset, after),
             };
             let issued = match issued {
                 Ok(token) => token,
@@ -2103,15 +2143,20 @@ impl CanonicalV13ReadService {
             page_limit: limit,
         };
         // The question half of a continuation is checked before the walk:
-        // its offset decides how many ranked names the page keeps.
-        let offset = match arguments.get("cursor") {
-            None => 0,
+        // the rank it resumes after decides which names the page keeps.
+        let after = match arguments.get("cursor") {
+            None => None,
             Some(Value::String(token)) => {
                 match self
                     .search_cursors
-                    .question_offset(token, &binding_for(None))
+                    .question_position(token, &binding_for(None))
                 {
-                    Ok(offset) => offset,
+                    Ok((_, Some(after))) => match usize::try_from(after.score) {
+                        Ok(score) => Some((score, after.at)),
+                        Err(_) => return SearchCursorError::Invalid.into_result(None),
+                    },
+                    // A name continuation always carries its rank.
+                    Ok((_, None)) => return SearchCursorError::Invalid.into_result(None),
                     Err(error) => return error.into_result(None),
                 }
             }
@@ -2124,16 +2169,15 @@ impl CanonicalV13ReadService {
             }
         };
         // Walking the layout ranks the names and notes whether the scope
-        // exists; only the candidates up to this page and one more are kept.
+        // exists; only this page's candidates and one more are kept.
         let ranked_request = match &scope {
             Some(scope) => request.clone().with_scope(scope.clone()),
             None => request.clone(),
         };
         let watched = scope.as_ref().map(name_scope_witnesses).unwrap_or_default();
-        let keep = offset.saturating_add(limit).saturating_add(1);
         let built = match self.find_builder.search_names(
             &layout,
-            NameRanker::new(ranked_request, watched, keep),
+            NameRanker::new(ranked_request, watched, limit.saturating_add(1), after),
             deadline,
             cancellation,
         ) {
@@ -2177,7 +2221,11 @@ impl CanonicalV13ReadService {
         let mut extra_data = Map::new();
         extra_data.insert("sourceCoverage".to_owned(), coverage.clone());
         extra_data.insert("approximate".to_owned(), Value::Bool(found.nearest));
-        let empty_page_bytes = search_page_probe_bytes("names", &[], &summary, &extra_data, None);
+        // A name continuation is keyed by the rank of its last item; the
+        // probe reserves a key as long as the longest address.
+        let cursor_probe = SearchCursorStore::keyed_token_probe(found.largest_address_bytes.max(1));
+        let empty_page_bytes =
+            search_page_probe_bytes_with("names", &[], &summary, &extra_data, None, &cursor_probe);
         if empty_page_bytes > unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES {
             return error_result(
                 None,
@@ -2220,14 +2268,28 @@ impl CanonicalV13ReadService {
                 Err(error) => return error.into_result(None),
             },
         };
+        let keys = found
+            .candidates
+            .iter()
+            .map(|(score, candidate)| SearchAfter {
+                score: *score as u64,
+                at: candidate.at().to_owned(),
+            })
+            .collect::<Vec<_>>();
         let matches = found
             .candidates
             .iter()
-            .skip(offset)
-            .take(limit + 1)
-            .map(public_name_match)
+            .map(|(_, candidate)| public_name_match(candidate))
             .collect();
-        let result = self.search_page_with_data(matches, cursor, binding, summary, extra_data);
+        let result = self.search_page_keyed(
+            matches,
+            Some(&keys),
+            &cursor_probe,
+            cursor,
+            binding,
+            summary,
+            extra_data,
+        );
         if let Some(refusal) = name_search_interruption(deadline, cancellation) {
             return refusal;
         }
@@ -4006,12 +4068,30 @@ fn search_page_probe_bytes(
     extra_data: &Map<String, Value>,
     revision: Option<&str>,
 ) -> usize {
+    search_page_probe_bytes_with(
+        mode,
+        matches,
+        summary,
+        extra_data,
+        revision,
+        &SearchCursorStore::token_probe(),
+    )
+}
+
+fn search_page_probe_bytes_with(
+    mode: &str,
+    matches: &[Value],
+    summary: &str,
+    extra_data: &Map<String, Value>,
+    revision: Option<&str>,
+    cursor_probe: &str,
+) -> usize {
     let mut probe = DomainResult::success(summary.to_owned());
     probe.data = Some(search_page_data(mode, matches, extra_data));
     // "complete" is the longest terminal reason; a cursor also reserves
     // space even when this turns out to be the final page.
     probe.page = Some(json!({"stoppedBy": "complete"}));
-    probe.cursor = Some(SearchCursorStore::token_probe());
+    probe.cursor = Some(cursor_probe.to_owned());
     probe.rev = revision.map(str::to_owned);
     serde_json::to_vec(&probe).map_or(usize::MAX, |value| value.len())
 }
