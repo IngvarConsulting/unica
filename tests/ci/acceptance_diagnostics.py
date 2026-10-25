@@ -54,6 +54,9 @@ def prepare_diagnostic_case(server, scenario, *, plugin=None, fixtures=None):
             raise ValueError("helper invalidation requires the staged analyzer and owned fixtures")
         assert_held = fixtures.enter_context(legacy_broker_for_invalidation(plugin, server.workspace))
         return lambda verification: assert_held()
+    if scenario.get("driver") == "bsl-analyzer-form-diagnostics":
+        from tests.ci.form_runtime_diagnostics import prepare_case
+        return prepare_case(server, scenario)
     if scenario.get("driver") != "bsl-analyzer-diagnostics":
         return None
     source = server.workspace / "src"

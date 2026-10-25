@@ -8,6 +8,7 @@ check:
   - crates/unica-xdto-designer/src/writer.rs::xdto_writer_rejects_every_invalid_property_path_shape
   - crates/unica-xdto-designer/src/writer.rs::xdto_writer_addresses_a_dotted_property_identity_with_an_escape
   - crates/unica-xdto-designer/src/writer.rs::xdto_writer_separates_only_unescaped_property_path_dots
+  - crates/unica-xdto/src/operations.rs::property_rename_takes_its_target_from_the_address_and_only_the_new_name_from_values
 ---
 
 # Вложенное свойство XDTO задаётся адресом
@@ -23,6 +24,8 @@ check:
 добавляется новое; `property.remove` — само удаляемое свойство. Аргументов
 `propertyPath` и `name` у этих операций нет: вызов с ними отклоняется
 `bad_value`; `next` ведёт к адресу свойства, а если путь назван отдельно
-от имени удаляемого свойства — к коллекции свойств по этому пути. Внутренний писатель получает
+от имени удаляемого свойства — к коллекции свойств по этому пути.
+`property.rename` тоже адресует само свойство и принимает только
+`values.newName`; любое другое поле отклоняется `bad_value`. Внутренний писатель получает
 тот же путь, где `\.` — буквальная точка, а пустые сегменты и иное
 экранирование отклоняются.

@@ -177,6 +177,7 @@ pub fn attached_resource_relative(
     relative.push(owner_name);
     match rest {
         [] if (*owner_kind == "CommonForm" && resource == "Form.xml")
+            || (*owner_kind == "CommonTemplate" && resource == "Template.xml")
             || (*owner_kind == "Role" && resource == "Rights.xml")
             || (*owner_kind == "Subsystem" && resource == "CommandInterface.xml")
             || (*owner_kind == "XDTOPackage" && resource == "Package.bin")

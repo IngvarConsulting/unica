@@ -1,0 +1,44 @@
+{
+  "id": "S-1808-form-command-two-actions",
+  "issue": 1808,
+  "area": "Формы",
+  "task": "Прочитать событие Execute команды формы с двумя Action после слияния с расширением: событие остаётся invalid, не называет единственный обработчик и не подставляет шаблон каталога, а перечисляет обе привязки",
+  "workspace": "tests/fixtures/acceptance/workspace-form-command-actions",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Command.Обновить.Event.Execute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "invalid"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/signature",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/handlers",
+          "eq": [
+            {
+              "handler": "Обновить",
+              "implementationAt": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Обновить"
+            },
+            {
+              "handler": "Расш1_ОбновитьПосле"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
