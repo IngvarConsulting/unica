@@ -212,13 +212,15 @@ def generate(out: Path, profile: dict, scale: float, seed: int) -> dict:
     children = "".join(
         f"<{kind}>{name}</{kind}>" for kind in counts for name in names[kind]
     )
-    configuration = re.sub(
+    configuration, replaced = re.subn(
         r"(<ChildObjects>\s*<Language>Русский</Language>\s*<Language>English</Language>).*?(</ChildObjects>)",
         lambda m: m.group(1) + children + m.group(2),
         configuration,
         count=1,
         flags=re.DOTALL,
     )
+    if replaced != 1:
+        raise SystemExit("the template Configuration.xml no longer has the expected ChildObjects")
     (src / "Configuration.xml").write_text(BOM + configuration, encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(out)], check=True)
     for key, value in [("gc.auto", "0"), ("maintenance.auto", "false")]:

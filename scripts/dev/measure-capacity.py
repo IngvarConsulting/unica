@@ -160,7 +160,9 @@ def main(argv: list[str]) -> int:
                 rounds.append([timed(server, tool, arguments) for tool, arguments in plan(workspace)])
         except RuntimeError:
             server.stderr.flush()
-            sys.stderr.write((state / "stderr.log").read_text(errors="replace")[-3000:])
+            sys.stderr.write(
+                (state / "stderr.log").read_text(encoding="utf-8", errors="replace")[-3000:]
+            )
             raise
         finally:
             server.close()
@@ -168,7 +170,12 @@ def main(argv: list[str]) -> int:
         time.sleep(5)
         env = dict(os.environ, UNICA_PROVIDER_STATE_DIR=str(state))
         report = subprocess.run(
-            [str(binary), "--capacity-report"], capture_output=True, text=True, env=env, check=False
+            [str(binary), "--capacity-report"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            check=False,
         )
         try:
             capacity = json.loads(report.stdout) if report.stdout.strip() else None
