@@ -915,12 +915,9 @@ impl ApplyAdmission {
                         std::io::Error::other("apply dependency read stopped")
                     })
                 },
+                // #1119: an apply dependency is read whole; its size is the
+                // configuration's.
                 |chunk| {
-                    if chunk.len() > (16 * 1024 * 1024_usize).saturating_sub(bytes.len()) {
-                        return Err(std::io::Error::other(
-                            "apply dependency exceeds the input limit",
-                        ));
-                    }
                     bytes.extend_from_slice(chunk);
                     Ok(())
                 },

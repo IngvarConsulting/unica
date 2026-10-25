@@ -3230,7 +3230,8 @@ fn validate_retained_apply_state_at_parent_typed(
                     ),
                 ));
             }
-            Some(file.read_bounded(32 * 1024 * 1024).map_err(|error| {
+            // #1119: the retained preimage is read whole, as apply staged it.
+            Some(file.read_bounded(usize::MAX).map_err(|error| {
                 RetainedApplyValidationError::new(
                     RetainedApplyValidationErrorKind::UnsupportedProvider,
                     format!("retained apply preimage cannot be read: {error}"),
@@ -3774,7 +3775,8 @@ fn validate_displaced_apply_preimage_typed(
             "retained apply destination gained a hard-link alias",
         ));
     }
-    let observed = displaced.read_bounded(32 * 1024 * 1024).map_err(|error| {
+    // #1119: the displaced preimage is compared whole.
+    let observed = displaced.read_bounded(usize::MAX).map_err(|error| {
         RetainedApplyPublishError::provider(format!(
             "retained apply displaced preimage read failed: {error}"
         ))
