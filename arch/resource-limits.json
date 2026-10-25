@@ -2988,31 +2988,6 @@
       "review": null
     },
     {
-      "id": "daemon.stale-state-idle",
-      "class": "retention",
-      "resource": "Срок простоя, после которого демон удаляет устаревшее состояние: каталоги чужих идентичностей демона и файлы продолжения корневой проверки, не переписанные дольше срока.",
-      "unit": "ms",
-      "scope": "daemon",
-      "source": {
-        "file": "crates/unica-daemon/src/state_collection.rs",
-        "literal": "pub const STALE_DAEMON_STATE_IDLE: Duration = Duration::from_secs(7 * 24 * 60 * 60);",
-        "count": 1
-      },
-      "expr": "Duration::from_secs(7 * 24 * 60 * 60)",
-      "value": 604800000,
-      "applied": [
-        "crates/unica-daemon/src/state_collection.rs"
-      ],
-      "status": "unproven",
-      "origin": null,
-      "problem": null,
-      "onReach": "тихо: устаревший каталог или файл продолжения удаляется; следующая корневая проверка такого проекта идёт с начала",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
       "id": "daemon.accept-poll",
       "class": "step",
       "resource": "Пауза между опросами слушающего сокета демона на новые соединения.",
@@ -5133,30 +5108,6 @@
       "review": null
     },
     {
-      "id": "navigation.result-store-bytes",
-      "class": "retention",
-      "resource": "Суммарный объём отложенных результатов прежнего хранилища ResultStore в памяти.",
-      "unit": "bytes",
-      "scope": "cache",
-      "source": {
-        "file": "crates/unica-navigation/src/result_store.rs",
-        "symbol": "DEFAULT_MAX_TOTAL_BYTES"
-      },
-      "expr": "64 * 1024 * 1024",
-      "value": 67108864,
-      "applied": [
-        "crates/unica-navigation/src/result_store.rs"
-      ],
-      "status": "unproven",
-      "origin": "27a108daf (#537); в коде помечено «Temporary and unproven… see #1119»",
-      "problem": null,
-      "onReach": "вытесняются давно не читавшиеся записи хранилища результатов",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
       "id": "navigation.result-store-entries",
       "class": "retention",
       "resource": "Число записей хранилища отложенных результатов.",
@@ -5199,6 +5150,30 @@
       "origin": "#537",
       "problem": null,
       "onReach": "Запись удаляется; чтение ссылки отказывает result_expired.",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "navigation.result-store-bytes",
+      "class": "retention",
+      "resource": "Суммарный объём отложенных результатов прежнего хранилища ResultStore в памяти.",
+      "unit": "bytes",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-navigation/src/result_store.rs",
+        "symbol": "DEFAULT_MAX_TOTAL_BYTES"
+      },
+      "expr": "64 * 1024 * 1024",
+      "value": 67108864,
+      "applied": [
+        "crates/unica-navigation/src/result_store.rs"
+      ],
+      "status": "unproven",
+      "origin": "27a108daf (#537); в коде помечено «Temporary and unproven… see #1119»",
+      "problem": null,
+      "onReach": "вытесняются давно не читавшиеся записи хранилища результатов",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -5967,31 +5942,6 @@
       "review": null
     },
     {
-      "id": "project-health.resource-page-paths",
-      "class": "step",
-      "resource": "Число ресурсов одной страницы проверки ресурсов репозитория: страница проходит check-attr, политику атрибутов, EOL индекса и рабочих файлов и агрегаты LFS.",
-      "unit": "count",
-      "scope": "operation",
-      "source": {
-        "file": "crates/unica-project-health/src/inspection/resources.rs",
-        "literal": "const RESOURCE_PAGE_PATHS: usize = 4096;",
-        "count": 1
-      },
-      "expr": "4096",
-      "value": 4096,
-      "applied": [
-        "crates/unica-project-health/src/inspection/resources.rs"
-      ],
-      "status": "unproven",
-      "origin": "#1119",
-      "problem": null,
-      "onReach": "страница проверяется и начинается следующая; общий результат не ограничивается",
-      "issue": "#1119",
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
       "id": "project-health.staged-attributes-bytes",
       "class": "corpus",
       "resource": "Суммарный объём индексированных файлов .gitattributes, читаемых проверкой здоровья проекта.",
@@ -6656,6 +6606,56 @@
       "origin": "#266",
       "problem": null,
       "onReach": "ошибка «failed to atomically publish Unica cache state»",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "project-health.resource-page-paths",
+      "class": "step",
+      "resource": "Число ресурсов одной страницы проверки ресурсов репозитория: страница проходит check-attr, политику атрибутов, EOL индекса и рабочих файлов и агрегаты LFS.",
+      "unit": "count",
+      "scope": "operation",
+      "source": {
+        "file": "crates/unica-project-health/src/inspection/resources.rs",
+        "literal": "const RESOURCE_PAGE_PATHS: usize = 4096;",
+        "count": 1
+      },
+      "expr": "4096",
+      "value": 4096,
+      "applied": [
+        "crates/unica-project-health/src/inspection/resources.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119",
+      "problem": null,
+      "onReach": "страница проверяется и начинается следующая; общий результат не ограничивается",
+      "issue": "#1119",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "daemon.stale-state-idle",
+      "class": "retention",
+      "resource": "Срок простоя, после которого демон удаляет устаревшее состояние: каталоги чужих идентичностей демона и файлы продолжения корневой проверки, не переписанные дольше срока.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-daemon/src/state_collection.rs",
+        "literal": "pub const STALE_DAEMON_STATE_IDLE: Duration = Duration::from_secs(7 * 24 * 60 * 60);",
+        "count": 1
+      },
+      "expr": "Duration::from_secs(7 * 24 * 60 * 60)",
+      "value": 604800000,
+      "applied": [
+        "crates/unica-daemon/src/state_collection.rs"
+      ],
+      "status": "unproven",
+      "origin": null,
+      "problem": null,
+      "onReach": "тихо: устаревший каталог или файл продолжения удаляется; следующая корневая проверка такого проекта идёт с начала",
       "issue": null,
       "evidence": [],
       "decision": null,
