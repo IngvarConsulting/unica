@@ -4603,8 +4603,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             match canonical_v5_terminal(&outcome, H::MAX_SUPPORTED_BODY_RESPONSE_BYTES) {
                 Ok(terminal) => (terminal, false),
                 Err(CanonicalTerminalError::ResultTooLarge) => (
-                    crate::receipt_ledger::canonical_failed_terminal(
-                        V5SafeFailureReason::ResultTooLarge,
+                    crate::receipt_ledger::canonical_oversized_terminal(
+                        &outcome,
+                        H::MAX_SUPPORTED_BODY_RESPONSE_BYTES,
                     )
                     .map_err(|_| {
                         ReceiptLedgerError::Corrupt("canonical result-too-large terminal failed")
@@ -4962,8 +4963,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 match canonical_v5_terminal(&outcome, H::MAX_SUPPORTED_BODY_RESPONSE_BYTES) {
                     Ok(terminal) => terminal,
                     Err(CanonicalTerminalError::ResultTooLarge) => {
-                        crate::receipt_ledger::canonical_failed_terminal(
-                            V5SafeFailureReason::ResultTooLarge,
+                        crate::receipt_ledger::canonical_oversized_terminal(
+                            &outcome,
+                            H::MAX_SUPPORTED_BODY_RESPONSE_BYTES,
                         )
                         .map_err(|_| {
                             ReceiptLedgerError::Corrupt(
@@ -5549,8 +5551,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         let terminal = match canonical_v5_terminal(&outcome, H::MAX_SUPPORTED_BODY_RESPONSE_BYTES) {
             Ok(terminal) => terminal,
             Err(CanonicalTerminalError::ResultTooLarge) => {
-                crate::receipt_ledger::canonical_failed_terminal(
-                    V5SafeFailureReason::ResultTooLarge,
+                crate::receipt_ledger::canonical_oversized_terminal(
+                    &outcome,
+                    H::MAX_SUPPORTED_BODY_RESPONSE_BYTES,
                 )
                 .map_err(|_| {
                     ReceiptLedgerError::Corrupt(
@@ -6978,8 +6981,11 @@ fn rejection_terminal(
     match canonical_v5_terminal(outcome, max_supported_body_response_bytes) {
         Ok(terminal) => Ok(terminal),
         Err(CanonicalTerminalError::ResultTooLarge) => {
-            crate::receipt_ledger::canonical_failed_terminal(V5SafeFailureReason::ResultTooLarge)
-                .map_err(|_| ReceiptLedgerError::Corrupt("canonical size refusal failed"))
+            crate::receipt_ledger::canonical_oversized_terminal(
+                outcome,
+                max_supported_body_response_bytes,
+            )
+            .map_err(|_| ReceiptLedgerError::Corrupt("canonical size refusal failed"))
         }
         Err(CanonicalTerminalError::Serialization) => {
             Err(ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))

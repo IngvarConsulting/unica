@@ -3213,6 +3213,23 @@ fn assert_terminal_preflight(publication: &TerminalPublicationObservation) {
         payload
     );
     match terminal {
+        TerminalObservation::Completed { result, .. } if is_size_refusal(result) => {
+            // The size refusal replaces the oversized candidate: the evidence
+            // keeps the rejected bytes and the refusal names their exact size.
+            let candidate = preflight
+                .candidate_result()
+                .expect("size refusal must expose the rejected candidate bytes");
+            let rejected_bytes = result.data.as_ref().expect("size refusal names its sizes")
+                ["resultBytes"]
+                .as_u64()
+                .expect("resultBytes is a byte count") as usize;
+            let rejected = assert_artifact(candidate, rejected_bytes);
+            assert_eq!(rejected.len(), rejected_bytes);
+            assert_eq!(
+                result.data.as_ref().unwrap()["limitBytes"],
+                MAX_CANONICAL_RESULT_BYTES
+            );
+        }
         TerminalObservation::Completed { result, .. } => {
             let candidate = preflight
                 .candidate_result()
@@ -3524,6 +3541,18 @@ fn assert_terminal_bound_link(
         }
         other => panic!("terminal Task owner must end in sole TaskTerminalBound link: {other:?}"),
     }
+}
+
+fn is_size_refusal(result: &DomainResultObservation) -> bool {
+    !result.ok
+        && result
+            .diagnostics
+            .first()
+            .is_some_and(|diagnostic| diagnostic["code"] == "result_too_large")
+        && result
+            .data
+            .as_ref()
+            .is_some_and(|data| data.get("resultBytes").is_some())
 }
 
 fn assert_failed_terminal(terminal: &TerminalObservation, expected: V5SafeFailureReason) {
@@ -13466,13 +13495,17 @@ fn oversized_result_and_uncertain_store_commit_fail_closed() {
     ]));
     let oversized_snapshot = checkpoint(&oversized, "oversized");
     let oversized_receipt = only_receipt(oversized_snapshot);
-    assert_failed_terminal(
-        terminal_of_receipt(oversized_receipt),
-        V5SafeFailureReason::ResultTooLarge,
+    // An oversized result becomes a completed size refusal that names the
+    // exact rejected size and the limit instead of a bare closed failure.
+    let refusal = completed_result(terminal_of_receipt(oversized_receipt));
+    assert!(is_size_refusal(refusal), "{refusal:#?}");
+    assert_eq!(
+        refusal.data.as_ref().unwrap()["resultBytes"],
+        serde_json::json!(MAX_CANONICAL_RESULT_BYTES + 1)
     );
     let oversized_response = response(&oversized, "oversized");
     assert_eq!(oversized_response.kind, ResponseKind::Direct);
-    assert_eq!(oversized_response.error, Some(ErrorCode::ResultTooLarge));
+    assert_eq!(oversized_response.error, None);
     assert_eq!(
         response_terminal(oversized_response),
         terminal_of_receipt(oversized_receipt)

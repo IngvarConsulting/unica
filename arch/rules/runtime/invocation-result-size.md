@@ -2,6 +2,7 @@
 id: INV.APP.DAEMON-RESULT-SIZE
 check:
   - crates/unica-execution/src/receipt_ledger.rs::canonical_completed_terminal_rejects_result_over_eight_mib
+  - crates/unica-execution/src/receipt_ledger.rs::oversized_result_becomes_a_size_refusal_that_names_both_sizes
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::oversized_result_and_uncertain_store_commit_fail_closed
   - crates/unica-coder/src/interfaces/mcp.rs::tasks_projection_bounds_near_limit_wire_and_rejects_over_limit
 gap: https://github.com/IngvarConsulting/unica/issues/985
@@ -10,8 +11,11 @@ gap: https://github.com/IngvarConsulting/unica/issues/985
 # Размер результата ограничен одинаково для прямого ответа и задачи
 
 Сериализованный канонический результат операции не превышает 8 МиБ.
-Превышение превращается в закрытую ошибку `result_too_large`; слишком большой
-результат не выдаётся как успешный ответ и не сохраняется как результат успеха.
+Превышение превращается в отказ `result_too_large`: завершённый результат
+с `ok: false`, где `data.resultBytes` — фактический размер отвергнутого
+результата, а `data.limitBytes` — предел. Слишком большой результат не выдаётся
+как успешный ответ и не сохраняется. Закрытая ошибка без данных остаётся лишь
+на случай, когда не помещается и сам отказ.
 
 Передача вызова в задание не уменьшает допустимый размер: результат ровно
 8 МиБ остаётся допустимым. Служебные поля ответа имеют отдельный запас;
