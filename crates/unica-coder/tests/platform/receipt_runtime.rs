@@ -4407,8 +4407,12 @@ fn sixty_fifth_authenticated_owner_delivers_exact_cancellation() {
     cancellation_owner_crosses_admission_count(0, 64);
 }
 
+/// Every owner set the listener read, in order, with the time it read it.
+type ListenerOwnersLog = Arc<Mutex<Vec<(Instant, V5ListenerOwners)>>>;
+
 struct PromisedWorkIdleHooks {
     observations: mpsc::Sender<(Instant, bool)>,
+    owners: ListenerOwnersLog,
 }
 
 impl V5RuntimeHooks<CanonicalInvocationHost> for PromisedWorkIdleHooks {
@@ -4419,6 +4423,28 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for PromisedWorkIdleHooks {
     fn after_idle_owner_leases_read(&self, empty: bool) {
         let _ = self.observations.send((Instant::now(), empty));
     }
+
+    fn observes_listener_owners(&self) -> bool {
+        true
+    }
+
+    fn listener_owners_observed(&self, owners: V5ListenerOwners) {
+        self.owners.lock().unwrap().push((Instant::now(), owners));
+    }
+}
+
+/// Every owner set read once the clients had left names the owner that kept
+/// the daemon, so a test shows which counter its work enters.
+fn assert_held_by(
+    observed: &[V5ListenerOwners],
+    holds: impl Fn(&V5ListenerOwners) -> bool,
+    owner: &str,
+) {
+    assert!(!observed.is_empty(), "no owner set was read for {owner}");
+    assert!(
+        observed.iter().all(holds),
+        "{owner} did not hold the daemon: {observed:?}"
+    );
 }
 
 struct PromisedWorkIdleDaemon {
@@ -4429,6 +4455,7 @@ struct PromisedWorkIdleDaemon {
     record: V5EndpointRecord,
     observations: mpsc::Receiver<(Instant, bool)>,
     exited: mpsc::Receiver<()>,
+    owners: ListenerOwnersLog,
 }
 
 impl PromisedWorkIdleDaemon {
@@ -4443,9 +4470,16 @@ impl PromisedWorkIdleDaemon {
         idle_grace: Duration,
         service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
     ) -> Self {
-        Self::with_service_and_hooks(idle_grace, service, |observations| {
-            Arc::new(PromisedWorkIdleHooks { observations })
-        })
+        let owners = ListenerOwnersLog::default();
+        let recorded = Arc::clone(&owners);
+        let mut daemon = Self::with_service_and_hooks(idle_grace, service, |observations| {
+            Arc::new(PromisedWorkIdleHooks {
+                observations,
+                owners: recorded,
+            })
+        });
+        daemon.owners = owners;
+        daemon
     }
 
     fn with_service_and_hooks(
@@ -4487,7 +4521,31 @@ impl PromisedWorkIdleDaemon {
             record,
             observations: observed,
             exited,
+            owners: ListenerOwnersLog::default(),
         }
+    }
+
+    /// Every owner set the listener read after `since`.
+    fn owners_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
+        self.owners
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(observed, _)| *observed >= since)
+            .map(|(_, owners)| *owners)
+            .collect()
+    }
+
+    /// The owner sets the listener read after `since` with no client lease:
+    /// what kept the daemon once every client had left.
+    fn owners_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
+        self.owners
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(observed, owners)| *observed >= since && !owners.client_leases)
+            .map(|(_, owners)| *owners)
+            .collect()
     }
 
     fn owner(&mut self) -> (TcpStream, BufReader<TcpStream>) {
@@ -4676,7 +4734,13 @@ fn daemon_idle_saved_apply_plan_preserves_instance_and_exact_replay_after_owner_
     );
     release_promised_work_owner(owner);
 
+    let released = Instant::now();
     let observed = daemon.observe_idle_interval(idle * 3);
+    assert_held_by(
+        &daemon.owners_without_clients_since(released),
+        |owners| owners.retained_workspace_work && !owners.task_cancellations,
+        "the saved plan, as retained workspace work",
+    );
     assert_eq!(
         daemon.endpoint(),
         Some(daemon.record.clone()),
@@ -4889,6 +4953,7 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
         .recv_timeout(Duration::from_secs(2))
         .expect("the real SharedWork producer starts");
     release_promised_work_owner(owner);
+    let released = Instant::now();
     let observed = daemon.observe_idle_interval(idle * 3);
     assert_eq!(
         daemon.endpoint(),
@@ -4896,6 +4961,11 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
         "idle shutdown lost a running index producer after the RPC and its lease ended"
     );
     assert!(observed);
+    assert_held_by(
+        &daemon.owners_without_clients_since(released),
+        |owners| owners.retained_workspace_work && !owners.task_cancellations,
+        "the running producer, as retained workspace work",
+    );
     let mut successor = daemon.owner();
     assert!(call(&mut successor).ok);
     let lease = joined
@@ -5036,9 +5106,15 @@ fn daemon_idle_live_task_after_client_release_preserves_attempt_then_retires() {
     assert_eq!(initial.invocation_id(), invocation.invocation_id());
     executing.recv_timeout(Duration::from_secs(3)).unwrap();
     release_promised_work_owner(owner);
+    let released = Instant::now();
 
     assert!(daemon.observe_idle_interval(idle * 3));
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
+    assert_held_by(
+        &daemon.owners_without_clients_since(released),
+        |owners| owners.task_cancellations,
+        "the live Task, through its cancellation registration",
+    );
     let mut successor = daemon.owner();
     let V5ServerResponse::Task { snapshot: running } = idle_request_over_tcp(
         &mut successor,
@@ -5097,11 +5173,19 @@ fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
     executing.recv_timeout(Duration::from_secs(3)).unwrap();
     owner.0.shutdown(std::net::Shutdown::Both).unwrap();
     drop(owner);
+    let disconnected = Instant::now();
 
     // The client has left, but the synchronous handler still owns its lease
     // until this invocation returns. Do not call its registry empty.
     assert!(daemon.observe_until(Instant::now() + idle * 3));
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
+    // Besides that lease, the begun attempt holds through its own
+    // cancellation registration.
+    assert_held_by(
+        &daemon.owners_since(disconnected),
+        |owners| owners.task_cancellations,
+        "the begun inline attempt, through its cancellation registration",
+    );
     let mut successor = daemon.owner();
     cleanup.release();
     // The released handler may not have published its receipt when the repeat
@@ -5228,7 +5312,13 @@ fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
         panic!("the producer must finish before the lease-only idle interval");
     };
 
+    let released = Instant::now();
     assert!(daemon.observe_idle_interval(idle * 3));
+    assert_held_by(
+        &daemon.owners_without_clients_since(released),
+        |owners| owners.retained_workspace_work && !owners.task_cancellations,
+        "the needed lease, as retained workspace work",
+    );
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
     let mut successor = daemon.owner();
     assert!(call(&mut successor).ok);

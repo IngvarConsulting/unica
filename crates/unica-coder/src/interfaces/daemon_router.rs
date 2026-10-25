@@ -221,7 +221,10 @@ fn build_router(
     let wait_client = Arc::clone(&client);
     let wait: Arc<CanonicalTaskWaitHandler> =
         Arc::new(move |task_id, wait_ms, deadline, cancellation| {
-            let cutoff = wait_transport_cutoff(wait_ms, deadline);
+            // Connect and exchange spend the frontend's own transport cutoff,
+            // as `get` and `cancel` do; `waitMs` bounds only the daemon wait.
+            let cutoff = deadline.transport_cutoff();
+            let wait_cutoff = daemon_wait_cutoff(wait_ms, deadline);
             let mut peer = task_peer(&wait_client, cutoff)?;
             let control_timer = TaskObservationTimer::start(cutoff);
             let interrupt = peer.observation_interrupt_handle().map_err(|_| {
@@ -245,8 +248,8 @@ fn build_router(
                     ))
                 })?;
             // The daemon wait shrinks by what connect and handshake already spent
-            // and by the response margin; the cutoff itself never moves.
-            let bounded_wait_ms = bounded_wait_ms(wait_ms, cutoff, Instant::now());
+            // and by the response margin; neither cutoff ever moves.
+            let bounded_wait_ms = bounded_wait_ms(wait_ms, wait_cutoff, Instant::now());
             peer.wait_task_before(task_id, bounded_wait_ms, cutoff)
         });
     let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, deadline| {
@@ -283,11 +286,13 @@ fn task_peer(
     })
 }
 
-/// `unica.task.result` gets its own cutoff, derived once from the moment the
-/// frontend received the request: the requested wait plus one response
-/// margin, never beyond the frontend transport cutoff. Time spent before the
-/// router runs is never replenished.
-pub(super) fn wait_transport_cutoff(
+/// The end of the daemon wait of `unica.task.result`, derived once from the
+/// moment the frontend received the request: the requested wait plus one
+/// response margin, never beyond the frontend transport cutoff. Time spent
+/// before the daemon wait starts is never replenished. Connect and exchange
+/// are bounded by the transport cutoff, not by this one: a ready result read
+/// with `waitMs: 0` on a slow host arrives as the result.
+pub(super) fn daemon_wait_cutoff(
     requested_wait_ms: u64,
     deadline: FrontendInvocationDeadline,
 ) -> Instant {
@@ -1648,6 +1653,43 @@ mod tests {
             }
             assert_eq!(fake.submissions(), 1, "{case}: submitted again");
         }
+    }
+
+    /// A first submit is never answered with a pending receipt. If one is,
+    /// the frontend refuses with the closed `receipt_pending` and neither
+    /// submits again nor starts a recovery of its own.
+    #[test]
+    fn a_first_submit_answered_receipt_pending_is_a_closed_refusal_without_resubmit() {
+        let frames = Arc::new(AtomicUsize::new(0));
+        let script_frames = Arc::clone(&frames);
+        let fake = FakeDaemon::start(Box::new(move |raw, request| {
+            script_frames.fetch_add(1, Ordering::SeqCst);
+            match request {
+                V5ClientRequest::SubmitInvocation { .. } => Step::Reply(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::ReceiptPending {
+                        receipt_key: daemon_side_key(raw),
+                        phase: unica_execution::receipt_runtime::response::V5InvocationPhase::ReservedBegun,
+                        accepted_epoch_ms: epoch_ms_now(),
+                        original_budget_ms: 100,
+                        cancel_requested: false,
+                    },
+                }),
+                other => panic!("a pending first answer must not be recovered: {other:?}"),
+            }
+        }));
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+
+        let refused = call(&router, None).expect_err("a pending first answer is refused");
+        assert_eq!(
+            refused.data,
+            Some(serde_json::json!({"code": "receipt_pending"}))
+        );
+        assert_eq!(fake.submissions(), 1);
+        assert_eq!(
+            frames.load(Ordering::SeqCst),
+            1,
+            "no frame follows the submit"
+        );
     }
 
     #[test]
@@ -3167,6 +3209,62 @@ mod tests {
         assert_eq!(service.executions.load(Ordering::SeqCst), 1);
         drop(router);
         daemon.finish();
+    }
+
+    /// The daemon answers a first ordinary submit with its result or its
+    /// Task, never with a pending receipt: inline, known as long, or failing.
+    /// Each call runs once. Past its cutoff the answer is the Task, as the
+    /// handoff tests show through the router.
+    #[test]
+    fn a_first_submit_is_answered_directly_or_by_its_task_never_pending() {
+        let failure = unica_execution_contract::invocation::InvocationFailure::new(
+            "scripted",
+            "the scripted call failed",
+        );
+        for (case, delay, known_long, outcome, budget_ms, expect_task) in [
+            ("inline", Duration::ZERO, false, None, 5_000, false),
+            ("known long", Duration::ZERO, true, None, 5_000, true),
+            (
+                "failing inline",
+                Duration::ZERO,
+                false,
+                Some(Err(failure)),
+                5_000,
+                false,
+            ),
+        ] {
+            let service = Arc::new(ScriptedService {
+                delay,
+                known_long,
+                outcome: Mutex::new(outcome),
+                executions: AtomicUsize::new(0),
+            });
+            let daemon = LiveDaemon::start(service.clone());
+            let search = json!({"query": "Товары"}).as_object().unwrap().clone();
+            let invocation = raw_invocation(&daemon, V5ToolIdentity::Search, &search, budget_ms);
+            let answer = daemon
+                .owner()
+                .submit_invocation_before(invocation, Instant::now() + Duration::from_secs(10))
+                .unwrap_or_else(|error| {
+                    panic!("{case}: the first submit was not answered: {error:?}")
+                });
+            match &answer {
+                V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task { .. },
+                } => assert!(expect_task, "{case}: {answer:?}"),
+                V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Direct { .. },
+                } => assert!(!expect_task, "{case}: {answer:?}"),
+                other => panic!("{case}: a first submit must not answer {other:?}"),
+            }
+            let started = Instant::now();
+            while service.executions.load(Ordering::SeqCst) == 0
+                && started.elapsed() < Duration::from_secs(5)
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(service.executions.load(Ordering::SeqCst), 1, "{case}");
+        }
     }
 
     #[test]
