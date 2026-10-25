@@ -118,7 +118,7 @@ pub(super) fn prepare(
     hasher.update(b"unica-v13-workspace-inspection-v1\0");
     hasher.update(canonical_root.as_os_str().as_encoded_bytes());
     let continuation = (question == RootQuestion::Verdict)
-        .then(|| continuations.for_workspace(&canonical_root, &context.cache_root))
+        .then(|| continuations.for_workspace(&canonical_root))
         .flatten();
     Preparation::Ready(Arc::new(PreparedWorkspaceInspection {
         context,
@@ -965,6 +965,16 @@ mod tests {
         (workspace, root)
     }
 
+    /// A store over daemon state outside the workspace, as the daemon keeps it.
+    fn continuation_store() -> (tempfile::TempDir, super::RootCheckContinuationStore) {
+        let state = tempfile::tempdir().unwrap();
+        let store = super::RootCheckContinuationStore::in_directory(
+            state.path().join("project-health"),
+            std::time::Duration::from_secs(3600),
+        );
+        (state, store)
+    }
+
     /// Stage `paths` with one shared blob and no working files, the way a
     /// large repository looks to the index without writing every file.
     fn stage_synthetic_paths(root: &std::path::Path, paths: impl Iterator<Item = String>) {
@@ -1080,8 +1090,74 @@ mod tests {
     }
 
     #[test]
-    fn root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint() {
+    fn root_check_keeps_its_continuation_outside_the_workspace_and_a_new_daemon_continues() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use std::sync::Arc;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_project_health::inspection::resources::stop_staged_eol_after_for_test;
+        use unica_work_control::cancellation::CancellationToken;
+
+        let (_workspace, root) = eol_check_fixture();
+        let state = tempfile::tempdir().unwrap();
+        let directory = state.path().join("project-health");
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let check = |stop_after: Option<usize>| {
+            // Every call opens its own store over the same state, as a
+            // restarted daemon would.
+            let store = RootCheckContinuationStore::in_directory(
+                directory.clone(),
+                std::time::Duration::from_secs(3600),
+            );
+            if let Some(stop_after) = stop_after {
+                stop_staged_eol_after_for_test(stop_after);
+            }
+            let Preparation::Ready(inspection) = prepare(
+                &request,
+                InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+                &store,
+            ) else {
+                panic!("root check must prepare");
+            };
+            inspection
+                .execute(CancellationToken::new())
+                .unwrap()
+                .data
+                .unwrap()
+        };
+        let workspace_before = unica_workspace::test_support::tree_snapshot(&root);
+
+        let first = check(Some(1));
+        assert_eq!(first["readinessState"], "incomplete");
+        assert_eq!(first["inspectionProgress"]["stagedEolRetained"], 1);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        // The next call proves the path the first one proved without asking
+        // Git again; starting over would retain nothing before its stop.
+        let second = check(Some(0));
+        assert_eq!(second["readinessState"], "incomplete");
+        assert_eq!(second["inspectionProgress"]["stagedEolRetained"], 1);
+        let third = check(None);
+        assert_eq!(third["readinessState"], "complete");
+        assert_eq!(third["repositoryReady"], true);
+
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&root),
+            workspace_before,
+            "a root check leaves the workspace unchanged"
+        );
+    }
+
+    #[test]
+    fn root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint() {
+        use super::{prepare, Preparation};
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use std::sync::Arc;
         use unica_execution::clock::TokioClock;
@@ -1098,7 +1174,7 @@ mod tests {
             7_000,
         )
         .unwrap();
-        let continuations = RootCheckContinuationStore::default();
+        let (_state, continuations) = continuation_store();
         stop_staged_eol_after_for_test(1);
         let Preparation::Ready(first) = prepare(
             &request,
@@ -1133,7 +1209,7 @@ mod tests {
 
     #[test]
     fn root_eol_timeout_keeps_earlier_attribute_failure() {
-        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use super::{prepare, Preparation};
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use std::sync::Arc;
         use unica_execution::clock::TokioClock;
@@ -1162,10 +1238,11 @@ mod tests {
         )
         .unwrap();
         stop_staged_eol_after_for_test(0);
+        let (_state, continuations) = continuation_store();
         let Preparation::Ready(inspection) = prepare(
             &request,
             InvocationResponseDeadline::capture(Arc::new(TokioClock)),
-            &RootCheckContinuationStore::default(),
+            &continuations,
         ) else {
             panic!("root check must prepare");
         };
@@ -1189,7 +1266,7 @@ mod tests {
 
     #[test]
     fn root_check_resumes_inside_working_file_without_losing_attribute_failure() {
-        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use super::{prepare, Preparation};
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use std::sync::Arc;
         use unica_execution::clock::TokioClock;
@@ -1225,7 +1302,7 @@ mod tests {
         )
         .unwrap();
         let normalized_root = super::normalize_path_identity(&root).unwrap();
-        let continuations = RootCheckContinuationStore::default();
+        let (_state, continuations) = continuation_store();
         for step in 0..4 {
             if step < 3 {
                 stop_working_eol_after_block_for_test();
@@ -1255,9 +1332,7 @@ mod tests {
             );
             if step < 3 {
                 assert_eq!(data["readinessState"], "incomplete");
-                let state = continuations
-                    .for_workspace(&normalized_root, &root.join(".build/unica"))
-                    .unwrap();
+                let state = continuations.for_workspace(&normalized_root).unwrap();
                 assert_eq!(
                     state
                         .lock()

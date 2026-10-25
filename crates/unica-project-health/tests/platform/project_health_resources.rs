@@ -1234,7 +1234,7 @@ fn continued_repository_eol_resumes_after_a_staged_timeout_and_rechecks_working_
         )
         .unwrap();
     let root = repository.repository_root.as_ref().unwrap();
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     super::stop_staged_eol_after_for_test(1);
     let first = SourceResourcePolicyInspector::new()
         .inspect_excluding_continued(
@@ -1411,7 +1411,7 @@ fn continued_repository_eol_uses_bounded_git_batches() {
         .inspect_base(&fixture.context, &layout, &cancellation, deadline)
         .unwrap();
     let runner = BatchCountingRunner::default();
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     let inspection = SourceResourcePolicyInspector::with_process_runner(
         &runner,
         crate::inspection::TEST_RESPONSE_HANDOFF_WINDOW,
@@ -1510,7 +1510,7 @@ fn continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity() 
         })
     };
 
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     let first = EolBatchCountingRunner::default();
     super::stop_staged_eol_after_for_test(FIRST_RUN);
     assert!(index_eol_not_run(&inspect(&first, &mut continuation)));
@@ -1519,7 +1519,7 @@ fn continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity() 
 
     // A new continuation over the same cache finds the evidence on disk and
     // inspects only the paths the first call did not reach.
-    let mut continued = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continued = super::ResourceContinuation::new(&fixture.continuation_file());
     let second = EolBatchCountingRunner::default();
     assert!(!index_eol_not_run(&inspect(&second, &mut continued)));
     assert_eq!(
@@ -1528,6 +1528,51 @@ fn continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity() 
     );
     assert_eq!(continued.progress.staged_eol_retained, text_resources);
     assert_eq!(continued.index_eol_keys_for_test().len(), text_resources);
+}
+
+#[test]
+fn root_check_continuations_live_in_their_directory_and_age_out() {
+    let state = TempDir::new().unwrap();
+    let directory = state.path().join("project-health");
+    fs::create_dir_all(&directory).unwrap();
+    let abandoned = directory.join("abandoned.bin");
+    let recent = directory.join("recent.bin");
+    fs::write(&abandoned, b"old").unwrap();
+    fs::write(&recent, b"new").unwrap();
+    let modified = std::time::SystemTime::now() - Duration::from_secs(3 * 3600);
+    fs::File::options()
+        .write(true)
+        .open(&abandoned)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+
+    let store = super::RootCheckContinuationStore::in_directory(
+        directory.clone(),
+        Duration::from_secs(3600),
+    );
+
+    assert!(!abandoned.exists(), "a file past its retention is removed");
+    assert!(recent.exists(), "a file within its retention is kept");
+    let workspace = TempDir::new().unwrap();
+    let continuation = store.for_workspace(workspace.path()).unwrap();
+    let file = continuation.lock().unwrap().file.clone();
+    assert_eq!(file.parent(), Some(directory.as_path()));
+    let name = file.file_name().unwrap().to_str().unwrap();
+    assert!(
+        name.len() == 36
+            && name.ends_with(".bin")
+            && name[..32].bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{name}"
+    );
+    assert!(super::RootCheckContinuationStore::default()
+        .for_workspace(workspace.path())
+        .is_none());
+    // A missing directory is not an error: it is created on the first write.
+    super::RootCheckContinuationStore::in_directory(
+        state.path().join("absent"),
+        Duration::from_secs(3600),
+    );
 }
 
 #[test]
@@ -1596,7 +1641,7 @@ fn continued_repository_eol_halves_a_timed_out_batch_on_retry() {
         timed_out: Cell::new(false),
         eol_batch_sizes: RefCell::new(Vec::new()),
     };
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     let first = SourceResourcePolicyInspector::with_process_runner(
         &runner,
         crate::inspection::TEST_RESPONSE_HANDOFF_WINDOW,
@@ -1691,7 +1736,7 @@ fn continued_repository_eol_keeps_batch_width_after_short_first_budget() {
         )
         .unwrap();
     let runner = TimeoutFirstEolRunner(Cell::new(false));
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     let incomplete = SourceResourcePolicyInspector::with_process_runner(
         &runner,
         crate::inspection::TEST_RESPONSE_HANDOFF_WINDOW,
@@ -1783,7 +1828,7 @@ fn continued_repository_eol_keeps_batch_width_across_later_timeouts() {
         eol_calls: Cell::new(0),
         completed_batch_sizes: RefCell::new(Vec::new()),
     };
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     for expected_retained in [64, 128] {
         continuation.progress = Default::default();
         let incomplete = SourceResourcePolicyInspector::with_process_runner(
@@ -1882,7 +1927,7 @@ fn continued_repository_eol_keeps_pending_batch_size_when_deadline_expires_befor
         *ORIGIN.get_or_init(Instant::now) + Duration::from_millis(3),
         advancing_clock,
     );
-    let mut continuation = super::ResourceContinuation::new(root.path());
+    let mut continuation = super::ResourceContinuation::new(&root.path().join("continuation.bin"));
     let mut records = BTreeMap::new();
     let result = SourceResourcePolicyInspector::with_process_runner(
         &FailingRunner,
@@ -1944,7 +1989,7 @@ fn continued_repository_eol_rejects_extra_batch_record_without_cache_commit() {
     let repository = GitRepositoryInspector::new()
         .inspect_base(&fixture.context, &layout, &cancellation, deadline)
         .unwrap();
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     let inspection = SourceResourcePolicyInspector::with_process_runner(
         &ExtraEolRecordRunner,
         crate::inspection::TEST_RESPONSE_HANDOFF_WINDOW,
@@ -2036,7 +2081,7 @@ fn continued_repository_eol_bounds_batch_by_git_blob_sizes() {
             .unwrap(),
         eol_batch_sizes: RefCell::new(Vec::new()),
     };
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     let inspection = SourceResourcePolicyInspector::with_process_runner(
         &runner,
         crate::inspection::TEST_RESPONSE_HANDOFF_WINDOW,
@@ -2118,7 +2163,7 @@ fn continued_repository_eol_cancellation_keeps_only_complete_batches() {
         eol_calls: Cell::new(0),
         cancellation: cancellation.clone(),
     };
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     let inspection = SourceResourcePolicyInspector::with_process_runner(
         &runner,
         crate::inspection::TEST_RESPONSE_HANDOFF_WINDOW,
@@ -2185,7 +2230,7 @@ fn continued_staged_eol_malformed_protocol_keeps_attribute_findings() {
             ProviderDeadline::from_budget(Duration::from_secs(5)),
         )
         .unwrap();
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     let policy = SourceResourcePolicyInspector::with_process_runner(
         &MalformedEolRunner,
         crate::inspection::TEST_RESPONSE_HANDOFF_WINDOW,
@@ -2251,7 +2296,7 @@ fn final_index_change_invalidates_earlier_attribute_findings() {
             git(&root, &["add", ".gitignore"]);
         }));
     });
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
     let policy = SourceResourcePolicyInspector::new()
         .inspect_excluding_continued(
             repository.repository_root.as_ref().unwrap(),
@@ -2659,7 +2704,7 @@ fn continued_working_eol_rejects_a_new_file_and_late_cancellation() {
         )
         .unwrap();
     let root = repository.repository_root.as_ref().unwrap();
-    let mut continuation = super::ResourceContinuation::new(&fixture.context.cache_root);
+    let mut continuation = super::ResourceContinuation::new(&fixture.continuation_file());
 
     super::BEFORE_WORKING_REVALIDATION.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(move || {
@@ -3066,8 +3111,16 @@ fn proven_runtime_sidecar_is_excluded_from_derivative_text_policy_checks() {
 
 struct PolicyFixture {
     _temp: TempDir,
+    /// Daemon state outside the workspace, where continuations live.
+    state: TempDir,
     root: PathBuf,
     context: WorkspaceContext,
+}
+
+impl PolicyFixture {
+    fn continuation_file(&self) -> PathBuf {
+        self.state.path().join("continuation.bin")
+    }
 }
 
 fn policy_fixture() -> PolicyFixture {
@@ -3089,6 +3142,7 @@ fn policy_fixture() -> PolicyFixture {
     };
     PolicyFixture {
         _temp: temp,
+        state: TempDir::new().unwrap(),
         root,
         context,
     }

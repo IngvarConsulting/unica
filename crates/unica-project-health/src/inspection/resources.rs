@@ -44,8 +44,6 @@ const RESOURCE_PAGE_PATHS: usize = 4096;
 const MAX_RESOURCE_OWNERSHIP_REASON_BYTES: usize = 512;
 const MAX_CONTINUATION_WORKSPACES: usize = 4;
 const CONTINUATION_TTL: Duration = Duration::from_secs(15 * 60);
-/// The resource EOL continuation, relative to the cache root.
-const CONTINUATION_FILE: &str = "project-health/resource-eol.bin";
 const CONTINUATION_MAGIC: &[u8] = b"unica-resource-eol-v1\0";
 
 #[cfg(any(test, feature = "test-support"))]
@@ -105,8 +103,12 @@ fn staged_eol_test_timeout() -> bool {
     false
 }
 
+/// Continuations of root checks, one file per workspace in a directory
+/// outside every workspace. The default store keeps none: each check then
+/// inspects from the start.
 #[derive(Default)]
 pub struct RootCheckContinuationStore {
+    directory: Option<PathBuf>,
     entries: Mutex<BTreeMap<PathBuf, ContinuationEntry>>,
 }
 
@@ -116,13 +118,20 @@ struct ContinuationEntry {
 }
 
 impl RootCheckContinuationStore {
-    /// The continuation of the workspace at `root`, kept on disk in
-    /// `cache_root`.
-    pub fn for_workspace(
-        &self,
-        root: &Path,
-        cache_root: &Path,
-    ) -> Option<Arc<Mutex<ResourceContinuation>>> {
+    /// Keep continuations in `directory`. Files not rewritten for longer
+    /// than `retention` belong to abandoned workspaces and are removed now;
+    /// a file that cannot be removed only stays behind.
+    pub fn in_directory(directory: PathBuf, retention: Duration) -> Self {
+        remove_stale_continuations(&directory, retention);
+        Self {
+            directory: Some(directory),
+            entries: Mutex::default(),
+        }
+    }
+
+    /// The continuation of the workspace whose canonical root is `root`.
+    pub fn for_workspace(&self, root: &Path) -> Option<Arc<Mutex<ResourceContinuation>>> {
+        let directory = self.directory.as_ref()?;
         let mut entries = self.entries.lock().ok()?;
         let now = Instant::now();
         entries.retain(|_, entry| {
@@ -141,7 +150,9 @@ impl RootCheckContinuationStore {
                 .map(|(root, _)| root.clone())?;
             entries.remove(&oldest_idle);
         }
-        let state = Arc::new(Mutex::new(ResourceContinuation::new(cache_root)));
+        let state = Arc::new(Mutex::new(ResourceContinuation::new(
+            &directory.join(continuation_file_name(root)),
+        )));
         entries.insert(
             root.to_path_buf(),
             ContinuationEntry {
@@ -150,6 +161,41 @@ impl RootCheckContinuationStore {
             },
         );
         Some(state)
+    }
+}
+
+/// 32 lowercase hex digits of SHA-256 over the canonical root: a short name
+/// that every host filesystem accepts.
+fn continuation_file_name(root: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-root-check-continuation-v1\0");
+    hasher.update(root.as_os_str().as_encoded_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut name = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    name.push_str(".bin");
+    name
+}
+
+fn remove_stale_continuations(directory: &Path, retention: Duration) {
+    let Ok(children) = fs::read_dir(directory) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for child in children.flatten() {
+        let stale = child.metadata().is_ok_and(|metadata| {
+            metadata.is_file()
+                && metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| now.duration_since(modified).ok())
+                    .is_some_and(|age| age > retention)
+        });
+        if stale {
+            let _ = fs::remove_file(child.path());
+        }
     }
 }
 
@@ -538,10 +584,10 @@ impl EolGeneration {
 }
 
 impl ResourceContinuation {
-    /// A continuation whose evidence lives in `cache_root`.
-    pub fn new(cache_root: &Path) -> Self {
+    /// A continuation whose evidence lives in `file`.
+    pub fn new(file: &Path) -> Self {
         Self {
-            file: cache_root.join(CONTINUATION_FILE),
+            file: file.to_path_buf(),
             index_eol_batch_files: None,
             progress: ResourceInspectionProgress::default(),
         }

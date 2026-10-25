@@ -843,6 +843,15 @@ impl V5CanonicalInvocationRuntime {
         )
     }
 
+    /// Root checks continue from files in `store` instead of starting over.
+    fn with_root_check_continuations(
+        mut self,
+        store: Arc<unica_project_health::inspection::resources::RootCheckContinuationStore>,
+    ) -> Self {
+        self.root_check_continuations = store;
+        self
+    }
+
     pub(super) fn has_retained_workspace_work(&self) -> bool {
         self.workspace_actors.has_retained_work()
     }
@@ -1500,6 +1509,18 @@ impl DaemonServerConfig {
             .runtime_hooks_for_v5()
             .unwrap_or_else(|| Arc::new(unica_execution::receipt_runtime::hooks::NoHooks));
         let source = self.clone();
+        // Continuations live in the daemon's own state, never in a workspace,
+        // and age out with the same idle period as stale daemon state.
+        let root_check_continuations = Arc::new(
+            unica_project_health::inspection::resources::RootCheckContinuationStore::in_directory(
+                unica_daemon::identity::DaemonStateDirectory::path_for(
+                    &self.state_root,
+                    &self.core_identity,
+                )
+                .join("project-health"),
+                unica_daemon::state_collection::STALE_DAEMON_STATE_IDLE,
+            ),
+        );
         let factory: Arc<dyn Fn() -> Arc<CanonicalInvocationHost> + Send + Sync> =
             Arc::new(move || {
                 #[cfg(test)]
@@ -1508,10 +1529,13 @@ impl DaemonServerConfig {
                 let preset: Option<Arc<V5CanonicalInvocationRuntime>> = None;
                 let runtime = match preset {
                     Some(runtime) => runtime,
-                    None => Arc::new(V5CanonicalInvocationRuntime::new(
-                        source.invocation_service_for_v5(),
-                        source.invocation_clock_for_v5(),
-                    )),
+                    None => Arc::new(
+                        V5CanonicalInvocationRuntime::new(
+                            source.invocation_service_for_v5(),
+                            source.invocation_clock_for_v5(),
+                        )
+                        .with_root_check_continuations(Arc::clone(&root_check_continuations)),
+                    ),
                 };
                 Arc::new(CanonicalInvocationHost::over(runtime))
             });
