@@ -7337,6 +7337,105 @@ fn submitted_task_snapshot(response: Result<V5ServerResponse, String>) -> V5Daem
     }
 }
 
+/// Records the runtime's steps in order, beside the listener's owner sets.
+struct StepOrderHooks {
+    observations: mpsc::Sender<(Instant, bool)>,
+    steps: Arc<Mutex<Vec<V5ReceiptRuntimeEventKind>>>,
+}
+
+impl V5RuntimeHooks<CanonicalInvocationHost> for StepOrderHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn after_idle_owner_leases_read(&self, empty: bool) {
+        let _ = self.observations.send((Instant::now(), empty));
+    }
+
+    fn event(&self, event: V5ReceiptRuntimeEventKind, _epoch_ms: u64) {
+        self.steps.lock().unwrap().push(event);
+    }
+}
+
+/// #980: with a zero direct-response budget the call passes into its durable
+/// Task before the provider runs: the TaskStore record and its binding are
+/// committed before the provider is entered, and the same attempt then ends
+/// that Task, once.
+#[test]
+fn zero_budget_call_is_a_durable_task_before_the_provider_runs() {
+    let (_workspace, workspace) = catalog_workspace();
+    let (entered, _executing) = mpsc::channel();
+    let service = Arc::new(IdleInvocationService {
+        known_long: false,
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered,
+        release: Arc::new((Mutex::new(true), Condvar::new())),
+    });
+    let steps = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&steps);
+    let mut daemon = PromisedWorkIdleDaemon::with_service_and_hooks(
+        Duration::from_secs(5),
+        service.clone(),
+        move |observations| {
+            Arc::new(StepOrderHooks {
+                observations,
+                steps: recorded,
+            })
+        },
+    );
+    let invocation = V5InvocationRequest::new(
+        InvocationId::new(),
+        TaskId::new(),
+        V5ToolIdentity::View,
+        serde_json::Map::from_iter([(
+            "at".to_owned(),
+            serde_json::Value::String("main:Catalog.Items".to_owned()),
+        )]),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace.to_string_lossy().into_owned()),
+        0,
+    )
+    .expect("a zero response budget is valid");
+    let mut owner = daemon.owner();
+    // The answer may be lost (#2089); the Task is read by its reserved id.
+    write_json_line(
+        &mut owner.0,
+        &serde_json::to_value(V5ClientRequest::SubmitInvocation {
+            invocation: invocation.clone(),
+        })
+        .unwrap(),
+    );
+    let mut reader = daemon.owner();
+    let terminal = idle_task_terminal_over_tcp(&mut reader, &invocation);
+    assert!(
+        matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. }
+        if result.ok && result.data == Some(json!({"attempt": 1}))),
+        "{terminal:?}"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+    let steps = steps.lock().unwrap().clone();
+    let at = |kind| {
+        steps
+            .iter()
+            .position(|step| *step == kind)
+            .unwrap_or_else(|| panic!("{kind:?} never happened: {steps:?}"))
+    };
+    let executed = at(V5ReceiptRuntimeEventKind::ExecuteEntered);
+    assert!(
+        at(V5ReceiptRuntimeEventKind::TaskStoreCreated) < executed
+            && at(V5ReceiptRuntimeEventKind::TaskBoundCommitted) < executed,
+        "the provider ran before its Task was durable: {steps:?}"
+    );
+    assert!(
+        at(V5ReceiptRuntimeEventKind::PrepareEntered)
+            > at(V5ReceiptRuntimeEventKind::TaskBoundCommitted),
+        "no subject step precedes the Task: {steps:?}"
+    );
+    drop(owner);
+    release_promised_work_owner(reader);
+}
+
 /// #1384: the exact repeat of a submit whose receipt already passed into its
 /// Task reads that Task — while it runs and after it ends. The key is never
 /// reserved again, nothing is prepared a second time, and the daemon keeps
