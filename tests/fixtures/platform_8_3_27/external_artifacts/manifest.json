@@ -1,0 +1,137 @@
+{
+  "platformVersion": "8.3.27.2074",
+  "formatVersion": "2.20",
+  "designerBinarySha256": "9abc3f65bbd146cbb858e4f84efc815cb8c6f43a650f1826fa502223e70d2688",
+  "ibcmdSha256": "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5",
+  "source": "Hierarchical DESIGNER /DumpExternalDataProcessorOrReportToFiles exports of a synthetic ExternalDataProcessor and ExternalReport. Round 1: load synthetic XML into a fresh file infobase, dump. Round 2: load round-1 dump into a second independently created file infobase, dump. Every file below is byte-identical between the two rounds.",
+  "files": {
+    "epf/SyntheticProcessor/Ext/ObjectModule.bsl": {
+      "sha256": "62125960e9343418373dc6a733129f8c570870b0ea557cab99dab2f4a3cf8f3c",
+      "size": 280
+    },
+    "epf/SyntheticProcessor/Forms/Auxiliary/Ext/Form.xml": {
+      "sha256": "b159915c461980e3f5690025f49600ac4ffe439420b4787216d9d0b6b7aa4ce1",
+      "size": 1240
+    },
+    "epf/SyntheticProcessor/Forms/Auxiliary.xml": {
+      "sha256": "77a1e0c665d6b82dbea122a34af8af11a63d0e9f7ace4c3a66fb21f9b0da1b3e",
+      "size": 1524
+    },
+    "epf/SyntheticProcessor/Forms/Main/Ext/Form/Module.bsl": {
+      "sha256": "84d121addcb8265c1d042eea07efe8b9b9f3f1456cdd809c9c924b116fe7878b",
+      "size": 516
+    },
+    "epf/SyntheticProcessor/Forms/Main/Ext/Form.xml": {
+      "sha256": "32e188c5644baddb36f5429f94bb84bb9b60357459dda3282f2ec02ac42fdd0e",
+      "size": 4489
+    },
+    "epf/SyntheticProcessor/Forms/Main.xml": {
+      "sha256": "ddc3c0bfe40ed99500a85ab9212f44848b0db115906f085cc2a0cd944f5455af",
+      "size": 1514
+    },
+    "epf/SyntheticProcessor/Templates/Blob/Ext/Template.bin": {
+      "sha256": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991",
+      "size": 16
+    },
+    "epf/SyntheticProcessor/Templates/Blob.xml": {
+      "sha256": "c0f842b38c6d70e2cc3ad8fdf13d8acd08293ca497f4aa5d1689fb24a4cf4727",
+      "size": 1247
+    },
+    "epf/SyntheticProcessor/Templates/Layout/Ext/Template.xml": {
+      "sha256": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb",
+      "size": 6500
+    },
+    "epf/SyntheticProcessor/Templates/Layout.xml": {
+      "sha256": "6a2eed596cc6520acd134ed55d72eabe06946438753ab4da2f5b6e7f93b67b8b",
+      "size": 1256
+    },
+    "epf/SyntheticProcessor/Templates/Notes/Ext/Template.txt": {
+      "sha256": "f7267f02d0fdf4df38088bd1281e1d1ec3cd769407a10d11267dedc7d6192590",
+      "size": 85
+    },
+    "epf/SyntheticProcessor/Templates/Notes.xml": {
+      "sha256": "76a03ac999ea26ab7c2d3f3727ac1e679cccbcacec36b73db30f5a176b646bbf",
+      "size": 1252
+    },
+    "epf/SyntheticProcessor.xml": {
+      "sha256": "2572fe9652f4bdb940941d3fa375e8f843724f568d332d0506a284ec3314f55f",
+      "size": 11329
+    },
+    "erf/SyntheticReport/Ext/ObjectModule.bsl": {
+      "sha256": "62125960e9343418373dc6a733129f8c570870b0ea557cab99dab2f4a3cf8f3c",
+      "size": 280
+    },
+    "erf/SyntheticReport/Forms/Auxiliary/Ext/Form.xml": {
+      "sha256": "985a3762d62e8c7b8686cd0175f5ca4b1fc4bb001b77f6ebe63ca47dda1e7c0d",
+      "size": 1444
+    },
+    "erf/SyntheticReport/Forms/Auxiliary.xml": {
+      "sha256": "48485144dfc09e21dec4abb2456932453b13b2f8dd8b59ad2fb39a8c356aca3f",
+      "size": 1524
+    },
+    "erf/SyntheticReport/Forms/Main/Ext/Form/Module.bsl": {
+      "sha256": "73e647add8c0bfdcb81df6605aca1fb476ff89d089cf84de8f5136ae5b4b2b19",
+      "size": 646
+    },
+    "erf/SyntheticReport/Forms/Main/Ext/Form.xml": {
+      "sha256": "dbd71f99398f98c92dd8c2802d4bfee75944a603e1f56ff36147db86dde769c9",
+      "size": 5666
+    },
+    "erf/SyntheticReport/Forms/Main.xml": {
+      "sha256": "f0373960d1e25d886c1d7f5613b4bdf16f392a2de61f6871d8b0fd3899fdf0ca",
+      "size": 1514
+    },
+    "erf/SyntheticReport/Forms/Settings/Ext/Form.xml": {
+      "sha256": "60347ff6ae6dfb006ae5d0a3d4ce91910df759d3491770b9c75c6b7eb606b49d",
+      "size": 1448
+    },
+    "erf/SyntheticReport/Forms/Settings.xml": {
+      "sha256": "ae21b0918c52190fa4e6f0ad2f230b20eb1a0c61e5b6b8a59b33484a344def13",
+      "size": 1522
+    },
+    "erf/SyntheticReport/Forms/Variant/Ext/Form.xml": {
+      "sha256": "f7070e6d353abcc0a08f818d6d857bf9cd00ba9dc0f113cace8dc8c887c681d2",
+      "size": 1447
+    },
+    "erf/SyntheticReport/Forms/Variant.xml": {
+      "sha256": "46864933a5e9c99d2c722d5f85421fd188cd0ed8c7a8ef15fb2b41237fdd202c",
+      "size": 1520
+    },
+    "erf/SyntheticReport/Templates/Blob/Ext/Template.bin": {
+      "sha256": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991",
+      "size": 16
+    },
+    "erf/SyntheticReport/Templates/Blob.xml": {
+      "sha256": "6ac7d1a2a0c82058b8d5642cfd380429a147066d5b961a93fc01f696be77a706",
+      "size": 1247
+    },
+    "erf/SyntheticReport/Templates/Layout/Ext/Template.xml": {
+      "sha256": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb",
+      "size": 6500
+    },
+    "erf/SyntheticReport/Templates/Layout.xml": {
+      "sha256": "a052347411d8885f3ea17622a979089ea8265d4da51dcdf1a73b45c7aead320a",
+      "size": 1256
+    },
+    "erf/SyntheticReport/Templates/MainSchema/Ext/Template.xml": {
+      "sha256": "2aceff815bfdaef15913411792951bde1117c246ff4e4f25f7177aef0694ba98",
+      "size": 3128
+    },
+    "erf/SyntheticReport/Templates/MainSchema.xml": {
+      "sha256": "c375bcb8cbf876c8398ac369fb44d6407a39fcea89dd7e6c12006f542bbb715e",
+      "size": 1279
+    },
+    "erf/SyntheticReport/Templates/Notes/Ext/Template.txt": {
+      "sha256": "f7267f02d0fdf4df38088bd1281e1d1ec3cd769407a10d11267dedc7d6192590",
+      "size": 85
+    },
+    "erf/SyntheticReport/Templates/Notes.xml": {
+      "sha256": "55368a0c87492fd0c6996f059d277eb3aa91616f4b4609ec51960697d7787bc3",
+      "size": 1252
+    },
+    "erf/SyntheticReport.xml": {
+      "sha256": "1ee96621838ee44d61a0d3fcf486b5941f815a028c738c71bdf1e165d09730d6",
+      "size": 11707
+    }
+  }
+}

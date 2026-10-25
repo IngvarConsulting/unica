@@ -34,8 +34,6 @@ use unica_workspace::paths::{
 };
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-const MAX_NAVIGATION_INVENTORY_ENTRIES: usize = 4_096;
-const MAX_NAVIGATION_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
 
 #[cfg(test)]
 thread_local! {
@@ -431,7 +429,6 @@ fn proven_object_names(
         }
     };
     let mut names = Vec::new();
-    let mut inspected = 0_usize;
     for entry in entries {
         check_navigation_cancellation(cancellation)?;
         let Ok(entry) = entry else {
@@ -449,14 +446,8 @@ fn proven_object_names(
         if name_prefix.is_some_and(|prefix| !stem.starts_with(prefix)) {
             continue;
         }
-        // Only a candidate that survives the cheap filters counts against the
-        // bound: skipping a sibling directory costs nothing and must not make
-        // the provider claim its answer is truncated.
-        if inspected >= MAX_NAVIGATION_INVENTORY_ENTRIES {
-            *partial = true;
-            break;
-        }
-        inspected += 1;
+        // Every candidate is inspected: the inventory of a kind is not cut at
+        // a count (#1119); only an unreadable candidate makes it partial.
         match descriptor_name(&path, kind.tag) {
             Ok(name) if name == stem => names.push(name),
             Ok(_) => *partial = true,
@@ -768,10 +759,7 @@ fn descriptor_name(path: &Path, expected_kind: &str) -> Result<String, ()> {
 
 fn read_navigation_descriptor(path: &Path) -> Result<Vec<u8>, ()> {
     let metadata = fs::symlink_metadata(path).map_err(|_| ())?;
-    if metadata_is_link_or_reparse_point(&metadata)
-        || !metadata.is_file()
-        || metadata.len() > MAX_NAVIGATION_DESCRIPTOR_BYTES
-    {
+    if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
         return Err(());
     }
     fs::read(path).map_err(|_| ())
@@ -991,6 +979,12 @@ fn metadata_source_failure(
 }
 
 impl ClosedPlatformXmlTarget {
+    /// Вид набора исходников, в котором выдан дескриптор: от него зависит
+    /// профиль свойств элементов, который наблюдает читатель метаданных.
+    pub(crate) fn source_set_kind(&self) -> SourceSetKind {
+        self.source_set_kind
+    }
+
     pub(crate) fn target_kind(&self) -> TargetKind {
         self.target_kind
     }

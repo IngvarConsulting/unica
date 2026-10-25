@@ -135,6 +135,10 @@ def select_profile(corpus, profile):
             elif driver == "bsl-analyzer-invalidation" and workspace == SYMBOL_WORKSPACE:
                 if "evaluation" in scenario or not all(helper_invalidation_step(step) for step in scenario["wire"]):
                     raise ValueError(f"{scenario['id']}: invalid analyzer invalidation wire")
+            elif driver == "bsl-analyzer-form-diagnostics":
+                from tests.ci.form_runtime_diagnostics import valid_scenario
+                if not valid_scenario(scenario):
+                    raise ValueError(f"{scenario['id']}: invalid runtime form diagnostic case")
             elif driver == "bsl-analyzer-diagnostics" and workspace == DIAGNOSTICS_WORKSPACE:
                 if scenario.get("evaluation") not in DIAGNOSTIC_CASES or any(
                     step["tool"] != "unica.check" or step["args"] != {"at": "main:CommonModule.Пример"}
@@ -260,6 +264,8 @@ def completed_delivery_call(server, tool, arguments, label):
                 return response
             task_id = None
             next_tool, next_args = tool, arguments
+            # The provider promised a different answer later, not at once.
+            time.sleep(.25)
         if time.monotonic() >= deadline or poll == 19:
             raise TimeoutError(f"{label}: analyzer did not reach a terminal result")
         response = invoke(next_tool, next_args)

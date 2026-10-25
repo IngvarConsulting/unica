@@ -13,7 +13,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::named_external_descriptor_and_owner_evidence_preserve_chunk_cancellation
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::named_external_descriptor_distinguishes_missing_from_unreadable_source
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::named_external_missing_descriptor_preserves_explicit_cancellation
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::external_leaf_preserves_an_explicit_finite_relative_read_limit
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::external_leaf_reads_a_relative_file_whole_whatever_its_size
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::real_external_sources_are_traversable_without_configuration_xml_and_hide_root_runtime_modules
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::external_inventory_skips_runtime_sidecar_and_fails_closed_on_malformed_or_ambiguous_owner
 ---
@@ -38,8 +38,8 @@ check:
 
 Отсутствующий описатель именованного артефакта возвращает `not_found`;
 ошибка чтения существующего пути не маскируется под отсутствие. Явная
-отмена сохраняется и при отсутствии файла. Явно заданный предел отдельного
-чтения продолжает действовать.
+отмена сохраняется и при отсутствии файла. Отдельный файл набора читается
+целиком, его размер не причина отказа.
 
 Читатель сохраняет один текущий описатель и все имена владельцев; расход
 памяти растёт с размером описателя и числом артефактов.

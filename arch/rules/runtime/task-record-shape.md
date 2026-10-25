@@ -11,7 +11,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::execution_boundary_names_a_changed_workspace_only_for_a_lost_binding
   - crates/unica-coder/src/infrastructure/daemon/mod.rs::canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision
   - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_failure_is_delivered_as_the_closed_reason_without_its_text
-gap: https://github.com/IngvarConsulting/unica/issues/984
+  - crates/unica-execution/src/task_store.rs::terminal_record_at_the_limit_persists_and_one_byte_over_keeps_the_prior_record
 ---
 
 # Сохранённая задача имеет закрытую форму для каждого состояния
@@ -38,8 +38,10 @@ gap: https://github.com/IngvarConsulting/unica/issues/984
 отмены; оно само не переписывает незавершённые записи. Последующее
 восстановление заданий описано в [отдельном правиле](task-recovery.md).
 
-Полная сохранённая запись не превышает 8 МиБ + 64 КиБ. Проверка предельного
-сохранения и отказа без изменения прежней записи остаётся в `gap`.
+Полная сохранённая запись не превышает 8 МиБ + 64 КиБ независимо от предела
+кадра протокола. Запись ровно на пределе сохраняется и читается; запись
+больше предела отклоняется, прежняя запись остаётся без изменений,
+промежуточный файл не остаётся.
 
 Новая запись использует заранее выделенный `taskId`. Повтор её создания
 разрешён только для точно совпавшей идентичности вызова. Другой вызов

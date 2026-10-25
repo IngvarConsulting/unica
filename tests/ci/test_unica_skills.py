@@ -2342,9 +2342,14 @@ Use `.claude/commands/xdto.md` as the execution route.
         examples = [json.loads(block.group(1)) for block in blocks]
         calls = [example for example in examples if "method" in example]
         argument_list = [example for example in examples if "method" not in example]
-        self.assertEqual(len(argument_list), 2)
+        self.assertEqual(len(argument_list), 3)
         argument_examples = {example["ops"][0]["op"]: example for example in argument_list}
-        self.assertEqual(set(argument_examples), {"objectType.add", "property.add"})
+        self.assertEqual(set(argument_examples), {"objectType.add", "property.add", "property.rename"})
+        scenario = json.loads(
+            (REPO_ROOT / "tests/fixtures/acceptance/scenarios/S-1703-xdto-property-rename.json").read_text(encoding="utf-8")
+        )
+        preview = next(step["args"] for step in scenario["wire"] if "ops" in step["args"])
+        self.assertEqual(argument_examples["property.rename"], preview)
         self.assertEqual(
             argument_examples["objectType.add"]["ops"][0]["args"]["values"],
             {"name": "ПримерБ", "base": "tns:Основа", "before": "ПримерВ"},
@@ -2615,6 +2620,23 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         # чтобы читатель не принял отказ за отсутствие ответа.
         self.assertIn('"configuration-documentation"', self.text)
         self.assertIn("unsupported_source", self.text)
+
+
+class SourceAccessExamplesRunTests(unittest.TestCase):
+    """Каждый пример source-access исполняется сценарием над фикстурой (#2006)."""
+
+    def test_each_example_is_a_step_of_the_acceptance_scenario(self) -> None:
+        text = (REPO_ROOT / "plugins/unica/skills/source-access/SKILL.md").read_text(encoding="utf-8")
+        examples = [
+            (call["params"]["name"], call["params"]["arguments"])
+            for call in (json.loads(block) for block in re.findall(r"```json\n(.*?)\n```", text, flags=re.S))
+            if call.get("method") == "tools/call"
+        ]
+        scenario = json.loads((REPO_ROOT / "tests/fixtures/acceptance/scenarios/S-2006-skill-example-arguments.json")
+                              .read_text(encoding="utf-8"))
+        steps = [(step["tool"], step["args"]) for step in scenario["wire"] if step["expect"] == ["ok"]]
+        self.assertTrue(examples)
+        self.assertEqual(examples, steps)
 
 
 if __name__ == "__main__":

@@ -1552,16 +1552,56 @@ pub fn normalized_content(
 
 pub fn insertion_is_present(text: &[u8], site: InsertionSite, insertion: &[u8]) -> bool {
     match site.position {
-        Position::Before => (site.offset..=site.head_end.max(site.offset))
-            .filter(|&boundary| boundary == site.offset || text.get(boundary - 1) == Some(&b'\n'))
-            .any(|boundary| {
-                text.get(..boundary)
-                    .is_some_and(|head| head.ends_with(insertion))
-            }),
+        Position::Before => {
+            (site.offset..=site.head_end.max(site.offset))
+                .filter(|&boundary| {
+                    boundary == site.offset || text.get(boundary - 1) == Some(&b'\n')
+                })
+                .any(|boundary| {
+                    text.get(..boundary)
+                        .is_some_and(|head| head.ends_with(insertion))
+                })
+                || unterminated_tail_is(text, site, insertion)
+        }
         Position::After => text
             .get(site.offset..)
             .is_some_and(|tail| tail.starts_with(insertion)),
     }
+}
+
+/// Вставка всегда кончается переводом строки, а модуль может кончаться без
+/// него. Повтор вставки в такой конец — тот же текст без последнего перевода
+/// строки, с начала строки (#1911, INV.SOURCE.IDEMPOTENT-PRECHECK).
+fn unterminated_tail_is(text: &[u8], site: InsertionSite, insertion: &[u8]) -> bool {
+    if site.offset != text.len() || text.ends_with(b"\n") {
+        return false;
+    }
+    let Some(body) = insertion.strip_suffix(b"\n") else {
+        return false;
+    };
+    let body = body.strip_suffix(b"\r").unwrap_or(body);
+    // Разделитель в начале вставки не нужен, когда она — весь модуль.
+    let bare = body
+        .strip_prefix(b"\r\n")
+        .or_else(|| body.strip_prefix(b"\n"))
+        .unwrap_or(body);
+    [body, bare].into_iter().any(|candidate| {
+        let Some(head) = text
+            .len()
+            .checked_sub(candidate.len())
+            .map(|end| &text[..end])
+        else {
+            return false;
+        };
+        // Вставка начинается с начала строки: своим разделителем, после
+        // перевода строки текста или в начале модуля (после BOM).
+        !candidate.is_empty()
+            && text.ends_with(candidate)
+            && (candidate.starts_with(b"\n")
+                || candidate.starts_with(b"\r\n")
+                || head.ends_with(b"\n")
+                || head.chunks(3).all(|chunk| chunk == b"\xEF\xBB\xBF"))
+    })
 }
 
 pub fn string_arg<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a str, String> {

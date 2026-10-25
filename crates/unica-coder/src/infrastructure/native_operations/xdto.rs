@@ -850,6 +850,7 @@ pub(crate) mod tests {
     use crate::application::SupportGuardRequirement;
     use unica_source_contract::events::DomainEventKind;
     use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+    use unica_xdto::operations::XdtoRenamePropertyArgs;
     use unica_xdto_designer::test_support::{args, PACKAGE};
 
     use crate::infrastructure::native_operations::common::support_guard_violation;
@@ -1856,6 +1857,7 @@ pub(crate) mod tests {
             at: qaddr(at),
             name: ncname(name),
             base: qname(base),
+            facets: unica_xdto::facets::ValueFacets::default(),
         })
     }
 
@@ -1887,6 +1889,20 @@ pub(crate) mod tests {
             at: qaddr(at),
             name: ncname(name),
             property_path: property_path.map(XdtoPropertyPath::for_test),
+        })
+    }
+
+    fn rename_property(
+        at: &str,
+        name: &str,
+        property_path: Option<&str>,
+        new_name: &str,
+    ) -> XdtoPlanOperation {
+        XdtoPlanOperation::RenameProperty(XdtoRenamePropertyArgs {
+            at: qaddr(at),
+            name: ncname(name),
+            property_path: property_path.map(XdtoPropertyPath::for_test),
+            new_name: ncname(new_name),
         })
     }
 
@@ -2281,6 +2297,120 @@ pub(crate) mod tests {
                 assert!(!fixture.context.cache_root.join("state.json").exists());
                 fixture.cleanup();
             }
+        }
+    }
+
+    /// A package that already declares the value type `Существующий` and the
+    /// property `Код` of `СоставнойЛюбойОбъект`.
+    fn package_with_declarations() -> String {
+        PACKAGE
+            .replacen(
+                "\t<objectType name=\"ЛюбаяСсылка\">",
+                "\t<valueType name=\"Существующий\" base=\"xs:string\"/>\n\t<objectType name=\"ЛюбаяСсылка\">",
+                1,
+            )
+            .replace(
+                "<objectType name=\"СоставнойЛюбойОбъект\"/>",
+                "<objectType name=\"СоставнойЛюбойОбъект\"><property name=\"Код\" type=\"xs:string\"/></objectType>",
+            )
+    }
+
+    /// INV.SOURCE.XDTO-ORDERED-BATCH: an exact repeat of an addition changes
+    /// nothing — the canonical plan is empty and publication writes neither
+    /// sources nor cache.
+    #[test]
+    fn staged_xdto_exact_repeat_of_an_addition_plans_and_publishes_nothing() {
+        let package = package_with_declarations();
+        for (label, operation) in [
+            (
+                "value type",
+                add_value("main:XDTOPackage.Sample", "Существующий", "xs:string"),
+            ),
+            (
+                "property",
+                add_property(
+                    "main:XDTOPackage.Sample.Type.СоставнойЛюбойОбъект",
+                    "Код",
+                    "xs:string",
+                    None,
+                    None,
+                ),
+            ),
+        ] {
+            let fixture = staged_xdto_fixture(
+                &format!("exact-repeat-{}", label.replace(' ', "-")),
+                package.as_bytes(),
+            );
+            let sources_before = snapshot_tree(&fixture.source);
+            let cache_before = snapshot_tree(&fixture.context.cache_root);
+            let admission = staged_xdto_admission(&fixture, None, false);
+            let (state, effects) = plan_admitted_xdto(&admission, &fixture.binding, &[operation])
+                .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+            assert!(state.planned_changes().is_empty(), "{label}");
+            assert!(effects.events().is_empty(), "{label}");
+            let published = fixture
+                .actor
+                .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+                .unwrap();
+            assert_eq!(published.commit_count_for_test(), 0, "{label}");
+            assert_eq!(snapshot_tree(&fixture.source), sources_before, "{label}");
+            assert_eq!(
+                snapshot_tree(&fixture.context.cache_root),
+                cache_before,
+                "{label}"
+            );
+            fixture.cleanup();
+        }
+    }
+
+    /// INV.SOURCE.XDTO-ORDERED-BATCH: an addition with an existing name and
+    /// other content is refused at its own operation, and nothing of the
+    /// batch is written.
+    #[test]
+    fn staged_xdto_conflicting_duplicate_is_refused_at_its_operation_without_writes() {
+        let package = package_with_declarations();
+        for (label, conflict, path) in [
+            (
+                "value type",
+                add_value("main:XDTOPackage.Sample", "Существующий", "xs:decimal"),
+                "ops[1].args.values.name",
+            ),
+            (
+                "property",
+                add_property(
+                    "main:XDTOPackage.Sample.Type.СоставнойЛюбойОбъект",
+                    "Код",
+                    "xs:decimal",
+                    None,
+                    None,
+                ),
+                "ops[1].args.values.property.name",
+            ),
+        ] {
+            let fixture = staged_xdto_fixture(
+                &format!("conflict-{}", label.replace(' ', "-")),
+                package.as_bytes(),
+            );
+            let sources_before = snapshot_tree(&fixture.source);
+            let cache_before = snapshot_tree(&fixture.context.cache_root);
+            let admission = staged_xdto_admission(&fixture, None, false);
+            let operations = [
+                add_value("main:XDTOPackage.Sample", "Новый", "xs:string"),
+                conflict,
+            ];
+            let error = match plan_admitted_xdto(&admission, &fixture.binding, &operations) {
+                Err(error) => error,
+                Ok(_) => panic!("{label}: a conflicting duplicate is refused"),
+            };
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{label}");
+            assert_eq!(error.path(), Some(path), "{label}");
+            assert_eq!(snapshot_tree(&fixture.source), sources_before, "{label}");
+            assert_eq!(
+                snapshot_tree(&fixture.context.cache_root),
+                cache_before,
+                "{label}"
+            );
+            fixture.cleanup();
         }
     }
 
@@ -3090,6 +3220,179 @@ pub(crate) mod tests {
         fixture.cleanup();
     }
 
+    /// Три соседних свойства; у среднего явное XML-имя и форма атрибута,
+    /// которые валидатор Unica пока относит к неподдержанным находкам.
+    const RENAMED_PACKAGE: &str = "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n\t<objectType name=\"Товар\">\r\n\t\t<property name=\"Наименование\" type=\"xs:string\"/>\r\n\t\t<property name=\"Код\" type=\"xs:string\" lowerBound=\"0\" form=\"Attribute\" localName=\"code\"/>\r\n\t\t<property name=\"Цена\" type=\"xs:decimal\" lowerBound=\"0\" upperBound=\"-1\"/>\r\n\t</objectType>\r\n</package>";
+    const RENAMED_TYPE: &str = "main:XDTOPackage.Sample.Type.Товар";
+
+    #[test]
+    fn staged_xdto_rename_changes_only_names_and_keeps_pre_existing_findings() {
+        let fixture = staged_xdto_fixture("rename", RENAMED_PACKAGE.as_bytes());
+        let admission = staged_xdto_admission(&fixture, None, false);
+        let (state, effects) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[
+                rename_property(RENAMED_TYPE, "Код", None, "Промежуточный"),
+                rename_property(RENAMED_TYPE, "Промежуточный", None, "ВнешнийКод"),
+                rename_property(RENAMED_TYPE, "Наименование", None, "Имя"),
+            ],
+        )
+        .expect("findings of the renamed declaration stay pre-existing");
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        assert_eq!(result.commit_count_for_test(), 1);
+        assert_eq!(result.effects().events().len(), 1);
+        let expected = RENAMED_PACKAGE
+            .replacen("name=\"Код\"", "name=\"ВнешнийКод\"", 1)
+            .replacen("name=\"Наименование\"", "name=\"Имя\"", 1);
+        let after = fs::read(&fixture.package).unwrap();
+        assert_eq!(after, expected.as_bytes());
+        let text = decode(&after).unwrap();
+        let model = model::PackageModel::parse(&text).unwrap();
+        assert_eq!(
+            model.types[0]
+                .properties
+                .iter()
+                .map(|property| property.logical_identity())
+                .collect::<Vec<_>>(),
+            ["Имя", "ВнешнийКод", "Цена"]
+        );
+        let findings = |model: &model::PackageModel| {
+            super::validate(model)
+                .into_iter()
+                .map(|finding| (finding.code, finding.location.key))
+                .collect::<Vec<_>>()
+        };
+        let before = findings(
+            &model::PackageModel::parse(&decode(RENAMED_PACKAGE.as_bytes()).unwrap()).unwrap(),
+        );
+        assert_eq!(
+            before.len(),
+            2,
+            "form and localName stay unsupported findings"
+        );
+        assert_eq!(
+            findings(&model),
+            before
+                .into_iter()
+                .map(|(code, key)| (code, key.replace("property:Код", "property:ВнешнийКод")))
+                .collect::<Vec<_>>()
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_nested_rename_moves_descendant_findings_and_frees_the_old_name() {
+        let package = concat!(
+            "<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\n",
+            "\t<objectType name=\"Заказ\">\n",
+            "\t\t<property name=\"Строки\" upperBound=\"-1\">\n",
+            "\t\t\t<typeDef xsi:type=\"ObjectType\">\n",
+            "\t\t\t\t<property name=\"Товар\" type=\"xs:string\" localName=\"item\"/>\n",
+            "\t\t\t</typeDef>\n",
+            "\t\t</property>\n",
+            "\t</objectType>\n",
+            "</package>"
+        );
+        let fixture = staged_xdto_fixture("rename-nested", package.as_bytes());
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let order = "main:XDTOPackage.Sample.Type.Заказ";
+        let (mut state, _) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[
+                rename_property(order, "Строки", None, "Позиции"),
+                rename_property(order, "Товар", Some("Позиции"), "Номенклатура"),
+                add_property(order, "Строки", "xs:string", Some(0), None),
+            ],
+        )
+        .expect("the parent rename carries its descendants' pre-existing findings");
+        let after = state
+            .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+            .unwrap()
+            .unwrap();
+        let text = decode(&after).unwrap();
+        // Переименования меняют только имена; новое свойство встаёт после них.
+        let renamed = package
+            .replacen("name=\"Строки\"", "name=\"Позиции\"", 1)
+            .replacen("name=\"Товар\"", "name=\"Номенклатура\"", 1);
+        let head = &renamed[..renamed.find("\t</objectType>").unwrap()];
+        assert!(text.starts_with(head), "{text}");
+        let model = model::PackageModel::parse(&text).unwrap();
+        let properties = &model.types[0].properties;
+        assert_eq!(
+            properties
+                .iter()
+                .map(|property| property.logical_identity())
+                .collect::<Vec<_>>(),
+            ["Позиции", "Строки"]
+        );
+        assert_eq!(
+            properties[0].type_defs[0].properties[0].logical_identity(),
+            "Номенклатура"
+        );
+        assert_eq!(fs::read(&fixture.package).unwrap(), package.as_bytes());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_rename_refuses_duplicates_and_missing_targets_and_repeats_the_name_as_no_op() {
+        let fixture = staged_xdto_fixture("rename-refusals", RENAMED_PACKAGE.as_bytes());
+        let source = snapshot_tree(&fixture.source);
+        let cache = snapshot_tree(&fixture.context.cache_root);
+
+        let admission = staged_xdto_admission(&fixture, None, false);
+        let (state, effects) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[rename_property(RENAMED_TYPE, "Код", None, "Код")],
+        )
+        .unwrap();
+        assert!(state.planned_changes().is_empty());
+        let result = fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        assert_eq!(result.commit_count_for_test(), 0);
+
+        for (operations, kind, path) in [
+            (
+                vec![
+                    rename_property(RENAMED_TYPE, "Наименование", None, "Имя"),
+                    rename_property(RENAMED_TYPE, "Код", None, "Цена"),
+                ],
+                ApplyPlanErrorKind::InvalidState,
+                "ops[1].args.values.newName",
+            ),
+            (
+                vec![rename_property(RENAMED_TYPE, "Нет", None, "Есть")],
+                ApplyPlanErrorKind::NotFound,
+                "ops[0].args.at",
+            ),
+            (
+                vec![rename_property(
+                    "main:XDTOPackage.Sample.Type.Нет",
+                    "Код",
+                    None,
+                    "Есть",
+                )],
+                ApplyPlanErrorKind::NotFound,
+                "ops[0].args.at",
+            ),
+        ] {
+            let admission = staged_xdto_admission(&fixture, None, false);
+            let error = plan_admitted_xdto(&admission, &fixture.binding, &operations).unwrap_err();
+            assert_eq!(error.kind(), kind, "{path}");
+            assert_eq!(error.path(), Some(path));
+        }
+        assert_eq!(snapshot_tree(&fixture.source), source);
+        assert_eq!(snapshot_tree(&fixture.context.cache_root), cache);
+        fixture.cleanup();
+    }
+
     #[test]
     fn staged_xdto_original_preimage_restoration_emits_no_effect() {
         let fixture = staged_xdto_fixture("restoration", PACKAGE.as_bytes());
@@ -3113,6 +3416,267 @@ pub(crate) mod tests {
         assert!(state.planned_changes().is_empty());
         assert!(effects.events().is_empty());
         assert_eq!(fs::read(&fixture.package).unwrap(), PACKAGE.as_bytes());
+        fixture.cleanup();
+    }
+    #[test]
+    fn anonymous_object_and_value_types_compose_without_shadowing_base_prefixes() {
+        for nested in [false, true] {
+            let before = "<d:package xmlns:d=\"http://v8.1c.ru/8.1/xdto\" xmlns=\"urn:other\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema\" targetNamespace=\"urn:test\">\r\n\t<d:objectType name=\"T\"/>\r\n</d:package>";
+            let value = json!({"name":"Code","maxOccurs":2,"valueType":{"base":"xsi:string","facets":{"maxLength":10}}});
+            let property = if nested {
+                json!({"name":"Rows","maxOccurs":-1,"objectType":{"properties":[value]}})
+            } else {
+                value
+            };
+            let spec = decoded_property_spec(&property);
+            let operation = writer::TypedWriterOperation::AddPropertyTree {
+                type_name: "T",
+                property: &spec,
+                property_path: None,
+            };
+            let result = writer::plan_typed(before, operation).unwrap();
+            assert!(!result.blocks());
+            assert!(!result.after.replace("\r\n", "").contains('\n'));
+            let model = model::PackageModel::parse(&result.after).unwrap();
+            assert!(super::validate(&model).is_empty());
+            let document = roxmltree::Document::parse(&result.after).unwrap();
+            let definition = document
+                .descendants()
+                .find(|n| n.attribute((model::XSI_NS, "type")) == Some("ValueType"))
+                .unwrap();
+            assert_eq!(
+                definition.lookup_namespace_uri(Some("xsi")),
+                Some(model::XML_SCHEMA_NS)
+            );
+            assert_eq!(definition.attribute("base"), Some("xsi:string"));
+            assert_eq!(definition.attribute("maxLength"), Some("10"));
+            let repeated = writer::plan_typed(&result.after, operation).unwrap();
+            assert!(repeated.edits.is_empty() && !repeated.blocks());
+            let mut changed = property.clone();
+            let target = if nested {
+                &mut changed["objectType"]["properties"][0]
+            } else {
+                &mut changed
+            };
+            target["valueType"]["facets"]["maxLength"] = json!(9);
+            let changed = decoded_property_spec(&changed);
+            let refusal = writer::plan_typed(
+                &result.after,
+                writer::TypedWriterOperation::AddPropertyTree {
+                    type_name: "T",
+                    property: &changed,
+                    property_path: None,
+                },
+            )
+            .unwrap();
+            assert!(refusal.blocks());
+            assert_eq!(refusal.after, result.after);
+        }
+    }
+
+    #[test]
+    fn staged_xdto_restricted_value_types_preserve_facets_and_anonymity() {
+        let fixture = staged_xdto_fixture("restricted-values", PACKAGE.as_bytes());
+        let requests = [
+            (
+                "valueType.add",
+                json!({"at":"main:XDTOPackage.Sample", "values":{
+                    "name":"Code", "base":"xs:string", "facets":{"maxLength":10}
+                }}),
+            ),
+            (
+                "valueType.add",
+                json!({"at":"main:XDTOPackage.Sample", "values":{
+                    "name":"Amount", "base":"xs:decimal", "facets":{
+                        "totalDigits":5, "fractionDigits":2,
+                        "minInclusive":"0", "maxInclusive":"999.99"
+                    }
+                }}),
+            ),
+            (
+                "objectType.add",
+                json!({"at":"main:XDTOPackage.Sample", "values":{"name":"Example"}}),
+            ),
+            (
+                "property.add",
+                json!({"at":"main:XDTOPackage.Sample.Type.Example", "values":{
+                    "property":{"name":"Code", "type":"tns:Code"}
+                }}),
+            ),
+            (
+                "property.add",
+                json!({"at":"main:XDTOPackage.Sample.Type.Example", "values":{
+                    "property":{"name":"Amount", "type":"tns:Amount"}
+                }}),
+            ),
+            (
+                "property.add",
+                json!({"at":"main:XDTOPackage.Sample.Type.Example", "values":{
+                    "property":{"name":"Inline", "valueType":{
+                        "base":"xs:string", "facets":{"maxLength":10}
+                    }}
+                }}),
+            ),
+        ];
+        let operations = requests
+            .iter()
+            .enumerate()
+            .map(|(i, (op, args))| {
+                parse_xdto_plan_operation(op, args, i, &fixture.binding).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let (mut staged, effects) =
+            plan_admitted_xdto(&admission, &fixture.binding, &operations).unwrap();
+        let bytes = staged
+            .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+            .unwrap()
+            .unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        let document = roxmltree::Document::parse(text).unwrap();
+        let root = document.root_element();
+        let code = root
+            .children()
+            .find(|n| n.attribute("name") == Some("Code"))
+            .unwrap();
+        assert_eq!(code.attribute("maxLength"), Some("10"));
+        let amount = root
+            .children()
+            .find(|n| n.attribute("name") == Some("Amount"))
+            .unwrap();
+        for (name, value) in [
+            ("totalDigits", "5"),
+            ("fractionDigits", "2"),
+            ("minInclusive", "0"),
+            ("maxInclusive", "999.99"),
+        ] {
+            assert_eq!(amount.attribute(name), Some(value));
+        }
+        let inline = root
+            .descendants()
+            .find(|n| n.attribute("name") == Some("Inline"))
+            .unwrap();
+        assert_eq!(inline.attribute("type"), None);
+        let definition = inline
+            .children()
+            .find(|n| n.has_tag_name((super::model::XDTO_NS, "typeDef")))
+            .unwrap();
+        assert_eq!(
+            definition.attribute((super::model::XSI_NS, "type")),
+            Some("ValueType")
+        );
+        assert_eq!(definition.attribute("name"), None);
+        assert_eq!(definition.attribute("base"), Some("xs:string"));
+        assert_eq!(definition.attribute("maxLength"), Some("10"));
+        assert_eq!(effects.events().len(), 1);
+        assert_eq!(fs::read(&fixture.package).unwrap(), PACKAGE.as_bytes());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_restricted_values_repeat_exactly_and_reject_conflicts_atomically() {
+        let before =
+            include_str!("../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
+                .replace("urn:unica:anonymous", "urn:test");
+        let fixture = staged_xdto_fixture("restricted-repeat", before.as_bytes());
+        let tree = snapshot_tree(&fixture.source);
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let named = json!({"at":"main:XDTOPackage.Sample", "values":{
+            "name":"СуммаПримера", "base":"xs:decimal", "facets":{
+                "totalDigits":5, "fractionDigits":2, "minInclusive":"-0.00", "maxInclusive":"+0999.990"
+            }
+        }});
+        let anonymous = json!({"at":"main:XDTOPackage.Sample.Type.Пример", "values":{
+            "property":{"name":"АнонимныйКод", "valueType":{"base":"xs:string", "facets":{"maxLength":10}}}
+        }});
+        let operations = [("valueType.add", &named), ("property.add", &anonymous)]
+            .iter()
+            .enumerate()
+            .map(|(index, (op, request))| {
+                parse_xdto_plan_operation(op, request, index, &fixture.binding).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let (mut staged, effects) =
+            plan_admitted_xdto(&admission, &fixture.binding, &operations).unwrap();
+        assert!(effects.events().is_empty());
+        assert_eq!(
+            staged
+                .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+                .unwrap()
+                .unwrap(),
+            before.as_bytes()
+        );
+        for (base, facets) in [
+            ("xs:decimal", json!({"maxLength":10})),
+            ("xs:string", json!({"fractionDigits":2})),
+            ("tns:КодПримера", json!({"maxLength":5})),
+        ] {
+            let bad = parse_xdto_plan_operation("valueType.add", &json!({"at":"main:XDTOPackage.Sample", "values":{"name":"Bad", "base":base,"facets":facets}}), 1, &fixture.binding).unwrap();
+            assert!(plan_admitted_xdto(
+                &admission,
+                &fixture.binding,
+                &[
+                    add_value("main:XDTOPackage.Sample", "Early", "xs:string"),
+                    bad
+                ]
+            )
+            .is_err());
+            assert_eq!(snapshot_tree(&fixture.source), tree);
+        }
+        for (op, mut request) in [("valueType.add", named), ("property.add", anonymous)] {
+            if op == "valueType.add" {
+                request["values"]["facets"]["maxInclusive"] = json!("999.98");
+            } else {
+                request["values"]["property"]["valueType"]["facets"]["maxLength"] = json!(9);
+            }
+            let bad = parse_xdto_plan_operation(op, &request, 1, &fixture.binding).unwrap();
+            assert!(plan_admitted_xdto(
+                &admission,
+                &fixture.binding,
+                &[
+                    add_value("main:XDTOPackage.Sample", "Early", "xs:string"),
+                    bad
+                ]
+            )
+            .is_err());
+            assert_eq!(snapshot_tree(&fixture.source), tree);
+        }
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_anonymous_value_rejects_object_base_even_without_facets() {
+        let fixture = staged_xdto_fixture("anonymous-value-object-base", PACKAGE.as_bytes());
+        let before = snapshot_tree(&fixture.source);
+        let admission = staged_xdto_admission(&fixture, None, true);
+        for extra in [json!({}), json!({"facets":{}})] {
+            let mut value_type = extra;
+            value_type["base"] = json!("tns:NewObject");
+            let operation = parse_xdto_plan_operation(
+                "property.add",
+                &json!({
+                    "at":"main:XDTOPackage.Sample.Type.NewObject", "values":{
+                        "property":{"name":"Bad","valueType":value_type}
+                    }
+                }),
+                1,
+                &fixture.binding,
+            )
+            .unwrap();
+            assert!(
+                plan_admitted_xdto(
+                    &admission,
+                    &fixture.binding,
+                    &[
+                        add_object("main:XDTOPackage.Sample", "NewObject"),
+                        operation
+                    ]
+                )
+                .is_err(),
+                "anonymous value type must not derive from object type"
+            );
+            assert_eq!(snapshot_tree(&fixture.source), before);
+        }
         fixture.cleanup();
     }
 }

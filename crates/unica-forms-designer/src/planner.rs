@@ -280,14 +280,25 @@ pub fn default_form_property(key: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+/// Тип реквизита формы с квалификаторами, которые пишет выгрузка 8.3.27.
+/// Имена контракта `String`, `Number`, `Date`, `Boolean` (и русские) раньше
+/// уходили голыми `xs:*`, и платформа дописывала умолчания (#1996). Теперь
+/// строка — длина 0 переменной длины, дата — «дата и время», как понимает
+/// платформа, а число — 10 знаков, как ставит конфигуратор и как у колонки
+/// таблицы значений. Словарь кодека (`string`, `decimal`, `date`) проходит
+/// как есть. Составной тип отображается по частям.
 pub fn form_attribute_type(type_name: &str) -> String {
-    match type_name {
-        "Boolean" | "boolean" | "Булево" => "xs:boolean".to_string(),
-        "String" | "string" | "Строка" => "xs:string".to_string(),
-        "Number" | "number" | "Число" => "xs:decimal".to_string(),
-        "Date" | "date" | "Дата" => "xs:dateTime".to_string(),
-        other => other.to_string(),
-    }
+    type_name
+        .split(['|', '+'])
+        .map(|part| match part.trim() {
+            "Boolean" | "Булево" => "boolean",
+            "String" | "Строка" => "string",
+            "Number" | "Число" => "decimal",
+            "Date" | "Дата" => "dateTime",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 /// The legacy element definition for one typed v0.13 item: the discriminator
 /// key named after the element type, every other property passed through.
@@ -549,7 +560,10 @@ pub fn parse_form_operation(
             !target.items.is_empty() && target.event.is_none()
         }
         FormOperation::EventBind => target.event.is_some(),
-        FormOperation::Remove | FormOperation::AttributeAdd | FormOperation::CommandAdd => {
+        FormOperation::Remove
+        | FormOperation::AttributeAdd
+        | FormOperation::CommandAdd
+        | FormOperation::PropsSet => {
             target.form.is_some() && target.items.is_empty() && target.event.is_none()
         }
     };
@@ -563,13 +577,33 @@ pub fn parse_form_operation(
                 "the existing item `Owner.Name.Form.F.Item.A[.Item.B…]`"
             }
             FormOperation::EventBind => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
-            FormOperation::Remove | FormOperation::AttributeAdd | FormOperation::CommandAdd => "the form `Owner.Name.Form.F`",
+            FormOperation::Remove
+            | FormOperation::AttributeAdd
+            | FormOperation::CommandAdd
+            | FormOperation::PropsSet => "the form `Owner.Name.Form.F`",
         };
         return Err(bad(
             op_index,
             "at",
             format!("{operation_name} targets {shape}"),
         ));
+    }
+    // Свойство-ссылку корня формы операция знает, но не пишет: отказ
+    // называет причину, а не «неизвестный аргумент».
+    if operation == FormOperation::PropsSet {
+        if let Some(values) = args.get("values").and_then(Value::as_object) {
+            for name in values.keys() {
+                if unica_forms::root_properties::root_property(name).is_some_and(|(_, property)| {
+                    property.value == unica_forms::root_properties::RootValue::Reference
+                }) {
+                    return Err(bad(
+                        op_index,
+                        &format!("values.{name}"),
+                        format!("`{name}` names a form attribute, item or object; props.set does not write it"),
+                    ));
+                }
+            }
+        }
     }
     if operation == FormOperation::ItemAdd {
         if let Some(items) = args.get("items").and_then(Value::as_array) {
@@ -637,6 +671,21 @@ pub fn parse_form_operation(
                 }
             },
         ),
+        FormOperation::PropsSet => {
+            let form = form_of(&target)?;
+            let values = args
+                .get("values")
+                .cloned()
+                .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
+            let mut wrapper = Map::new();
+            wrapper.insert("rootProperties".to_string(), values);
+            Ok(FormPlan::FormEdit {
+                owner: target.owner,
+                form,
+                subject: FormEditSubject::Node(Vec::new()),
+                definitions: vec![FormEditStep::Definition(Value::Object(wrapper))],
+            })
+        }
         FormOperation::CommandAdd => {
             parse_form_root_addition(target, args, op_index, "commands", |_item, entry, name| {
                 if !entry.contains_key("action") {
@@ -1582,4 +1631,28 @@ pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> Str
         "</Form>"
     )
     .to_string()
+}
+
+#[cfg(test)]
+mod attribute_type_tests {
+    use super::form_attribute_type;
+
+    #[test]
+    fn bare_primitive_types_take_the_qualifiers_8_3_27_exports() {
+        for (input, expected) in [
+            ("String", "string"),
+            ("Строка", "string"),
+            ("Number", "decimal"),
+            ("Date", "dateTime"),
+            ("Boolean", "boolean"),
+            ("date", "date"),
+            ("decimal", "decimal"),
+            ("string(10)", "string(10)"),
+            ("CatalogRef.Товары", "CatalogRef.Товары"),
+            ("String | Number", "string | decimal"),
+            ("String+Date", "string | dateTime"),
+        ] {
+            assert_eq!(form_attribute_type(input), expected, "{input}");
+        }
+    }
 }

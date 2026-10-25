@@ -5,8 +5,10 @@
 `needs` между ними сделал бы прогон последовательным, поэтому `Unica CI`
 идёт параллельно и в конце читает исход джобы `Rust (<runner>)` из jobs API
 этого же прогона. Скрипт ничего не решает: исходы сверяет `ci_rust_lanes`
-(`CI_JOB_RESULTS`) и оценка гейта. Не дождались — исход `timed_out`, джобы
-нет среди завершённых — `missing`. Отменённая джоба без раннера — это
+(`CI_JOB_RESULTS`) и оценка гейта. Не дождались — исход `timed_out`, в том
+числе у завершённой джобы, чей итог так и не записан; шаг завершённой джобы
+без итога по сроку получает итог джобы; джобы нет среди завершённых —
+`missing`. Отменённая джоба без раннера — это
 `not_acquired`: GitHub так и не выдал раннер этого типа («The job was not
 acquired by Runner … even after multiple attempts»), а не потеря её части.
 Ни один из этих исходов успехом не является.
@@ -48,31 +50,46 @@ def conclusion(job: dict) -> str:
 STEP = "::"
 
 
+def outcome(name: str, found: dict[str, dict], jobs: list[dict], *, final: bool = False) -> str | None:
+    """Исход одной ожидаемой джобы или шага; None, пока он может измениться.
+
+    Jobs API отдаёт `status=completed` раньше, чем заполняет итоги: пустой
+    итог у завершённой джобы или её шага значит «ещё не записан», а не
+    провал (#2008). Шаг завершённой джобы может долго оставаться без итога
+    или вовсе не попасть в список (#2026): до срока это ожидание, а по сроку
+    (`final`) итог шага — итог джобы, так что отказ джобы не становится
+    успехом шага.
+    """
+    job_name, _, step_name = name.partition(STEP)
+    job = found.get(job_name)
+    if job is None:
+        # Матрица ещё не развёрнута или джобы нет вовсе: «нет» становится
+        # окончательным, только когда больше ничего, кроме гейта, не идёт.
+        if any(item["status"] != "completed" for item in jobs if item["name"] != GATE_JOB):
+            return None
+        return "missing"
+    if job["status"] != "completed" or not job.get("conclusion"):
+        return None
+    if step_name and conclusion(job) != NOT_ACQUIRED and job.get("steps"):
+        step = next((item for item in job["steps"] if item.get("name") == step_name), None)
+        written = step.get("conclusion") if step else None
+        return written or (conclusion(job) if final else None)
+    # Jobs API бывает отдаёт завершённую джобу вовсе без шагов (PR #2012):
+    # тогда итог шага — итог самой джобы. Успешная джоба значит успешные
+    # шаги, а отказ джобы не превращается в успех ни одного из них.
+    return conclusion(job)
+
+
 def outcomes(jobs: list[dict], expected: list[str]) -> dict[str, str] | None:
     """Исходы ожидаемых джоб или None, пока какая-то из них может появиться или идёт.
 
     `Джоба::Шаг` — исход одного шага джобы: у джобы pull request с Clippy
-    и Python отказ одного не должен выдавать себя за отказ другого.
+    и Python отказ одного не должен выдавать себя за отказ другого, пока
+    итог каждого записан; незаписанный по сроку берёт итог джобы.
     """
     found = {job["name"]: job for job in jobs}
-    result = {}
-    for name in expected:
-        job_name, _, step_name = name.partition(STEP)
-        job = found.get(job_name)
-        if job is None:
-            # Матрица ещё не развёрнута или джобы нет вовсе: «нет» становится
-            # окончательным, только когда больше ничего, кроме гейта, не идёт.
-            if any(item["status"] != "completed" for item in jobs if item["name"] != GATE_JOB):
-                return None
-            result[name] = "missing"
-        elif job["status"] != "completed":
-            return None
-        elif step_name and conclusion(job) != NOT_ACQUIRED:
-            step = next((item for item in job.get("steps") or [] if item.get("name") == step_name), None)
-            result[name] = (step.get("conclusion") or "unknown") if step else "missing"
-        else:
-            result[name] = conclusion(job)
-    return result
+    result = {name: outcome(name, found, jobs) for name in expected}
+    return None if None in result.values() else result
 
 
 def wait(expected: list[str], read: Callable[[], list[dict]], *, timeout: float, interval: float,
@@ -89,10 +106,10 @@ def wait(expected: list[str], read: Callable[[], list[dict]], *, timeout: float,
         if current is not None:
             return current
         if clock() >= deadline:
-            # Завершённая джоба сохраняет свой исход; срок истёк у остальных.
+            # Записанный исход найденной джобы сохраняется; срок истёк у остальных.
             found = {job["name"]: job for job in jobs}
-            return {name: conclusion(found[name]) if name in found and found[name]["status"] == "completed"
-                    else "timed_out" for name in expected}
+            return {name: (outcome(name, found, jobs, final=True) if name.partition(STEP)[0] in found else None)
+                    or "timed_out" for name in expected}
         sleep(interval)
 
 

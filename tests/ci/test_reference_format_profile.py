@@ -214,14 +214,14 @@ class ReferenceFormatProfileTests(unittest.TestCase):
                 ("supported", "typeDef:ObjectType/property"): "direct-child",
                 ("supported", "property-identity"): "exactly-one(name,ref)",
                 ("supported", "ref-target"): "global-property",
-                ("supported", "owned-type"): "zero-or-one(type,typeDef:ObjectType)",
+                ("supported", "owned-type"): "zero-or-one(type,typeDef:ObjectType,typeDef:ValueType)",
                 ("supported", "lowerBound"): "0-or-1;default=1",
                 ("supported", "upperBound"): "-1-or-integer>=1;default=1",
                 ("supported", "finite-bounds"): "lower<=upper",
                 ("unsupported", "valueType/enumeration"): "writer-contract",
                 ("unsupported", "valueType/pattern"): "writer-contract",
                 ("unsupported", "valueType/typeDef:ValueType"): "writer-contract",
-                ("unsupported", "property/typeDef:ValueType"): "writer-contract",
+                ("supported", "property/typeDef:ValueType"): "direct-child",
                 ("unsupported", "valueType/memberTypes"): "writer-contract",
             },
         )
@@ -312,21 +312,21 @@ class ReferenceFormatProfileTests(unittest.TestCase):
             if status == "supported" and rule == "direct-child"
         }
         observed_edges: set[str] = set()
-        for parent in package.iter():
-            parent_kind = parent.tag.removeprefix(f"{{{XDTO_NS}}}")
-            if parent_kind == "typeDef":
-                self.assertEqual(
-                    parent.attrib.get(f"{{{XSI_NS}}}type"), "ObjectType"
-                )
-                parent_kind = "typeDef:ObjectType"
-            for child in parent:
-                child_kind = child.tag.removeprefix(f"{{{XDTO_NS}}}")
-                if child_kind == "typeDef":
-                    self.assertEqual(
-                        child.attrib.get(f"{{{XSI_NS}}}type"), "ObjectType"
-                    )
-                    child_kind = "typeDef:ObjectType"
-                observed_edges.add(f"{parent_kind}/{child_kind}")
+        restricted = ET.parse(ROOT / "tests/fixtures/xdto/restricted-values/Package.bin").getroot()
+        for evidence in (package, restricted):
+            for parent in evidence.iter():
+                parent_kind = parent.tag.removeprefix(f"{{{XDTO_NS}}}")
+                if parent_kind == "typeDef":
+                    kind = parent.attrib.get(f"{{{XSI_NS}}}type")
+                    self.assertIn(kind, {"ObjectType", "ValueType"})
+                    parent_kind = f"typeDef:{kind}"
+                for child in parent:
+                    child_kind = child.tag.removeprefix(f"{{{XDTO_NS}}}")
+                    if child_kind == "typeDef":
+                        kind = child.attrib.get(f"{{{XSI_NS}}}type")
+                        self.assertIn(kind, {"ObjectType", "ValueType"})
+                        child_kind = f"typeDef:{kind}"
+                    observed_edges.add(f"{parent_kind}/{child_kind}")
         self.assertEqual(observed_edges, supported_edges)
 
         imports = {
