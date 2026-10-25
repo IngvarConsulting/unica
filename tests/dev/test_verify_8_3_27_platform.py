@@ -1077,12 +1077,15 @@ class CorpusAdapterTests(unittest.TestCase):
 
         self.assertIn("meta-edit-event-source", verifier.MANDATORY_CASE_IDS)
 
-    def test_current_default_inventory_is_not_pinned_until_the_platform_gate(self):
+    def test_current_default_inventory_is_pinned_to_reproducible_candidate(self):
         verifier = load_verifier()
-        self.assertIsNone(verifier.EXPECTED_CASE_CONTRACT_SHA256)
+        self.assertEqual(
+            verifier.EXPECTED_CASE_CONTRACT_SHA256,
+            "827a35dbee0dcfd415a38d1c3448a151181e7d80d67f376501d57837e2006102",
+        )
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
-            "e4387e953c4f82452b32af8873661db90e26b594d4be8c9fb50fe5e996492400",
+            "827a35dbee0dcfd415a38d1c3448a151181e7d80d67f376501d57837e2006102",
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1095,11 +1098,7 @@ class CorpusAdapterTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 verifier.CorpusError,
-                r"required corpus case contract is not pinned for the current "
-                r"48-case public-writer inventory; last verified digest for the "
-                r"previous inventory was "
-                + verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256
-                + r", candidate digest is [0-9a-f]{64}; exact platform gate is pending",
+                r"case contract fields do not match the pinned public-writer inventory",
             ):
                 verifier.load_corpus(
                     manifest,

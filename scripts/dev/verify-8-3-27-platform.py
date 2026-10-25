@@ -100,33 +100,20 @@ EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
 EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
-# The e4387e95 contract is proven on 1C 8.3.27.2074 on 2026-10-25. A full
-# 67-case gate (456 commands, report SHA256
-# 91cfabf9c937aed85a850a0117919bab776688d3bfbc47691b6dbece70c8273f) passed on
-# the previous composition. A manual comparison with UUIDs masked found
-# form-compile-managed, interface-edit-subsystem and subsystem-edit-add-child
-# changed since; with form-edit-managed, form-compile-managed-v012 and
-# meta-remove-object (its arguments changed) they passed on this composition
-# (report SHA256 f7a190226ceb4a585024fba3adaa5ef4704c1357473f0df26afc274685bb2a81
-# and 324d0fc332a682ef75c940ac2d3bef16d2fed91c45ca272a4df5e060f08aac88).
-# Two corpora generated independently from this change give this contract.
+# The 827a35db contract is proven on 1C 8.3.27.2074 on 2026-10-25. The corpus
+# moved off the v0.12 surface (#1813): its 48 cases publish through canonical
+# unica.apply, and the v0.12 form-compile-managed-v012 case left with it. A full
+# 48-case gate (294 commands, report SHA256
+# 9ace4c793d8bb9488646666771230bad2c5aa2cb58fa55f337ab8b673ab8994d) passed every
+# case. Two corpora generated independently from this change give this contract.
 # This records semantic retention and stable round trips under the existing
 # comparison policy; it is not whole-tree raw-byte or full-release acceptance.
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
-    "e4387e953c4f82452b32af8873661db90e26b594d4be8c9fb50fe5e996492400"
+    "827a35dbee0dcfd415a38d1c3448a151181e7d80d67f376501d57837e2006102"
 )
-# The corpus moved off the v0.12 surface (#1813): the 48 remaining cases
-# publish through canonical unica.apply, so every case contract changed. With
-# None the full set is refused before ibcmd runs; the refusal names the
-# candidate digest. To run the gate, pin that candidate here, run it on
-# 8.3.27.2074, and keep the pin only if every case passes; then record it in
-# LAST_VERIFIED_CASE_CONTRACT_SHA256 too. A run on 2026-10-22 gave 45 pass and
-# 3 accepted-normalized (form-edit-managed and form-compile-managed: #1996;
-# template-remove-object-template: #1997), so the contract stays unpinned.
-# Since then form-compile-managed took props.set from #2043 and the bare
-# String and Number attributes #2066 writes in the 8.3.27 profile; the v0.12
-# form-compile-managed-v012 case left with the v0.12 corpus.
-EXPECTED_CASE_CONTRACT_SHA256: str | None = None
+EXPECTED_CASE_CONTRACT_SHA256: str | None = (
+    "827a35dbee0dcfd415a38d1c3448a151181e7d80d67f376501d57837e2006102"
+)
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
