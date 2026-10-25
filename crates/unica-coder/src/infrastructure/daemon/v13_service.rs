@@ -6614,8 +6614,6 @@ mod tests {
         }
     }
 
-    /// Resolving a metadata object by its own place answers exactly what the
-    /// full layout directory answers, for every object shape it handles (#1457).
     /// A name search proves its scope only through the addresses it
     /// watched while walking; a form scope needs its owner among them.
     #[test]
@@ -6671,6 +6669,8 @@ mod tests {
         );
     }
 
+    /// Resolving a metadata object by its own place answers exactly what the
+    /// full layout directory answers, for every object shape it handles (#1457).
     #[test]
     fn resolve_metadata_point_matches_the_full_layout_directory() {
         use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};

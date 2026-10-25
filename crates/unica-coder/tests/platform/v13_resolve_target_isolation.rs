@@ -488,7 +488,8 @@ fn resolve_path_succeeds_above_the_full_directory_byte_budget() {
 
     // The full directory charges the synonym once as the title and again as
     // a fact. These unrelated valid objects alone exceed its 16 MiB budget,
-    // which name search no longer builds (#1119).
+    // which name search no longer builds (#1119). The compile-time check
+    // below is now the only proof that the layout is above that budget.
     const UNRELATED: usize = 1_200;
     const SYNONYM_BYTES: usize = 7_200;
     const _: () = assert!(UNRELATED * SYNONYM_BYTES * 2 > 16 * 1024 * 1024);
