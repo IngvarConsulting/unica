@@ -192,19 +192,24 @@ fn project_metadata(
             ],
         );
         // Детальные расписания дня — массив тех же фактов, вложенным JSON
-        // без упаковки в строку (#2031).
+        // без упаковки в строку и в общем пределе размера свойства (#2031).
+        let mut limits = Vec::new();
         if let Some(detailed) = properties
             .get("detailedDailySchedules")
             .filter(|value| value.is_array())
         {
-            props.insert("detailedDailySchedules".to_string(), detailed.clone());
+            place_prop(
+                &mut props,
+                &mut limits,
+                "detailedDailySchedules",
+                detailed,
+                false,
+                "schedule detailedDailySchedules",
+            );
         }
-        return Ok(NodeViewData::Node(NodeView::new(
-            address.to_string(),
-            "Schedule",
-            "Schedule",
-            props,
-        )));
+        return Ok(NodeViewData::Node(
+            NodeView::new(address.to_string(), "Schedule", "Schedule", props).with_limits(limits),
+        ));
     }
     if first.kind() == NodeKind::Relation {
         if suffix.len() > 1 || first.name().is_some() {
