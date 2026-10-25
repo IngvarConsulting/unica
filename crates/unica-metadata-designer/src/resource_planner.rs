@@ -813,13 +813,16 @@ pub fn stage_metadata_resource_plan(
             // Пустой интерфейс платформа не выгружает, и у новой подсистемы
             // файла нет: цель подтверждает дескриптор владельца, он же даёт
             // версию формата, а файл создаёт первая правка видимости или
-            // размещения. Порядок переставляет хранимый состав, и без файла
-            // переставлять нечего (#2010).
+            // размещения либо первый порядок разделов корня. Порядок команд
+            // и групп переставляет хранимый состав, и без файла переставлять
+            // нечего.
             let seed = match &existing {
                 Some(bytes) => bytes.clone(),
                 None if !matches!(
                     edit,
-                    InterfaceEdit::Visibility(_) | InterfaceEdit::Placement(_)
+                    InterfaceEdit::Visibility(_)
+                        | InterfaceEdit::Placement(_)
+                        | InterfaceEdit::SubsystemOrder(_)
                 ) =>
                 {
                     return Err(ApplyPlanError::new(
@@ -958,12 +961,37 @@ pub fn stage_metadata_resource_plan(
                     .map_err(fail)?;
                 }
                 InterfaceEdit::SubsystemOrder(subsystems) => {
-                    interface_order_membership(
-                        &interface_text_direct_item_values(&text, "SubsystemsOrder", "Subsystem"),
-                        subsystems,
-                        "subsystems",
-                    )
-                    .map_err(|message| order_refusal(message, "subsystems"))?;
+                    let stored =
+                        interface_text_direct_item_values(&text, "SubsystemsOrder", "Subsystem");
+                    // Первый порядок разделов, как у платформы, может быть
+                    // частичным: неназванные разделы встают следом. Имена —
+                    // только разделы интерфейса.
+                    if stored.is_empty() {
+                        let sections = command_interface_section_references(staged, &at_path)?;
+                        let mut foreign = Vec::new();
+                        for name in subsystems.iter().filter(|name| !sections.contains(name)) {
+                            let quoted = format!("`{name}`");
+                            if !foreign.contains(&quoted) {
+                                foreign.push(quoted);
+                            }
+                        }
+                        if !foreign.is_empty() {
+                            return Err(order_refusal(
+                                format!(
+                                    "not a top-level subsystem shown in the command interface: {}; the sections are {}",
+                                    foreign.join(", "),
+                                    sections
+                                        .iter()
+                                        .map(|name| format!("`{name}`"))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                                "subsystems",
+                            ));
+                        }
+                    }
+                    interface_order_membership(&stored, subsystems, "subsystems")
+                        .map_err(|message| order_refusal(message, "subsystems"))?;
                     interface_text_do_subsystem_order(
                         &mut text,
                         &json!(subsystems),
@@ -1230,6 +1258,39 @@ fn command_interface_owner(relative: &std::path::Path) -> PathBuf {
         Some(directory) => directory.with_extension("xml"),
         None => PathBuf::from("Configuration.xml"),
     }
+}
+
+/// Разделы командного интерфейса ссылками порядка: `Subsystem.<Имя>`.
+fn command_interface_section_references(
+    staged: &mut ApplyProposal<'_>,
+    at_path: &str,
+) -> Result<Vec<String>, ApplyPlanError> {
+    let configuration = staged
+        .read(std::path::Path::new("Configuration.xml"))
+        .map_err(|error| ApplyPlanError::staging(error, at_path.to_string()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "Configuration.xml was not found",
+            )
+            .at_path(at_path.to_string())
+        })?;
+    let sections = crate::subsystem_topology::command_interface_sections(&configuration, |path| {
+        staged.read(path)
+    })
+    .map_err(|error| match error {
+        crate::subsystem_topology::CommandInterfaceSectionsError::Read(error) => {
+            ApplyPlanError::staging(error, at_path.to_string())
+        }
+        crate::subsystem_topology::CommandInterfaceSectionsError::Topology(error) => {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error.to_string())
+                .at_path(at_path.to_string())
+        }
+    })?;
+    Ok(sections
+        .into_iter()
+        .map(|name| format!("Subsystem.{name}"))
+        .collect())
 }
 
 fn descriptor_format_version(descriptor: &[u8]) -> Option<String> {
