@@ -506,13 +506,6 @@ pub fn plan_meta_remove_subsystem_replacements_bounded(
     Ok(())
 }
 
-/// Largest single source file the reference scan will read: none (#1119).
-///
-/// The scan decides whether an object may be removed, so it reads every XML and
-/// BSL file under the source root whole; a large module is part of the
-/// configuration and must not refuse the removal.
-pub const META_REMOVE_REFERENCE_FILE_MAX_BYTES: usize = usize::MAX;
-
 pub fn meta_remove_should_skip_file(
     file: &Path,
     config_dir: &Path,

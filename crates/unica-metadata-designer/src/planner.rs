@@ -897,7 +897,6 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         meta_remove_composition, meta_remove_composition_image, meta_remove_references,
         meta_remove_referrer, meta_remove_search_patterns, meta_remove_should_skip_file,
         plan_meta_remove_subsystem_replacements, remove_composition_entries, MetaRemoveReference,
-        META_REMOVE_REFERENCE_FILE_MAX_BYTES,
     };
     let at_path = format!("ops[{op_index}].args.at");
     unica_source_designer::registration::require_untouched_staged_state(
@@ -998,7 +997,9 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             continue;
         }
         let bytes = staged
-            .read_guarded_bounded(relative, META_REMOVE_REFERENCE_FILE_MAX_BYTES)
+            // #1119: every XML and BSL file of the reference scan is read
+            // whole; a large module must not refuse the removal.
+            .read_guarded_bounded(relative, usize::MAX)
             .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
             .ok_or_else(|| {
                 ApplyPlanError::new(

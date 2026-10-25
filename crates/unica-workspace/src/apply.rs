@@ -14,11 +14,8 @@ use std::sync::Arc;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
-// #1119: apply does not cap the size of a file it reads nor the number of
-// entries in a namespace it retains; the configuration decides both. A file
-// is read whole unless its caller bounds it. The entry constant stays as the
-// default of the bound that tests inject smaller, and the arithmetic keeps
-// guarding overflow. Depth still guards against cycles.
+// #1119: the configuration, not apply, decides file sizes and namespace
+// membership; depth still guards against cycles.
 pub(super) const MAX_APPLY_NAMESPACE_ENTRIES: usize = usize::MAX;
 pub(super) const MAX_APPLY_NAMESPACE_DEPTH: usize = 256;
 
@@ -809,7 +806,7 @@ impl ApplyStagedState {
         let bytes = file.read_bounded(limit).map_err(|error| {
             ApplyStagingError::new(
                 ApplyStagingErrorKind::UnsupportedProvider,
-                format!("reference input fixed read bound failed: {error}"),
+                format!("reference input read failed: {error}"),
             )
         })?;
         self.checkpoint("apply reference input result")?;
@@ -1298,7 +1295,7 @@ impl ApplyStagedState {
                 let bytes = file.read_bounded(limit).map_err(|error| {
                     ApplyStagingError::new(
                         ApplyStagingErrorKind::UnsupportedProvider,
-                        format!("staged target fixed read bound failed: {error}"),
+                        format!("staged target read failed: {error}"),
                     )
                 })?;
                 let identity = file.identity();
@@ -1559,10 +1556,7 @@ fn strict_relative(relative: &Path) -> Result<PathBuf, ApplyStagingError> {
     Ok(relative.to_path_buf())
 }
 
-#[cfg(feature = "test-support")]
-#[path = "apply_budget_contract_tests.rs"]
-pub mod budget_contract_tests;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "../tests/support/apply.rs"]
 mod test_support;
 
