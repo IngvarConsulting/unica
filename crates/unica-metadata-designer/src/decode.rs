@@ -54,7 +54,8 @@ pub enum MetadataPlanKind {
     },
     Remove {
         target: MetadataAddress,
-        kind: MetadataKind,
+        /// The removed object's layout: a typed kind or a common template.
+        layout: &'static unica_source_designer::layout::MetadataLayout,
         name: String,
     },
     HelpCreate {
@@ -805,16 +806,48 @@ pub fn parse_object_remove(
         op_index,
         binding.source_set_name(),
     )?;
-    let (address, kind) = metadata_owner(&target, op_index)?;
+    let (address, layout) = removable_object(&target, op_index)?;
     let name = target.segments()[0]
         .name()
-        .expect("metadata_owner proved the segment is named")
+        .expect("removable_object proved the segment is named")
         .to_string();
     Ok(MetadataPlanKind::Remove {
         target: address,
-        kind,
+        layout,
         name,
     })
+}
+/// The top-level object `object.remove` takes: one of the typed kinds or a
+/// common template, which the configurator removes the same way.
+fn removable_object(
+    target: &QualifiedAddress,
+    op_index: usize,
+) -> Result<
+    (
+        MetadataAddress,
+        &'static unica_source_designer::layout::MetadataLayout,
+    ),
+    ApplyPlanError,
+> {
+    if let [owner] = target.segments() {
+        if owner.kind() == NodeKind::CommonTemplate {
+            if let Some(name) = owner.name() {
+                let address = MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("CommonTemplate.{name}"),
+                )
+                .map_err(|error| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
+                        .at_path(format!("ops[{op_index}].args.at"))
+                })?;
+                let layout = unica_source_designer::layout::metadata_kind("CommonTemplate")
+                    .expect("a common template has a physical layout");
+                return Ok((address, layout));
+            }
+        }
+    }
+    let (address, kind) = metadata_owner(target, op_index)?;
+    Ok((address, crate::layout::metadata_layout(kind)))
 }
 pub fn parse_help_create(
     args: &Map<String, Value>,

@@ -556,6 +556,10 @@ pub fn meta_remove_search_patterns(
         // it `CommonModule.X`, which the caller adds for XML.
         patterns.push(format!("{obj_name}."));
     }
+    if obj_type == "CommonTemplate" {
+        // No manager names a common template; `Метаданные.ОбщиеМакеты.X` does.
+        patterns.push(format!("ОбщиеМакеты.{obj_name}"));
+    }
     patterns
 }
 

@@ -1872,6 +1872,84 @@ mod tests {
         assert!(unchanged);
     }
 
+    /// A common template on support follows the same rules as any vendor
+    /// object: locked, it refuses under `deny` and warns under `warn`.
+    #[test]
+    fn vendor_common_template_removal_follows_its_support_rule() {
+        use unica_workspace::test_support::tree_snapshot;
+
+        let template = "44444444-4444-4444-8444-444444444444";
+        for (rule, policy) in [(0, "deny"), (0, "warn"), (1, "deny")] {
+            let fixture = ApplySeamFixture::new();
+            let source = fixture.source_dir();
+            std::fs::write(
+                source.parent().unwrap().join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            std::fs::create_dir_all(source.join("Ext")).unwrap();
+            std::fs::write(
+                source.join("Ext/ParentConfigurations.bin"),
+                format!(
+                    "\u{feff}{{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,33333333-3333-4333-8333-333333333333,\"1.0\",\"Vendor\",\"VendorConf\",3,{rule},0,{template},{template}}}"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Document>First</Document><Document>Second</Document><CommonTemplate>Print</CommonTemplate></ChildObjects></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::create_dir_all(source.join("CommonTemplates/Print/Ext")).unwrap();
+            std::fs::write(
+                source.join("CommonTemplates/Print.xml"),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonTemplate uuid="{template}"><Properties><Name>Print</Name><Synonym/><Comment/><TemplateType>SpreadsheetDocument</TemplateType></Properties></CommonTemplate></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("CommonTemplates/Print/Ext/Template.xml"),
+                r#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet"/>"#,
+            )
+            .unwrap();
+            let before = tree_snapshot(&source);
+            let request = seam_request(
+                "main:CommonTemplate.Print",
+                "object.remove",
+                serde_json::json!({}),
+            );
+            let outcome = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                .map(|(mut staged, effects)| {
+                    assert!(staged
+                        .read(std::path::Path::new("CommonTemplates/Print.xml"))
+                        .unwrap()
+                        .is_none());
+                    effects.warnings().to_vec()
+                });
+            assert_eq!(tree_snapshot(&source), before);
+            match (rule, policy) {
+                (0, "deny") => {
+                    let error = outcome.expect_err("a locked common template stays under deny");
+                    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+                    let message = error.to_string();
+                    assert!(message.contains("`main:CommonTemplate.Print`"));
+                    assert!(message.contains("support rule `locked`"));
+                }
+                (0, _) => {
+                    let warnings = outcome.expect("warn removes a locked common template");
+                    assert_eq!(warnings.len(), 1);
+                    assert_eq!(warnings[0]["code"], "support_locked");
+                    assert_eq!(warnings[0]["at"], "main:CommonTemplate.Print");
+                }
+                _ => {
+                    let warnings = outcome.expect("an editable common template is removed");
+                    assert!(warnings.is_empty());
+                }
+            }
+        }
+    }
+
     /// With changes disabled for the whole configuration a removal is told
     /// so in its own words: `deny` refuses before removal, `warn` permits it.
     #[test]
