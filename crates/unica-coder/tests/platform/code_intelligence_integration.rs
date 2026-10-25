@@ -353,7 +353,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context,
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -476,7 +475,6 @@ mod tests {
                 &SearchRequest {
                     query: "needle".into(),
                     limit: 20,
-                    skip: None,
                 },
                 &owned_git_scope(root.path(), relative),
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -570,7 +568,6 @@ mod tests {
                 &SearchRequest {
                     query: "needle".into(),
                     limit: 20,
-                    skip: None,
                 },
                 &context,
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -643,7 +640,6 @@ mod tests {
                 &SearchRequest {
                     query: "needle".into(),
                     limit: 20,
-                    skip: None,
                 },
                 &context,
                 deadline,
@@ -667,7 +663,6 @@ mod tests {
             &SearchRequest {
                 query: "needle".into(),
                 limit: 20,
-                skip: None,
             },
             &context,
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -690,7 +685,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::no_deadline(),
@@ -722,7 +716,6 @@ mod tests {
             &SearchRequest {
                 query: "Post.*".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context,
             ProviderDeadline::new(Instant::now() + Duration::from_secs(60)),
@@ -857,7 +850,6 @@ mod tests {
             &SearchRequest {
                 query: "ПолитикаУчетаСерий".to_string(),
                 limit: 1,
-                skip: None,
             },
             &context,
             ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
@@ -925,7 +917,6 @@ mod tests {
             &SearchRequest {
                 query: "Needle".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context,
             ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
@@ -1052,7 +1043,6 @@ mod tests {
                 &SearchRequest {
                     query: "Needle".into(),
                     limit: 20,
-                    skip: None,
                 },
                 &context,
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
@@ -1098,7 +1088,6 @@ mod tests {
             &SearchRequest {
                 query: "needle".to_string(),
                 limit: 2,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1117,64 +1106,6 @@ mod tests {
     }
 
     #[test]
-    fn git_grep_continuation_passes_over_the_delivered_prefix_and_proves_it() {
-        use unica_code_intelligence::model::{SearchHitChain, SearchSkip};
-        let records = "a/Module.bsl\x001\x00First\n\
-                       a/Module.bsl\x002\x00Second\n\
-                       b/Module.bsl\x003\x00Third\n\
-                       b/Module.bsl\x004\x00Fourth\n";
-        let search = |skip: Option<SearchSkip>, limit: usize| {
-            let runner = FakeRunner {
-                output: output(records),
-                commands: Mutex::new(Vec::new()),
-            };
-            GitGrepProvider::with_runner(
-                &runner,
-                crate::infrastructure::analysis_composition::source_bindings(),
-            )
-            .search(
-                &SearchRequest {
-                    query: "needle".to_string(),
-                    limit,
-                    skip,
-                },
-                &context(),
-                ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
-                &CancellationToken::new(),
-            )
-        };
-        let first = search(None, 2);
-        assert_eq!(first.skipped, None);
-        let delivered = first
-            .hits
-            .iter()
-            .fold(SearchSkip::START, |prefix, hit| prefix.push(hit));
-
-        let next = search(
-            Some(SearchSkip {
-                count: 2,
-                chain: SearchHitChain::EMPTY,
-            }),
-            1,
-        );
-        assert_eq!(next.status, ProviderSectionStatus::LimitReached);
-        assert_eq!(next.hits.len(), 1);
-        assert_eq!(next.hits[0].line, 3);
-        assert_eq!(next.skipped, Some(delivered), "the prefix chain is proven");
-
-        let past_end = search(
-            Some(SearchSkip {
-                count: 6,
-                chain: SearchHitChain::EMPTY,
-            }),
-            1,
-        );
-        assert!(past_end.search_complete);
-        assert!(past_end.hits.is_empty());
-        assert_eq!(past_end.skipped.map(|skip| skip.count), Some(4));
-    }
-
-    #[test]
     fn git_grep_preserves_utf8_paths() {
         let runner = FakeRunner {
             output: output("Catalogs/Номенклатура.xml\x007\x00<Name>Номенклатура</Name>\n"),
@@ -1189,7 +1120,6 @@ mod tests {
             &SearchRequest {
                 query: "Номенклатура".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1229,7 +1159,6 @@ mod tests {
             &SearchRequest {
                 query: "needle".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1271,7 +1200,6 @@ mod tests {
             &SearchRequest {
                 query: "needle".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1317,7 +1245,6 @@ mod tests {
             &SearchRequest {
                 query: "Procedure".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1354,7 +1281,6 @@ mod tests {
             &SearchRequest {
                 query: "Procedure".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1391,7 +1317,6 @@ mod tests {
             &SearchRequest {
                 query: "absent".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1417,7 +1342,6 @@ mod tests {
             &SearchRequest {
                 query: "needle".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1443,7 +1367,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1463,7 +1386,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 1,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1488,7 +1410,6 @@ mod tests {
             &SearchRequest {
                 query: "Password".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1858,7 +1779,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -1903,7 +1823,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::no_deadline(),
@@ -2082,7 +2001,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 50,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(120)),
@@ -2119,7 +2037,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 1,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -2134,7 +2051,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 2,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -2195,7 +2111,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &metadata_scoped_context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -2227,7 +2142,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -2259,7 +2173,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -2295,7 +2208,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -2555,7 +2467,6 @@ mod tests {
             &SearchRequest {
                 query: "Find".into(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::with_clock(started_at + budget, manual_now),
@@ -2777,7 +2688,6 @@ mod tests {
             &SearchRequest {
                 query: "Find".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
@@ -2814,7 +2724,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(90)),
@@ -2851,7 +2760,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 1,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -2866,7 +2774,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 2,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -2926,7 +2833,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &metadata_scoped_context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
@@ -2956,7 +2862,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::no_deadline(),
@@ -2997,7 +2902,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
@@ -3031,7 +2935,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::with_clock(started_at, manual_now),
@@ -3068,7 +2971,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::with_clock(started_at + Duration::from_secs(1), manual_now),
@@ -3095,7 +2997,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
@@ -3341,7 +3242,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
@@ -3380,7 +3280,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
@@ -3411,7 +3310,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
@@ -3449,7 +3347,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),

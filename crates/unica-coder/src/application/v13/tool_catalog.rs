@@ -324,11 +324,12 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "query": {"type": "string", "description": "Literal BSL text, symbol, or metadata name to search for."},
                             "corpus": {"type": "string", "enum": ["text", "names"], "description": "Where to search: `text` matches BSL module content and answers scope, line, column, snippet and the proven module address at; a hit without one carries unaddressed and fileId instead; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`.", "default": "text"},
                             "kind": {"type": "string", "description": "`names` corpus only: narrow the search to one logical node kind."},
-                            "role": {"type": "string", "enum": ["lexical", "symbol", "semantic"], "description": "`text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself."},
+                            "role": {"type": "string", "enum": ["symbol", "semantic"], "description": "`text` corpus only: which provider answers. `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search, which pages to the last match."},
                             "scope": logical_subtree_address(),
-                            "regex": {"type": "boolean", "description": "Use a regular expression for local text search.", "default": false},
+                            "regex": {"type": "boolean", "description": "Literal search without a role: match a regular expression instead of the literal text.", "default": false},
+                            "ignoreCase": {"type": "boolean", "description": "Literal search without a role: ignore letter case. Omit to match case."},
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20,
-                                "description": "Maximum matches per page, from 1 to 50. `symbol` and `semantic` may stop after their first 200 retrieved matches and mark the search incomplete; `lexical` pages continue to the last match."},
+                                "description": "Maximum matches per page, from 1 to 50. `symbol` and `semantic` may stop after their first 200 retrieved matches and mark the search incomplete."},
                             "cursor": cursor("Continue a previous search page. Bound to the question, source sets and page limit. Text search reads live sources; indexed providers report freshness and the build generation when known."),
                         }),
                         json!(["query"]),
@@ -531,7 +532,7 @@ fn result_envelope_schema() -> Value {
             "cursor": cursor("Opaque continuation cursor issued by this result stream."),
             "page": {"type": "object", "additionalProperties": false,
                 "properties": {
-                    "stoppedBy": {"type": "string", "enum": ["limit", "bytes", "complete"]},
+                    "stoppedBy": {"type": "string", "enum": ["limit", "bytes", "deadline", "complete"]},
                     "startByte": {"type": "integer", "minimum": 0},
                     "endByte": {"type": "integer", "minimum": 0},
                     "totalBytes": {"type": "integer", "minimum": 0},
@@ -739,14 +740,11 @@ mod tests {
     }
 
     #[test]
-    fn search_publishes_three_provider_roles_and_stays_literal_without_one() {
+    fn search_publishes_two_provider_roles_and_stays_literal_without_one() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog");
         let role = input_field(&catalog.tools, "search", "role");
         assert_eq!(role["type"], "string");
-        assert_eq!(
-            role["enum"],
-            serde_json::json!(["lexical", "symbol", "semantic"])
-        );
+        assert_eq!(role["enum"], serde_json::json!(["symbol", "semantic"]));
         assert!(
             role.get("default").is_none(),
             "у роли не должно быть умолчания: {role}"
@@ -803,7 +801,15 @@ mod tests {
             "search",
             json!(["query"]),
             &[
-                "query", "corpus", "kind", "role", "scope", "regex", "limit", "cursor",
+                "query",
+                "corpus",
+                "kind",
+                "role",
+                "scope",
+                "regex",
+                "ignoreCase",
+                "limit",
+                "cursor",
             ],
         );
         assert_schema(

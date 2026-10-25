@@ -49,7 +49,7 @@ enum ProviderWorkerMessage {
     },
     Completed {
         index: usize,
-        section: Box<ProviderSearchSection>,
+        section: ProviderSearchSection,
     },
 }
 
@@ -225,10 +225,7 @@ impl CodeSearchCoordinator {
                         ));
                         section.identity = worker_identity;
                     }
-                    let _ = tx.send(ProviderWorkerMessage::Completed {
-                        index,
-                        section: Box::new(section),
-                    });
+                    let _ = tx.send(ProviderWorkerMessage::Completed { index, section });
                 });
             match spawn_result {
                 Ok(handle) => self.worker_lifecycle.track(handle),
@@ -320,7 +317,7 @@ impl CodeSearchCoordinator {
                 {
                     provider_progress[index].state = progress_state_for_section(&section);
                     provider_progress[index].results_found = section.hits.len();
-                    slots[index] = Some(*section);
+                    slots[index] = Some(section);
                     publish_search_progress(
                         progress,
                         started_at,
@@ -914,7 +911,6 @@ mod tests {
                     &SearchRequest {
                         query: "Post".to_string(),
                         limit: 20,
-                        skip: None,
                     },
                     &context(),
                     &CancellationToken::new(),
@@ -1005,7 +1001,6 @@ mod tests {
                 &SearchRequest {
                     query: "Post".to_string(),
                     limit: 20,
-                    skip: None,
                 },
                 &context(),
                 &CancellationToken::new(),
@@ -1079,7 +1074,6 @@ mod tests {
                     &SearchRequest {
                         query: "Post".to_string(),
                         limit: 20,
-                        skip: None,
                     },
                     &context(),
                     &CancellationToken::new(),
@@ -1097,7 +1091,6 @@ mod tests {
         let request = SearchRequest {
             query: "Post".to_string(),
             limit: 20,
-            skip: None,
         };
         let cancellation = CancellationToken::new();
         let partial = CodeSearchCoordinator::new(
@@ -1171,7 +1164,6 @@ mod tests {
                     &SearchRequest {
                         query: "Post".to_string(),
                         limit: 20,
-                        skip: None,
                     },
                     &context(),
                     &CancellationToken::new(),
@@ -1198,7 +1190,6 @@ mod tests {
                     &SearchRequest {
                         query: "Post".to_string(),
                         limit: 20,
-                        skip: None,
                     },
                     &context(),
                     &CancellationToken::new(),
@@ -1232,7 +1223,6 @@ mod tests {
                     &SearchRequest {
                         query: "Post".to_string(),
                         limit: 2,
-                        skip: None,
                     },
                     &context(),
                     &CancellationToken::new(),
@@ -1298,7 +1288,6 @@ mod tests {
                     &SearchRequest {
                         query: "Post".to_string(),
                         limit: 20,
-                        skip: None,
                     },
                     &context(),
                     &CancellationToken::new(),
@@ -1378,7 +1367,6 @@ mod tests {
                 &SearchRequest {
                     query: "Post".to_string(),
                     limit: 20,
-                    skip: None,
                 },
                 &context(),
                 &CancellationToken::new(),
@@ -1490,7 +1478,6 @@ mod tests {
                             &SearchRequest {
                                 query: name.clone(),
                                 limit: 20,
-                                skip: None,
                             },
                             &context(),
                             &CancellationToken::new(),
@@ -1567,7 +1554,6 @@ mod tests {
                     &SearchRequest {
                         query: query.to_string(),
                         limit: 20,
-                        skip: None,
                     },
                     &context(),
                     &CancellationToken::new(),
@@ -1624,7 +1610,6 @@ mod tests {
             &SearchRequest {
                 query: "Post".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context(),
             &CancellationToken::new(),
@@ -1818,7 +1803,6 @@ mod tests {
                 &SearchRequest {
                     query: "Post".to_string(),
                     limit: 20,
-                    skip: None,
                 },
                 &context(),
                 &CancellationToken::new(),
@@ -1873,7 +1857,6 @@ mod tests {
                 &SearchRequest {
                     query: "Post".to_string(),
                     limit: 20,
-                    skip: None,
                 },
                 &context(),
                 &CancellationToken::new(),

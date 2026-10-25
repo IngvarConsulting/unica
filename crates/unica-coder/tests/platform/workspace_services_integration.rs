@@ -760,7 +760,6 @@ mod tests {
                     &SearchRequest {
                         query: "Acceptance".into(),
                         limit: 20,
-                        skip: None,
                     },
                     &context,
                     ProviderDeadline::from_budget(Duration::from_secs(10)),
@@ -1245,7 +1244,6 @@ mod tests {
                 &SearchRequest {
                     query: "Acceptance".into(),
                     limit: 20,
-                    skip: None,
                 },
                 &context,
                 ProviderDeadline::from_budget(Duration::from_secs(10)),
@@ -2150,7 +2148,6 @@ mod tests {
             &SearchRequest {
                 query: "Find".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context,
             deadline(),
@@ -2328,7 +2325,6 @@ mod tests {
             &SearchRequest {
                 query: "Find".to_string(),
                 limit: 20,
-                skip: None,
             },
             &context,
             ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),

@@ -259,9 +259,13 @@ pub struct SearchCursorBinding {
     pub page_limit: usize,
 }
 
-const SEARCH_CURSOR_PAYLOAD_BYTES: usize = 106;
+/// The fixed record; a resumable traversal appends the path it re-enters.
+const SEARCH_CURSOR_PAYLOAD_BYTES: usize = 122;
 const SEARCH_CURSOR_CIPHERTEXT_BYTES: usize = SEARCH_CURSOR_PAYLOAD_BYTES + 16;
 const SEARCH_CURSOR_TOKEN_BYTES: usize = 4 + 2 * SEARCH_CURSOR_CIPHERTEXT_BYTES;
+/// The longest resume path a cursor carries: a source-set name and one
+/// relative path, far below what a file system names.
+const SEARCH_RESUME_PATH_MAX_BYTES: usize = 64 * 1024;
 const SEARCH_CURSOR_AAD: &[u8] = b"unica.search.cursor.sc2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,8 +328,28 @@ impl std::fmt::Debug for SearchCursorOwner {
 #[derive(Clone)]
 pub struct StoredSearchCursor {
     owner: Arc<SearchCursorOwner>,
-    payload: zeroize::Zeroizing<[u8; SEARCH_CURSOR_PAYLOAD_BYTES]>,
+    payload: zeroize::Zeroizing<Vec<u8>>,
     pub offset: usize,
+    pub resume: SearchResume,
+}
+
+/// Where a traversal that cannot re-read its delivered part resumes: the
+/// file it re-enters, how many of that file's matches were already
+/// delivered, and how many files before it stayed uncovered. A search that
+/// re-reads from the start keeps [`SearchResume::START`], an empty `file`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchResume {
+    pub file: Vec<u8>,
+    pub hits: u64,
+    pub uncovered: u64,
+}
+
+impl SearchResume {
+    pub const START: Self = Self {
+        file: Vec::new(),
+        hits: 0,
+        uncovered: 0,
+    };
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -346,13 +370,24 @@ impl SearchCursorStore {
         binding: SearchCursorBinding,
         offset: usize,
     ) -> Result<String, SearchCursorError> {
-        let mut payload = zeroize::Zeroizing::new([0u8; SEARCH_CURSOR_PAYLOAD_BYTES]);
+        self.insert_first_resumable(binding, offset, SearchResume::START)
+    }
+
+    /// [`Self::insert_first`] for a traversal that resumes at `resume`.
+    pub fn insert_first_resumable(
+        &self,
+        binding: SearchCursorBinding,
+        offset: usize,
+        resume: SearchResume,
+    ) -> Result<String, SearchCursorError> {
+        let mut payload = zeroize::Zeroizing::new(vec![0u8; SEARCH_CURSOR_PAYLOAD_BYTES]);
         payload[0] = 1;
         payload[1..33].copy_from_slice(&search_question_digest(&binding)?);
         let (present, digest) = search_answer_digest(&binding);
         payload[33] = present;
         payload[34..66].copy_from_slice(&digest);
         payload[98..106].copy_from_slice(&search_offset_bytes(offset)?);
+        write_search_resume(&mut payload, &resume)?;
         let owner = {
             let mut current = self
                 .owner
@@ -385,27 +420,31 @@ impl SearchCursorStore {
             return Err(SearchCursorError::Stale);
         }
         let offset = search_payload_offset(&plaintext)?;
-        let mut payload = zeroize::Zeroizing::new([0u8; SEARCH_CURSOR_PAYLOAD_BYTES]);
-        payload.copy_from_slice(&plaintext);
+        let resume = read_search_resume(&plaintext);
+        let payload = zeroize::Zeroizing::new(plaintext.to_vec());
         Ok(StoredSearchCursor {
             owner,
             payload,
             offset,
+            resume,
         })
     }
 
     /// Authenticates a token and its question before any answer exists: the
     /// format, this owner and the question binding (query, scope, mode,
-    /// kind, source sets, page limit), and returns the continuation offset.
-    /// The answer half — whether the result or coverage changed — needs the
+    /// kind, source sets, page limit), and returns where it continues. The
+    /// answer half — whether the result or coverage changed — needs the
     /// answer and stays with [`Self::read`].
     pub fn verify_question(
         &self,
         token: &str,
         expected: &SearchCursorBinding,
-    ) -> Result<usize, SearchCursorError> {
+    ) -> Result<(usize, SearchResume), SearchCursorError> {
         let (_, plaintext) = self.open_question(token, expected)?;
-        search_payload_offset(&plaintext)
+        Ok((
+            search_payload_offset(&plaintext)?,
+            read_search_resume(&plaintext),
+        ))
     }
 
     fn open_question(
@@ -429,7 +468,8 @@ impl SearchCursorStore {
                 .decrypt([SEARCH_CURSOR_AAD], &ciphertext)
                 .map_err(|_| SearchCursorError::Invalid)?,
         );
-        if plaintext.len() != SEARCH_CURSOR_PAYLOAD_BYTES
+        if plaintext.len() < SEARCH_CURSOR_PAYLOAD_BYTES
+            || plaintext.len() > SEARCH_CURSOR_PAYLOAD_BYTES + SEARCH_RESUME_PATH_MAX_BYTES
             || plaintext[0] != 1
             || plaintext[33] > 1
             || (plaintext[33] == 0 && plaintext[34..66].iter().any(|byte| *byte != 0))
@@ -471,6 +511,7 @@ impl SearchCursorStore {
         current: &StoredSearchCursor,
         answer: &SearchCursorBinding,
         offset: usize,
+        resume: SearchResume,
     ) -> Result<String, SearchCursorError> {
         let owner = self
             .owner
@@ -489,6 +530,7 @@ impl SearchCursorStore {
         payload[33] = present;
         payload[34..66].copy_from_slice(&digest);
         payload[98..106].copy_from_slice(&search_offset_bytes(offset)?);
+        write_search_resume(&mut payload, &resume)?;
         issue_search_cursor(&owner, &payload)
     }
 
@@ -518,6 +560,36 @@ fn search_payload_offset(plaintext: &[u8]) -> Result<usize, SearchCursorError> {
     usize::try_from(u64::from_be_bytes(raw_offset)).map_err(|_| SearchCursorError::Invalid)
 }
 
+fn write_search_resume(
+    payload: &mut Vec<u8>,
+    resume: &SearchResume,
+) -> Result<(), SearchCursorError> {
+    // A path past the bound is no continuation the token can carry.
+    if resume.file.len() > SEARCH_RESUME_PATH_MAX_BYTES {
+        return Err(SearchCursorError::OffsetNotRepresentable);
+    }
+    payload.truncate(SEARCH_CURSOR_PAYLOAD_BYTES);
+    payload[106..114].copy_from_slice(&resume.hits.to_be_bytes());
+    payload[114..122].copy_from_slice(&resume.uncovered.to_be_bytes());
+    payload.extend_from_slice(&resume.file);
+    Ok(())
+}
+
+fn read_search_resume(plaintext: &[u8]) -> SearchResume {
+    let field = |range: std::ops::Range<usize>| {
+        u64::from_be_bytes(
+            plaintext[range]
+                .try_into()
+                .expect("an authenticated payload has every resume field"),
+        )
+    };
+    SearchResume {
+        file: plaintext[SEARCH_CURSOR_PAYLOAD_BYTES..].to_vec(),
+        hits: field(106..114),
+        uncovered: field(114..122),
+    }
+}
+
 fn search_offset_bytes(offset: usize) -> Result<[u8; 8], SearchCursorError> {
     u64::try_from(offset)
         .map(u64::to_be_bytes)
@@ -526,7 +598,7 @@ fn search_offset_bytes(offset: usize) -> Result<[u8; 8], SearchCursorError> {
 
 fn issue_search_cursor(
     owner: &SearchCursorOwner,
-    payload: &[u8; SEARCH_CURSOR_PAYLOAD_BYTES],
+    payload: &[u8],
 ) -> Result<String, SearchCursorError> {
     use aes_siv::KeyInit;
     let mut cipher = aes_siv::siv::Aes256Siv::new_from_slice(&owner.key[..])
@@ -534,7 +606,7 @@ fn issue_search_cursor(
     let ciphertext = cipher
         .encrypt([SEARCH_CURSOR_AAD], &payload[..])
         .map_err(|_| SearchCursorError::TokenUnavailable)?;
-    if ciphertext.len() != SEARCH_CURSOR_CIPHERTEXT_BYTES {
+    if ciphertext.len() != payload.len() + 16 {
         return Err(SearchCursorError::TokenUnavailable);
     }
     Ok(encode_search_cursor(&ciphertext))
@@ -551,10 +623,12 @@ fn encode_search_cursor(ciphertext: &[u8]) -> String {
     token
 }
 
-fn decode_search_cursor(
-    token: &str,
-) -> Result<[u8; SEARCH_CURSOR_CIPHERTEXT_BYTES], SearchCursorError> {
-    if token.len() != SEARCH_CURSOR_TOKEN_BYTES || !token.starts_with("sc2.") {
+fn decode_search_cursor(token: &str) -> Result<Vec<u8>, SearchCursorError> {
+    if token.len() < SEARCH_CURSOR_TOKEN_BYTES
+        || token.len() > SEARCH_CURSOR_TOKEN_BYTES + 2 * SEARCH_RESUME_PATH_MAX_BYTES
+        || token.len() % 2 != 0
+        || !token.starts_with("sc2.")
+    {
         return Err(SearchCursorError::Invalid);
     }
     fn nibble(byte: u8) -> Result<u8, SearchCursorError> {
@@ -564,7 +638,7 @@ fn decode_search_cursor(
             _ => Err(SearchCursorError::Invalid),
         }
     }
-    let mut ciphertext = [0u8; SEARCH_CURSOR_CIPHERTEXT_BYTES];
+    let mut ciphertext = vec![0u8; (token.len() - 4) / 2];
     for (pair, out) in token.as_bytes()[4..]
         .as_chunks::<2>()
         .0
@@ -1507,8 +1581,14 @@ mod tests {
         // yet known and stays for `read` to report as stale.
         let mut unanswered = changed_answer.clone();
         unanswered.result_fingerprint = None;
-        assert_eq!(store.verify_question(&token, &unanswered), Ok(20));
-        assert_eq!(store.verify_question(&token, &changed_answer), Ok(20));
+        assert_eq!(
+            store.verify_question(&token, &unanswered),
+            Ok((20, SearchResume::START))
+        );
+        assert_eq!(
+            store.verify_question(&token, &changed_answer),
+            Ok((20, SearchResume::START))
+        );
         assert_eq!(
             store.verify_question(&token, &other_kind),
             Err(SearchCursorError::Invalid)
@@ -1709,16 +1789,31 @@ mod tests {
         let mut binding = search_binding("needle", "unused");
         binding.result_fingerprint = Some("prefix-50".into());
         let token = store.insert_first(binding.clone(), 50).unwrap();
+        let resume = SearchResume {
+            file: b"main\0Catalogs/Items/Ext/ObjectModule.bsl".to_vec(),
+            hits: 3,
+            uncovered: 2,
+        };
         let stored = store.read(&token, &binding).unwrap();
         let mut next = binding.clone();
         next.result_fingerprint = Some("prefix-100".into());
-        let successor = store.insert_next_answer(&stored, &next, 100).unwrap();
+        let successor = store
+            .insert_next_answer(&stored, &next, 100, resume.clone())
+            .unwrap();
         assert_eq!(
-            store.insert_next_answer(&stored, &next, 100).unwrap(),
+            store
+                .insert_next_answer(&stored, &next, 100, resume.clone())
+                .unwrap(),
             successor,
             "a replayed page issues the same continuation"
         );
-        assert_eq!(store.read(&successor, &next).unwrap().offset, 100);
+        let read = store.read(&successor, &next).unwrap();
+        assert_eq!((read.offset, &read.resume), (100, &resume));
+        assert_eq!(
+            store.verify_question(&successor, &binding),
+            Ok((100, resume.clone())),
+            "the question half carries the resume position"
+        );
         assert_eq!(
             store.read(&successor, &binding).err(),
             Some(SearchCursorError::Stale)
@@ -1727,14 +1822,16 @@ mod tests {
         other_question.query.push('x');
         assert_eq!(
             store
-                .insert_next_answer(&stored, &other_question, 100)
+                .insert_next_answer(&stored, &other_question, 100, resume.clone())
                 .err(),
             Some(SearchCursorError::Invalid)
         );
         let foreign = SearchCursorStore::default();
         foreign.insert_first(binding.clone(), 0).unwrap();
         assert_eq!(
-            foreign.insert_next_answer(&stored, &next, 100).err(),
+            foreign
+                .insert_next_answer(&stored, &next, 100, resume.clone())
+                .err(),
             Some(SearchCursorError::Invalid)
         );
     }

@@ -14,8 +14,7 @@
 //! Execution keeps its own checks of the same arguments. The question binding
 //! built here must equal the one execution builds, or a valid cursor would be
 //! refused. Continuations through this admission are exercised for scoped
-//! and unscoped literal text, scoped lexical, names with a kind and unscoped
-//! symbol search; a change to how execution binds a question must change
+//! and unscoped literal text, names with a kind and unscoped symbol search; a change to how execution binds a question must change
 //! this module in the same edit.
 
 use super::server::ActorBoundInvocation;
@@ -133,21 +132,17 @@ fn search_question(
         }
         "text" => match arguments.get("role") {
             None => {
-                let mode = match arguments.get("regex") {
-                    None | Some(Value::Bool(false)) => "literal",
-                    Some(Value::Bool(true)) => {
-                        // The same bounded compile execution performs.
-                        regex::RegexBuilder::new(query)
-                            .size_limit(1 << 20)
-                            .dfa_size_limit(1 << 20)
-                            .build()
-                            .map_err(|error| {
-                                refusal(format!("search regex is not a valid pattern: {error}"))
-                            })?;
-                        "regex"
-                    }
-                    Some(_) => return Err(refusal("search regex must be a boolean")),
+                let flag = |name: &str| match arguments.get(name) {
+                    None | Some(Value::Bool(false)) => Ok(false),
+                    Some(Value::Bool(true)) => Ok(true),
+                    Some(_) => Err(refusal(format!("search {name} must be a boolean"))),
                 };
+                let ignore_case = flag("ignoreCase")?;
+                // The same bounded compile execution performs.
+                let mode =
+                    super::server::text_search::TextQuery::new(query, flag("regex")?, ignore_case)
+                        .map_err(refusal)?
+                        .mode;
                 let limit = page_limit(
                     arguments,
                     "search limit must be an integer from 1 through 50",
@@ -155,43 +150,23 @@ fn search_question(
                 let scope = scope(arguments)?;
                 Ok(question(
                     scope.as_ref().map(ToString::to_string),
-                    mode,
+                    &super::v13_service::text_search_binding_mode(mode, ignore_case),
                     None,
                     selected(scope.as_ref()),
                     limit,
                 ))
             }
             Some(Value::String(role)) => {
-                let Some(role) = ProviderRole::ALL
-                    .into_iter()
-                    .find(|candidate| candidate.as_str() == role)
-                else {
-                    let mut refused = refusal(format!(
-                        "search role `{role}` is unknown; use one of {}",
-                        ProviderRole::ALL
-                            .iter()
-                            .map(|role| format!("`{}`", role.as_str()))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                    refused.next.push(json!({
-                        "tool": "unica.search",
-                        "args": {"query": query},
-                        "reason": "буквальный поиск без роли",
-                    }));
-                    return Err(refused);
-                };
+                let role = search_provider_role(arguments, role)?;
                 let scope = scope(arguments)?;
                 let limit = page_limit(
                     arguments,
                     "provider search page limit must be a positive integer at most 50",
                 )?;
-                // A role search binds the raw scope text, and searches either
-                // every admitted set (unscoped lexical) or exactly one: the
-                // scope's set, or the first admitted set without a scope.
+                // A role search binds the raw scope text and searches exactly
+                // one set: the scope's set, or the first admitted set.
                 let source_sets = match scope.as_ref() {
                     Some(scope) => vec![scope.source_set().to_owned()],
-                    None if role == ProviderRole::Lexical => selected(None),
                     None => admitted
                         .first()
                         .map(|name| vec![(*name).to_owned()])
@@ -222,6 +197,45 @@ fn search_question(
             Err(refused)
         }
     }
+}
+
+/// The provider role a text search names. The literal search has no role:
+/// the former `lexical` role is that search, and naming it is refused with
+/// the call that answers it.
+pub(super) fn search_provider_role(
+    arguments: &Map<String, Value>,
+    role: &str,
+) -> Result<ProviderRole, Box<DomainResult>> {
+    const ROLES: [ProviderRole; 2] = [ProviderRole::Symbol, ProviderRole::Semantic];
+    if let Some(role) = ROLES
+        .into_iter()
+        .find(|candidate| candidate.as_str() == role)
+    {
+        return Ok(role);
+    }
+    let names = ROLES
+        .iter()
+        .map(|role| format!("`{}`", role.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut refused = refusal(if role == ProviderRole::Lexical.as_str() {
+        format!(
+            "search role `lexical` is the literal search without a role; omit `role`, or use one of {names}"
+        )
+    } else {
+        format!("search role `{role}` is unknown; omit `role` for the literal search, or use one of {names}")
+    });
+    // The same question without the role: its scope, pattern and case
+    // flags stay, the cursor of another mode does not.
+    let mut args = arguments.clone();
+    args.remove("role");
+    args.remove("cursor");
+    refused.next.push(json!({
+        "tool": "unica.search",
+        "args": args,
+        "reason": "буквальный поиск без роли",
+    }));
+    Err(refused)
 }
 
 fn page_limit(arguments: &Map<String, Value>, message: &str) -> Result<usize, Box<DomainResult>> {

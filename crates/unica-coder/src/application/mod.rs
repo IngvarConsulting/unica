@@ -1984,7 +1984,6 @@ fn invoke_code_intelligence_search(
             .and_then(Value::as_u64)
             .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(20),
-        skip: None,
     };
     let execution = code_intelligence::CodeSearchCoordinator::with_deadlines(
         ports.code_intelligence_registry()?,

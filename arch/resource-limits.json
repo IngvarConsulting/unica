@@ -1379,12 +1379,13 @@
       "expr": "32",
       "value": 32,
       "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs"
+        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs"
       ],
       "status": "unproven",
       "origin": "b6650bc18",
       "problem": null,
-      "onReach": "тихо: каталоги глубже 32 не обходятся, признака неполноты нет.",
+      "onReach": "Обход без Git отказывает provider_unavailable «exceeded its retained depth limit», страницы нет; в рабочем дереве Git глубину ограничивает только Git.",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1403,12 +1404,13 @@
       "expr": "8 * 1024 * 1024",
       "value": 8388608,
       "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs"
+        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs"
       ],
       "status": "unproven",
       "origin": "cd7331929 (#1106)",
       "problem": "Якоря regex и столбцы Unicode требуют полной строки; неделимую единицу держат ограниченной, размер файла и корпуса бюджетом памяти не считается (комментарий в invocation_service.rs).",
-      "onReach": "Неполнота: файл помечается uncovered с деталью, поиск продолжается.",
+      "onReach": "Неполнота: файл помечается uncovered с деталью, поиск продолжается. В рабочем дереве Git предел относится к строке с совпадением; её файл неизвестен, и счёт uncovered становится нижней оценкой.",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1427,7 +1429,8 @@
       "expr": "32",
       "value": 32,
       "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs"
+        "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs",
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs"
       ],
       "status": "unproven",
       "origin": "cd7331929 (#1106)",
@@ -1626,56 +1629,6 @@
       "review": null
     },
     {
-      "id": "search.admission-regex-dfa-bytes",
-      "class": "format",
-      "resource": "Размер DFA регулярного выражения при допуске поиска.",
-      "unit": "bytes",
-      "scope": "request",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_search_admission.rs",
-        "literal": ".dfa_size_limit(1 << 20)",
-        "count": 1
-      },
-      "expr": "1 << 20",
-      "value": 1048576,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/v13_search_admission.rs"
-      ],
-      "status": "unproven",
-      "origin": null,
-      "problem": null,
-      "onReach": "отказ допуска поиска «search regex is not a valid pattern»",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
-      "id": "search.admission-regex-size-bytes",
-      "class": "format",
-      "resource": "Размер скомпилированного регулярного выражения при допуске поиска.",
-      "unit": "bytes",
-      "scope": "request",
-      "source": {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_search_admission.rs",
-        "literal": ".size_limit(1 << 20)",
-        "count": 1
-      },
-      "expr": "1 << 20",
-      "value": 1048576,
-      "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/v13_search_admission.rs"
-      ],
-      "status": "unproven",
-      "origin": null,
-      "problem": null,
-      "onReach": "отказ допуска поиска «search regex is not a valid pattern»",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
       "id": "search.page-default-entries",
       "class": "step",
       "resource": "Число совпадений страницы search, когда limit не задан.",
@@ -1726,7 +1679,7 @@
     {
       "id": "search.provider-fetch-matches",
       "class": "corpus",
-      "resource": "Число совпадений, которое текстовый и семантический поиск получают от провайдера за запрос без курсора.",
+      "resource": "Окно совпадений, которое ранжирующие роли symbol и semantic получают от поставщика за запрос; буквальный поиск без роли окна не имеет.",
       "unit": "count",
       "scope": "request",
       "source": {
@@ -1741,32 +1694,32 @@
       "status": "unproven",
       "origin": "022636d23 (#1029)",
       "problem": "API провайдера принимает top-N без смещения; окно выборки сохранено от прежней публичной границы (комментарий в v13_service.rs).",
-      "onReach": "Неполнота: предупреждение «Search returned 200 matches. Ask the user to narrow the query…», хвост теряется.",
+      "onReach": "Неполнота: секция сообщает limitReached и нижнюю оценку, предупреждение «Search returned 200 matches. Ask the user to narrow the query…»; хвост окна недоступен, курсор его не обещает.",
       "issue": "#1119",
       "evidence": [],
       "decision": null,
-      "review": "снимается в #1119 PR6"
+      "review": "#1119: окно ролей symbol и semantic без продолжения — их API принимает top-N без смещения; буквальный поиск снят с окна в PR6 (#2079, #2095)"
     },
     {
       "id": "search.provider-regex-dfa-bytes",
       "class": "format",
-      "resource": "Размер DFA регулярного выражения при исполнении поиска.",
+      "resource": "Размер DFA регулярного выражения текстового поиска: одна компиляция служит допуску и исполнению.",
       "unit": "bytes",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "file": "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
         "literal": ".dfa_size_limit(1 << 20)",
         "count": 1
       },
       "expr": "1 << 20",
       "value": 1048576,
       "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs"
       ],
       "status": "unproven",
       "origin": null,
       "problem": "Ограниченная компиляция: шаблон, не умещающийся в бюджет, — ошибка вызывающего, а не сбой поставщика.",
-      "onReach": "отказ bad_value: шаблон не компилируется в пределах размера",
+      "onReach": "отказ bad_value «search regex is not a valid pattern» при допуске и при исполнении: шаблон не компилируется в пределах размера",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -1775,27 +1728,76 @@
     {
       "id": "search.provider-regex-size-bytes",
       "class": "format",
-      "resource": "Размер скомпилированного регулярного выражения при исполнении поиска.",
+      "resource": "Размер скомпилированного регулярного выражения текстового поиска: одна компиляция служит допуску и исполнению.",
       "unit": "bytes",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
+        "file": "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
         "literal": ".size_limit(1 << 20)",
         "count": 1
       },
       "expr": "1 << 20",
       "value": 1048576,
       "applied": [
-        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs"
       ],
       "status": "unproven",
       "origin": null,
       "problem": "Ограниченная компиляция: шаблон, не умещающийся в бюджет, — ошибка вызывающего, а не сбой поставщика.",
-      "onReach": "отказ bad_value: шаблон не компилируется в пределах размера",
+      "onReach": "отказ bad_value «search regex is not a valid pattern» при допуске и при исполнении: шаблон не компилируется в пределах размера",
       "issue": null,
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "search.cursor-resume-path-bytes",
+      "class": "format",
+      "resource": "Длина пути файла (имя набора и путь от его корня), который несёт курсор буквального поиска без Git для возобновления обхода.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-navigation/src/result_store.rs",
+        "symbol": "SEARCH_RESUME_PATH_MAX_BYTES"
+      },
+      "expr": "64 * 1024",
+      "value": 65536,
+      "applied": [
+        "crates/unica-navigation/src/result_store.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 PR-B: курсор обхода без Git называет файл возобновления",
+      "problem": "Длина токена курсора растёт с путём; предел отсекает подделанный или ошибочный токен до расшифровки, а не настоящие пути исходников 1С.",
+      "onReach": "Курсор не выдаётся: отказ provider_failed «search continuation offset is not representable»; токен длиннее предела отклоняется как invalid_cursor.",
+      "issue": "#1119",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "search.walk-page-response-share",
+      "class": "deadline",
+      "resource": "Доля оставшегося бюджета прямого ответа, которую одна страница буквального поиска без Git тратит на обход, прежде чем отдать продолжение курсору.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
+        "symbol": "WALK_PAGE_RESPONSE_BUDGET_DIVISOR"
+      },
+      "expr": "2",
+      "value": 2,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/text_search.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
+      ],
+      "status": "unproven",
+      "origin": "#1119 PR-B: собственный обход УТ 11 на отсутствующей строке занимает 31–45 с и уходит в задание",
+      "problem": "Полный обход крупной конфигурации без Git не умещается в бюджет прямого ответа (7 с); страница, закончившаяся раньше рубежа, отдаёт продолжение вместо задания.",
+      "onReach": "Не отказ: страница заканчивается на границе файла с page.stoppedBy deadline и курсором, который продолжает обход с этого файла; совпадения не теряются. Без бюджета ответа (вызов уже стал заданием) страница по времени не заканчивается.",
+      "issue": "#1119",
+      "evidence": [],
+      "decision": null,
+      "review": "Половина оставляет вторую половину бюджета на сужение адресов и сериализацию страницы; замер страницы на УТ 11 — в описании PR."
     },
     {
       "id": "view.call-graph-initial-page",

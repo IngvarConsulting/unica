@@ -8,7 +8,6 @@ use unica_execution_contract::view_error::ViewError;
 use unica_source_contract::{ProjectSourceSet, SourceFormat, SourceProfile, SourceSetKind};
 use unica_work_control::shared_work::{SharedWorkLease, SharedWorkProducer};
 
-use crate::infrastructure::event_sources::module_address_for_relative;
 use unica_execution::runtime_jobs::RuntimeResourceOwner;
 use unica_source_contract::read::SourceDirectory;
 type RuntimeJobService = unica_execution::runtime_jobs::RuntimeJobService<
@@ -32,48 +31,13 @@ use unica_workspace::actor::{
 use unica_workspace::selection_evidence::SourceSelectionEvidenceErrorKind;
 
 mod ordered_search_names;
+pub(in crate::infrastructure::daemon) mod text_search;
 
-struct SearchDirectoryFrame {
-    relative: std::path::PathBuf,
-    directory: SourceDirectory,
-    names: Option<ordered_search_names::OrderedNames>,
-    directories: bool,
-}
 // Regex anchors and Unicode columns require a complete line. Keep that
 // indivisible unit bounded; neither file nor corpus size is a memory budget.
 const CANONICAL_SEARCH_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 const CANONICAL_SEARCH_MAX_DEPTH: usize = 32;
 const CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS: usize = 32;
-
-#[derive(Default)]
-pub(in crate::infrastructure::daemon) struct LiteralSearchScan {
-    pub(in crate::infrastructure::daemon) matches: Vec<serde_json::Value>,
-    pub(in crate::infrastructure::daemon) uncovered: usize,
-    pub(in crate::infrastructure::daemon) details: Vec<serde_json::Value>,
-    pub(in crate::infrastructure::daemon) scan_complete: bool,
-}
-
-impl LiteralSearchScan {
-    fn complete() -> Self {
-        Self {
-            scan_complete: true,
-            ..Self::default()
-        }
-    }
-
-    fn mark_uncovered(&mut self, source_set: &str, file_ordinal: usize, reason: &str) {
-        self.uncovered += 1;
-        if self.details.len() < CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS {
-            let mut detail = serde_json::Map::new();
-            detail.insert("sourceSet".to_owned(), source_set.into());
-            // The ordinal identifies this file within the current live scan
-            // without revealing its retained-relative path.
-            detail.insert("fileId".to_owned(), format!("bsl-{file_ordinal}").into());
-            detail.insert("reason".to_owned(), reason.into());
-            self.details.push(serde_json::Value::Object(detail));
-        }
-    }
-}
 
 /// Proves that the owner of a module address derived from a hit path is
 /// registered in this source set, so a hit names only a module `view` admits.
@@ -82,8 +46,8 @@ impl LiteralSearchScan {
 /// retained root and shared with `view` by the registration cache; each owner
 /// is decided once per scan. An extension object that is neither its own nor
 /// borrowed is not registered there and stays unproven.
-struct SearchHitOwners<'a> {
-    root: &'a SourceDirectory,
+pub(in crate::infrastructure::daemon) struct SearchHitOwners<'a> {
+    root: Arc<SourceDirectory>,
     source_kind: SourceSetKind,
     cache: &'a RegistrationCache,
     index: Option<Option<Arc<RegistrationIndex>>>,
@@ -92,7 +56,7 @@ struct SearchHitOwners<'a> {
 
 impl<'a> SearchHitOwners<'a> {
     fn new(
-        root: &'a SourceDirectory,
+        root: Arc<SourceDirectory>,
         source_kind: SourceSetKind,
         cache: &'a RegistrationCache,
     ) -> Self {
@@ -139,7 +103,7 @@ impl<'a> SearchHitOwners<'a> {
         checkpoint()?;
         let proved = if configuration {
             if self.index.is_none() {
-                let built = self.cache.registrations(self.root, checkpoint);
+                let built = self.cache.registrations(&self.root, checkpoint);
                 self.index = Some(match built {
                     Ok(index) => Some(index),
                     Err(error) if interrupted(&error) => return Err(error),
@@ -288,383 +252,13 @@ impl ActorReadSourceCapability {
         self.read_identity.clone()
     }
 
-    pub(in crate::infrastructure::daemon) fn search_bsl_literal(
-        &self,
-        matcher: &super::super::v13_read_modes::SearchMatcher,
-        skip: &mut usize,
-        limit: usize,
-        scope_prefix: Option<&str>,
-        scope_at: &QualifiedAddress,
-        cancellation: &CancellationToken,
-    ) -> Result<LiteralSearchScan, String> {
-        use unica_source_contract::read::SourceEntry;
-
-        // A raw OS error carries no recovery signal for the caller; every
-        // surviving I/O failure names the search phase it interrupted. An
-        // entry that is absent or vanishes mid-walk is not a failure at all:
-        // the admitted logical scope simply has no BSL there.
-        let vanished = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
-        let context =
-            |phase: &str, error: std::io::Error| format!("canonical search {phase}: {error}");
-        // The source-set relative path of the entry a phase was reading.
-        let entry = |relative: &std::path::Path| relative.to_string_lossy().replace('\\', "/");
-
-        let root = self.binding.retained_root();
-        let (start_relative, start_directory) = match scope_prefix {
-            None => (std::path::PathBuf::new(), root.as_ref().clone()),
-            Some(prefix) => {
-                let mut relative = std::path::PathBuf::new();
-                let mut directory = root.as_ref().clone();
-                for component in prefix.split('/') {
-                    if component.is_empty() || matches!(component, "." | "..") {
-                        return Err("canonical search scope prefix is invalid".to_string());
-                    }
-                    relative.push(component);
-                    let child = match directory
-                        .retain_immediate_child_nofollow(std::ffi::OsStr::new(component))
-                    {
-                        Ok(child) => child,
-                        Err(error) if vanished(&error) => return Ok(LiteralSearchScan::complete()),
-                        Err(error) => {
-                            return Err(context("could not open the scope subtree", error))
-                        }
-                    };
-                    match child {
-                        SourceEntry::Directory(next) => directory = next,
-                        SourceEntry::ReparsePoint => {
-                            return Err(
-                                "canonical search scope crosses a link/reparse point".to_string()
-                            )
-                        }
-                        SourceEntry::RegularFile(_) | SourceEntry::Unsupported => {
-                            return Ok(LiteralSearchScan::complete())
-                        }
-                    }
-                }
-                (relative, directory)
-            }
-        };
-        let platform_profile = crate::domain::source_capabilities::bsl_profile_for_source(
-            self.binding.source_profile(),
-        );
-        let owner_checkpoint = || {
-            if cancellation.is_cancelled() {
-                Err(ViewError::new(
-                    RefusalCode::Cancelled,
-                    "canonical search was cancelled",
-                ))
-            } else if self.deadline.is_elapsed() {
-                Err(ViewError::new(
-                    RefusalCode::DeadlineExceeded,
-                    "canonical search operation deadline elapsed",
-                ))
-            } else {
-                Ok(())
-            }
-        };
-        let mut owners =
-            SearchHitOwners::new(&root, self.binding.source_kind(), &self.registration_cache);
-        let mut stack = vec![SearchDirectoryFrame {
-            relative: start_relative,
-            directory: start_directory,
-            names: None,
-            directories: false,
-        }];
-        let mut scan = LiteralSearchScan::complete();
-        let mut file_ordinal = 0_usize;
-        while !stack.is_empty() {
-            let checkpoint = || {
-                if cancellation.is_cancelled() {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted,
-                        "canonical search was cancelled",
-                    ))
-                } else if self.deadline.is_elapsed() {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "canonical search operation deadline elapsed",
-                    ))
-                } else {
-                    Ok(())
-                }
-            };
-            checkpoint().map_err(|error| error.to_string())?;
-            let depth = stack.len() - 1;
-            let frame = stack.last_mut().expect("active search directory");
-            let directory = &frame.directory;
-            if frame.names.is_none() {
-                match directory.validate_named_identity() {
-                    Ok(()) => {}
-                    Err(error) if vanished(&error) => {
-                        stack.pop();
-                        continue;
-                    }
-                    Err(error) => {
-                        return Err(context(
-                            &format!("lost retained directory `{}`", entry(&frame.relative)),
-                            error,
-                        ))
-                    }
-                }
-                frame.names =
-                    match ordered_search_names::OrderedNames::collect(directory, checkpoint) {
-                        Ok(names) => Some(names),
-                        Err(error) => {
-                            return Err(context(
-                                &format!(
-                                    "could not list source directory `{}`",
-                                    entry(&frame.relative)
-                                ),
-                                error,
-                            ))
-                        }
-                    };
-            }
-            let names = frame.names.as_mut().expect("enumerated search directory");
-            let name = names
-                .next(frame.directories)
-                .map_err(|error| context("could not read sorted source names", error))?;
-            let Some(name) = name else {
-                if frame.directories {
-                    stack.pop();
-                } else {
-                    frame.directories = true;
-                }
-                continue;
-            };
-            let directories = frame.directories;
-            let relative_directory = &frame.relative;
-            let relative = relative_directory.join(&name);
-            // Files precede subdirectories in the established scan order.
-            // The file pass opens only `.bsl` names. Neither pass opens a
-            // publication artifact: a staged copy or a preimage left beside
-            // the module right after apply is not source, and on Windows it
-            // may still be pending deletion and refuse to open.
-            let wanted = if name
-                .to_string_lossy()
-                .starts_with(unica_workspace::compile_transaction::PUBLICATION_ARTIFACT_PREFIX)
-            {
-                false
-            } else if directories {
-                true
-            } else {
-                relative
-                    .extension()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl"))
-            };
-            if !wanted {
-                continue;
-            }
-            let child = match directory.retain_immediate_child_nofollow(&name) {
-                Ok(child) => child,
-                Err(error) if vanished(&error) => continue,
-                Err(error) => {
-                    return Err(context(
-                        &format!("could not open source entry `{}`", entry(&relative)),
-                        error,
-                    ))
-                }
-            };
-            match child {
-                SourceEntry::Directory(child_directory)
-                    if directories && depth < CANONICAL_SEARCH_MAX_DEPTH =>
-                {
-                    stack.push(SearchDirectoryFrame {
-                        relative,
-                        directory: child_directory,
-                        names: None,
-                        directories: false,
-                    });
-                }
-                SourceEntry::Directory(_) if directories => {
-                    return Err("canonical search exceeded its retained depth limit".to_string())
-                }
-                SourceEntry::RegularFile(file)
-                    if !directories
-                        && relative
-                            .extension()
-                            .and_then(std::ffi::OsStr::to_str)
-                            .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl")) =>
-                {
-                    file_ordinal += 1;
-                    let opened = match file.open_named_identity_for_read() {
-                        Ok(opened) => opened,
-                        Err(error) if vanished(&error) => continue,
-                        Err(error) => {
-                            return Err(context(
-                                &format!("lost retained source file `{}`", entry(&relative)),
-                                error,
-                            ))
-                        }
-                    };
-                    let mut reader = std::io::BufReader::new(opened);
-                    let mut raw_line = Vec::new();
-                    let mut line_index = 0_usize;
-                    // Mapped once per file, on its first hit, from the
-                    // path already in hand: no descriptor or module read.
-                    let mut module_at = None::<Result<String, &'static str>>;
-                    loop {
-                        let has_line = read_search_line_bounded(
-                            &mut reader,
-                            &mut raw_line,
-                            CANONICAL_SEARCH_MAX_LINE_BYTES,
-                            || {
-                                if cancellation.is_cancelled() {
-                                    Err(std::io::Error::new(
-                                        std::io::ErrorKind::Interrupted,
-                                        "canonical search was cancelled",
-                                    ))
-                                } else if self.deadline.is_elapsed() {
-                                    Err(std::io::Error::new(
-                                        std::io::ErrorKind::TimedOut,
-                                        "canonical search operation deadline elapsed",
-                                    ))
-                                } else {
-                                    Ok(())
-                                }
-                            },
-                        );
-                        let has_line = match has_line {
-                            Ok(has_line) => has_line,
-                            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
-                                scan.mark_uncovered(
-                                    self.binding.source_set_name(),
-                                    file_ordinal,
-                                    "line_too_long",
-                                );
-                                break;
-                            }
-                            Err(error)
-                                if matches!(
-                                    error.kind(),
-                                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::TimedOut
-                                ) =>
-                            {
-                                return Err(error.to_string())
-                            }
-                            Err(error) => {
-                                return Err(context(
-                                    &format!("could not read source file `{}`", entry(&relative)),
-                                    error,
-                                ))
-                            }
-                        };
-                        if !has_line {
-                            break;
-                        }
-                        line_index += 1;
-                        let Ok(text) = std::str::from_utf8(&raw_line) else {
-                            scan.mark_uncovered(
-                                self.binding.source_set_name(),
-                                file_ordinal,
-                                "invalid_utf8",
-                            );
-                            break;
-                        };
-                        let line = text.strip_suffix('\n').map_or(text, |without_lf| {
-                            without_lf.strip_suffix('\r').unwrap_or(without_lf)
-                        });
-                        // `view` reads the module without its byte-order
-                        // mark; the hit column and snippet must match it.
-                        let line = if line_index == 1 {
-                            line.strip_prefix('\u{feff}').unwrap_or(line)
-                        } else {
-                            line
-                        };
-                        let mut previous_byte = 0;
-                        let mut column = 1;
-                        let mut snippet = None::<String>;
-                        for byte_column in matcher.match_starts(line) {
-                            if cancellation.is_cancelled() {
-                                return Err("canonical search was cancelled".to_string());
-                            }
-                            if self.deadline.is_elapsed() {
-                                return Err(
-                                    "canonical search operation deadline elapsed".to_string()
-                                );
-                            }
-                            column += line[previous_byte..byte_column].chars().count();
-                            previous_byte = byte_column;
-                            if *skip > 0 {
-                                *skip -= 1;
-                                continue;
-                            }
-                            let mut item = serde_json::Map::new();
-                            item.insert(
-                                "scope".to_string(),
-                                serde_json::Value::String(scope_at.to_string()),
-                            );
-                            if module_at.is_none() {
-                                let mapped = match platform_profile {
-                                    None => Err("unsupported_source_profile"),
-                                    Some(profile) => match module_address_for_relative(
-                                        self.binding.source_set_name(),
-                                        self.binding.source_kind(),
-                                        profile,
-                                        &relative,
-                                    ) {
-                                        None => Err("outside_module_layout"),
-                                        Some(at) => {
-                                            if owners
-                                                .proves(&at, &owner_checkpoint)
-                                                .map_err(|error| error.to_string())?
-                                            {
-                                                Ok(at.to_string())
-                                            } else {
-                                                Err("owner_unproven")
-                                            }
-                                        }
-                                    },
-                                };
-                                module_at = Some(mapped);
-                            }
-                            match module_at.as_ref() {
-                                Some(Ok(hit_at)) => {
-                                    item.insert(
-                                        "at".to_string(),
-                                        serde_json::Value::String(hit_at.clone()),
-                                    );
-                                }
-                                Some(Err(reason)) => {
-                                    // No proven module owns this file: name
-                                    // it by the scan ordinal, never by path.
-                                    item.insert(
-                                        "fileId".to_string(),
-                                        format!("bsl-{file_ordinal}").into(),
-                                    );
-                                    item.insert("unaddressed".to_string(), (*reason).into());
-                                }
-                                // Mapped just above; a file is never left unmapped.
-                                None => {}
-                            }
-                            item.insert("line".to_string(), serde_json::Value::from(line_index));
-                            item.insert("column".to_string(), serde_json::Value::from(column));
-                            item.insert(
-                                "snippet".to_string(),
-                                serde_json::Value::String(
-                                    snippet
-                                        .get_or_insert_with(|| {
-                                            line.chars().take(512).collect::<String>()
-                                        })
-                                        .clone(),
-                                ),
-                            );
-                            scan.matches.push(serde_json::Value::Object(item));
-                            if scan.matches.len() == limit {
-                                scan.scan_complete = false;
-                                return Ok(scan);
-                            }
-                        }
-                    }
-                }
-                SourceEntry::Directory(_)
-                | SourceEntry::RegularFile(_)
-                | SourceEntry::ReparsePoint
-                | SourceEntry::Unsupported => {}
-            }
-        }
-        Ok(scan)
+    // The owner proofs of one text-search traversal of this source set.
+    pub(in crate::infrastructure::daemon) fn search_hit_owners(&self) -> SearchHitOwners<'_> {
+        SearchHitOwners::new(
+            self.binding.retained_root(),
+            self.binding.source_kind(),
+            &self.registration_cache,
+        )
     }
 }
 
@@ -991,6 +585,13 @@ enum ActorExecutionRevision {
 }
 
 impl ActorBoundExecution {
+    /// How long the caller still waits for a direct answer.
+    pub(in crate::infrastructure::daemon) fn remaining_response_budget(
+        &self,
+    ) -> std::time::Duration {
+        self.invocation.response_deadline.remaining_handoff_budget()
+    }
+
     // The hidden V13 profile installs real consumers in Tasks 10-21. Until the
     // Task 22 cutover, only injected canonical services exercise this narrow
     // capability surface.

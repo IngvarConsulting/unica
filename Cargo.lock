@@ -2522,7 +2522,6 @@ version = "0.14.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
- "sha2",
  "unica-address",
  "unica-bsl",
  "unica-bsl-parser",
@@ -2553,6 +2552,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
+ "regex-syntax",
  "rmcp",
  "roxmltree",
  "rust-stemmers",
