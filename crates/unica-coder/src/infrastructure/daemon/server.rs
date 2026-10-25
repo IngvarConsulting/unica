@@ -1567,6 +1567,9 @@ mod form_lifecycle_tests;
 #[path = "form_move_tests.rs"]
 mod form_move_tests;
 #[cfg(test)]
+#[path = "form_native_profile_tests.rs"]
+mod form_native_profile_tests;
+#[cfg(test)]
 #[path = "form_properties_tests.rs"]
 mod form_properties_tests;
 #[cfg(test)]
@@ -13753,6 +13756,242 @@ struct ActorLogicalReadLease {"#,
             assert!(message.contains(cause), "{kind:?}");
             assert!(!checked_text_leaks(&checked), "{kind:?}");
         }
+    }
+
+    /// #1966, INV.APP.DIAGNOSTIC-FOCUS, INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY:
+    /// `check` справочника спрашивает находки у поставщика, который объявил цель
+    /// «объект метаданных». Находка на свойстве реквизита приходит цепочкой
+    /// коллекция → элемент → свойство и язык; недоказанный элемент — находкой
+    /// объекта целиком; файл внутри объекта без логического адреса — путём
+    /// с причиной и владельцем; находка модуля объекту не принадлежит.
+    /// Анализатор модулей такой цели не объявляет, и без подмены шага нет.
+    #[test]
+    fn object_check_shows_the_metadata_focus_chain_of_a_provider_finding() {
+        use unica_diagnostics::model::{
+            DiagnosticAction, DiagnosticContext, DiagnosticFocusKind, DiagnosticObservation,
+            DiagnosticObservationFocus, DiagnosticObservationLocation, DiagnosticProvider,
+            DiagnosticProviderDescriptor, DiagnosticProviderId, DiagnosticProviderOutcome,
+            DiagnosticProviderRequest, DiagnosticProviderStatus, DiagnosticSeverity, MetadataFocus,
+        };
+        use unica_metadata::MetadataElement;
+        use unica_work_control::provider_deadline::ProviderDeadline;
+
+        static DESCRIPTOR: DiagnosticProviderDescriptor = DiagnosticProviderDescriptor {
+            id: DiagnosticProviderId::new_const("metadata-provider"),
+            actions: &[DiagnosticAction::Findings],
+            findings_target_kinds: &[
+                unica_address::source_target::TargetKind::MetadataObject,
+                unica_address::source_target::TargetKind::SourceRoot,
+            ],
+            emits_focus_kinds: &[DiagnosticFocusKind::Target, DiagnosticFocusKind::Metadata],
+        };
+        struct MetadataProvider(Vec<DiagnosticObservation>);
+        impl DiagnosticProvider for MetadataProvider {
+            fn descriptor(&self) -> &'static DiagnosticProviderDescriptor {
+                &DESCRIPTOR
+            }
+            fn execute(
+                &self,
+                _request: &DiagnosticProviderRequest,
+                _context: &DiagnosticContext,
+                _deadline: ProviderDeadline,
+                _cancellation: &CancellationToken,
+            ) -> DiagnosticProviderOutcome {
+                DiagnosticProviderOutcome {
+                    observations: self.0.clone(),
+                    ..DiagnosticProviderOutcome::empty(DiagnosticProviderStatus::Completed)
+                }
+            }
+        }
+        let finding = |location, focus| DiagnosticObservation::Diagnostic {
+            provider: DESCRIPTOR.id,
+            location,
+            focus,
+            code: "MetadataRule".to_string(),
+            severity: DiagnosticSeverity::Warning,
+            message: "finding".to_string(),
+            tags: Vec::new(),
+        };
+        let object = || DiagnosticObservationLocation::Logical {
+            metadata_path: Some(
+                unica_address::source_target::MetadataAddress::parse(
+                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "Catalog.Items",
+                )
+                .unwrap(),
+            ),
+        };
+        let attribute = |name: &str| MetadataFocus {
+            element_path: vec![MetadataElement {
+                collection: "attributes".to_string(),
+                name: name.to_string(),
+            }],
+            property: Some("Synonym".to_string()),
+            language: Some("ru".to_string()),
+        };
+
+        let workspace =
+            scheduled_handler_workspace("CONFIGURATION", "Procedure Run()\nEndProcedure\n");
+        let source = workspace.path().join("src");
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name></Properties><ChildObjects><Attribute uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Номенклатура</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item></Synonym></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join("Catalogs/Items/Ext")).unwrap();
+        std::fs::write(source.join("Catalogs/Items/Ext/Unknown.xml"), "<unknown/>").unwrap();
+        let provider = MetadataProvider(vec![
+            finding(
+                DiagnosticObservationLocation::Logical {
+                    metadata_path: None,
+                },
+                DiagnosticObservationFocus::Target,
+            ),
+            finding(
+                object(),
+                DiagnosticObservationFocus::Metadata(attribute("Номенклатура")),
+            ),
+            finding(
+                object(),
+                DiagnosticObservationFocus::Metadata(attribute("Missing")),
+            ),
+            finding(
+                DiagnosticObservationLocation::Resource {
+                    handle: source
+                        .join("Catalogs/Items/Ext/Unknown.xml")
+                        .to_string_lossy()
+                        .into_owned(),
+                },
+                DiagnosticObservationFocus::Target,
+            ),
+            finding(
+                DiagnosticObservationLocation::Resource {
+                    handle: source
+                        .join("CommonModules/Handlers/Ext/Module.bsl")
+                        .to_string_lossy()
+                        .into_owned(),
+                },
+                DiagnosticObservationFocus::Target,
+            ),
+        ]);
+
+        let runtime = bootstrap_runtime();
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let cancellation = CancellationToken::new();
+        let check = |at: &str, override_provider: Option<Arc<dyn DiagnosticProvider>>| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Check,
+                serde_json::json!({"at": at}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let check = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = override_provider);
+            let checked = service.execute(&check, cancellation.clone());
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = None);
+            let checked = checked.unwrap();
+            assert!(checked.ok, "object check must answer a verdict");
+            checked.data.unwrap()
+        };
+
+        let provider: Arc<dyn DiagnosticProvider> = Arc::new(provider);
+        let data = check("main:Catalog.Items", Some(Arc::clone(&provider)));
+        assert_eq!(
+            data["validators"],
+            serde_json::json!(["meta", "bsl"]),
+            "the provider finding keeps its location"
+        );
+        let provided = data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["provider"] == "metadata-provider")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            provided.len(),
+            3,
+            "neither the module nor the root finding is the object's"
+        );
+        let addressed = serde_json::json!({
+            "kind": "addressed",
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Items",
+            "targetKind": "metadataObject",
+        });
+        assert!(
+            provided.iter().any(|item| item["location"] == addressed
+                && item["focus"]
+                    == serde_json::json!({
+                        "kind": "metadata",
+                        "elementPath": [{"collection": "attributes", "name": "Номенклатура"}],
+                        "property": "Synonym",
+                        "language": "ru",
+                    })),
+            "the provider finding keeps its location"
+        );
+        assert!(
+            provided.iter().any(|item| item["location"] == addressed
+                && item["focus"] == serde_json::json!({"kind": "target"})),
+            "an unproven element weakens to the object"
+        );
+        assert!(
+            provided
+                .iter()
+                .any(|item| item["location"]["kind"] == "unaddressable"
+                    && item["location"]["ownerMetadataPath"] == "Catalog.Items"
+                    && item["location"]["path"] == "Catalogs/Items/Ext/Unknown.xml"
+                    && item["locationReason"] == "resourceNotAddressable"),
+            "the provider finding keeps its location"
+        );
+        assert!(
+            !data.to_string().contains(&*source.to_string_lossy()),
+            "the provider finding keeps its location"
+        );
+
+        let plain = check("main:Catalog.Items", None);
+        assert_eq!(
+            plain["validators"],
+            serde_json::json!(["meta"]),
+            "no step without a provider"
+        );
+
+        // Корень принимает только свою находку: объекты и модули — свои цели.
+        let root = check("main:Configuration", Some(provider));
+        let provided = root["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["provider"] == "metadata-provider")
+            .collect::<Vec<_>>();
+        assert_eq!(provided.len(), 1, "the root keeps only its own finding");
+        assert_eq!(
+            provided[0]["location"],
+            serde_json::json!({"kind": "addressed", "sourceSet": "main", "targetKind": "sourceRoot"}),
+            "the root finding is addressed to the root"
+        );
+        let plain = check("main:Configuration", None);
+        assert_eq!(
+            plain["validators"],
+            serde_json::json!(["cf"]),
+            "no step without a provider"
+        );
     }
 
     /// #1460: платформа не компилирует модуль, где `Перем` стоит после

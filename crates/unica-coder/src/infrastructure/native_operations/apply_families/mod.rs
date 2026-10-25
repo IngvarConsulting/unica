@@ -61,6 +61,104 @@ fn refuse_targets_outside_writable_profile(
     Ok(())
 }
 
+/// Every edit of an owner registers its forms and templates by name (#1370).
+/// Before #1325 an owner could carry a form's or template's whole description
+/// inline next to its standalone `Forms/<Name>.xml` or `Templates/<Name>.xml`,
+/// and 1C 8.3.27 then imports the configuration endlessly. An owner this plan
+/// changes loses such inline registrations whose standalone descriptor
+/// exists; the plan names them in a `legacy_inline_registration` warning, so
+/// the rewrite of bytes the operation did not ask for is not silent.
+fn collapse_legacy_inline_registrations(
+    staged: &mut ApplyStagedState,
+    binding: &ProviderRootBinding,
+) -> Result<Vec<serde_json::Value>, ApplyPlanError> {
+    let mut warnings = Vec::new();
+    for change in staged.planned_changes() {
+        let unica_source_contract::proposal::StagedFileState::Bytes(current) = &change.current
+        else {
+            continue;
+        };
+        let parts = change
+            .relative_path
+            .iter()
+            .filter_map(std::ffi::OsStr::to_str)
+            .collect::<Vec<_>>();
+        // An object of a configuration or extension is `<Kind dir>/<Name>.xml`;
+        // an external data processor or report is `<Name>.xml` at the root.
+        let (kind, owner_dir, file) = match (parts.as_slice(), binding.source_kind()) {
+            ([directory, file], _) => {
+                let Some(layout) =
+                    unica_source_designer::layout::metadata_kind_by_directory(directory)
+                else {
+                    continue;
+                };
+                (layout.tag, std::path::PathBuf::from(directory), *file)
+            }
+            ([file], SourceSetKind::ExternalProcessor) => {
+                ("ExternalDataProcessor", std::path::PathBuf::new(), *file)
+            }
+            ([file], SourceSetKind::ExternalReport) => {
+                ("ExternalReport", std::path::PathBuf::new(), *file)
+            }
+            _ => continue,
+        };
+        let Some(name) = file.strip_suffix(".xml") else {
+            continue;
+        };
+        let (bom, text) = match current.strip_prefix(b"\xef\xbb\xbf") {
+            Some(text) => (&b"\xef\xbb\xbf"[..], text),
+            None => (&b""[..], current.as_slice()),
+        };
+        let Ok(text) = std::str::from_utf8(text) else {
+            continue;
+        };
+        let mut image = text.to_string();
+        let owner_dir = owner_dir.join(name);
+        let mut described = std::collections::BTreeSet::new();
+        for (tag, child) in unica_metadata_designer::edit::inline_standalone_child_names(&image) {
+            let collection = if tag == "Form" { "Forms" } else { "Templates" };
+            let descriptor = owner_dir.join(collection).join(format!("{child}.xml"));
+            if staged
+                .read(&descriptor)
+                .map_err(|error| ApplyPlanError::staging(error, "ops"))?
+                .is_some()
+            {
+                described.insert((tag, child));
+            }
+        }
+        let collapsed = unica_metadata_designer::edit::collapse_legacy_inline_children(
+            &mut image,
+            &|tag, child| {
+                described
+                    .iter()
+                    .any(|(known, known_name)| *known == tag && known_name == child)
+            },
+        );
+        if collapsed.is_empty() {
+            continue;
+        }
+        let mut bytes = bom.to_vec();
+        bytes.extend_from_slice(image.as_bytes());
+        staged
+            .replace(&change.relative_path, current, bytes)
+            .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
+        let names = collapsed
+            .iter()
+            .map(|(tag, child)| format!("{tag}.{child}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(serde_json::json!({
+            "code": "legacy_inline_registration",
+            "severity": "warning",
+            "at": format!("{}:{kind}.{name}", binding.source_set_name()),
+            "message": format!(
+                "the owner registers {names} by name now: the description inline in the owner is an older Unica format that 1C 8.3.27 imports endlessly"
+            ),
+        }));
+    }
+    Ok(warnings)
+}
+
 /// Operations that change the vendor-support state itself: they are the way
 /// to unlock an object, so the lock they edit never refuses them.
 fn changes_support_state(
@@ -1191,9 +1289,13 @@ pub(crate) fn plan_hidden_v13_apply(
             _ => None,
         }),
     )?;
+    let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
     // A plan whose operations cancel out edits nothing protected.
     if let Some(warning) = support_warning.filter(|_| !staged.planned_changes().is_empty()) {
+        effects.push_warning(warning);
+    }
+    for warning in legacy_inline {
         effects.push_warning(warning);
     }
     let detail_error = |error: serde_json::Error| {
@@ -1870,6 +1972,84 @@ mod tests {
         let warnings = outcome.expect("off removes a locked vendor object");
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(unchanged);
+    }
+
+    /// A common template on support follows the same rules as any vendor
+    /// object: locked, it refuses under `deny` and warns under `warn`.
+    #[test]
+    fn vendor_common_template_removal_follows_its_support_rule() {
+        use unica_workspace::test_support::tree_snapshot;
+
+        let template = "44444444-4444-4444-8444-444444444444";
+        for (rule, policy) in [(0, "deny"), (0, "warn"), (1, "deny")] {
+            let fixture = ApplySeamFixture::new();
+            let source = fixture.source_dir();
+            std::fs::write(
+                source.parent().unwrap().join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            std::fs::create_dir_all(source.join("Ext")).unwrap();
+            std::fs::write(
+                source.join("Ext/ParentConfigurations.bin"),
+                format!(
+                    "\u{feff}{{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,33333333-3333-4333-8333-333333333333,\"1.0\",\"Vendor\",\"VendorConf\",3,{rule},0,{template},{template}}}"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Document>First</Document><Document>Second</Document><CommonTemplate>Print</CommonTemplate></ChildObjects></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+            std::fs::create_dir_all(source.join("CommonTemplates/Print/Ext")).unwrap();
+            std::fs::write(
+                source.join("CommonTemplates/Print.xml"),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonTemplate uuid="{template}"><Properties><Name>Print</Name><Synonym/><Comment/><TemplateType>SpreadsheetDocument</TemplateType></Properties></CommonTemplate></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("CommonTemplates/Print/Ext/Template.xml"),
+                r#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet"/>"#,
+            )
+            .unwrap();
+            let before = tree_snapshot(&source);
+            let request = seam_request(
+                "main:CommonTemplate.Print",
+                "object.remove",
+                serde_json::json!({}),
+            );
+            let outcome = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                .map(|(mut staged, effects)| {
+                    assert!(staged
+                        .read(std::path::Path::new("CommonTemplates/Print.xml"))
+                        .unwrap()
+                        .is_none());
+                    effects.warnings().to_vec()
+                });
+            assert_eq!(tree_snapshot(&source), before);
+            match (rule, policy) {
+                (0, "deny") => {
+                    let error = outcome.expect_err("a locked common template stays under deny");
+                    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+                    let message = error.to_string();
+                    assert!(message.contains("`main:CommonTemplate.Print`"));
+                    assert!(message.contains("support rule `locked`"));
+                }
+                (0, _) => {
+                    let warnings = outcome.expect("warn removes a locked common template");
+                    assert_eq!(warnings.len(), 1);
+                    assert_eq!(warnings[0]["code"], "support_locked");
+                    assert_eq!(warnings[0]["at"], "main:CommonTemplate.Print");
+                }
+                _ => {
+                    let warnings = outcome.expect("an editable common template is removed");
+                    assert!(warnings.is_empty());
+                }
+            }
+        }
     }
 
     /// With changes disabled for the whole configuration a removal is told

@@ -1509,6 +1509,132 @@ mod tests {
         );
     }
 
+    fn open_with_record_limit(
+        root: &std::path::Path,
+        clock: Arc<dyn EpochMillisClock>,
+        max_record_bytes: usize,
+    ) -> Result<FileInvocationStoreV5, V5TaskStoreError> {
+        let root = unica_workspace::state_fs::StateDirectory::open(root).expect("retain root");
+        FileInvocationStoreV5::open_retained_directory_inspect_only_with_limits(
+            root,
+            clock,
+            deadline(),
+            super::StoreLimits { max_record_bytes },
+        )
+        .map(|(store, _)| store)
+    }
+
+    /// Creates the fixed Task and moves it to Working.
+    fn working_task(store: &FileInvocationStoreV5) -> V5StoredInvocationRecord {
+        let created = store
+            .create_exact(
+                new_record(
+                    task_id("47474747-4747-4747-8747-474747474747"),
+                    invocation_id("48484848-4848-4848-8848-484848484848"),
+                    0x47,
+                ),
+                deadline(),
+            )
+            .unwrap();
+        let identity = created.identity();
+        let V5StartWorkingOutcome::Started(working) = store
+            .start_working_if_not_cancel_requested(&identity, created.version, deadline())
+            .unwrap()
+        else {
+            panic!("task did not enter Working");
+        };
+        working
+    }
+
+    /// Publishes one Completed result of `payload` bytes for the Working Task.
+    fn publish_completed(
+        store: &FileInvocationStoreV5,
+        working: &V5StoredInvocationRecord,
+        payload: usize,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError> {
+        let publication = V5TerminalPublication::Completed {
+            terminal_epoch_ms: 9_100,
+            terminal_digest: terminal_digest(0x48),
+            result: Box::new(DomainResult::success("x".repeat(payload))),
+        };
+        store.publish_terminal_exact(
+            &working.identity(),
+            working.version,
+            publication,
+            deadline(),
+        )
+    }
+
+    fn record_bytes(root: &std::path::Path) -> Vec<u8> {
+        fs::read(root.join("47474747-4747-4747-8747-474747474747.json")).expect("record file")
+    }
+
+    /// The full stored Task record is bounded by its store limit, not by any
+    /// wire frame. A record exactly at the limit persists and reads back; one
+    /// byte over is refused and the prior record stays as it was, with no
+    /// staged file left.
+    #[test]
+    fn terminal_record_at_the_limit_persists_and_one_byte_over_keeps_the_prior_record() {
+        assert_eq!(
+            super::StoreLimits::production().max_record_bytes,
+            8 * 1024 * 1024 + 64 * 1024,
+            "the production record limit is 8 MiB + 64 KiB"
+        );
+        const PAYLOAD: usize = 4096;
+        let measured = tempfile::tempdir().expect("measured root");
+        let measured_path = physical_root(&measured);
+        let clock: Arc<dyn EpochMillisClock> = Arc::new(ManualEpochClock::at(9_000));
+        let store =
+            open_with_record_limit(&measured_path, clock.clone(), super::MAX_TASK_RECORD_BYTES)
+                .unwrap();
+        let working = working_task(&store);
+        publish_completed(&store, &working, PAYLOAD).unwrap();
+        let limit = record_bytes(&measured_path).len();
+
+        let exact = tempfile::tempdir().expect("exact root");
+        let exact_path = physical_root(&exact);
+        let store = open_with_record_limit(&exact_path, clock.clone(), limit).unwrap();
+        let working = working_task(&store);
+        let published = publish_completed(&store, &working, PAYLOAD).unwrap();
+        assert_eq!(record_bytes(&exact_path).len(), limit);
+        drop(store);
+        let reopened = open_with_record_limit(&exact_path, clock.clone(), limit).unwrap();
+        assert_eq!(
+            reopened.get(published.task_id, deadline()).unwrap(),
+            published
+        );
+        drop(reopened);
+        // Current behaviour, not an obligation: the catalog reads every
+        // record when the store opens, so an over-limit record refuses it.
+        assert!(matches!(
+            open_with_record_limit(&exact_path, clock.clone(), limit - 1),
+            Err(V5TaskStoreError::RecordTooLarge { .. })
+        ));
+
+        let over = tempfile::tempdir().expect("over root");
+        let over_path = physical_root(&over);
+        let store = open_with_record_limit(&over_path, clock.clone(), limit - 1).unwrap();
+        let working = working_task(&store);
+        let before = record_bytes(&over_path);
+        let published = publish_completed(&store, &working, PAYLOAD);
+        assert!(
+            matches!(
+                published,
+                Err(V5TaskStoreError::RecordTooLarge { max_bytes }) if max_bytes == limit - 1
+            ),
+            "the store's own limit refuses: {published:?}"
+        );
+        assert_eq!(record_bytes(&over_path), before, "the prior record changed");
+        let mut names = fs::read_dir(&over_path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != super::STORE_LOCK_FILE)
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, ["47474747-4747-4747-8747-474747474747.json"]);
+        assert_eq!(store.get(working.task_id, deadline()).unwrap(), working);
+    }
+
     #[test]
     fn create_exact_uses_preallocated_identity_and_is_idempotent_only_for_exact_readback() {
         let root = tempfile::tempdir().expect("temporary v5 root");
