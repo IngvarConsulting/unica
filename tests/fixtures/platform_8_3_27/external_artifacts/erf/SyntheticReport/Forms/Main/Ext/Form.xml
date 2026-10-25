@@ -1,0 +1,138 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcssch="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<ReportResult>Result</ReportResult>
+	<DetailsData>DetailsData</DetailsData>
+	<ReportFormType>Main</ReportFormType>
+	<AutoShowState>Auto</AutoShowState>
+	<ReportResultViewMode>Auto</ReportResultViewMode>
+	<ViewModeApplicationOnSetReportResult>Auto</ViewModeApplicationOnSetReportResult>
+	<AutoCommandBar name="FormCommandBar" id="-1"/>
+	<Events>
+		<Event name="OnLoadVariantAtServer">OnLoadVariantAtServer</Event>
+		<Event name="OnCreateAtServer">OnCreateAtServer</Event>
+	</Events>
+	<ChildItems>
+		<InputField name="TextValue" id="1">
+			<DataPath>Report.TextValue</DataPath>
+			<ContextMenu name="TextValueContextMenu" id="2"/>
+			<ExtendedTooltip name="TextValueExtendedTooltip" id="3"/>
+			<Events>
+				<Event name="OnChange">TextValueOnChange</Event>
+			</Events>
+		</InputField>
+		<Table name="Lines" id="4">
+			<DataPath>Report.Lines</DataPath>
+			<RowFilter xsi:nil="true"/>
+			<ContextMenu name="LinesContextMenu" id="5"/>
+			<AutoCommandBar name="LinesCommandBar" id="6"/>
+			<ExtendedTooltip name="LinesExtendedTooltip" id="7"/>
+			<SearchStringAddition name="LinesSearchString" id="8">
+				<AdditionSource>
+					<Item>Lines</Item>
+					<Type>SearchStringRepresentation</Type>
+				</AdditionSource>
+				<ContextMenu name="LinesSearchStringContextMenu" id="9"/>
+				<ExtendedTooltip name="LinesSearchStringExtendedTooltip" id="10"/>
+			</SearchStringAddition>
+			<ViewStatusAddition name="LinesViewStatus" id="11">
+				<AdditionSource>
+					<Item>Lines</Item>
+					<Type>ViewStatusRepresentation</Type>
+				</AdditionSource>
+				<ContextMenu name="LinesViewStatusContextMenu" id="12"/>
+				<ExtendedTooltip name="LinesViewStatusExtendedTooltip" id="13"/>
+			</ViewStatusAddition>
+			<SearchControlAddition name="LinesSearchControl" id="14">
+				<AdditionSource>
+					<Item>Lines</Item>
+					<Type>SearchControl</Type>
+				</AdditionSource>
+				<ContextMenu name="LinesSearchControlContextMenu" id="15"/>
+				<ExtendedTooltip name="LinesSearchControlExtendedTooltip" id="16"/>
+			</SearchControlAddition>
+			<ChildItems>
+				<InputField name="LinesItem" id="17">
+					<DataPath>Report.Lines.Item</DataPath>
+					<ContextMenu name="LinesItemContextMenu" id="18"/>
+					<ExtendedTooltip name="LinesItemExtendedTooltip" id="19"/>
+				</InputField>
+				<InputField name="LinesQuantity" id="23">
+					<DataPath>Report.Lines.Quantity</DataPath>
+					<ContextMenu name="LinesQuantityContextMenu" id="24"/>
+					<ExtendedTooltip name="LinesQuantityExtendedTooltip" id="25"/>
+				</InputField>
+			</ChildItems>
+		</Table>
+		<InputField name="Counter" id="26">
+			<DataPath>Counter</DataPath>
+			<ContextMenu name="CounterContextMenu" id="27"/>
+			<ExtendedTooltip name="CounterExtendedTooltip" id="28"/>
+		</InputField>
+		<Button name="RefreshButton" id="29">
+			<Type>UsualButton</Type>
+			<CommandName>Form.Command.Refresh</CommandName>
+			<ExtendedTooltip name="RefreshButtonExtendedTooltip" id="30"/>
+		</Button>
+		<SpreadSheetDocumentField name="Result" id="20">
+			<DataPath>Result</DataPath>
+			<TitleLocation>None</TitleLocation>
+			<ContextMenu name="ResultContextMenu" id="21"/>
+			<ExtendedTooltip name="ResultExtendedTooltip" id="22"/>
+		</SpreadSheetDocumentField>
+	</ChildItems>
+	<Attributes>
+		<Attribute name="Report" id="1">
+			<Type>
+				<v8:Type>cfg:ExternalReportObject.SyntheticReport</v8:Type>
+			</Type>
+			<MainAttribute>true</MainAttribute>
+		</Attribute>
+		<Attribute name="Counter" id="2">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Счётчик</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:decimal</v8:Type>
+				<v8:NumberQualifiers>
+					<v8:Digits>15</v8:Digits>
+					<v8:FractionDigits>2</v8:FractionDigits>
+					<v8:AllowedSign>Any</v8:AllowedSign>
+				</v8:NumberQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="Result" id="4">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Результат</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type xmlns:mxl="http://v8.1c.ru/8.2/data/spreadsheet">mxl:SpreadsheetDocument</v8:Type>
+			</Type>
+		</Attribute>
+		<Attribute name="DetailsData" id="5">
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+	</Attributes>
+	<Commands>
+		<Command name="Refresh" id="1">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Обновить</v8:content>
+				</v8:item>
+			</Title>
+			<Action>Refresh</Action>
+		</Command>
+	</Commands>
+</Form>
