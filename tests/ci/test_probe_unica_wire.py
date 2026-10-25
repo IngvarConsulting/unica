@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import textwrap
-import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +21,19 @@ PROBE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "probe-unica-wire.py"
 BASELINE_FIXTURE = (
     REPO_ROOT / "tests" / "fixtures" / "migration" / "v0.12.3-baseline.json"
 )
+# Предохранитель от зависания пробы, а не проверяемый срок: фейки ниже
+# отвечают сразу либо завершают пробу событием, так что этот срок
+# не определяет длительность зелёного прогона.
+PROBE_FUSE_SECONDS = 30.0
+# Сколько живёт держатель трубы, если его никто не убил. Граница
+# «очистка не ждала держателя» выражена долей этой величины, а не
+# скоростью машины: ожидание EOF длилось бы не меньше всего срока жизни.
+HOLDER_LIFETIME_SECONDS = 60.0
+HOLDER_BOUND_SECONDS = HOLDER_LIFETIME_SECONDS / 2
+# Бюджет старта фейка для проверки истечения общего срока: срок должен
+# истечь уже после того, как фейк породил потомка и записал pids.txt.
+# Сам срок здесь не контракт — контракт «по истечении срока дерево убрано».
+FAKE_START_BUDGET_SECONDS = 2.0
 RUNTIME_JOB_NAMES = [
     "unica.runtime.job.cancel",
     "unica.runtime.job.list",
@@ -101,7 +113,7 @@ class WireProbeTests(unittest.TestCase):
         protocol_version: str = "2025-06-18",
         profile: str | None = None,
         target: str | None = None,
-        timeout_seconds: float = 2.0,
+        timeout_seconds: float = PROBE_FUSE_SECONDS,
     ) -> subprocess.CompletedProcess[str]:
         command = [
                 sys.executable,
@@ -128,8 +140,45 @@ class WireProbeTests(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
-            timeout=4.0,
+            timeout=timeout_seconds + PROBE_FUSE_SECONDS,
         )
+
+    def probe_command(self, server: Path, output: Path, timeout_seconds: float) -> list[str]:
+        return [
+            sys.executable,
+            str(PROBE_SCRIPT),
+            "--binary",
+            sys.executable,
+            "--binary-arg",
+            str(server),
+            "--protocol-version",
+            "2025-06-18",
+            "--tasks-capability",
+            "off",
+            "--output",
+            str(output),
+            "--timeout-seconds",
+            str(timeout_seconds),
+        ]
+
+    def read_pids(self, pid_path: Path) -> list[int]:
+        self.assertTrue(
+            pid_path.is_file(),
+            "the fake server did not record its process tree before cleanup; "
+            "the scenario under test never started",
+        )
+        return [int(value) for value in pid_path.read_text(encoding="utf-8").split()]
+
+    def kill_leftovers(self, module, pid_path: Path) -> None:
+        if not pid_path.exists():
+            return
+        pids = {int(value) for value in pid_path.read_text(encoding="utf-8").split()}
+        for pid in module._running_pids(pids):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        module._wait_for_process_pids(pids, PROBE_FUSE_SECONDS)
 
     def test_initialize_uses_the_explicit_legacy_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -407,6 +456,10 @@ class WireProbeTests(unittest.TestCase):
                 self.assertEqual(lines.timeouts, [10.0, 8.0, 6.0, 3.0, 1.0])
 
     def test_aggregate_timeout_reaps_the_detached_process_tree(self) -> None:
+        # Общий срок — проверяемое свойство: фейк заведомо не отвечает на
+        # tools/list и только шлёт уведомления. Его величина — бюджет старта
+        # фейка, чтобы срок истёк после записи pids.txt.
+        module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             pid_path = root / "pids.txt"
@@ -426,13 +479,15 @@ class WireProbeTests(unittest.TestCase):
                         [
                             sys.executable,
                             "-c",
-                            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
+                            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                            "time.sleep({HOLDER_LIFETIME_SECONDS!r})",
                         ],
                         start_new_session=True,
                     )
-                    Path({str(pid_path)!r}).write_text(
-                        f"{{os.getpid()}} {{child.pid}}", encoding="utf-8"
-                    )
+                    # Атомарно: срок может оборвать фейк посреди записи.
+                    staged = Path({str(pid_path)!r} + ".tmp")
+                    staged.write_text(f"{{os.getpid()}} {{child.pid}}", encoding="utf-8")
+                    os.replace(staged, {str(pid_path)!r})
                     for line in sys.stdin:
                         message = json.loads(line)
                         if message.get("method") == "initialize":
@@ -457,46 +512,60 @@ class WireProbeTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            result = self.run_probe(
-                server,
-                root / "wire.json",
-                timeout_seconds=0.1,
-            )
-            pids = [int(value) for value in pid_path.read_text(encoding="utf-8").split()]
-            module = load_module()
             try:
-                for pid in pids:
-                    with self.subTest(pid=pid):
-                        self.assertFalse(module._process_is_running(pid))
+                result = self.run_probe(
+                    server,
+                    root / "wire.json",
+                    timeout_seconds=FAKE_START_BUDGET_SECONDS,
+                )
+                pids = self.read_pids(pid_path)
+                # Добитый SIGKILL процесс исчезает асинхронно; без очистки
+                # держатель прожил бы весь свой срок, а не долю его.
+                module._wait_for_process_pids(set(pids), HOLDER_BOUND_SECONDS)
+                running = sorted(module._running_pids(set(pids)))
             finally:
-                for pid in pids:
-                    if module._process_is_running(pid):
-                        os.kill(pid, signal.SIGKILL)
+                self.kill_leftovers(module, pid_path)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("aggregate deadline", result.stderr)
+        self.assertEqual(running, [], f"probe process tree survived: {running}")
 
     @unittest.skipUnless(os.name == "posix", "POSIX session ownership regression")
     def test_parent_exit_before_snapshot_has_bounded_cleanup_and_reaps_orphan(self) -> None:
+        # Порядок задают события, а не срок: сирота отвечает ошибкой на
+        # initialize только после выхода родителя, и проба уходит в очистку
+        # уже без него. Сирота держит stdout и игнорирует SIGTERM; если бы
+        # очистка ждала EOF трубы, проба жила бы весь срок жизни сироты.
+        module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             pid_path = root / "pids.txt"
             server = root / "parent-exits-first.py"
+            orphan = textwrap.dedent(
+                f"""
+                import json, os, signal, sys, time
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                parent = int(sys.argv[1])
+                while os.getppid() == parent:
+                    time.sleep(0.005)
+                print(json.dumps({{
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {{"code": -32000, "message": "parent exited"}},
+                }}), flush=True)
+                time.sleep({HOLDER_LIFETIME_SECONDS!r})
+                """
+            )
             server.write_text(
                 textwrap.dedent(
                     f"""
                     import os
-                    import signal
                     import subprocess
                     import sys
                     from pathlib import Path
 
                     child = subprocess.Popen(
-                        [
-                            sys.executable,
-                            "-c",
-                            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
-                        ],
+                        [sys.executable, "-c", {orphan!r}, str(os.getpid())],
                         process_group=0,
                     )
                     Path({str(pid_path)!r}).write_text(
@@ -506,25 +575,8 @@ class WireProbeTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            command = [
-                sys.executable,
-                str(PROBE_SCRIPT),
-                "--binary",
-                sys.executable,
-                "--binary-arg",
-                str(server),
-                "--protocol-version",
-                "2025-06-18",
-                "--tasks-capability",
-                "off",
-                "--output",
-                str(root / "wire.json"),
-                "--timeout-seconds",
-                "0.15",
-            ]
-            started = time.monotonic()
             probe = subprocess.Popen(
-                command,
+                self.probe_command(server, root / "wire.json", PROBE_FUSE_SECONDS),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -532,34 +584,79 @@ class WireProbeTests(unittest.TestCase):
             bounded = True
             try:
                 try:
-                    stdout, stderr = probe.communicate(timeout=0.8)
+                    stdout, stderr = probe.communicate(timeout=HOLDER_BOUND_SECONDS)
                 except subprocess.TimeoutExpired:
                     bounded = False
                     probe.kill()
-                    stdout, stderr = probe.communicate(timeout=1.0)
-                elapsed = time.monotonic() - started
-                pids = [
-                    int(value)
-                    for value in pid_path.read_text(encoding="utf-8").split()
-                ]
-                module = load_module()
-                running = [pid for pid in pids if module._process_is_running(pid)]
+                    stdout, stderr = probe.communicate(timeout=PROBE_FUSE_SECONDS)
+                pids = self.read_pids(pid_path)
+                module._wait_for_process_pids(set(pids), HOLDER_BOUND_SECONDS)
+                running = sorted(module._running_pids(set(pids)))
             finally:
                 if probe.poll() is None:
                     probe.kill()
-                    probe.wait(timeout=1.0)
-                if pid_path.exists():
-                    module = load_module()
-                    for value in pid_path.read_text(encoding="utf-8").split():
-                        pid = int(value)
-                        if module._process_is_running(pid):
-                            os.kill(pid, signal.SIGKILL)
+                    probe.wait(timeout=PROBE_FUSE_SECONDS)
+                self.kill_leftovers(module, pid_path)
 
         self.assertTrue(bounded, "cleanup blocked on pipes inherited by an orphan")
-        self.assertLess(elapsed, 0.8)
         self.assertNotEqual(probe.returncode, 0, stdout)
-        self.assertIn("aggregate deadline", stderr)
+        self.assertIn("initialize failed", stderr)
         self.assertEqual(running, [], f"orphaned probe processes survived: {running}")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process table observation")
+    def test_unreadable_process_table_is_never_read_as_absence(self) -> None:
+        # Сбой `ps` (здесь — истёкший предохранитель) — неизвестность:
+        # снимок не пуст, а ошибочен; живой процесс не объявляется мёртвым.
+        module = load_module()
+        hung_ps = subprocess.TimeoutExpired(["ps"], module._PROCESS_OBSERVATION_TIMEOUT_SECONDS)
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            with patch.object(module.subprocess, "run", side_effect=hung_ps):
+                with self.assertRaises(module.ProcessObservationError):
+                    module._posix_process_snapshot()
+                self.assertTrue(module._process_is_running(process.pid))
+                self.assertEqual(module._running_pids({process.pid}), {process.pid})
+        finally:
+            process.kill()
+            process.wait(timeout=PROBE_FUSE_SECONDS)
+        # Отсутствие ядро сообщает точно и без `ps`.
+        with patch.object(module.subprocess, "run", side_effect=hung_ps):
+            self.assertFalse(module._process_is_running(process.pid))
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process table observation")
+    def test_cleanup_without_a_process_table_is_incomplete_and_stops_the_leader(self) -> None:
+        module = load_module()
+        leader = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            start_new_session=True,
+        )
+        signalled: list[int] = []
+        try:
+            ownership = module.ProcessOwnership(leader, None, leader.pid)
+            identity = module.ProcessIdentity(leader.pid, os.getpid(), leader.pid, "start")
+            failure = module.ProcessObservationError("process table is unreadable: hung")
+            with patch.object(module, "_posix_process_snapshot", side_effect=failure):
+                terminated = ownership.terminate()
+                with patch.object(
+                    module.os,
+                    "kill",
+                    side_effect=lambda pid, number: signalled.append(pid),
+                ):
+                    quiesced = ownership.quiesce({identity}, 0.0)
+        finally:
+            if leader.poll() is None:
+                leader.kill()
+            leader.wait(timeout=PROBE_FUSE_SECONDS)
+
+        self.assertFalse(terminated.complete)
+        self.assertTrue(
+            any("snapshot failed" in detail for detail in terminated.incomplete),
+            terminated.incomplete,
+        )
+        self.assertEqual(leader.returncode, -signal.SIGKILL)
+        self.assertFalse(quiesced.complete)
+        self.assertEqual(quiesced.survivors, {identity})
+        self.assertEqual(signalled, [], "a PID was signalled without a readable table")
 
     @unittest.skipUnless(os.name == "posix", "POSIX process identity regression")
     def test_identity_mismatch_is_not_signalled_during_escalation(self) -> None:
@@ -593,12 +690,38 @@ class WireProbeTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX session escape boundary")
     def test_unregistered_setsid_child_does_not_block_or_get_claimed(self) -> None:
+        # Сбежавший через setsid потомок держит stdout пробы и сам запускает
+        # её очистку ошибкой на initialize — уже после выхода родителя, так
+        # что в снимке он не потомок владельца. Свойство — событие: проба
+        # завершилась, пока держатель ещё жив, и он не получил SIGTERM.
+        module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             pid_path = root / "pids.txt"
             ready_path = root / "escaped-ready"
             signal_path = root / "escaped-signalled"
             server = root / "unregistered-session-escape.py"
+            escaped = textwrap.dedent(
+                f"""
+                import json, os, signal, sys, time
+                from pathlib import Path
+                parent = int(sys.argv[1])
+                os.setsid()
+                signal.signal(
+                    signal.SIGTERM,
+                    lambda *_: Path({str(signal_path)!r}).write_text("term", encoding="utf-8"),
+                )
+                Path({str(ready_path)!r}).write_text("ready", encoding="utf-8")
+                while os.getppid() == parent:
+                    time.sleep(0.005)
+                print(json.dumps({{
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {{"code": -32000, "message": "parent exited"}},
+                }}), flush=True)
+                time.sleep({HOLDER_LIFETIME_SECONDS!r})
+                """
+            )
             server.write_text(
                 textwrap.dedent(
                     f"""
@@ -609,16 +732,7 @@ class WireProbeTests(unittest.TestCase):
                     from pathlib import Path
 
                     child = subprocess.Popen(
-                        [
-                            sys.executable,
-                            "-c",
-                            "import os,signal,time; from pathlib import Path; "
-                            "os.setsid(); "
-                            "signal.signal(signal.SIGTERM, lambda *_: "
-                            "Path({str(signal_path)!r}).write_text('term', encoding='utf-8')); "
-                            "Path({str(ready_path)!r}).write_text('ready', encoding='utf-8'); "
-                            "time.sleep(60)",
-                        ]
+                        [sys.executable, "-c", {escaped!r}, str(os.getpid())]
                     )
                     while not Path({str(ready_path)!r}).exists():
                         time.sleep(0.005)
@@ -629,70 +743,38 @@ class WireProbeTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            command = [
-                sys.executable,
-                str(PROBE_SCRIPT),
-                "--binary",
-                sys.executable,
-                "--binary-arg",
-                str(server),
-                "--protocol-version",
-                "2025-06-18",
-                "--tasks-capability",
-                "off",
-                "--output",
-                str(root / "wire.json"),
-                "--timeout-seconds",
-                "0.15",
-            ]
-            started = time.monotonic()
             probe = subprocess.Popen(
-                command,
+                self.probe_command(server, root / "wire.json", PROBE_FUSE_SECONDS),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            child_pid = None
             bounded = True
             try:
                 try:
-                    stdout, stderr = probe.communicate(timeout=0.8)
+                    stdout, stderr = probe.communicate(timeout=HOLDER_BOUND_SECONDS)
                 except subprocess.TimeoutExpired:
                     bounded = False
                     probe.kill()
-                    stdout, stderr = probe.communicate(timeout=1.0)
-                elapsed = time.monotonic() - started
-                _, child_pid = [
-                    int(value)
-                    for value in pid_path.read_text(encoding="utf-8").split()
-                ]
-                module = load_module()
-                child_was_not_claimed = module._process_is_running(child_pid)
+                    stdout, stderr = probe.communicate(timeout=PROBE_FUSE_SECONDS)
+                _, child_pid = self.read_pids(pid_path)
+                child_alive_after_probe = module._process_is_running(child_pid)
+                signalled = signal_path.exists()
             finally:
                 if probe.poll() is None:
                     probe.kill()
-                    probe.wait(timeout=1.0)
-                if child_pid is None and pid_path.exists():
-                    _, child_pid = [
-                        int(value)
-                        for value in pid_path.read_text(encoding="utf-8").split()
-                    ]
-                if child_pid is not None:
-                    module = load_module()
-                    if module._process_is_running(child_pid):
-                        os.kill(child_pid, signal.SIGKILL)
-                        module._wait_for_process_pids({child_pid}, 1.0)
+                    probe.wait(timeout=PROBE_FUSE_SECONDS)
+                self.kill_leftovers(module, pid_path)
 
         self.assertTrue(bounded, "escaped child kept probe cleanup blocked")
-        self.assertLess(elapsed, 0.8)
         self.assertNotEqual(probe.returncode, 0, stdout)
-        self.assertIn("aggregate deadline", stderr)
+        self.assertIn("initialize failed", stderr)
         self.assertTrue(
-            child_was_not_claimed,
-            "an unregistered process that escaped the owned session was signalled",
+            child_alive_after_probe,
+            "the probe finished only after the escaped pipe holder was gone",
         )
         self.assertFalse(
-            signal_path.exists(),
+            signalled,
             "cleanup sent SIGTERM to an unregistered escaped process",
         )
 

@@ -2,6 +2,7 @@
 id: INV.SOURCE.METADATA-OBJECT-FACTS
 check:
   - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_bare_fill_value_is_a_diagnostic_not_an_absent_value
+  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_check_reports_a_duplicated_tabular_attribute_property
   - crates/unica-coder/src/infrastructure/meta_info_surface_tests.rs::info_marks_bare_fill_value_incomplete_with_diagnostic
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata_declaration_diagnostics.rs::malformed_standard_attributes_keep_the_cause_and_the_characteristic_sibling
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata_declaration_diagnostics.rs::malformed_characteristics_keep_the_cause_and_the_standard_attribute_sibling

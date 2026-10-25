@@ -4,4 +4,5 @@ pub mod identity;
 mod process_command;
 pub mod protocol_v5;
 pub mod state_collection;
+mod task_observation;
 pub mod transport;

@@ -2,6 +2,8 @@
 id: INV.APP.RECEIPT-SCENARIO-EVIDENCE
 check:
   - crates/unica-coder/tests/daemon_receipt_ledger/facade_guards.rs::scenario_driver_cannot_mint_runtime_telemetry_events
+  - crates/unica-coder/tests/daemon_receipt_ledger/facade_guards.rs::scenario_driver_source_list_names_every_runner_file
+  - crates/unica-coder/tests/daemon_receipt_ledger/facade_guards.rs::scenario_telemetry_guard_sees_minting_in_a_nested_runner_module
   - crates/unica-coder/tests/daemon_receipt_ledger/facade_guards.rs::crash_is_a_staged_control_and_does_not_mint_receipt_transition_evidence
   - tests/ci/test_receipt_harness_boundary.py::ReceiptHarnessBoundaryTests.test_live_tree_keeps_the_harness_observing
 ---

@@ -2007,6 +2007,21 @@ impl CompileTransaction {
     where
         F: FnOnce() -> Result<(), CommitFailure>,
     {
+        self.commit_with_classified_pre_and_post_validation(|| Ok(()), post_validation)
+    }
+
+    /// Recheck a caller's admission under publication locks, after staging and
+    /// recovery preparation, immediately before each source mutation. A refusal
+    /// discards prepared files and rolls back any earlier writes in this transaction.
+    pub fn commit_with_classified_pre_and_post_validation<P, F>(
+        self,
+        mut pre_publication: P,
+        post_validation: F,
+    ) -> Result<CommitReport, CommitFailure>
+    where
+        P: FnMut() -> Result<(), CommitFailure>,
+        F: FnOnce() -> Result<(), CommitFailure>,
+    {
         if self.retained_apply_authority.is_some() || !self.retained_apply.is_empty() {
             return Err(CommitFailure::provider(
                 "retained apply plans require the actor-owned commit path",
@@ -2064,7 +2079,7 @@ impl CompileTransaction {
             &targets,
             &guard_targets,
             tree_lock_mode,
-            |lock| self.commit_locked(lock, &mut state, &mut post_validation),
+            |lock| self.commit_locked(lock, &mut state, &mut pre_publication, &mut post_validation),
         ) {
             Ok(result) => result,
             Err(error) => {
@@ -2078,13 +2093,15 @@ impl CompileTransaction {
         }
     }
 
-    fn commit_locked<'request, 'lock, 'scope, F>(
+    fn commit_locked<'request, 'lock, 'scope, P, F>(
         &'request self,
         lock: &'lock PublicationLockToken<'scope>,
         state: &mut PublishState,
+        pre_publication: &mut P,
         post_validation: &mut Option<F>,
     ) -> Result<CommitReport, CommitFailure>
     where
+        P: FnMut() -> Result<(), CommitFailure>,
         F: FnOnce() -> Result<(), CommitFailure>,
     {
         let mut prepared_creates: VecDeque<(
@@ -2213,6 +2230,10 @@ impl CompileTransaction {
                         return Err(message);
                     }
                 };
+                if let Err(error) = pre_publication() {
+                    record_cleanup_warnings(state, prepared.discard());
+                    return Err(error);
+                }
                 let report = prepared.commit().map_err(|error| {
                     let message = adapt_publish_error(&error, PublicationRole::Create);
                     record_publish_error_cleanup(state, &error);
@@ -2291,6 +2312,11 @@ impl CompileTransaction {
                     return Err(error.into());
                 }
 
+                if let Err(error) = pre_publication() {
+                    record_cleanup_warnings(state, prepared.discard());
+                    record_recovery_cleanup(state, &mut recovery);
+                    return Err(error);
+                }
                 let report = match prepared.commit() {
                     Ok(report) => report,
                     Err(error) => {
@@ -2309,8 +2335,10 @@ impl CompileTransaction {
                 ));
             }
 
-            while let Some((removal, recovery)) = prepared_removals.pop_front() {
+            while let Some((removal, _)) = prepared_removals.front() {
                 recheck_removal(removal).map_err(CommitFailure::concurrent)?;
+                pre_publication()?;
+                let (removal, recovery) = prepared_removals.pop_front().expect("nonempty removals");
                 rename_no_replace(&removal.path, &recovery.path).map_err(|error| {
                     // `AlreadyExists` here means another writer took the
                     // recovery name between the preflight and this rename, and
@@ -3342,16 +3370,29 @@ struct CreatedRetainedApplyDirectory {
     published: bool,
 }
 
+/// Every staged copy, preimage and private directory a publication leaves in
+/// the source tree starts with this prefix; it is never a source name.
+pub const PUBLICATION_ARTIFACT_PREFIX: &str = ".unica-apply-";
+
 fn retained_apply_stage_name() -> OsString {
-    OsString::from(format!(".unica-apply-{}", uuid::Uuid::new_v4()))
+    OsString::from(format!(
+        "{PUBLICATION_ARTIFACT_PREFIX}{}",
+        uuid::Uuid::new_v4()
+    ))
 }
 
 fn retained_apply_directory_stage_name() -> OsString {
-    OsString::from(format!(".unica-apply-dir-{}", uuid::Uuid::new_v4()))
+    OsString::from(format!(
+        "{PUBLICATION_ARTIFACT_PREFIX}dir-{}",
+        uuid::Uuid::new_v4()
+    ))
 }
 
 fn retained_apply_directory_cleanup_name() -> OsString {
-    OsString::from(format!(".unica-apply-dir-cleanup-{}", uuid::Uuid::new_v4()))
+    OsString::from(format!(
+        "{PUBLICATION_ARTIFACT_PREFIX}dir-cleanup-{}",
+        uuid::Uuid::new_v4()
+    ))
 }
 
 fn create_retained_apply_parent_chain(

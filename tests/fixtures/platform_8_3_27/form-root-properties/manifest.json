@@ -1,0 +1,17 @@
+{
+  "platformVersion": "8.3.27.2074",
+  "formatVersion": "2.20",
+  "source": "Catalog.Товары form ФормаЭлемента made by canonical form.add and props.set over tests/fixtures/platform_8_3_27/empty_configuration, imported by native ibcmd into a fresh file infobase and exported again. Two import/check/export rounds produced identical bytes, equal to the Unica output.",
+  "normalization": "none",
+  "files": {
+    "native-form.xml": {
+      "sha256": "cdc2a7ea98e4c4446aab0a14097ca524e0970ce9b3ef8c9cfe0ccf094efda835",
+      "size": 2623
+    },
+    "native-document-form.xml": {
+      "sha256": "08ad2968bd196b1b1b2fd1954841e728757a109549b47e914ea222310444b867",
+      "size": 1398
+    }
+  },
+  "ibcmdSha256": "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
+}

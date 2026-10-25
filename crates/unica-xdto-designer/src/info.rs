@@ -203,6 +203,7 @@ fn type_info(
     named: &model::NamedType,
 ) -> XdtoTypeInfo {
     XdtoTypeInfo {
+        facets: named.facets.clone(),
         kind: match named.kind {
             model::TypeKind::Value => XdtoTypeKind::Value,
             model::TypeKind::Object => XdtoTypeKind::Object,
@@ -262,6 +263,8 @@ fn anonymous_type_info(
     anonymous: &model::AnonymousObject,
 ) -> XdtoAnonymousTypeInfo {
     XdtoAnonymousTypeInfo {
+        facets: anonymous.facets.clone(),
+        base: anonymous.base.as_ref().map(qname_info),
         discriminator: anonymous
             .discriminator
             .as_ref()

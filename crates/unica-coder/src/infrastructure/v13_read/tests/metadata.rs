@@ -547,6 +547,135 @@ fn predefined_long_type_read_preserves_other_facts_and_names_the_size_limit() {
     assert_eq!(fs::read_to_string(&path).unwrap(), xml);
 }
 
+#[test]
+fn metadata_member_comments_preserve_presence_and_damage_in_collection_and_detail() {
+    for (owner, file, kind) in [
+        ("Catalog.Items", "Catalogs/Items.xml", "Attribute"),
+        ("Catalog.Items", "Catalogs/Items.xml", "Command"),
+        (
+            "InformationRegister.Rates",
+            "InformationRegisters/Rates.xml",
+            "Dimension",
+        ),
+        (
+            "InformationRegister.Rates",
+            "InformationRegisters/Rates.xml",
+            "Resource",
+        ),
+        (
+            "DocumentJournal.Entries",
+            "DocumentJournals/Entries.xml",
+            "Column",
+        ),
+        ("Enum.Codes", "Enums/Codes.xml", "EnumValue"),
+    ] {
+        for (comment, expected, damaged) in [
+            ("<Comment/>", Some(""), false),
+            ("<Comment></Comment>", Some(""), false),
+            ("<Comment> </Comment>", Some(" "), false),
+            ("<Comment>Описание</Comment>", Some("Описание"), false),
+            ("", None, false),
+            ("<Comment><Nested/></Comment>", None, true),
+            ("<Comment attr=\"x\"/>", None, true),
+            ("<Comment/><Comment>duplicate</Comment>", None, true),
+            ("<Comment xmlns=\"urn:foreign\"/>", None, true),
+        ] {
+            let fixture = RealReaderFixture::new();
+            for relative in [
+                "Configuration.xml",
+                "Catalogs/Items.xml",
+                "InformationRegisters/Rates.xml",
+                "DocumentJournals/Entries.xml",
+                "Enums/Codes.xml",
+            ] {
+                write(
+                    &fixture.source.join(relative),
+                    &fixture_text(&format!(
+                        "acceptance/workspace-member-comments/src/{relative}"
+                    )),
+                );
+            }
+            let path = fixture.source.join(file);
+            let original = fs::read_to_string(&path).unwrap();
+            let document = roxmltree::Document::parse(&original).unwrap();
+            let source = document
+                .descendants()
+                .find(|node| {
+                    node.is_element()
+                        && node.tag_name().name() == kind
+                        && node.children().any(|child| {
+                            child.is_element()
+                                && child.tag_name().name() == "Properties"
+                                && child.children().any(|name| {
+                                    name.is_element()
+                                        && name.tag_name().name() == "Name"
+                                        && name.text() == Some("Empty")
+                                })
+                        })
+                })
+                .unwrap();
+            let range = source
+                .descendants()
+                .find(|node| node.is_element() && node.tag_name().name() == "Comment")
+                .unwrap()
+                .range();
+            let mut xml = original.clone();
+            xml.replace_range(range, comment);
+            write(&path, &xml);
+            let service = fixture.view_service();
+            let at = format!("main:{owner}.{kind}");
+            let collection = service.view(ViewRequest::new(&at).unwrap());
+            assert!(collection.ok, "{at}, {comment}: {collection:?}");
+            let items = collection.data.unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .clone();
+            assert_eq!(items.len(), 2);
+            assert!(items[1]["props"].get("comment").is_none());
+            let detail = service.view(ViewRequest::new(items[0]["at"].as_str().unwrap()).unwrap());
+            assert!(detail.ok, "{detail:?}");
+            let data = detail.data.unwrap();
+            assert_eq!(items[0]["props"], data["props"]);
+            assert_eq!(data["title"], format!("{kind} Empty"));
+            assert_eq!(
+                data["props"]
+                    .get("comment")
+                    .and_then(serde_json::Value::as_str),
+                expected,
+                "{kind}: {comment}"
+            );
+            assert_eq!(
+                data["props"]
+                    .get("incomplete")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+                damaged
+            );
+            if matches!(kind, "Attribute" | "Dimension" | "Resource") {
+                assert_eq!(data["props"]["required"], false);
+                for key in ["type", "fillValue"] {
+                    assert!(data["props"].get(key).is_some(), "{kind}: missing {key}");
+                    assert_eq!(data["props"][key], items[1]["props"][key]);
+                }
+            }
+            let root = service.view(ViewRequest::new(&format!("main:{owner}")).unwrap());
+            assert!(root.ok, "{root:?}");
+            let limits = root.data.unwrap()["limits"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(
+                limits
+                    .iter()
+                    .any(|limit| limit.as_str().unwrap().contains(".comment не прочитано")),
+                damaged,
+                "{kind}: {limits:?}"
+            );
+            assert_eq!(fs::read_to_string(path).unwrap(), xml);
+        }
+    }
+}
+
 /// Три роли дампа `PrintWebDAV`: заимствован с перекрытием, заимствован без
 /// перекрытия, собственный объект расширения.
 ///
