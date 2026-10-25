@@ -2255,9 +2255,16 @@ pub fn validate_one_child_footprint(
     // carries no payload: platform 8.3.27 exports it without `Form.xml` or
     // `Template.xml`. Both descriptors prove the borrowing independently of
     // the plan, and nothing else may then stand in the footprint.
+    //
+    // A binary data template without data is exported as its descriptor only:
+    // ibcmd 8.3.27 imports and exports it without `Ext/Template.bin` (#2027).
+    let empty_binary_template = expected.profile
+        == unica_metadata::validation_subject::MetadataChildProfile::Template(
+            unica_metadata::validation_subject::MetadataTemplateType::BinaryData,
+        );
     if resources.is_empty()
         && footprint.retained.is_empty()
-        && borrowed_child_of_borrowed_owner(subject, &expected.child)
+        && (empty_binary_template || borrowed_child_of_borrowed_owner(subject, &expected.child))
     {
         if !footprint.directories.is_empty() {
             diagnostics.push(template_resource_set_diagnostic(
