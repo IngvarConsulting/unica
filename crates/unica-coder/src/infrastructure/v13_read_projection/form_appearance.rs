@@ -39,7 +39,7 @@ fn rule(address: &QualifiedAddress, value: &Value) -> NodeView {
     // oversize fact is named in limits like any other property.
     for key in ["presentation", "selection", "filter", "appearance"] {
         if let Some(value) = value.get(key) {
-            place_prop(&mut props, &mut limits, key, value, false, key);
+            place_prop(&mut props, &mut limits, address, key, value, false, key);
         }
     }
     NodeView::new(
@@ -122,16 +122,13 @@ mod tests {
         let address =
             QualifiedAddress::parse("main:CommonForm.F.Setting.ConditionalAppearance.Item.Rule1")
                 .unwrap();
-        let node = rule(
-            &address,
-            &json!({
-                "name": "Rule1",
-                "use": true,
-                "filter": {"kind": "group", "items": []},
-                "appearance": {"text": "x".repeat(MAX_COMPACT_PROP_BYTES)},
-            }),
-        );
-        let node = serde_json::to_value(node).unwrap();
+        let payload = json!({
+            "name": "Rule1",
+            "use": true,
+            "filter": {"kind": "group", "items": []},
+            "appearance": {"text": "x".repeat(MAX_COMPACT_PROP_BYTES)},
+        });
+        let node = serde_json::to_value(rule(&address, &payload)).unwrap();
         assert_eq!(node["props"]["use"], true);
         assert_eq!(
             node["props"]["filter"],
@@ -141,8 +138,13 @@ mod tests {
         assert_eq!(
             node["limits"],
             json!([format!(
-                "appearance exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"
+                "appearance exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes; read it whole at {address}.Props.appearance"
             )])
         );
+        let whole =
+            serde_json::to_value(with_whole_prop("appearance", || rule(&address, &payload)))
+                .unwrap();
+        assert_eq!(whole["props"]["appearance"], payload["appearance"]);
+        assert!(whole.get("limits").is_none());
     }
 }

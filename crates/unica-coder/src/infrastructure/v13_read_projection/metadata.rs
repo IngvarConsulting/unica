@@ -236,6 +236,7 @@ fn project_metadata(
             place_prop(
                 &mut props,
                 &mut limits,
+                address,
                 "detailedDailySchedules",
                 detailed,
                 false,
