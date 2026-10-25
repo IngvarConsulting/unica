@@ -686,7 +686,6 @@ pub fn parse_subsystem_operation(
         // ключ или неверный тип отклоняется, а не теряется молча.
         let normalized = interface
             .contract()
-            .expect("the root document operations publish a contract")
             .normalize(
                 &Value::Object(args.clone()),
                 &format!("ops[{op_index}].args"),
@@ -1713,8 +1712,14 @@ mod tests {
         ] {
             let mut args = retired.as_object().unwrap().clone();
             args.insert("at".into(), json!("main:Subsystem.Parent.Subsystem.Child"));
-            let error =
-                parse_subsystem_operation("childSubsystem.remove", &args, 2, "main").unwrap_err();
+            let error = parse_subsystem_operation(
+                "childSubsystem.remove",
+                &args,
+                2,
+                "main",
+                unica_source_contract::SourceSetKind::Configuration,
+            )
+            .unwrap_err();
             assert_eq!(error.path(), Some(format!("ops[2].args.{key}").as_str()));
             assert!(
                 error
@@ -1730,6 +1735,7 @@ mod tests {
             args.as_object().unwrap(),
             2,
             "main",
+            unica_source_contract::SourceSetKind::Configuration,
         )
         .unwrap_err();
         assert_eq!(error.path(), Some("ops[2].args.values"));

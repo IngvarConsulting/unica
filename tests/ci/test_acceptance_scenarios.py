@@ -930,6 +930,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("commandOrder.set", "Interface", "InterfaceGroup", "Values"),
         ("groupOrder.set", "Interface", "Interface", "Values"),
         ("subsystemOrder.set", "Interface", "Configuration", "Values"),
+        ("panels.set", "Interface", "ConfigurationRoot", "Values"),
+        ("homePage.set", "Interface", "ConfigurationRoot", "Values"),
     ]
 
     SOURCE_REGISTRATIONS = """
@@ -939,6 +941,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         (SubsystemOperation::ChildRemove), (InterfaceOperation::VisibilitySet),
         (InterfaceOperation::PlacementSet), (InterfaceOperation::CommandOrderSet),
         (InterfaceOperation::GroupOrderSet), (InterfaceOperation::SubsystemOrderSet),
+        (InterfaceOperation::PanelsSet), (InterfaceOperation::HomePageSet),
     """
 
     def test_source_operations_fail_closed_when_typed_registration_is_incomplete(self):
@@ -946,7 +949,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
         table = roles + self.SOURCE_REGISTRATIONS
         registry, _ = self.registration_fixture(table, metadata, complete_source=False)
-        self.assertEqual(len([entry for entry in registry if entry[1] in {"Code", "Subsystem", "Interface"}]), 12)
+        self.assertEqual(len([entry for entry in registry if entry[1] in {"Code", "Subsystem", "Interface"}]), 14)
         for typed, raw in [
             ("(CodeOperation::Insert)", '("code.insert", Code, CodeInsert, Text)'),
             ("(SubsystemOperation::Create)", '("subsystem.create", Subsystem, Configuration, Values)'),
