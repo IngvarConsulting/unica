@@ -156,10 +156,18 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["managed-form"],
     },
     MutatorRegistryEntry {
+        tool: CANONICAL_APPLY_TOOL,
+        operation: "form-compose",
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["form-compile-managed"],
+        required_branches: &["managed-form"],
+    },
+    // The v0.12 writer stays covered until it leaves the surface with v0.12.
+    MutatorRegistryEntry {
         tool: "unica.form.compile",
         operation: "form-compile",
         impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["form-compile-managed"],
+        case_ids: &["form-compile-managed-v012"],
         required_branches: &["managed-form"],
     },
     MutatorRegistryEntry {
@@ -419,6 +427,11 @@ pub(crate) static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "form-compile-managed",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "managed-form",
+    },
+    ExecutableCase {
+        id: "form-compile-managed-v012",
         tool: "unica.form.compile",
         branch: "managed-form",
     },
@@ -2757,6 +2770,104 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
     }
 
     if case.id == "form-compile-managed" {
+        // A whole managed form through canonical apply: the root properties,
+        // attributes, a command and elements of the report form `form.add`
+        // made, in one call (#1984).
+        seed_report_form(workspace)?;
+        let mut args = common_args(workspace);
+        args.insert(
+            "at".to_string(),
+            Value::String("main:Report.CorpusReport.Form.CorpusForm".to_string()),
+        );
+        args.insert(
+            "ops".to_string(),
+            json!([{
+                "op": "props.set",
+                "args": {"values": {
+                    "Title": "Corpus form",
+                    "AutoTitle": false,
+                    "Width": 4_294_967_295_u64,
+                    "Height": 4_294_967_294_u64,
+                    "Scale": 98
+                }}
+            }, {
+                // Qualified types: attribute.add does not yet write the
+                // default qualifiers of a bare String or Number (#1996).
+                "op": "attribute.add",
+                "args": {"items": [
+                    {"name": "Value", "type": "string(100)"},
+                    {"name": "Enabled", "type": "Boolean"},
+                    {"name": "Picture", "type": "decimal(10,0)"},
+                    {"name": "Rows", "type": "ValueTable", "columns": [
+                        {"name": "Value", "type": "String"},
+                        {"name": "Presentation", "type": "String"},
+                        {"name": "Picture", "type": "Number"}
+                    ]}
+                ]}
+            }, {
+                "op": "command.add",
+                "args": {"items": [{"name": "CorpusAction", "title": "Corpus action"}]}
+            }, {
+                "op": "item.add",
+                "args": {"items": [{
+                    "name": "Header",
+                    "type": "Group",
+                    "orientation": "AlwaysHorizontal",
+                    "behavior": "PopUp",
+                    "currentRowUse": "DontUse",
+                    "titleDataPath": "Value"
+                }, {
+                    "name": "Description",
+                    "type": "InputField",
+                    "path": "Rows",
+                    "titleLocation": "Top",
+                    "footerDataPath": "Value",
+                    "multipleValueDataPath": "Rows.Value",
+                    "multipleValuePresentDataPath": "Rows.Presentation",
+                    "multipleValuePictureDataPath": "Rows.Picture",
+                    "width": 4_294_967_295_u64,
+                    "height": 4_294_967_294_u64
+                }, {
+                    "name": "Enabled",
+                    "type": "CheckBox",
+                    "path": "Enabled",
+                    "checkBoxType": "Tumbler",
+                    "titleLocation": "Bottom"
+                }, {
+                    "name": "Rows",
+                    "type": "Table",
+                    "path": "Rows",
+                    "rowPictureDataPath": "Rows.Picture"
+                }, {
+                    "name": "HtmlDescription",
+                    "type": "HTMLDocumentField",
+                    "path": "Value",
+                    "titleLocation": "None",
+                    "skipOnInput": true,
+                    "width": 40,
+                    "height": 1,
+                    "autoMaxWidth": false,
+                    "autoMaxHeight": false
+                }]}
+            }, {
+                // A button of the form's command bar is a CommandBarButton.
+                "op": "item.add",
+                "args": {
+                    "at": "main:Report.CorpusReport.Form.CorpusForm.Item.ФормаКоманднаяПанель",
+                    "items": [{
+                        "name": "CorpusActionButton",
+                        "type": "Button",
+                        "command": "CorpusAction",
+                        "representation": "Text",
+                        "locationInCommandBar": "InCommandBar"
+                    }]
+                }
+            }]),
+        );
+        return Ok(args);
+    }
+
+    if case.id == "form-compile-managed-v012" {
         seed_report_form(workspace)?;
         let mut args = common_args(workspace);
         let path = write_json_input(

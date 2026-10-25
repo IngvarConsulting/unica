@@ -116,6 +116,18 @@ pub fn emit_empty_command_interface_document(format_version: &str) -> String {
     )
 }
 
+/// Командный интерфейс в форме выгрузки: BOM, CRLF, без перевода строки
+/// в конце. Пустой интерфейс платформа не выгружает вовсе, поэтому этот текст
+/// только основа первой правки.
+pub fn platform_empty_command_interface(format_version: &str) -> String {
+    format!(
+        "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+<CommandInterface xmlns=\"{INTERFACE_CI_NS}\" xmlns:xr=\"{INTERFACE_XR_NS}\" xmlns:xs=\"{INTERFACE_XS_NS}\" xmlns:xsi=\"{INTERFACE_XSI_NS}\" version=\"{}\">\r\n\
+</CommandInterface>",
+        unica_xml_format::text::escape_xml(format_version)
+    )
+}
+
 pub fn interface_text_do_hide(
     text: &mut String,
     commands: Vec<String>,
@@ -478,6 +490,11 @@ pub fn interface_text_replace_group_commands(
         .into_iter()
         .filter(|command| command.group == group)
         .collect::<Vec<_>>();
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let indent = slots.first().map_or("", |first| {
+        let line = text[..first.start].rsplit('\n').next().unwrap_or_default();
+        &line[..line.len() - line.trim_start_matches(['\t', ' ']).len()]
+    });
     let elements = commands
         .iter()
         .map(|name| {
@@ -486,10 +503,14 @@ pub fn interface_text_replace_group_commands(
                 .find(|slot| slot.name == *name)
                 .map(|slot| text[slot.start..slot.end].to_string())
                 .unwrap_or_else(|| {
-                    format!(
-                        "<Command name=\"{}\"><CommandGroup>{}</CommandGroup></Command>",
-                        unica_xml_format::text::escape_xml(name),
-                        unica_xml_format::text::escape_xml(group)
+                    interface_platform_element(
+                        &format!(
+                            "<Command name=\"{}\"><CommandGroup>{}</CommandGroup></Command>",
+                            unica_xml_format::text::escape_xml(name),
+                            unica_xml_format::text::escape_xml(group)
+                        ),
+                        indent,
+                        newline,
                     )
                 })
         })
@@ -625,7 +646,7 @@ pub fn interface_text_append_to_section(
     fragment: &str,
 ) -> Result<(), String> {
     if unica_xml_format::text::find_element_bounds(text, section, 0).is_none() {
-        interface_text_insert_section(text, section, &[])?;
+        return interface_text_insert_section(text, section, &[fragment.to_string()]);
     }
     let (_, content_start, close_start, _, _, _) =
         unica_xml_format::text::find_element_bounds(text, section, 0)
@@ -634,6 +655,7 @@ pub fn interface_text_append_to_section(
     let child_indent = interface_text_detect_indent(body)
         .or_else(|| interface_text_detect_empty_indent(body))
         .unwrap_or_else(|| "\t\t".to_string());
+    let fragment = interface_platform_element(fragment, &child_indent, "\r\n");
     let replacement = if body.trim().is_empty() {
         let parent_indent = interface_parent_indent(&child_indent);
         format!("\r\n{child_indent}{fragment}\r\n{parent_indent}")
@@ -685,7 +707,7 @@ pub fn interface_text_insert_section(
     let body = if fragments.is_empty() {
         format!("\r\n{root_indent}")
     } else {
-        interface_text_section_body(&root_indent, "", fragments)
+        interface_text_section_body(&format!("{root_indent}\t"), &root_indent, fragments)
     };
 
     if let Some(next_section_start) =
@@ -742,11 +764,73 @@ pub fn interface_text_section_body(
     for fragment in fragments {
         body.push_str("\r\n");
         body.push_str(child_indent);
-        body.push_str(fragment);
+        body.push_str(&interface_platform_element(fragment, child_indent, "\r\n"));
     }
     body.push_str("\r\n");
     body.push_str(parent_indent);
     body
+}
+
+/// Раскладывает сжатый элемент так, как его выгружает платформа: элемент
+/// с дочерними элементами занимает строки, лист с текстом — одну строку,
+/// каждый уровень вложенности добавляет табуляцию к `indent`. Первая строка
+/// идёт без отступа: его ставит место вставки.
+fn interface_platform_element(fragment: &str, indent: &str, newline: &str) -> String {
+    let mut tokens = Vec::new();
+    let mut rest = fragment;
+    while !rest.is_empty() {
+        let end = if rest.starts_with('<') {
+            rest.find('>').map_or(rest.len(), |close| close + 1)
+        } else {
+            rest.find('<').unwrap_or(rest.len())
+        };
+        // Пробелы между тегами — прежняя раскладка, а не текст элемента.
+        if !rest[..end].trim().is_empty() {
+            tokens.push(&rest[..end]);
+        }
+        rest = &rest[end..];
+    }
+    let mut lines = Vec::new();
+    let mut depth = 0usize;
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
+        let line = if token.starts_with("</") {
+            depth = depth.saturating_sub(1);
+            index += 1;
+            (depth, token.to_string())
+        } else if token.ends_with("/>") || !token.starts_with('<') {
+            index += 1;
+            (depth, token.to_string())
+        } else if let Some(leaf) = tokens
+            .get(index + 1..index + 3)
+            .filter(|leaf| !leaf[0].starts_with('<') && leaf[1].starts_with("</"))
+        {
+            index += 3;
+            (depth, format!("{token}{}{}", leaf[0], leaf[1]))
+        } else if tokens
+            .get(index + 1)
+            .is_some_and(|next| next.starts_with("</"))
+        {
+            index += 2;
+            (depth, format!("{token}{}", tokens[index - 1]))
+        } else {
+            index += 1;
+            depth += 1;
+            (depth - 1, token.to_string())
+        };
+        lines.push(line);
+    }
+    let mut element = String::new();
+    for (position, (depth, line)) in lines.into_iter().enumerate() {
+        if position > 0 {
+            element.push_str(newline);
+            element.push_str(indent);
+            element.push_str(&"\t".repeat(depth));
+        }
+        element.push_str(&line);
+    }
+    element
 }
 
 pub fn interface_text_count_commands_for_group(
