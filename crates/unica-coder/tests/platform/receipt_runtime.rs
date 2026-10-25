@@ -5104,12 +5104,44 @@ fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
     let mut successor = daemon.owner();
     cleanup.release();
-    let recovered = idle_request_over_tcp(
-        &mut successor,
-        V5ClientRequest::SubmitInvocation {
-            invocation: invocation.clone(),
-        },
-    );
+    // The released handler may not have published its receipt when the repeat
+    // arrives; the daemon then answers `ReceiptPending` for the same key, and a
+    // client repeats the exact call, as after `receipt_pending`. The repeat
+    // still has to recover this attempt, not run a second one.
+    let settles_by = Instant::now() + Duration::from_secs(5);
+    let recovered = loop {
+        let response = idle_request_over_tcp(
+            &mut successor,
+            V5ClientRequest::SubmitInvocation {
+                invocation: invocation.clone(),
+            },
+        );
+        let V5ServerResponse::Invocation {
+            outcome:
+                V5InvocationResponse::ReceiptPending {
+                    receipt_key,
+                    cancel_requested,
+                    ..
+                },
+        } = &response
+        else {
+            break response;
+        };
+        assert_eq!(receipt_key.invocation_id(), invocation.invocation_id());
+        assert_eq!(
+            receipt_key.reserved_task_id(),
+            invocation.reserved_task_id()
+        );
+        assert!(
+            !cancel_requested,
+            "nobody cancelled the admitted invocation"
+        );
+        assert!(
+            Instant::now() < settles_by,
+            "the released invocation never settled: {response:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
     let result = match recovered {
         V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::Direct { receipt },
