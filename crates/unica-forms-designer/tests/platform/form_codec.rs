@@ -2957,5 +2957,8 @@ fn form_edit_inserts_lines_with_the_form_line_ending() {
     let mixed = form("\r\n").replacen("\r\n", "\n", 1);
     let edited = edit(mixed.clone());
     assert!(edited.starts_with(&mixed[..mixed.find("<Form").unwrap()]));
-    assert!(has_bare_lf(&edited) && edited.contains("\r\n"), "{edited:?}");
+    assert!(
+        has_bare_lf(&edited) && edited.contains("\r\n"),
+        "{edited:?}"
+    );
 }
