@@ -32,9 +32,6 @@ pub(crate) struct GitIndexEntry {
     pub(crate) mode: Option<String>,
 }
 
-const MAX_STAGED_IGNORE_FILES: usize = 1024;
-const MAX_STAGED_IGNORE_TOTAL_BYTES: usize = 8 * 1024 * 1024;
-const MAX_STAGED_IGNORE_BATCH_METADATA_BYTES: usize = MAX_STAGED_IGNORE_FILES * 128;
 const MAX_AMBIGUOUS_OWNER_REASON_BYTES: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -784,14 +781,7 @@ impl<'a> GitRepositoryInspector<'a> {
                 check: ProjectCheckId::RepositoryIgnore,
                 source_set: None,
             });
-        } else if output_incomplete(&ignore)
-            || (!ignore.status_success && !status_is_no_match(&ignore))
-        {
-            let reason = if output_incomplete(&ignore) {
-                completeness_reason(&ignore)
-            } else {
-                nonzero_reason(&ignore)
-            };
+        } else if let Some(reason) = ignore_failure_reason(&ignore) {
             observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
             append_not_run_for_roots(
                 &mut observations,
@@ -1573,6 +1563,28 @@ fn output_incomplete(output: &ProcessOutput) -> bool {
         || output.stderr_had_invalid_utf8
 }
 
+/// Why a `check-ignore -v` answer cannot be trusted, if it cannot.
+///
+/// The command echoes the matching pattern, which keeps the encoding of its
+/// ignore file (often cp1251). Only the pattern text can be non-UTF-8: the
+/// source and the path are paths Unica wrote, and the pattern is reported,
+/// never matched, so its lossy text is enough. A truncated stream is not.
+/// Git skips a pattern file of 100 MiB or more with a warning; the answer
+/// then comes from part of the policy.
+fn ignore_failure_reason(output: &ProcessOutput) -> Option<String> {
+    if output.stdout_truncated || output.stderr_truncated {
+        return Some(completeness_reason(output));
+    }
+    if !output.status_success && !status_is_no_match(output) {
+        return Some(nonzero_reason(output));
+    }
+    output
+        .stderr
+        .lines()
+        .find(|line| line.starts_with("warning: ignoring"))
+        .map(|warning| format!("Git ignored part of the ignore policy: {warning}"))
+}
+
 fn completeness_reason(output: &ProcessOutput) -> String {
     let mut reasons = Vec::new();
     if output.stdout_truncated {
@@ -2223,12 +2235,6 @@ fn materialize_staged_ignore_files(
     if staged_ignore_files.is_empty() {
         return Ok(root);
     }
-    if staged_ignore_files.len() > MAX_STAGED_IGNORE_FILES {
-        return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-            "staged ignore policy contains {} .gitignore files; inspection supports at most {MAX_STAGED_IGNORE_FILES}",
-            staged_ignore_files.len()
-        )));
-    }
     if let StagedBlobReadSafety::Blocked(reason) = blob_read_safety {
         return Err(StagedIgnoreMaterializationError::Incomplete(reason.clone()));
     }
@@ -2267,44 +2273,14 @@ fn materialize_staged_ignore_files(
             deadline,
         )?;
     }
-    let blobs = read_staged_ignore_blobs(
+    write_staged_ignore_blobs(
         runner,
         repository_root,
         &staged_ignore_files,
+        root.path(),
         cancellation,
         deadline,
     )?;
-    for (path, oid) in staged_ignore_files {
-        if cancellation.is_cancelled() {
-            return Err(StagedIgnoreMaterializationError::Cancelled);
-        }
-        if deadline.is_elapsed() {
-            return Err(StagedIgnoreMaterializationError::Incomplete(
-                "staged .gitignore blob inspection timed out".into(),
-            ));
-        }
-        let relative = Path::new(path);
-        let target = root.path().join(relative);
-        let mut target_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&target)
-            .map_err(|error| {
-                let reason = if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    format!(
-                        "staged .gitignore path {path} collides with another host path identity"
-                    )
-                } else {
-                    format!("create staged .gitignore blob {path}: {error}")
-                };
-                StagedIgnoreMaterializationError::Incomplete(reason)
-            })?;
-        target_file.write_all(&blobs[oid]).map_err(|error| {
-            StagedIgnoreMaterializationError::Incomplete(format!(
-                "write staged .gitignore blob {path}: {error}"
-            ))
-        })?;
-    }
     for candidate in candidates {
         let candidate = Path::new(&candidate.repo_path);
         let parent = candidate.parent().ok_or_else(|| {
@@ -2329,132 +2305,209 @@ fn materialize_staged_ignore_files(
     Ok(root)
 }
 
-fn read_staged_ignore_blobs(
+/// Write the staged blob of every `(path, oid)` in `files` to that path
+/// below `target_root` as `git cat-file --batch` streams it, holding no more
+/// than the current piece. Paths of one blob get a copy of the first.
+fn write_staged_ignore_blobs(
     runner: &dyn ProcessRunner,
     repository_root: &Path,
     files: &[(&str, &str)],
+    target_root: &Path,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-) -> Result<BTreeMap<String, Vec<u8>>, StagedIgnoreMaterializationError> {
-    let oids = files.iter().map(|(_, oid)| *oid).collect::<BTreeSet<_>>();
+) -> Result<(), StagedIgnoreMaterializationError> {
+    let mut paths_by_oid = BTreeMap::<&str, Vec<&str>>::new();
+    for (path, oid) in files {
+        paths_by_oid.entry(oid).or_default().push(path);
+    }
     let mut input = Vec::new();
-    for oid in &oids {
+    for oid in paths_by_oid.keys() {
         input.extend_from_slice(oid.as_bytes());
         input.push(b'\n');
     }
-    let check = run_staged_ignore_batch(
+    let incomplete = StagedIgnoreMaterializationError::Incomplete;
+    let mut sizes = Vec::with_capacity(paths_by_oid.len());
+    let mut expected = paths_by_oid.keys();
+    stream_staged_ignore_batch(
         runner,
         repository_root,
         "--batch-check=%(objectname) %(objecttype) %(objectsize)",
         &input,
-        MAX_STAGED_IGNORE_BATCH_METADATA_BYTES + 1,
+        Some(b'\n'),
         cancellation,
         deadline,
+        &mut |line| {
+            let Some(oid) = expected.next() else {
+                return Err(incomplete(
+                    "Git returned unexpected staged .gitignore blob metadata".into(),
+                ));
+            };
+            let line = std::str::from_utf8(line).map_err(|_| {
+                incomplete(format!(
+                    "Git returned invalid staged .gitignore blob metadata for {oid}"
+                ))
+            })?;
+            let mut fields = line.split(' ');
+            let (Some(actual_oid), Some("blob"), Some(raw_size), None) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
+                return Err(incomplete(format!(
+                    "Git returned invalid staged .gitignore blob metadata for {oid}"
+                )));
+            };
+            if actual_oid != *oid {
+                return Err(incomplete(format!(
+                    "Git returned the wrong staged .gitignore blob object id for {oid}"
+                )));
+            }
+            let size = raw_size.parse::<u64>().map_err(|_| {
+                incomplete(format!(
+                    "Git returned an invalid staged .gitignore blob size for {oid}"
+                ))
+            })?;
+            sizes.push(size);
+            Ok(())
+        },
     )?;
-    let mut sizes = BTreeMap::<&str, usize>::new();
-    let lines = check.stdout.lines().collect::<Vec<_>>();
-    if lines.len() != oids.len() || !check.stdout.ends_with('\n') {
-        return Err(StagedIgnoreMaterializationError::Incomplete(
+    if sizes.len() != paths_by_oid.len() {
+        return Err(incomplete(
             "Git returned incomplete staged .gitignore blob metadata".into(),
         ));
     }
-    for (oid, line) in oids.iter().zip(lines) {
-        let mut fields = line.split(' ');
-        let (Some(actual_oid), Some("blob"), Some(raw_size), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "Git returned invalid staged .gitignore blob metadata for {oid}"
-            )));
-        };
-        if actual_oid != *oid {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "Git returned the wrong staged .gitignore blob object id for {oid}"
-            )));
-        }
-        let size = raw_size.parse::<usize>().map_err(|_| {
-            StagedIgnoreMaterializationError::Incomplete(format!(
-                "Git returned an invalid staged .gitignore blob size for {oid}"
-            ))
-        })?;
-        sizes.insert(oid, size);
+
+    enum Batch {
+        Header(Vec<u8>),
+        Body(u64, std::fs::File),
+        Trailer,
+        Done,
     }
-    let mut total_bytes = 0_usize;
-    for (_, oid) in files {
-        total_bytes = total_bytes
-            .checked_add(sizes[oid])
-            .unwrap_or(MAX_STAGED_IGNORE_TOTAL_BYTES + 1);
-        if total_bytes > MAX_STAGED_IGNORE_TOTAL_BYTES {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "staged .gitignore policy exceeds {MAX_STAGED_IGNORE_TOTAL_BYTES} bytes"
-            )));
-        }
-    }
-    let mut expected_batch_bytes = 0_usize;
-    for oid in &oids {
-        expected_batch_bytes += oid.len() + " blob ".len() + sizes[oid].to_string().len() + 1;
-        expected_batch_bytes += sizes[oid] + 1;
-    }
-    let batch = run_staged_ignore_batch(
+    let blobs = paths_by_oid.iter().zip(&sizes).collect::<Vec<_>>();
+    let create = |path: &str| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target_root.join(path))
+            .map_err(|error| {
+                incomplete(if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!(
+                        "staged .gitignore path {path} collides with another host path identity"
+                    )
+                } else {
+                    format!("create staged .gitignore blob {path}: {error}")
+                })
+            })
+    };
+    let mut next = 0_usize;
+    let mut state = Batch::Header(Vec::new());
+    stream_staged_ignore_batch(
         runner,
         repository_root,
         "--batch",
         &input,
-        expected_batch_bytes + 1,
+        None,
         cancellation,
         deadline,
+        &mut |mut chunk| {
+            while !chunk.is_empty() {
+                if matches!(state, Batch::Done) {
+                    return Err(incomplete(
+                        "Git returned unexpected trailing staged .gitignore blob bytes".into(),
+                    ));
+                }
+                let ((oid, paths), size) = blobs[next];
+                state = match std::mem::replace(&mut state, Batch::Done) {
+                    Batch::Header(mut header) => {
+                        let expected = format!("{oid} blob {size}\n");
+                        let taken = chunk.len().min(expected.len() - header.len());
+                        header.extend_from_slice(&chunk[..taken]);
+                        chunk = &chunk[taken..];
+                        if !expected.as_bytes().starts_with(&header) {
+                            return Err(incomplete(format!(
+                                "Git returned invalid staged .gitignore batch framing for {oid}"
+                            )));
+                        }
+                        if header.len() < expected.len() {
+                            Batch::Header(header)
+                        } else if *size == 0 {
+                            create(paths[0])?;
+                            Batch::Trailer
+                        } else {
+                            Batch::Body(*size, create(paths[0])?)
+                        }
+                    }
+                    Batch::Body(remaining, mut file) => {
+                        let taken = chunk
+                            .len()
+                            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+                        file.write_all(&chunk[..taken]).map_err(|error| {
+                            incomplete(format!(
+                                "write staged .gitignore blob {}: {error}",
+                                paths[0]
+                            ))
+                        })?;
+                        chunk = &chunk[taken..];
+                        let remaining = remaining - taken as u64;
+                        if remaining == 0 {
+                            Batch::Trailer
+                        } else {
+                            Batch::Body(remaining, file)
+                        }
+                    }
+                    Batch::Trailer => {
+                        if chunk[0] != b'\n' {
+                            return Err(incomplete(format!(
+                                "Git returned invalid staged .gitignore batch framing for {oid}"
+                            )));
+                        }
+                        chunk = &chunk[1..];
+                        for path in &paths[1..] {
+                            let mut copy = create(path)?;
+                            let mut first = std::fs::File::open(target_root.join(paths[0]))
+                                .map_err(|error| {
+                                    incomplete(format!(
+                                        "read staged .gitignore blob {}: {error}",
+                                        paths[0]
+                                    ))
+                                })?;
+                            std::io::copy(&mut first, &mut copy).map_err(|error| {
+                                incomplete(format!("write staged .gitignore blob {path}: {error}"))
+                            })?;
+                        }
+                        next += 1;
+                        if next == blobs.len() {
+                            Batch::Done
+                        } else {
+                            Batch::Header(Vec::new())
+                        }
+                    }
+                    Batch::Done => unreachable!("a finished batch takes no more bytes"),
+                };
+            }
+            Ok(())
+        },
     )?;
-    let output = batch.stdout.as_bytes();
-    let mut cursor = 0_usize;
-    let mut blobs = BTreeMap::new();
-    for oid in oids {
-        if cancellation.is_cancelled() {
-            return Err(StagedIgnoreMaterializationError::Cancelled);
-        }
-        if deadline.is_elapsed() {
-            return Err(StagedIgnoreMaterializationError::Incomplete(
-                "staged .gitignore blob inspection timed out".into(),
-            ));
-        }
-        let size = sizes[oid];
-        let header = format!("{oid} blob {size}\n");
-        if !output[cursor..].starts_with(header.as_bytes()) {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "Git returned invalid staged .gitignore batch framing for {oid}"
-            )));
-        }
-        cursor += header.len();
-        let end = cursor.checked_add(size).ok_or_else(|| {
-            StagedIgnoreMaterializationError::Incomplete(
-                "Git returned an oversized staged .gitignore blob".into(),
-            )
-        })?;
-        if output.get(end) != Some(&b'\n') {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "Git returned incomplete staged .gitignore blob bytes for {oid}"
-            )));
-        }
-        blobs.insert(oid.to_owned(), output[cursor..end].to_vec());
-        cursor = end + 1;
+    if !matches!(state, Batch::Done) {
+        let oid = blobs.get(next).map_or("", |((oid, _), _)| oid);
+        return Err(incomplete(format!(
+            "Git returned incomplete staged .gitignore blob bytes for {oid}"
+        )));
     }
-    if cursor != output.len() {
-        return Err(StagedIgnoreMaterializationError::Incomplete(
-            "Git returned unexpected trailing staged .gitignore blob bytes".into(),
-        ));
-    }
-    Ok(blobs)
+    Ok(())
 }
 
+/// Stream one `git cat-file` batch over `input`: `delimiter`-terminated
+/// records, or with no delimiter raw bytes in pieces.
 #[allow(clippy::too_many_arguments)]
-fn run_staged_ignore_batch(
+fn stream_staged_ignore_batch(
     runner: &dyn ProcessRunner,
     repository_root: &Path,
     mode: &str,
     input: &[u8],
-    capture_limit: usize,
+    delimiter: Option<u8>,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-) -> Result<ProcessOutput, StagedIgnoreMaterializationError> {
+    on_record: &mut dyn FnMut(&[u8]) -> Result<(), StagedIgnoreMaterializationError>,
+) -> Result<(), StagedIgnoreMaterializationError> {
     if cancellation.is_cancelled() {
         return Err(StagedIgnoreMaterializationError::Cancelled);
     }
@@ -2463,7 +2516,7 @@ fn run_staged_ignore_batch(
             "staged .gitignore blob inspection timed out".into(),
         ));
     }
-    let mut command = process_command_vec(
+    let command = process_command_vec(
         repository_root,
         vec![
             "--no-replace-objects".into(),
@@ -2473,28 +2526,50 @@ fn run_staged_ignore_batch(
         cancellation,
         deadline,
     );
-    command.capture_limits = Some((capture_limit, unica_process::STDERR_CAPTURE_LIMIT));
-    let output = match sticky_process_result(runner.run_with_input(&command, input), cancellation) {
-        Ok(output) => output,
-        Err(_) if cancellation.is_cancelled() => {
-            return Err(StagedIgnoreMaterializationError::Cancelled)
+    let mut failed = None;
+    let mut consume = |record: &[u8]| {
+        if cancellation.is_cancelled() {
+            failed = Some(StagedIgnoreMaterializationError::Cancelled);
+            return StreamControl::Stop;
         }
-        Err(reason) => return Err(StagedIgnoreMaterializationError::Incomplete(reason)),
+        match on_record(record) {
+            Ok(()) => StreamControl::Continue,
+            Err(error) => {
+                failed = Some(error);
+                StreamControl::Stop
+            }
+        }
     };
-    if output.cancelled || cancellation.is_cancelled() {
+    let output = match delimiter {
+        Some(delimiter) => runner.run_streaming_records(&command, input, delimiter, &mut consume),
+        None => runner.run_streaming_bytes(&command, input, &mut consume),
+    };
+    if cancellation.is_cancelled() {
         return Err(StagedIgnoreMaterializationError::Cancelled);
     }
-    if !output.status_success || output.timed_out || output_incomplete(&output) {
-        let reason = if output.timed_out {
-            "staged .gitignore blob inspection timed out".into()
-        } else if output_incomplete(&output) {
-            completeness_reason(&output)
-        } else {
-            nonzero_reason(&output)
-        };
-        return Err(StagedIgnoreMaterializationError::Incomplete(reason));
+    let output = output.map_err(StagedIgnoreMaterializationError::Incomplete)?;
+    if let Some(error) = failed {
+        return Err(error);
     }
-    Ok(output)
+    if output.cancelled {
+        return Err(StagedIgnoreMaterializationError::Cancelled);
+    }
+    if output.timed_out {
+        return Err(StagedIgnoreMaterializationError::Incomplete(
+            "staged .gitignore blob inspection timed out".into(),
+        ));
+    }
+    if let Some((_, error)) = output.line_error {
+        return Err(StagedIgnoreMaterializationError::Incomplete(format!(
+            "Git returned incomplete staged .gitignore blob output: {error}"
+        )));
+    }
+    if !output.status_success {
+        return Err(StagedIgnoreMaterializationError::Incomplete(
+            stream_nonzero_reason(&output.status, &output.stderr),
+        ));
+    }
+    Ok(())
 }
 
 fn materialize_exact_git_directories(
@@ -2610,13 +2685,8 @@ fn inspect_working_ignore_matches(
     if output.timed_out {
         return Ok(WorkingIgnoreInspection::TimedOut);
     }
-    if output_incomplete(&output) {
-        return Ok(WorkingIgnoreInspection::Incomplete(completeness_reason(
-            &output,
-        )));
-    }
-    if !output.status_success && !status_is_no_match(&output) {
-        return Ok(WorkingIgnoreInspection::Incomplete(nonzero_reason(&output)));
+    if let Some(reason) = ignore_failure_reason(&output) {
+        return Ok(WorkingIgnoreInspection::Incomplete(reason));
     }
     match parse_check_ignore_verbose_z_controlled(&output.stdout, cancellation, deadline) {
         Ok(matches) => Ok(WorkingIgnoreInspection::Complete(matches)),

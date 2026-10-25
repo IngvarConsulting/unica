@@ -580,7 +580,7 @@ fn project_health_git_ignore_materializes_distinct_staged_blobs_with_bounded_pro
 }
 
 #[test]
-fn project_health_git_ignore_batch_reads_1024_real_staged_blobs_with_two_children() {
+fn project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children() {
     struct CountingGitRunner<'a> {
         inner: &'a dyn ProcessRunner,
         commands: RefCell<Vec<Vec<String>>>,
@@ -604,7 +604,9 @@ fn project_health_git_ignore_batch_reads_1024_real_staged_blobs_with_two_childre
 
     let repository = TempDir::new().unwrap();
     git(repository.path(), &["init"]);
-    for index in 0..super::MAX_STAGED_IGNORE_FILES {
+    // 1025 files and more than 8 MiB of policy: past the former 1024-file
+    // and 8 MiB refusals. The blobs are streamed into their files.
+    for index in 0..1025 {
         let directory = repository.path().join(format!("policy/{index:04}"));
         fs::create_dir_all(&directory).unwrap();
         fs::write(
@@ -613,6 +615,8 @@ fn project_health_git_ignore_batch_reads_1024_real_staged_blobs_with_two_childre
         )
         .unwrap();
     }
+    let large = format!("large\n{}", "# padding\n".repeat(9 * 1024 * 1024 / 10));
+    fs::write(repository.path().join("policy/0000/.gitignore"), &large).unwrap();
     git(repository.path(), &["add", "policy"]);
     let output = Command::new("git")
         .args(["ls-files", "--cached", "--stage", "-z"])
@@ -621,7 +625,7 @@ fn project_health_git_ignore_batch_reads_1024_real_staged_blobs_with_two_childre
         .unwrap();
     assert!(output.status.success());
     let entries = parse_git_index_entries(&String::from_utf8(output.stdout).unwrap()).unwrap();
-    assert_eq!(entries.len(), super::MAX_STAGED_IGNORE_FILES);
+    assert_eq!(entries.len(), 1025);
     let runner = CountingGitRunner {
         inner: unica_process::runner::system_process_runner(),
         commands: RefCell::new(Vec::new()),
@@ -640,11 +644,11 @@ fn project_health_git_ignore_batch_reads_1024_real_staged_blobs_with_two_childre
 
     assert_eq!(
         fs::read(materialized.path().join("policy/0000/.gitignore")).unwrap(),
-        b"ignored-0000\n"
+        large.as_bytes()
     );
     assert_eq!(
-        fs::read(materialized.path().join("policy/1023/.gitignore")).unwrap(),
-        b"ignored-1023\n"
+        fs::read(materialized.path().join("policy/1024/.gitignore")).unwrap(),
+        b"ignored-1024\n"
     );
     let commands = runner.commands.borrow();
     assert_eq!(
@@ -659,7 +663,7 @@ fn project_health_git_ignore_batch_reads_1024_real_staged_blobs_with_two_childre
 }
 
 #[test]
-fn project_health_git_ignore_batch_reuses_duplicate_oid_but_charges_each_path() {
+fn project_health_git_ignore_batch_reuses_a_duplicate_oid_for_each_path() {
     let repository = TempDir::new().unwrap();
     let oid = "a".repeat(40);
     let entries = [
@@ -692,27 +696,6 @@ fn project_health_git_ignore_batch_reuses_duplicate_oid_but_charges_each_path() 
         assert_eq!(fs::read(materialized.path().join(path)).unwrap(), b"one\n");
     }
     assert_eq!(runner.commands.borrow().len(), 2);
-
-    let too_large = SequenceRunner::outputs(vec![process_output(
-        true,
-        &format!("{oid} blob {}\n", 5 * 1024 * 1024),
-    )]);
-    let error = materialize_staged_ignore_files(
-        &too_large,
-        repository.path(),
-        &entries,
-        &[],
-        &StagedBlobReadSafety::LocalOnlyGuaranteed,
-        &CancellationToken::new(),
-        ProviderDeadline::from_budget(Duration::from_secs(7)),
-    )
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        StagedIgnoreMaterializationError::Incomplete(ref reason)
-            if reason.contains("exceeds 8388608 bytes")
-    ));
-    assert_eq!(too_large.commands.borrow().len(), 1);
 }
 
 #[test]
@@ -763,10 +746,12 @@ fn project_health_git_ignore_batch_rejects_wrong_oid_type_size_and_framing() {
             outputs.push(process_output(true, &response));
         }
         let runner = SequenceRunner::outputs(outputs);
-        let error = super::read_staged_ignore_blobs(
+        let target = TempDir::new().unwrap();
+        let error = super::write_staged_ignore_blobs(
             &runner,
             repository.path(),
             &files,
+            target.path(),
             &CancellationToken::new(),
             ProviderDeadline::from_budget(Duration::from_secs(7)),
         )
@@ -783,32 +768,6 @@ fn project_health_git_ignore_batch_rejects_wrong_oid_type_size_and_framing() {
 }
 
 #[test]
-fn project_health_git_ignore_batch_rejects_invalid_utf8_without_per_blob_retry() {
-    let repository = TempDir::new().unwrap();
-    let oid = "a".repeat(40);
-    let mut binary_output = process_output(true, &format!("{oid} blob 1\n�\n"));
-    binary_output.stdout_had_invalid_utf8 = true;
-    let runner = SequenceRunner::outputs(vec![
-        process_output(true, &format!("{oid} blob 1\n")),
-        binary_output,
-    ]);
-    let error = super::read_staged_ignore_blobs(
-        &runner,
-        repository.path(),
-        &[(".gitignore", oid.as_str())],
-        &CancellationToken::new(),
-        ProviderDeadline::from_budget(Duration::from_secs(7)),
-    )
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        StagedIgnoreMaterializationError::Incomplete(ref reason)
-            if reason.contains("invalid UTF-8")
-    ));
-    assert_eq!(runner.commands.borrow().len(), 2);
-}
-
-#[test]
 fn project_health_git_ignore_batch_rejects_truncated_output_without_per_blob_retry() {
     let repository = TempDir::new().unwrap();
     let oid = "a".repeat(40);
@@ -818,10 +777,12 @@ fn project_health_git_ignore_batch_rejects_truncated_output_without_per_blob_ret
         process_output(true, &format!("{oid} blob 4\n")),
         truncated,
     ]);
-    let error = super::read_staged_ignore_blobs(
+    let target = TempDir::new().unwrap();
+    let error = super::write_staged_ignore_blobs(
         &runner,
         repository.path(),
         &[(".gitignore", oid.as_str())],
+        target.path(),
         &CancellationToken::new(),
         ProviderDeadline::from_budget(Duration::from_secs(7)),
     )
@@ -829,7 +790,7 @@ fn project_health_git_ignore_batch_rejects_truncated_output_without_per_blob_ret
     assert!(matches!(
         error,
         StagedIgnoreMaterializationError::Incomplete(ref reason)
-            if reason.contains("stdout was truncated")
+            if reason.contains("truncated")
     ));
     assert_eq!(runner.commands.borrow().len(), 2);
 }
@@ -884,82 +845,6 @@ fn project_health_git_ignore_rejects_host_identity_collisions() {
         }
     );
     assert!(runner.commands.borrow().is_empty());
-}
-
-#[test]
-fn project_health_git_ignore_bounds_staged_policy_file_count() {
-    let repository = TempDir::new().unwrap();
-    let runner = SequenceRunner::outputs(Vec::new());
-    let entries = (0..=super::MAX_STAGED_IGNORE_FILES)
-        .map(|index| GitIndexEntry {
-            repo_path: format!("nested/{index}/.gitignore"),
-            blob_oid: Some(format!("{index:040x}")),
-            mode: Some("100644".into()),
-        })
-        .collect::<Vec<_>>();
-
-    let error = materialize_staged_ignore_files(
-        &runner,
-        repository.path(),
-        &entries,
-        &[],
-        &StagedBlobReadSafety::LocalOnlyGuaranteed,
-        &CancellationToken::new(),
-        ProviderDeadline::from_budget(Duration::from_secs(1)),
-    )
-    .unwrap_err();
-
-    assert!(
-        matches!(
-            error,
-            StagedIgnoreMaterializationError::Incomplete(ref reason)
-                if reason.contains("at most 1024")
-        ),
-        "{error:?}"
-    );
-    assert!(runner.commands.borrow().is_empty());
-}
-
-#[test]
-fn project_health_git_ignore_bounds_total_staged_policy_bytes() {
-    let repository = TempDir::new().unwrap();
-    let oid = "a".repeat(40);
-    let runner = SequenceRunner::outputs(vec![process_output(
-        true,
-        &format!("{oid} blob {}\n", super::MAX_STAGED_IGNORE_TOTAL_BYTES + 1),
-    )]);
-
-    let error = materialize_staged_ignore_files(
-        &runner,
-        repository.path(),
-        &[GitIndexEntry {
-            repo_path: ".gitignore".into(),
-            blob_oid: Some(oid),
-            mode: Some("100644".into()),
-        }],
-        &[],
-        &StagedBlobReadSafety::LocalOnlyGuaranteed,
-        &CancellationToken::new(),
-        ProviderDeadline::from_budget(Duration::from_secs(1)),
-    )
-    .unwrap_err();
-
-    assert!(
-        matches!(
-            error,
-            StagedIgnoreMaterializationError::Incomplete(ref reason)
-                if reason.contains("exceeds 8388608 bytes")
-        ),
-        "{error:?}"
-    );
-    assert_eq!(
-        runner.commands.borrow()[0].capture_limits,
-        Some((
-            super::MAX_STAGED_IGNORE_BATCH_METADATA_BYTES + 1,
-            256 * 1024
-        ))
-    );
-    assert_eq!(runner.commands.borrow().len(), 1);
 }
 
 #[test]
@@ -1769,6 +1654,87 @@ fn project_health_staged_ignore_read_does_not_run_smudge_filter() {
         "{:?}",
         inspection.facts
     );
+}
+
+#[test]
+fn project_health_git_ignore_reads_a_tracked_cp1251_gitignore() {
+    // A .gitignore saved in cp1251 is not UTF-8. Its comment and the matching
+    // pattern itself carry cp1251 bytes; Git matches bytes, so the rules hold
+    // and the check completes instead of reporting invalid UTF-8.
+    let fixture = parent_repository_fixture();
+    let mut policy = b"# \xca\xee\xec\xec\xe5\xed\xf2\xe0\xf0\xe8\xe9\n**/.build/\n".to_vec();
+    policy.extend_from_slice(b"[!\xc4]onfigDumpInfo.xml\nDumpFilesIndex.txt\n");
+    fs::write(fixture.repository_root.join(".gitignore"), policy).unwrap();
+    git(&fixture.repository_root, &["add", ".gitignore"]);
+    let layout = inspect_layout(&fixture.context);
+
+    let inspection = GitRepositoryInspector::new()
+        .inspect_base(
+            &fixture.context,
+            &layout,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+        .unwrap();
+
+    assert!(
+        inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIgnore
+                && observation.source_set.is_none()
+                && matches!(observation.outcome, ProjectCheckOutcome::Completed)
+        }),
+        "{:?}",
+        inspection.observations
+    );
+    assert!(
+        !inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::IgnoreRuleMissing { .. }
+                | ProjectHealthFact::IgnoreRuleLocalOnly { .. }
+                | ProjectHealthFact::GitInspectionIncomplete { .. }
+        )),
+        "{:?}",
+        inspection.facts
+    );
+}
+
+#[test]
+fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
+    // Git skips a pattern file of 100 MiB or more with a warning. The skipped
+    // file holds every required rule, so trusting the answer would report the
+    // rules missing; the check must say the policy could not be read instead.
+    let fixture = parent_repository_fixture();
+    let mut policy = "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n".to_string();
+    policy.push_str(&"# padding\n".repeat(101 * 1024 * 1024 / 10));
+    fs::write(fixture.repository_root.join(".gitignore"), policy).unwrap();
+    git(&fixture.repository_root, &["add", ".gitignore"]);
+    let layout = inspect_layout(&fixture.context);
+
+    let inspection = GitRepositoryInspector::new()
+        .inspect_base(
+            &fixture.context,
+            &layout,
+            &CancellationToken::new(),
+            ProviderDeadline::no_deadline(),
+        )
+        .unwrap();
+
+    assert!(
+        inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryIgnore,
+                reason,
+                ..
+            } if reason.contains("ignoring excessively large pattern file")
+        )),
+        "{:?}",
+        inspection.facts
+    );
+    assert!(!inspection.facts.iter().any(|fact| matches!(
+        fact,
+        ProjectHealthFact::IgnoreRuleMissing { .. } | ProjectHealthFact::IgnoreRuleLocalOnly { .. }
+    )));
 }
 
 #[test]
