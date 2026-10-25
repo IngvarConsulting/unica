@@ -2058,7 +2058,7 @@ impl CanonicalV13ReadService {
             .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
             .collect::<Vec<_>>();
         // One pass over the layout ranks the names and notes whether the
-        // scope exists; the directory itself is never held.
+        // scope exists, instead of building the whole directory first.
         let ranked_request = match &scope {
             Some(scope) => request.clone().with_scope(scope.clone()),
             None => request.clone(),
@@ -2076,7 +2076,7 @@ impl CanonicalV13ReadService {
         let scope_binding = scope.as_ref().map(ToString::to_string);
         if let Some(scope) = scope {
             if let Err((code, message)) =
-                validate_name_scope(&*built.scope_present, &scope, first.kind())
+                validate_name_scope(&|at| built.present.contains(at), &scope, first.kind())
             {
                 if built.omissions.total != 0
                     && matches!(code, RefusalCode::NotFound | RefusalCode::InvalidState)
@@ -6600,6 +6600,61 @@ mod tests {
 
     /// Resolving a metadata object by its own place answers exactly what the
     /// full layout directory answers, for every object shape it handles (#1457).
+    /// A name search proves its scope only through the addresses it
+    /// watched while walking; a form scope needs its owner among them.
+    #[test]
+    fn name_scope_witnesses_cover_every_address_the_scope_check_asks_for() {
+        use unica_address::address::QualifiedAddress;
+        use unica_refusal::RefusalCode;
+        use unica_source_contract::SourceSetKind;
+
+        let scope = QualifiedAddress::parse("main:Catalog.Валюты.Form.ФормаЭлемента").unwrap();
+        let witnesses = super::name_scope_witnesses(&scope);
+        let mut asked = Vec::new();
+        let recorded = std::cell::RefCell::new(&mut asked);
+        let _ = super::validate_name_scope(
+            &|at| {
+                recorded.borrow_mut().push(at.to_string());
+                true
+            },
+            &scope,
+            SourceSetKind::Configuration,
+        );
+        assert!(!asked.is_empty());
+        for at in &asked {
+            assert!(witnesses.contains(at), "unwatched address {at}");
+        }
+        let present = |missing: &str| {
+            let witnesses = witnesses.clone();
+            let missing = missing.to_string();
+            move |at: &str| witnesses.iter().any(|known| known == at) && at != missing
+        };
+        assert!(
+            super::validate_name_scope(&present("none"), &scope, SourceSetKind::Configuration)
+                .is_ok()
+        );
+        assert_eq!(
+            super::validate_name_scope(
+                &present("main:Catalog.Валюты"),
+                &scope,
+                SourceSetKind::Configuration
+            )
+            .unwrap_err()
+            .0,
+            RefusalCode::NotFound
+        );
+        assert_eq!(
+            super::validate_name_scope(
+                &present("main:Configuration"),
+                &scope,
+                SourceSetKind::Configuration
+            )
+            .unwrap_err()
+            .0,
+            RefusalCode::InvalidState
+        );
+    }
+
     #[test]
     fn resolve_metadata_point_matches_the_full_layout_directory() {
         use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};

@@ -161,8 +161,8 @@ enum DescriptorHeadReadError {
 pub(crate) struct NameSearchOutcome {
     pub(crate) result: FindResult,
     pub(crate) omissions: FindOmissions,
-    /// Whether a watched address, such as the search scope, exists.
-    pub(crate) scope_present: Box<dyn Fn(&str) -> bool + Send>,
+    /// The watched addresses, such as the search scope, that exist.
+    pub(crate) present: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -196,8 +196,8 @@ struct DirectoryBuild {
     attempted_fact_bytes: usize,
     omissions: FindOmissions,
     include_module_aliases: bool,
-    /// A name search scores each document as it is read and keeps only its
-    /// candidates: no directory is held, so no directory budget applies.
+    /// A name search scores each document as it is read instead of keeping
+    /// the directory, so the directory budgets do not apply to it.
     ranker: Option<NameRanker>,
 }
 
@@ -322,10 +322,10 @@ impl WorkspaceFindDirectoryBuilder {
     }
 
     /// Search the names of `sources` in one pass over the layout. Each
-    /// document is scored while it is read and only its candidate is kept,
-    /// so neither the directory entry count nor its facts are budgeted; a
-    /// collection is listed whole. The ranker also answers whether its
-    /// watched addresses exist.
+    /// document is scored while it is read, so neither the directory entry
+    /// count nor its facts are budgeted; a collection is listed whole.
+    /// Memory still grows with the corpus (see [`NameRanker`]); pages carry
+    /// no state yet and walk the layout again (#2106).
     pub(crate) fn search_names(
         &self,
         sources: &[LayoutFindSource<'_>],
@@ -337,18 +337,17 @@ impl WorkspaceFindDirectoryBuilder {
             self.build_internal(sources, deadline, cancellation, false, Some(ranker))?;
         let ranker = ranker.expect("a name search keeps its ranker");
         find_checkpoint(deadline, cancellation)?;
+        let present = ranker.watched_presence();
+        let result = ranker.finish(|| find_checkpoint(deadline, cancellation))?;
         Ok(NameSearchOutcome {
-            scope_present: Box::new({
-                let watched = ranker.watched_presence();
-                move |at: &str| watched.contains(at)
-            }),
-            result: ranker.finish(),
+            present,
+            result,
             omissions: outcome.omissions,
         })
     }
 
     /// A name search lists a collection whole; the layout directory that
-    /// resolve and call-graph neighbours hold keeps its collection limit.
+    /// address resolution and call-graph neighbours hold keeps its limit.
     fn collection_limit(&self, build: &DirectoryBuild) -> Option<usize> {
         build
             .ranker
@@ -2362,8 +2361,10 @@ fn immediate_names(
                 )
             } else if error.kind() == io::ErrorKind::FileTooLarge {
                 if let Some(observer) = observer {
-                    let bound = maximum_entries.map_or(u64::MAX, |entries| entries as u64 + 1);
-                    observer.record_find_collection(bound, false);
+                    // Only a bounded listing refuses for its size.
+                    if let Some(entries) = maximum_entries {
+                        observer.record_find_collection(entries as u64 + 1, false);
+                    }
                 }
                 FindBuildError::new(
                     RefusalCode::ProviderLimitExceeded,
@@ -4551,8 +4552,8 @@ mod tests {
             if request == FindRequest::new("Валют").unwrap() {
                 assert!(expected.candidates().len() >= 2);
             }
-            assert!((searched.scope_present)("main:Catalog.Валюты"));
-            assert!(!(searched.scope_present)("main:Catalog.Нет"));
+            assert!(searched.present.contains("main:Catalog.Валюты"));
+            assert!(!searched.present.contains("main:Catalog.Нет"));
         }
     }
 

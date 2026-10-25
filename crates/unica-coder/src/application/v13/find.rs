@@ -3,7 +3,9 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_refusal::RefusalCode;
+#[cfg(test)]
 use unica_work_control::cancellation::CancellationToken;
+#[cfg(test)]
 use unica_work_control::provider_deadline::ProviderDeadline;
 
 const DEFAULT_LIMIT: usize = 20;
@@ -330,6 +332,7 @@ impl FindIndex {
             .find(|document| document.at == at && document.path.is_some())
     }
 
+    #[cfg(test)]
     pub(crate) fn has_address(&self, at: &str) -> bool {
         self.documents
             .binary_search_by(|document| document.at.as_str().cmp(at))
@@ -402,8 +405,9 @@ impl FindIndex {
             .expect("an unchecked find cannot fail")
     }
 
-    /// Return the entire ranked stream for a paged public search. The
-    /// historical `find` limit remains intact for internal readers.
+    /// The entire ranked stream of a whole directory: the oracle a name
+    /// search ([`NameRanker`]) is checked against.
+    #[cfg(test)]
     pub(crate) fn find_all_checked(
         &self,
         request: FindRequest,
@@ -514,8 +518,12 @@ impl FindIndex {
 }
 
 /// The ranked answer of [`FindIndex::find_all_checked`], built while the
-/// layout is walked: each document is scored as it is read and only its
-/// candidate is kept, so a search never holds the whole directory.
+/// layout is walked: each document is scored as it is read, and no
+/// document keeps its facts beyond what ranking needs. Memory still grows
+/// with the corpus — every address is remembered for deduplication, a broad
+/// query keeps a candidate per document, and a query without a direct match
+/// keeps each eligible document's name and address for nearest scoring — but
+/// no quota refuses the search.
 pub(crate) struct NameRanker {
     request: FindRequest,
     query: String,
@@ -586,30 +594,41 @@ impl NameRanker {
             .collect()
     }
 
-    pub(crate) fn finish(self) -> FindResult {
+    /// `checkpoint` runs every 128 documents of nearest scoring, as in
+    /// [`FindIndex::find_all_checked`].
+    pub(crate) fn finish<E>(
+        self,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<FindResult, E> {
         let nearest = self.direct.is_empty();
         let mut candidates = if nearest {
-            self.nearest_pool
-                .iter()
-                .filter_map(|document| nearest_match(document, &self.query))
-                .map(OwnedCandidate::from)
-                .collect()
+            let mut scored = Vec::new();
+            for (index, document) in self.nearest_pool.iter().enumerate() {
+                if index % 128 == 0 {
+                    checkpoint()?;
+                }
+                if let Some(found) = nearest_match(document, &self.query) {
+                    scored.push(OwnedCandidate::from(found));
+                }
+            }
+            scored
         } else {
             self.direct
         };
+        checkpoint()?;
         candidates.sort_by(|left, right| {
             left.score
                 .cmp(&right.score)
                 .then_with(|| left.candidate.at.cmp(&right.candidate.at))
         });
         candidates.dedup_by(|left, right| left.candidate.at == right.candidate.at);
-        FindResult {
+        Ok(FindResult {
             nearest: nearest && !candidates.is_empty(),
             candidates: candidates
                 .into_iter()
                 .map(|owned| owned.candidate)
                 .collect(),
-        }
+        })
     }
 }
 
