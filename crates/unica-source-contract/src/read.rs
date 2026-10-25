@@ -462,12 +462,11 @@ pub trait SourceArtifactClassifier: Send + Sync {
 
 pub mod full_dump;
 
+/// How deep a secure tree read may descend. The number of entries, files
+/// and bytes is not limited; file bytes are held one file at a time (#1119).
 #[derive(Debug, Clone, Copy)]
 pub struct SecureTreeCaptureLimits {
     pub maximum_depth: usize,
-    pub maximum_entries: usize,
-    pub maximum_files: usize,
-    pub maximum_bytes: usize,
 }
 
 #[derive(Debug)]

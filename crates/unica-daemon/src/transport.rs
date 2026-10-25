@@ -279,6 +279,7 @@ fn run_daemon_configured_until<
         // stop the process: it keeps only its own Task (#1251).
         if runtime.restart_required() {
             restart_requested = true;
+            runtime.cancel_active_attempts_after_fail_stop();
             runtime.hooks().forced_process_exit(None);
             break;
         }
@@ -287,6 +288,7 @@ fn run_daemon_configured_until<
                 if runtime.restart_required() {
                     drop(stream);
                     restart_requested = true;
+                    runtime.cancel_active_attempts_after_fail_stop();
                     runtime.hooks().forced_process_exit(None);
                     break;
                 }

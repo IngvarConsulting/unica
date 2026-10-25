@@ -229,20 +229,36 @@ fn generated_equal_root_fact_expansion_is_bounded() {
         })
         .collect::<Vec<_>>();
 
-    let result = super::tracked_generated_facts(
+    // 820 paths with five equal owners are 4100 facts, past the former
+    // 4096-fact refusal. Each owner keeps a sample and an exact count.
+    let facts = match super::tracked_generated_facts(
         &entries,
         fixture.context.workspace_root.as_path(),
         &fixture.context,
         &owners,
         &cancellation,
-        ProviderDeadline::from_budget(Duration::from_secs(1)),
-    );
+        ProviderDeadline::from_budget(Duration::from_secs(10)),
+    ) {
+        Ok(facts) => facts,
+        Err(_) => panic!("generated paths past the former fact budget are inspected"),
+    };
 
-    assert!(matches!(
-        result,
-        Err(super::GeneratedPathInspectionError::Incomplete(reason))
-            if reason.contains("fact budget")
-    ));
+    assert_eq!(facts.len(), 5 * (crate::MAX_PROJECT_DIAGNOSTIC_PATHS + 1));
+    for index in 0..5 {
+        let source_set = Some(format!("owner-{index}"));
+        let kept = facts
+            .iter()
+            .filter(|fact| {
+                matches!(fact, ProjectHealthFact::GeneratedPathTracked { source_set: owner, .. } if *owner == source_set)
+            })
+            .count();
+        assert_eq!(kept, crate::MAX_PROJECT_DIAGNOSTIC_PATHS);
+        assert!(facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::Additional { like, count: 800, .. }
+                if matches!(like.as_ref(), ProjectHealthFact::GeneratedPathTracked { source_set: owner, .. } if *owner == source_set)
+        )));
+    }
 }
 
 #[test]
@@ -405,12 +421,13 @@ fn equal_root_inconclusive_config_dump_info_reports_every_owner() {
 
 #[test]
 fn project_health_git_index_parser_groups_stages_and_preserves_unusual_paths() {
+    // Git lists the index in byte order of paths, stages of a path adjacent.
     let entries = parse_git_index_entries(concat!(
         "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tconflict/ConfigDumpInfo.xml\0",
         "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2\tconflict/ConfigDumpInfo.xml\0",
+        "100755 dddddddddddddddddddddddddddddddddddddddd 0\tline\nbreak,ok\0",
         "120000 cccccccccccccccccccccccccccccccccccccccc 0\tlinked\0",
         "100644 0000000000000000000000000000000000000000 0\tnew\0",
-        "100755 dddddddddddddddddddddddddddddddddddddddd 0\tline\nbreak,ok\0",
     ))
     .unwrap();
 
@@ -1027,6 +1044,8 @@ fn project_health_git_commands_use_large_but_bounded_capture() {
 fn project_health_git_index_parser_rejects_malformed_nul_record() {
     assert!(parse_git_index_entries("100644 oid 0 without-tab\0").is_err());
     assert!(parse_git_index_entries("100644 abc 0\tpath-without-terminal-nul").is_err());
+    // Out-of-order paths would let a later stage of a path escape the merge.
+    assert!(parse_git_index_entries(concat!("100644 abc 0\tb\0", "100644 abc 0\ta\0")).is_err());
 }
 
 #[test]

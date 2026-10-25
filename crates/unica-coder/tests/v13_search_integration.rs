@@ -1819,8 +1819,14 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         assert_eq!(page["page"]["stoppedBy"], "limit");
     }
     assert_eq!(seen.len(), 121);
-    assert_eq!(seen.first().unwrap(), "main:Catalog.Item000");
-    assert_eq!(seen.last().unwrap(), "main:Catalog.Item120");
+    // Equal scores rank by address: pages resumed after their last name
+    // walk the whole answer in that order.
+    assert_eq!(
+        seen,
+        (0..121)
+            .map(|index| format!("main:Catalog.Item{index:03}"))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         seen.iter().collect::<std::collections::BTreeSet<_>>().len(),
         121
@@ -1852,6 +1858,29 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         assert_eq!(page["page"]["stoppedBy"], "limit");
     }
     assert_eq!(nearest_seen, seen);
+
+    // 121 matches are eleven full pages of eleven: the last one completes
+    // without a continuation.
+    let mut exact_cursor: Option<String> = None;
+    let mut exact_pages = 0;
+    loop {
+        let mut arguments =
+            json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 11});
+        if let Some(token) = &exact_cursor {
+            arguments["cursor"] = json!(token);
+        }
+        let page = mcp.completed_tool_call(call_tool(300 + exact_pages, "unica.search", arguments));
+        assert_eq!(page["ok"], true, "{page:#}");
+        assert_eq!(page["data"]["matches"].as_array().map(Vec::len), Some(11));
+        exact_pages += 1;
+        exact_cursor = page["cursor"].as_str().map(str::to_owned);
+        if exact_cursor.is_none() {
+            assert_eq!(page["page"]["stoppedBy"], "complete");
+            break;
+        }
+        assert!(exact_pages < 11, "{page:#}");
+    }
+    assert_eq!(exact_pages, 11);
 
     let default_page = mcp.completed_tool_call(call_tool(
         200,
@@ -1899,6 +1928,23 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 18, "cursor": first_cursor}),
     ));
     assert_eq!(wrong_limit["diagnostics"][0]["code"], "invalid_cursor");
+
+    // A new title keeps the number of matches: the fingerprint of the
+    // answer, not its count, makes the continuation stale.
+    std::fs::write(
+        workspace.join("Catalogs/Item061.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Catalog><Properties><Name>Item061</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Другое имя</v8:content></v8:item></Synonym></Properties></Catalog></MetaDataObject>"#,
+    )
+    .expect("retitle one ranked name");
+    let retitled = mcp.completed_tool_call(call_tool(
+        34,
+        "unica.search",
+        json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 17, "cursor": first_cursor}),
+    ));
+    assert_eq!(
+        retitled["diagnostics"][0]["code"], "stale_cursor",
+        "{retitled:#}"
+    );
 
     std::fs::write(
         workspace.join("Catalogs/Item060.xml"),

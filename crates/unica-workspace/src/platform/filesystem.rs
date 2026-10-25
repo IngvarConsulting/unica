@@ -1748,6 +1748,23 @@ fn sync_renamed_regular_child(file: &fs::File) -> io::Result<()> {
     file.sync_all()
 }
 
+/// The portion a checked read takes between two checkpoints.
+const CHECKED_READ_CHUNK_BYTES: usize = 64 * 1024;
+
+/// A checked read either failed on the filesystem or was stopped by its
+/// checkpoint, whose own error is kept.
+#[derive(Debug)]
+pub(crate) enum CheckedReadError<E> {
+    Io(io::Error),
+    Stopped(E),
+}
+
+impl<E> From<io::Error> for CheckedReadError<E> {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
 impl RetainedRegularFileCapability {
     pub(crate) fn identity(&self) -> FileIdentity {
         self.identity
@@ -1770,6 +1787,93 @@ impl RetainedRegularFileCapability {
             ));
         }
         Ok(bytes)
+    }
+
+    /// Reads the file in chunks, at most `max_bytes`, and asks `checkpoint`
+    /// before each one, so a large input stops at the operation's deadline
+    /// or cancellation.
+    pub(crate) fn read_checked<E>(
+        &self,
+        max_bytes: usize,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<Vec<u8>, CheckedReadError<E>> {
+        let mut bytes = Vec::new();
+        self.visit_checked(&mut checkpoint, |chunk| {
+            if bytes.len().saturating_add(chunk.len()) > max_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("regular file exceeds the {max_bytes}-byte read limit"),
+                ));
+            }
+            bytes.extend_from_slice(chunk);
+            Ok(true)
+        })?;
+        Ok(bytes)
+    }
+
+    /// The length and SHA-256 of the file, read in chunks with `checkpoint`
+    /// before each one, without holding the file in memory.
+    pub(crate) fn sha256_checked<E>(
+        &self,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<(usize, [u8; 32]), CheckedReadError<E>> {
+        use sha2::Digest;
+
+        let mut hash = sha2::Sha256::new();
+        let mut len = 0usize;
+        self.visit_checked(&mut checkpoint, |chunk| {
+            len = len.saturating_add(chunk.len());
+            hash.update(chunk);
+            Ok(true)
+        })?;
+        Ok((len, hash.finalize().into()))
+    }
+
+    /// Reads the file from its start in chunks and hands each to `visit`,
+    /// asking `checkpoint` before every read. `visit` answers whether to go on.
+    fn visit_checked<E>(
+        &self,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+        mut visit: impl FnMut(&[u8]) -> io::Result<bool>,
+    ) -> Result<(), CheckedReadError<E>> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let mut file = self.file.try_clone()?;
+        file.seek(SeekFrom::Start(0))?;
+        let mut chunk = [0u8; CHECKED_READ_CHUNK_BYTES];
+        loop {
+            checkpoint().map_err(CheckedReadError::Stopped)?;
+            let read = match file.read(&mut chunk) {
+                Ok(0) => return Ok(()),
+                Ok(read) => read,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if !visit(&chunk[..read])? {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Whether the file holds exactly `expected`. It compares chunk by chunk
+    /// without a second copy of the file and asks `checkpoint` before each one.
+    pub(crate) fn matches_checked<E>(
+        &self,
+        expected: &[u8],
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<bool, CheckedReadError<E>> {
+        let mut offset = 0;
+        let mut matches = true;
+        self.visit_checked(&mut checkpoint, |chunk| {
+            let end = offset + chunk.len();
+            if end > expected.len() || chunk != &expected[offset..end] {
+                matches = false;
+                return Ok(false);
+            }
+            offset = end;
+            Ok(true)
+        })?;
+        Ok(matches && offset == expected.len())
     }
 
     pub(crate) fn try_clone_file(&self) -> io::Result<fs::File> {
@@ -8045,6 +8149,122 @@ mod tests {
 
             assert!(error.to_string().contains("complete header"), "{error}");
         }
+    }
+
+    /// #1119: a whole-file read takes chunks and stops at the checkpoint
+    /// between them instead of finishing a large file past its deadline.
+    #[test]
+    fn checked_read_stops_between_chunks_and_keeps_a_planner_limit() {
+        let root = unique_temp_root("checked-read");
+        fs::create_dir_all(&root).unwrap();
+        let image = (0..3 * super::CHECKED_READ_CHUNK_BYTES + 7)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(root.join("large.bin"), &image).unwrap();
+        let directory =
+            super::RetainedDirectoryCapability::open(&fs::canonicalize(&root).unwrap()).unwrap();
+        let file = directory
+            .retain_regular_child(std::ffi::OsStr::new("large.bin"))
+            .unwrap();
+
+        let mut checks = 0;
+        let whole = file
+            .read_checked(usize::MAX, || {
+                checks += 1;
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert_eq!(whole, image);
+        // Four chunks hold the file; the fifth read sees its end.
+        assert_eq!(checks, 5, "one checkpoint before each read");
+        let (len, sha256) = file.sha256_checked(|| Ok::<(), ()>(())).unwrap();
+        assert_eq!(len, image.len());
+        assert_eq!(
+            sha256,
+            <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(&image))
+        );
+
+        let mut checks = 0;
+        let stopped = file.read_checked(usize::MAX, || {
+            checks += 1;
+            if checks == 2 {
+                Err("deadline")
+            } else {
+                Ok(())
+            }
+        });
+        assert!(
+            matches!(stopped, Err(super::CheckedReadError::Stopped("deadline"))),
+            "{stopped:?}"
+        );
+        assert_eq!(checks, 2, "the read stops at the failing checkpoint");
+
+        let limited = file.read_checked(image.len() - 1, || Ok::<(), ()>(()));
+        assert!(
+            matches!(&limited, Err(super::CheckedReadError::Io(error)) if error.kind() == io::ErrorKind::InvalidData),
+            "{limited:?}"
+        );
+        assert_eq!(
+            file.read_checked(image.len(), || Ok::<(), ()>(())).unwrap(),
+            image
+        );
+        drop(file);
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// #1119: the preimage comparison reads in chunks against the retained
+    /// image and tells equal, changed, shorter and longer files apart.
+    #[test]
+    fn checked_comparison_matches_only_the_exact_image() {
+        let root = unique_temp_root("checked-compare");
+        fs::create_dir_all(&root).unwrap();
+        let image = (0..2 * super::CHECKED_READ_CHUNK_BYTES + 3)
+            .map(|index| (index % 253) as u8)
+            .collect::<Vec<_>>();
+        fs::write(root.join("image.bin"), &image).unwrap();
+        let directory =
+            super::RetainedDirectoryCapability::open(&fs::canonicalize(&root).unwrap()).unwrap();
+        let file = directory
+            .retain_regular_child(std::ffi::OsStr::new("image.bin"))
+            .unwrap();
+        let compare =
+            |expected: &[u8]| file.matches_checked(expected, || Ok::<(), ()>(())).unwrap();
+
+        assert!(compare(&image));
+        let mut changed = image.clone();
+        let last = changed.len() - 1;
+        changed[last] ^= 1;
+        assert!(!compare(&changed), "a changed last byte");
+        assert!(!compare(&image[..image.len() - 1]), "the file is longer");
+        let mut longer = image.clone();
+        longer.push(0);
+        assert!(!compare(&longer), "the file is shorter");
+        assert!(!compare(&[]), "an empty image");
+        fs::write(root.join("empty.bin"), b"").unwrap();
+        let empty = directory
+            .retain_regular_child(std::ffi::OsStr::new("empty.bin"))
+            .unwrap();
+        assert!(empty.matches_checked(&[], || Ok::<(), ()>(())).unwrap());
+        assert!(!empty.matches_checked(b"x", || Ok::<(), ()>(())).unwrap());
+        drop(empty);
+
+        let mut checks = 0;
+        let stopped = file.matches_checked(&image, || {
+            checks += 1;
+            if checks == 2 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        assert!(
+            matches!(stopped, Err(super::CheckedReadError::Stopped("cancelled"))),
+            "{stopped:?}"
+        );
+        drop(file);
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn unique_temp_root(name: &str) -> PathBuf {

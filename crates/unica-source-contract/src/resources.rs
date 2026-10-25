@@ -5,7 +5,6 @@ use unica_address::source_target::ResolvedTarget;
 pub const SOURCE_MANIFEST_RESOURCE_MAX: usize = 100;
 pub const SOURCE_RESOURCE_PAGE_LIMIT_MAX: usize = 50;
 pub const SOURCE_READ_LIMIT_MAX: usize = 64 * 1024;
-pub const SOURCE_REPLACEMENT_MAX_BYTES: usize = 1024 * 1024;
 pub const SOURCE_SNAPSHOT_TTL_SECONDS: u64 = 5 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,6 +1,10 @@
 ---
 id: INV.WIRE.V13-CAN-DICTIONARY
 check:
+  - crates/unica-coder/src/domain/apply.rs::implemented_operations_have_contracts_and_target_skeletons_have_no_empty_address
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::code_contract_context_matrix_matches_staged_parser_and_previews_without_writes
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::subsystem_interface_contracts_preview_all_operations_without_source_writes
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::subsystem_interface_contracts_match_decoder_for_every_registered_operation
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::support_can_contract_examples_preview_without_source_changes
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::support_contracts_and_productive_parser_agree_on_closed_arguments
   - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_catalog_locks_the_eight_domain_contracts_without_publishing_them
@@ -46,8 +50,9 @@ check:
 `props` имя, форму аргументов, реализованность и контракт, суженный до цели.
 Отсутствующая операция или пустое имя дают `bad_value` с `next` к узлу.
 Если словарь не вычисляется, `can` отсутствует, а его операция отвечает
-`unsupported_section`; так же отвечает реализованная операция без
-опубликованного подробного контракта. Вычисленный словарь может быть пустым.
+`unsupported_section`. Каждая операция в словаре узла публикует закрытый
+подробный контракт аргументов. Скелет не содержит пустого или повторного
+адреса цели. Вычисленный словарь может быть пустым.
 
 Состав `can`, предварительная проверка и разбор цели планировщиком совпадают.
 Контракт и планировщик одинаково принимают структуру аргументов с учётом

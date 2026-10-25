@@ -531,8 +531,14 @@ fn valid_inventory_record(item: &Value) -> bool {
             prefix.is_null() || prefix.as_str().is_some_and(|value| value.len() <= 4096)
         })
 }
+/// The runner's text fields pass through the secret redactor: a record is
+/// provider prose like any other (#2124).
 fn public_record(item: &Value) -> Value {
-    json!({"name":item["name"],"version":item["version"],"namePrefix":item["name_prefix"],"purpose":item["purpose"],"active":item["active"],"safeMode":item["safe_mode"],"unsafeActionProtection":item["unsafe_action_protection"],"usedInDistributedInfobase":item["used_in_distributed_infobase"],"scope":item["scope"],"hashSum":item["hash_sum"],"securityProfileName":item["security_profile_name"]})
+    let text = |key: &str| match item[key].as_str() {
+        Some(value) => Value::String(redactor(value)),
+        None => item[key].clone(),
+    };
+    json!({"name":item["name"],"version":text("version"),"namePrefix":text("name_prefix"),"purpose":text("purpose"),"active":item["active"],"safeMode":item["safe_mode"],"unsafeActionProtection":item["unsafe_action_protection"],"usedInDistributedInfobase":item["used_in_distributed_infobase"],"scope":text("scope"),"hashSum":text("hash_sum"),"securityProfileName":text("security_profile_name")})
 }
 fn rejection(operation: Operation, code: RefusalCode, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(Some(operation.name().into()), code, message)
