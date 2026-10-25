@@ -81,24 +81,25 @@ pub(crate) struct PathLine {
 impl PathLine {
     /// `путь` или `путь:строка`. Строкой считается только последний
     /// сегмент из одних цифр, поэтому `C:\x\Module.bsl` остаётся путём.
-    /// Второй такой сегмент — колонка `rg --vimgrep` — не угадывается,
+    /// Числовой сегмент не в конце — строка совпадения с колонкой или
+    /// текстом, как её печатают `grep -n` и `rg --vimgrep`, — не угадывается,
     /// а отклоняется: молча принятый за часть пути, он дал бы ложный
     /// `not_found`.
     pub(crate) fn parse(item: &str) -> Result<Self, ResolveError> {
         let item = item.trim();
         let numeric =
             |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+        let segments = item.split(':').collect::<Vec<_>>();
+        if segments.len() > 2 && segments[1..segments.len() - 1].iter().any(|s| numeric(s)) {
+            return Err(ResolveError::new(
+                RefusalCode::BadValue,
+                format!(
+                    "`{item}` carries more than a line number; pass `path:line` without a column or the match text"
+                ),
+            ));
+        }
         let (path, line) = match item.rsplit_once(':') {
             Some((path, line)) if numeric(line) => {
-                if path
-                    .rsplit_once(':')
-                    .is_some_and(|(_, column)| numeric(column))
-                {
-                    return Err(ResolveError::new(
-                        RefusalCode::BadValue,
-                        format!("`{item}` carries more than a line number; pass `path:line`"),
-                    ));
-                }
                 let line = line
                     .parse::<usize>()
                     .ok()
@@ -239,6 +240,7 @@ impl ResolvedSource {
         &self.kind
     }
 
+    #[cfg(test)]
     pub(crate) const fn lines(&self) -> ResolvedLines {
         self.lines
     }
@@ -337,6 +339,8 @@ mod tests {
             ":12",
             "src/a.bsl:0",
             "src/a.bsl:12:5",
+            "src/a.bsl:12:    Сообщить(1);",
+            r"C:\w\a.bsl:12:5:Сообщить(1)",
             "src/a.bsl:99999999999999999999999",
         ] {
             assert_eq!(

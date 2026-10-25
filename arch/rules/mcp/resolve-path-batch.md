@@ -4,6 +4,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_paths_translates_paths_and_lines_in_input_order
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_paths_places_lines_by_the_method_range_resolve_names
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_paths_refuses_only_the_failing_item
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_paths_cancelled_read_refuses_the_whole_call
   - crates/unica-coder/src/application/v13/resolve.rs::resolve_paths_items_split_a_trailing_line_and_refuse_only_themselves
 ---
 

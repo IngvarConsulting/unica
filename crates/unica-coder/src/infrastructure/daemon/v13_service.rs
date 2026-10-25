@@ -2634,11 +2634,22 @@ impl CanonicalV13ReadService {
             Err(error) => return error_result(None, error.code(), error.to_string()),
         };
         match request {
-            ResolveRequest::Path(path) => match self.locate_path(invocation, &path, cancellation) {
-                Ok(source) => resolve_result(source),
-                Err(refusal) => *refusal,
-            },
-            ResolveRequest::Paths(items) => self.resolve_paths(invocation, &items, cancellation),
+            ResolveRequest::Path(path) => {
+                match with_resolve_layout(invocation, |layout, deadline| {
+                    self.locate_path(invocation, layout, deadline, &path, cancellation)
+                }) {
+                    Ok(Ok(source)) => resolve_result(source),
+                    Ok(Err(refusal)) | Err(refusal) => *refusal,
+                }
+            }
+            ResolveRequest::Paths(items) => {
+                match with_resolve_layout(invocation, |layout, deadline| {
+                    self.resolve_paths(invocation, layout, deadline, &items, cancellation)
+                }) {
+                    Ok(result) => result,
+                    Err(refusal) => *refusal,
+                }
+            }
             ResolveRequest::Address(address) => {
                 self.resolve_address(invocation, &address, cancellation)
             }
@@ -2653,6 +2664,8 @@ impl CanonicalV13ReadService {
     fn resolve_paths(
         &self,
         invocation: &ActorBoundExecution,
+        layout: &[LayoutFindSource<'_>],
+        deadline: ProviderDeadline,
         items: &[Result<PathLine, ResolveError>],
         cancellation: &CancellationToken,
     ) -> DomainResult {
@@ -2661,7 +2674,8 @@ impl CanonicalV13ReadService {
         for item in items.iter().flatten() {
             let key = item.key();
             if !located.contains_key(&key) {
-                let source = self.locate_path(invocation, item.path(), cancellation);
+                let source =
+                    self.locate_path(invocation, layout, deadline, item.path(), cancellation);
                 if let Err(refusal) = &source {
                     if call_stopping_refusal(refusal) {
                         return *refusal.clone();
@@ -2772,26 +2786,14 @@ impl CanonicalV13ReadService {
     fn locate_path(
         &self,
         invocation: &ActorBoundExecution,
+        layout: &[LayoutFindSource<'_>],
+        deadline: ProviderDeadline,
         path: &str,
         cancellation: &CancellationToken,
     ) -> Result<ResolvedSource, Box<DomainResult>> {
-        let sources = invocation.layout_sources().map_err(|error| {
-            Box::new(error_result(None, RefusalCode::ProviderUnavailable, error))
-        })?;
-        let Some(deadline) = sources.first().map(|source| source.deadline()) else {
-            return Err(Box::new(error_result_detailed(
-                None,
-                RefusalDetail::ProviderAbsent,
-                "resolve has no admitted source sets",
-            )));
-        };
-        let layout = sources
-            .iter()
-            .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
-            .collect::<Vec<_>>();
         let entry = self
             .find_builder
-            .locate_path(&layout, path, deadline, cancellation)
+            .locate_path(layout, path, deadline, cancellation)
             .map_err(|error| Box::new(find_build_error_result(None, error)))?;
         let Some(entry) = entry else {
             return Err(Box::new(error_result(
@@ -3768,6 +3770,29 @@ fn provider_search_page_result(
         .extend(warnings.iter().cloned().map(Value::String));
     result.cursor = cursor.map(str::to_owned);
     result
+}
+
+/// Раскладка допущенных наборов для пути, пришедшего снаружи. Её
+/// недоступность — отказ всего вызова, а не каждого элемента пакета.
+fn with_resolve_layout<T>(
+    invocation: &ActorBoundExecution,
+    answer: impl FnOnce(&[LayoutFindSource<'_>], ProviderDeadline) -> T,
+) -> Result<T, Box<DomainResult>> {
+    let sources = invocation
+        .layout_sources()
+        .map_err(|error| Box::new(error_result(None, RefusalCode::ProviderUnavailable, error)))?;
+    let Some(deadline) = sources.first().map(|source| source.deadline()) else {
+        return Err(Box::new(error_result_detailed(
+            None,
+            RefusalDetail::ProviderAbsent,
+            "resolve has no admitted source sets",
+        )));
+    };
+    let layout = sources
+        .iter()
+        .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
+        .collect::<Vec<_>>();
+    Ok(answer(&layout, deadline))
 }
 
 /// Отказ одного элемента пакета: тот же код, уточнение и адрес, что дал бы
@@ -6732,6 +6757,11 @@ mod tests {
                 "src/Catalogs/Items.xml:3",
                 &format!("{common}:4"),
                 &format!("{object}:1"),
+                "src/Catalogs/Items/Forms/Main/Ext/Form.xml:1",
+                &format!(
+                    "{}:4",
+                    std::fs::canonicalize(root).unwrap().join(object).display()
+                ),
             ],
         );
         assert_eq!(
@@ -6746,8 +6776,11 @@ mod tests {
                 with_line("src/Catalogs/Items.xml", "notLineBased"),
                 method("main:CommonModule.Probe.Method.Ping"),
                 with_line(object, "outsideMethod"),
+                with_line("src/Catalogs/Items/Forms/Main/Ext/Form.xml", "notLineBased"),
+                method("main:Catalog.Items.Module.Object.Method.Ping"),
             ]
         );
+        assert_eq!(items[9]["at"], "main:Catalog.Items.Form.Main");
         assert_eq!(items[1]["at"], "main:CommonModule.Probe", "{items:?}");
         assert_eq!(items[8]["at"], "main:Catalog.Items.Module.Object");
         assert_eq!(items[6]["at"], "main:Catalog.Items");
@@ -6762,6 +6795,19 @@ mod tests {
             .parent()
             .unwrap()
             .join("Elsewhere/Ext/ObjectModule.bsl");
+        // Дескриптор и модуль есть, но конфигурация каталог не регистрирует.
+        std::fs::write(
+            root.join("src/Catalogs/Orphan.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="f3317000-0000-4000-8000-0000000000aa"><Properties><Name>Orphan</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let orphan = root.join("src/Catalogs/Orphan/Ext");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(
+            orphan.join("ObjectModule.bsl"),
+            "Процедура Ping()\nКонецПроцедуры\n",
+        )
+        .unwrap();
         let items = resolve_paths_items(
             root,
             &[
@@ -6772,8 +6818,19 @@ mod tests {
                 &format!("{object}:3:5"),
                 "",
                 &format!("{object}:3"),
+                "src/Catalogs/Orphan/Ext/ObjectModule.bsl:1",
             ],
         );
+        // Владелец не зарегистрирован в конфигурации, хотя файл модуля есть.
+        assert_eq!(items[7]["code"], "not_found", "{items:?}");
+        assert!(
+            items[7]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not registered"),
+            "{items:?}"
+        );
+        let items = &items[..7];
         let codes = items
             .iter()
             .map(|item| item.get("code").and_then(serde_json::Value::as_str))
@@ -7784,6 +7841,66 @@ mod tests {
             result.data.is_none(),
             "cancelled read returned a location: {result:?}"
         );
+    }
+
+    #[test]
+    fn resolve_paths_cancelled_read_refuses_the_whole_call() {
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_execution::receipt_runtime::ports::ExecutionClass;
+        use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
+        struct CancelRead(super::CanonicalV13ReadService);
+        impl super::CanonicalInvocationService for CancelRead {
+            fn prepare(
+                &self,
+                invocation: &super::ActorBoundInvocation,
+            ) -> Result<ExecutionClass, Box<DomainResult>> {
+                self.0.prepare(invocation)
+            }
+            fn execute(
+                &self,
+                execution: &super::ActorBoundExecution,
+                _: CancellationToken,
+            ) -> Result<DomainResult, InvocationFailure> {
+                let cancellation = CancellationToken::new();
+                cancellation.cancel();
+                self.0.execute(execution, cancellation)
+            }
+        }
+        let workspace = resolve_exact_workspace();
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CancelRead(super::CanonicalV13ReadService::default())),
+            Arc::new(TokioClock),
+        );
+        let result = runtime
+            .bind(
+                InvocationRequest::new(
+                    ToolIdentity::Resolve,
+                    json!({"paths": [
+                        "src/CommonModules/Probe/Ext/Module.bsl:4",
+                        "src/Catalogs/Items.xml",
+                    ]}),
+                    std::fs::canonicalize(workspace.path())
+                        .unwrap()
+                        .to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .prepare()
+            .unwrap()
+            .execute(CancellationToken::new())
+            .unwrap();
+        // Отмена не превращается в отказы элементов внутри успешного пакета.
+        assert!(!result.ok, "cancelled batch claimed answers: {result:?}");
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+            "cancelled"
+        );
+        assert!(result.data.is_none(), "{result:?}");
     }
 
     #[test]
