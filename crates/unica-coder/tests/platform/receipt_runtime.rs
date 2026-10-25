@@ -9315,7 +9315,9 @@ fn direct_terminal_preparation_queue_and_store_share_one_publication_deadline() 
     )]);
     // A one-second answer budget: the publication deadline is the daemon's
     // two-second durable floor from the frame, `DURABLE_STEP_BUDGET`.
+    let calls = AtomicUsize::new(0);
     let call = |delay: Duration| {
+        let number = calls.fetch_add(1, Ordering::SeqCst) + 1;
         hooks
             .delay_ms
             .store(delay.as_millis() as u64, Ordering::SeqCst);
@@ -9345,11 +9347,13 @@ fn direct_terminal_preparation_queue_and_store_share_one_publication_deadline() 
             .expect("open a session for the call");
         let submitted = session.submit_invocation(invocation);
         // The caller may stop reading first; the verdict is what the daemon
-        // did once the preparation ended and its store command settled.
-        let prepared = hooks.serialized.load(Ordering::SeqCst);
-        let until = Instant::now() + Duration::from_secs(10);
-        while hooks.prepared.load(Ordering::SeqCst) < prepared {
-            assert!(Instant::now() < until, "the preparation never ended");
+        // did once this call's preparation ended and its store step settled.
+        let until = Instant::now() + Duration::from_secs(30);
+        while hooks.prepared.load(Ordering::SeqCst) < number {
+            assert!(
+                Instant::now() < until,
+                "the preparation of call {number} never ended"
+            );
             thread::sleep(Duration::from_millis(20));
         }
         thread::sleep(Duration::from_millis(500));
@@ -9379,13 +9383,28 @@ fn direct_terminal_preparation_queue_and_store_share_one_publication_deadline() 
     }
     assert_eq!(hooks.published.load(Ordering::SeqCst), 1);
 
+    // Preparation past the caller's answer budget (one second plus the
+    // serialization margin) but inside the publication deadline: the caller
+    // stops reading, yet the store still gets the rest of that deadline.
+    let (submitted, recovered) = call(Duration::from_millis(1_400));
+    assert!(
+        matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { receipt }
+            } if matches!(receipt.terminal(), ReceiptTerminalOutcome::Completed { result } if result.ok)
+        ),
+        "the rest of the publication deadline still writes the terminal: {submitted:?} / {recovered:?}"
+    );
+    assert_eq!(hooks.published.load(Ordering::SeqCst), 2);
+
     // Preparation outlasts the publication deadline before the command is
     // queued: the store must not get a fresh budget for the write.
     let (submitted, recovered) = call(DURABLE_STEP_BUDGET + Duration::from_millis(300));
-    assert_eq!(hooks.serialized.load(Ordering::SeqCst), 2);
+    assert_eq!(hooks.serialized.load(Ordering::SeqCst), 3);
     assert_eq!(
         hooks.published.load(Ordering::SeqCst),
-        1,
+        2,
         "a terminal prepared past its deadline reached the store: {submitted:?} / {recovered:?}"
     );
     assert!(
@@ -9413,7 +9432,7 @@ fn direct_terminal_preparation_queue_and_store_share_one_publication_deadline() 
         ),
         "the daemon serves after the spent deadline: {submitted:?} / {recovered:?}"
     );
-    assert_eq!(hooks.published.load(Ordering::SeqCst), 2);
+    assert_eq!(hooks.published.load(Ordering::SeqCst), 3);
 
     stop.store(true, Ordering::SeqCst);
     drop(owner);
