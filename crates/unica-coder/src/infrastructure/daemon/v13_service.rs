@@ -1397,7 +1397,8 @@ impl CanonicalV13ReadService {
                 Ok((offset, resume)) if !resume.file.is_empty() => {
                     (offset, TextContinuation::Resume(resume))
                 }
-                Ok((offset, _)) => (offset, TextContinuation::Pass(offset)),
+                // Every continuation names the file it re-enters.
+                Ok(_) => return SearchCursorError::Stale.into_result(None),
                 Err(error) => return error.into_result(None),
             },
         };
@@ -1425,19 +1426,18 @@ impl CanonicalV13ReadService {
                 }
             })
             .collect::<Vec<_>>();
-        let engine = choose_engine(&text_query, &text_sources, cancellation);
+        // Git reads a first page fastest; a continuation re-enters its file
+        // through the walk, which does not read the delivered part again.
+        let engine = match continuation {
+            TextContinuation::Start => choose_engine(&text_query, &text_sources, cancellation),
+            TextContinuation::Resume(_) => TextEngine::Walk,
+        };
         #[cfg(test)]
         let engine = (*self.text_engine.lock().unwrap())
-            .filter(|_| text_query.candidates.is_some())
+            .filter(|_| {
+                text_query.candidates.is_some() && continuation == TextContinuation::Start
+            })
             .unwrap_or(engine);
-        // The continuation of one engine cannot be followed by the other.
-        if matches!(
-            (engine, &continuation),
-            (TextEngine::Git, TextContinuation::Resume(_))
-                | (TextEngine::Walk, TextContinuation::Pass(_))
-        ) {
-            return SearchCursorError::Stale.into_result(None);
-        }
         let walk_budget = {
             let remaining =
                 invocation.remaining_response_budget() / WALK_PAGE_RESPONSE_BUDGET_DIVISOR;
@@ -1467,14 +1467,11 @@ impl CanonicalV13ReadService {
         let stored = match cursor_token {
             None => None,
             Some(token) => {
-                // The traversal must still pass over exactly what the cursor
-                // delivered; a Git cursor also promises one more match.
+                // The traversal must still reach the file the cursor
+                // re-enters and the matches it delivered there.
                 let Some(passed) = scan.passed.clone() else {
                     return SearchCursorError::Stale.into_result(None);
                 };
-                if engine == TextEngine::Git && scan.hits.is_empty() {
-                    return SearchCursorError::Stale.into_result(None);
-                }
                 let mut answered = binding.clone();
                 answered.result_fingerprint = Some(passed);
                 match self.search_cursors.read(token, &answered) {
@@ -1669,7 +1666,7 @@ impl CanonicalV13ReadService {
             .chain(scan.time_next.as_ref().map(|next| &next.0))
             .map(|next| match next {
                 TextContinuation::Resume(resume) => 2 * resume.file.len(),
-                TextContinuation::Start | TextContinuation::Pass(_) => 0,
+                TextContinuation::Start => 0,
             })
             .max()
             .unwrap_or(0);
@@ -1730,7 +1727,7 @@ impl CanonicalV13ReadService {
             };
             let resume = match continuation {
                 TextContinuation::Resume(resume) => resume,
-                TextContinuation::Start | TextContinuation::Pass(_) => SearchResume::START,
+                TextContinuation::Start => SearchResume::START,
             };
             binding.result_fingerprint = Some(fingerprint);
             let issued = match stored {
@@ -8851,9 +8848,10 @@ mod tests {
         workspace
     }
 
-    /// #2095 (regex), the case flag and the parity of the two engines: both
-    /// read the same corpus into the same matches, in the same order, with
-    /// the same addresses, page by page.
+    /// #2095 (regex), the case flag and the seam of the two engines: a first
+    /// page read through Git and its continuation by the walk give the same
+    /// pages, matches, order and addresses as the walk alone, wherever the
+    /// Git page stops.
     #[test]
     fn literal_search_engines_agree_on_matches_order_and_addresses() {
         let workspace = text_engine_workspace();
@@ -9006,11 +9004,12 @@ mod tests {
         assert!(refused.data.is_none(), "no empty answer: {refused:?}");
     }
 
-    /// A Git continuation re-reads the traversal and passes over what it
-    /// delivered: a replay repeats the page, an edit after the cursor is
-    /// read, an edit before it or a corpus that ends at it is stale.
+    /// A first page read through Git continues past 200 matches through the
+    /// walk at the same place: a replay repeats the page, an edit after the
+    /// cursor is read, an edit of the delivered part is stale, and a corpus
+    /// that now ends at the cursor ends the search.
     #[test]
-    fn git_literal_continuation_proves_the_delivered_part() {
+    fn git_first_page_continues_by_the_walk_to_the_last_match() {
         use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         let module = workspace
@@ -9073,7 +9072,10 @@ mod tests {
 
         std::fs::write(&module, lines(250)).unwrap();
         let ended = search(Some(&cursors[4]));
-        assert_eq!(ended.diagnostics[0]["code"], "stale_cursor", "{ended:?}");
+        assert!(ended.ok, "{ended:?}");
+        assert_eq!(ended.data.as_ref().unwrap()["matches"], json!([]));
+        assert_eq!(ended.data.as_ref().unwrap()["fileCoverage"]["scanComplete"], true);
+        assert!(ended.cursor.is_none());
 
         std::fs::write(
             &module,
@@ -9084,11 +9086,10 @@ mod tests {
         assert_eq!(edited.diagnostics[0]["code"], "stale_cursor", "{edited:?}");
     }
 
-    /// Without Git the walk resumes at the file of the last delivered match
+    /// A continuation resumes at the file of the last delivered match
     /// instead of reading the corpus again: a replay repeats the page, an
-    /// edit in that file before the cursor or its removal is stale, files
-    /// passed before it are not read again, and a cursor of one engine is
-    /// not followed by the other.
+    /// edit in that file before the cursor or its removal is stale, and
+    /// files passed before it are not read again.
     #[test]
     fn walk_literal_continuation_resumes_at_its_file() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -9131,10 +9132,6 @@ mod tests {
             text_search_matches(&[first.clone(), second.clone(), third.clone()]),
             all[..60].to_vec()
         );
-        *walk.text_engine.lock().unwrap() = Some(TextEngine::Git);
-        let git = search(&walk, second.cursor.as_deref());
-        assert_eq!(git.diagnostics[0]["code"], "stale_cursor", "{git:?}");
-        *walk.text_engine.lock().unwrap() = Some(TextEngine::Walk);
 
         // An edit after the cursor is read by the next page.
         std::fs::write(source.join("Loose/C/x.bsl"), "Needle\n".repeat(31)).unwrap();

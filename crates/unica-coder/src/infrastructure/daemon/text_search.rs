@@ -8,12 +8,13 @@
 //! The traversal order is the full source-relative path compared byte-wise,
 //! source sets in admission order.
 //!
-//! A page continues the traversal. Git reads from the start again, passes
-//! over the delivered matches and proves them with a running digest. The
-//! walk cannot afford a second pass on a vendor-scale configuration: it
-//! resumes at the file of the last delivered match, proves only that file's
-//! identity and its delivered matches, and a page also ends at a time share
-//! of the caller's response budget so a long walk continues by pages.
+//! Git answers the first page only: it reads the corpus fastest from its
+//! start. Every continuation is the walk, which resumes at the file of the
+//! last delivered match without reading the corpus before it again, and
+//! proves that file's identity and its delivered matches. One cursor model
+//! serves both engines because they agree on order and matches. A walk
+//! page also ends at a time share of the caller's response budget, so a
+//! long walk continues by pages.
 
 use super::super::super::v13_read_modes::SearchMatcher;
 use super::{
@@ -132,8 +133,6 @@ pub(in crate::infrastructure::daemon) enum TextEngine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::infrastructure::daemon) enum TextContinuation {
     Start,
-    /// Pass over this many matches from the start of the traversal.
-    Pass(usize),
     /// Re-enter a file of the traversal.
     Resume(SearchResume),
 }
@@ -712,8 +711,6 @@ struct Collector<'a> {
     owners: Option<SearchHitOwners<'a>>,
     // The traversal.
     current: Option<CurrentFile>,
-    passed: usize,
-    chain: [u8; 32],
     passed_digest: Option<String>,
     hits: Vec<TextHit>,
     end: TextScanEnd,
@@ -749,10 +746,8 @@ impl<'a> Collector<'a> {
             source: None,
             owners: None,
             current: None,
-            passed: 0,
-            chain: [0; 32],
             passed_digest: match &request.continuation {
-                TextContinuation::Start | TextContinuation::Pass(0) => Some(String::new()),
+                TextContinuation::Start => Some(String::new()),
                 _ => None,
             },
             hits: Vec::new(),
@@ -997,7 +992,6 @@ impl<'a> Collector<'a> {
                 .as_slice()]);
             current.matches += 1;
             current.chain = digest(&[&current.chain, &hit_digest]);
-            self.chain = digest(&[&self.chain, &hit_digest]);
             if current.passing > 0 {
                 current.passing -= 1;
                 if current.passing == 0 {
@@ -1005,37 +999,23 @@ impl<'a> Collector<'a> {
                 }
                 continue;
             }
-            if let TextContinuation::Pass(count) = self.request.continuation {
-                if self.passed < count {
-                    self.passed += 1;
-                    if self.passed == count {
-                        self.passed_digest = Some(format!("git-v1:{}", hex(&self.chain)));
-                    }
-                    continue;
-                }
-            }
             if self.passed_digest.is_none() {
                 // A resumed walk reached matches before the position it
                 // re-enters: the cursor never names such a traversal.
                 continue;
             }
-            let next = match self.request.engine {
-                TextEngine::Git => (
-                    TextContinuation::Pass(self.passed + self.hits.len() + 1),
-                    format!("git-v1:{}", hex(&self.chain)),
-                ),
-                TextEngine::Walk => (
-                    TextContinuation::Resume(SearchResume {
-                        file: current.key.clone(),
-                        hits: current.matches,
-                        // Every file this page found uncovered lies before
-                        // the current one: a file is left at its first
-                        // unreadable line, after any match it delivered.
-                        uncovered: self.uncovered as u64,
-                    }),
-                    Self::walk_digest(&current.identity, &current.chain),
-                ),
-            };
+            // Either engine names the same place: the walk resumes there.
+            let next = (
+                TextContinuation::Resume(SearchResume {
+                    file: current.key.clone(),
+                    hits: current.matches,
+                    // Every file this page found uncovered lies before the
+                    // current one: a file is left at its first unreadable
+                    // line, after any match it delivered.
+                    uncovered: self.uncovered as u64,
+                }),
+                Self::walk_digest(&current.identity, &current.chain),
+            );
             self.hits.push(TextHit {
                 value,
                 source_set: self.source_set.clone(),
