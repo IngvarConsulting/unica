@@ -433,6 +433,13 @@ impl SearchCursorKind {
     }
 }
 
+/// An authenticated token: its owner, decrypted payload and tail kind.
+type OpenedSearchCursor = (
+    Arc<SearchCursorOwner>,
+    zeroize::Zeroizing<Vec<u8>>,
+    SearchCursorKind,
+);
+
 /// The tail a token is issued with.
 enum SearchCursorTail<'a> {
     None,
@@ -663,14 +670,7 @@ impl SearchCursorStore {
         &self,
         token: &str,
         expected: &SearchCursorBinding,
-    ) -> Result<
-        (
-            Arc<SearchCursorOwner>,
-            zeroize::Zeroizing<Vec<u8>>,
-            SearchCursorKind,
-        ),
-        SearchCursorError,
-    > {
+    ) -> Result<OpenedSearchCursor, SearchCursorError> {
         use aes_siv::KeyInit;
         let (ciphertext, kind) = decode_search_cursor(token)?;
         let owner = self
