@@ -12,6 +12,8 @@ check:
   - crates/unica-coder/tests/v13_search_integration.rs::text_hits_name_their_module_and_view_reads_the_same_line
   - crates/unica-coder/tests/v13_search_integration.rs::broad_text_search_scopes_name_the_module_of_every_hit
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_search_hit_without_an_address_carries_no_path
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::first_literal_page_counts_the_whole_corpus_by_kind_and_module
+  - crates/unica-coder/tests/v13_search_integration.rs::literal_search_pages_past_two_hundred_matches_without_loss
   - crates/unica-coder/tests/platform/event_sources.rs::module_paths_map_to_the_logical_module_view_reads
   - crates/unica-coder/tests/platform/event_sources.rs::files_outside_the_module_layout_have_no_logical_address
 ---
@@ -60,6 +62,16 @@ UTF-8, оставляет файл непокрытым; найденные со
 `detailsTruncated` отличает неполный список от полного. `fileId` — устойчивый
 идентификатор файла в его наборе исходников, а не путь и не логический
 адрес.
+
+Первая страница `text`-поиска несёт `data.totals` — сводку объёма всего
+корпуса области по [правилу буквального поиска](../analysis/literal-search.md):
+точные `matches` и `files`, `kinds` со счётом совпадений и файлов по виду
+объекта, `unaddressed` для совпадений без доказанного адреса, `modules` —
+ограниченный список модулей-лидеров с адресом `at` и счётом, `rest` — счёт
+остальных модулей и их совпадений, `uncovered` — число файлов с
+непрочитанными строками. Пустые `unaddressed`, `rest` и `uncovered` не
+выдаются. `fileCoverage` описывает выданную часть, `totals` — весь корпус;
+продолжения `totals` не несут.
 
 Текстовые страницы читают текущие исходники с места курсора и сообщают
 `dataFreshness: unknown` и `pageConsistency: live`: при изменении корпуса

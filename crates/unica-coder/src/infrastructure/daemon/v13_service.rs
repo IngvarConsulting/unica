@@ -16,7 +16,8 @@ const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
 
 use super::server::text_search::{
     choose_engine, scan_text_page, TextContinuation, TextEngine, TextPageRequest, TextQuery,
-    TextScan, TextScanEnd, TextSearchError, TextSource, WALK_PAGE_RESPONSE_BUDGET_DIVISOR,
+    TextScan, TextScanEnd, TextSearchError, TextSource, MAX_TEXT_TOTALS_LEADING_MODULES,
+    WALK_PAGE_RESPONSE_BUDGET_DIVISOR,
 };
 use super::v13_call_graph::{
     branch_collection, branch_direction, branch_owner, call_graph_support, complete_branch,
@@ -106,6 +107,8 @@ pub(crate) struct CanonicalV13ReadService {
     text_engine: Option<TextEngine>,
     #[cfg(test)]
     walk_budget: Option<std::time::Duration>,
+    #[cfg(test)]
+    cancel_past_page: bool,
 }
 
 /// Снимки продолжений лежат во временном файле: в памяти процесса остаются
@@ -132,6 +135,8 @@ impl Default for CanonicalV13ReadService {
             text_engine: None,
             #[cfg(test)]
             walk_budget: None,
+            #[cfg(test)]
+            cancel_past_page: false,
         }
     }
 }
@@ -1442,13 +1447,17 @@ impl CanonicalV13ReadService {
             .text_engine
             .filter(|_| text_query.candidates.is_some() && continuation == TextContinuation::Start)
             .unwrap_or(engine);
+        // The first page counts the whole corpus and so never ends by time:
+        // a long one becomes a Task. A continuation ends at a share of the
+        // direct answer's budget.
+        let count_totals = continuation == TextContinuation::Start;
         let walk_budget = {
             let remaining =
                 invocation.remaining_response_budget() / WALK_PAGE_RESPONSE_BUDGET_DIVISOR;
-            (!remaining.is_zero()).then_some(remaining)
+            (!count_totals && !remaining.is_zero()).then_some(remaining)
         };
         #[cfg(test)]
-        let walk_budget = self.walk_budget.or(walk_budget);
+        let walk_budget = self.walk_budget.filter(|_| !count_totals).or(walk_budget);
         let request = TextPageRequest {
             query: &text_query,
             sources: text_sources,
@@ -1460,6 +1469,9 @@ impl CanonicalV13ReadService {
             engine,
             continuation,
             walk_budget,
+            count_totals,
+            #[cfg(test)]
+            cancel_past_page: self.cancel_past_page,
         };
         let scan = match scan_text_page(&request, cancellation) {
             Ok(scan) => scan,
@@ -1662,6 +1674,13 @@ impl CanonicalV13ReadService {
                 "details": scan.details,
             }),
         );
+        // The volume of the whole corpus travels with the first page only.
+        if let Some(totals) = &scan.totals {
+            extra_data.insert(
+                "totals".to_owned(),
+                totals.to_value(MAX_TEXT_TOTALS_LEADING_MODULES),
+            );
+        }
         // A cursor also carries the path it re-enters.
         let resume_bytes = scan
             .hits
@@ -9082,6 +9101,185 @@ mod tests {
         assert_eq!(case.len(), 6, "{case:?}");
     }
 
+    /// The first page of either engine carries the exact volume of the
+    /// whole corpus, however small the page: counts by kind, the modules
+    /// and the matches without an address. A continuation does not repeat it.
+    #[test]
+    fn first_literal_page_counts_the_whole_corpus_by_kind_and_module() {
+        let workspace = text_engine_workspace();
+        let expected = json!({
+            "matches": 8,
+            "files": 6,
+            "kinds": {
+                "CommonModule": {"matches": 3, "files": 1},
+                "Catalog": {"matches": 1, "files": 1},
+            },
+            "unaddressed": {"matches": 4, "files": 4},
+            "modules": [
+                {"at": "main:CommonModule.Probe", "matches": 3},
+                {"at": "main:Catalog.Items.Module.Object", "matches": 1},
+            ],
+        });
+        for limit in [1, 50] {
+            for engine in [TextEngine::Git, TextEngine::Walk] {
+                let pages = text_search_pages(
+                    workspace.path(),
+                    engine,
+                    json!({"query":"Needle","limit":limit}),
+                );
+                let first = pages[0].data.as_ref().unwrap();
+                assert_eq!(first["totals"], expected, "{engine:?} limit {limit}");
+                assert_eq!(text_search_matches(&pages).len(), 8);
+                for page in &pages[1..] {
+                    assert!(
+                        page.data.as_ref().unwrap().get("totals").is_none(),
+                        "{engine:?}: a continuation repeats no volume"
+                    );
+                }
+                if limit == 1 {
+                    // The page itself still stops after one match.
+                    assert_eq!(first["matches"].as_array().unwrap().len(), 1);
+                    assert_eq!(first["fileCoverage"]["scanComplete"], false);
+                    assert_eq!(pages.len(), 8);
+                }
+            }
+        }
+        let empty = text_search_pages(workspace.path(), TextEngine::Git, json!({"query":"Absent"}));
+        assert_eq!(empty.len(), 1);
+        assert_eq!(
+            empty[0].data.as_ref().unwrap()["totals"],
+            json!({"matches": 0, "files": 0, "kinds": {}, "modules": []})
+        );
+        assert_eq!(empty[0].page.as_ref().unwrap()["stoppedBy"], "complete");
+    }
+
+    /// A file left uncovered past the first page counts in the volume of
+    /// the corpus, not in the coverage of that page; the page that reads
+    /// it reports it. The configuration's own module counts as its kind.
+    #[test]
+    fn literal_volume_counts_uncovered_files_past_the_page_apart_from_its_coverage() {
+        let workspace = text_engine_workspace();
+        let source = workspace.path().join("src");
+        std::fs::write(source.join("Zzz.bsl"), b"Needle\n\xffNeedle\xff\nNeedle\n").unwrap();
+        std::fs::create_dir_all(source.join("Ext")).unwrap();
+        std::fs::write(source.join("Ext/SessionModule.bsl"), "// Needle\n").unwrap();
+        for engine in [TextEngine::Git, TextEngine::Walk] {
+            let pages = text_search_pages(
+                workspace.path(),
+                engine,
+                json!({"query":"Needle","limit":1}),
+            );
+            let first = pages[0].data.as_ref().unwrap();
+            assert_eq!(first["fileCoverage"]["uncovered"], 0, "{engine:?}: {first}");
+            let totals = &first["totals"];
+            assert_eq!(totals["uncovered"], 1, "{engine:?}: {totals}");
+            // The unreadable line stops the file: only its first match counts.
+            assert_eq!(totals["matches"], 10, "{engine:?}: {totals}");
+            assert_eq!(
+                totals["kinds"]["Configuration"],
+                json!({"matches": 1, "files": 1}),
+                "{engine:?}: {totals}"
+            );
+            assert_eq!(
+                text_search_matches(&pages).len(),
+                10,
+                "the pages deliver what the volume counts"
+            );
+            let last = pages.last().unwrap().data.as_ref().unwrap();
+            assert_eq!(last["fileCoverage"]["uncovered"], 1, "{engine:?}: {last}");
+        }
+    }
+
+    /// Past twenty modules the volume names the twenty with the most
+    /// matches, a tie in traversal order, and the rest as one line; both
+    /// engines count the same.
+    #[test]
+    fn literal_volume_names_twenty_leading_modules_and_counts_the_rest() {
+        let workspace = resolve_exact_workspace();
+        let source = workspace.path().join("src");
+        let names = (1..=23)
+            .map(|index| format!("M{index:02}"))
+            .collect::<Vec<_>>();
+        let registered = names
+            .iter()
+            .map(|name| format!("<CommonModule>{name}</CommonModule>"))
+            .collect::<String>();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="f3317000-0000-4000-8000-000000000001"><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>Probe</CommonModule><Catalog>Items</Catalog><CommonForm>Main</CommonForm>{registered}</ChildObjects></Configuration></MetaDataObject>"#),
+        )
+        .unwrap();
+        for (index, name) in names.iter().enumerate() {
+            let number = index + 1;
+            // M20 ties with M21: the earlier one in traversal order leads.
+            let count = if number == 20 { 21 } else { number };
+            std::fs::write(
+                source.join(format!("CommonModules/{name}.xml")),
+                format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="f3317000-0000-4000-8000-0000000001{number:02}"><Properties><Name>{name}</Name><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties><ChildObjects/></CommonModule></MetaDataObject>"#),
+            )
+            .unwrap();
+            let module = source.join(format!("CommonModules/{name}/Ext/Module.bsl"));
+            std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+            std::fs::write(module, "// Lead\n".repeat(count)).unwrap();
+        }
+        let leaders = [23, 22, 20, 21]
+            .into_iter()
+            .chain((4..=19).rev())
+            .map(|number| {
+                let matches = if number == 20 { 21 } else { number };
+                json!({"at": format!("main:CommonModule.M{number:02}"), "matches": matches})
+            })
+            .collect::<Vec<_>>();
+        let expected = json!({
+            "matches": 277,
+            "files": 23,
+            "kinds": {"CommonModule": {"matches": 277, "files": 23}},
+            "modules": leaders,
+            "rest": {"modules": 3, "matches": 6},
+        });
+        for engine in [TextEngine::Git, TextEngine::Walk] {
+            let first = invoke_exact_read_with_service(
+                workspace.path(),
+                unica_execution::invocation_store::ToolIdentity::Search,
+                json!({"query":"Lead"}),
+                Arc::new(super::CanonicalV13ReadService::with_text_engine_for_test(
+                    engine,
+                )),
+            );
+            assert!(first.ok, "{first:?}");
+            assert_eq!(
+                first.data.as_ref().unwrap()["totals"],
+                expected,
+                "{engine:?}"
+            );
+            assert!(first.cursor.is_some());
+        }
+    }
+
+    /// A search cancelled while it counts past its full page answers
+    /// neither the volume nor the page: the refusal stays as before.
+    #[test]
+    fn cancelled_literal_search_answers_no_volume() {
+        let workspace = text_engine_workspace();
+        for engine in [TextEngine::Git, TextEngine::Walk] {
+            let service = Arc::new(super::CanonicalV13ReadService {
+                text_engine: Some(engine),
+                cancel_past_page: true,
+                ..super::CanonicalV13ReadService::default()
+            });
+            let result = invoke_exact_read_with_service(
+                workspace.path(),
+                unica_execution::invocation_store::ToolIdentity::Search,
+                json!({"query":"Needle","limit":1}),
+                service,
+            );
+            assert!(!result.ok, "{engine:?}: {result:?}");
+            assert_eq!(result.diagnostics[0]["code"], "cancelled", "{result:?}");
+            assert!(result.data.is_none(), "{engine:?}: {result:?}");
+            assert!(result.cursor.is_none());
+        }
+    }
+
     /// `git grep` reads neither a submodule nor an embedded repository. A
     /// source root holding either is read by the walk: a match there that
     /// comes first in file order is on the first page, and the answer is
@@ -9116,6 +9314,23 @@ mod tests {
                 );
                 git(workspace.path(), &["add", "src/Aaa"]);
             }
+            let corpus = unica_adapter_lexical::lines::CandidateCorpus {
+                subtree: None,
+                excluded: Vec::new(),
+                excluded_name_prefixes: Vec::new(),
+            };
+            let foreign = |root: &std::path::Path| {
+                unica_adapter_lexical::lines::holds_foreign_work_tree(
+                    unica_process::runner::system_process_runner(),
+                    root,
+                    &corpus,
+                    1 << 16,
+                    &CancellationToken::new(),
+                )
+            };
+            assert!(foreign(&workspace.path().join("src")), "gitlink {gitlink}");
+            // Outside the nested tree Git reads the corpus whole.
+            assert!(!foreign(&workspace.path().join("src/CommonModules")));
             let chosen = text_search_pages_with(
                 workspace.path(),
                 Arc::new(super::CanonicalV13ReadService::default()),
@@ -9399,9 +9614,17 @@ mod tests {
             walk_budget: Some(Duration::ZERO),
             ..super::CanonicalV13ReadService::default()
         });
-        let pages = text_search_pages_with(workspace.path(), service, json!({"query":"Needle"}));
+        // The first page counts the whole corpus and does not end by time;
+        // its continuations do.
+        let pages = text_search_pages_with(
+            workspace.path(),
+            service,
+            json!({"query":"Needle","limit":1}),
+        );
         let matches = text_search_matches(&pages);
         assert_eq!(matches.len(), 3, "{matches:?}");
+        assert_eq!(pages[0].page.as_ref().unwrap()["stoppedBy"], "limit");
+        assert_eq!(pages[0].data.as_ref().unwrap()["totals"]["matches"], 3);
         let by_time = pages
             .iter()
             .filter(|page| page.page.as_ref().unwrap()["stoppedBy"] == "deadline")

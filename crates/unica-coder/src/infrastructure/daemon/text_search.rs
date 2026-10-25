@@ -15,6 +15,12 @@
 //! serves both engines because they agree on order and matches. A walk
 //! page also ends at a time share of the caller's response budget, so a
 //! long walk continues by pages.
+//!
+//! The first page also counts the whole corpus: once the page is full the
+//! traversal goes on to the end and keeps only counters, one per module
+//! with matches, so the first answer carries the exact volume of the
+//! search. A first page therefore never ends by time; a long one becomes a
+//! Task like any slow answer.
 
 use super::super::super::v13_read_modes::SearchMatcher;
 use super::{
@@ -23,7 +29,7 @@ use super::{
     CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS,
 };
 use crate::infrastructure::event_sources::module_address_for_relative;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -42,6 +48,10 @@ use unica_work_control::cancellation::CancellationToken;
 /// The share of the caller's remaining response budget one walk page may
 /// spend before it ends and hands the rest to its cursor.
 pub(in crate::infrastructure::daemon) const WALK_PAGE_RESPONSE_BUDGET_DIVISOR: u32 = 2;
+
+/// How many modules with the most matches the volume of a first answer
+/// names; the rest is one line of counts.
+pub(in crate::infrastructure::daemon) const MAX_TEXT_TOTALS_LEADING_MODULES: usize = 20;
 
 /// The question a text search answers, independent of the engine.
 pub(in crate::infrastructure::daemon) struct TextQuery {
@@ -212,8 +222,141 @@ pub(in crate::infrastructure::daemon) struct TextPageRequest<'a> {
     pub(in crate::infrastructure::daemon) wanted: usize,
     pub(in crate::infrastructure::daemon) engine: TextEngine,
     pub(in crate::infrastructure::daemon) continuation: TextContinuation,
-    /// When a walk page ends and leaves the rest to its cursor.
+    /// When a walk page ends and leaves the rest to its cursor. A page that
+    /// counts the whole corpus does not end by time.
     pub(in crate::infrastructure::daemon) walk_budget: Option<Duration>,
+    /// Read the corpus to its end and count it, past the page.
+    pub(in crate::infrastructure::daemon) count_totals: bool,
+    /// Cancels the search once the page is full and only counting remains.
+    #[cfg(test)]
+    pub(in crate::infrastructure::daemon) cancel_past_page: bool,
+}
+
+/// The exact volume of a whole traversal. Nothing is kept per match: a
+/// counter per kind and per module with matches.
+#[derive(Debug, Default)]
+pub(in crate::infrastructure::daemon) struct TextTotals {
+    matches: u64,
+    files: u64,
+    /// Matches and files per kind of the module's owner, in first-seen order.
+    kinds: Vec<(&'static str, u64, u64)>,
+    /// Matches and files without a proven module.
+    unaddressed: (u64, u64),
+    /// Matches per module, in traversal order.
+    modules: Vec<(String, u64)>,
+    module_index: std::collections::HashMap<String, usize>,
+    /// Files whose lines could not all be read.
+    uncovered: u64,
+}
+
+impl TextTotals {
+    fn add(&mut self, module: &Result<ModuleOf, &'static str>, matches: u64, new_file: bool) {
+        self.matches += matches;
+        self.files += u64::from(new_file);
+        let Ok(module) = module else {
+            self.unaddressed.0 += matches;
+            self.unaddressed.1 += u64::from(new_file);
+            return;
+        };
+        match self
+            .kinds
+            .iter_mut()
+            .find(|(kind, _, _)| *kind == module.kind)
+        {
+            Some(kind) => {
+                kind.1 += matches;
+                kind.2 += u64::from(new_file);
+            }
+            None => self.kinds.push((module.kind, matches, u64::from(new_file))),
+        }
+        match self.module_index.get(&module.at) {
+            Some(index) => self.modules[*index].1 += matches,
+            None => {
+                self.module_index
+                    .insert(module.at.clone(), self.modules.len());
+                self.modules.push((module.at.clone(), matches));
+            }
+        }
+    }
+
+    /// The public volume: exact counts, the kinds by their matches, the
+    /// `leading` modules with the most matches and one line for the rest.
+    pub(in crate::infrastructure::daemon) fn to_value(&self, leading: usize) -> Value {
+        let by_count = |left: &(u64, usize), right: &(u64, usize)| {
+            right.0.cmp(&left.0).then(left.1.cmp(&right.1))
+        };
+        let mut kinds = self
+            .kinds
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| ((kind.1, index), kind))
+            .collect::<Vec<_>>();
+        kinds.sort_by(|left, right| by_count(&left.0, &right.0));
+        let mut ranked = self
+            .modules
+            .iter()
+            .enumerate()
+            .map(|(index, module)| (module.1, index))
+            .collect::<Vec<_>>();
+        if ranked.len() > leading && leading > 0 {
+            ranked.select_nth_unstable_by(leading - 1, by_count);
+        }
+        ranked.truncate(leading);
+        ranked.sort_by(by_count);
+        let mut value = Map::new();
+        value.insert("matches".into(), self.matches.into());
+        value.insert("files".into(), self.files.into());
+        value.insert(
+            "kinds".into(),
+            Value::Object(
+                kinds
+                    .into_iter()
+                    .map(|(_, (kind, matches, files))| {
+                        (
+                            (*kind).to_owned(),
+                            json!({"matches": matches, "files": files}),
+                        )
+                    })
+                    .collect(),
+            ),
+        );
+        if self.unaddressed.0 > 0 {
+            value.insert(
+                "unaddressed".into(),
+                json!({"matches": self.unaddressed.0, "files": self.unaddressed.1}),
+            );
+        }
+        let shown = ranked.iter().map(|(matches, _)| matches).sum::<u64>();
+        value.insert(
+            "modules".into(),
+            Value::Array(
+                ranked
+                    .iter()
+                    .map(|(matches, index)| json!({"at": self.modules[*index].0, "matches": matches}))
+                    .collect(),
+            ),
+        );
+        if self.modules.len() > ranked.len() {
+            value.insert(
+                "rest".into(),
+                json!({
+                    "modules": self.modules.len() - ranked.len(),
+                    "matches": self.matches - self.unaddressed.0 - shown,
+                }),
+            );
+        }
+        if self.uncovered > 0 {
+            value.insert("uncovered".into(), self.uncovered.into());
+        }
+        Value::Object(value)
+    }
+}
+
+/// The proven module of a file and the kind of its owner.
+#[derive(Debug, Clone)]
+struct ModuleOf {
+    at: String,
+    kind: &'static str,
 }
 
 /// A collected match and the continuation right after it.
@@ -244,6 +387,8 @@ pub(in crate::infrastructure::daemon) struct TextScan {
     pub(in crate::infrastructure::daemon) uncovered: usize,
     pub(in crate::infrastructure::daemon) uncovered_lower_bound: bool,
     pub(in crate::infrastructure::daemon) details: Vec<Value>,
+    /// The volume of the whole corpus, when the request counts it.
+    pub(in crate::infrastructure::daemon) totals: Option<TextTotals>,
 }
 
 /// Why the traversal could not answer.
@@ -782,7 +927,7 @@ struct CurrentFile {
     identity: [u8; 32],
     file_id: String,
     relative: PathBuf,
-    module: Option<Result<String, &'static str>>,
+    module: Option<Result<ModuleOf, &'static str>>,
     matches: u64,
     chain: [u8; 32],
     /// Matches of a resumed file still to pass over.
@@ -813,6 +958,9 @@ struct Collector<'a> {
     uncovered_lower_bound: bool,
     details: Vec<Value>,
     fatal: Option<TextSearchError>,
+    /// The page is full; the traversal only counts.
+    page_full: bool,
+    totals: Option<TextTotals>,
 }
 
 fn digest(parts: &[&[u8]]) -> [u8; 32] {
@@ -861,6 +1009,8 @@ impl<'a> Collector<'a> {
             uncovered_lower_bound: false,
             details: Vec::new(),
             fatal: None,
+            page_full: false,
+            totals: request.count_totals.then(TextTotals::default),
         }
     }
 
@@ -912,7 +1062,7 @@ impl<'a> Collector<'a> {
                 }
             }
         }
-        if self.engine == TextEngine::Walk && self.files_read > 0 {
+        if self.engine == TextEngine::Walk && self.files_read > 0 && self.totals.is_none() {
             if let Some(budget) = self.request.walk_budget {
                 if self.started.elapsed() >= budget {
                     self.end = TextScanEnd::Time;
@@ -942,7 +1092,7 @@ impl<'a> Collector<'a> {
         };
         if let Some(module) = &self.request.module {
             match self.module_of(&mut current) {
-                Ok(Ok(at)) if at == *module => {}
+                Ok(Ok(at)) if at.at == *module => {}
                 Ok(_) => return FileStep::Skip,
                 Err(error) => {
                     self.fatal = Some(error);
@@ -960,7 +1110,7 @@ impl<'a> Collector<'a> {
     fn module_of(
         &mut self,
         current: &mut CurrentFile,
-    ) -> Result<Result<String, &'static str>, TextSearchError> {
+    ) -> Result<Result<ModuleOf, &'static str>, TextSearchError> {
         if let Some(module) = &current.module {
             return Ok(module.clone());
         }
@@ -993,7 +1143,14 @@ impl<'a> Collector<'a> {
                         .proves(&at, &checkpoint)
                         .map_err(TextSearchError::Interrupted)?
                     {
-                        Ok(at.to_string())
+                        Ok(ModuleOf {
+                            at: at.to_string(),
+                            // The configuration's own modules belong to it.
+                            kind: match at.segments()[0].kind() {
+                                unica_address::address::NodeKind::Module => "Configuration",
+                                kind => kind.as_str(),
+                            },
+                        })
                     } else {
                         Err("owner_unproven")
                     }
@@ -1020,6 +1177,13 @@ impl<'a> Collector<'a> {
         }
         current.uncovered = true;
         let file_id = current.file_id.clone();
+        if let Some(totals) = self.totals.as_mut() {
+            totals.uncovered += 1;
+        }
+        // Past the page the file belongs to the next page's coverage.
+        if self.page_full {
+            return;
+        }
         self.uncovered += 1;
         if self.details.len() < CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS {
             let mut detail = Map::new();
@@ -1033,8 +1197,12 @@ impl<'a> Collector<'a> {
     /// A Git record whose file is unknown: it stays visible as uncovered,
     /// and the count becomes a lower bound.
     fn unaddressable_record(&mut self, reason: &'static str) {
-        self.uncovered += 1;
+        // The walk reads such a page again and names the file.
         self.uncovered_lower_bound = true;
+        if self.page_full {
+            return;
+        }
+        self.uncovered += 1;
         if self.details.len() < CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS {
             let mut detail = Map::new();
             detail.insert("sourceSet".to_owned(), self.source_set.clone().into());
@@ -1079,6 +1247,14 @@ impl<'a> Collector<'a> {
                 return LineStep::Stop;
             }
         };
+        if let Some(totals) = self.totals.as_mut() {
+            totals.add(&module, starts.len() as u64, current.matches == 0);
+        }
+        if self.page_full {
+            current.matches += starts.len() as u64;
+            self.current = Some(current);
+            return LineStep::Continue;
+        }
         let snippet = text.chars().take(512).collect::<String>();
         let mut previous = 0;
         let mut column = 1;
@@ -1089,8 +1265,8 @@ impl<'a> Collector<'a> {
             let mut item = Map::new();
             item.insert("scope".to_owned(), self.scope.clone().into());
             match &module {
-                Ok(at) => {
-                    item.insert("at".to_owned(), at.clone().into());
+                Ok(module) => {
+                    item.insert("at".to_owned(), module.at.clone().into());
                 }
                 Err(reason) => {
                     // No proven module owns this file: name it by its
@@ -1138,7 +1314,16 @@ impl<'a> Collector<'a> {
             });
             if self.hits.len() >= self.request.wanted {
                 self.end = TextScanEnd::Limit;
-                step = LineStep::Stop;
+                if self.totals.is_some() {
+                    // The rest of the corpus is only counted.
+                    self.page_full = true;
+                    #[cfg(test)]
+                    if self.request.cancel_past_page {
+                        self.cancellation.cancel();
+                    }
+                } else {
+                    step = LineStep::Stop;
+                }
                 break;
             }
         }
@@ -1155,6 +1340,7 @@ impl<'a> Collector<'a> {
             uncovered: self.uncovered,
             uncovered_lower_bound: self.uncovered_lower_bound,
             details: self.details,
+            totals: self.totals,
         }
     }
 }
