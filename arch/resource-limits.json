@@ -5877,7 +5877,7 @@
       "status": "unproven",
       "origin": "#1115",
       "problem": null,
-      "onReach": "порция фиксируется и начинается следующая",
+      "onReach": "порция фиксируется и начинается следующая; блоб больше порции читается потоком git cat-file blob без ls-files --eol",
       "issue": null,
       "evidence": [],
       "decision": null,

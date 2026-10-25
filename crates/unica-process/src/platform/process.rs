@@ -3470,8 +3470,9 @@ where
             } else if !line.is_empty() {
                 let message = match framing {
                     StreamFraming::Lines { .. } => LineMessage::Line(line_number, line),
-                    StreamFraming::Records { .. } | StreamFraming::Chunks => {
-                        LineMessage::Unterminated(line_number)
+                    StreamFraming::Records { .. } => LineMessage::Unterminated(line_number),
+                    StreamFraming::Chunks => {
+                        unreachable!("byte streams are read by start_chunk_reader")
                     }
                 };
                 let _ = sender.send(message);

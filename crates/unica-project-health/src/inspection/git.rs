@@ -1581,7 +1581,7 @@ fn ignore_failure_reason(output: &ProcessOutput) -> Option<String> {
     output
         .stderr
         .lines()
-        .find(|line| line.starts_with("warning: ignoring"))
+        .find(|line| line.starts_with("warning: ignoring excessively"))
         .map(|warning| format!("Git ignored part of the ignore policy: {warning}"))
 }
 

@@ -600,6 +600,29 @@ fn project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_wit
             self.commands.borrow_mut().push(command.args.clone());
             self.inner.run_with_input(command, input)
         }
+
+        // The real streams, so the blobs reach their files without a capture.
+        fn run_streaming_records(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+            delimiter: u8,
+            on_record: &mut dyn FnMut(&[u8]) -> unica_process::StreamControl,
+        ) -> Result<unica_process::runner::ProcessStreamOutput, String> {
+            self.commands.borrow_mut().push(command.args.clone());
+            self.inner
+                .run_streaming_records(command, input, delimiter, on_record)
+        }
+
+        fn run_streaming_bytes(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+            on_chunk: &mut dyn FnMut(&[u8]) -> unica_process::StreamControl,
+        ) -> Result<unica_process::runner::ProcessStreamOutput, String> {
+            self.commands.borrow_mut().push(command.args.clone());
+            self.inner.run_streaming_bytes(command, input, on_chunk)
+        }
     }
 
     let repository = TempDir::new().unwrap();

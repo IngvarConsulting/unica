@@ -1297,10 +1297,10 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 })
             },
         )?;
-        if let Some(warning) = stderr
-            .lines()
-            .find(|line| line.starts_with("warning: ignoring overly"))
-        {
+        if let Some(warning) = stderr.lines().find(|line| {
+            line.starts_with("warning: ignoring overly large gitattributes")
+                || line.starts_with("warning: ignoring overly long attributes line")
+        }) {
             return Err(ResourceProtocolParseError::Malformed(format!(
                 "Git ignored part of the attribute policy: {warning}"
             )));
@@ -1381,7 +1381,25 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             })?;
             if size > MAX_INDEX_EOL_BATCH_BLOB_BYTES {
                 // Larger than a whole batch: scanned as a stream, never held
-                // by `ls-files --eol`. Its evidence is committed on its own.
+                // by `ls-files --eol`. Its evidence is committed on its own,
+                // after the batch gathered before it.
+                // The root check runs without a deadline, so only cancellation
+                // stops a scan; the scan then restarts from the blob's start.
+                if !pending.is_empty() {
+                    self.commit_index_eol_batch(
+                        repository_root,
+                        &pending,
+                        records,
+                        continuation,
+                        &mut result,
+                        cancellation,
+                        deadline,
+                        completed_batches == 0,
+                    )?;
+                    completed_batches += 1;
+                    pending.clear();
+                    pending_bytes = 0;
+                }
                 let index_eol =
                     self.scan_index_eol(repository_root, resource, cancellation, deadline)?;
                 records.entry(path.clone()).or_default().index = Some((key, index_eol));
