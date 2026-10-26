@@ -3642,10 +3642,10 @@ mod tests {
             ("props.set", json!({"at":"main:Document.Order","values":{"Comment":"first"}})),
             ("attribute.add", json!({"at":"main:Document.Order","items":[{"name":"Total"}]})),
             ("props.set", json!({"at":"main:Document.Order","values":{"Comment":"final"}})),
-            ("props.set", json!({"at":"main:Role.Reader","values":{"synonym":"ru = 'Reader edited'; en = 'Retained translation'","Comment":"clear later"}})),
+            ("props.set", json!({"at":"main:Role.Reader","values":{"synonym":"en = 'Retained translation'; ru = 'Reader edited'","Comment":"clear later"}})),
             ("props.set", json!({"at":"main:Role.Reader","values":{"comment":""}})),
             ("props.set", json!({"at":"main:Subsystem.Sales","values":{
-                "synonym":"ru = 'Sales edited'; en = 'Retained translation'","comment":"first","Explanation":"ru = 'About sales'",
+                "synonym":"en = 'Retained translation'; ru = 'Sales edited'","comment":"first","Explanation":"ru = 'About sales'",
                 "IncludeHelpInContents":false,"includeInCommandInterface":false,"useOneCommand":true
             }})),
             ("props.set", json!({"at":"main:Subsystem.Sales","values":{"Comment":"last"}})),
@@ -3883,7 +3883,8 @@ mod tests {
     fn properties_late_failure_and_stale_inputs_publish_no_partial_patch() {
         // A whole NStr value names its languages, so the configuration and its
         // languages are not inputs of the role edit.
-        for relative in ["Roles/Reader.xml"] {
+        {
+            let relative = "Roles/Reader.xml";
             let fixture = MetadataFixture::with_files(&[
                 ("Configuration.xml", RU_CONFIGURATION_XML),
                 ("Languages/Русский.xml", &language_xml("Русский", "ru")),

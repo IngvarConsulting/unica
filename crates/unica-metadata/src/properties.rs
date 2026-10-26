@@ -167,7 +167,9 @@ pub fn parse_nstr(value: &str) -> Result<Vec<LocalizedItem>, String> {
             }
         }
         if items.iter().any(|item| item.language == language) {
-            return Err(format!("language `{language}` is listed twice"));
+            return Err(format!(
+                "{LOCALIZED_VALUE_FORM}; language `{language}` is listed twice"
+            ));
         }
         items.push(LocalizedItem {
             language: language.to_string(),

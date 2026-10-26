@@ -3,6 +3,8 @@ id: INV.SOURCE.LOCALIZED-STRING-NSTR
 check:
   - crates/unica-metadata/src/properties.rs::nstr_round_trips_quotes_and_rejects_text_without_a_language
   - crates/unica-metadata/src/property_input.rs::descriptor_localized_properties_take_the_whole_nstr_value
+  - crates/unica-xml-format/src/localized.rs::listed_order_is_the_written_order
+  - crates/unica-xml-format/src/localized.rs::an_empty_text_keeps_its_language
   - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::synonym_takes_the_whole_value_in_nstr_form
   - crates/unica-coder/src/infrastructure/v13_read_projection/member_properties/tests/catalog_attribute.rs::catalog_attribute_provider_tooltip_publishes_localized_values_in_row_and_detail
   - crates/unica-coder/src/infrastructure/v13_read_projection/member_properties/tests/catalog_attribute.rs::catalog_attribute_provider_tooltip_rejects_wrong_shapes_and_duplicate_languages_locally
