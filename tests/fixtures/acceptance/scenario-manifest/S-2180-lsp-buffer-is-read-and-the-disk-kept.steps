@@ -1,0 +1,4 @@
+lsp:textDocument/didOpen
+lsp:workspace/textDocumentContent
+lsp:textDocument/didClose
+lsp:workspace/textDocumentContent

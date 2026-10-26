@@ -94,7 +94,7 @@ def helper_invalidation_step(step):
 
 
 def select_profile(corpus, profile):
-    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection", "runtime-fault"}:
+    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection", "runtime-fault", "lsp"}:
         raise ValueError(f"profile {profile!r} has no executable driver")
     selected = []
     for scenario in corpus["scenarios"]:
@@ -161,6 +161,9 @@ def select_profile(corpus, profile):
                 for step in scenario["wire"]
             ):
                 raise ValueError(f"{scenario['id']}: invalid controlled JSONL driver, case or wire")
+        elif current == "lsp":
+            from tests.ci.acceptance_lsp import validate_scenario
+            validate_scenario(scenario)
         elif current == "agent-evaluation":
             if driver != "codex" or AGENT_EVALUATIONS.get(scenario.get("evaluation")) != workspace:
                 raise ValueError(f"{scenario['id']}: invalid agent driver, evaluation or fixture")

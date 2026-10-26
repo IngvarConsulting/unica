@@ -1,0 +1,25 @@
+{
+  "id": "S-2180-lsp-content-by-mcp-body-address",
+  "area": "Дверь LSP",
+  "task": "Текст модуля по адресу тела из MCP без открытия",
+  "profile": "lsp",
+  "driver": "lsp-stdio",
+  "workspace": "tests/fixtures/acceptance/workspace-lsp",
+  "wire": [
+    {
+      "tool": "lsp:workspace/textDocumentContent",
+      "args": {
+        "uri": "$document/main:CommonModule.Tools.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/result/text",
+          "contains": "Function Add(Val First, Second = 1) Export"
+        }
+      ]
+    }
+  ]
+}

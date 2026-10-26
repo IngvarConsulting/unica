@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <Catalog uuid="f38c3e27-2394-4c11-b522-857c3ab16ca4">
+    <Properties><Name>Items</Name><Hierarchical>true</Hierarchical><CodeType>String</CodeType><CodeLength>9</CodeLength><DescriptionLength>100</DescriptionLength><Owners/><InputByString/><DataLockFields/></Properties>
+    <ChildObjects>
+      <TabularSection uuid="3986e985-04bb-4bca-a2ea-c591d95c3455">
+        <InternalInfo>
+          <xr:GeneratedType name="CatalogTabularSection.Items.Lines" category="TabularSection"><xr:TypeId>f6dbbc1b-17f2-4d93-842a-3e05e4c5b152</xr:TypeId><xr:ValueId>0e2c4f27-73ee-4793-a228-4cb03cf63b22</xr:ValueId></xr:GeneratedType>
+          <xr:GeneratedType name="CatalogTabularSectionRow.Items.Lines" category="TabularSectionRow"><xr:TypeId>b7488ec1-a38b-4b97-bd00-a268748c9db5</xr:TypeId><xr:ValueId>327e820f-2915-4680-8ad1-47713f4e5f9b</xr:ValueId></xr:GeneratedType>
+        </InternalInfo>
+        <Properties>
+          <Name>Lines</Name><Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Order lines</v8:content></v8:item></Synonym><Comment>Keep the original section</Comment><FillChecking>ShowError</FillChecking>
+          <StandardAttributes><xr:StandardAttribute name="LineNumber"><xr:FillChecking>DontCheck</xr:FillChecking><xr:ToolTip><v8:item><v8:lang>en</v8:lang><v8:content>Original line number</v8:content></v8:item></xr:ToolTip><xr:TypeReductionMode>TransformValues</xr:TypeReductionMode></xr:StandardAttribute></StandardAttributes>
+          <Use>ForItem</Use><LineNumberLength>5</LineNumberLength>
+        </Properties>
+        <ChildObjects>
+          <Attribute uuid="844ae184-036d-4d6f-bc31-700e94e14f42"><Properties><Name>Quantity</Name><Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Quantity</v8:content></v8:item></Synonym><Type><v8:Type>xs:decimal</v8:Type><v8:NumberQualifiers><v8:Digits>10</v8:Digits><v8:FractionDigits>2</v8:FractionDigits><v8:AllowedSign>Nonnegative</v8:AllowedSign></v8:NumberQualifiers></Type><FillChecking>ShowError</FillChecking></Properties></Attribute>
+        </ChildObjects>
+      </TabularSection>
+      <TabularSection uuid="8621d319-64ac-4e14-8239-6b65c05f5a45"><Properties><Name>Notes</Name><FillChecking>DontCheck</FillChecking><Use>ForFolder</Use><LineNumberLength>3</LineNumberLength></Properties><ChildObjects><Attribute uuid="318b61cc-7d75-4b69-b507-24b5abbdb056"><Properties><Name>Text</Name><Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>80</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type><FillChecking>DontCheck</FillChecking></Properties></Attribute></ChildObjects></TabularSection>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>

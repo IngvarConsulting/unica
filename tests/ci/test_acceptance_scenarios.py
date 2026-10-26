@@ -76,6 +76,11 @@ from tests.ci.acceptance_profiles import (
 )
 
 from tests.ci.acceptance_pull_validation import WORKSPACE as PULL_VALIDATION_WORKSPACE
+from tests.ci.acceptance_lsp import (
+    WORKSPACE as LSP_WORKSPACE,
+    failure_codes as lsp_failure_codes,
+    run_lsp_corpus,
+)
 
 REFUSAL_DICTIONARY = REPO_ROOT / "crates/unica-refusal/src/lib.rs"
 
@@ -676,7 +681,9 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         runtime = {s["id"] for s in select_profile(self.corpus, "runtime-fault")["scenarios"]}
         self.assertFalse(runtime & (source | delivery | agent | fault))
-        self.assertEqual(source | delivery | agent | fault | runtime, {s["id"] for s in self.corpus["scenarios"]})
+        lsp = {s["id"] for s in select_profile(self.corpus, "lsp")["scenarios"]}
+        self.assertFalse(lsp & (source | delivery | agent | fault | runtime))
+        self.assertEqual(source | delivery | agent | fault | runtime | lsp, {s["id"] for s in self.corpus["scenarios"]})
         # The closed S### block keeps its profiles; a per-file scenario
         # declares its own and is admitted by select_profile, so two added
         # scenarios never edit these sets.
@@ -686,18 +693,22 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         self.assertEqual({i for i in delivery if legacy(i)}, {'S324', 'S339', 'S340', 'S341', 'S342', 'S343', 'S359'})
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
+        lsp_failures = lsp_failure_codes()
         for scenario in self.corpus["scenarios"]:
             declared = set()
             workspace = scenario.get("workspace", self.corpus["workspace"])
+            lsp = scenario.get("profile") == "lsp"
             self.assertIn(
                 workspace,
-                SOURCE_WORKSPACES | {SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, FORM_RUNTIME_WORKSPACE, PULL_VALIDATION_WORKSPACE},
+                SOURCE_WORKSPACES | {SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, FORM_RUNTIME_WORKSPACE, PULL_VALIDATION_WORKSPACE, LSP_WORKSPACE},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
                 with self.subTest(scenario=scenario["id"], step=index):
                     validate_controls(step, declared)
-                    self.assertTrue(step["tool"].startswith("unica."))
+                    # An LSP scenario steps through LSP methods, every other
+                    # through the `unica.*` tools.
+                    self.assertTrue(step["tool"].startswith("lsp:" if lsp else "unica."))
                     expected = step["expect"]
                     self.assertTrue(expected, "every step freezes an expectation")
                     self.assertTrue(set(expected) <= EXPECT_CLASSES, expected)
@@ -714,7 +725,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
                         code = refusal.split(":", 1)[0]
                         self.assertIn(
                             code,
-                            REFUSAL_CODES,
+                            lsp_failures if lsp else REFUSAL_CODES,
                             "a refusal is frozen as `code: message` with a code from the closed set",
                         )
                     if step["tool"] == "unica.check" and step["args"].get("at") and expected == ["ok"]:
@@ -2404,6 +2415,18 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
             self.assertEqual(evidence["both"]["result"]["findings_ignored_by_author"],2)
             self.assertEqual(evidence["both"]["result"]["findings"],[])
 
+
+
+class AcceptanceLspCorpusRunTests(unittest.TestCase):
+    """The LSP door answers each scenario as frozen, over `unica lsp`."""
+
+    @classmethod
+    def setUpClass(cls):
+        ensure_binary(REPO_ROOT)
+        cls.corpus = load_acceptance_corpus()
+
+    def test_every_lsp_wire_answers_its_frozen_classes(self):
+        run_lsp_corpus(self, select_profile(self.corpus, "lsp")["scenarios"])
 
 
 class AcceptanceFaultCorpusRunTests(unittest.TestCase):

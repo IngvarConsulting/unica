@@ -12,6 +12,8 @@ entries = [
   "test_acceptance_scenarios.AcceptanceCorpusRunTests",
   "test_acceptance_scenarios.AcceptanceDeliveryCorpusRunTests",
   "test_acceptance_scenarios.AcceptanceFaultCorpusRunTests",
+  # дверь LSP: тот же продукт через `unica lsp`
+  "test_acceptance_scenarios.AcceptanceLspCorpusRunTests",
   "test_whole_template_plan_diff.WholeTemplatePlanDiffWireTests",
   # контракт продукта: модуль зовёт `cargo metadata`, страж требует записи
   "test_product_contracts.ProductContractTests.test_rmcp_transport_is_confined_to_mcp_interface",

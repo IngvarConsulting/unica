@@ -1,0 +1,72 @@
+{
+  "id": "S-2180-lsp-buffer-is-read-and-the-disk-kept",
+  "area": "Дверь LSP",
+  "task": "Открытый буфер читается вместо файла, файл не меняется",
+  "profile": "lsp",
+  "driver": "lsp-stdio",
+  "workspace": "tests/fixtures/acceptance/workspace-lsp",
+  "wire": [
+    {
+      "tool": "lsp:textDocument/didOpen",
+      "args": {
+        "textDocument": {
+          "uri": "$document/main:CommonModule.Tools.Body",
+          "languageId": "bsl",
+          "version": 1,
+          "text": "// buffer\n"
+        }
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "lsp:workspace/textDocumentContent",
+      "args": {
+        "uri": "$document/main:CommonModule.Tools.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/result/text",
+          "eq": "// buffer\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Tools/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "9141e7ebc85a913db7d65e61c6e491faf2a31c90b84a9dfbd6695d407c85b028"
+        }
+      ]
+    },
+    {
+      "tool": "lsp:textDocument/didClose",
+      "args": {
+        "textDocument": {
+          "uri": "$document/main:CommonModule.Tools.Body"
+        }
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "lsp:workspace/textDocumentContent",
+      "args": {
+        "uri": "$document/main:CommonModule.Tools.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/result/text",
+          "contains": "Function Add"
+        }
+      ]
+    }
+  ]
+}

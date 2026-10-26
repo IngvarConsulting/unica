@@ -1,0 +1,74 @@
+{
+  "id": "S-2180-lsp-completion-on-the-buffer",
+  "area": "Дверь LSP",
+  "task": "Completion по открытому буферу: состав объекта и общий модуль",
+  "profile": "lsp",
+  "driver": "lsp-stdio",
+  "workspace": "tests/fixtures/acceptance/workspace-lsp",
+  "wire": [
+    {
+      "tool": "lsp:textDocument/didOpen",
+      "args": {
+        "textDocument": {
+          "uri": "$document/main:Catalog.Items.Module.Object.Body",
+          "languageId": "bsl",
+          "version": 1,
+          "text": "Procedure P()\n\tThisObject.\n\tTools.\nEndProcedure\n"
+        }
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "lsp:textDocument/completion",
+      "args": {
+        "textDocument": {
+          "uri": "$document/main:Catalog.Items.Module.Object.Body"
+        },
+        "position": {
+          "line": 1,
+          "character": 12
+        }
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/result/items/0/label",
+          "eq": "Lines"
+        },
+        {
+          "pointer": "/result/items/1/label",
+          "eq": "Notes"
+        }
+      ]
+    },
+    {
+      "tool": "lsp:textDocument/completion",
+      "args": {
+        "textDocument": {
+          "uri": "$document/main:Catalog.Items.Module.Object.Body"
+        },
+        "position": {
+          "line": 2,
+          "character": 7
+        }
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/result/items/0/label",
+          "eq": "Add"
+        },
+        {
+          "pointer": "/result/items/1",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

@@ -1325,6 +1325,19 @@ fn documentation_context(
     }
 }
 
+/// The platform installation `unica.docs` reads for `workspace`: the
+/// project's pin, otherwise the newest installation found.
+pub(crate) fn platform_installation_root(
+    workspace: &WorkspaceContext,
+) -> Option<std::path::PathBuf> {
+    documentation_context(
+        &unica_adapter_v8_runner::full_dump::default_platform_roots(),
+        None,
+        workspace,
+    )
+    .installation_root
+}
+
 /// Pure root pick, split out of `documentation_context`'s resolution so it can
 /// be tested without the hard-coded platform roots. Roots are tried in the
 /// declared order and the first one that answers closes the walk.

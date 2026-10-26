@@ -1,0 +1,3 @@
+lsp:textDocument/didOpen
+lsp:textDocument/completion
+lsp:textDocument/completion
