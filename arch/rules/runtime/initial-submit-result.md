@@ -5,7 +5,7 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_first_submit_answered_receipt_pending_is_a_closed_refusal_without_resubmit
   - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_hands_inline_work_over_the_cutoff_to_a_task_the_same_attempt_completes
   - crates/unica-coder/src/interfaces/daemon_router.rs::pending_receipt_is_polled_until_its_original_budget_settles
-  - crates/unica-coder/src/interfaces/daemon_router.rs::pending_receipt_beyond_the_frontend_cutoff_is_a_closed_refusal_not_a_retry
+  - crates/unica-coder/src/interfaces/daemon_router.rs::pending_receipt_beyond_the_frontend_cutoff_is_the_reserved_task_not_a_retry
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_fenced_frame_never_runs_and_a_held_one_is_answered_by_its_state
 ---
 

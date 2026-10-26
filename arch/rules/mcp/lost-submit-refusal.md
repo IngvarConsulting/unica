@@ -1,13 +1,15 @@
 ---
 id: INV.WIRE.LOST-SUBMIT-TASK-ID
 check:
-  - crates/unica-coder/src/interfaces/daemon_router.rs::pending_receipt_beyond_the_frontend_cutoff_is_a_closed_refusal_not_a_retry
-  - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_window_closing_answers_the_closed_lost_submit_refusal
+  - crates/unica-coder/src/interfaces/daemon_router.rs::pending_receipt_beyond_the_frontend_cutoff_is_the_reserved_task_not_a_retry
+  - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_window_closing_answers_the_task_reserved_for_the_call
   - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_without_a_receipt_whose_fence_meets_the_call_names_its_task
   - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_without_a_receipt_fences_the_exact_key_and_answers_not_delivered
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_call_whose_connection_never_stood_was_not_delivered
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_daemon_refusing_the_connection_needs_a_person_not_a_repeat
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_lost_submit_is_the_queued_task_reserved_for_the_call
+  - crates/unica-coder/src/interfaces/daemon_router.rs::a_lost_task_the_daemon_does_not_know_answers_task_not_found
+  - crates/unica-coder/src/interfaces/mcp.rs::a_lost_submit_is_a_task_for_native_clients_and_a_task_receipt_for_others
   - crates/unica-coder/src/interfaces/daemon_router.rs::lost_submit_names_its_task_and_a_retry_joins_it_instead_of_running_again
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_read_whose_answer_was_lost_inline_is_readable_by_its_task_id
   - crates/unica-coder/src/interfaces/daemon_router.rs::the_task_id_of_a_call_still_inline_can_be_cancelled
@@ -20,14 +22,15 @@ gap: https://github.com/IngvarConsulting/unica/issues/1743
 
 Если вызов дошёл до демона, а ответ на него потерян и не восстановлен
 за окно восстановления, вызов может продолжаться как задание,
-зарезервированное под его `taskId`. Клиент со встроенными заданиями MCP
-получает это задание (`CreateTaskResult`, статус `queued`) и опрашивает его
-через `tasks/get`. Остальные клиенты получают ошибку JSON-RPC `-32000`
-с `data.code: submit_response_lost`, исходом `goElsewhere`, `taskId`
-и `next` с `unica.task.result` для этого задания. Тот же `taskId` повторён
-в тексте ошибки, потому что не каждый хост показывает модели `data`.
-Других сведений ошибка не несёт: `taskId` — случайный UUID, без путей,
-аргументов и текста демона.
+зарезервированное под его `taskId`. Клиент получает это задание так же,
+как при обычной передаче вызова в задание. Клиент со встроенными
+заданиями MCP получает `CreateTaskResult` со статусом `queued` и опрашивает
+задание через `tasks/get`. Остальные клиенты получают обычную квитанцию
+задания: `data.task` с этим `taskId` и статусом `queued` и `next`
+с `unica.task.result`. Квитанция не несёт других сведений: `taskId` —
+случайный UUID, без путей, аргументов и текста демона. Если демон так
+и не принял вызов к исполнению или больше его не знает,
+`unica.task.result` по этому `taskId` отвечает `task_not_found`.
 
 По этому `taskId` демон отвечает состоянием вызова, пока он не стал
 заданием: ещё исполняющийся вызов виден как `queued` и отменяется через
@@ -43,8 +46,8 @@ gap: https://github.com/IngvarConsulting/unica/issues/1743
 преграда живёт в памяти этого процесса десять минут — с большим запасом
 против бюджета вызова в 7 с. Пока она стоит, опоздавший кадр не запускается,
 и ответ — `submit_not_delivered` с исходом `retry`, без `taskId`. Если
-демон уже держит вызов, он отвечает его состоянием, и ответ —
-`submit_response_lost` с его `taskId`. Записи ранней отмены
+демон уже держит вызов, он отвечает его состоянием, и ответ — квитанция
+задания с его `taskId`. Записи ранней отмены
 ([правило](../runtime/receipt-cancel-reservation.md)) преграда не создаёт.
 
 Вызов, кадр которого не ушёл, также получает `submit_not_delivered`, если

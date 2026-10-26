@@ -15,12 +15,12 @@
       ],
       "captures": {
         "attributes": {
-          "pointer": "/data/branches/0/at"
+          "pointer": "/data/branches/1/at"
         }
       },
       "assertions": [
         {
-          "pointer": "/data/branches/0/at",
+          "pointer": "/data/branches/1/at",
           "eq": "main:Catalog.Items.StandardAttribute"
         }
       ],

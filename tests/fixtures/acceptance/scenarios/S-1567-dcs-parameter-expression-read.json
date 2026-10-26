@@ -77,17 +77,17 @@
           "eq": "Configuration"
         },
         {
-          "pointer": "/data/branches/1/at",
+          "pointer": "/data/branches/35/at",
           "eq": "cf:Report"
         },
         {
-          "pointer": "/data/branches/1/count",
+          "pointer": "/data/branches/35/count",
           "eq": 1
         }
       ],
       "captures": {
         "reports": {
-          "pointer": "/data/branches/1/at"
+          "pointer": "/data/branches/35/at"
         }
       }
     },
@@ -121,17 +121,17 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/branches/0/at",
+          "pointer": "/data/branches/4/at",
           "eq": "cf:Report.F05Report.Template"
         },
         {
-          "pointer": "/data/branches/0/count",
+          "pointer": "/data/branches/4/count",
           "eq": 1
         }
       ],
       "captures": {
         "templates": {
-          "pointer": "/data/branches/0/at"
+          "pointer": "/data/branches/4/at"
         }
       }
     },

@@ -13,9 +13,11 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use unica_address::address::NodeKind;
 use unica_execution_contract::view_error::ViewError;
+use unica_metadata::subsystem_topology::SubsystemTopology;
+use unica_metadata_designer::subsystem_topology::read_registered_subsystem_topology;
 use unica_metadata_designer::support::SupportState;
 use unica_refusal::RefusalDetail;
-use unica_source_contract::read::{FileStamp, ReadFile, SourceDirectory};
+use unica_source_contract::read::{FileStamp, ReadFile, RetainedSourceRead, SourceDirectory};
 use xml::name::OwnedName;
 use xml::reader::{ParserConfig, XmlEvent};
 
@@ -244,6 +246,7 @@ pub(crate) struct RegistrationCache {
     configuration: Mutex<Option<(ConfigurationStamps, Arc<Value>)>>,
     support: Mutex<Option<RetainedSupportState>>,
     name_catalog: NameCatalog,
+    subsystems: Mutex<Option<RetainedSubsystemTopology>>,
     settle_window: std::time::Duration,
     #[cfg(test)]
     registration_builds: std::sync::atomic::AtomicUsize,
@@ -262,6 +265,7 @@ impl Default for RegistrationCache {
             configuration: Mutex::new(None),
             support: Mutex::new(None),
             name_catalog: NameCatalog::default(),
+            subsystems: Mutex::new(None),
             settle_window: SETTLE_WINDOW,
             #[cfg(test)]
             registration_builds: std::sync::atomic::AtomicUsize::new(0),
@@ -269,6 +273,43 @@ impl Default for RegistrationCache {
             after_parse: Mutex::new(None),
         }
     }
+}
+
+/// The registered subsystem topology with the stamp of every file it was
+/// built from: `Configuration.xml` and each subsystem descriptor.
+type RetainedSubsystemTopology = (Vec<(std::path::PathBuf, FileStamp)>, Arc<SubsystemTopology>);
+
+/// Reads descriptors for the topology builder and keeps the stamp each file
+/// had when its bytes were read.
+struct StampedTopologyRead {
+    root: Arc<SourceDirectory>,
+    stamps: Arc<Mutex<Vec<(std::path::PathBuf, FileStamp)>>>,
+}
+
+impl RetainedSourceRead for StampedTopologyRead {
+    fn read_regular_file(
+        &mut self,
+        relative: &std::path::Path,
+        checkpoint: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<u8>> {
+        checkpoint()?;
+        let mut file = self.root.open_relative_regular_nofollow(relative)?;
+        let stamp = file.stamp()?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        slot_vec(&self.stamps).push((relative.to_path_buf(), stamp));
+        Ok(bytes)
+    }
+
+    fn complete(self: Box<Self>, checkpoint: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
+        checkpoint()
+    }
+}
+
+fn slot_vec<T>(mutex: &Mutex<Vec<T>>) -> std::sync::MutexGuard<'_, Vec<T>> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// A support state with the stamp of its marker (`None` when absent).
@@ -432,6 +473,54 @@ impl RegistrationCache {
         checkpoint()?;
         *slot(&self.support) = retain.then(|| (stamp, state.clone()));
         Ok((stamp, state))
+    }
+
+    /// The registered subsystem topology under `root`, built again unless
+    /// every file it was built from keeps its settled stamp. One topology
+    /// answers every object of the source state instead of a pass over all
+    /// subsystems per call.
+    pub(crate) fn subsystem_topology(
+        &self,
+        root: &Arc<SourceDirectory>,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Arc<SubsystemTopology>, ViewError> {
+        checkpoint()?;
+        if let Some((stamps, topology)) = slot(&self.subsystems).as_ref() {
+            let unchanged = stamps.iter().all(|(path, stamp)| {
+                root.relative_file_stamp(path)
+                    .is_ok_and(|current| current.as_ref() == Some(stamp))
+            });
+            if unchanged {
+                return Ok(Arc::clone(topology));
+            }
+        }
+        let stamps = Arc::new(Mutex::new(Vec::new()));
+        let reader = StampedTopologyRead {
+            root: Arc::clone(root),
+            stamps: Arc::clone(&stamps),
+        };
+        // Отмена и срок остаются своими кодами, а не «не читается».
+        let mut interrupted = None;
+        let mut io_checkpoint = || {
+            checkpoint().map_err(|error| {
+                let message = error.to_string();
+                interrupted = Some(error);
+                io::Error::other(message)
+            })
+        };
+        let built = read_registered_subsystem_topology(Box::new(reader), &mut io_checkpoint);
+        if let Some(error) = interrupted {
+            return Err(error);
+        }
+        let topology = Arc::new(built.map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?);
+        self.parsed();
+        let stamps = std::mem::take(&mut *slot_vec(&stamps));
+        let settled = stamps.iter().all(|(_, stamp)| self.retains(stamp));
+        *slot(&self.subsystems) = settled.then(|| (stamps, Arc::clone(&topology)));
+        checkpoint()?;
+        Ok(topology)
     }
 
     #[cfg(test)]
@@ -1551,6 +1640,49 @@ mod tests {
 
     fn holds(index: &RegistrationIndex, name: &str) -> bool {
         index.contains("CommonModule", name, &|| Ok(())).unwrap()
+    }
+
+    fn subsystem_xml(name: &str, module: &str) -> String {
+        format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Subsystem><Properties><Name>{name}</Name><IncludeInCommandInterface>false</IncludeInCommandInterface><Content><xr:Item xsi:type="xr:MDObjectRef">CommonModule.{module}</xr:Item></Content></Properties><ChildObjects/></Subsystem></MetaDataObject>"#
+        )
+    }
+
+    /// One topology answers every object of a source state: it is reused
+    /// while every file it was built from keeps its stamp, and built again
+    /// once a subsystem descriptor changes (#2235).
+    #[test]
+    fn retained_subsystem_topology_is_reused_until_a_descriptor_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::write(
+            path.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Subsystem>Library</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::create_dir(path.join("Subsystems")).unwrap();
+        let descriptor = path.join("Subsystems/Library.xml");
+        std::fs::write(&descriptor, subsystem_xml("Library", "First")).unwrap();
+        let root = Arc::new(unica_workspace::read::open_source_directory(&path).unwrap());
+        let cache = settled_cache();
+        let module = |name: &str| {
+            unica_address::source_target::MetadataAddress::parse(
+                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("CommonModule.{name}"),
+            )
+            .unwrap()
+        };
+
+        let first = cache.subsystem_topology(&root, &mut || Ok(())).unwrap();
+        let same = cache.subsystem_topology(&root, &mut || Ok(())).unwrap();
+        assert!(Arc::ptr_eq(&first, &same));
+        assert_eq!(first.memberships_of(&module("First"), None).len(), 1);
+
+        rewrite_keeping_mtime(&descriptor, subsystem_xml("Library", "Other").as_bytes());
+        let rebuilt = cache.subsystem_topology(&root, &mut || Ok(())).unwrap();
+        assert!(!Arc::ptr_eq(&first, &rebuilt));
+        assert!(rebuilt.memberships_of(&module("First"), None).is_empty());
+        assert_eq!(rebuilt.memberships_of(&module("Other"), None).len(), 1);
     }
 
     #[test]

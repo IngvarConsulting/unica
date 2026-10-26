@@ -346,6 +346,7 @@ class UnicaObserverTests(unittest.TestCase):
         passed: dict[str, str] = {}
         failed: dict[str, list] = {}
         unavailable_ops: set[str] = set()
+        skipped: set[str] = set()
         while pending:
             at = pending.popleft()
             if at in seen or len(seen) >= 600:
@@ -373,6 +374,13 @@ class UnicaObserverTests(unittest.TestCase):
                 if draft["contract"] != "ok":
                     continue
                 self.assertIsNone(draft["note"], draft)
+                contract = (((draft.get("contractAnswer") or {}).get("data") or {}).get("props") or {}).get("contract") or {}
+                if draft["validation"] and contract.get("exampleArgs") == {}:
+                    # Контракт сам называет узел без исполнимых аргументов
+                    # (`relation.add` у общего модуля): семейство проверяется
+                    # на другом узле, порядок обхода дерева этого не решает.
+                    skipped.add(family)
+                    continue
                 self.assertEqual(draft["validation"], [], draft)
                 status, preview = self.post("/api/apply", draft["draft"])
                 self.assertEqual(status, 200, preview)
@@ -392,6 +400,9 @@ class UnicaObserverTests(unittest.TestCase):
         # Порядки проходят предпросмотр на хранимой перестановке узла.
         self.assertLessEqual({"commandOrder", "groupOrder"}, set(passed), passed)
         self.assertEqual(set(failed), set(known_gaps), failed)
+        # Семейство, пропущенное на узле без исполнимых аргументов, обязано
+        # пройти на другом узле или стоять в известных пробелах.
+        self.assertLessEqual(skipped, set(passed) | set(known_gaps), skipped)
         # Ветку «контракт недоступен» закрепляет протокольный тест: в фикстуре
         # каждая реализованная операция публикует контракт.
         self.assertEqual(unavailable_ops, set(), "implemented operations without a contract")

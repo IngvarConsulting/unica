@@ -1,0 +1,164 @@
+{
+  "id": "S-2235-object-subsystems-and-library-roots",
+  "name": "common-module-names-its-subsystems-and-libraries",
+  "issue": 2235,
+  "area": "Навигация по исходникам",
+  "task": "Узнать, в какие подсистемы входит общий модуль и к каким библиотекам он относится, не обходя все подсистемы, и отличить корень библиотеки от раздела командного интерфейса",
+  "workspace": "tests/fixtures/acceptance/workspace-library-subsystems",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.ОбщегоНазначения"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:CommonModule.ОбщегоНазначения.Relation",
+            "count": 6
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.ОбщегоНазначения.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "subsystem",
+              "at": "main:Subsystem.СтандартныеПодсистемы",
+              "kind": "Subsystem",
+              "direct": false
+            },
+            {
+              "relation": "subsystem",
+              "at": "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность",
+              "kind": "Subsystem",
+              "direct": true
+            },
+            {
+              "relation": "subsystem",
+              "at": "main:Subsystem.ЭлектронноеВзаимодействие",
+              "kind": "Subsystem",
+              "direct": true
+            },
+            {
+              "relation": "subsystem",
+              "at": "main:Subsystem.Продажи",
+              "kind": "Subsystem",
+              "direct": true
+            },
+            {
+              "relation": "library",
+              "at": "main:Subsystem.СтандартныеПодсистемы",
+              "kind": "Subsystem",
+              "source": "standardLibraryModule",
+              "module": "main:CommonModule.ОбновлениеИнформационнойБазыБСП"
+            },
+            {
+              "relation": "library",
+              "at": "main:Subsystem.ЭлектронноеВзаимодействие",
+              "kind": "Subsystem",
+              "source": "standardLibraryModule",
+              "module": "main:CommonModule.ОбновлениеИнформационнойБазыБЭД"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Subsystem"
+        },
+        {
+          "pointer": "/data/props/libraryRoot",
+          "eq": {
+            "source": "standardLibraryModule",
+            "module": "main:CommonModule.ОбновлениеИнформационнойБазыБСП"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.ЭлектронноеВзаимодействие"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Subsystem"
+        },
+        {
+          "pointer": "/data/props/libraryRoot",
+          "eq": {
+            "source": "standardLibraryModule",
+            "module": "main:CommonModule.ОбновлениеИнформационнойБазыБЭД"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Продажи"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Subsystem"
+        },
+        {
+          "pointer": "/data/props/libraryRoot",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Subsystem"
+        },
+        {
+          "pointer": "/data/props/libraryRoot",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

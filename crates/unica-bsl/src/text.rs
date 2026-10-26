@@ -228,9 +228,12 @@ pub fn plan_code_postimage(
         .at_path(&at_path)
     })?;
     if !indexed.diagnostics.is_empty() {
-        return Err(ApplyPlanError::new(
+        return Err(syntax_refusal(
             ApplyPlanErrorKind::InvalidSource,
-            "original BSL module contains syntax errors",
+            "original BSL module does not parse",
+            snapshot.decoded_text(),
+            &indexed.diagnostics,
+            None,
         )
         .at_path(&at_path));
     }
@@ -241,6 +244,9 @@ pub fn plan_code_postimage(
         }
         CodePlanOperation::Insert(_) => None,
     };
+    // The bytes the patch writes and their line ending: the sent text lies
+    // inside them, with its line endings normalized.
+    let written: (std::ops::Range<usize>, LineEnding);
     let (selector, content, site, no_op, after) = match operation {
         CodePlanOperation::Insert(args) => {
             if args.text.is_empty() {
@@ -292,6 +298,7 @@ pub fn plan_code_postimage(
             if !no_op {
                 after.splice(site.offset..site.offset, insertion.iter().copied());
             }
+            written = (site.offset..site.offset + insertion.len(), site.eol);
             (
                 selector,
                 args.text.as_str(),
@@ -326,6 +333,7 @@ pub fn plan_code_postimage(
             if !no_op {
                 after.splice(site.start..site.end, replacement.iter().copied());
             }
+            written = (site.start..site.start + replacement.len(), site.eol);
             (
                 selector,
                 args.text.as_str(),
@@ -350,9 +358,15 @@ pub fn plan_code_postimage(
         .at_path(&text_path)
     })?;
     if !post.diagnostics.is_empty() {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::Postcondition,
-            "patched BSL module contains syntax errors",
+        // The source parsed before the patch: the sent text broke it.
+        let (range, eol) = written;
+        let sent = SentText::locate(postimage, range, content, eol);
+        return Err(syntax_refusal(
+            ApplyPlanErrorKind::BadValue,
+            "text makes the BSL module unparsable",
+            postimage,
+            &post.diagnostics,
+            sent,
         )
         .at_path(&text_path));
     }
@@ -405,6 +419,166 @@ pub fn plan_code_postimage(
     Ok(StagedCodePostimage { after, no_op })
 }
 
+/// The sent text inside the patched module: which module line holds each
+/// of its lines, and the column its first line starts at.
+struct SentText<'a> {
+    module: &'a str,
+    /// Module line (one-based) to text line (zero-based).
+    lines: Vec<(usize, usize)>,
+    /// Column (one-based) of the text's first character on its first line.
+    first_column: usize,
+    /// Characters on the text's last line, for an error that runs past it.
+    last_line_chars: usize,
+}
+
+impl<'a> SentText<'a> {
+    /// Finds the sent text in the bytes the patch wrote. A replacement
+    /// writes it whole; an insertion may add blank lines before, after and
+    /// between its methods, so its lines are matched in order.
+    fn locate(
+        module: &'a str,
+        written: std::ops::Range<usize>,
+        content: &str,
+        eol: LineEnding,
+    ) -> Option<Self> {
+        let text = canonicalize_eol(content);
+        let text_lines = text
+            .strip_suffix('\n')
+            .unwrap_or(&text)
+            .split('\n')
+            .collect::<Vec<_>>();
+        let last_line_chars = text_lines.last()?.chars().count();
+        let block = module.get(written.clone())?;
+        let normalized = normalized_replacement(content, eol, false);
+        if let Some(found) = block.find(std::str::from_utf8(&normalized).ok()?) {
+            let start = written.start + found;
+            let (first_line, first_column) = line_column(module, start).ok()?;
+            return Some(Self {
+                module,
+                lines: (0..text_lines.len())
+                    .map(|line| (first_line + line, line))
+                    .collect(),
+                first_column,
+                last_line_chars,
+            });
+        }
+        let (block_line, block_column) = line_column(module, written.start).ok()?;
+        if block_column != 1 {
+            return None;
+        }
+        let mut lines = Vec::with_capacity(text_lines.len());
+        let mut next = 0;
+        for (index, line) in block.split('\n').enumerate() {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            match text_lines.get(next) {
+                Some(expected) if line == *expected => {
+                    lines.push((block_line + index, next));
+                    next += 1;
+                }
+                // A blank line the insertion added around the text.
+                _ if line.trim().is_empty() => {}
+                _ => return None,
+            }
+        }
+        (next == text_lines.len()).then_some(Self {
+            module,
+            lines,
+            first_column: 1,
+            last_line_chars,
+        })
+    }
+
+    /// The zero-based line and column of module byte `offset` within the
+    /// sent text, if it lies there.
+    fn position(&self, offset: usize) -> Option<(usize, usize)> {
+        let (line, column) = line_column(self.module, offset).ok()?;
+        let text_line = self
+            .lines
+            .iter()
+            .find(|(module_line, _)| *module_line == line)
+            .map(|(_, text_line)| *text_line)?;
+        let start = if text_line == 0 { self.first_column } else { 1 };
+        Some((text_line, column.checked_sub(start)?))
+    }
+
+    /// The end of the text, for an error that starts in it and ends past it.
+    fn end(&self) -> (usize, usize) {
+        let last = self.lines.len() - 1;
+        (last, self.last_line_chars)
+    }
+}
+
+/// A refusal for a module that does not parse. Its message names the first
+/// error; every error follows as a diagnostic of its own, with its place in
+/// the module and, for one that starts inside the sent text, its place in
+/// that text (INV.SOURCE.CODE-TEXT-SYNTAX-ERRORS).
+fn syntax_refusal(
+    kind: ApplyPlanErrorKind,
+    cause: &str,
+    module: &str,
+    errors: &[ValidationDiagnostic],
+    sent: Option<SentText<'_>>,
+) -> ApplyPlanError {
+    // The parser counts a byte order mark as a character of the first line;
+    // the editor does not show it.
+    let bom = module.starts_with('\u{feff}');
+    let column = |line: usize, column: usize| {
+        if bom && line == 1 {
+            column.saturating_sub(1).max(1)
+        } else {
+            column
+        }
+    };
+    let first = &errors[0];
+    let in_text = sent
+        .as_ref()
+        .and_then(|sent| sent.position(first.start_byte))
+        .map(|(line, _)| format!(" (line {} of text)", line + 1))
+        .unwrap_or_default();
+    let total = match errors.len() {
+        1 => String::new(),
+        count => format!("; {count} syntax errors in all"),
+    };
+    let message = format!(
+        "{cause}: {} at line {}, column {}{in_text}{total}",
+        first.message,
+        first.start_line,
+        column(first.start_line, first.start_column)
+    );
+    let diagnostics = errors
+        .iter()
+        .map(|error| {
+            let mut diagnostic = serde_json::json!({
+                "code": error.code,
+                "severity": "error",
+                "message": error.message,
+                "focus": {
+                    "kind": "sourceRange",
+                    "range": {
+                        "startLine": error.start_line - 1,
+                        "startColumn": column(error.start_line, error.start_column) - 1,
+                        "endLine": error.end_line - 1,
+                        "endColumn": column(error.end_line, error.end_column) - 1,
+                    },
+                },
+            });
+            if let Some(sent) = &sent {
+                if let Some(from) = sent.position(error.start_byte) {
+                    let to = sent.position(error.end_byte).unwrap_or_else(|| sent.end());
+                    diagnostic["textRange"] = serde_json::json!({
+                        "startLine": from.0,
+                        "startColumn": from.1,
+                        "endLine": to.0,
+                        "endColumn": to.1,
+                    });
+                }
+            }
+            diagnostic
+        })
+        .collect();
+    ApplyPlanError::new(kind, message).with_diagnostics(diagnostics)
+}
+
 /// Адрес замены и её охват.
 pub struct ReplacementTarget {
     pub at: QualifiedAddress,
@@ -446,8 +620,10 @@ pub fn replacement_target(
     if !declares_method(text) {
         return Ok(unchanged());
     }
+    // A method text with syntax errors still replaces the whole method: the
+    // patched module then names each error by its place.
     let parsed = analyze_module(text)
-        .is_ok_and(|analysis| analysis.diagnostics.is_empty() && !analysis.methods.is_empty());
+        .is_ok_and(|analysis| !analysis.diagnostics.is_empty() || !analysis.methods.is_empty());
     if !parsed {
         return Err(bad_code_arg(
             text_path,

@@ -5540,6 +5540,29 @@ fn main() {
     }
 
     #[test]
+    fn canonical_view_bootstrap_does_not_claim_source_sets_in_an_empty_configuration() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\n",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime();
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.summary,
+            "workspace configuration discovered; no source sets are attached and no infobase target is configured"
+        );
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["config"]["state"], "configured");
+        assert_eq!(data["sourceSets"], serde_json::json!([]));
+        assert_eq!(data["infobase"]["configured"], false);
+    }
+
+    #[test]
     fn canonical_view_bootstrap_recognizes_an_infobase_only_workspace() {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -6402,12 +6425,20 @@ fn main() {
                 serde_json::json!({"at": at}),
             )
         };
-        let packages = view("main:Configuration").data.unwrap()["branches"][0]["at"]
-            .as_str()
+        // Ветвь и пакет выбираются по виду и имени: корень перечисляет и
+        // пустые виды (#2153), а коллекция идёт в порядке `ChildObjects`.
+        let packages = "main:XDTOPackage".to_owned();
+        assert!(view("main:Configuration").data.unwrap()["branches"]
+            .as_array()
             .unwrap()
-            .to_owned();
-        let node = view(&packages).data.unwrap()["items"][3]["at"]
-            .as_str()
+            .iter()
+            .any(|branch| branch["at"] == packages.as_str()));
+        let node = view(&packages).data.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["title"] == "Unsupported")
+            .and_then(|item| item["at"].as_str())
             .unwrap()
             .to_owned();
         let node_page = call(serde_json::json!({"at": node, "limit": 1}));
