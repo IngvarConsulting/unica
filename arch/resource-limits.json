@@ -6727,6 +6727,30 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "lsp.provider-budget",
+      "class": "deadline",
+      "resource": "Срок, который поставщик символов (bsl-analyzer) получает на один запрос редактора.",
+      "unit": "ms",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs",
+        "symbol": "LSP_PROVIDER_BUDGET"
+      },
+      "expr": "Duration::from_secs(30)",
+      "value": 30000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2177",
+      "problem": null,
+      "onReach": "поставщик отвечает «не готово», ответ редактору помечен неполным; общая сессия анализатора при этом списывается до #2189",
+      "issue": "#2189",
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [

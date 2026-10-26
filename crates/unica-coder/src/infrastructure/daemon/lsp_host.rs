@@ -10,7 +10,7 @@
 //! тем, которого реестр выдаёт и MCP, и переносит в него свои буферы.
 
 use super::server::closed_daemon_source_relative_path;
-use super::v13_service::{CanonicalV13ReadService, SymbolOperation, SymbolRequest};
+use super::v13_service::{CanonicalV13ReadService, SymbolCaller, SymbolOperation, SymbolRequest};
 use crate::application::lsp::document::ContentChange;
 use crate::application::lsp::position::Utf16Position;
 use crate::application::lsp::uri::WorkspaceFolder;
@@ -43,6 +43,11 @@ use unica_workspace::documents::{DocumentOverlay, DocumentOverlayError, Document
 /// The scope string under which MCP admits a workspace. The actor of a
 /// workspace is the same only for the same inputs (`actor-identity`).
 const ACTOR_SCOPE: &str = "canonical-v0.13";
+
+/// What the symbol provider may spend on one editor request. The analyzer
+/// answers in about a second cold; a provider call is not cut shorter by the
+/// editor's budget, since that would retire the session MCP shares (#2189).
+const LSP_PROVIDER_BUDGET: Duration = Duration::from_secs(30);
 
 pub(crate) struct UnicaLspHost {
     actors: Arc<WorkspaceActorRegistry>,
@@ -274,6 +279,9 @@ impl LspHost for UnicaLspHost {
         }
         if context.is_cancelled() {
             return V5LspOutcome::Cancelled {};
+        }
+        if is_symbol_call(&call) {
+            return symbol_answer(self, &session, call).unwrap_or_else(failed);
         }
         let session = read(&session);
         answer(self, &session, call, context).unwrap_or_else(failed)
@@ -619,21 +627,58 @@ fn answer(
                 .map(json)
                 .map_err(document_failure)
         }
+        V5LspCall::Hover { .. }
+        | V5LspCall::Definition { .. }
+        | V5LspCall::References { .. }
+        | V5LspCall::PrepareCallHierarchy { .. }
+        | V5LspCall::IncomingCalls { .. }
+        | V5LspCall::OutgoingCalls { .. } => {
+            unreachable!("symbol calls are answered outside the session lock")
+        }
+    }
+}
+
+fn is_symbol_call(call: &V5LspCall) -> bool {
+    matches!(
+        call,
+        V5LspCall::Hover { .. }
+            | V5LspCall::Definition { .. }
+            | V5LspCall::References { .. }
+            | V5LspCall::PrepareCallHierarchy { .. }
+            | V5LspCall::IncomingCalls { .. }
+            | V5LspCall::OutgoingCalls { .. }
+    )
+}
+
+/// A symbol call. The provider may take seconds: it runs without the
+/// session's lock, so the editor's document notifications never wait for it.
+fn symbol_answer(
+    host: &UnicaLspHost,
+    session: &RwLock<Session>,
+    call: V5LspCall,
+) -> Result<V5LspOutcome, V5LspFailure> {
+    let json = |value| V5LspOutcome::Json { value };
+    match call {
         V5LspCall::Hover { uri, position } => {
-            let answer = symbols(host, session, &uri, position, SymbolOperation::Hover)?;
+            let answer = ask_symbols(host, session, &uri, position, SymbolOperation::Hover)?;
             Ok(json(hover_json(&answer)))
         }
         V5LspCall::Definition { uri, position } => {
-            let answer = symbols(host, session, &uri, position, SymbolOperation::Definition)?;
-            Ok(json(locations_json(session, &answer)))
+            let answer = ask_symbols(host, session, &uri, position, SymbolOperation::Definition)?;
+            places_json(&read(session), &answer).map(json)
         }
         V5LspCall::References { uri, position } => {
-            let answer = symbols(host, session, &uri, position, SymbolOperation::References)?;
-            Ok(json(locations_json(session, &answer)))
+            let answer = ask_symbols(host, session, &uri, position, SymbolOperation::References)?;
+            places_json(&read(session), &answer).map(json)
         }
         V5LspCall::PrepareCallHierarchy { uri, position } => {
-            let answer = symbols(host, session, &uri, position, SymbolOperation::Hover)?;
-            Ok(json(call_hierarchy_item(&uri, position, &answer)))
+            let answer = ask_symbols(host, session, &uri, position, SymbolOperation::Hover)?;
+            Ok(json(call_hierarchy_item(
+                &read(session),
+                &uri,
+                position,
+                &answer,
+            )))
         }
         V5LspCall::IncomingCalls { item } => {
             calls_json(host, session, &item, SymbolOperation::IncomingCalls, "from").map(json)
@@ -641,6 +686,7 @@ fn answer(
         V5LspCall::OutgoingCalls { item } => {
             calls_json(host, session, &item, SymbolOperation::OutgoingCalls, "to").map(json)
         }
+        _ => Err(V5LspFailure::NotSupported),
     }
 }
 
@@ -653,16 +699,19 @@ struct SymbolData {
     reasons: Vec<String>,
 }
 
-/// Ask the symbol port about `position` in a document, as MCP would: the
-/// saved module is read from disk and the session's buffer is given beside
-/// it, so a provider's answer about the saved text is marked stale.
-fn symbols(
-    host: &UnicaLspHost,
-    session: &Session,
-    uri: &str,
-    position: V5LspPosition,
-    operation: SymbolOperation,
-) -> Result<SymbolData, V5LspFailure> {
+/// What a symbol call needs from the session, taken under its lock.
+struct SymbolCall {
+    space: String,
+    module: unica_address::address::QualifiedAddress,
+    buffer: Option<String>,
+    read: ProviderReadAuthority,
+    registration_cache: Arc<crate::infrastructure::v13_large_configuration::RegistrationCache>,
+    profile: unica_bsl::profile::PlatformProfile,
+    context: WorkspaceContext,
+    client: LspClientChannel,
+}
+
+fn prepare_symbol_call(session: &Session, uri: &str) -> Result<SymbolCall, V5LspFailure> {
     let uri = document_uri(&session.documents, uri).map_err(|_| V5LspFailure::DocumentUnknown)?;
     let location = session
         .documents
@@ -679,26 +728,52 @@ fn symbols(
         .open_document(&location.document)
         .map(|document| document.text().to_owned());
     let (read, registration_cache, profile) = space.saved_read(&location.source_set)?;
-    // The provider runs to its own end, as for MCP: cancelling it would
-    // retire the analyzer session MCP shares (#2189). The lane gives the
-    // editor its answer or a server cancellation by the editor's budget.
+    Ok(SymbolCall {
+        space: location.document.space,
+        module,
+        buffer,
+        read,
+        registration_cache,
+        profile,
+        context: space.context.clone(),
+        client: session.client.clone(),
+    })
+}
+
+/// Ask the symbol port about `position` in a document, as MCP would: the
+/// saved module is read from disk and the session's buffer is given beside
+/// it, so a provider's answer about the saved text is marked stale.
+fn ask_symbols(
+    host: &UnicaLspHost,
+    session: &RwLock<Session>,
+    uri: &str,
+    position: V5LspPosition,
+    operation: SymbolOperation,
+) -> Result<SymbolData, V5LspFailure> {
+    let call = prepare_symbol_call(&read(session), uri)?;
+    // The provider runs to its own deadline, never the editor's budget:
+    // cancelling it would retire the analyzer session MCP shares (#2189).
+    // The lane gives the editor its answer or a server cancellation by the
+    // editor's budget while the provider call ends on its own.
     let cancellation = unica_work_control::cancellation::CancellationToken::new();
-    let deadline = unica_work_control::provider_deadline::ProviderDeadline::no_deadline();
+    let deadline =
+        unica_work_control::provider_deadline::ProviderDeadline::from_budget(LSP_PROVIDER_BUDGET);
     let authority =
         crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority_and_registration_cache(
             &cancellation,
-            read,
-            profile,
+            call.read,
+            call.profile,
             deadline,
-            registration_cache,
+            call.registration_cache,
         );
     let result = host.read_service.symbols_with(
         &authority,
-        &space.context,
+        &call.context,
         deadline,
+        SymbolCaller::Editor,
         SymbolRequest {
-            module,
-            buffer: buffer.as_deref(),
+            module: call.module,
+            buffer: call.buffer.as_deref(),
             position: unica_code_intelligence::symbols::SymbolPosition {
                 line: position.line as usize,
                 column: position.character as usize,
@@ -720,31 +795,32 @@ fn symbols(
     }
     let data = result.data.unwrap_or_default();
     let complete = data["complete"].as_bool().unwrap_or(false);
+    let reasons = data["reasons"]
+        .as_array()
+        .map(|reasons| {
+            reasons
+                .iter()
+                .filter_map(|reason| reason["kind"].as_str().or(reason.as_str()))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     if !complete {
-        let reasons = data["reasons"].to_string();
-        let _ = session.client.push(V5LspServerNotification::LogMessage {
+        let _ = call.client.push(V5LspServerNotification::LogMessage {
             level: V5LspMessageLevel::Info,
-            message: format!("unica: the answer is incomplete: {reasons}"),
+            message: format!("unica: the answer is incomplete: {}", reasons.join(", ")),
         });
     }
     Ok(SymbolData {
-        space: location.document.space,
+        space: call.space,
         value: data["value"].clone(),
         complete,
-        reasons: data["reasons"]
-            .as_array()
-            .map(|reasons| {
-                reasons
-                    .iter()
-                    .filter_map(|reason| reason.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default(),
+        reasons,
     })
 }
 
-/// A place of the symbol port as an LSP location in this session's spaces.
-/// A metadata node has no range: it is the start of its document.
+/// A place of the symbol port as an LSP location in this session's spaces,
+/// if the editor can open it: a metadata node is no document.
 fn lsp_location(
     session: &Session,
     space: &str,
@@ -758,6 +834,7 @@ fn lsp_location(
             address: place["at"].as_str()?.to_owned(),
         })
         .ok()?;
+    session.documents.locate(&uri).ok()?;
     Some(serde_json::json!({"uri": uri, "range": lsp_range(&place["range"])}))
 }
 
@@ -771,67 +848,96 @@ fn lsp_range(range: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({"start": point(&range["start"]), "end": point(&range["end"])})
 }
 
-fn locations_json(session: &Session, answer: &SymbolData) -> serde_json::Value {
-    serde_json::Value::Array(
-        answer
-            .value
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|place| lsp_location(session, &answer.space, place))
-            .collect(),
-    )
+/// Places as LSP locations. Nothing found while a source was not ready is
+/// not "none": it is refused as incomplete instead of shown as empty.
+fn places_json(session: &Session, answer: &SymbolData) -> Result<serde_json::Value, V5LspFailure> {
+    let places = answer
+        .value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|place| lsp_location(session, &answer.space, place))
+        .collect::<Vec<_>>();
+    if places.is_empty() && !answer.complete {
+        return Err(V5LspFailure::Incomplete);
+    }
+    Ok(serde_json::Value::Array(places))
 }
 
 /// Hover in markdown. An incomplete answer says so in its own text: LSP has
 /// no field for it.
 fn hover_json(answer: &SymbolData) -> serde_json::Value {
-    let info = &answer.value;
-    if info.is_null() {
-        return serde_json::Value::Null;
-    }
-    let head = info["signature"]
-        .as_str()
-        .or(info["name"].as_str())
-        .unwrap_or_default();
-    let mut text = format!("```bsl\n{head}\n```");
-    if let Some(returns) = info["returnType"].as_str() {
-        text.push_str(&format!("\n\n→ {returns}"));
-    }
-    if !answer.complete {
-        text.push_str(&format!(
-            "\n\n_unica: the answer is incomplete ({})_",
+    let incomplete = (!answer.complete).then(|| {
+        format!(
+            "_unica: the answer is incomplete ({})_",
             answer.reasons.join(", ")
-        ));
-    }
+        )
+    });
+    let info = &answer.value;
+    let text = if info.is_null() {
+        match incomplete {
+            Some(note) => note,
+            None => return serde_json::Value::Null,
+        }
+    } else {
+        let head = info["signature"]
+            .as_str()
+            .or(info["name"].as_str())
+            .unwrap_or_default();
+        let mut text = format!("```bsl\n{head}\n```");
+        if let Some(returns) = info["returnType"].as_str() {
+            text.push_str(&format!("\n\n→ {returns}"));
+        }
+        if let Some(note) = incomplete {
+            text.push_str(&format!("\n\n{note}"));
+        }
+        text
+    };
     serde_json::json!({"contents": {"kind": "markdown", "value": text}})
 }
 
-/// The item `prepareCallHierarchy` gives: the symbol at the position, with
-/// the document and position the calls are asked about later.
+/// The item `prepareCallHierarchy` gives: a method, at its declaration when
+/// the port knows it, carrying the document and position the calls are
+/// asked about later.
 fn call_hierarchy_item(
+    session: &Session,
     uri: &str,
     position: V5LspPosition,
     answer: &SymbolData,
 ) -> serde_json::Value {
-    let Some(name) = answer.value["name"].as_str() else {
+    let info = &answer.value;
+    let Some(name) = info["name"].as_str() else {
         return serde_json::Value::Null;
     };
+    if info["kind"] != "method" {
+        return serde_json::Value::Null;
+    }
     let point = serde_json::json!({"line": position.line, "character": position.character});
-    let range = serde_json::json!({"start": point, "end": point});
+    let declared = info
+        .get("location")
+        .and_then(|place| lsp_location(session, &answer.space, place));
+    let (item_uri, range) = match &declared {
+        Some(location) => (location["uri"].clone(), location["range"].clone()),
+        None => (
+            serde_json::Value::String(uri.to_owned()),
+            serde_json::json!({"start": point, "end": point}),
+        ),
+    };
     serde_json::json!([{
         "name": name,
-        "kind": 12,
-        "uri": uri,
+        "kind": 6,
+        "uri": item_uri,
         "range": range,
         "selectionRange": range,
         "data": {COMPLETION_DOCUMENT: uri, "position": point},
     }])
 }
 
+/// Callers or callees, each at the place of its own name. The port gives no
+/// call sites, so `fromRanges` is empty rather than pointing elsewhere.
 fn calls_json(
     host: &UnicaLspHost,
-    session: &Session,
+    session: &RwLock<Session>,
     item: &serde_json::Value,
     operation: SymbolOperation,
     end: &str,
@@ -848,30 +954,47 @@ fn calls_json(
             .as_u64()
             .ok_or(V5LspFailure::DocumentUnknown)? as u32,
     };
-    let answer = symbols(host, session, uri, position, operation)?;
-    Ok(serde_json::Value::Array(
-        answer
-            .value
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|place| {
-                let location = lsp_location(session, &answer.space, place)?;
-                let at = place["at"].as_str()?;
-                let name = at.rsplit(['.', ':']).next().unwrap_or(at);
-                Some(serde_json::json!({
-                    end: {
-                        "name": name,
-                        "kind": 12,
-                        "uri": location["uri"],
-                        "range": location["range"],
-                        "selectionRange": location["range"],
-                    },
-                    "fromRanges": [location["range"]],
-                }))
-            })
-            .collect(),
-    ))
+    let answer = ask_symbols(host, session, uri, position, operation)?;
+    let session = read(session);
+    let calls = answer
+        .value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|place| {
+            let location = lsp_location(&session, &answer.space, place)?;
+            let name = range_text(&session, &location)?;
+            Some(serde_json::json!({
+                end: {
+                    "name": name,
+                    "kind": 6,
+                    "uri": location["uri"],
+                    "range": location["range"],
+                    "selectionRange": location["range"],
+                },
+                "fromRanges": [],
+            }))
+        })
+        .collect::<Vec<_>>();
+    if calls.is_empty() && !answer.complete {
+        return Err(V5LspFailure::Incomplete);
+    }
+    Ok(serde_json::Value::Array(calls))
+}
+
+/// The text a one-line location covers: the name of the method there.
+fn range_text(session: &Session, location: &serde_json::Value) -> Option<String> {
+    let uri = location["uri"].as_str()?;
+    let (uri, read) = document_read(session, uri).ok()?;
+    let text = session.documents.content(&uri, &read).ok()??;
+    let start = &location["range"]["start"];
+    let end = &location["range"]["end"];
+    let line = text.lines().nth(start["line"].as_u64()? as usize)?;
+    let units = line.encode_utf16().collect::<Vec<_>>();
+    let from = start["character"].as_u64()? as usize;
+    let to = end["character"].as_u64()? as usize;
+    let name = String::from_utf16(units.get(from..to)?).ok()?;
+    (!name.is_empty()).then_some(name)
 }
 
 /// Where a completion item keeps its document for `completionItem/resolve`:

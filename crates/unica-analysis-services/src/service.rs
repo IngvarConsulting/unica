@@ -163,7 +163,12 @@ pub struct WorkspaceServiceBslCall<'a> {
     tool_args: Value,
     timeout: Duration,
     request_budget: Duration,
+    background: bool,
 }
+
+/// The answer to a background call that found the analyzer taken by an
+/// agent's call: the editor's answer is incomplete, not failed.
+pub const ANALYZER_BUSY: &str = "workspace analyzer is busy with an agent call";
 
 impl<'a> WorkspaceServiceBslCall<'a> {
     pub fn new(
@@ -177,7 +182,14 @@ impl<'a> WorkspaceServiceBslCall<'a> {
             tool_args,
             timeout,
             request_budget,
+            background: false,
         }
+    }
+
+    /// An editor's call: answered busy instead of waiting behind an agent's.
+    pub fn background(mut self) -> Self {
+        self.background = true;
+        self
     }
 }
 
@@ -358,6 +370,7 @@ impl<'a> WorkspaceServiceManager<'a> {
                         tool_args: call.tool_args.clone(),
                         timeout_seconds: attempt_timeout.as_secs(),
                         timeout_nanos: attempt_timeout.subsec_nanos(),
+                        background: call.background,
                     },
                 },
                 cancellation,
@@ -1602,6 +1615,19 @@ impl AnalyzerLane {
     }
 }
 
+impl AnalyzerLane {
+    /// The lane, only when no call holds it or waits for it: a background
+    /// call never makes a foreground one wait in line behind it.
+    pub fn try_acquire_idle(&self) -> Option<AnalyzerLanePermit<'_>> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.held || !state.waiters.is_empty() {
+            return None;
+        }
+        state.held = true;
+        Some(AnalyzerLanePermit { lane: self })
+    }
+}
+
 pub struct AnalyzerLanePermit<'a> {
     lane: &'a AnalyzerLane,
 }
@@ -2155,6 +2181,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         tool_args: Value,
         timeout_seconds: u64,
         timeout_nanos: u32,
+        background: bool,
         cancellation: &CancellationToken,
     ) -> ServiceResponse {
         if cancellation.is_cancelled() {
@@ -2165,7 +2192,14 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             Err(error) => return ServiceResponse::error(error),
         };
         let deadline = ElapsedBudgetDeadline::new(timeout);
-        let _lane = match self.acquire_analyzer_lane_before(cancellation, &deadline) {
+        let lane = if background {
+            self.analyzer_lane()
+                .try_acquire_idle()
+                .ok_or_else(|| ANALYZER_BUSY.to_string())
+        } else {
+            self.acquire_analyzer_lane_before(cancellation, &deadline)
+        };
+        let _lane = match lane {
             Ok(lane) => lane,
             Err(error) => return ServiceResponse::error(error),
         };
@@ -2449,12 +2483,14 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServiceOperationExecutor<B, R>
                 tool_args,
                 timeout_seconds,
                 timeout_nanos,
+                background,
                 ..
             } => runtime.handle_bsl_mcp(
                 &tool_name,
                 tool_args,
                 timeout_seconds,
                 timeout_nanos,
+                background,
                 cancellation,
             ),
             ServiceRequestKind::RlmReady {
@@ -3780,8 +3816,16 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             tool_args,
             timeout_seconds,
             timeout_nanos,
+            false,
             cancellation,
         )
+    }
+    pub fn test_handle_background_bsl_mcp(
+        &self,
+        tool_name: &str,
+        cancellation: &CancellationToken,
+    ) -> ServiceResponse {
+        self.handle_bsl_mcp(tool_name, Value::Null, 30, 0, true, cancellation)
     }
     pub fn test_provider_binding(&self) -> Result<ProviderRootBinding, String> {
         self.provider_binding()

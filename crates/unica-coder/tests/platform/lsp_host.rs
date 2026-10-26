@@ -579,14 +579,32 @@ fn symbols_answer_from_the_buffer_in_the_sessions_places() {
         },
     ));
     assert_eq!(items[0]["name"], "Помощник", "{items}");
-    let incoming = json_of(ask(
+    assert_eq!(items[0]["kind"], 6, "a method");
+    // Callers come from the provider only; without one, nothing found is
+    // refused as incomplete rather than shown as "no callers".
+    assert_eq!(
+        ask(
+            &host,
+            &editor,
+            V5LspCall::IncomingCalls {
+                item: items[0].clone(),
+            },
+        ),
+        V5LspOutcome::Failed {
+            failure: V5LspFailure::Incomplete
+        }
+    );
+    // A name only a provider knows: the hover says it is incomplete and why.
+    let platform = json_of(ask(
         &host,
         &editor,
-        V5LspCall::IncomingCalls {
-            item: items[0].clone(),
+        V5LspCall::Hover {
+            uri: uri.clone(),
+            position: at(2, 6),
         },
     ));
-    assert!(incoming.is_array(), "{incoming}");
+    let text = platform["contents"]["value"].as_str().unwrap();
+    assert!(text.contains("incomplete (provider"), "{platform}");
 }
 
 /// A provider that is slower than the editor's budget and records the
@@ -670,7 +688,11 @@ fn the_provider_runs_to_its_own_end_past_the_editors_budget() {
         "the provider outlived the editor's budget"
     );
     for (remaining, cancelled) in seen.iter() {
-        assert_eq!(*remaining, None, "the provider has no editor deadline");
+        let remaining = remaining.expect("the provider has a finite deadline");
+        assert!(
+            remaining > Duration::from_secs(20),
+            "the provider's deadline is its own, not the editor's: {remaining:?}"
+        );
         assert!(!cancelled, "nothing cancelled the provider");
     }
 }

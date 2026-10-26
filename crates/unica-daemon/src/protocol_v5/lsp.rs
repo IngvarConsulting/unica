@@ -355,6 +355,8 @@ pub enum V5LspFailure {
     WorkspaceUnavailable,
     /// Адрес не называет модуль, доступный этому соединению.
     DocumentUnknown,
+    /// Ничего не найдено, пока источник ответа не готов: это не «нет».
+    Incomplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

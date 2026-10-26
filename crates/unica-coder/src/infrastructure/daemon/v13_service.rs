@@ -4381,6 +4381,14 @@ pub(crate) enum SymbolOperation {
 
 /// Вопрос порта символов: модуль, его буфер в редакторе, если он открыт,
 /// и позиция в нём.
+/// Who asks the symbol port: an agent's call waits its turn for the
+/// analyzer, an editor's call gives way and is answered incomplete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SymbolCaller {
+    Agent,
+    Editor,
+}
+
 pub(crate) struct SymbolRequest<'a> {
     pub(crate) module: QualifiedAddress,
     pub(crate) buffer: Option<&'a str>,
@@ -4431,6 +4439,7 @@ impl CanonicalV13ReadService {
             &authority,
             invocation.workspace_context(),
             source.deadline(),
+            SymbolCaller::Agent,
             request,
             cancellation,
         )
@@ -4444,6 +4453,7 @@ impl CanonicalV13ReadService {
         authority: &crate::infrastructure::v13_read::LogicalViewReadAuthority<'_>,
         workspace: &unica_source_contract::workspace::WorkspaceContext,
         deadline: unica_work_control::provider_deadline::ProviderDeadline,
+        caller: SymbolCaller,
         request: SymbolRequest<'_>,
         cancellation: &CancellationToken,
     ) -> DomainResult {
@@ -4473,8 +4483,10 @@ impl CanonicalV13ReadService {
             text: request.buffer.unwrap_or(&saved),
             saved: &saved,
         };
-        let provider = self.symbol_provider(workspace, &source_set);
+        let provider = self.symbol_provider(workspace, &source_set, caller);
         let service = SymbolService::new(provider.as_deref(), &environment);
+        // Срок вызова, как MCP, до #2189: короче — и общая сессия анализатора
+        // списывается на каждом медленном ответе.
         let context = SymbolRequestContext {
             deadline,
             cancellation,
@@ -4516,6 +4528,7 @@ impl CanonicalV13ReadService {
         &self,
         workspace: &unica_source_contract::workspace::WorkspaceContext,
         source_set: &str,
+        caller: SymbolCaller,
     ) -> Option<Box<dyn unica_code_intelligence::symbols::SymbolProvider>> {
         use crate::application::ports::ApplicationPorts;
         #[cfg(test)]
@@ -4530,9 +4543,13 @@ impl CanonicalV13ReadService {
             .ports
             .resolve_code_search_context(workspace, &args)
             .ok()?;
-        Some(Box::new(
-            crate::infrastructure::analysis_composition::bsl_symbols(context),
-        ))
+        let provider = crate::infrastructure::analysis_composition::bsl_symbols(context);
+        Some(Box::new(match caller {
+            SymbolCaller::Agent => provider,
+            // The analyzer session is one per workspace and shared with
+            // agents: an editor's call does not wait for it behind theirs.
+            SymbolCaller::Editor => provider.background(),
+        }))
     }
 }
 

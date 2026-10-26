@@ -18,6 +18,10 @@ pub enum ServiceRequestKind {
         tool_args: Value,
         timeout_seconds: u64,
         timeout_nanos: u32,
+        /// An editor's call: it does not wait for the analyzer while an
+        /// agent's call holds or waits for it, and is answered busy instead.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        background: bool,
     },
     RlmReady {
         operation_id: String,

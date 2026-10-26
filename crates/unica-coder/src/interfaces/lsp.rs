@@ -634,6 +634,7 @@ fn failure_code(failure: V5LspFailure) -> &'static str {
         V5LspFailure::Unavailable => "lsp_unavailable",
         V5LspFailure::WorkspaceUnavailable => "lsp_workspace_unavailable",
         V5LspFailure::DocumentUnknown => "lsp_document_unknown",
+        V5LspFailure::Incomplete => "lsp_answer_incomplete",
     }
 }
 
