@@ -11,19 +11,12 @@
 use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::time::Duration;
 use unica_bsl_parser::symbols::{
     same_name, LineIndex, LocalMethod, LocalSymbol, LocalSymbolKind, NamePath,
 };
 use unica_bsl_parser::ParsedModule;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
-
-/// The longest a references request waits for the provider. Its first walk
-/// over a large configuration reads every candidate file and can take a
-/// minute on a cold disk; an editor request must not hold the provider for
-/// that, so it answers from the module's text and says the rest is not ready.
-pub const PROVIDER_REFERENCES_BUDGET: Duration = Duration::from_secs(2);
 
 /// A position in a module: 0-based line and 0-based UTF-16 column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -89,6 +82,8 @@ pub enum Incompleteness {
     /// The provider answered with part of what it found, or from an index
     /// behind the saved sources.
     Capped,
+    /// Places in other modules are not answered: only this module's are.
+    OtherModules,
     /// So many places the provider named have no logical address here.
     Unaddressable(usize),
 }
@@ -210,6 +205,9 @@ pub trait SymbolProvider: Send + Sync {
         context: &SymbolRequestContext<'_>,
     ) -> Result<Option<ProviderSymbol>, ProviderFailure>;
 
+    /// Every place that names the symbol, by a walk over the configuration.
+    /// The editor's references do not call it: the walk is the slow first
+    /// pass the background index of #2190 is to run instead.
     fn references(
         &self,
         query: &SymbolQuery,
@@ -281,7 +279,6 @@ struct CommonModule {
 pub struct SymbolService<'a> {
     provider: Option<&'a dyn SymbolProvider>,
     environment: &'a dyn SymbolEnvironment,
-    references_budget: Duration,
     common_modules: RefCell<HashMap<String, Option<CommonModule>>>,
 }
 
@@ -323,15 +320,8 @@ impl<'a> SymbolService<'a> {
         Self {
             provider,
             environment,
-            references_budget: PROVIDER_REFERENCES_BUDGET,
             common_modules: RefCell::new(HashMap::new()),
         }
-    }
-
-    /// A shorter wait for provider references, for tests.
-    pub fn with_references_budget(mut self, budget: Duration) -> Self {
-        self.references_budget = budget;
-        self
     }
 
     fn resolve(&self, request: &Request<'_, '_>) -> Option<Resolved> {
@@ -641,10 +631,12 @@ impl<'a> SymbolService<'a> {
         }
     }
 
-    /// Every place that names the symbol under `position`, its declaration
-    /// included. A parameter or local variable is answered from the module
-    /// alone; anything visible outside the module is asked of the provider
-    /// too, within [`PROVIDER_REFERENCES_BUDGET`].
+    /// Every place in this module that names the symbol under `position`, its
+    /// declaration included. A parameter or local variable is answered in
+    /// full; for anything visible outside the module the places in other
+    /// modules are reported as not answered. Collecting them means a walk
+    /// over the whole configuration, which an editor request must not start
+    /// (#2190 builds that index in the background).
     pub fn references(
         &self,
         document: &SymbolDocument<'_>,
@@ -658,38 +650,23 @@ impl<'a> SymbolService<'a> {
         let Some(resolved) = self.resolve(&request) else {
             return SymbolAnswer::complete(Vec::new());
         };
-        let mut locations = Vec::new();
-        let mut own_module = None;
-        if let Resolved::Local(local) = &resolved {
-            locations.extend(
-                request
-                    .module
-                    .local_references(local)
-                    .into_iter()
-                    .map(|range| request.location(range)),
-            );
-            if matches!(
-                local.kind,
-                LocalSymbolKind::Parameter | LocalSymbolKind::Variable
-            ) {
-                return SymbolAnswer::complete(locations);
-            }
-            own_module = Some(document.at);
+        let Resolved::Local(local) = &resolved else {
+            return SymbolAnswer::partial(Vec::new(), vec![Incompleteness::OtherModules]);
+        };
+        let locations = request
+            .module
+            .local_references(local)
+            .into_iter()
+            .map(|range| request.location(range))
+            .collect();
+        if matches!(
+            local.kind,
+            LocalSymbolKind::Parameter | LocalSymbolKind::Variable
+        ) {
+            SymbolAnswer::complete(locations)
+        } else {
+            SymbolAnswer::partial(locations, vec![Incompleteness::OtherModules])
         }
-        let Some(query) = self.query(&request, &resolved) else {
-            return unasked(locations);
-        };
-        // The editor's request never holds the provider past the budget.
-        let budgeted = SymbolRequestContext {
-            deadline: context
-                .deadline
-                .earlier(ProviderDeadline::from_budget(self.references_budget)),
-            cancellation: context.cancellation,
-        };
-        let (answer, mut reasons) =
-            self.ask(&request, |provider| provider.references(&query, &budgeted));
-        self.join(answer, &mut reasons, &mut locations, own_module);
-        SymbolAnswer::partial(locations, reasons)
     }
 
     /// The methods calling, or called by, the method under `position`.

@@ -14759,6 +14759,13 @@ struct ActorLogicalReadLease {"#,
         let helper = ask(None, "Помощник();", SymbolOperation::Definition);
         assert_eq!(helper["complete"], true);
         assert_eq!(helper["value"][0]["range"]["start"]["line"], 6);
+        let references = ask(None, "Помощник();", SymbolOperation::References);
+        assert_eq!(references["value"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            references["reasons"],
+            serde_json::json!([{"kind": "otherModules"}]),
+            "places in other modules are not answered by an editor request"
+        );
         assert!(stub.0.lock().unwrap().is_empty(), "Unica answered alone");
 
         let external = ask(None, "Метод", SymbolOperation::Definition);

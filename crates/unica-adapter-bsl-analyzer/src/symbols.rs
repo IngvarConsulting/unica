@@ -29,8 +29,10 @@ impl<'a> BslAnalyzerSymbols<'a> {
         Self { client, context }
     }
 
-    /// One tool call. Running out of the request's time is "not ready": the
-    /// analyzer keeps what it built, and the next request is faster.
+    /// One tool call. Running out of the request's time is "not ready". The
+    /// analysis service still retires the shared analyzer session on such a
+    /// call, so a caller passes the request's own deadline, never a shorter
+    /// editor budget, until #2189 cancels without retiring it.
     fn call(
         &self,
         tool: &'static str,

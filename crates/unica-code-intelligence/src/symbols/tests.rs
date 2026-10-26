@@ -1,5 +1,6 @@
 use super::*;
 use std::sync::Mutex;
+use std::time::Duration;
 
 const MODULE_AT: &str = "main:Catalog.Валюты.Module.Manager";
 const MODULE_PATH: &str = "Catalogs/Валюты/Ext/ManagerModule.bsl";
@@ -50,8 +51,6 @@ fn range(line: usize, start: usize, end: usize) -> SymbolRange {
 #[derive(Default)]
 struct StubProvider {
     queries: Mutex<Vec<SymbolQuery>>,
-    /// How long `references` takes, to see the budget at work.
-    references_delay: Option<Duration>,
 }
 
 impl SymbolProvider for StubProvider {
@@ -83,15 +82,9 @@ impl SymbolProvider for StubProvider {
     fn references(
         &self,
         query: &SymbolQuery,
-        context: &SymbolRequestContext<'_>,
+        _context: &SymbolRequestContext<'_>,
     ) -> Result<ProviderPlaces, ProviderFailure> {
         self.queries.lock().unwrap().push(query.clone());
-        if let Some(delay) = self.references_delay {
-            std::thread::sleep(delay);
-            if context.deadline.is_elapsed() {
-                return Err(ProviderFailure::NotReady);
-            }
-        }
         Ok(ProviderPlaces {
             places: vec![
                 ProviderPlace::Code {
@@ -191,10 +184,10 @@ fn module_names_are_answered_from_its_own_text_without_a_provider() {
         let hover = service.hover(&document(TEXT, TEXT), parameter, context);
         assert_eq!(hover.value.as_ref().unwrap().kind, SymbolKind::Parameter);
 
-        // A method visible elsewhere needs the provider, and there is none.
+        // A method visible elsewhere is answered here only.
         let method = service.references(&document(TEXT, TEXT), call, context);
         assert_eq!(method.value.len(), 2);
-        assert_eq!(method.reasons, [Incompleteness::ProviderUnavailable]);
+        assert_eq!(method.reasons, [Incompleteness::OtherModules]);
     });
 }
 
@@ -271,9 +264,10 @@ fn a_saved_module_asks_by_position_and_an_edited_one_by_saved_declaration_or_nam
 
         // The module's own method is asked where the saved text declares it,
         // never by its bare name, which another module may share.
-        let own = service.references(
+        let own = service.calls(
             &document(&edited, TEXT),
             position_of(&edited, "Ф(А)", 0),
+            CallDirection::Incoming,
             context,
         );
         assert!(own.reasons.contains(&Incompleteness::Stale));
@@ -308,67 +302,67 @@ fn an_edited_buffer_asks_unica_resolved_names_by_name_and_marks_new_ones_stale()
     let service = SymbolService::new(Some(&provider), &environment);
     let edited = format!("{TEXT}\nПроцедура Новая()\n\tНовая();\nКонецПроцедуры\n");
     with_context(|context| {
-        let common = service.references(
+        let common = service.calls(
             &document(&edited, TEXT),
             position_of(&edited, "Сделать(Ссылка)", 2),
+            CallDirection::Incoming,
             context,
         );
         assert!(!common.complete);
         assert!(common.reasons.contains(&Incompleteness::Stale));
         assert!(!common.value.is_empty(), "{common:?}");
 
-        let catalog = service.references(
-            &document(&edited, TEXT),
-            position_of(&edited, "Валюты.ПустаяСсылка", 1),
-            context,
-        );
-        assert!(catalog.reasons.contains(&Incompleteness::Stale));
-
         // The saved text has never seen this method: the buffer alone answers.
-        let new = service.references(
+        let new = service.calls(
             &document(&edited, TEXT),
             position_of(&edited, "Новая();", 0),
+            CallDirection::Incoming,
             context,
         );
-        assert_eq!(new.value.len(), 2);
         assert_eq!(new.reasons, [Incompleteness::Stale]);
     });
     assert_eq!(
         *provider.queries.lock().unwrap(),
-        [
-            SymbolQuery::Named {
-                name: "Общий.Сделать".to_string(),
-                path: MODULE_PATH.to_string(),
-            },
-            SymbolQuery::Named {
-                name: "Справочники.Валюты".to_string(),
-                path: MODULE_PATH.to_string(),
-            },
-        ]
+        [SymbolQuery::Named {
+            name: "Общий.Сделать".to_string(),
+            path: MODULE_PATH.to_string(),
+        }]
     );
 }
 
+/// References are this module's places only: the walk over the whole
+/// configuration is never started by an editor request. Calls join the
+/// provider's places to the module's own.
 #[test]
-fn provider_places_in_this_module_count_unless_its_text_already_answered() {
+fn references_stay_in_the_module_and_calls_join_the_provider() {
     let environment = Environment;
     let provider = StubProvider::default();
     let service = SymbolService::new(Some(&provider), &environment);
     with_context(|context| {
-        // `Внешний.Метод` is not the module's: the provider's place in this
-        // module is kept.
         let external = service.references(
             &document(TEXT, TEXT),
             position_of(TEXT, "Метод(", 1),
             context,
         );
-        assert_eq!(addresses(&external), [COMMON_AT, MODULE_AT]);
-        assert!(external.complete);
+        assert!(external.value.is_empty());
+        assert_eq!(external.reasons, [Incompleteness::OtherModules]);
 
-        // The module's own method: its places here come from its text, one
-        // elsewhere from the provider.
         let own = service.references(&document(TEXT, TEXT), position_of(TEXT, "Ф(А)", 0), context);
-        assert_eq!(addresses(&own), [MODULE_AT, MODULE_AT, COMMON_AT]);
+        assert_eq!(addresses(&own), [MODULE_AT, MODULE_AT]);
+        assert_eq!(own.reasons, [Incompleteness::OtherModules]);
 
+        let common = service.references(
+            &document(TEXT, TEXT),
+            position_of(TEXT, "Сделать(Ссылка)", 2),
+            context,
+        );
+        assert_eq!(common.reasons, [Incompleteness::OtherModules]);
+    });
+    assert!(
+        provider.queries.lock().unwrap().is_empty(),
+        "references never reach the provider"
+    );
+    with_context(|context| {
         let outgoing = service.calls(
             &document(TEXT, TEXT),
             position_of(TEXT, "Вызов(", 0),
@@ -421,26 +415,6 @@ fn a_name_in_a_call_chain_and_an_unknown_catalog_go_to_the_provider() {
         );
     });
     assert_eq!(provider.queries.lock().unwrap().len(), 2);
-}
-
-/// The first reference walk of a cold configuration takes a minute; an
-/// editor request answers what the module knows within the budget and says
-/// the rest is not ready yet.
-#[test]
-fn a_slow_reference_walk_answers_the_module_s_own_places_as_not_ready() {
-    let environment = Environment;
-    let provider = StubProvider {
-        references_delay: Some(Duration::from_millis(60)),
-        ..StubProvider::default()
-    };
-    let service = SymbolService::new(Some(&provider), &environment)
-        .with_references_budget(Duration::from_millis(10));
-    let answer = with_context(|context| {
-        service.references(&document(TEXT, TEXT), position_of(TEXT, "Ф(А)", 0), context)
-    });
-    assert_eq!(addresses(&answer), [MODULE_AT, MODULE_AT]);
-    assert!(!answer.complete);
-    assert_eq!(answer.reasons, [Incompleteness::ProviderNotReady]);
 }
 
 #[test]
