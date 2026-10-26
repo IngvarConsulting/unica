@@ -4455,7 +4455,7 @@ impl CanonicalV13ReadService {
         // The module's canonical address and path, so the places the
         // provider names in this module compare equal to the document.
         let (at, path, saved) =
-            match Self::resolve_with_authority(&authority, &request.module, None).and_then(
+            match Self::resolve_with_authority(authority, &request.module, None).and_then(
                 |resolved| {
                     authority
                         .module_text(&request.module)
@@ -4466,7 +4466,7 @@ impl CanonicalV13ReadService {
                 Err(error) => return view_error_result(Some(at), error),
             };
         let environment = crate::infrastructure::symbol_environment::ReaderSymbolEnvironment {
-            authority: &authority,
+            authority,
             source_set: &source_set,
         };
         let document = SymbolDocument {
