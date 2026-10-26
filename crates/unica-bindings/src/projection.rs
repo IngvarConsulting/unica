@@ -811,13 +811,21 @@ fn region_projections(
 }
 
 /// Ближайшая нормативная область метода (INV.SOURCE.MODULE-REGION-INTERFACE):
-/// от области, прямо содержащей метод, вверх по родителям до первой области
-/// с нормативным именем.
+/// от самой глубокой области, внутри которой лежит объявление метода, вверх по
+/// родителям до первой области с нормативным именем. Принадлежность берётся по
+/// строкам, как в `region_projections`, а не по адресу: у одноимённых методов
+/// адрес общий.
 fn assign_method_areas(methods: &mut [MethodProjection], regions: &[RegionProjection]) {
     for method in methods {
+        let declaration = method.body_from_line.saturating_sub(1);
         let mut current = regions
             .iter()
-            .position(|region| region.methods.contains(&method.at));
+            .enumerate()
+            .filter(|(_, region)| {
+                declaration > region.line && declaration < region.end_line.unwrap_or(usize::MAX)
+            })
+            .max_by_key(|(_, region)| region.line)
+            .map(|(index, _)| index);
         method.area = None;
         while let Some(index) = current {
             let region = &regions[index];

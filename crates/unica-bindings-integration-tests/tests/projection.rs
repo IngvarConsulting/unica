@@ -1727,7 +1727,11 @@ mod tests {
             #Область СлужебныеПроцедурыИФункции\n\
             Процедура Внутренняя() Экспорт\nКонецПроцедуры\n\
             #КонецОбласти\n\
-            Процедура ВнеОбластей() Экспорт\nКонецПроцедуры\n";
+            Процедура ВнеОбластей() Экспорт\nКонецПроцедуры\n\
+            #Область ПрограммныйИнтерфейс\n\
+            Процедура Дубль() Экспорт\nКонецПроцедуры\n\
+            #КонецОбласти\n\
+            Процедура Дубль()\nКонецПроцедуры\n";
         let projection = project("main:CommonModule.ОбщегоНазначения", Some(source));
         let area = |name: &str| {
             projection
@@ -1751,6 +1755,15 @@ mod tests {
         assert_eq!(serialized[0]["props"]["area"], json!("public"));
         assert_eq!(serialized[3]["props"]["area"], json!("crossSubsystem"));
         assert!(serialized[6]["props"].get("area").is_none());
+        // Same-named methods share an address; each still takes the area of
+        // its own lines.
+        let duplicates = projection
+            .methods()
+            .iter()
+            .filter(|method| method.name == "Дубль")
+            .map(|method| method.area)
+            .collect::<Vec<_>>();
+        assert_eq!(duplicates, vec![Some(MethodArea::Public), None]);
     }
 
     #[test]

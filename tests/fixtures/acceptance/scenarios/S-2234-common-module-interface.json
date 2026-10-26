@@ -131,6 +131,25 @@
           "eq": "private"
         }
       ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.ОбщегоНазначения.Method.ВнеОбластей"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        },
+        {
+          "pointer": "/data/props/area",
+          "absent": true
+        }
+      ]
     }
   ]
 }
