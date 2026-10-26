@@ -270,6 +270,24 @@ class AcceptanceProfileTests(unittest.TestCase):
             with self.subTest(field=field),self.assertRaises(ValueError):
                 select_profile({**corpus,"scenarios":[{**scenario,field:value}]},"source")
 
+    def test_runtime_form_diagnostic_driver_is_closed_to_its_fixture_and_check(self):
+        from tests.ci.form_runtime_diagnostics import AT, CASES, DRIVER, WORKSPACE
+        scenario = {"id":"form-diagnostics","profile":"delivery","driver":DRIVER,
+                    "workspace":WORKSPACE,"evaluation":"default-bare",
+                    "wire":[{"tool":"unica.check","args":{"at":AT,"limit":50}}]}
+        corpus = {"workspace":"tests/fixtures/acceptance/workspace","scenarios":[scenario]}
+        for case in CASES:
+            selected = select_profile({**corpus,"scenarios":[{**scenario,"evaluation":case}]},"delivery")
+            self.assertEqual(len(selected["scenarios"]),1)
+        for field, value in [
+            ("evaluation","unknown"), ("workspace",DIAGNOSTICS_WORKSPACE),
+            ("wire",[{"tool":"unica.apply","args":{"at":AT,"limit":50}}]),
+            ("wire",[{"tool":"unica.check","args":{"at":AT,"limit":2}}]),
+            ("wire",[{"tool":"unica.check","args":{"at":"main:CommonModule.Other","limit":50}}]),
+        ]:
+            with self.subTest(field=field,value=value), self.assertRaises(ValueError):
+                select_profile({**corpus,"scenarios":[{**scenario,field:value}]},"source")
+
     def test_host_target_uses_the_lock_and_rejects_unsupported_platform(self):
         lock = json.loads((REPO / "plugins/unica/third-party/tools.lock.json").read_text())
         for system, machine, expected in [("Darwin", "arm64", "darwin-arm64"),
@@ -282,10 +300,10 @@ class AcceptanceProfileTests(unittest.TestCase):
     def test_corrupt_pinned_asset_never_creates_a_runnable_manifest(self):
         builder = tools_builder()
         def corrupt(_url, destination, *, timeout):
-            self.assertEqual(timeout, 60)
-            destination.parent.mkdir(parents=True)
+            self.assertEqual(timeout, 25)
             destination.write_bytes(b"corrupt analyzer")
-        with tempfile.TemporaryDirectory() as raw, patch.object(builder, "download", corrupt):
+        with tempfile.TemporaryDirectory() as raw, patch.object(builder, "download", corrupt), \
+                patch.dict(os.environ, {"UNICA_TOOL_CACHE": str(Path(raw) / "cache")}):
             plugin = Path(raw) / "plugin"
             with self.assertRaisesRegex(SystemExit, "checksum mismatch"):
                 stage_analyzer(plugin, builder=builder, system="Linux", machine="x86_64")
@@ -296,8 +314,10 @@ class AcceptanceProfileTests(unittest.TestCase):
         builder = tools_builder()
         with tempfile.TemporaryDirectory() as raw:
             for timeout, expected in [(None, {}), (60, {"timeout": 60})]:
+                response = BytesIO(b"asset")
+                response.headers = {"Content-Length": "5"}
                 with self.subTest(timeout=timeout), patch.object(
-                    builder.urllib.request, "urlopen", return_value=BytesIO(b"asset")
+                    builder.urllib.request, "urlopen", return_value=response
                 ) as open_url:
                     destination = Path(raw) / "asset"
                     builder.download("https://example.invalid/asset", destination, timeout=timeout)
@@ -411,3 +431,44 @@ class DeliveryTaskTests(unittest.TestCase):
                 server.receive(expected_id=1, timeout=0.1)
         server.close.assert_called_once()
         self.assertEqual(server.lines.qsize(), 1)
+
+class PullValidationProfileTests(unittest.TestCase):
+    def test_runtime_profile_rejects_other_workspaces_cases_and_mutations(self):
+        import copy
+        from tests.ci.acceptance_controls import load_acceptance_corpus
+        corpus = select_profile(load_acceptance_corpus(), "runtime-fault")
+        self.assertEqual(len(corpus["scenarios"]), 5)
+        for field, value in [("workspace", "tests/fixtures/acceptance/workspace"), ("evaluation", "unknown"), ("driver", "other")]:
+            altered = copy.deepcopy(corpus)
+            altered["scenarios"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                select_profile(altered, "source")
+        altered = copy.deepcopy(corpus)
+        altered["scenarios"][0]["wire"][1]["args"]["op"] = "push"
+        with self.assertRaises(ValueError):
+            select_profile(altered, "source")
+
+    def test_runtime_profile_requires_explicit_platform_and_owned_fixture(self):
+        from tests.ci.acceptance_pull_validation import platform_executable, prepare_case
+        with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, "UNICA_ACCEPTANCE_PLATFORM_ROOT"):
+            platform_executable()
+        with self.assertRaisesRegex(ValueError, "closed pull validation fixture"):
+            prepare_case(Mock(), {"driver": "other"})
+
+    def test_runtime_fault_reobserves_only_the_same_task_after_transport_loss(self):
+        from tests.ci import acceptance_pull_validation as driver
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "src").mkdir()
+            initial = {"result": {"structuredContent": {"ok": True, "data": {"task": {"taskId": "original-task", "status": "working"}}}}}
+            lost = {"result": {"structuredContent": {"ok": False, "diagnostics": [{"code": "task_transport_failed"}]}}}
+            terminal = {"result": {"structuredContent": {"ok": False, "diagnostics": [{"code": "invalid_result"}]}}}
+            original = Mock(side_effect=[initial, lost, terminal])
+            server = Mock(workspace=root, call=original)
+            with patch.object(driver, "platform_executable", return_value=Path("/genuine-platform/1cv8")):
+                driver.prepare_case(server, {"driver": "pull-validation-fault", "workspace": driver.WORKSPACE, "evaluation": "empty-dump"})
+            args = {"op": "pull", "args": {"sourceSet": "main", "force": True}, "dryRun": False}
+            server.call("unica.run", args)
+            self.assertEqual(server.call("unica.task.result", {"taskId": "original-task", "waitMs": 7000}), terminal)
+            self.assertEqual([c.args[0] for c in original.call_args_list], ["unica.run", "unica.task.result", "unica.task.result"])
+            self.assertEqual(original.call_args_list[1].args[1], original.call_args_list[2].args[1])

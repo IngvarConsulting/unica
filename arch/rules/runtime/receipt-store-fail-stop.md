@@ -11,7 +11,10 @@ check:
   - crates/unica-coder/tests/platform/receipt_runtime.rs::tiny_submit_budget_gives_the_receipt_store_its_own_step_budget
   - crates/unica-coder/tests/platform/receipt_runtime.rs::tiny_submit_budget_after_an_early_cancel_keeps_the_daemon
   - crates/unica-execution/src/receipt_ledger_actor.rs::step_begun_late_in_its_deadline_gets_the_running_floor_from_its_start
-gap: https://github.com/IngvarConsulting/unica/issues/984
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::fail_stop_by_another_call_during_prepare_never_enters_the_provider
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::fail_stop_signals_cancellation_to_running_subject_work
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::fail_stop_before_the_long_phase_never_enters_the_provider
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::direct_terminal_preparation_queue_and_store_share_one_publication_deadline
 ---
 
 # Неопределённая запись о вызове останавливает приём работы
@@ -39,5 +42,3 @@ gap: https://github.com/IngvarConsulting/unica/issues/984
 
 Подготовка конечного ответа, ожидание в очереди и сохранение расходуют
 один срок публикации. Начало следующего этапа не даёт нового бюджета.
-Проверка всего пути, включая подготовку ответа до постановки в очередь,
-остаётся в `gap`.

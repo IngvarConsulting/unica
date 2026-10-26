@@ -65,8 +65,8 @@ fn catalog_tabular_profile_reaches_public_collection_and_detail_without_writes()
         "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
     );
     assert_eq!(column["props"]["required"], true);
-    let column_type: Value =
-        serde_json::from_str(column["props"]["type"].as_str().unwrap()).unwrap();
+    let column_type = column["props"]["type"].clone();
+    assert!(column_type.is_object(), "type must arrive as nested JSON");
     assert_eq!(
         column_type["variants"][0]["kind"], "number",
         "the column type must preserve the expected qualifiers"
@@ -87,8 +87,8 @@ fn catalog_tabular_profile_reaches_public_collection_and_detail_without_writes()
         &fixture,
         "main:Catalog.Items.TabularSection.Notes.Attribute.Text",
     );
-    let sibling_type: Value =
-        serde_json::from_str(sibling_column["props"]["type"].as_str().unwrap()).unwrap();
+    let sibling_type = sibling_column["props"]["type"].clone();
+    assert!(sibling_type.is_object(), "type must arrive as nested JSON");
     assert_eq!(
         sibling_type["variants"][0]["kind"], "string",
         "the sibling type must preserve the expected qualifiers"
@@ -210,7 +210,7 @@ fn catalog_tabular_profile_damage_is_local_to_the_observed_fact() {
                 "the owner must name the damaged fact too: fixture {replacement}, field {field}");
             let column = read(&fixture, "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity");
             assert_eq!(column["props"]["required"], true);
-            assert!(column["props"]["type"].is_string());
+            assert!(column["props"]["type"].is_object());
             let sibling = read(&fixture, "main:Catalog.Items.TabularSection.Notes");
             assert_eq!(sibling["props"]["LineNumberLength"], 3);
             assert_eq!(sibling["props"]["Use"], "ForFolder");
@@ -317,8 +317,8 @@ fn catalog_tabular_profile_requires_the_exact_declared_xml_version() {
             "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
         );
         assert_eq!(column["props"]["required"], true);
-        let column_type: Value =
-            serde_json::from_str(column["props"]["type"].as_str().unwrap()).unwrap();
+        let column_type = column["props"]["type"].clone();
+        assert!(column_type.is_object(), "type must arrive as nested JSON");
         assert_eq!(column_type["variants"][0]["kind"], "number");
         assert_eq!(column_type["variants"][0]["digits"], 10);
         assert_eq!(column_type["variants"][0]["fraction"], 2);

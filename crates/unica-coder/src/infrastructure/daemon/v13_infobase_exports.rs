@@ -1694,7 +1694,7 @@ mod tests {
             plugin.join("third-party/tools.lock.json"),
             r#"{"schemaVersion":1,
   "targets":{"darwin-arm64":{"exe":""},"linux-x64":{"exe":""},"win-x64":{"exe":".exe"}},
-  "tools":[{"name":"v8-runner","version":"0.15.2","binaryName":"v8-runner"}]}"#,
+  "tools":[{"name":"v8-runner","version":"0.15.3","binaryName":"v8-runner"}]}"#,
         )
         .unwrap();
 
@@ -1710,7 +1710,7 @@ mod tests {
         assert_eq!(diagnostic["outcome"], "needsHuman");
         let data = rejection.data.as_ref().expect("поля движка в data");
         assert_eq!(data["tool"], "v8-runner");
-        assert_eq!(data["pinnedVersion"], "0.15.2");
+        assert_eq!(data["pinnedVersion"], "0.15.3");
         assert_eq!(data["stage"], "manifest");
         assert_eq!(data["retryable"], false);
         assert_eq!(

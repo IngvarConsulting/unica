@@ -38,6 +38,13 @@ Support-state checks come from `unica.view` on the configuration root (`support`
 4. Run `unica.check` on the changed modules; build and update go through `unica.run` (`make`, or source `push`; loading a `.cf`/`.cfe` file is unavailable, #1246) with a `dryRun: true` preview followed by explicit `dryRun: false`; test runs are outside the v0.13 surface, so record them as unverified unless separate evidence is supplied.
 5. Produce a release readiness note: blocking findings, migration steps, rollback boundary, manual checks, and Unica MCP contract gaps.
 
+Для клиентского шага обновления `launch` принимает `applicationParameter` —
+точную строку `/C`, в том числе пустую. Для ограниченного ожидания используй
+`clientMode: "thin"`, `waitForExit: true` и положительный `waitTimeoutMs`;
+сочетание с `execute` допустимо, при ожидании файл должен быть `.epf`.
+Проверь код выхода и прикладной результат: завершение клиента не подтверждает
+успех обновления БСП. Подробности — [runtime](../../references/use-cases/workspace-runtime.md).
+
 ## Installed extensions
 
 Исходники расширения и расширение, установленное в базе, — разные предметы.

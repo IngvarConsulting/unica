@@ -28,6 +28,19 @@ LARGE_LIBRARY_MODULES = {
         "crates/unica-coder/tests/platform/receipt_runtime.rs",
         "infrastructure::daemon::receipt_runtime_tests::",
     ),
+    # Root check and resource inspection past the former corpus caps (#1119).
+    ("unica_coder", "infrastructure::daemon::v13_workspace_bootstrap::tests::"): (
+        "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs",
+        "infrastructure::daemon::v13_workspace_bootstrap::",
+    ),
+    ("unica_project_health", "inspection::resources::tests::"): (
+        "crates/unica-project-health/tests/platform/project_health_resources.rs",
+        "inspection::resources::tests::",
+    ),
+    ("unica_project_health", "inspection::git::tests::"): (
+        "crates/unica-project-health/tests/platform/project_health_git.rs",
+        "inspection::git::tests::",
+    ),
     ("selection", ""): (
         "crates/unica-source-integration-tests/tests/selection.rs",
         "",
@@ -84,7 +97,11 @@ def exact_groups(expression: str, label: str, targets: set[str]) -> dict[str, li
 
 def large_groups(expression: str) -> dict[str, list[str]]:
     """Exact named tests remain bound to their actual Cargo binary owners."""
-    result = exact_groups(expression, "large", {"daemon_receipt_ledger", "unica_coder", "unica_workspace", "selection"})
+    result = exact_groups(
+        expression,
+        "large",
+        {"daemon_receipt_ledger", "unica_coder", "unica_project_health", "unica_workspace", "selection"},
+    )
     for target, names in result.items():
         for name in names:
             if target == "daemon_receipt_ledger":
@@ -226,7 +243,9 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
         self.assertEqual(self.run_tests.nextest_profile("large"), "nightly-full")
         self.assertEqual(profiles["nightly-full"]["default-filter"], "all()")
-        self.assertEqual(profiles["nightly-full"]["overrides"], profiles["large"]["overrides"])
+        # Ночью Windows гоняет весь набор, без исключений по платформе (#1879).
+        self.assertNotIn("overrides", profiles["nightly-full"])
+        self.assertNotIn("overrides", profiles["large"])
         # Ночной ярус на ubuntu и macOS — только названные тесты своих целей;
         # тот же список стоит и у срока `large`.
         large_groups(large)
@@ -234,16 +253,11 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(deadline["filter"].strip(), large)
         self.assertEqual(deadline["slow-timeout"], {"period": "900s", "terminate-after": 2})
         self.assertEqual(deadline["threads-required"], "num-cpus")
-        # Ночью Windows гоняет всё, кроме детерминированной модели горизонта
-        # нагрузки: она платформе безразлична и на двух ядрах не укладывается
-        # в два срока `large`.
-        self.assertEqual(
-            profiles["large"]["overrides"],
-            [{
-                "platform": "cfg(windows)",
-                "default-filter": "all() - test(/^deterministic_horizon_load_does_not_saturate$/)",
-            }],
-        )
+        # Nextest берёт для каждой настройки первое совпавшее переопределение,
+        # а интеграционные цели `large` входят и в `kind(test)` срока `medium`:
+        # срок `large` обязан стоять раньше, иначе они получают 600 с (#1879).
+        deadlines = [o for o in profiles["default"]["overrides"] if "slow-timeout" in o]
+        self.assertIs(deadlines[0], deadline)
         for command in self.run_tests.rust_commands("large"):
             if "--manifest-path" in command:
                 self.assertEqual(command, ["cargo", "nextest", "run", *UREQ_SELECTION, "--profile", "ureq-recycling"])
@@ -279,7 +293,13 @@ class GateProfileCompositionTests(unittest.TestCase):
         groups = large_groups(large)
         self.assertEqual(sum(map(len, groups.values())), large.count("test("))
         ledger = (REPO_ROOT / "crates" / "unica-coder" / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
-        declared_by_target = {"daemon_receipt_ledger": attributed_test_functions(ledger), "unica_coder": set(), "unica_workspace": set(), "selection": set()}
+        declared_by_target = {
+            "daemon_receipt_ledger": attributed_test_functions(ledger),
+            "unica_coder": set(),
+            "unica_project_health": set(),
+            "unica_workspace": set(),
+            "selection": set(),
+        }
         for (binary, _), (path, module) in LARGE_LIBRARY_MODULES.items():
             source = (REPO_ROOT / path).read_text(encoding="utf-8")
             declared_by_target[binary] |= {module + name for name in attributed_test_functions(source)}

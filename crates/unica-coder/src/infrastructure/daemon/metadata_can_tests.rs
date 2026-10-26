@@ -1046,10 +1046,8 @@ fn canonical_uuid_attribute_round_trips_as_an_editable_observed_type() {
     assert!(viewed.ok, "{viewed:?}");
     let props = &viewed.data.as_ref().unwrap()["props"];
     assert!(props.get("incomplete").is_none(), "{props}");
-    let observed: Value =
-        serde_json::from_str(props["type"].as_str().expect("compact type")).unwrap();
     assert_eq!(
-        observed,
+        props["type"],
         json!({"variants":[{"kind":"uuid"}],"mutationCapability":"editable"})
     );
     let checked = call(
@@ -1773,7 +1771,7 @@ fn canonical_bare_fill_value_is_a_diagnostic_not_an_absent_value() {
     );
     assert_eq!(attribute["props"]["incomplete"], true);
     assert!(attribute["props"].get("fillValue").is_none(), "{attribute}");
-    assert!(attribute["props"]["type"].is_string(), "{attribute}");
+    assert!(attribute["props"]["type"].is_object(), "{attribute}");
     assert!(
         limits(&attribute)
             .iter()
@@ -2280,4 +2278,134 @@ fn canonical_check_reports_a_duplicated_tabular_attribute_property() {
         limits(&viewed).iter().any(|limit| limit.contains(field)),
         "{viewed}"
     );
+}
+
+/// #2027: макет двоичных данных без содержимого платформа выгружает одним
+/// описанием, без `Ext/Template.bin` (так его загружает и выгружает ibcmd
+/// 8.3.27). `check` не считает его непроверяемым ресурсом, а частичный каталог
+/// и макет другого вида без содержимого по-прежнему остаются ошибкой.
+#[test]
+fn canonical_check_accepts_a_binary_template_without_data() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Products","ops":[{"op":"template.add","args":{"items":[
+            {"name":"Sheet","templateType":"SpreadsheetDocument"}
+        ]}}]}),
+    );
+    // Двоичный макет планировщик не создаёт: описание — из выгрузки платформы.
+    let templates = fixture.source.join("Catalogs/Products/Templates");
+    let descriptor = std::fs::read_to_string(
+        repo_root()
+            .join("tests/fixtures/platform_8_3_27/template-new-xml/native-binary-descriptor.xml"),
+    )
+    .unwrap()
+    .replace("CorpusTemplate", "Empty")
+    .replace("Corpus template", "Empty");
+    std::fs::write(templates.join("Empty.xml"), descriptor).unwrap();
+    std::fs::create_dir_all(templates.join("Empty/Ext")).unwrap();
+    std::fs::write(templates.join("Empty/Ext/Template.bin"), b"data").unwrap();
+    rewrite(
+        &fixture.source.join("Catalogs/Products.xml"),
+        "<Template>Sheet</Template>",
+        "<Template>Sheet</Template>\n\t\t\t<Template>Empty</Template>",
+    );
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["severity"] != "error"),
+        "{status}: {diagnostics:?}"
+    );
+
+    std::fs::remove_dir_all(templates.join("Empty")).unwrap();
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["severity"] != "error"),
+        "{status}: {diagnostics:?}"
+    );
+    let catalog = view(&runtime, &fixture, "main:Catalog.Products");
+    assert!(
+        catalog["branches"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"at":"main:Catalog.Products.Template","count":2})),
+        "{catalog}"
+    );
+
+    // Частичный каталог без файла — не «макет без данных».
+    std::fs::create_dir_all(templates.join("Empty/Ext")).unwrap();
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "failed", "{diagnostics:?}");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "provider_unavailable"
+                && diagnostic["metadataPath"] == "Catalog.Products.Template.Empty"),
+        "{diagnostics:?}"
+    );
+    std::fs::remove_dir_all(templates.join("Empty")).unwrap();
+
+    // Владелец с таким макетом правится: макет удаляется без отказа.
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Products.Template.Empty","ops":[{"op":"template.remove","args":{}}]}),
+    );
+    assert!(!templates.join("Empty.xml").exists());
+    assert!(
+        !std::fs::read_to_string(fixture.source.join("Catalogs/Products.xml"))
+            .unwrap()
+            .contains("<Template>Empty</Template>")
+    );
+
+    // Табличному макету содержимое обязательно.
+    std::fs::remove_dir_all(templates.join("Sheet")).unwrap();
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "failed", "{diagnostics:?}");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "provider_unavailable"
+                && diagnostic["metadataPath"] == "Catalog.Products.Template.Sheet"),
+        "{diagnostics:?}"
+    );
+}
+
+/// #2027: общий макет двоичных данных без содержимого — то же описание без
+/// `Ext/Template.bin`, которое платформа загружает и выгружает; `check` его
+/// принимает.
+#[test]
+fn canonical_check_accepts_a_common_binary_template_without_data() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    let descriptor = std::fs::read_to_string(
+        repo_root()
+            .join("tests/fixtures/platform_8_3_27/template-new-xml/native-binary-descriptor.xml"),
+    )
+    .unwrap()
+    .replace("CorpusTemplate", "Empty")
+    .replace("Corpus template", "Empty")
+    .replace("<Template uuid=", "<CommonTemplate uuid=")
+    .replace("</Template>", "</CommonTemplate>");
+    std::fs::create_dir_all(fixture.source.join("CommonTemplates")).unwrap();
+    std::fs::write(fixture.source.join("CommonTemplates/Empty.xml"), descriptor).unwrap();
+    rewrite(
+        &fixture.source.join("Configuration.xml"),
+        "<Language>Русский</Language>",
+        "<Language>Русский</Language><CommonTemplate>Empty</CommonTemplate>",
+    );
+    let (status, diagnostics) = check(&runtime, &fixture, "main:CommonTemplate.Empty");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["severity"] != "error"),
+        "{status}: {diagnostics:?}"
+    );
+    let viewed = view(&runtime, &fixture, "main:CommonTemplate.Empty");
+    assert_eq!(viewed["kind"], "CommonTemplate", "{viewed}");
 }

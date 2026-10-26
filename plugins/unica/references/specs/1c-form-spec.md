@@ -288,10 +288,12 @@ CommonForms регистрируются в `Configuration.xml`:
 |---------|----------|----------|
 | `<ReportResult>` | string | Имя реквизита результата (`Результат`) |
 | `<DetailsData>` | string | Имя реквизита расшифровки (`ДанныеРасшифровки`) |
-| `<ReportFormType>` | `Main`, `Settings`, `Choice` | Тип формы отчёта |
-| `<AutoShowState>` | `Auto`, `Show`, `Hide` | Автоотображение состояния |
+| `<ReportFormType>` | `Main`, `Settings`, `Variant` | Тип формы отчёта |
+| `<AutoShowState>` | `Auto`, `DontShow`, `ShowOnComposition` | Автоотображение состояния |
 | `<ReportResultViewMode>` | `Auto`, `Table`, `Spreadsheet` | Режим отображения результата |
 | `<ViewModeApplicationOnSetReportResult>` | `Auto`, `Always`, `Never` | Применение режима |
+
+Какие из этих свойств платформа дописывает в форму внешнего отчёта и в каком порядке, см. [спецификацию внешнего отчёта](1c-erf-spec.md), раздел 6.2.
 
 ### Мобильные свойства
 
@@ -387,7 +389,10 @@ CommonForms регистрируются в `Configuration.xml`:
 | `FillCheckProcessingAtServer` | Сервер | Проверка заполнения |
 | `OnLoadUserSettingsAtServer` | Сервер | Загрузка пользовательских настроек (отчёты) |
 | `OnSaveUserSettingsAtServer` | Сервер | Сохранение пользовательских настроек (отчёты) |
+| `OnLoadVariantAtServer` | Сервер | Загрузка варианта (отчёты) |
 | `URLProcessing` | Клиент | Обработка навигационных ссылок |
+
+Выгрузка 8.3.27.2074 ставит `OnLoadVariantAtServer` перед `OnCreateAtServer`, даже если во входе он шёл после; полный порядок событий не установлен.
 
 ### Типичные комбинации по типам форм
 
@@ -660,6 +665,9 @@ ChildItems
     <ExcludedCommand>...</ExcludedCommand>
   </CommandSet>
 
+  <!-- Есть у таблицы по ТЧ, ValueTable и набору записей; нет у дерева, динамического списка, списка значений и настроек компоновщика -->
+  <RowFilter xsi:nil="true"/>
+
   <!-- Служебные элементы -->
   <ContextMenu name="..." id="..."/>
   <AutoCommandBar name="..." id="..."/>
@@ -908,6 +916,32 @@ ChildItems
   </Attribute>
 </Attributes>
 ```
+
+### Условное оформление формы при чтении
+
+`Attributes/ConditionalAppearance` — сосед реквизитов `Attribute`, а не
+постоянные свойства элементов и не настройки динамического списка.
+В `unica.view` он доступен через объявленную ветвь формы `Setting`:
+`<форма>.Setting.ConditionalAppearance.Item.Rule1`. Позиции `RuleN` сохраняют
+порядок исходного XML в прочитанном снимке; коллекция поддерживает `limit` и
+`cursor`. Владелец настройки сообщает `sourcePath` и `ruleCount`.
+
+Свойства `selection`, `filter` и `appearance` правила — вложенный JSON
+типизированных фактов; явно заданный `use` — boolean, подпись правила
+`presentation` — строка или `{"kind":"localizedString","values":[...]}`.
+Читатель различает сравнения и группы условий, `Field`, `Color` (включая
+`auto`), `Font` (атрибуты `kind`, `ref`, `faceName`, `height`, `scale`
+и признаки начертания), `HorizontalAlign`, `DesignTimeValue`,
+`StandardBeginningDate`, `LocalStringType`, `xs:string`, `xs:boolean`,
+`xs:decimal`; локализация сохраняет языки и порядок, decimal — точную строку.
+Сравнение со списком повторяет `right` для каждого значения, и `right`
+становится массивом; без `right` правое значение не задано.
+XML-типы определяются по URI, независимо от префикса.
+Неподдержанная структура, повреждённое значение или превышение предела
+компактного факта (2048 байт UTF-8, 256 элементов, глубина 32) исключают только
+этот факт с пояснением в `limits`. Реквизиты формы остаются доступны.
+Отсутствие контейнера не создаёт настройки, явный пустой контейнер даёт
+`ruleCount=0`. Чтение не вычисляет оформление во время исполнения.
 
 ### 9.1. Система типов
 

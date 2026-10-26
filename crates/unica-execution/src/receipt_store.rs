@@ -574,13 +574,131 @@ impl From<&StoredProvenTaskLinkCapacityV1> for ProvenTaskLinkCapacity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 struct CatalogEntry {
     record: StoredActiveReceiptV1,
     encoded_bytes: u64,
 }
 
+/// One shared stand-in for a committed result body the catalog does not hold.
+/// The body stays on disk and is read with its record; memory held for results
+/// does not grow with their number or size (#1119).
+fn result_body_on_disk() -> Arc<ReceiptTerminalOutcome> {
+    static ON_DISK: std::sync::OnceLock<Arc<ReceiptTerminalOutcome>> = std::sync::OnceLock::new();
+    Arc::clone(ON_DISK.get_or_init(|| Arc::new(ReceiptTerminalOutcome::Cancelled)))
+}
+
+fn is_result_body_on_disk(terminal: &Arc<ReceiptTerminalOutcome>) -> bool {
+    Arc::ptr_eq(terminal, &result_body_on_disk())
+}
+
+impl StoredActiveReceiptV1 {
+    fn result_body_mut(&mut self) -> Option<&mut Arc<ReceiptTerminalOutcome>> {
+        match &mut self.lifecycle {
+            StoredActiveLifecycleV1::DirectTerminalUnacked { terminal, .. }
+            | StoredActiveLifecycleV1::TaskTerminalReceiptBacked { terminal, .. }
+            | StoredActiveLifecycleV1::TaskHandoffActorBound {
+                terminal_stage: StoredHandoffTerminalStageV1::Staged { terminal, .. },
+                ..
+            } => Some(terminal),
+            _ => None,
+        }
+    }
+
+    /// The same record with its result body left on disk. The terminal digest
+    /// stays and identifies the body.
+    fn without_result_body(mut self) -> Self {
+        if let Some(terminal) = self.result_body_mut() {
+            *terminal = result_body_on_disk();
+        }
+        self
+    }
+
+    /// Equality of two copies of a record whichever of them holds the body:
+    /// the terminal digest identifies it.
+    fn same_record(&self, other: &Self) -> bool {
+        self.clone().without_result_body() == other.clone().without_result_body()
+    }
+
+    fn result_body_is_on_disk(&self) -> bool {
+        let mut record = self.clone();
+        record
+            .result_body_mut()
+            .is_some_and(|terminal| is_result_body_on_disk(terminal))
+    }
+}
+
+/// Catalog and disk copies of a record agree when everything but the body
+/// agrees: the terminal digest identifies the body exactly.
+impl PartialEq for CatalogEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.encoded_bytes == other.encoded_bytes
+            && self.record.clone().without_result_body()
+                == other.record.clone().without_result_body()
+    }
+}
+
+/// Restores a committed result only from a record that carries its body: a
+/// catalog entry holds the digest alone, and its body is read from disk.
+fn restore_held_terminal(
+    terminal: &Arc<ReceiptTerminalOutcome>,
+    digest: &TerminalDigest,
+) -> Result<V5CanonicalTerminal, ReceiptLedgerError> {
+    if is_result_body_on_disk(terminal) {
+        return Err(ReceiptLedgerError::Corrupt(
+            "receipt result body must be read with its record from disk",
+        ));
+    }
+    restore_canonical_terminal(Arc::clone(terminal), digest)
+}
+
 impl CatalogEntry {
+    fn without_result_body(self) -> Self {
+        Self {
+            record: self.record.without_result_body(),
+            encoded_bytes: self.encoded_bytes,
+        }
+    }
+
+    /// The catalog entry of a record just committed, with the result body its
+    /// caller still holds: the catalog itself keeps only the digest.
+    fn with_result_body(mut self, terminal: &V5CanonicalTerminal) -> Self {
+        if let Some(body) = self.record.result_body_mut() {
+            *body = terminal.outcome_shared();
+        }
+        self
+    }
+
+    /// A just-committed catalog entry with its result body restored from the
+    /// committed bytes, already compared with the disk copy by the caller.
+    fn with_body_from_bytes(self, committed: &[u8]) -> Result<Self, ReceiptLedgerError> {
+        if !self.record.result_body_is_on_disk() {
+            return Ok(self);
+        }
+        let record: StoredActiveReceiptV1 = serde_json::from_slice(committed)
+            .map_err(|_| ReceiptLedgerError::Corrupt("committed receipt row does not decode"))?;
+        let entry = Self {
+            record,
+            encoded_bytes: u64::try_from(committed.len())
+                .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
+        };
+        if entry != self {
+            return Err(ReceiptLedgerError::Corrupt(
+                "committed receipt row differs from its catalog entry",
+            ));
+        }
+        Ok(entry)
+    }
+
+    fn direct_terminal_digest(&self) -> Option<&TerminalDigest> {
+        match &self.record.lifecycle {
+            StoredActiveLifecycleV1::DirectTerminalUnacked {
+                terminal_digest, ..
+            } => Some(terminal_digest),
+            _ => None,
+        }
+    }
+
     fn record_header(&self) -> ReceiptRecordHeader {
         ReceiptRecordHeader::new(
             self.record.key.clone(),
@@ -821,8 +939,7 @@ impl CatalogEntry {
                         terminal_digest,
                         terminal,
                     } => {
-                        let terminal =
-                            restore_canonical_terminal(Arc::clone(terminal), terminal_digest)?;
+                        let terminal = restore_held_terminal(terminal, terminal_digest)?;
                         let certificate = canonical_staged_transfer_certificate(
                             &self.record.key,
                             &self.record.key_digest,
@@ -901,7 +1018,7 @@ impl CatalogEntry {
                 terminal,
                 ..
             } => {
-                let terminal = restore_canonical_terminal(Arc::clone(terminal), terminal_digest)?;
+                let terminal = restore_held_terminal(terminal, terminal_digest)?;
                 Ok(ReceiptState::DirectTerminalUnacked(
                     DirectTerminalUnackedReceipt::new(
                         self.record_header(),
@@ -925,7 +1042,7 @@ impl CatalogEntry {
                 terminal,
                 cancel_requested,
             } => {
-                let terminal = restore_canonical_terminal(Arc::clone(terminal), terminal_digest)?;
+                let terminal = restore_held_terminal(terminal, terminal_digest)?;
                 let task = ReceiptTaskProjection::new(
                     *task_id,
                     *invocation_id,
@@ -1841,7 +1958,7 @@ impl ReceiptLedgerStore {
             });
         }
         let committed = match catalog.records.get(&key_digest).cloned() {
-            Some(committed) if committed.record == record => committed,
+            Some(committed) if committed.record.same_record(&record) => committed,
             Some(_) | None => {
                 catalog.unavailable = true;
                 return Err(ReceiptLedgerError::CommitUncertain {
@@ -1998,6 +2115,9 @@ impl ReceiptLedgerStore {
                     actual: expected.record.record_version,
                 });
             }
+            if expected.record.result_body_is_on_disk() {
+                return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
+            }
             let reserved = expected.reservation()?;
             let next_phase = if begun {
                 match reserved.phase() {
@@ -2094,6 +2214,9 @@ impl ReceiptLedgerStore {
                     expected: *expected_version,
                     actual: expected.record.record_version,
                 });
+            }
+            if expected.record.result_body_is_on_disk() {
+                return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
             }
             let reserved = expected.reservation()?;
             let next_version =
@@ -2204,11 +2327,11 @@ impl ReceiptLedgerStore {
                 .get(&digest)
                 .cloned()
                 .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
-            let direct = match expected.state()? {
-                ReceiptState::DirectTerminalUnacked(receipt) => receipt,
-                _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
+            // The digest in the catalog identifies the body; no body is read.
+            let Some(committed_digest) = expected.direct_terminal_digest() else {
+                return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
             };
-            if direct.terminal().digest() != terminal_digest {
+            if committed_digest != terminal_digest {
                 return Err(ReceiptLedgerError::TerminalMismatch);
             }
             generation = generation
@@ -2464,7 +2587,7 @@ impl ReceiptLedgerStore {
                     .get(&digest)
                     .cloned()
                     .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
-                match entry.state()? {
+                match entry.with_result_body(&terminal).state()? {
                     ReceiptState::DirectTerminalUnacked(receipt) => Ok(receipt),
                     _ => Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
                 }
@@ -2826,7 +2949,7 @@ impl ReceiptLedgerStore {
             });
         }
         let committed = match catalog.records.get(&key_digest) {
-            Some(committed) if committed.record == record => committed,
+            Some(committed) if committed.record.same_record(&record) => committed,
             Some(_) | None => {
                 catalog.unavailable = true;
                 return Err(ReceiptLedgerError::CommitUncertain {
@@ -3759,6 +3882,8 @@ impl ReceiptLedgerStore {
         match catalog
             .records
             .get(&key_digest)
+            .cloned()
+            .map(|entry| entry.with_result_body(&terminal))
             .and_then(|entry| entry.state().ok())
         {
             Some(ReceiptState::TaskHandoffActorBound(committed))
@@ -4063,11 +4188,14 @@ impl ReceiptLedgerStore {
                 });
             }
         }
-        let committed = catalog.records.get(&key_digest).cloned().ok_or(
-            ReceiptLedgerError::CommitUncertain {
+        let committed = catalog
+            .records
+            .get(&key_digest)
+            .cloned()
+            .ok_or(ReceiptLedgerError::CommitUncertain {
                 receipt_key_digest: key_digest.clone(),
-            },
-        )?;
+            })?
+            .with_body_from_bytes(&encoded)?;
         let committed_state = match committed.state() {
             Ok(ReceiptState::TaskPromisedUnbound(receipt)) => {
                 TaskCancellationReceipt::PromisedUnbound(receipt)
@@ -4322,7 +4450,7 @@ impl ReceiptLedgerStore {
             });
         }
         let committed = match catalog.records.get(&key_digest).cloned() {
-            Some(committed) if committed.record == record => committed,
+            Some(committed) if committed.record.same_record(&record) => committed,
             Some(_) | None => {
                 catalog.unavailable = true;
                 return Err(ReceiptLedgerError::CommitUncertain {
@@ -4501,7 +4629,7 @@ impl ReceiptLedgerStore {
                 receipt_key_digest: key_digest,
             },
         )?;
-        match committed.state() {
+        match committed.clone().with_result_body(&terminal).state() {
             Ok(ReceiptState::TaskTerminalReceiptBacked(receipt)) => Ok(receipt),
             Ok(_) | Err(_) => {
                 catalog.unavailable = true;
@@ -4638,11 +4766,14 @@ impl ReceiptLedgerStore {
                 });
             }
         }
-        let committed = catalog.records.get(&key_digest).cloned().ok_or(
-            ReceiptLedgerError::CommitUncertain {
+        let committed = catalog
+            .records
+            .get(&key_digest)
+            .cloned()
+            .ok_or(ReceiptLedgerError::CommitUncertain {
                 receipt_key_digest: key_digest,
-            },
-        )?;
+            })?
+            .with_result_body(&terminal);
         match committed.state()? {
             ReceiptState::TaskTerminalReceiptBacked(receipt) => Ok(receipt),
             _ => Err(ReceiptLedgerError::Corrupt(
@@ -5953,10 +6084,30 @@ impl ReceiptLedgerStore {
         let generation_before = latch_catalog_result(catalog, self.generation_under_writer_lock())?;
         check_optional_deadline(deadline)?;
         let entry = if let Some(backing) = catalog.batch_backing.get(receipt_key_digest) {
-            if let Err(error) = self.verify_receipt_batch_backing(backing) {
-                return latch_catalog_error(catalog, error);
+            let catalogued = catalog.records.get(receipt_key_digest).cloned();
+            if catalogued
+                .as_ref()
+                .is_some_and(|entry| entry.record.result_body_is_on_disk())
+            {
+                // The catalog holds the digest alone; the body comes from the
+                // same verified batch frame the row was published in.
+                match self.read_verified_receipt_batch(backing) {
+                    Ok(batch) => batch
+                        .rows
+                        .into_iter()
+                        .find(|row| row.record.key_digest == *receipt_key_digest)
+                        .map(|row| CatalogEntry {
+                            encoded_bytes: row.encoded.len() as u64,
+                            record: row.record,
+                        }),
+                    Err(error) => return latch_catalog_error(catalog, error),
+                }
+            } else {
+                if let Err(error) = self.verify_receipt_batch_backing(backing) {
+                    return latch_catalog_error(catalog, error);
+                }
+                catalogued
             }
-            catalog.records.get(receipt_key_digest).cloned()
         } else {
             match self.read_active_record(receipt_key_digest) {
                 Ok(entry) => entry,
@@ -6501,7 +6652,8 @@ impl ReceiptLedgerStore {
             .ok_or(ReceiptLedgerError::Corrupt(
                 "batch backing does not contain its catalogued receipt row",
             ))?;
-        if row.record != entry.record || row.encoded.len() as u64 != entry.encoded_bytes {
+        if !row.record.same_record(&entry.record) || row.encoded.len() as u64 != entry.encoded_bytes
+        {
             return Err(ReceiptLedgerError::Corrupt(
                 "batch-backed receipt row changed record or encoded size",
             ));

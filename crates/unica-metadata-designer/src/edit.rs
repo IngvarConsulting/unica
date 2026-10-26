@@ -2070,6 +2070,43 @@ pub fn update_typed_element(
             )
         })?;
     }
+    if let Some(deny) = update.deny_incomplete_values {
+        // 8.3.27 writes the flag on every dimension of these registers as
+        // `<DenyIncompleteValues>true|false</…>`; any other shape or value
+        // has no proven meaning to keep, so it is refused, not overwritten.
+        let refused = |message: &str| {
+            typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                message,
+                Some("denyIncompleteValues"),
+            )
+        };
+        let open = "<DenyIncompleteValues>";
+        let close = "</DenyIncompleteValues>";
+        let start = match properties_text.find(open) {
+            Some(start) => start + open.len(),
+            None if properties_text.contains("<DenyIncompleteValues") => {
+                return Err(refused(
+                    "the dimension's DenyIncompleteValues has a form other than an element with a boolean value",
+                ))
+            }
+            None => return Err(refused("the dimension has no DenyIncompleteValues to change")),
+        };
+        let end = start
+            + properties_text[start..]
+                .find(close)
+                .ok_or_else(|| refused("the dimension's DenyIncompleteValues is not closed"))?;
+        let current = properties_text[start..end].trim();
+        if !matches!(current, "true" | "false") {
+            return Err(refused(
+                "the dimension's DenyIncompleteValues holds a value other than true or false",
+            ));
+        }
+        let value = if deny { "true" } else { "false" };
+        if current != value {
+            properties_text.replace_range(start..end, value);
+        }
+    }
     let mut updated_node = node_xml;
     updated_node.replace_range(properties_range, &properties_text);
     xml_text.replace_range(range, &updated_node);
@@ -3401,3 +3438,11 @@ mod legacy_inline_collapse_tests {
 #[cfg(test)]
 #[path = "../tests/platform/edit_empty_child_objects.rs"]
 mod empty_child_objects_tests;
+
+#[cfg(test)]
+#[path = "../tests/platform/dump_parity.rs"]
+mod dump_parity_tests;
+
+#[cfg(test)]
+#[path = "../tests/platform/edit_dimension_deny.rs"]
+mod dimension_deny_tests;

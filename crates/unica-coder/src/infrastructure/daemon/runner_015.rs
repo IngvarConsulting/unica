@@ -32,7 +32,7 @@ use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::full_dump::RunnerProjectStore;
 use unica_workspace::paths::normalize_path_identity;
 
-pub(super) const VERSION: &str = "0.15.2";
+pub(super) const VERSION: &str = "0.15.3";
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
@@ -1333,7 +1333,7 @@ mod tests {
     #[test]
     fn unknown_runner_versions_are_not_probed_by_executing_an_operation() {
         assert!(check_version(VERSION).is_ok());
-        assert!(check_version("0.15.2").is_ok());
+        assert!(check_version("0.15.3").is_ok());
         for version in [
             "0.9.0",
             "0.11.3",
@@ -1343,8 +1343,8 @@ mod tests {
             "0.14.0",
             "0.15.0",
             "0.15.1",
-            "0.15.3",
-            "0.15.2-rc.1",
+            "0.15.2",
+            "0.15.3-rc.1",
             "1.0.0",
             "1.0.0-rc.1",
             "",

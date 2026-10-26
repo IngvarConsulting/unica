@@ -1008,6 +1008,85 @@ mod tests {
     /// operation adds its record to the image the previous one staged
     /// instead of refusing because the disk preimage no longer matches.
     #[test]
+    fn object_create_places_each_register_record_on_its_line_in_register_uuid_order() {
+        // 8.3.27 lists a registrar's records one per line in the order of the
+        // registers' UUIDs, whatever order they were created in (#1404).
+        let order = ORDER_XML.replace(
+            "<Properties><Name>Order</Name><Synonym/><Comment/><BasedOn/></Properties>",
+            "<Properties>\n\t\t\t<Name>Order</Name>\n\t\t\t<BasedOn/>\n\t\t\t<RegisterRecords/>\n\t\t</Properties>",
+        );
+        let configuration = RU_CONFIGURATION_XML.replace(
+            "<Document>Order</Document>",
+            "<Document>Order</Document><ChartOfCalculationTypes>Kinds</ChartOfCalculationTypes>",
+        );
+        let chart = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ChartOfCalculationTypes uuid="44444444-4444-4444-8444-444444444444"><Properties><Name>Kinds</Name></Properties><ChildObjects/></ChartOfCalculationTypes></MetaDataObject>"#;
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &configuration),
+            ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+            ("Documents/Order.xml", &order),
+            ("ChartsOfCalculationTypes/Kinds.xml", chart),
+        ]);
+        let registers = [
+            ("AccumulationRegister", "AccumulationRegisters", "Продажи"),
+            ("CalculationRegister", "CalculationRegisters", "Начисления"),
+            ("AccumulationRegister", "AccumulationRegisters", "Остатки"),
+            ("CalculationRegister", "CalculationRegisters", "Премии"),
+        ];
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = registers
+            .iter()
+            .enumerate()
+            .map(|(index, (kind, _, name))| {
+                fixture.parse(
+                    "object.create",
+                    json!({"at": "main:Configuration", "values": {"kind": kind, "name": name}}),
+                    index,
+                )
+            })
+            .collect::<Vec<_>>();
+        let (mut staged, _) = plan_metadata_batch_owned_for_test(staged, authority, &operations)
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let mut expected = registers
+            .iter()
+            .map(|(kind, directory, name)| {
+                let descriptor = staged
+                    .read(&PathBuf::from(directory).join(format!("{name}.xml")))
+                    .unwrap()
+                    .unwrap();
+                let uuid =
+                    unica_metadata_designer::template_catalog::descriptor_object_uuid(&descriptor)
+                        .unwrap();
+                (uuid, format!("{kind}.{name}"))
+            })
+            .collect::<Vec<_>>();
+        expected.sort();
+        let records = expected
+            .iter()
+            .map(|(_, reference)| {
+                format!("\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">{reference}</xr:Item>\n")
+            })
+            .collect::<String>();
+        let document = String::from_utf8(
+            staged
+                .read(Path::new("Documents/Order.xml"))
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            document,
+            order.replace(
+                "<RegisterRecords/>",
+                &format!("<RegisterRecords>\n{records}\t\t\t</RegisterRecords>")
+            )
+        );
+    }
+
+    #[test]
     fn object_create_batches_registers_that_share_one_registrar_document() {
         let order = ORDER_XML.replace(
             "<BasedOn/></Properties>",

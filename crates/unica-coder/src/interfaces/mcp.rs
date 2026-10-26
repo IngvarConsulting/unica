@@ -3194,9 +3194,10 @@ mod tests {
                 .expect("valid conditional diff wire schema");
             for arguments in [
                 json!({"left":"main:Catalog.Items", "right":"main:Catalog.Other"}),
-                json!({"left":"main:Catalog.Items", "right":"main:Catalog.Other", "limit":1000}),
+                json!({"left":"main:Catalog.Items", "right":"main:Catalog.Other", "limit":50}),
                 json!({"executionToken":"saved-plan"}),
                 json!({"executionToken":"saved-plan", "limit":1, "cursor":""}),
+                json!({"left":"main:Catalog.Items", "right":"main:Catalog.Other", "cursor":""}),
             ] {
                 assert!(
                     diff_validator.is_valid(&arguments),
@@ -3211,8 +3212,9 @@ mod tests {
                 json!({"executionToken":""}),
                 json!({"executionToken":null}),
                 json!({"executionToken":"saved-plan", "left":"main:Catalog.Items", "right":"main:Catalog.Other"}),
-                json!({"left":"main:Catalog.Items", "right":"main:Catalog.Other", "cursor":""}),
+                json!({"left":"main:Catalog.Items", "right":"main:Catalog.Other", "cursor":7}),
                 json!({"executionToken":"saved-plan", "limit":51}),
+                json!({"left":"main:Catalog.Items", "right":"main:Catalog.Other", "limit":51}),
                 json!({"executionToken":"saved-plan", "limit":0}),
             ] {
                 assert!(
@@ -8587,7 +8589,7 @@ fn main() {
         let digest = format!("{:x}", Sha256::digest(&bytes));
         let mut core_targets = serde_json::Map::new();
         let mut runner_targets = serde_json::Map::new();
-        let runner_version = "0.15.2"; // Fixture pin must match the production runner contract.
+        let runner_version = "0.15.3"; // Fixture pin must match the production runner contract.
         for host in HostTarget::ALL {
             let target = host.as_str();
             let suffix = if target == "win-x64" { ".exe" } else { "" };

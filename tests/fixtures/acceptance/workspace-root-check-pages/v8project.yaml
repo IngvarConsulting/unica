@@ -1,0 +1,11 @@
+format: DESIGNER
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src
+  - name: billing
+    type: EXTENSION
+    path: billing
+  - name: delivery
+    type: EXTENSION
+    path: delivery

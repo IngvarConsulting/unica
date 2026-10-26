@@ -2014,6 +2014,7 @@ fn late_exact_submit_keeps_original_lazy_cancel_deadline_and_all_durable_winners
         ),
         1,
         original,
+        runtime.capture_submit_deadline(7_000),
     );
     let error = response
         .err()

@@ -224,7 +224,7 @@ mod runner_one_tests {
                 .as_str()
                 .unwrap()
                 .contains("https://github.com/IngvarConsulting/unica/issues/1246"));
-            assert_eq!(published["support"]["adapter"], "v8-runner/0.15.2");
+            assert_eq!(published["support"]["adapter"], "v8-runner/0.15.3");
         }
     }
 

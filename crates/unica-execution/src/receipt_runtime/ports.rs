@@ -73,12 +73,11 @@ pub trait InvocationHost: Send + Sync + 'static {
     fn discover_join_source_set_paths(&self, root: &Path) -> Result<Vec<String>, String>;
 }
 
-/// Strict decoding remains deferred until after the original response deadline is captured.
-/// Its actual producer owns the original frame and exact Daemon core identity.
+/// Strict decoding remains deferred until after the call's deadline is captured at
+/// frame receipt. Its actual producer owns the original frame and exact Daemon core identity.
 pub trait DecodedSubmit<R: InvocationRequestFacts> {
     type Error;
     fn reserved_task_id(&self) -> Option<TaskId>;
-    fn response_budget_ms(&self) -> Option<u64>;
     fn into_strict_submit(
         self,
         expected_core: &CoreIdentityDigest,

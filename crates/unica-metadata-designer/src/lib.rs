@@ -21,6 +21,8 @@ pub mod edit;
 
 pub mod info;
 
+pub mod job_schedule;
+
 pub mod template_catalog;
 
 pub mod member_properties;
@@ -59,6 +61,7 @@ pub mod template_owner;
 pub mod image_plan;
 pub mod relations;
 
+pub mod client_interface;
 pub mod configuration;
 pub mod extension;
 

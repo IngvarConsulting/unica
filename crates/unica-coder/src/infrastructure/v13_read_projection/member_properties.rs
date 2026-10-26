@@ -1,4 +1,4 @@
-use super::bounded_prop;
+use super::place_prop;
 use serde_json::{Map, Value};
 use unica_metadata::{
     MetaMemberReadContext, MetaMemberReadProfile, MetaObservedProperty, MetaObservedPropertyValue,
@@ -7,6 +7,7 @@ use unica_metadata::{
 /// Both the XML observer and this transfer consume the same closed profile.
 /// A serialized provider property is not, by itself, permission to publish it.
 pub(super) fn project(
+    address: &unica_address::address::QualifiedAddress,
     profile: MetaMemberReadProfile,
     context: MetaMemberReadContext,
     item: &Value,
@@ -40,18 +41,30 @@ pub(super) fn project(
         let value = match value {
             Some(MetaObservedPropertyValue::UnsignedInteger { value }) => Some(Value::from(value)),
             Some(MetaObservedPropertyValue::Text { value }) => Some(Value::String(value)),
+            // Пустой набор переводов — значения нет, свойство не публикуется.
+            Some(MetaObservedPropertyValue::LocalizedString { values }) if values.is_empty() => {
+                continue;
+            }
+            // Обёртку снимает `place_prop`: публикуется массив переводов.
             Some(value @ MetaObservedPropertyValue::LocalizedString { .. }) => {
                 serde_json::to_value(value).ok()
             }
             _ => None,
         };
-        if let Some(value) = value.and_then(|value| bounded_prop(spec.name, &value)) {
-            props.insert(spec.name.to_string(), value);
-        } else {
-            limits.push(format!(
+        match value {
+            Some(value) => place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                spec.name,
+                &value,
+                true,
+                spec.name,
+            ),
+            None => limits.push(format!(
                 "{} has an invalid or duplicated observed value",
                 spec.name
-            ));
+            )),
         }
     }
     (props, limits)

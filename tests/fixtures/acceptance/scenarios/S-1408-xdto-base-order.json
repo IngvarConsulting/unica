@@ -183,7 +183,12 @@
       "assertions": [
         {
           "pointer": "/data/props/type",
-          "eq": "{\"raw\":\"xs:string\",\"prefix\":\"xs\",\"local\":\"string\",\"namespace\":\"http://www.w3.org/2001/XMLSchema\"}"
+          "eq": {
+            "raw": "xs:string",
+            "prefix": "xs",
+            "local": "string",
+            "namespace": "http://www.w3.org/2001/XMLSchema"
+          }
         }
       ]
     },

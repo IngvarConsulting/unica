@@ -4,7 +4,7 @@ use crate::inspection::{
 };
 use crate::{
     ProjectCheckId, ProjectCheckObservation, ProjectCheckOutcome, ProjectHealthFact,
-    ProjectHealthInspectionError,
+    ProjectHealthFacts, ProjectHealthInspectionError,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -14,6 +14,7 @@ use tempfile::TempDir;
 #[cfg(test)]
 use unica_process::runner::system_process_runner;
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
+use unica_process::StreamControl;
 use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::{SourceFormat, SourceSetKind};
@@ -31,11 +32,6 @@ pub(crate) struct GitIndexEntry {
     pub(crate) mode: Option<String>,
 }
 
-const MAX_STAGED_IGNORE_FILES: usize = 1024;
-const MAX_STAGED_IGNORE_TOTAL_BYTES: usize = 8 * 1024 * 1024;
-const MAX_STAGED_IGNORE_BATCH_METADATA_BYTES: usize = MAX_STAGED_IGNORE_FILES * 128;
-const MAX_EXPANDED_REPOSITORY_FACTS: usize = 4096;
-const MAX_EXPANDED_REPOSITORY_FACT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AMBIGUOUS_OWNER_REASON_BYTES: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,141 +353,76 @@ impl<'a> GitRepositoryInspector<'a> {
 
         let mut observations = vec![completed(ProjectCheckId::RepositoryDiscovery)];
         let mut facts = Vec::new();
-        let index = match self.run(
+        let mut entries = Vec::new();
+        let index = read_git_index(
+            self.runner,
             &repository_root,
-            ["ls-files", "--cached", "--stage", "-z"],
             cancellation,
             deadline,
-        ) {
-            Ok(output) => output,
-            Err(_) if cancellation.is_cancelled() => {
-                return Err(ProjectHealthInspectionError::Cancelled)
-            }
-            Err(reason) => {
-                observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
-                facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryIndex,
-                    source_set: None,
-                    reason,
-                });
-                append_not_run_after_index(
-                    &mut observations,
-                    &layout.roots,
-                    "Git index inspection failed",
-                );
-                return Ok(GitRepositoryInspection {
-                    repository_root: Some(repository_root),
-                    entries: Vec::new(),
-                    resource_inspection_blocker: None,
-                    staged_config_dump_info_kinds: BTreeMap::new(),
-                    observations,
-                    facts,
-                });
-            }
-        };
-        if index.cancelled || cancellation.is_cancelled() {
-            return Err(ProjectHealthInspectionError::Cancelled);
-        }
-        if index.timed_out {
-            observations.push(not_run(
-                ProjectCheckId::RepositoryIndex,
-                "Git index inspection timed out",
-            ));
-            facts.push(ProjectHealthFact::GitInspectionTimeout {
-                check: ProjectCheckId::RepositoryIndex,
-                source_set: None,
-            });
-            append_not_run_after_index(
-                &mut observations,
-                &layout.roots,
-                "Git index inspection timed out",
-            );
-            return Ok(GitRepositoryInspection {
-                repository_root: Some(repository_root),
-                entries: Vec::new(),
-                resource_inspection_blocker: None,
-                staged_config_dump_info_kinds: BTreeMap::new(),
-                observations,
-                facts,
-            });
-        }
-        if !index.status_success || output_incomplete(&index) {
-            let reason = if output_incomplete(&index) {
-                completeness_reason(&index)
-            } else {
-                nonzero_reason(&index)
-            };
-            observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
-            facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                check: ProjectCheckId::RepositoryIndex,
-                source_set: None,
-                reason,
-            });
-            append_not_run_after_index(
-                &mut observations,
-                &layout.roots,
-                "Git index output is incomplete",
-            );
-            return Ok(GitRepositoryInspection {
-                repository_root: Some(repository_root),
-                entries: Vec::new(),
-                resource_inspection_blocker: None,
-                staged_config_dump_info_kinds: BTreeMap::new(),
-                observations,
-                facts,
-            });
-        }
-        let entries =
-            match parse_git_index_entries_controlled(&index.stdout, cancellation, deadline) {
-                Ok(entries) => entries,
-                Err(IndexParseError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(IndexParseError::TimedOut) => {
-                    observations.push(not_run(
-                        ProjectCheckId::RepositoryIndex,
-                        "Git index parsing exceeded the inspection deadline",
-                    ));
-                    facts.push(ProjectHealthFact::GitInspectionTimeout {
-                        check: ProjectCheckId::RepositoryIndex,
-                        source_set: None,
-                    });
-                    append_not_run_after_index(
-                        &mut observations,
-                        &layout.roots,
-                        "Git index parsing exceeded the inspection deadline",
-                    );
-                    return Ok(GitRepositoryInspection {
-                        repository_root: Some(repository_root),
-                        entries: Vec::new(),
-                        resource_inspection_blocker: None,
-                        staged_config_dump_info_kinds: BTreeMap::new(),
-                        observations,
-                        facts,
-                    });
-                }
-                Err(IndexParseError::Malformed(reason)) => {
-                    observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
-                    facts.push(ProjectHealthFact::GitInspectionIncomplete {
+            &mut |entry| entries.push(entry),
+        );
+        if let Err(error) = index {
+            let (observation_reason, fact, after_index) = match error {
+                IndexReadError::Cancelled => return Err(ProjectHealthInspectionError::Cancelled),
+                IndexReadError::Failed(reason) => (
+                    reason.clone(),
+                    ProjectHealthFact::GitInspectionIncomplete {
                         check: ProjectCheckId::RepositoryIndex,
                         source_set: None,
                         reason,
-                    });
-                    append_not_run_after_index(
-                        &mut observations,
-                        &layout.roots,
-                        "Git index records are malformed",
-                    );
-                    return Ok(GitRepositoryInspection {
-                        repository_root: Some(repository_root),
-                        entries: Vec::new(),
-                        resource_inspection_blocker: None,
-                        staged_config_dump_info_kinds: BTreeMap::new(),
-                        observations,
-                        facts,
-                    });
-                }
+                    },
+                    "Git index inspection failed",
+                ),
+                IndexReadError::Incomplete(reason) => (
+                    reason.clone(),
+                    ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                        reason,
+                    },
+                    "Git index output is incomplete",
+                ),
+                IndexReadError::ProcessTimedOut => (
+                    "Git index inspection timed out".into(),
+                    ProjectHealthFact::GitInspectionTimeout {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                    },
+                    "Git index inspection timed out",
+                ),
+                IndexReadError::ParseTimedOut => (
+                    "Git index parsing exceeded the inspection deadline".into(),
+                    ProjectHealthFact::GitInspectionTimeout {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                    },
+                    "Git index parsing exceeded the inspection deadline",
+                ),
+                IndexReadError::Malformed(reason) => (
+                    reason.clone(),
+                    ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                        reason,
+                    },
+                    "Git index records are malformed",
+                ),
             };
+            observations.push(not_run(
+                ProjectCheckId::RepositoryIndex,
+                &observation_reason,
+            ));
+            facts.push(fact);
+            append_not_run_after_index(&mut observations, &layout.roots, after_index);
+            return Ok(GitRepositoryInspection {
+                repository_root: Some(repository_root),
+                entries: Vec::new(),
+                resource_inspection_blocker: None,
+                staged_config_dump_info_kinds: BTreeMap::new(),
+                observations,
+                facts,
+            });
+        }
         observations.push(completed(ProjectCheckId::RepositoryIndex));
 
         if !layout.repository_targets_complete && layout.roots.is_empty() {
@@ -850,14 +781,7 @@ impl<'a> GitRepositoryInspector<'a> {
                 check: ProjectCheckId::RepositoryIgnore,
                 source_set: None,
             });
-        } else if output_incomplete(&ignore)
-            || (!ignore.status_success && !status_is_no_match(&ignore))
-        {
-            let reason = if output_incomplete(&ignore) {
-                completeness_reason(&ignore)
-            } else {
-                nonzero_reason(&ignore)
-            };
+        } else if let Some(reason) = ignore_failure_reason(&ignore) {
             observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
             append_not_run_for_roots(
                 &mut observations,
@@ -1082,242 +1006,12 @@ impl<'a> GitRepositoryInspector<'a> {
             }
             Err(error) => return Ok(Err(error)),
         };
-        let mut facts = Vec::new();
-        let mut fact_bytes = 0_usize;
-        let ConfigDumpInfoIndexInspection {
-            runtime_paths,
-            inconclusive_paths,
-            classifications,
-        } = inspection;
-        for (path, classification) in &classifications {
-            let descriptor_kind = match classification {
-                ConfigDumpInfoXmlKind::ExternalProcessor => SourceSetKind::ExternalProcessor,
-                ConfigDumpInfoXmlKind::ExternalReport => SourceSetKind::ExternalReport,
-                ConfigDumpInfoXmlKind::RuntimeSidecar
-                | ConfigDumpInfoXmlKind::MetadataDescriptor
-                | ConfigDumpInfoXmlKind::Other => continue,
-            };
-            let owners = match source_owners.owners_for_repo_path(path, cancellation, deadline) {
-                Ok(owners) => owners,
-                Err(GeneratedPathInspectionError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(GeneratedPathInspectionError::TimedOut) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
-                }
-                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            let Some(owners) = owners else {
-                continue;
-            };
-            for (owner_index, root) in owners.iter().enumerate() {
-                if owner_index.is_multiple_of(256) {
-                    if cancellation.is_cancelled() {
-                        return Err(ProjectHealthInspectionError::Cancelled);
-                    }
-                    if deadline.is_elapsed() {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
-                    }
-                }
-                if !matches!(
-                    root.source_set.kind,
-                    SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-                ) || root.source_set.kind == descriptor_kind
-                {
-                    continue;
-                }
-                let reason = format!(
-                    "staged {} descriptor does not match declared {} source-set kind",
-                    source_set_kind_label(descriptor_kind),
-                    source_set_kind_label(root.source_set.kind)
-                );
-                fact_bytes = match reserve_expanded_repository_fact_budget(
-                    facts.len(),
-                    fact_bytes,
-                    1,
-                    path.len()
-                        .saturating_add(root.source_set.name.len())
-                        .saturating_add(reason.len()),
-                    "ConfigDumpInfo",
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                    }
-                };
-                facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: Some(root.source_set.name.clone()),
-                    path: path.clone(),
-                    reason,
-                });
+        match config_dump_info_facts(inspection, source_owners, cancellation, deadline) {
+            Err(ConfigDumpInfoIndexInspectionError::Cancelled) => {
+                Err(ProjectHealthInspectionError::Cancelled)
             }
+            evaluation => Ok(evaluation),
         }
-        for path in runtime_paths {
-            let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
-                Ok(owners) => owners,
-                Err(GeneratedPathInspectionError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(GeneratedPathInspectionError::TimedOut) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
-                }
-                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            if let Some([root]) = owners {
-                fact_bytes = match reserve_expanded_repository_fact_budget(
-                    facts.len(),
-                    fact_bytes,
-                    1,
-                    path.len().saturating_add(root.source_set.name.len()),
-                    "ConfigDumpInfo",
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                    }
-                };
-                facts.push(ProjectHealthFact::RuntimeSidecarTracked {
-                    source_set: root.source_set.name.clone(),
-                    path,
-                });
-            } else {
-                let ambiguous_owners = owners.filter(|owners| owners.len() > 1);
-                let reason = ambiguous_owners
-                    .map(ambiguous_owner_reason)
-                    .unwrap_or_else(|| "runtime sidecar is outside a proven source root".into());
-                let additional_count =
-                    1_usize.saturating_add(ambiguous_owners.map_or(0, |owners| owners.len()));
-                let additional_bytes = path.len().saturating_add(reason.len()).saturating_add(
-                    ambiguous_owners.map_or(0, |owners| {
-                        owners.iter().fold(0_usize, |total, root| {
-                            total
-                                .saturating_add(path.len())
-                                .saturating_add(reason.len())
-                                .saturating_add(root.source_set.name.len())
-                        })
-                    }),
-                );
-                fact_bytes = match reserve_expanded_repository_fact_budget(
-                    facts.len(),
-                    fact_bytes,
-                    additional_count,
-                    additional_bytes,
-                    "ConfigDumpInfo",
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                    }
-                };
-                facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: None,
-                    path: path.clone(),
-                    reason: reason.clone(),
-                });
-                if let Some(owners) = ambiguous_owners {
-                    for (owner_index, root) in owners.iter().enumerate() {
-                        if owner_index.is_multiple_of(256) {
-                            if cancellation.is_cancelled() {
-                                return Err(ProjectHealthInspectionError::Cancelled);
-                            }
-                            if deadline.is_elapsed() {
-                                return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
-                            }
-                        }
-                        facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                            source_set: Some(root.source_set.name.clone()),
-                            path: path.clone(),
-                            reason: reason.clone(),
-                        });
-                    }
-                }
-            }
-        }
-        for path in inconclusive_paths {
-            let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
-                Ok(owners) => owners,
-                Err(GeneratedPathInspectionError::Cancelled) => {
-                    return Err(ProjectHealthInspectionError::Cancelled)
-                }
-                Err(GeneratedPathInspectionError::TimedOut) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
-                }
-                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            let reason = "staged blob classification is inconclusive";
-            let additional_count = match owners {
-                Some([_]) | None => 1,
-                Some(owners) => 1_usize.saturating_add(owners.len()),
-            };
-            let owner_bytes = match owners {
-                Some([root]) => root.source_set.name.len(),
-                Some(owners) => owners.iter().fold(0_usize, |total, root| {
-                    total
-                        .saturating_add(path.len())
-                        .saturating_add(reason.len())
-                        .saturating_add(root.source_set.name.len())
-                }),
-                None => 0,
-            };
-            fact_bytes = match reserve_expanded_repository_fact_budget(
-                facts.len(),
-                fact_bytes,
-                additional_count,
-                path.len()
-                    .saturating_add(reason.len())
-                    .saturating_add(owner_bytes),
-                "ConfigDumpInfo",
-            ) {
-                Ok(bytes) => bytes,
-                Err(reason) => {
-                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
-                }
-            };
-            match owners {
-                Some([root]) => facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: Some(root.source_set.name.clone()),
-                    path,
-                    reason: reason.into(),
-                }),
-                Some(owners) => {
-                    facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                        source_set: None,
-                        path: path.clone(),
-                        reason: reason.into(),
-                    });
-                    for (owner_index, root) in owners.iter().enumerate() {
-                        if owner_index.is_multiple_of(256) {
-                            if cancellation.is_cancelled() {
-                                return Err(ProjectHealthInspectionError::Cancelled);
-                            }
-                            if deadline.is_elapsed() {
-                                return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
-                            }
-                        }
-                        facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                            source_set: Some(root.source_set.name.clone()),
-                            path: path.clone(),
-                            reason: reason.into(),
-                        });
-                    }
-                }
-                None => facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                    source_set: None,
-                    path,
-                    reason: reason.into(),
-                }),
-            }
-        }
-        Ok(Ok(ConfigDumpInfoEvaluation {
-            facts,
-            classifications,
-        }))
     }
 
     fn run<const N: usize>(
@@ -1338,6 +1032,187 @@ impl<'a> GitRepositoryInspector<'a> {
             .run(&process_command(cwd, args, cancellation, deadline));
         sticky_process_result(result, cancellation)
     }
+}
+
+fn config_dump_info_facts(
+    inspection: ConfigDumpInfoIndexInspection,
+    source_owners: &SourceRootOwners<'_>,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<ConfigDumpInfoEvaluation, ConfigDumpInfoIndexInspectionError> {
+    let mut facts = ProjectHealthFacts::default();
+    let ConfigDumpInfoIndexInspection {
+        runtime_paths,
+        inconclusive_paths,
+        classifications,
+    } = inspection;
+    for (path, classification) in &classifications {
+        let descriptor_kind = match classification {
+            ConfigDumpInfoXmlKind::ExternalProcessor => SourceSetKind::ExternalProcessor,
+            ConfigDumpInfoXmlKind::ExternalReport => SourceSetKind::ExternalReport,
+            ConfigDumpInfoXmlKind::RuntimeSidecar
+            | ConfigDumpInfoXmlKind::MetadataDescriptor
+            | ConfigDumpInfoXmlKind::Other => continue,
+        };
+        let owners = match source_owners.owners_for_repo_path(path, cancellation, deadline) {
+            Ok(owners) => owners,
+            Err(GeneratedPathInspectionError::Cancelled) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Cancelled)
+            }
+            Err(GeneratedPathInspectionError::TimedOut) => {
+                return Err(ConfigDumpInfoIndexInspectionError::TimedOut)
+            }
+            Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason))
+            }
+        };
+        let Some(owners) = owners else {
+            continue;
+        };
+        for (owner_index, root) in owners.iter().enumerate() {
+            if owner_index.is_multiple_of(256) {
+                if cancellation.is_cancelled() {
+                    return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
+                }
+                if deadline.is_elapsed() {
+                    return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
+                }
+            }
+            if !matches!(
+                root.source_set.kind,
+                SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+            ) || root.source_set.kind == descriptor_kind
+            {
+                continue;
+            }
+            let reason = format!(
+                "staged {} descriptor does not match declared {} source-set kind",
+                source_set_kind_label(descriptor_kind),
+                source_set_kind_label(root.source_set.kind)
+            );
+            facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: Some(root.source_set.name.clone()),
+                    path: path.clone(),
+                    reason,
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+        }
+    }
+    for path in runtime_paths {
+        let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
+            Ok(owners) => owners,
+            Err(GeneratedPathInspectionError::Cancelled) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Cancelled)
+            }
+            Err(GeneratedPathInspectionError::TimedOut) => {
+                return Err(ConfigDumpInfoIndexInspectionError::TimedOut)
+            }
+            Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason))
+            }
+        };
+        if let Some([root]) = owners {
+            facts
+                .push(ProjectHealthFact::RuntimeSidecarTracked {
+                    source_set: root.source_set.name.clone(),
+                    path,
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+        } else {
+            let ambiguous_owners = owners.filter(|owners| owners.len() > 1);
+            let reason = ambiguous_owners
+                .map(ambiguous_owner_reason)
+                .unwrap_or_else(|| "runtime sidecar is outside a proven source root".into());
+            facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: None,
+                    path: path.clone(),
+                    reason: reason.clone(),
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+            if let Some(owners) = ambiguous_owners {
+                for (owner_index, root) in owners.iter().enumerate() {
+                    if owner_index.is_multiple_of(256) {
+                        if cancellation.is_cancelled() {
+                            return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
+                        }
+                        if deadline.is_elapsed() {
+                            return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
+                        }
+                    }
+                    facts
+                        .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                            source_set: Some(root.source_set.name.clone()),
+                            path: path.clone(),
+                            reason: reason.clone(),
+                        })
+                        .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+                }
+            }
+        }
+    }
+    for path in inconclusive_paths {
+        let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
+            Ok(owners) => owners,
+            Err(GeneratedPathInspectionError::Cancelled) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Cancelled)
+            }
+            Err(GeneratedPathInspectionError::TimedOut) => {
+                return Err(ConfigDumpInfoIndexInspectionError::TimedOut)
+            }
+            Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                return Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason))
+            }
+        };
+        let reason = "staged blob classification is inconclusive";
+        match owners {
+            Some([root]) => facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: Some(root.source_set.name.clone()),
+                    path,
+                    reason: reason.into(),
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?,
+            Some(owners) => {
+                facts
+                    .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                        source_set: None,
+                        path: path.clone(),
+                        reason: reason.into(),
+                    })
+                    .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+                for (owner_index, root) in owners.iter().enumerate() {
+                    if owner_index.is_multiple_of(256) {
+                        if cancellation.is_cancelled() {
+                            return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
+                        }
+                        if deadline.is_elapsed() {
+                            return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
+                        }
+                    }
+                    facts
+                        .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                            source_set: Some(root.source_set.name.clone()),
+                            path: path.clone(),
+                            reason: reason.into(),
+                        })
+                        .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?;
+                }
+            }
+            None => facts
+                .push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: None,
+                    path,
+                    reason: reason.into(),
+                })
+                .map_err(ConfigDumpInfoIndexInspectionError::Incomplete)?,
+        }
+    }
+    Ok(ConfigDumpInfoEvaluation {
+        facts: facts.into_facts(),
+        classifications,
+    })
 }
 
 fn sticky_process_result(
@@ -1688,6 +1563,29 @@ fn output_incomplete(output: &ProcessOutput) -> bool {
         || output.stderr_had_invalid_utf8
 }
 
+/// Why a `check-ignore -v` answer cannot be trusted, if it cannot.
+///
+/// The command echoes the matching pattern, which keeps the encoding of its
+/// ignore file (often cp1251). Only the pattern text can be non-UTF-8: the
+/// source and the path are paths Unica wrote, and the pattern is reported and
+/// only tested for its ASCII `!`, so its lossy text is enough. A truncated
+/// stream is not.
+/// Git skips a pattern file of 100 MiB or more with a warning; the answer
+/// then comes from part of the policy.
+fn ignore_failure_reason(output: &ProcessOutput) -> Option<String> {
+    if output.stdout_truncated || output.stderr_truncated {
+        return Some(completeness_reason(output));
+    }
+    if !output.status_success && !status_is_no_match(output) {
+        return Some(nonzero_reason(output));
+    }
+    output
+        .stderr
+        .lines()
+        .find(|line| line.starts_with("warning: ignoring excessively"))
+        .map(|warning| format!("Git ignored part of the ignore policy: {warning}"))
+}
+
 fn completeness_reason(output: &ProcessOutput) -> String {
     let mut reasons = Vec::new();
     if output.stdout_truncated {
@@ -1706,15 +1604,7 @@ fn completeness_reason(output: &ProcessOutput) -> String {
 }
 
 fn nonzero_reason(output: &ProcessOutput) -> String {
-    if output.stderr.trim().is_empty() {
-        format!("Git exited with {}", output.status)
-    } else {
-        format!(
-            "Git exited with {}: {}",
-            output.status,
-            output.stderr.trim()
-        )
-    }
+    stream_nonzero_reason(&output.status, &output.stderr)
 }
 
 fn status_is_no_match(output: &ProcessOutput) -> bool {
@@ -1852,95 +1742,241 @@ fn append_not_run_after_index(
 
 #[cfg(test)]
 pub(crate) fn parse_git_index_entries(stdout: &str) -> Result<Vec<GitIndexEntry>, String> {
-    parse_git_index_entries_with_checkpoint(stdout, &mut || Ok(())).map_err(|error| match error {
-        IndexParseError::Malformed(reason) => reason,
-        IndexParseError::Cancelled => "Git index parsing was cancelled".into(),
-        IndexParseError::TimedOut => "Git index parsing timed out".into(),
-    })
+    let Some(records) = stdout
+        .strip_suffix('\0')
+        .or(stdout.is_empty().then_some(""))
+    else {
+        return Err("Git index output is missing its terminal NUL".into());
+    };
+    let mut parser = GitIndexRecords::default();
+    let mut entries = Vec::new();
+    for record in records.split_terminator('\0') {
+        entries.extend(parser.push(record.as_bytes())?);
+    }
+    entries.extend(parser.finish());
+    Ok(entries)
 }
 
-pub(super) enum IndexParseError {
-    Malformed(String),
+/// Why the staged index could not be read completely.
+pub(crate) enum IndexReadError {
     Cancelled,
-    TimedOut,
+    /// Git could not be run.
+    Failed(String),
+    /// Git exited unsuccessfully or its output stream is incomplete.
+    Incomplete(String),
+    /// The Git process exceeded the inspection deadline.
+    ProcessTimedOut,
+    /// Reading the records reached the inspection deadline.
+    ParseTimedOut,
+    Malformed(String),
 }
 
-pub(super) fn parse_git_index_entries_controlled(
-    stdout: &str,
-    cancellation: &CancellationToken,
-    deadline: ProviderDeadline,
-) -> Result<Vec<GitIndexEntry>, IndexParseError> {
-    parse_git_index_entries_with_checkpoint(stdout, &mut || {
-        if cancellation.is_cancelled() {
-            Err(IndexParseError::Cancelled)
-        } else if deadline.is_elapsed() {
-            Err(IndexParseError::TimedOut)
-        } else {
-            Ok(())
-        }
-    })
+/// Merges the stage records of one path from `git ls-files --stage -z` into
+/// one entry. Git lists the index in byte order of paths, so the records of a
+/// path are adjacent and only one pending path is held.
+#[derive(Default)]
+pub(crate) struct GitIndexRecords {
+    pending: Option<PendingIndexPath>,
 }
 
-fn parse_git_index_entries_with_checkpoint(
-    stdout: &str,
-    checkpoint: &mut dyn FnMut() -> Result<(), IndexParseError>,
-) -> Result<Vec<GitIndexEntry>, IndexParseError> {
-    #[derive(Default)]
-    struct State {
-        records: usize,
-        blob_oid: Option<String>,
-        mode: Option<String>,
-    }
-    if !stdout.is_empty() && !stdout.ends_with('\0') {
-        return Err(IndexParseError::Malformed(
-            "Git index output is missing its terminal NUL".into(),
-        ));
-    }
-    let mut entries = BTreeMap::<String, State>::new();
-    checkpoint()?;
-    for (record_index, record) in stdout.split_terminator('\0').enumerate() {
-        if record_index % 256 == 0 {
-            checkpoint()?;
-        }
-        let (metadata, path) = record.split_once('\t').ok_or_else(|| {
-            IndexParseError::Malformed("Git index record has no tab separator".into())
-        })?;
+struct PendingIndexPath {
+    repo_path: String,
+    records: usize,
+    blob: Option<(String, String)>,
+}
+
+impl GitIndexRecords {
+    /// Accept one record; returns the previous path once it is complete.
+    pub(crate) fn push(&mut self, record: &[u8]) -> Result<Option<GitIndexEntry>, String> {
+        let record = std::str::from_utf8(record)
+            .map_err(|_| "Git index output contained invalid UTF-8".to_string())?;
+        let (metadata, path) = record
+            .split_once('\t')
+            .ok_or_else(|| "Git index record has no tab separator".to_string())?;
         if path.is_empty() {
-            return Err(IndexParseError::Malformed(
-                "Git index record has an empty path".into(),
-            ));
+            return Err("Git index record has an empty path".into());
         }
-        let fields = metadata.split_whitespace().collect::<Vec<_>>();
-        if fields.len() != 3 {
-            return Err(IndexParseError::Malformed(
-                "Git index record has invalid metadata".into(),
-            ));
-        }
-        let (mode, oid, stage) = (fields[0], fields[1], fields[2]);
+        let mut fields = metadata.split_whitespace();
+        let (Some(mode), Some(oid), Some(stage), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err("Git index record has invalid metadata".into());
+        };
         let usable = matches!(mode, "100644" | "100755")
             && stage == "0"
             && !oid.is_empty()
             && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
             && oid.bytes().any(|byte| byte != b'0');
-        let state = entries.entry(path.into()).or_default();
-        state.records += 1;
-        if state.records == 1 && usable {
-            state.blob_oid = Some(oid.into());
-            state.mode = Some(mode.into());
-        } else {
-            state.blob_oid = None;
-            state.mode = None;
+        if let Some(pending) = self.pending.as_mut() {
+            match path.cmp(pending.repo_path.as_str()) {
+                std::cmp::Ordering::Equal => {
+                    pending.records += 1;
+                    pending.blob = None;
+                    return Ok(None);
+                }
+                std::cmp::Ordering::Less => {
+                    return Err("Git index records are not in path order".into());
+                }
+                std::cmp::Ordering::Greater => {}
+            }
+        }
+        let next = PendingIndexPath {
+            repo_path: path.to_owned(),
+            records: 1,
+            blob: usable.then(|| (oid.to_owned(), mode.to_owned())),
+        };
+        Ok(self.pending.replace(next).map(PendingIndexPath::into_entry))
+    }
+
+    /// The last path, after the stream ended.
+    pub(crate) fn finish(self) -> Option<GitIndexEntry> {
+        self.pending.map(PendingIndexPath::into_entry)
+    }
+}
+
+impl PendingIndexPath {
+    fn into_entry(self) -> GitIndexEntry {
+        let (blob_oid, mode) = match self.blob.filter(|_| self.records == 1) {
+            Some((oid, mode)) => (Some(oid), Some(mode)),
+            None => (None, None),
+        };
+        GitIndexEntry {
+            repo_path: self.repo_path,
+            blob_oid,
+            mode,
         }
     }
-    checkpoint()?;
-    Ok(entries
-        .into_iter()
-        .map(|(repo_path, state)| GitIndexEntry {
-            repo_path,
-            blob_oid: state.blob_oid,
-            mode: state.mode,
-        })
-        .collect())
+}
+
+/// SHA-256 over parsed index entries in order. Equal digests prove the same
+/// staged index without keeping a second copy of its entries.
+pub(crate) struct GitIndexDigest(sha2::Sha256);
+
+impl Default for GitIndexDigest {
+    fn default() -> Self {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"unica-git-index-entries-v1\0");
+        Self(hasher)
+    }
+}
+
+impl GitIndexDigest {
+    pub(crate) fn update(&mut self, entry: &GitIndexEntry) {
+        use sha2::Digest;
+        for field in [
+            Some(entry.repo_path.as_str()),
+            entry.blob_oid.as_deref(),
+            entry.mode.as_deref(),
+        ] {
+            match field {
+                Some(field) => {
+                    self.0.update([1]);
+                    self.0.update((field.len() as u64).to_be_bytes());
+                    self.0.update(field.as_bytes());
+                }
+                None => self.0.update([0]),
+            }
+        }
+    }
+
+    pub(crate) fn finish(self) -> [u8; 32] {
+        use sha2::Digest;
+        self.0.finalize().into()
+    }
+}
+
+/// Stream the staged index of `repository_root` to `on_entry`, one merged
+/// entry per path in path order. Entries may already have been delivered when
+/// an error is returned; a caller keeps them only after `Ok`.
+pub(crate) fn read_git_index(
+    runner: &dyn ProcessRunner,
+    repository_root: &Path,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+    on_entry: &mut dyn FnMut(GitIndexEntry),
+) -> Result<(), IndexReadError> {
+    if cancellation.is_cancelled() {
+        return Err(IndexReadError::Cancelled);
+    }
+    if deadline.is_elapsed() {
+        return Err(IndexReadError::ProcessTimedOut);
+    }
+    let command = process_command(
+        repository_root,
+        ["ls-files", "--cached", "--stage", "-z"],
+        cancellation,
+        deadline,
+    );
+    let mut parser = GitIndexRecords::default();
+    let mut stopped = None;
+    let mut records = 0_usize;
+    let output = runner.run_streaming_records(&command, &[], 0, &mut |record| {
+        if records.is_multiple_of(256) {
+            if cancellation.is_cancelled() {
+                stopped = Some(IndexReadError::Cancelled);
+                return StreamControl::Stop;
+            }
+            if deadline.is_elapsed() {
+                stopped = Some(IndexReadError::ParseTimedOut);
+                return StreamControl::Stop;
+            }
+        }
+        records += 1;
+        match parser.push(record) {
+            Ok(entry) => {
+                entry.map(&mut *on_entry);
+                StreamControl::Continue
+            }
+            Err(reason) => {
+                stopped = Some(IndexReadError::Malformed(reason));
+                StreamControl::Stop
+            }
+        }
+    });
+    if cancellation.is_cancelled() {
+        return Err(IndexReadError::Cancelled);
+    }
+    let output = output.map_err(IndexReadError::Failed)?;
+    if let Some(error) = stopped {
+        return Err(error);
+    }
+    if output.cancelled {
+        return Err(IndexReadError::Cancelled);
+    }
+    if output.timed_out {
+        return Err(IndexReadError::ProcessTimedOut);
+    }
+    match output.line_error {
+        Some((_, error)) if error == unica_process::STREAM_RECORD_UNTERMINATED_ERROR => {
+            return Err(IndexReadError::Malformed(
+                "Git index output is missing its terminal NUL".into(),
+            ));
+        }
+        Some((_, error)) => return Err(IndexReadError::Incomplete(error)),
+        None => {}
+    }
+    if !output.status_success {
+        return Err(IndexReadError::Incomplete(stream_nonzero_reason(
+            &output.status,
+            &output.stderr,
+        )));
+    }
+    if deadline.is_elapsed() {
+        return Err(IndexReadError::ParseTimedOut);
+    }
+    if let Some(entry) = parser.finish() {
+        on_entry(entry);
+    }
+    Ok(())
+}
+
+fn stream_nonzero_reason(status: &str, stderr: &str) -> String {
+    if stderr.trim().is_empty() {
+        format!("Git exited with {status}")
+    } else {
+        format!("Git exited with {status}: {}", stderr.trim())
+    }
 }
 
 #[cfg(test)]
@@ -2091,19 +2127,25 @@ fn ignore_facts_with_checkpoint(
     staged_ignore_root: &Path,
     checkpoint: &mut dyn FnMut() -> Result<(), IgnoreInspectionError>,
 ) -> Result<Vec<ProjectHealthFact>, IgnoreInspectionError> {
+    // `check-ignore -v` reports the deciding pattern, and a negated one
+    // (`!pattern`) decides that the path is not ignored.
     let mut staged_by_path = BTreeMap::new();
     for (match_index, matched) in staged_matches.iter().enumerate() {
         if match_index.is_multiple_of(256) {
             checkpoint()?;
         }
-        staged_by_path.insert(matched.path.as_str(), matched);
+        if !matched.pattern.starts_with('!') {
+            staged_by_path.insert(matched.path.as_str(), matched);
+        }
     }
     let mut working_by_path = BTreeMap::new();
     for (match_index, matched) in working_matches.iter().enumerate() {
         if match_index.is_multiple_of(256) {
             checkpoint()?;
         }
-        working_by_path.insert(matched.path.as_str(), matched);
+        if !matched.pattern.starts_with('!') {
+            working_by_path.insert(matched.path.as_str(), matched);
+        }
     }
     let mut tracked = BTreeSet::new();
     for (entry_index, entry) in entries.iter().enumerate() {
@@ -2200,12 +2242,6 @@ fn materialize_staged_ignore_files(
     if staged_ignore_files.is_empty() {
         return Ok(root);
     }
-    if staged_ignore_files.len() > MAX_STAGED_IGNORE_FILES {
-        return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-            "staged ignore policy contains {} .gitignore files; inspection supports at most {MAX_STAGED_IGNORE_FILES}",
-            staged_ignore_files.len()
-        )));
-    }
     if let StagedBlobReadSafety::Blocked(reason) = blob_read_safety {
         return Err(StagedIgnoreMaterializationError::Incomplete(reason.clone()));
     }
@@ -2244,44 +2280,14 @@ fn materialize_staged_ignore_files(
             deadline,
         )?;
     }
-    let blobs = read_staged_ignore_blobs(
+    write_staged_ignore_blobs(
         runner,
         repository_root,
         &staged_ignore_files,
+        root.path(),
         cancellation,
         deadline,
     )?;
-    for (path, oid) in staged_ignore_files {
-        if cancellation.is_cancelled() {
-            return Err(StagedIgnoreMaterializationError::Cancelled);
-        }
-        if deadline.is_elapsed() {
-            return Err(StagedIgnoreMaterializationError::Incomplete(
-                "staged .gitignore blob inspection timed out".into(),
-            ));
-        }
-        let relative = Path::new(path);
-        let target = root.path().join(relative);
-        let mut target_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&target)
-            .map_err(|error| {
-                let reason = if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    format!(
-                        "staged .gitignore path {path} collides with another host path identity"
-                    )
-                } else {
-                    format!("create staged .gitignore blob {path}: {error}")
-                };
-                StagedIgnoreMaterializationError::Incomplete(reason)
-            })?;
-        target_file.write_all(&blobs[oid]).map_err(|error| {
-            StagedIgnoreMaterializationError::Incomplete(format!(
-                "write staged .gitignore blob {path}: {error}"
-            ))
-        })?;
-    }
     for candidate in candidates {
         let candidate = Path::new(&candidate.repo_path);
         let parent = candidate.parent().ok_or_else(|| {
@@ -2306,132 +2312,209 @@ fn materialize_staged_ignore_files(
     Ok(root)
 }
 
-fn read_staged_ignore_blobs(
+/// Write the staged blob of every `(path, oid)` in `files` to that path
+/// below `target_root` as `git cat-file --batch` streams it, holding no more
+/// than the current piece. Paths of one blob get a copy of the first.
+fn write_staged_ignore_blobs(
     runner: &dyn ProcessRunner,
     repository_root: &Path,
     files: &[(&str, &str)],
+    target_root: &Path,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-) -> Result<BTreeMap<String, Vec<u8>>, StagedIgnoreMaterializationError> {
-    let oids = files.iter().map(|(_, oid)| *oid).collect::<BTreeSet<_>>();
+) -> Result<(), StagedIgnoreMaterializationError> {
+    let mut paths_by_oid = BTreeMap::<&str, Vec<&str>>::new();
+    for (path, oid) in files {
+        paths_by_oid.entry(oid).or_default().push(path);
+    }
     let mut input = Vec::new();
-    for oid in &oids {
+    for oid in paths_by_oid.keys() {
         input.extend_from_slice(oid.as_bytes());
         input.push(b'\n');
     }
-    let check = run_staged_ignore_batch(
+    let incomplete = StagedIgnoreMaterializationError::Incomplete;
+    let mut sizes = Vec::with_capacity(paths_by_oid.len());
+    let mut expected = paths_by_oid.keys();
+    stream_staged_ignore_batch(
         runner,
         repository_root,
         "--batch-check=%(objectname) %(objecttype) %(objectsize)",
         &input,
-        MAX_STAGED_IGNORE_BATCH_METADATA_BYTES + 1,
+        Some(b'\n'),
         cancellation,
         deadline,
+        &mut |line| {
+            let Some(oid) = expected.next() else {
+                return Err(incomplete(
+                    "Git returned unexpected staged .gitignore blob metadata".into(),
+                ));
+            };
+            let line = std::str::from_utf8(line).map_err(|_| {
+                incomplete(format!(
+                    "Git returned invalid staged .gitignore blob metadata for {oid}"
+                ))
+            })?;
+            let mut fields = line.split(' ');
+            let (Some(actual_oid), Some("blob"), Some(raw_size), None) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
+                return Err(incomplete(format!(
+                    "Git returned invalid staged .gitignore blob metadata for {oid}"
+                )));
+            };
+            if actual_oid != *oid {
+                return Err(incomplete(format!(
+                    "Git returned the wrong staged .gitignore blob object id for {oid}"
+                )));
+            }
+            let size = raw_size.parse::<u64>().map_err(|_| {
+                incomplete(format!(
+                    "Git returned an invalid staged .gitignore blob size for {oid}"
+                ))
+            })?;
+            sizes.push(size);
+            Ok(())
+        },
     )?;
-    let mut sizes = BTreeMap::<&str, usize>::new();
-    let lines = check.stdout.lines().collect::<Vec<_>>();
-    if lines.len() != oids.len() || !check.stdout.ends_with('\n') {
-        return Err(StagedIgnoreMaterializationError::Incomplete(
+    if sizes.len() != paths_by_oid.len() {
+        return Err(incomplete(
             "Git returned incomplete staged .gitignore blob metadata".into(),
         ));
     }
-    for (oid, line) in oids.iter().zip(lines) {
-        let mut fields = line.split(' ');
-        let (Some(actual_oid), Some("blob"), Some(raw_size), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "Git returned invalid staged .gitignore blob metadata for {oid}"
-            )));
-        };
-        if actual_oid != *oid {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "Git returned the wrong staged .gitignore blob object id for {oid}"
-            )));
-        }
-        let size = raw_size.parse::<usize>().map_err(|_| {
-            StagedIgnoreMaterializationError::Incomplete(format!(
-                "Git returned an invalid staged .gitignore blob size for {oid}"
-            ))
-        })?;
-        sizes.insert(oid, size);
+
+    enum Batch {
+        Header(Vec<u8>),
+        Body(u64, std::fs::File),
+        Trailer,
+        Done,
     }
-    let mut total_bytes = 0_usize;
-    for (_, oid) in files {
-        total_bytes = total_bytes
-            .checked_add(sizes[oid])
-            .unwrap_or(MAX_STAGED_IGNORE_TOTAL_BYTES + 1);
-        if total_bytes > MAX_STAGED_IGNORE_TOTAL_BYTES {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "staged .gitignore policy exceeds {MAX_STAGED_IGNORE_TOTAL_BYTES} bytes"
-            )));
-        }
-    }
-    let mut expected_batch_bytes = 0_usize;
-    for oid in &oids {
-        expected_batch_bytes += oid.len() + " blob ".len() + sizes[oid].to_string().len() + 1;
-        expected_batch_bytes += sizes[oid] + 1;
-    }
-    let batch = run_staged_ignore_batch(
+    let blobs = paths_by_oid.iter().zip(&sizes).collect::<Vec<_>>();
+    let create = |path: &str| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target_root.join(path))
+            .map_err(|error| {
+                incomplete(if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!(
+                        "staged .gitignore path {path} collides with another host path identity"
+                    )
+                } else {
+                    format!("create staged .gitignore blob {path}: {error}")
+                })
+            })
+    };
+    let mut next = 0_usize;
+    let mut state = Batch::Header(Vec::new());
+    stream_staged_ignore_batch(
         runner,
         repository_root,
         "--batch",
         &input,
-        expected_batch_bytes + 1,
+        None,
         cancellation,
         deadline,
+        &mut |mut chunk| {
+            while !chunk.is_empty() {
+                if matches!(state, Batch::Done) {
+                    return Err(incomplete(
+                        "Git returned unexpected trailing staged .gitignore blob bytes".into(),
+                    ));
+                }
+                let ((oid, paths), size) = blobs[next];
+                state = match std::mem::replace(&mut state, Batch::Done) {
+                    Batch::Header(mut header) => {
+                        let expected = format!("{oid} blob {size}\n");
+                        let taken = chunk.len().min(expected.len() - header.len());
+                        header.extend_from_slice(&chunk[..taken]);
+                        chunk = &chunk[taken..];
+                        if !expected.as_bytes().starts_with(&header) {
+                            return Err(incomplete(format!(
+                                "Git returned invalid staged .gitignore batch framing for {oid}"
+                            )));
+                        }
+                        if header.len() < expected.len() {
+                            Batch::Header(header)
+                        } else if *size == 0 {
+                            create(paths[0])?;
+                            Batch::Trailer
+                        } else {
+                            Batch::Body(*size, create(paths[0])?)
+                        }
+                    }
+                    Batch::Body(remaining, mut file) => {
+                        let taken = chunk
+                            .len()
+                            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+                        file.write_all(&chunk[..taken]).map_err(|error| {
+                            incomplete(format!(
+                                "write staged .gitignore blob {}: {error}",
+                                paths[0]
+                            ))
+                        })?;
+                        chunk = &chunk[taken..];
+                        let remaining = remaining - taken as u64;
+                        if remaining == 0 {
+                            Batch::Trailer
+                        } else {
+                            Batch::Body(remaining, file)
+                        }
+                    }
+                    Batch::Trailer => {
+                        if chunk[0] != b'\n' {
+                            return Err(incomplete(format!(
+                                "Git returned invalid staged .gitignore batch framing for {oid}"
+                            )));
+                        }
+                        chunk = &chunk[1..];
+                        for path in &paths[1..] {
+                            let mut copy = create(path)?;
+                            let mut first = std::fs::File::open(target_root.join(paths[0]))
+                                .map_err(|error| {
+                                    incomplete(format!(
+                                        "read staged .gitignore blob {}: {error}",
+                                        paths[0]
+                                    ))
+                                })?;
+                            std::io::copy(&mut first, &mut copy).map_err(|error| {
+                                incomplete(format!("write staged .gitignore blob {path}: {error}"))
+                            })?;
+                        }
+                        next += 1;
+                        if next == blobs.len() {
+                            Batch::Done
+                        } else {
+                            Batch::Header(Vec::new())
+                        }
+                    }
+                    Batch::Done => unreachable!("a finished batch takes no more bytes"),
+                };
+            }
+            Ok(())
+        },
     )?;
-    let output = batch.stdout.as_bytes();
-    let mut cursor = 0_usize;
-    let mut blobs = BTreeMap::new();
-    for oid in oids {
-        if cancellation.is_cancelled() {
-            return Err(StagedIgnoreMaterializationError::Cancelled);
-        }
-        if deadline.is_elapsed() {
-            return Err(StagedIgnoreMaterializationError::Incomplete(
-                "staged .gitignore blob inspection timed out".into(),
-            ));
-        }
-        let size = sizes[oid];
-        let header = format!("{oid} blob {size}\n");
-        if !output[cursor..].starts_with(header.as_bytes()) {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "Git returned invalid staged .gitignore batch framing for {oid}"
-            )));
-        }
-        cursor += header.len();
-        let end = cursor.checked_add(size).ok_or_else(|| {
-            StagedIgnoreMaterializationError::Incomplete(
-                "Git returned an oversized staged .gitignore blob".into(),
-            )
-        })?;
-        if output.get(end) != Some(&b'\n') {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "Git returned incomplete staged .gitignore blob bytes for {oid}"
-            )));
-        }
-        blobs.insert(oid.to_owned(), output[cursor..end].to_vec());
-        cursor = end + 1;
+    if !matches!(state, Batch::Done) {
+        let oid = blobs.get(next).map_or("", |((oid, _), _)| oid);
+        return Err(incomplete(format!(
+            "Git returned incomplete staged .gitignore blob bytes for {oid}"
+        )));
     }
-    if cursor != output.len() {
-        return Err(StagedIgnoreMaterializationError::Incomplete(
-            "Git returned unexpected trailing staged .gitignore blob bytes".into(),
-        ));
-    }
-    Ok(blobs)
+    Ok(())
 }
 
+/// Stream one `git cat-file` batch over `input`: `delimiter`-terminated
+/// records, or with no delimiter raw bytes in pieces.
 #[allow(clippy::too_many_arguments)]
-fn run_staged_ignore_batch(
+fn stream_staged_ignore_batch(
     runner: &dyn ProcessRunner,
     repository_root: &Path,
     mode: &str,
     input: &[u8],
-    capture_limit: usize,
+    delimiter: Option<u8>,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-) -> Result<ProcessOutput, StagedIgnoreMaterializationError> {
+    on_record: &mut dyn FnMut(&[u8]) -> Result<(), StagedIgnoreMaterializationError>,
+) -> Result<(), StagedIgnoreMaterializationError> {
     if cancellation.is_cancelled() {
         return Err(StagedIgnoreMaterializationError::Cancelled);
     }
@@ -2440,7 +2523,7 @@ fn run_staged_ignore_batch(
             "staged .gitignore blob inspection timed out".into(),
         ));
     }
-    let mut command = process_command_vec(
+    let command = process_command_vec(
         repository_root,
         vec![
             "--no-replace-objects".into(),
@@ -2450,28 +2533,50 @@ fn run_staged_ignore_batch(
         cancellation,
         deadline,
     );
-    command.capture_limits = Some((capture_limit, unica_process::STDERR_CAPTURE_LIMIT));
-    let output = match sticky_process_result(runner.run_with_input(&command, input), cancellation) {
-        Ok(output) => output,
-        Err(_) if cancellation.is_cancelled() => {
-            return Err(StagedIgnoreMaterializationError::Cancelled)
+    let mut failed = None;
+    let mut consume = |record: &[u8]| {
+        if cancellation.is_cancelled() {
+            failed = Some(StagedIgnoreMaterializationError::Cancelled);
+            return StreamControl::Stop;
         }
-        Err(reason) => return Err(StagedIgnoreMaterializationError::Incomplete(reason)),
+        match on_record(record) {
+            Ok(()) => StreamControl::Continue,
+            Err(error) => {
+                failed = Some(error);
+                StreamControl::Stop
+            }
+        }
     };
-    if output.cancelled || cancellation.is_cancelled() {
+    let output = match delimiter {
+        Some(delimiter) => runner.run_streaming_records(&command, input, delimiter, &mut consume),
+        None => runner.run_streaming_bytes(&command, input, &mut consume),
+    };
+    if cancellation.is_cancelled() {
         return Err(StagedIgnoreMaterializationError::Cancelled);
     }
-    if !output.status_success || output.timed_out || output_incomplete(&output) {
-        let reason = if output.timed_out {
-            "staged .gitignore blob inspection timed out".into()
-        } else if output_incomplete(&output) {
-            completeness_reason(&output)
-        } else {
-            nonzero_reason(&output)
-        };
-        return Err(StagedIgnoreMaterializationError::Incomplete(reason));
+    let output = output.map_err(StagedIgnoreMaterializationError::Incomplete)?;
+    if let Some(error) = failed {
+        return Err(error);
     }
-    Ok(output)
+    if output.cancelled {
+        return Err(StagedIgnoreMaterializationError::Cancelled);
+    }
+    if output.timed_out {
+        return Err(StagedIgnoreMaterializationError::Incomplete(
+            "staged .gitignore blob inspection timed out".into(),
+        ));
+    }
+    if let Some((_, error)) = output.line_error {
+        return Err(StagedIgnoreMaterializationError::Incomplete(format!(
+            "Git returned incomplete staged .gitignore blob output: {error}"
+        )));
+    }
+    if !output.status_success {
+        return Err(StagedIgnoreMaterializationError::Incomplete(
+            stream_nonzero_reason(&output.status, &output.stderr),
+        ));
+    }
+    Ok(())
 }
 
 fn materialize_exact_git_directories(
@@ -2587,13 +2692,8 @@ fn inspect_working_ignore_matches(
     if output.timed_out {
         return Ok(WorkingIgnoreInspection::TimedOut);
     }
-    if output_incomplete(&output) {
-        return Ok(WorkingIgnoreInspection::Incomplete(completeness_reason(
-            &output,
-        )));
-    }
-    if !output.status_success && !status_is_no_match(&output) {
-        return Ok(WorkingIgnoreInspection::Incomplete(nonzero_reason(&output)));
+    if let Some(reason) = ignore_failure_reason(&output) {
+        return Ok(WorkingIgnoreInspection::Incomplete(reason));
     }
     match parse_check_ignore_verbose_z_controlled(&output.stdout, cancellation, deadline) {
         Ok(matches) => Ok(WorkingIgnoreInspection::Complete(matches)),
@@ -2642,8 +2742,7 @@ fn tracked_generated_facts(
     deadline: ProviderDeadline,
 ) -> Result<Vec<ProjectHealthFact>, GeneratedPathInspectionError> {
     let cache = repo_path(repository_root, &context.cache_root);
-    let mut facts = Vec::new();
-    let mut fact_bytes = 0_usize;
+    let mut facts = ProjectHealthFacts::default();
     for (entry_index, entry) in entries.iter().enumerate() {
         if entry_index % 256 == 0 {
             if cancellation.is_cancelled() {
@@ -2679,19 +2778,6 @@ fn tracked_generated_facts(
         if generated {
             match source_owners.owners_for_repo_path(&entry.repo_path, cancellation, deadline)? {
                 Some(owners) if !owners.is_empty() => {
-                    let additional_bytes = owners.iter().fold(0_usize, |total, root| {
-                        total
-                            .saturating_add(entry.repo_path.len())
-                            .saturating_add(root.source_set.name.len())
-                    });
-                    fact_bytes = reserve_expanded_repository_fact_budget(
-                        facts.len(),
-                        fact_bytes,
-                        owners.len(),
-                        additional_bytes,
-                        "generated path",
-                    )
-                    .map_err(GeneratedPathInspectionError::Incomplete)?;
                     for (owner_index, root) in owners.iter().enumerate() {
                         if owner_index.is_multiple_of(256) {
                             if cancellation.is_cancelled() {
@@ -2701,48 +2787,24 @@ fn tracked_generated_facts(
                                 return Err(GeneratedPathInspectionError::TimedOut);
                             }
                         }
-                        facts.push(ProjectHealthFact::GeneratedPathTracked {
-                            source_set: Some(root.source_set.name.clone()),
-                            path: entry.repo_path.clone(),
-                        });
+                        facts
+                            .push(ProjectHealthFact::GeneratedPathTracked {
+                                source_set: Some(root.source_set.name.clone()),
+                                path: entry.repo_path.clone(),
+                            })
+                            .map_err(GeneratedPathInspectionError::Incomplete)?;
                     }
                 }
-                _ => {
-                    fact_bytes = reserve_expanded_repository_fact_budget(
-                        facts.len(),
-                        fact_bytes,
-                        1,
-                        entry.repo_path.len(),
-                        "generated path",
-                    )
-                    .map_err(GeneratedPathInspectionError::Incomplete)?;
-                    facts.push(ProjectHealthFact::GeneratedPathTracked {
+                _ => facts
+                    .push(ProjectHealthFact::GeneratedPathTracked {
                         source_set: None,
                         path: entry.repo_path.clone(),
-                    });
-                }
+                    })
+                    .map_err(GeneratedPathInspectionError::Incomplete)?,
             }
         }
     }
-    Ok(facts)
-}
-
-fn reserve_expanded_repository_fact_budget(
-    current_count: usize,
-    current_bytes: usize,
-    additional_count: usize,
-    additional_bytes: usize,
-    fact_kind: &str,
-) -> Result<usize, String> {
-    let next_count = current_count.saturating_add(additional_count);
-    let next_bytes = current_bytes.saturating_add(additional_bytes);
-    if next_count > MAX_EXPANDED_REPOSITORY_FACTS || next_bytes > MAX_EXPANDED_REPOSITORY_FACT_BYTES
-    {
-        return Err(format!(
-            "{fact_kind} fact budget exceeded while expanding source-set ownership"
-        ));
-    }
-    Ok(next_bytes)
+    Ok(facts.into_facts())
 }
 
 fn ambiguous_owner_reason(owners: &[&InspectedSourceRoot]) -> String {

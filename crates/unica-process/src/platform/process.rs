@@ -21,6 +21,7 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const TERMINATION_WAIT_LIMIT: Duration = Duration::from_millis(500);
 const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
 pub const STREAM_LINE_TOO_LONG_ERROR: &str = "line exceeds configured byte limit";
+pub const STREAM_RECORD_UNTERMINATED_ERROR: &str = "output ends inside a record";
 
 #[cfg(all(any(test, feature = "test-support"), windows))]
 struct JobAttachGateState {
@@ -1667,7 +1668,9 @@ impl ManagedChild {
     {
         drop(self.take_stdin());
         self.wait_for_line_output_inner(
-            max_line_bytes,
+            StreamFraming::Lines {
+                max_bytes: max_line_bytes,
+            },
             &mut |number, bytes| match on_line(number, bytes) {
                 StreamControl::Continue => ProcessLineReply::Continue,
                 StreamControl::Stop => ProcessLineReply::Stop,
@@ -1685,20 +1688,82 @@ impl ManagedChild {
             .take_stdin()
             .ok_or("process_failed: process stdin is unavailable")?;
         self.wait_for_line_output_inner(
-            max_line_bytes,
+            StreamFraming::Lines {
+                max_bytes: max_line_bytes,
+            },
             on_line,
             LineStreamInput::Replies(LineReplyWriter::start(stdin)),
         )
     }
 
+    /// Stream stdout as `delimiter`-terminated records of any length while
+    /// `input` is written to stdin, so neither side waits for the other.
+    /// Nothing of stdout is retained beyond the record being delivered; an
+    /// unterminated tail is reported in `line_error`.
+    pub fn wait_for_record_output(
+        &mut self,
+        input: Vec<u8>,
+        delimiter: u8,
+        on_record: &mut dyn FnMut(&[u8]) -> StreamControl,
+    ) -> Result<ManagedLineOutput, String> {
+        self.wait_for_stream_output(input, StreamFraming::Records { delimiter }, on_record)
+    }
+
+    /// [`ManagedChild::wait_for_record_output`] for raw bytes: stdout is
+    /// handed over in the pieces it is read in.
+    pub fn wait_for_byte_output(
+        &mut self,
+        input: Vec<u8>,
+        on_chunk: &mut dyn FnMut(&[u8]) -> StreamControl,
+    ) -> Result<ManagedLineOutput, String> {
+        self.wait_for_stream_output(input, StreamFraming::Chunks, on_chunk)
+    }
+
+    fn wait_for_stream_output(
+        &mut self,
+        input: Vec<u8>,
+        framing: StreamFraming,
+        on_record: &mut dyn FnMut(&[u8]) -> StreamControl,
+    ) -> Result<ManagedLineOutput, String> {
+        let mut stdin = self
+            .take_stdin()
+            .ok_or_else(|| "process_failed: process stdin is unavailable".to_string())?;
+        let writer = thread::spawn(move || stdin.write_all(&input));
+        let output = self.wait_for_line_output_inner(
+            framing,
+            &mut |_, bytes| match on_record(bytes) {
+                StreamControl::Continue => ProcessLineReply::Continue,
+                StreamControl::Stop => ProcessLineReply::Stop,
+            },
+            LineStreamInput::Closed,
+        );
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                // As in `run_with_input`: a failed wait no longer proves that
+                // every descendant released stdin, so the writer is detached.
+                self.terminate_after_wait_error();
+                drop(writer);
+                return Err(error);
+            }
+        };
+        let write_result = writer
+            .join()
+            .map_err(|_| "process_failed: process stdin writer panicked".to_string())?;
+        if !(output.timed_out || output.cancelled || output.stopped_by_consumer) {
+            write_result.map_err(process_error)?;
+        }
+        Ok(output)
+    }
+
     fn wait_for_line_output_inner(
         &mut self,
-        max_line_bytes: usize,
+        framing: StreamFraming,
         on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
         input: LineStreamInput,
     ) -> Result<ManagedLineOutput, String> {
         self.wait_for_line_output_inner_with_clock(
-            max_line_bytes,
+            framing,
             on_line,
             input,
             &SystemProcessWaitClock::new(),
@@ -1707,7 +1772,7 @@ impl ManagedChild {
 
     fn wait_for_line_output_inner_with_clock(
         &mut self,
-        max_line_bytes: usize,
+        framing: StreamFraming,
         on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
         mut input: LineStreamInput,
         clock: &dyn ProcessWaitClock,
@@ -1720,7 +1785,7 @@ impl ManagedChild {
                 "process_failed: controlled output requires stdout and stderr pipes".into(),
             );
         }
-        let stdout = start_line_reader(stdout, max_line_bytes);
+        let stdout = start_line_reader(stdout, framing);
         let stderr = start_reader(stderr, STDERR_CAPTURE_LIMIT);
         let started = clock.elapsed();
         let mut first_line_error = None;
@@ -1735,11 +1800,13 @@ impl ManagedChild {
                 .is_some_and(|limit| clock.elapsed().saturating_sub(started) >= limit)
                 || protected_finish
                     .is_some_and(|(anchor, limit)| clock.elapsed().saturating_sub(anchor) >= limit);
-            let drained = if stdout_eof
+            let skip_drain = stdout_eof
                 || input.is_writing()
                 || reply_write_error.is_some()
-                || (input.is_controlled() && deadline_expired)
-            {
+                || (input.is_controlled() && deadline_expired);
+            // An observer drain already waited up to one poll interval.
+            let drain_waited = !skip_drain && !input.is_controlled();
+            let drained = if skip_drain {
                 LineDrain::Pending
             } else {
                 drain_replied_line_messages(
@@ -1921,7 +1988,9 @@ impl ManagedChild {
                     continue;
                 }
             }
-            clock.sleep(PROCESS_POLL_INTERVAL);
+            if !drain_waited {
+                clock.sleep(PROCESS_POLL_INTERVAL);
+            }
         }
     }
 
@@ -3274,7 +3343,11 @@ enum LineMessage {
     End,
     Line(usize, Vec<u8>),
     TooLong(usize),
+    Unterminated(usize),
     ReadError(usize, String),
+    /// The records completed by one read, handed over together: one
+    /// handover per record would cost a thread switch each.
+    Records(Vec<(usize, Vec<u8>)>),
 }
 
 enum LineDrain {
@@ -3284,10 +3357,63 @@ enum LineDrain {
     Reply(ProcessLineReply),
 }
 
-fn start_line_reader<R>(pipe: Option<R>, max_line_bytes: usize) -> Option<Receiver<LineMessage>>
+/// How a stdout stream is cut into the units its consumer receives.
+#[derive(Debug, Clone, Copy)]
+enum StreamFraming {
+    /// LF-terminated lines of at most `max_bytes`; an unterminated tail is
+    /// still a line.
+    Lines { max_bytes: usize },
+    /// `delimiter`-terminated records of any length; an unterminated tail is
+    /// an error, never a record.
+    Records { delimiter: u8 },
+    /// The bytes exactly as read, in pieces of any size.
+    Chunks,
+}
+
+/// One read of a byte stream: a step of the stream, not a bound of its size.
+const BYTE_STREAM_CHUNK_BYTES: usize = 64 * 1024;
+
+fn start_chunk_reader<R>(pipe: Option<R>) -> Option<Receiver<LineMessage>>
 where
     R: Read + Send + 'static,
 {
+    pipe.map(|mut pipe| {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut chunk = vec![0_u8; BYTE_STREAM_CHUNK_BYTES];
+            let mut number = 1_usize;
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        let message = LineMessage::Line(number, chunk[..count].to_vec());
+                        if sender.send(message).is_err() {
+                            return;
+                        }
+                        number = number.saturating_add(1);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => {
+                        let _ = sender.send(LineMessage::ReadError(number, error.to_string()));
+                        return;
+                    }
+                }
+            }
+            let _ = sender.send(LineMessage::End);
+        });
+        receiver
+    })
+}
+
+fn start_line_reader<R>(pipe: Option<R>, framing: StreamFraming) -> Option<Receiver<LineMessage>>
+where
+    R: Read + Send + 'static,
+{
+    let (delimiter, max_bytes) = match framing {
+        StreamFraming::Lines { max_bytes } => (b'\n', Some(max_bytes)),
+        StreamFraming::Records { delimiter } => (delimiter, None),
+        StreamFraming::Chunks => return start_chunk_reader(pipe),
+    };
     pipe.map(|mut pipe| {
         let (sender, receiver) = mpsc::sync_channel(1);
         thread::spawn(move || {
@@ -3304,33 +3430,52 @@ where
                         return;
                     }
                 };
-                for byte in &chunk[..count] {
-                    if *byte == b'\n' {
-                        let message = if too_long {
-                            LineMessage::TooLong(line_number)
-                        } else {
-                            LineMessage::Line(line_number, std::mem::take(&mut line))
-                        };
-                        if sender.send(message).is_err() {
-                            return;
-                        }
-                        line.clear();
-                        too_long = false;
-                        line_number = line_number.saturating_add(1);
-                    } else if !too_long {
-                        if line.len() == max_line_bytes {
+                let mut rest = &chunk[..count];
+                let mut records = Vec::new();
+                while !rest.is_empty() {
+                    let end = rest.iter().position(|byte| *byte == delimiter);
+                    let part = &rest[..end.unwrap_or(rest.len())];
+                    if !too_long {
+                        if max_bytes.is_some_and(|max| line.len() + part.len() > max) {
                             line.clear();
                             too_long = true;
                         } else {
-                            line.push(*byte);
+                            line.extend_from_slice(part);
                         }
                     }
+                    let Some(end) = end else { break };
+                    rest = &rest[end + 1..];
+                    let message = if too_long {
+                        LineMessage::TooLong(line_number)
+                    } else if matches!(framing, StreamFraming::Records { .. }) {
+                        records.push((line_number, std::mem::take(&mut line)));
+                        line_number = line_number.saturating_add(1);
+                        continue;
+                    } else {
+                        LineMessage::Line(line_number, std::mem::take(&mut line))
+                    };
+                    if sender.send(message).is_err() {
+                        return;
+                    }
+                    line.clear();
+                    too_long = false;
+                    line_number = line_number.saturating_add(1);
+                }
+                if !records.is_empty() && sender.send(LineMessage::Records(records)).is_err() {
+                    return;
                 }
             }
             if too_long {
                 let _ = sender.send(LineMessage::TooLong(line_number));
             } else if !line.is_empty() {
-                let _ = sender.send(LineMessage::Line(line_number, line));
+                let message = match framing {
+                    StreamFraming::Lines { .. } => LineMessage::Line(line_number, line),
+                    StreamFraming::Records { .. } => LineMessage::Unterminated(line_number),
+                    StreamFraming::Chunks => {
+                        unreachable!("byte streams are read by start_chunk_reader")
+                    }
+                };
+                let _ = sender.send(message);
             }
             let _ = sender.send(LineMessage::End);
         });
@@ -3401,9 +3546,20 @@ fn drain_replied_line_messages(
             LineStreamKind::Controlled => LineDrain::Disconnected,
         };
     };
+    // An observer waits for the next line within one poll interval instead
+    // of returning at the first empty channel: the reader hands over one line
+    // at a time, so polling would cap a long stream at one line per interval.
+    let observe_slice_end = Instant::now() + PROCESS_POLL_INTERVAL;
     loop {
-        let message = if wait_for_end {
-            match receiver.recv_timeout(READER_WAIT_LIMIT) {
+        let wait = if wait_for_end {
+            Some(READER_WAIT_LIMIT)
+        } else if matches!(kind, LineStreamKind::Observe) {
+            Some(observe_slice_end.saturating_duration_since(Instant::now()))
+        } else {
+            None
+        };
+        let message = if let Some(wait) = wait {
+            match receiver.recv_timeout(wait) {
                 Ok(message) => message,
                 Err(mpsc::RecvTimeoutError::Timeout) => return LineDrain::Pending,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -3433,8 +3589,20 @@ fn drain_replied_line_messages(
                     return LineDrain::Reply(reply);
                 }
             }
+            LineMessage::Records(records) => {
+                for (number, bytes) in records {
+                    let reply = on_line(number, &bytes);
+                    if reply != ProcessLineReply::Continue {
+                        return LineDrain::Reply(reply);
+                    }
+                }
+            }
             LineMessage::TooLong(number) => {
                 first_error.get_or_insert_with(|| (number, STREAM_LINE_TOO_LONG_ERROR.to_string()));
+            }
+            LineMessage::Unterminated(number) => {
+                first_error
+                    .get_or_insert_with(|| (number, STREAM_RECORD_UNTERMINATED_ERROR.to_string()));
             }
             LineMessage::ReadError(number, error) => {
                 first_error.get_or_insert_with(|| {
@@ -3887,6 +4055,14 @@ mod tests {
                 let mut input = String::new();
                 std::io::stdin().read_to_string(&mut input).unwrap();
                 print!("stdin closed");
+            }
+            "echo_stdin" => {
+                // The harness has already printed its banner; exiting here
+                // keeps its trailer out of the echoed stream.
+                let mut stdout = std::io::stdout().lock();
+                std::io::copy(&mut std::io::stdin(), &mut stdout).unwrap();
+                stdout.flush().unwrap();
+                std::process::exit(0);
             }
             "echo_stdin_len" => {
                 let mut input = Vec::new();
@@ -5761,6 +5937,121 @@ mod tests {
         assert!(output.stdout.contains("missing"), "{}", output.stdout);
     }
 
+    fn record_echo_helper() -> ManagedChild {
+        ManagedChild::spawn(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".into(),
+                "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(OsString::from(HELPER_ENV), OsString::from("echo_stdin"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: Some(Duration::from_secs(30)),
+            cancellation: CancellationToken::new(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn record_stream_delivers_every_record_past_the_capture_limit_while_writing_stdin() {
+        // The echo starts answering before stdin ends. Both sides exceed a
+        // pipe buffer and the whole output exceeds the default capture, so a
+        // capture or a sequential write would truncate or deadlock.
+        let long = vec![b'x'; 2 * super::STDOUT_CAPTURE_LIMIT];
+        // The leading NUL ends the harness banner as its own record.
+        let mut input = vec![0];
+        input.extend_from_slice(&long);
+        input.push(0);
+        let short_records = 100_000_usize;
+        for number in 0..short_records {
+            input.extend_from_slice(format!("record-{number}").as_bytes());
+            input.push(0);
+        }
+        assert!(input.len() > 3 * super::STDOUT_CAPTURE_LIMIT);
+        let mut records = Vec::new();
+        let output = record_echo_helper()
+            .wait_for_record_output(input, 0, &mut |record| {
+                records.push(record.to_vec());
+                StreamControl::Continue
+            })
+            .unwrap();
+
+        assert!(output.status_success, "{output:?}");
+        assert_eq!(output.line_error, None);
+        assert_eq!(records.len(), short_records + 2);
+        assert_eq!(records[1], long);
+        assert_eq!(records[2], b"record-0");
+        assert_eq!(
+            records.last().unwrap(),
+            format!("record-{}", short_records - 1).as_bytes()
+        );
+    }
+
+    #[test]
+    fn byte_stream_delivers_the_exact_bytes_past_the_capture_limit() {
+        let mut input = vec![0];
+        for number in 0..(3 * super::STDOUT_CAPTURE_LIMIT) {
+            input.push((number % 251) as u8);
+        }
+        let mut received = Vec::new();
+        let output = record_echo_helper()
+            .wait_for_byte_output(input.clone(), &mut |chunk| {
+                received.extend_from_slice(chunk);
+                StreamControl::Continue
+            })
+            .unwrap();
+
+        assert!(output.status_success, "{output:?}");
+        assert_eq!(output.line_error, None);
+        // The harness banner ends at the first NUL of the echoed input.
+        let start = received.len() - input.len();
+        assert_eq!(received[start..], input[..]);
+    }
+
+    #[test]
+    fn record_stream_reports_an_unterminated_tail_instead_of_a_record() {
+        let mut records = Vec::new();
+        let output = record_echo_helper()
+            .wait_for_record_output(b"\0first\0second\0tail".to_vec(), 0, &mut |record| {
+                records.push(record.to_vec());
+                StreamControl::Continue
+            })
+            .unwrap();
+
+        assert_eq!(records[1..], [b"first".to_vec(), b"second".to_vec()]);
+        assert_eq!(
+            output.line_error,
+            Some((4, super::STREAM_RECORD_UNTERMINATED_ERROR.to_string()))
+        );
+    }
+
+    #[test]
+    fn record_stream_consumer_can_stop_before_the_input_is_consumed() {
+        let mut input = Vec::new();
+        for _ in 0..200_000 {
+            input.extend_from_slice(b"record\0");
+        }
+        let mut seen = 0;
+        let output = record_echo_helper()
+            .wait_for_record_output(input, 0, &mut |_| {
+                seen += 1;
+                if seen == 3 {
+                    StreamControl::Stop
+                } else {
+                    StreamControl::Continue
+                }
+            })
+            .unwrap();
+
+        assert_eq!(seen, 3);
+        assert!(output.stopped_by_consumer, "{output:?}");
+        assert!(!output.status_success);
+    }
+
     #[test]
     fn managed_child_drains_output_while_writing_more_than_a_pipe_buffer() {
         let input = vec![b'x'; 2 * 1024 * 1024];
@@ -6412,7 +6703,10 @@ mod tests {
     #[test]
     fn controlled_stdout_read_error_stays_an_error_after_disconnect() {
         let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Error);
-        let receiver = super::start_line_reader(Some(reader), 1024);
+        let receiver = super::start_line_reader(
+            Some(reader),
+            super::StreamFraming::Lines { max_bytes: 1024 },
+        );
         let mut error = None;
         let mut lines = 0;
         let mut on_line = |_, bytes: &[u8]| {
@@ -6465,7 +6759,10 @@ mod tests {
     #[test]
     fn controlled_stdout_reader_panic_is_not_eof() {
         let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Panic);
-        let receiver = super::start_line_reader(Some(reader), 1024);
+        let receiver = super::start_line_reader(
+            Some(reader),
+            super::StreamFraming::Lines { max_bytes: 1024 },
+        );
         let mut error = None;
         let mut lines = 0;
         let mut on_line = |_, bytes: &[u8]| {
@@ -6842,7 +7139,7 @@ mod tests {
         let mut tails = 0;
         let output = managed
             .wait_for_line_output_inner_with_clock(
-                1024,
+                super::StreamFraming::Lines { max_bytes: 1024 },
                 &mut |_, bytes| match bytes {
                     br#"{"event":"ready"}"# => {
                         cancellation.handoff_with_gate(|| Ok(())).unwrap();
@@ -6891,7 +7188,10 @@ mod tests {
                 .stderr(Stdio::piped())
                 .spawn()
                 .unwrap();
-            let stdout = super::start_line_reader(child.stdout.take(), 1024);
+            let stdout = super::start_line_reader(
+                child.stdout.take(),
+                super::StreamFraming::Lines { max_bytes: 1024 },
+            );
             let stderr = super::start_reader(child.stderr.take(), super::STDERR_CAPTURE_LIMIT);
             let status = child.wait().expect("child finished before output drain");
             let mut first_error = None;

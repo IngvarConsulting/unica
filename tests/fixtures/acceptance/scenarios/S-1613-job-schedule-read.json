@@ -1,0 +1,502 @@
+{
+  "id": "S-1613-job-schedule-read",
+  "issue": 1613,
+  "area": "Метаданные",
+  "task": "Прочитать два расписания регламентных заданий по выданным адресам, различить все 14 фактов и отсутствие третьего артефакта, сохранить декларации владельцев и исходники.",
+  "workspace": "tests/fixtures/acceptance/workspace-job-schedule",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sourceSets/0/name",
+          "eq": "main"
+        },
+        {
+          "pointer": "/data/sourceSets/0/sourceFormat",
+          "eq": "platform_xml"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "0752ec883ba9cb3805dff05539c75c0268db1334e93fc828286f5e34a767a1fe"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml",
+          "eq": "4e53eea081d683d8aa785fc8ed603774f0ca4e42c11a7c975982b9868f88b206"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/Market.xml",
+          "eq": "4f3479a95aa376f1536e50044804d29bd412106dc0f399f93f50a220f37f12da"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/Missing.xml",
+          "eq": "87cd2144d521c745ab677a7d2681f280bc4352728174b73cc035e19bfc641e02"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml",
+          "eq": "f7b78663c45f6056fe647a8557ff9d06ad1c7864f8d52b53a5834f9abe2b085b"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/MonthClose.xml",
+          "eq": "87c4256747e9b8406726a64c16759b55af9d51f9dfadb9e291739fe063fc2177"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "ScheduledJobs/MonthClose.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ScheduledJob.MonthClose"
+        }
+      ],
+      "captures": {
+        "ownerMonthClose": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ownerMonthClose"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ScheduledJob.MonthClose"
+        },
+        {
+          "pointer": "/data/props/Use",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/Predefined",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/Key",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/RestartCountOnFailure",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/props/RestartIntervalOnFailure",
+          "eq": 10
+        },
+        {
+          "pointer": "/data/props/handlerModule",
+          "eq": "CommonModule.MonthClose"
+        },
+        {
+          "pointer": "/data/props/handlerMethod",
+          "eq": "RunScheduled"
+        },
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:ScheduledJob.MonthClose.Schedule"
+        }
+      ],
+      "captures": {
+        "scheduleMonthClose": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.scheduleMonthClose"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ScheduledJob.MonthClose.Schedule"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Schedule"
+        },
+        {
+          "pointer": "/data/props/BeginDate",
+          "eq": "0001-01-01"
+        },
+        {
+          "pointer": "/data/props/EndDate",
+          "eq": "0001-01-01"
+        },
+        {
+          "pointer": "/data/props/BeginTime",
+          "eq": "00:00:00"
+        },
+        {
+          "pointer": "/data/props/EndTime",
+          "eq": "00:00:00"
+        },
+        {
+          "pointer": "/data/props/CompletionTime",
+          "eq": "00:00:00"
+        },
+        {
+          "pointer": "/data/props/CompletionInterval",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/props/RepeatPeriodInDay",
+          "eq": 3600
+        },
+        {
+          "pointer": "/data/props/RepeatPause",
+          "eq": 3600
+        },
+        {
+          "pointer": "/data/props/WeekDayInMonth",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/props/DayInMonth",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/props/WeeksPeriod",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/props/DaysRepeatPeriod",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/props/WeekDays",
+          "eq": "1 2 3 4 5 6 7"
+        },
+        {
+          "pointer": "/data/props/Months",
+          "eq": "1 2 3 4 5 6 7 8 9 10 11 12"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "present"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "ScheduledJobs/Market.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ScheduledJob.Market"
+        }
+      ],
+      "captures": {
+        "ownerMarket": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ownerMarket"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ScheduledJob.Market"
+        },
+        {
+          "pointer": "/data/props/Use",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/Predefined",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/Key",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/RestartCountOnFailure",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/props/RestartIntervalOnFailure",
+          "eq": 10
+        },
+        {
+          "pointer": "/data/props/handlerModule",
+          "eq": "CommonModule.Market"
+        },
+        {
+          "pointer": "/data/props/handlerMethod",
+          "eq": "RunScheduled"
+        },
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:ScheduledJob.Market.Schedule"
+        }
+      ],
+      "captures": {
+        "scheduleMarket": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.scheduleMarket"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ScheduledJob.Market.Schedule"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Schedule"
+        },
+        {
+          "pointer": "/data/props/BeginDate",
+          "eq": "0001-01-01"
+        },
+        {
+          "pointer": "/data/props/EndDate",
+          "eq": "0001-01-01"
+        },
+        {
+          "pointer": "/data/props/BeginTime",
+          "eq": "00:00:00"
+        },
+        {
+          "pointer": "/data/props/EndTime",
+          "eq": "00:00:00"
+        },
+        {
+          "pointer": "/data/props/CompletionTime",
+          "eq": "00:00:00"
+        },
+        {
+          "pointer": "/data/props/CompletionInterval",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/props/RepeatPeriodInDay",
+          "eq": 900
+        },
+        {
+          "pointer": "/data/props/RepeatPause",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/props/WeekDayInMonth",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/props/DayInMonth",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/props/WeeksPeriod",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/props/DaysRepeatPeriod",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/props/WeekDays",
+          "eq": "1 2 3 4 5 6 7"
+        },
+        {
+          "pointer": "/data/props/Months",
+          "eq": "1 2 3 4 5 6 7 8 9 10 11 12"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "present"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "ScheduledJobs/Missing.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ScheduledJob.Missing"
+        }
+      ],
+      "captures": {
+        "ownerMissing": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ownerMissing"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ScheduledJob.Missing"
+        },
+        {
+          "pointer": "/data/props/Use",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/Predefined",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/Key",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/RestartCountOnFailure",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/props/RestartIntervalOnFailure",
+          "eq": 10
+        },
+        {
+          "pointer": "/data/props/handlerModule",
+          "eq": "CommonModule.Missing"
+        },
+        {
+          "pointer": "/data/props/handlerMethod",
+          "eq": "RunScheduled"
+        },
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:ScheduledJob.Missing.Schedule"
+        }
+      ],
+      "captures": {
+        "scheduleMissing": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.scheduleMissing"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ScheduledJob.Missing.Schedule"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Schedule"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "absent"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "0752ec883ba9cb3805dff05539c75c0268db1334e93fc828286f5e34a767a1fe"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml",
+          "eq": "4e53eea081d683d8aa785fc8ed603774f0ca4e42c11a7c975982b9868f88b206"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/Market.xml",
+          "eq": "4f3479a95aa376f1536e50044804d29bd412106dc0f399f93f50a220f37f12da"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/Missing.xml",
+          "eq": "87cd2144d521c745ab677a7d2681f280bc4352728174b73cc035e19bfc641e02"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml",
+          "eq": "f7b78663c45f6056fe647a8557ff9d06ad1c7864f8d52b53a5834f9abe2b085b"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/MonthClose.xml",
+          "eq": "87c4256747e9b8406726a64c16759b55af9d51f9dfadb9e291739fe063fc2177"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "kind": "exists",
+          "path": "src/ScheduledJobs/Missing/Ext/Schedule.xml",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

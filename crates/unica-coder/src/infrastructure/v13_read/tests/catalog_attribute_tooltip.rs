@@ -36,19 +36,30 @@ fn member_views(fixture: &RealReaderFixture, at: &str) -> [Value; 2] {
 }
 
 fn localized(node: &Value) -> Value {
-    serde_json::from_str(
-        node["props"]["ToolTip"]
-            .as_str()
-            .expect("public ToolTip must preserve localized XML as compact JSON"),
-    )
-    .expect("public ToolTip must contain valid compact JSON")
+    let tooltip = node["props"]["ToolTip"].clone();
+    assert!(
+        tooltip.is_array(),
+        "public ToolTip must preserve localized XML as a nested array of translations"
+    );
+    tooltip
+}
+
+fn assert_no_tooltip(node: &Value) {
+    assert!(
+        node["props"].get("ToolTip").is_none(),
+        "an empty set of translations must not create ToolTip"
+    );
+    assert!(
+        !has_tooltip_limit(node),
+        "an empty set of translations is not damage"
+    );
 }
 
 fn expected_tooltip() -> Value {
-    json!({"kind": "localizedString", "values": [
+    json!([
         {"language": "ru", "content": "Настройки представления суммы прописью"},
         {"language": "en", "content": "Amount spelling settings & presentation"}
-    ]})
+    ])
 }
 
 fn has_tooltip_limit(node: &Value) -> bool {
@@ -61,7 +72,8 @@ fn has_tooltip_limit(node: &Value) -> bool {
 }
 
 fn assert_type(node: &Value, length: u64) {
-    let observed: Value = serde_json::from_str(node["props"]["type"].as_str().unwrap()).unwrap();
+    let observed = &node["props"]["type"];
+    assert!(observed.is_object(), "type must arrive as nested JSON");
     assert_eq!(observed["variants"][0]["kind"], "string");
     assert_eq!(observed["variants"][0]["length"], length);
     assert_eq!(observed["variants"][0]["allowedLength"], "variable");
@@ -108,10 +120,7 @@ fn catalog_attribute_tooltip_completes_six_facts_in_public_collection_and_detail
         assert_eq!(language["props"]["synonym"], "Код языка");
         assert_eq!(language["props"]["required"], false);
         assert_type(&language, 10);
-        assert_eq!(
-            localized(&language),
-            json!({"kind": "localizedString", "values": []})
-        );
+        assert_no_tooltip(&language);
     }
     for section in member_views(&fixture, SECTION) {
         assert_eq!(section["props"]["LineNumberLength"], 5);
@@ -132,24 +141,15 @@ fn catalog_attribute_tooltip_completes_six_facts_in_public_collection_and_detail
 }
 
 #[test]
-fn catalog_attribute_tooltip_absence_and_explicit_empty_values_remain_distinct() {
+fn catalog_attribute_tooltip_empty_set_reads_as_absence_but_an_empty_translation_survives() {
     for (replacement, expected) in [
         ("", None),
-        (
-            "<ToolTip/>",
-            Some(json!({"kind": "localizedString", "values": []})),
-        ),
-        (
-            "<ToolTip></ToolTip>",
-            Some(json!({"kind": "localizedString", "values": []})),
-        ),
-        (
-            "<ToolTip> \n\t </ToolTip>",
-            Some(json!({"kind": "localizedString", "values": []})),
-        ),
+        ("<ToolTip/>", None),
+        ("<ToolTip></ToolTip>", None),
+        ("<ToolTip> \n\t </ToolTip>", None),
         (
             "<ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></ToolTip>",
-            Some(json!({"kind": "localizedString", "values": [{"language": "ru", "content": ""}]})),
+            Some(json!([{"language": "ru", "content": ""}])),
         ),
     ] {
         let fixture = fixture_with_catalog(&replace_spelling_tooltip(CATALOG, replacement));
@@ -159,12 +159,12 @@ fn catalog_attribute_tooltip_absence_and_explicit_empty_values_remain_distinct()
                 assert_eq!(
                     localized(&node),
                     *expected,
-                    "explicit empty value: {replacement}"
+                    "an explicit empty translation is a value: {replacement}"
                 );
             } else {
                 assert!(
                     node["props"].get("ToolTip").is_none(),
-                    "absence must not inherit another ToolTip"
+                    "absence or an empty set must not create or inherit ToolTip: {replacement}"
                 );
             }
             assert!(
@@ -245,9 +245,9 @@ fn catalog_attribute_tooltip_damage_is_local_in_owner_row_and_detail() {
         );
         let language = read(&fixture, LANGUAGE);
         assert_eq!(language["props"]["Indexing"], "Index");
-        assert_eq!(
-            localized(&language),
-            json!({"kind": "localizedString", "values": []})
+        assert!(
+            language["props"].get("ToolTip").is_none(),
+            "the sibling's empty set must stay without ToolTip"
         );
         assert!(
             !has_tooltip_limit(&language),
@@ -282,7 +282,7 @@ fn catalog_attribute_tooltip_never_inherits_section_header_or_sibling_values() {
     }
     assert_eq!(
         localized(&read(&fixture, LANGUAGE)),
-        json!({"kind": "localizedString", "values": [{"language": "ru", "content": "Подсказка соседа"}]})
+        json!([{"language": "ru", "content": "Подсказка соседа"}])
     );
     assert_eq!(tree_snapshot(&fixture.source), before);
 }

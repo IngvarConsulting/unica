@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="d8b50168-86a7-41e4-a554-613caf0c2ec9">
+    <Properties><Name>FormAppearance</Name></Properties>
+    <ChildObjects><CommonForm>Appearance</CommonForm></ChildObjects>
+  </Configuration>
+</MetaDataObject>

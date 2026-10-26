@@ -557,6 +557,8 @@ pub struct MetaElementUpdateInput {
     pub fill_value: Option<MetaFillValue>,
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
+    /// `DenyIncompleteValues` of a register dimension.
+    pub deny_incomplete_values: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -570,6 +572,7 @@ pub struct MetaElementUpdate {
     pub fill_value: Option<MetaFillValue>,
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
+    pub deny_incomplete_values: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -629,6 +632,16 @@ const fn collection_spec(
         allows_position,
         allows_indexing: allows_type,
     }
+}
+
+/// Owners whose dimensions take `denyIncompleteValues` in this slice.
+pub fn metadata_deny_incomplete_values_is_allowed(owner: MetadataKind) -> bool {
+    matches!(
+        owner,
+        MetadataKind::AccumulationRegister
+            | MetadataKind::AccountingRegister
+            | MetadataKind::CalculationRegister
+    )
 }
 
 pub fn metadata_collection_spec(collection: MetaCollection) -> &'static MetaCollectionSpec {
@@ -844,10 +857,17 @@ impl MetaElementUpdate {
             && input.fill_value.is_none()
             && input.position.is_none()
             && input.indexing.is_none()
+            && input.deny_incomplete_values.is_none()
         {
             return Err(invalid_operation(
                 field,
                 "update must change at least one field",
+            ));
+        }
+        if input.deny_incomplete_values.is_some() && collection != MetaCollection::Dimensions {
+            return Err(invalid_operation(
+                format!("{field}.denyIncompleteValues"),
+                "denyIncompleteValues is a property of register dimensions",
             ));
         }
         let spec = metadata_collection_spec(collection);
@@ -872,6 +892,7 @@ impl MetaElementUpdate {
             fill_value: input.fill_value,
             position: input.position,
             indexing: input.indexing,
+            deny_incomplete_values: input.deny_incomplete_values,
         })
     }
 }
@@ -1653,6 +1674,16 @@ pub fn validate_metadata_operation_capabilities(
             elements,
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
+            for (index, element) in elements.iter().enumerate() {
+                if element.deny_incomplete_values.is_some()
+                    && !metadata_deny_incomplete_values_is_allowed(owner_kind)
+                {
+                    return Err(invalid_operation(
+                        format!("elements[{index}].denyIncompleteValues"),
+                        "denyIncompleteValues is available for dimensions of accumulation, accounting and calculation registers",
+                    ));
+                }
+            }
             let context = if scope.is_some() {
                 MetaElementScope::TabularSection
             } else {

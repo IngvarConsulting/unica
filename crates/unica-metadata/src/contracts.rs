@@ -104,6 +104,17 @@ fn fill_value_allowed(collection: crate::MetaCollection, site: Option<MetadataSi
     }
 }
 
+/// `DenyIncompleteValues` is published for the dimensions of the register
+/// kinds whose 8.3.27 dimensions carry it in this slice; a contract without
+/// a node does not know its owner and does not offer it.
+fn deny_incomplete_values_allowed(
+    collection: crate::MetaCollection,
+    site: Option<MetadataSite>,
+) -> bool {
+    collection == crate::MetaCollection::Dimensions
+        && site.is_some_and(|site| crate::metadata_deny_incomplete_values_is_allowed(site.owner))
+}
+
 pub const IDENTIFIER_PATTERN: &str = r"^[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$";
 
 /// Field definitions for both the raw typed input and the contextual Can.
@@ -172,6 +183,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
             }
         } else {
             fields.remove("templateType");
+            fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
@@ -216,6 +228,9 @@ fn metadata_element_schema(
         })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
+    if update && deny_incomplete_values_allowed(collection, site) {
+        fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
+    }
     let selector = if update { "newName" } else { "name" };
     fields[selector]
         .as_object_mut()
@@ -412,7 +427,7 @@ pub fn metadata_object_remove() -> OperationContract {
         schema: metadata_object_remove_input_schema().clone(),
         target: "The existing metadata object: <source-set>:<Kind>.<Name>.",
         effect: "Remove the object descriptor, its resource directory and its registration; update subsystem membership.",
-        notes: "References from other metadata refuse the removal and are listed by the referring address and property; remove them first. References only in module code or in query-language text (form and data composition queries, data composition expressions, role access restriction conditions; English or Russian kind names) are listed by address and line in the code_references warning of the plan; that text is left as it is, and executing its token confirms the removal. Compositions that list the object — subsystem content, role rights, command interfaces, the home page, exchange plan and functional option content — lose its entries in the same apply, named in the composition_cleaned warning of the plan. An editable vendor object is removed while staying on support; a locked vendor object, or one with a locked child, refuses under the deny support policy until a separate supportRule.set apply takes it off support, warns support_locked under warn and is removed silently under off. The support marker is not changed.",
+        notes: "References from other metadata refuse the removal and are listed by the referring address and property; remove them first. References only in module code or in query-language text (form and data composition queries, data composition expressions of templates and dynamic lists, role access restriction conditions; English or Russian kind names) are listed by address and line in the code_references warning of the plan; that text is left as it is, and executing its token confirms the removal. Compositions that list the object — subsystem content, role rights, command interfaces, the home page, exchange plan and functional option content — lose its entries in the same apply, named in the composition_cleaned warning of the plan. An editable vendor object is removed while staying on support; a locked vendor object, or one with a locked child, refuses under the deny support policy until a separate supportRule.set apply takes it off support, warns support_locked under warn and is removed silently under off. The support marker is not changed.",
         example_args: json!({}),
         help: METADATA_HELP,
         format_validators: &[],

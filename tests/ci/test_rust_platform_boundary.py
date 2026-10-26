@@ -4,7 +4,7 @@ import importlib.util
 import subprocess
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -45,6 +45,85 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         # Retained-workspace and process implementations own their IO.
         for owner in ("unica-workspace", "unica-process"):
             self.assertEqual(checker.check_source(f"crates/{owner}/src/lib.rs", "use std::fs;"), [])
+
+    def test_file_io_free_sources_refuse_third_party_file_crates(self) -> None:
+        checker = load_checker_module()
+        source = (
+            "use walkdir::WalkDir;\n"
+            "let entries = ::fs_err::read_dir(root)?;\n"
+            "tokio::fs::read(path).await?;\n"
+            "extern crate tempfile;\n"
+            "let mine = myglob::open();\n"
+            "// walkdir::WalkDir::new(root)\n"
+            "let text = \"tokio::fs\";\n"
+            "tokio::spawn(task);\n"
+            "use tokio::{io::{AsyncReadExt}, fs as files};\n"
+            "mod glob;\n"
+            "let matched = glob::matches(name);\n"
+        )
+        for path, layer in (("crates/unica-forms-designer/src/codec.rs", "component"),
+                            ("crates/unica-metadata/src/lib.rs", "domain")):
+            with self.subTest(path=path):
+                self.assertEqual(checker.check_source(path, source), [
+                    f"{path}:1: {layer} must not use file crate walkdir",
+                    f"{path}:2: {layer} must not use file crate fs_err",
+                    f"{path}:3: {layer} must not use file crate tokio::fs",
+                    f"{path}:4: {layer} must not use file crate tempfile",
+                    f"{path}:9: {layer} must not use file crate tokio::fs",
+                ])
+        for clean in ("use tokio::{sync::Mutex, fs_helper};\n", "use tokio::{io::{fs}, sync};\n"):
+            self.assertEqual(checker.check_source("crates/unica-dcs/src/lib.rs", clean), [], clean)
+        # Integration tests and other packages keep their file crates.
+        self.assertEqual(checker.check_source("crates/unica-forms-designer/tests/io.rs", source), [])
+        self.assertEqual(checker.check_source("crates/unica-workspace/src/walk.rs", source), [])
+
+    def test_file_io_free_manifests_refuse_file_crate_dependencies(self) -> None:
+        checker = load_checker_module()
+        workspace = {"tokio": {"version": "1", "features": ["rt", "fs"]}, "plain": {"version": "1"},
+                     "renamed": {"version": "2", "package": "walkdir"}}
+        manifest = (
+            '[package]\nname = "unica-xdto-designer"\n'
+            '[dependencies]\nwalkdir = "2"\nfs = { package = "fs-err", version = "2" }\nplain = { workspace = true }\n'
+            'tokio = { workspace = true }\nrenamed = { workspace = true }\n'
+            '[build-dependencies]\nglob = "0.3"\n'
+            '[target.\'cfg(unix)\'.dependencies]\nnotify = "6"\n'
+            '[dev-dependencies]\ntempfile = "3"\n'
+        )
+        path = "crates/unica-xdto-designer/Cargo.toml"
+        self.assertEqual(checker.check_manifest(path, manifest, workspace), [
+            f"{path}:0: unica-xdto-designer must not depend on file crate fs-err in [dependencies]",
+            f"{path}:0: unica-xdto-designer must not depend on file crate walkdir in [dependencies]",
+            f"{path}:0: unica-xdto-designer must not depend on file crate tokio with feature fs in [dependencies]",
+            f"{path}:0: unica-xdto-designer must not depend on file crate walkdir in [dependencies]",
+            f"{path}:0: unica-xdto-designer must not depend on file crate glob in [build-dependencies]",
+            f"{path}:0: unica-xdto-designer must not depend on file crate notify in [target.cfg(unix).dependencies]",
+        ])
+        # A feature may open tokio's file module; a renamed dev-dependency would hide a file crate.
+        opened = ('[package]\nname = "unica-dcs"\n[dependencies]\ntokio = { version = "1", optional = true }\n'
+                  '[features]\nasync = ["tokio?/fs"]\n[dev-dependencies]\nwd = { package = "walkdir", version = "2" }\n'
+                  'tempfile = "3"\n')
+        self.assertEqual(checker.check_manifest("crates/unica-dcs/Cargo.toml", opened, {}), [
+            "crates/unica-dcs/Cargo.toml:0: unica-dcs must not rename file crate walkdir as wd in [dev-dependencies]",
+            "crates/unica-dcs/Cargo.toml:0: unica-dcs must not depend on file crate tokio with feature fs in [dependencies]",
+        ])
+        # tokio without its file module, and any crate in a package that may do file IO, pass.
+        quiet = '[package]\nname = "unica-operations"\n[dependencies]\ntokio = { version = "1", features = ["rt", "sync"] }\n'
+        self.assertEqual(checker.check_manifest("crates/unica-operations/Cargo.toml", quiet, {}), [])
+        free = manifest.replace("unica-xdto-designer", "unica-workspace")
+        self.assertEqual(checker.check_manifest("crates/unica-workspace/Cargo.toml", free, workspace), [])
+
+    def test_file_io_free_package_list_follows_the_source_boundary(self) -> None:
+        checker = load_checker_module()
+        packages = checker.file_io_free_packages(REPO_ROOT)
+        self.assertIn("unica-address", packages)
+        self.assertIn("unica-forms-designer", packages)
+        self.assertIn("unica-operations", packages)
+        self.assertNotIn("unica-workspace", packages)
+        # The Clippy pass covers exactly the packages whose `src/` the text guard bounds.
+        for name, directory in packages.items():
+            with self.subTest(package=name):
+                source = PurePosixPath(directory, "src", "lib.rs")
+                self.assertTrue(checker._is_file_io_free_source(source) or checker._is_domain_source(source))
 
     def test_codecs_and_engines_reach_files_only_through_workspace(self) -> None:
         checker = load_checker_module()

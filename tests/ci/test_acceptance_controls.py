@@ -56,11 +56,32 @@ class ContentAssertionTests(unittest.TestCase):
             self.assertTrue(self.check({"pointer": "/data/value", "contains": expected}, {"value": [actual]}))
         self.assertEqual(self.check({"pointer": "/data/value", "eq": 1.0}, {"value": 1}), [])
 
+    def test_none_matches_refuses_any_element_with_all_named_fields(self):
+        pattern = {"code": "E", "focus": {"range": {"startLine": 18}}}
+        hit = {"code": "E", "focus": {"kind": "r", "range": {"startLine": 18, "endLine": 18}}}
+        miss = {"code": "E", "focus": {"kind": "r", "range": {"startLine": 8, "endLine": 8}}}
+        self.assertEqual(self.check({"pointer": "/data/value", "noneMatches": pattern}, {"value": [miss]}), [])
+        self.assertEqual(self.check({"pointer": "/data/value", "noneMatches": pattern}, {"value": []}), [])
+        self.assertTrue(self.check({"pointer": "/data/value", "noneMatches": pattern}, {"value": [miss, hit]}))
+        self.assertEqual(self.check({"pointer": "/data/value", "noneMatches": {"code": True}}, {"value": [{"code": 1}]}), [])
+        self.assertTrue(self.check({"pointer": "/data/value", "noneMatches": pattern}, {"value": "E"}))
+        self.assertTrue(self.check({"pointer": "/data/missing", "noneMatches": pattern}, {"value": []}))
+        with self.assertRaises(ValueError):
+            validate_controls({"tool": "unica.check", "args": {}, "expect": ["ok"],
+                               "assertions": [{"pointer": "/data/value", "noneMatches": "E"}]})
+
     def test_contains_is_substring_or_exact_array_element(self):
         self.assertEqual(self.check({"pointer": "/data/value", "contains": "слово"}, {"value": "два слова и слово"}), [])
         self.assertEqual(self.check({"pointer": "/data/value", "contains": {"at": "main:X"}}, {"value": [{"at": "main:X"}]}), [])
         self.assertTrue(self.check({"pointer": "/data/value", "contains": {"at": "main:X"}}, {"value": [{"at": "main:X", "extra": 1}]}))
         self.assertTrue(self.check({"pointer": "/data/value", "contains": {"x": 1}}, {"value": {"x": 1}}))
+
+    def test_same_items_ignores_order_but_counts_each_element(self):
+        assertion = {"pointer": "/data/value", "sameItems": ["a", "b", "a"]}
+        self.assertEqual(self.check(assertion, {"value": ["b", "a", "a"]}), [])
+        for actual in (["a", "b"], ["a", "b", "b"], ["a", "b", "a", "c"], "aba", None):
+            with self.subTest(actual=actual):
+                self.assertTrue(self.check(assertion, {"value": actual}))
 
     def test_controls_reject_invalid_pointer_operator_and_extra_fields(self):
         for assertion in [{"pointer": "data/x", "eq": 1}, {"pointer": "/~2", "eq": 1},

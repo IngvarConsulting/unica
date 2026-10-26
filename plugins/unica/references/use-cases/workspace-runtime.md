@@ -30,7 +30,12 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `no_memory` when this working copy has no memory of the infobase; the refusal offers a `pull` preview and a `push` preview with `force:true`. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Full pulling requires explicit `force:true` and provides no local-work protection; inspect the preview before execution.
 For source readiness independently of runtime availability, first
 call `unica.check {}`. It returns `status`, `ready`, `repositoryReady`,
-`checks[]` and `diagnostics[]` — the verdict on the workspace. The facts it
+`checks[]` and `diagnostics[]` — the verdict on the workspace. Every page
+repeats the whole verdict, `checks[]` and `diagnosticCount`; diagnostic groups
+arrive in pages of up to 20 (`limit` up to 50, about 64 KiB). When the answer
+has a `cursor`, call the `unica.check` continuation from `next` until
+`page.stoppedBy` is `complete`: it reads the saved verdict and does not inspect
+again. The facts it
 judges live in `unica.view {}`: `sourceSets` (possibly an empty array),
 `config`, `infobase` and the recommended `v8project.yaml` content. The split is
 the same as on a node, where `view {at}` gives `props` and `check {at}` gives
@@ -90,7 +95,11 @@ effect although no final receipt was durably saved. Inspect the actual
 infobase state and intended change, record the finding alongside the `taskId`,
 then decide a new action from that evidence. Unica does not replay this work
 automatically; a second `run` call is a new mutation, not a retry of the old
-Task.
+Task. A read-only call (`view`, `resolve`, `search`, `check`, `diff`, `docs`)
+changed nothing: its direct `outcome_uncertain` refusal says so and carries the
+same call in `next`, which is safe to send as a new call. A read-only call that
+had become a Task reports `outcome_uncertain` without `next`; it changed
+nothing either, so send the original call again.
 
 Each `sourceSets[].sourceFormat` describes working-tree discovery. Repository
 checks may additionally become applicable from staged index markers; do not
@@ -128,10 +137,21 @@ source-set path itself has no stronger structural evidence.
 | Build a `.cf`/`.cfe`/`.epf`/`.erf` from sources | `make`, `output`; for CF/CFE optional `sourceSet` and `extension` (CFE); EPF/ERF require `sourceSet` naming a singleton matching Designer external source set and a declared main configuration |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
-| Launch a 1C client | `launch`, `clientMode`, optional `execute`; `waitForExit` with `waitTimeoutMs` supports `thin` + `.epf`; terminal, no preview required |
+| Launch a 1C client | `launch`, `clientMode`, optional `execute` and `applicationParameter`; bounded `waitForExit` with `waitTimeoutMs` supports `thin` + `.epf` or an explicit application parameter; terminal, no preview required |
 | Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
 | Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
 | Apply or discard pending configuration changes | `apply` and `reset` — unavailable until the runner supports them ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
+
+For `launch`, `applicationParameter` passes one exact `/C` string to an enterprise
+client. Empty is distinct from omitted; NUL and `designer` are rejected. It may
+accompany `execute`; when waiting, that file must be `.epf`. Inspect `wait.exitCode`
+and `wait.timedOut`: completion alone does not prove an application update succeeded.
+The parameter and raw runner command are not echoed in the response. The pinned
+runner encodes the value for the 1C command-line parser on every OS, so quotes,
+spaces, tabs, line breaks and `/Execute` inside it reach `ПараметрЗапуска` as
+exactly one value and never become another launch key; an external processor
+opens only through `execute`. Delivery of 23 values, empty and quote-boundary ones
+included, is live-verified on macOS 8.3.27.2074; Windows and Linux are not measured live.
 
 A previewApply operation requires explicit boolean `dryRun`: `true` shows the
 plan without execution, and `false` executes using the current inputs. The API

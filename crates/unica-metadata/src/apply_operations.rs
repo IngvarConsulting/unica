@@ -608,4 +608,74 @@ mod tests {
             )
             .is_err());
     }
+
+    #[test]
+    fn deny_incomplete_values_is_published_only_for_dimensions_of_its_register_kinds() {
+        use crate::contracts::MetadataSite;
+        let field = |operation: MetadataOperation, owner| {
+            operation
+                .contract_at(Some(MetadataSite {
+                    owner,
+                    in_section: false,
+                }))
+                .schema["properties"]["values"]["properties"]
+                .get("denyIncompleteValues")
+                .cloned()
+        };
+        for owner in [
+            MetadataKind::AccumulationRegister,
+            MetadataKind::AccountingRegister,
+            MetadataKind::CalculationRegister,
+        ] {
+            assert_eq!(
+                field(MetadataOperation::DimensionSet, owner),
+                Some(json!({"type": "boolean"})),
+                "{owner:?}"
+            );
+            assert_eq!(
+                field(MetadataOperation::ResourceSet, owner),
+                None,
+                "{owner:?}"
+            );
+        }
+        assert_eq!(
+            field(
+                MetadataOperation::DimensionSet,
+                MetadataKind::InformationRegister
+            ),
+            None
+        );
+        let update = |owner| {
+            crate::validate_metadata_operation_capabilities(
+                owner,
+                &unica_address::source_target::MetadataAddress::parse(
+                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "InformationRegister.Prices",
+                )
+                .unwrap(),
+                &crate::MetaEditOperation::Update {
+                    collection: crate::MetaCollection::Dimensions,
+                    scope: None,
+                    elements: vec![crate::MetaElementUpdate {
+                        name: "Item".into(),
+                        new_name: None,
+                        synonym: None,
+                        comment: None,
+                        r#type: None,
+                        required: None,
+                        fill_value: None,
+                        position: None,
+                        indexing: None,
+                        deny_incomplete_values: Some(true),
+                    }],
+                },
+            )
+        };
+        let refused = update(MetadataKind::InformationRegister).unwrap_err();
+        assert_eq!(
+            refused.field.as_deref(),
+            Some("elements[0].denyIncompleteValues")
+        );
+        update(MetadataKind::AccumulationRegister).unwrap();
+    }
 }

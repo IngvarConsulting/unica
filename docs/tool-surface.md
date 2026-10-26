@@ -45,21 +45,22 @@ Plan typed edits with at and ops without writing; execute that saved plan with e
 
 ### `unica.check`
 
-Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node diagnostics are returned in stable pages.
+Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node findings and workspace diagnostic groups are returned in stable pages; every page repeats the whole verdict.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit to check workspace source-set admission; null is treated as omitted. |
-| `cursor` | string | нет | Continuation cursor from an earlier check of the same node; valid only with at. Omit, or pass an empty string or null, for the first page. |
-| `limit` | integer | нет | Maximum diagnostics in one node-check page, from 1 to 50; valid only with at. Omit for 20; null is treated as omitted. |
+| `cursor` | string | нет | Continue the same check with the same limit: the same node with at, or the same workspace verdict without it; later pages read the result saved by the first page. Omit, or pass an empty string or null, for the first page. |
+| `limit` | integer | нет | Maximum diagnostics in one page, from 1 to 50: node findings, or workspace diagnostic groups without at. Omit for 20; null is treated as omitted. Pages are also bounded by encoded bytes. |
 
-**Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
+**Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. Корневой вердикт, `checks` и `diagnosticCount` приходят целиком на каждой странице, а группы диагностик — страницами до 20 групп по умолчанию (максимум 50) и около 64 КиБ; page.stoppedBy сообщает limit/bytes/complete, группа не режется, cursor привязан к рабочему пространству и limit и читает вердикт, сохранённый первой страницей. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
 **Целевой контракт:** Держать таблицу вид → валидаторы закрытой и доказанной корпусом; на проводе у `check` нет аргумента выбора валидатора
 
 **Сценарии:**
 
 - Проверить, что рабочее пространство и его source set допущены
+- Дочитать все страницы групп диагностик корневого вердикта
 - Проверить один логический узел всеми валидаторами его вида и дочитать все страницы диагностик
 - Проверить читаемость узла без валидаторов
 
@@ -71,15 +72,15 @@ Compare readable logical nodes, or read exact source changes from a saved apply 
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `cursor` | string | только в ветви | Continue the same saved plan with the same limit. Only saved-plan reads support continuation. |
+| `cursor` | string | нет | Continue the same saved plan with the same limit. |
 | `executionToken` | string | по ветви | Token from apply planning; reads stored before/after bytes without executing. |
 | `left` | string | по ветви | Qualified logical address of the left node. |
 | `limit` | integer | нет | Maximum saved source chunks; default 20. Pages are also bounded by encoded bytes. |
 | `right` | string | по ветви | Qualified logical address of the right node. |
 
-**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников и без вычисляемого словаря `can`; сравнение сужается адресами узлов, фильтра нет. Курсора нет: усечённый ответ (`truncated: true`) называет усечение и советует сравнить узлы поменьше или поднять `limit`. Для left/right limit по умолчанию равен 100, максимум — 1000. Альтернатива executionToken читает точные сохранённые диапазоны before/after с контекстом до исполнения плана; страницы по умолчанию содержат до 20 chunks (максимум 50), также ограничены размером; page.stoppedBy сообщает limit/bytes/complete, cursor привязан к плану и limit. Входы плана проверяются без записи. Каждый chunk явно задаёт pathEncoding: utf8 для текста компонентов с /, base64-unix-bytes для точных native Unix bytes или base64-utf16le для точных Windows UTF-16LE units; группировка — (pathEncoding, path, side), кодировка пути независима от encoding содержимого. (отвечают типизированным `data`)
+**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников и без вычисляемого словаря `can`; сравнение сужается адресами узлов, фильтра нет. Усечённый ответ (`truncated: true`) выдаёт cursor: продолжение привязано к обоим адресам, limit и рабочему пространству и читает пару, сохранённую первой страницей. Страница сравнения left/right — до 20 изменений по умолчанию (максимум 50) и около 64 КиБ; page.stoppedBy сообщает limit/bytes/complete, изменение не режется, а одно изменение больше предела ответа даёт result_too_large. Альтернатива executionToken читает точные сохранённые диапазоны before/after с контекстом до исполнения плана; страницы по умолчанию содержат до 20 chunks (максимум 50), также ограничены размером; page.stoppedBy сообщает limit/bytes/complete, cursor привязан к плану и limit. Входы плана проверяются без записи. Каждый chunk явно задаёт pathEncoding: utf8 для текста компонентов с /, base64-unix-bytes для точных native Unix bytes или base64-utf16le для точных Windows UTF-16LE units; группировка — (pathEncoding, path, side), кодировка пути независима от encoding содержимого. (отвечают типизированным `data`)
 
-**Целевой контракт:** Добавить предметные diff-проекции и продолжение сохранённого сравнения
+**Целевой контракт:** Добавить предметные diff-проекции
 
 **Сценарии:**
 
@@ -114,20 +115,22 @@ Search bundled Unica and safe 1C documentation by topic, or open a document loca
 
 ### `unica.resolve`
 
-Emergency bridge between a logical address and the source layout, in both directions. Use it only when a path arrived from outside Unica - a diff, a build log, a stack trace - or when a file has to be opened outside Unica. To find an object by name use search; to read it use view.
+Bridge between a logical address and the source layout, in both directions. Use it when paths arrived from outside Unica - host grep hits, a diff, a build log, a stack trace - or when a file has to be opened outside Unica: `paths` turns many of them into addresses in one call. To find an object by name use search; to read it use view.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address whose source location is needed. |
 | `path` | string | нет | Path to a source file or object directory, absolute or relative to the workspace root. |
+| `paths` | array | нет | Batch of paths, each optionally `path:line` with a 1-based file line as `grep -n` prints it. Answers `data.items` in input order with `at` and `kind`; with a line, `line` is `inMethod` (`at` is the method holding it), `outsideMethod` (`at` is the module) or `notLineBased` (a tree file; `at` is its object). A failed item carries `code` and `message` instead; the others still resolve. |
 
-**Результат сейчас:** `data` несёт один предмет: `at`, `kind`, `path` и закрытый признак `lines`; ответ точный либо `not_found` и не несёт `rev` (отвечают типизированным `data`)
+**Результат сейчас:** `data` несёт один предмет: `at`, `kind`, `path` и закрытый признак `lines`; ответ точный либо `not_found` и не несёт `rev`. Пакет `paths` отвечает `data.items` по позиции входа: `at` и `kind`, у элемента со строкой — закрытый признак `line` (`inMethod`, `outsideMethod`, `notLineBased`); отказ элемента — его `code` и `message` на его позиции (отвечают типизированным `data`)
 
 **Целевой контракт:** Держать путь в одном редком инструменте: в частом ответе он звал бы читать файл мимо адреса
 
 **Сценарии:**
 
 - Узнать, какому объекту принадлежит путь, пришедший из диффа, лога сборки или трассы
+- Перевести совпадения поиска средствами хоста (`путь:строка`) в адреса методов одним вызовом
 - Получить путь к файлу или каталогу объекта, чтобы прочитать или починить его вне Unica
 - Узнать файл и диапазон строк метода, когда его открывают вне Unica
 
@@ -144,7 +147,7 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | `infobase` | string | нет | Named infobase; defaults to origin. The runner 0.15 adapter supports only origin. |
 | `op` | string | нет | Runner 1.0 operation name; omit to list the target dictionary and adapter support. |
 
-**Результат сейчас:** 10 из 13 операций целевого словаря исполнимы через закреплённый адаптер 0.15.2; upload, apply и reset отвечают `unsupported_operation` (разрыв #1246): раннер 0.15 умеет push --no-apply, apply и reset, но адаптер их ещё не исполняет, а upload раннера применяет конфигурацию БД; исходники идут через push, который применяет конфигурацию БД. Плановые операции требуют явный boolean dryRun: true показывает план, false исполняет без предварительного preview. run не принимает ifRev и не выдаёт rev. push перед загрузкой набора сверяет поколение базы и отказывает, если база ушла вперёд или памяти о ней нет; force:true перезаписывает базу без сверки. Изменённый набор push узнаёт по содержимому файлов, а не по времени изменения: восстановленная копия со старым временем грузится. push, которому нечего грузить, применяет загрузку, оставленную прежним push непринятой, и называет это в changed. pull требует force. infobase.create создаёт отсутствующую базу: файловую — сразу с основной конфигурацией проекта, и первый push грузит её набор, только если он изменился, а остальные наборы целиком; базу в кластере — пустой, и первый push грузит все наборы. Три исполнимые операции ограничены и публикуют поддержанную схему и отсутствующие гарантии. (отвечают типизированным `data`)
+**Результат сейчас:** 10 из 13 операций целевого словаря исполнимы через закреплённый адаптер 0.15.3; upload, apply и reset отвечают `unsupported_operation` (разрыв #1246): раннер 0.15 умеет push --no-apply, apply и reset, но адаптер их ещё не исполняет, а upload раннера применяет конфигурацию БД; исходники идут через push, который применяет конфигурацию БД. Плановые операции требуют явный boolean dryRun: true показывает план, false исполняет без предварительного preview. run не принимает ifRev и не выдаёт rev. push перед загрузкой набора сверяет поколение базы и отказывает, если база ушла вперёд или памяти о ней нет; force:true перезаписывает базу без сверки. Изменённый набор push узнаёт по содержимому файлов, а не по времени изменения: восстановленная копия со старым временем грузится. push, которому нечего грузить, применяет загрузку, оставленную прежним push непринятой, и называет это в changed. pull требует force. infobase.create создаёт отсутствующую базу: файловую — сразу с основной конфигурацией проекта, и первый push грузит её набор, только если он изменился, а остальные наборы целиком; базу в кластере — пустой, и первый push грузит все наборы. Три исполнимые операции ограничены и публикуют поддержанную схему и отсутствующие гарантии. (отвечают типизированным `data`)
 
 **Целевой контракт:** Ограничены три операции разработки; upload, apply и reset вернутся, когда адаптер станет исполнять push --no-apply, apply и reset раннера (#1246). Адаптер 1.0 расширяет те же имена контролем поколений и синхронизацией; текущий dryRun не фиксирует состояние базы или исходников между вызовами.
 
@@ -158,20 +161,21 @@ List canonical runtime operations and their invocation contract, or preview/exec
 
 ### `unica.search`
 
-Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Results use pages; provider roles report whether their finite search window is complete. Names report descriptor-read coverage separately from approximate name matching.
+Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Results use pages; `symbol` and `semantic` report whether their finite search window is complete. Names report descriptor-read coverage separately from approximate name matching.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `corpus` | string | нет | Where to search: `text` matches BSL module content and answers scope, line, column, snippet and the proven module address at; a hit without one carries unaddressed and fileId instead; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`. |
 | `cursor` | string | нет | Continue a previous search page. Bound to the question, source sets and page limit. Text search reads live sources; indexed providers report freshness and the build generation when known. |
+| `ignoreCase` | boolean | нет | Literal search without a role: ignore letter case. Omit to match case. |
 | `kind` | string | нет | `names` corpus only: narrow the search to one logical node kind. |
-| `limit` | integer | нет | Maximum matches per page, from 1 to 50. Provider roles may stop after their first 200 retrieved matches and mark the search incomplete. |
+| `limit` | integer | нет | Maximum matches per page, from 1 to 50. `symbol` and `semantic` may stop after their first 200 retrieved matches and mark the search incomplete. |
 | `query` | string | да | Literal BSL text, symbol, or metadata name to search for. |
-| `regex` | boolean | нет | Use a regular expression for local text search. |
-| `role` | string | нет | `text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself. |
+| `regex` | boolean | нет | Literal search without a role: match a regular expression instead of the literal text. |
+| `role` | string | нет | `text` corpus only: which provider answers. `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search, which pages to the last match; its first page adds `data.totals`, the exact matches and files by kind and the leading modules. |
 | `scope` | string | нет | logical subtree address |
 
-**Результат сейчас:** Локальный поиск по BSL и именам и поиск через поставщика возвращают `data.matches`, `page.stoppedBy` и, пока есть следующие полученные совпадения, `cursor`. Текстовый курсор повторно читает исходники и сообщает `dataFreshness: unknown`, `pageConsistency: live`: изменения могут сдвигать совпадения между страницами. Курсоры имён и поставщика повторно собирают ответ и проверяют его отпечаток; изменение такого ответа даёт `stale_cursor`. Ответы RLM сообщают поколение сборки и неизвестную актуальность относительно исходников, включая пустой результат. Ответы bsl-analyzer также помечают актуальность как неизвестную; поколение его собственного индекса Unica не определяет. Общая ревизия дерева не вычисляется. Локальный текстовый режим поддерживает литерал и regex. Кодовая роль запрашивает до 200 совпадений, но внутренние пределы bsl-analyzer и RLM могут остановить поиск раньше. Последняя страница полученного окна имеет `page.stoppedBy: complete`; при достижении квоты секция сохраняет `searchComplete: false`, `status: limitReached` и нижнюю оценку числа совпадений; при потере результата статус становится `partial`. При 200 полученных совпадениях ответ рекомендует уточнить запрос. (отвечают типизированным `data`)
+**Результат сейчас:** Локальный поиск по BSL и именам и поиск через поставщика возвращают `data.matches`, `page.stoppedBy` и, пока есть следующие полученные совпадения, `cursor`. Текстовый поиск без роли буквальный (литерал, `regex`, `ignoreCase`), принимает корень, ветвь, владельца или один модуль и сообщает `dataFreshness: unknown`, `pageConsistency: live`. Его первая страница несёт `data.totals` — точный объём всей области: совпадения и файлы, раскладку по видам объектов и модули-лидеры с адресами; курсор продолжает выдачу до последнего совпадения с места остановки, продолжение может закончиться по времени (`page.stoppedBy: deadline`), а изменение выданных совпадений в файле продолжения даёт `stale_cursor`. Курсоры имён и ранжирующих ролей повторно собирают ответ и проверяют его отпечаток; изменение такого ответа даёт `stale_cursor`. Ответы RLM сообщают поколение сборки и неизвестную актуальность относительно исходников, включая пустой результат. Ответы bsl-analyzer также помечают актуальность как неизвестную; поколение его собственного индекса Unica не определяет. Общая ревизия дерева не вычисляется. Роли `symbol` и `semantic` запрашивают до 200 совпадений, но внутренние пределы bsl-analyzer и RLM могут остановить поиск раньше. Последняя страница полученного окна имеет `page.stoppedBy: complete`; при достижении квоты секция сохраняет `searchComplete: false`, `status: limitReached` и нижнюю оценку числа совпадений; при потере результата статус становится `partial`. При 200 полученных совпадениях ответ рекомендует уточнить запрос. (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 

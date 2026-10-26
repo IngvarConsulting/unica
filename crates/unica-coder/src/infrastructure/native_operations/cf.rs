@@ -135,7 +135,7 @@ pub(crate) fn analyze_cf_info(
             .ok()
             .map(|text| parse_cf_command_interface_xml(&text))
             .transpose()?;
-        let parsed = parse_cf_info_xml(&text, support, home_page, interface)?;
+        let parsed = parse_cf_info_xml(&text, support, home_page, interface, None)?;
         Ok((parsed.data, config_path))
     })();
 

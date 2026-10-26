@@ -1,6 +1,5 @@
 use super::{
-    bounded_prop, member_properties, safe_prop, select_named, selected_scalar_props,
-    MAX_COMPACT_PROP_BYTES,
+    dropped_by_size, member_properties, place_prop, safe_prop, select_named, selected_scalar_props,
 };
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_execution_contract::view_error::ViewError;
@@ -30,6 +29,51 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "overrides",
     // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
     "unreadable",
+];
+
+/// Скаляры корня объекта метаданных в его `props`.
+const ROOT_SCALAR_KEYS: &[&str] = &[
+    "kind",
+    "synonym",
+    "support",
+    // Заимствование расширением: ключи есть только в наборе
+    // расширения и только у заимствованного объекта, кроме
+    // `belonging` — он отвечает у всякого объекта расширения.
+    "belonging",
+    "parentId",
+    "parentStatus",
+    "overridesCount",
+    "overridesComplete",
+    "overrides",
+];
+
+/// Скаляры члена объекта метаданных в его `props`.
+const ITEM_SCALAR_KEYS: &[&str] = &[
+    "synonym",
+    "comment",
+    "required",
+    "fillValue",
+    "addressingDimension",
+    "incomplete",
+    "template",
+    "httpMethod",
+    "handler",
+    "procedure",
+    "nillable",
+    "transactioned",
+    "direction",
+    // Предопределённый элемент: собственные скаляры и поля по виду
+    // владельца. Без них ветвь отвечала бы одним заголовком, то есть
+    // домом без содержимого.
+    "id",
+    "parentId",
+    "code",
+    "description",
+    "isFolder",
+    "accountType",
+    "offBalance",
+    "order",
+    "actionPeriodIsBase",
 ];
 
 pub(super) fn project_metadata_for_source(
@@ -84,25 +128,14 @@ fn project_metadata(
     member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> Result<NodeViewData, ViewError> {
     if suffix.is_empty() {
-        let mut props = selected_scalar_props(
-            payload,
-            &[
-                "kind",
-                "synonym",
-                "support",
-                // Заимствование расширением: ключи есть только в наборе
-                // расширения и только у заимствованного объекта, кроме
-                // `belonging` — он отвечает у всякого объекта расширения.
-                "belonging",
-                "parentId",
-                "parentStatus",
-                "overridesCount",
-                "overridesComplete",
-                "overrides",
-            ],
-        );
-        props.extend(metadata_property_props(payload));
-        props.extend(metadata_detail_props(payload));
+        let mut props = selected_scalar_props(payload, ROOT_SCALAR_KEYS);
+        let size_limits = dropped_by_size(payload, &props, address, |probe| {
+            selected_scalar_props(probe, ROOT_SCALAR_KEYS)
+        });
+        let mut limits = metadata_limits(payload);
+        limits.extend(size_limits);
+        props.extend(metadata_property_props(address, payload, &mut limits));
+        props.extend(metadata_detail_props(address, payload, &mut limits));
         // Счёт предопределённых элементов берётся из ответа читателя, а не из
         // длины страницы: при урезанной странице они расходятся, и ветвь
         // обещала бы меньше, чем есть.
@@ -124,6 +157,9 @@ fn project_metadata(
             })
             .collect::<Vec<_>>();
         let relations = metadata_relations(address, payload);
+        if matches!(address.segments(), [owner] if owner.kind() == NodeKind::ScheduledJob) {
+            branches.push(BranchRef::new(format!("{address}.Schedule"), 1));
+        }
         if !relations.is_empty() {
             branches.push(BranchRef::new(
                 format!("{}.{}", address, NodeKind::Relation.as_str()),
@@ -154,10 +190,63 @@ fn project_metadata(
                 props,
             )
             .with_branches(branches)
-            .with_limits(metadata_limits(payload)),
+            .with_limits(limits),
         ));
     }
     let first = &suffix[0];
+    if matches!(address.segments(), [owner, schedule]
+        if owner.kind() == NodeKind::ScheduledJob && schedule.kind() == NodeKind::Schedule)
+    {
+        let properties = payload
+            .get("properties")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "schedule reader returned a non-object payload",
+                )
+            })?;
+        let mut props = selected_scalar_props(
+            &Value::Object(properties.clone()),
+            &[
+                "state",
+                "BeginDate",
+                "EndDate",
+                "BeginTime",
+                "EndTime",
+                "CompletionTime",
+                "CompletionInterval",
+                "RepeatPeriodInDay",
+                "RepeatPause",
+                "WeekDayInMonth",
+                "DayInMonth",
+                "WeeksPeriod",
+                "DaysRepeatPeriod",
+                "WeekDays",
+                "Months",
+            ],
+        );
+        // Детальные расписания дня — массив тех же фактов, вложенным JSON
+        // без упаковки в строку и в общем пределе размера свойства (#2031).
+        let mut limits = Vec::new();
+        if let Some(detailed) = properties
+            .get("detailedDailySchedules")
+            .filter(|value| value.is_array())
+        {
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                "detailedDailySchedules",
+                detailed,
+                false,
+                "schedule detailedDailySchedules",
+            );
+        }
+        return Ok(NodeViewData::Node(
+            NodeView::new(address.to_string(), "Schedule", "Schedule", props).with_limits(limits),
+        ));
+    }
     if first.kind() == NodeKind::Relation {
         if suffix.len() > 1 || first.name().is_some() {
             return Err(ViewError::new(
@@ -670,37 +759,10 @@ fn metadata_item_node(
     item: &Value,
     member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> NodeView {
-    let mut limits = Vec::new();
-    let mut props = selected_scalar_props(
-        item,
-        &[
-            "synonym",
-            "comment",
-            "required",
-            "fillValue",
-            "addressingDimension",
-            "incomplete",
-            "template",
-            "httpMethod",
-            "handler",
-            "procedure",
-            "nillable",
-            "transactioned",
-            "direction",
-            // Предопределённый элемент: собственные скаляры и поля по виду
-            // владельца. Без них ветвь отвечала бы одним заголовком, то есть
-            // домом без содержимого.
-            "id",
-            "parentId",
-            "code",
-            "description",
-            "isFolder",
-            "accountType",
-            "offBalance",
-            "order",
-            "actionPeriodIsBase",
-        ],
-    );
+    let mut props = selected_scalar_props(item, ITEM_SCALAR_KEYS);
+    let mut limits = dropped_by_size(item, &props, address, |probe| {
+        selected_scalar_props(probe, ITEM_SCALAR_KEYS)
+    });
     if kind == NodeKind::StandardAttribute {
         let tabular = address
             .segments()
@@ -729,44 +791,36 @@ fn metadata_item_node(
             let Some(value) = property.get("value") else {
                 continue;
             };
-            if let Some(value) = bounded_prop(key, value) {
-                props.insert(key.to_string(), value);
-            } else if tabular
-                && (value.is_object() || value.is_array())
-                && value.to_string().len() > MAX_COMPACT_PROP_BYTES
-            {
-                limits.push(format!("metadata standard attribute property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
-            }
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                key,
+                value,
+                true,
+                &format!("metadata standard attribute property {key}"),
+            );
         }
     }
-    for key in ["accountingFlags", "extDimensionTypes"] {
-        if let Some(value) = item.get(key).and_then(|value| bounded_prop(key, value)) {
-            props.insert(key.to_string(), value);
+    for key in [
+        "accountingFlags",
+        "extDimensionTypes",
+        "returnType",
+        "type",
+        "fillValue",
+    ] {
+        if let Some(value) = item.get(key) {
+            let subject = format!("metadata {key}");
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                key,
+                value,
+                false,
+                &subject,
+            );
         }
-    }
-    if let Some(value) = item
-        .get("returnType")
-        .and_then(|value| bounded_prop("returnType", value))
-    {
-        props.insert("returnType".to_string(), value);
-    }
-    if let Some(value) = item.get("type") {
-        if let Some(compact) = bounded_prop("type", value) {
-            props.insert("type".to_string(), compact);
-        } else if matches!(value, Value::Object(_) | Value::Array(_))
-            && serde_json::to_string(value)
-                .is_ok_and(|rendered| rendered.len() > MAX_COMPACT_PROP_BYTES)
-        {
-            limits.push(format!(
-                "metadata type exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"
-            ));
-        }
-    }
-    if let Some(value) = item
-        .get("fillValue")
-        .and_then(|value| bounded_prop("fillValue", value))
-    {
-        props.insert("fillValue".to_string(), value);
     }
     let mut branches = [
         ("attributes", NodeKind::Attribute),
@@ -814,7 +868,7 @@ fn metadata_item_node(
                     .collect();
                 (Map::new(), limits)
             },
-            |(profile, context)| member_properties::project(profile, context, item),
+            |(profile, context)| member_properties::project(address, profile, context, item),
         );
     props.extend(member_props);
     limits.extend(member_limits);
@@ -837,7 +891,11 @@ fn metadata_item_node(
 /// не заслуживает ветви: адресовать внутри него нечего. Роль каждого поля
 /// называет ключ, и родительный падеж уходит в имя: `handlerModule`, а не
 /// `method.metadataPath`.
-fn metadata_detail_props(payload: &Value) -> Map<String, Value> {
+fn metadata_detail_props(
+    address: &QualifiedAddress,
+    payload: &Value,
+    limits: &mut Vec<String>,
+) -> Map<String, Value> {
     let mut props = Map::new();
     let Some(details) = payload
         .get("details")
@@ -866,39 +924,52 @@ fn metadata_detail_props(payload: &Value) -> Map<String, Value> {
             continue;
         };
         for (field, role) in roles {
-            if let Some(value) = composite
-                .get(field)
-                .and_then(|value| bounded_prop(role, value))
-            {
-                props.insert((*role).to_string(), value);
+            if let Some(value) = composite.get(field) {
+                let subject = format!("metadata {role}");
+                place_prop(&mut props, limits, address, role, value, false, &subject);
             }
         }
     }
-    if let Some(value) = details
-        .get("type")
-        .and_then(|value| bounded_prop("type", value))
-    {
-        props.insert("type".to_string(), value);
+    if let Some(value) = details.get("type") {
+        place_prop(
+            &mut props,
+            limits,
+            address,
+            "type",
+            value,
+            false,
+            "metadata type",
+        );
     }
     props
 }
 
-fn metadata_property_props(payload: &Value) -> Map<String, Value> {
-    payload
+fn metadata_property_props(
+    address: &QualifiedAddress,
+    payload: &Value,
+    limits: &mut Vec<String>,
+) -> Map<String, Value> {
+    let mut props = Map::new();
+    for property in payload
         .get("properties")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|property| {
-            let key = property.get("key")?.as_str()?;
-            // Синоним узел уже назвал сам — заголовком и собственным `props`.
-            if key == "Synonym" {
-                return None;
-            }
-            let value = bounded_prop(key, property.get("value")?)?;
-            Some((key.to_string(), value))
-        })
-        .collect()
+    {
+        let (Some(key), Some(value)) = (
+            property.get("key").and_then(Value::as_str),
+            property.get("value"),
+        ) else {
+            continue;
+        };
+        // Синоним узел уже назвал сам — заголовком и собственным `props`.
+        if key == "Synonym" {
+            continue;
+        }
+        let subject = format!("metadata property {key}");
+        place_prop(&mut props, limits, address, key, value, true, &subject);
+    }
+    props
 }
 
 pub(crate) fn borrowing_props(
@@ -932,18 +1003,22 @@ pub(crate) fn borrowing_props(
 #[cfg(test)]
 mod tabular_standard_attribute_property_tests {
     use super::*;
+    use crate::infrastructure::v13_read_projection::MAX_COMPACT_PROP_BYTES;
 
     #[test]
     fn tabular_standard_properties_keep_a_closed_utf8_bound_and_independent_values() {
         for extra in [0, 1] {
-            let overhead = json!({"kind":"text","value":""}).to_string().len();
-            let room = MAX_COMPACT_PROP_BYTES + extra - overhead;
+            // The text wrapper is removed (#2031): the bound applies to the
+            // published string itself, counted in UTF-8 bytes.
+            let room = MAX_COMPACT_PROP_BYTES + extra;
             let text = format!("{}{}", "я".repeat(room / 2), "a".repeat(room % 2));
+            assert_eq!(text.len(), MAX_COMPACT_PROP_BYTES + extra);
             let comment = json!({"kind":"text","value":text});
-            assert_eq!(comment.to_string().len(), MAX_COMPACT_PROP_BYTES + extra);
+            let synonym = json!([{"language":"ru","content":"Номер строки"}]);
             let item = json!({"name":"LineNumber","properties":[
                 {"name":"Comment","value":comment},
-                {"name":"Synonym","value":{"kind":"localizedString","values":[]}},
+                {"name":"Synonym","value":{"kind":"localizedString","values":synonym.clone()}},
+                {"name":"ToolTip","value":{"kind":"localizedString","values":[]}},
                 {"name":"MultiLine","value":{"kind":"boolean","value":false}},
                 {"name":"UnknownProviderKey","value":{"kind":"text","value":"x".repeat(3000)}}
             ]});
@@ -955,13 +1030,16 @@ mod tabular_standard_attribute_property_tests {
                 let at = QualifiedAddress::parse(raw).unwrap();
                 let node = serde_json::to_value(metadata_item_node(&at, NodeKind::StandardAttribute, &item, None)).unwrap();
                 assert!(node["props"].get("UnknownProviderKey").is_none());
-                assert!(node["props"].get("Synonym").is_some());
+                assert_eq!(node["props"]["Synonym"], synonym, "{raw}: {node}");
+                // An empty translation set is no value: no key and no limit.
+                assert!(node["props"].get("ToolTip").is_none(), "{raw}: {node}");
+                assert!(!node["limits"].to_string().contains("ToolTip"));
                 assert_eq!(node["props"].get("Comment").is_some(), tabular && extra == 0, "{raw}: {node}");
                 assert_eq!(node["props"].get("MultiLine").is_some(), tabular);
                 if tabular {
-                    assert_eq!(serde_json::from_str::<Value>(node["props"]["MultiLine"].as_str().unwrap()).unwrap(), json!({"kind":"boolean","value":false}));
+                    assert_eq!(node["props"]["MultiLine"], json!(false));
                     if extra == 0 {
-                        assert_eq!(serde_json::from_str::<Value>(node["props"]["Comment"].as_str().unwrap()).unwrap(), comment);
+                        assert_eq!(node["props"]["Comment"], json!(text));
                     }
                 }
                 assert_eq!(node["limits"].to_string().contains("Comment"), tabular && extra == 1);

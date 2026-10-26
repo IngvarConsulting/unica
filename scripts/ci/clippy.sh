@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Clippy гейта: `workspace` — весь workspace со всеми признаками и SARIF для
-# Code Scanning, `packages` — каждый пакет со своими признаками, `all` — оба
-# подряд; отказ первого не отменяет второй, код — худший из двух.
+# Code Scanning, `packages` — каждый пакет со своими признаками, `file-io` —
+# файловые методы в пакетах без файлового ввода-вывода, `all` — все три
+# подряд; отказ одного не отменяет следующие, код — худший из них.
 #
 # Сборка workspace объединяет признаки: dev-зависимость одного пакета
 # включает `test-support` другого, и его код под этим признаком перестаёт
@@ -14,6 +15,7 @@ case "${1:-}" in
     status=0
     "$0" workspace || status=$?
     "$0" packages || status=$?
+    "$0" file-io || status=$?
     exit "$status"
     ;;
   workspace)
@@ -41,8 +43,14 @@ case "${1:-}" in
       exit 1
     fi
     ;;
+  file-io)
+    # Текстовый страж не видит `path.exists()`: нужен вывод типов. Clippy
+    # `disallowed_methods` проходит `src/` пакетов без файлового ввода-вывода
+    # (INV.APP.DOMAIN-INPUTS), сначала доказав запреты на пробе (#1894).
+    python3 scripts/ci/check-file-io-methods.py
+    ;;
   *)
-    echo "usage: $0 workspace|packages" >&2
+    echo "usage: $0 workspace|packages|file-io|all" >&2
     exit 2
     ;;
 esac

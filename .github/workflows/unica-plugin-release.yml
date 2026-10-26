@@ -318,6 +318,14 @@ jobs:
       # в своём процессе и каталоге результатов, их нагрузка — ожидание
       # процессов продукта, а не компиляция. Красный набор не отменяет
       # остальные; вывод каждого печатается своей группой.
+      # Скачанные инструменты из tools.lock.json лежат по своей sha256 и сверяются
+      # с ней при каждом чтении, поэтому кеш не может подменить инструмент.
+      - name: Кэш проверенных инструментов # zizmor: ignore[cache-poisoning] запись кеша адресуется sha256 из lock и сверяется с ней при каждом чтении
+        if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && github.event_name != 'pull_request' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/unica-tools
+          key: tool-assets-acceptance-${{ runner.os }}-${{ hashFiles('plugins/unica/third-party/tools.lock.json') }}
       - id: python
         if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && github.event_name != 'pull_request' }}
         env:
@@ -752,6 +760,13 @@ jobs:
         with:
           path: .build/tool-work/${{ matrix.target }}/cargo-target
           key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+      # Скачанные инструменты из tools.lock.json лежат по своей sha256 и сверяются
+      # с ней при каждом чтении, поэтому кеш не может подменить инструмент.
+      - name: Кэш проверенных инструментов # zizmor: ignore[cache-poisoning] запись кеша адресуется sha256 из lock и сверяется с ней при каждом чтении
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/unica-tools
+          key: tool-assets-build-${{ matrix.target }}-${{ hashFiles('plugins/unica/third-party/tools.lock.json') }}
       - name: Build target bundle and bootstrap
         if: matrix.target != 'win-x64'
         run: >

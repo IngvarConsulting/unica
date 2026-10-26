@@ -89,6 +89,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                 object,
                 op_index,
                 binding.source_set_name(),
+                binding.source_kind(),
             )?)
         }
         Some(OperationFamily::Interface) => {
@@ -97,6 +98,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                 object,
                 op_index,
                 binding.source_set_name(),
+                binding.source_kind(),
             )?)
         }
         Some(OperationFamily::Support) => {
@@ -215,6 +217,8 @@ pub(crate) fn plan_form_resource_batch_owned_for_test(
 #[cfg(test)]
 mod tests {
     use super::{parse_form_resource_plan_operation, plan_form_resource_batch_owned_for_test};
+    use serde_json::Value;
+    use unica_operations::OperationFamily;
 
     #[test]
     fn a_dynamic_list_table_keeps_its_discriminator() {
@@ -1588,6 +1592,142 @@ mod tests {
                 .expect_err(object);
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{object}");
             assert_eq!(error.path(), Some(path), "{object}");
+        }
+    }
+
+    #[test]
+    fn subsystem_interface_contracts_match_decoder_for_every_registered_operation() {
+        let fixture = ApplySeamFixture::new();
+        let mut count = 0;
+        for descriptor in crate::domain::apply::operation_registry().descriptors() {
+            if !matches!(
+                descriptor.family(),
+                OperationFamily::Subsystem | OperationFamily::Interface
+            ) {
+                continue;
+            }
+            count += 1;
+            let op = descriptor.name();
+            let at = match op {
+                "subsystem.create" | "subsystemOrder.set" | "panels.set" | "homePage.set" => {
+                    "main:Configuration"
+                }
+                "childSubsystem.remove" => "main:Subsystem.Sales.Subsystem.Orders",
+                "commandOrder.set" => {
+                    "main:Subsystem.Sales.Interface.Group.NavigationPanelImportant"
+                }
+                "commandVisibility.set" | "commandPlacement.set" | "groupOrder.set" => {
+                    "main:Subsystem.Sales.Interface"
+                }
+                _ => "main:Subsystem.Sales",
+            };
+            let contract = descriptor.argument_contract().unwrap();
+            let mut args = contract.example_args.clone();
+            args["at"] = json!(at);
+            assert!(contract.normalize(&args, "args").is_ok(), "{op}: {args}");
+            assert!(
+                parse_form_resource_plan_operation(op, &args, 0, &fixture.binding).is_ok(),
+                "{op}: {args}"
+            );
+            let mut unknown = args.clone();
+            unknown["ignored"] = json!(1);
+            assert!(contract.normalize(&unknown, "args").is_err());
+            assert!(parse_form_resource_plan_operation(op, &unknown, 0, &fixture.binding).is_err());
+            for field in ["items", "values"] {
+                if args.get(field).is_some() {
+                    let mut invalid = args.clone();
+                    invalid[field] = Value::Null;
+                    assert!(
+                        contract.normalize(&invalid, "args").is_err(),
+                        "{op}: {invalid}"
+                    );
+                    assert!(
+                        parse_form_resource_plan_operation(op, &invalid, 0, &fixture.binding)
+                            .is_err(),
+                        "{op}: {invalid}"
+                    );
+                }
+            }
+        }
+        assert_eq!(count, 12);
+        for (op, key, value) in [
+            ("content.add", "object", "Catalog.X"),
+            ("content.remove", "object", "Catalog.X"),
+            ("childSubsystem.add", "name", "Child"),
+        ] {
+            for args in [
+                json!({"items":[value]}),
+                json!({"items":[{key:value}]}),
+                json!({"values":{key:value}}),
+            ] {
+                let mut args = args;
+                args["at"] = json!("main:Subsystem.Sales");
+                let contract = crate::domain::apply::operation_registry()
+                    .lookup(op)
+                    .unwrap()
+                    .argument_contract()
+                    .unwrap();
+                assert!(contract.normalize(&args, "args").is_ok(), "{op}: {args}");
+                assert!(
+                    parse_form_resource_plan_operation(op, &args, 0, &fixture.binding).is_ok(),
+                    "{op}: {args}"
+                );
+            }
+            // Both lists at once are refused; neither silently wins.
+            let mut both = json!({"items":[value],"values":{key:"Other"}});
+            both["at"] = json!("main:Subsystem.Sales");
+            let contract = crate::domain::apply::operation_registry()
+                .lookup(op)
+                .unwrap()
+                .argument_contract()
+                .unwrap();
+            assert!(contract.normalize(&both, "args").is_err(), "{op}: {both}");
+            let error = parse_form_resource_plan_operation(op, &both, 0, &fixture.binding)
+                .expect_err("items and values together must be refused");
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::BadValue,
+                "{op}: {error:?}"
+            );
+            assert_eq!(error.path(), Some("ops[0].args.values"), "{op}: {error:?}");
+        }
+    }
+
+    #[test]
+    fn subsystem_interface_reject_previously_ignored_arguments() {
+        let fixture = ApplySeamFixture::new();
+        for (op, at, args) in [
+            (
+                "content.add",
+                "main:Subsystem.Main",
+                json!({"items":[{"object":"Catalog.X","extra":1}]}),
+            ),
+            (
+                "content.add",
+                "main:Subsystem.Main",
+                json!({"items":["Catalog.X"],"extra":1}),
+            ),
+            (
+                "content.add",
+                "main:Subsystem.Main",
+                json!({"items":["Catalog.X"],"values":123}),
+            ),
+            (
+                "commandVisibility.set",
+                "main:Subsystem.Main.Interface",
+                json!({"items":[{"command":"X","visible":true,"extra":1}]}),
+            ),
+            (
+                "commandPlacement.set",
+                "main:Subsystem.Main.Interface",
+                json!({"items":[{"command":"X","group":123,"placement":"P"}]}),
+            ),
+        ] {
+            let mut args = args;
+            args["at"] = json!(at);
+            let error = parse_form_resource_plan_operation(op, &args, 0, &fixture.binding)
+                .expect_err("ignored fields and wrong types must not be accepted");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op}: {args}");
         }
     }
 

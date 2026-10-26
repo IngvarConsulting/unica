@@ -27,7 +27,6 @@ use unica_workspace::compile_transaction::*;
 use unica_workspace::discovery::ProjectDiscoveryReader;
 use unica_workspace::paths::normalize_path_identity;
 use unica_workspace::read::RetainedRootSecureRead;
-const SUBSYSTEM_INFO_MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
 
 fn subsystem_validation_args(path: &Path) -> Map<String, Value> {
     let mut args = Map::new();
@@ -828,12 +827,7 @@ fn read_subsystem_info_file(
         .ok_or_else(|| format!("subsystem info path has no file name: {}", path.display()))?;
     let mut reader = RetainedRootSecureRead::open(
         parent,
-        SecureTreeCaptureLimits {
-            maximum_depth: 0,
-            maximum_entries: 1,
-            maximum_files: 1,
-            maximum_bytes: SUBSYSTEM_INFO_MAX_FILE_BYTES,
-        },
+        SecureTreeCaptureLimits { maximum_depth: 0 },
         &mut checkpoint,
     )
     .map_err(|error| format!("failed to open {} securely: {error}", path.display()))?;
@@ -1083,9 +1077,6 @@ pub(crate) fn capture_registered_subsystem_topology(
         source_root,
         SecureTreeCaptureLimits {
             maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2,
-            maximum_entries: SUBSYSTEM_SCAN_MAX_ENTRIES,
-            maximum_files: SUBSYSTEM_SCAN_MAX_FILES,
-            maximum_bytes: SUBSYSTEM_SCAN_MAX_BYTES,
         },
         &mut checkpoint,
     )?;

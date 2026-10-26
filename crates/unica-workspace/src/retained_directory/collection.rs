@@ -78,7 +78,9 @@ impl DirectoryRemoval {
                     let Some(image) = files.get(&file.identity()) else {
                         return Ok(plans);
                     };
-                    file_matches(&file, file.identity(), image)?;
+                    file_matches(&file, file.identity(), image, &|| {
+                        checkpoint(deadline, &cancellation)
+                    })?;
                     children.insert(name, ChildImage::File(file.identity(), image.clone()));
                 }
                 _ => return Err(wrong_kind()),

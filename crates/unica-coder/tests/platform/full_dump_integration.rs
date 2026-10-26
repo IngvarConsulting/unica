@@ -3474,6 +3474,24 @@ mod tests {
                 "2.200",
             ),
             (
+                "additional-indexes-missing",
+                "Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml",
+                r#"<AdditionalIndexes xmlns="http://v8.1c.ru/8.3/xcf/extrnprops"/>"#,
+                "missing",
+            ),
+            (
+                "additional-indexes-numeric-equivalent",
+                "Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml",
+                r#"<AdditionalIndexes xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.200"/>"#,
+                "2.200",
+            ),
+            (
+                "additional-indexes-foreign-namespace",
+                "Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml",
+                r#"<AdditionalIndexes xmlns="urn:foreign" version="2.20"/>"#,
+                "unsupported",
+            ),
+            (
                 "unknown-version-bearing",
                 "Unknown.xml",
                 r#"<Unknown xmlns="urn:unknown" version="2.20"/>"#,
@@ -3585,6 +3603,11 @@ mod tests {
             include_bytes!(
                 "../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Predefined.xml"
             ),
+            StagedRootVersionPolicy::ExactRootVersion,
+        ),
+        (
+            "Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml",
+            include_bytes!("../../../../tests/fixtures/platform_8_3_27/additional_indexes/AdditionalIndexes.xml"),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (

@@ -64,6 +64,15 @@ pub(crate) fn route_logical_address(
 ) -> Result<LogicalTreeRoute, LogicalTreeError> {
     let class = classify_route(address, profile).ok_or_else(|| not_found(address))?;
     let segments = address.segments();
+    if segments
+        .iter()
+        .any(|part| part.kind() == NodeKind::Schedule)
+        && !matches!(segments, [owner, schedule]
+            if owner.kind() == NodeKind::ScheduledJob && owner.name().is_some()
+                && schedule.kind() == NodeKind::Schedule && schedule.name().is_none())
+    {
+        return Err(not_found(address));
+    }
     match class {
         LogicalReader::Module => {
             let module = profile.module_prefix_capability(address);

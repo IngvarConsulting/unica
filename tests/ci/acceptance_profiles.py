@@ -94,7 +94,7 @@ def helper_invalidation_step(step):
 
 
 def select_profile(corpus, profile):
-    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection"}:
+    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection", "runtime-fault"}:
         raise ValueError(f"profile {profile!r} has no executable driver")
     selected = []
     for scenario in corpus["scenarios"]:
@@ -109,6 +109,15 @@ def select_profile(corpus, profile):
             if any(step["tool"] in {"unica.run", "unica.task.get", "unica.task.result", "unica.task.cancel"}
                    for step in scenario["wire"]):
                 raise ValueError(f"{scenario['id']}: runtime operations need an executable runtime driver")
+        elif current == "runtime-fault":
+            from tests.ci.acceptance_pull_validation import WORKSPACE, CASES
+            if (driver != "pull-validation-fault" or workspace != WORKSPACE
+                    or scenario.get("evaluation") not in CASES
+                    or [step["args"] for step in scenario["wire"]] != [
+                        {"op": "pull", "args": {"sourceSet": "main", "force": True}, "dryRun": True},
+                        {"op": "pull", "args": {"sourceSet": "main", "force": True}, "dryRun": False}]
+                    or any(step["tool"] != "unica.run" for step in scenario["wire"])):
+                raise ValueError(f"{scenario['id']}: invalid runtime-fault fixture or pull wire")
         elif current == "delivery":
             if driver == "bsl-analyzer-external" and workspace == EXTERNAL_WORKSPACE:
                 if "evaluation" in scenario or any(
@@ -126,6 +135,10 @@ def select_profile(corpus, profile):
             elif driver == "bsl-analyzer-invalidation" and workspace == SYMBOL_WORKSPACE:
                 if "evaluation" in scenario or not all(helper_invalidation_step(step) for step in scenario["wire"]):
                     raise ValueError(f"{scenario['id']}: invalid analyzer invalidation wire")
+            elif driver == "bsl-analyzer-form-diagnostics":
+                from tests.ci.form_runtime_diagnostics import valid_scenario
+                if not valid_scenario(scenario):
+                    raise ValueError(f"{scenario['id']}: invalid runtime form diagnostic case")
             elif driver == "bsl-analyzer-diagnostics" and workspace == DIAGNOSTICS_WORKSPACE:
                 if scenario.get("evaluation") not in DIAGNOSTIC_CASES or any(
                     step["tool"] != "unica.check" or step["args"] != {"at": "main:CommonModule.Пример"}
@@ -187,8 +200,9 @@ def stage_analyzer(plugin, *, builder=None, system=None, machine=None):
     tool = next(tool for tool in lock["tools"] if tool["name"] == "bsl-analyzer")
     asset = tool["assets"][target]
     binary = plugin / "bin" / target / (tool["binaryName"] + config["exe"])
-    builder.download(builder.release_asset_url(tool, asset), binary, timeout=60)
-    builder.verify_asset_checksum(binary, asset, tool_name=tool["name"], target=target)
+    # Три попытки по 25 с укладываются в 90 с, которые приёмка даёт подготовке.
+    builder.fetch_verified_asset(builder.release_asset_url(tool, asset), binary, asset,
+                                 tool_name=tool["name"], target=target, timeout=25)
     builder.set_file_mode(binary, executable=True)
     entry = builder.tool_entry(
         target=target, target_triple=config["targetTriple"], name=tool["name"],

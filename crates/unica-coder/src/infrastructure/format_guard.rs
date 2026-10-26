@@ -48,7 +48,7 @@ use unica_metadata_designer::subsystem::{
 };
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_designer::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+    classify_root_version, writable_profile_refusal, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
 use unica_source_designer::owner::{
     PlatformXmlOwner, PlatformXmlOwnerKind, PlatformXmlRootExpectation, DCS_ROOT,
@@ -487,34 +487,11 @@ pub(crate) fn classify_staged_platform_xml_root(
     if !versioned {
         return None;
     }
-    match classify_root_version(version.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => None,
-        Ok(FormatCompatibility::Older { actual }) => Some(StagedRootFormatFinding {
-            code: "formatMigrationAvailable",
-            message: format!(
-                "{relative}: export format {actual} is older than the writable profile {} for 1C {}; re-export the sources with the platform before editing them",
-                ACTIVE_FORMAT_PROFILE.export_format, ACTIVE_FORMAT_PROFILE.platform_line
-            ),
-            actual: Some(actual.to_string()),
-        }),
-        Ok(FormatCompatibility::Newer { actual }) => Some(StagedRootFormatFinding {
-            code: "platformVersionUnsupported",
-            message: format!(
-                "{relative}: export format {actual} is newer than the writable profile {} for 1C {}; Unica does not edit this export yet",
-                ACTIVE_FORMAT_PROFILE.export_format, ACTIVE_FORMAT_PROFILE.platform_line
-            ),
-            actual: Some(actual.to_string()),
-        }),
-        Err(error) => Some(StagedRootFormatFinding {
-            code: error.code(),
-            message: format!(
-                "{relative}: export format version {} is invalid for the writable profile {}",
-                version.clone().unwrap_or_default(),
-                ACTIVE_FORMAT_PROFILE.export_format
-            ),
-            actual: version,
-        }),
-    }
+    writable_profile_refusal(relative, version.as_deref()).map(|refusal| StagedRootFormatFinding {
+        code: refusal.code,
+        actual: Some(refusal.actual),
+        message: refusal.message,
+    })
 }
 
 fn effective_format_paths(
