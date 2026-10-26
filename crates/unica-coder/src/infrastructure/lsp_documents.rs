@@ -1,15 +1,15 @@
 //! Editor documents of one LSP connection (#2174).
 //!
-//! A document is a BSL module named by `unica://<space>/<set>/<address>`.
-//! The connection keeps the buffers its editor opened and mirrors each
-//! version into the overlay of the workspace actor, so analysis on behalf of
-//! this connection reads the buffer; the file on disk is written only by
-//! `unica.apply`. A `file://` path inside a source set maps to the same
-//! address `unica.resolve` gives it, and back.
+//! A document is the body of a BSL module named by
+//! `unica://<space>/<set>/<address>`, where the address is the one MCP gives
+//! that text: `CommonModule.X.Body`, `Catalog.X.Module.Object.Body`. The
+//! connection keeps the buffers its editor opened and mirrors each version
+//! into the overlay of the workspace actor, so analysis on behalf of this
+//! connection reads the buffer; the file on disk is written only by
+//! `unica.apply`. A file path (`file://`) never names a document.
 
 use crate::application::lsp::document::{ContentChange, DocumentChangeError, OpenDocument};
 use crate::application::lsp::uri::{DocumentUri, SpaceRegistry, UriError, WorkspaceFolder};
-use crate::infrastructure::event_sources::module_address_for_relative;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -40,11 +40,8 @@ pub(crate) struct SpaceLayout {
 #[derive(Debug)]
 pub(crate) enum LspDocumentError {
     Uri(UriError),
-    /// Not a `file://` URI of a local path.
-    NotAFile,
-    /// The file is in no source set of this connection.
-    OutsideSourceSets,
-    /// The address names no BSL module of the source set layout.
+    /// The address is not the `Body` of a BSL module of the source set
+    /// layout.
     NotAModule,
     UnknownSourceSet(String),
     NotOpen,
@@ -79,7 +76,7 @@ pub(crate) struct DocumentLocation {
 
 impl LspDocuments {
     pub(crate) fn new(session: impl Into<String>, mut layouts: Vec<SpaceLayout>) -> Self {
-        // Roots are compared with paths an editor sends, which may come
+        // Roots are compared with the root of a read, which may name them
         // through a symlink (`/tmp` and `/private/tmp` on macOS).
         for layout in &mut layouts {
             for set in &mut layout.source_sets {
@@ -119,8 +116,7 @@ impl LspDocuments {
     /// The space, source set and module file a `unica://` URI names.
     pub(crate) fn locate(&self, uri: &str) -> Result<DocumentLocation, LspDocumentError> {
         let document = self.spaces.parse(uri).map_err(LspDocumentError::Uri)?;
-        let at = QualifiedAddress::parse(&document.address)
-            .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))?;
+        let at = module_of_body(&document)?;
         let layout = self.source_set(&document.space, at.source_set())?;
         let relative = module_file(&at, layout).ok_or(LspDocumentError::NotAModule)?;
         Ok(DocumentLocation {
@@ -128,44 +124,6 @@ impl LspDocuments {
             relative,
             document,
         })
-    }
-
-    /// The `unica://` URI of a module file, as `unica.resolve` addresses it.
-    pub(crate) fn uri_of_file(&self, file_uri: &str) -> Result<String, LspDocumentError> {
-        let path = url::Url::parse(file_uri)
-            .ok()
-            .filter(|url| url.scheme() == "file")
-            .and_then(|url| url.to_file_path().ok())
-            .map(|path| canonical(&path))
-            .ok_or(LspDocumentError::NotAFile)?;
-        // The innermost source set wins when roots nest.
-        let (space, layout, relative) = self
-            .source_sets
-            .iter()
-            .flat_map(|(space, sets)| sets.iter().map(move |set| (space, set)))
-            .filter_map(|(space, set)| {
-                let relative = path.strip_prefix(&set.root).ok()?;
-                Some((space, set, relative.to_path_buf()))
-            })
-            .max_by_key(|(_, set, _)| set.root.components().count())
-            .ok_or(LspDocumentError::OutsideSourceSets)?;
-        let at = module_address_for_relative(&layout.name, layout.kind, layout.profile, &relative)
-            .ok_or(LspDocumentError::NotAModule)?;
-        self.spaces
-            .format(&DocumentUri {
-                space: space.clone(),
-                address: at.to_string(),
-            })
-            .map_err(LspDocumentError::Uri)
-    }
-
-    /// The `file://` URI of the module file a `unica://` URI names.
-    pub(crate) fn file_of_uri(&self, uri: &str) -> Result<String, LspDocumentError> {
-        let location = self.locate(uri)?;
-        let layout = self.source_set(&location.document.space, &location.source_set)?;
-        url::Url::from_file_path(layout.root.join(&location.relative))
-            .map(String::from)
-            .map_err(|()| LspDocumentError::NotAFile)
     }
 
     /// `didOpen`: the buffer replaces the file for this connection.
@@ -256,8 +214,7 @@ impl LspDocuments {
         if read.source_set() != location.source_set || canonical(read.root_path()) != layout.root {
             return Err(LspDocumentError::UnknownSourceSet(location.source_set));
         }
-        let at = QualifiedAddress::parse(&location.document.address)
-            .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))?;
+        let at = module_of_body(&location.document)?;
         let target = module_target(&at, layout).ok_or(LspDocumentError::NotAModule)?;
         read.module_source(&target).map_err(LspDocumentError::Read)
     }
@@ -314,6 +271,16 @@ impl LspDocuments {
 /// The path with symlinks resolved, or as given when it does not exist.
 fn canonical(path: &std::path::Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_owned())
+}
+
+/// The module whose `Body` a document address names.
+fn module_of_body(document: &DocumentUri) -> Result<QualifiedAddress, LspDocumentError> {
+    let module = document
+        .address
+        .strip_suffix(".Body")
+        .ok_or(LspDocumentError::NotAModule)?;
+    QualifiedAddress::parse(module)
+        .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))
 }
 
 fn module_target(

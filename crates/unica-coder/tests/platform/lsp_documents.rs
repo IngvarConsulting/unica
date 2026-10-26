@@ -44,32 +44,32 @@ fn file_uri(path: &Path) -> String {
     url::Url::from_file_path(path).unwrap().into()
 }
 
+/// The `unica://` URI of the module body MCP addresses as `address`.
+fn body_uri(documents: &LspDocuments, space: &str, address: &str) -> String {
+    documents
+        .spaces()
+        .format(&DocumentUri {
+            space: space.to_owned(),
+            address: address.to_owned(),
+        })
+        .unwrap()
+}
+
+const BODY: &str = "main:CommonModule.ОбщегоНазначения.Body";
+
 #[test]
-fn files_and_unica_uris_map_both_ways_and_two_mains_do_not_mix() {
+fn module_bodies_are_documents_and_two_mains_do_not_mix() {
     let (ut, bp) = (space("// УТ\n"), space("// БП\n"));
     let documents = LspDocuments::new(
         "editor",
         vec![layout("УТ", &ut.root), layout("БП", &bp.root)],
     );
 
-    let ut_uri = documents
-        .uri_of_file(&file_uri(&ut.root.join("src").join(MODULE)))
-        .unwrap();
-    let bp_uri = documents
-        .uri_of_file(&file_uri(&bp.root.join("src").join(MODULE)))
-        .unwrap();
+    let ut_uri = body_uri(&documents, "ут", BODY);
+    let bp_uri = body_uri(&documents, "бп", BODY);
     assert_ne!(ut_uri, bp_uri);
-    assert_eq!(
-        documents.locate(&ut_uri).unwrap().document,
-        DocumentUri {
-            space: "ут".to_owned(),
-            address: "main:CommonModule.ОбщегоНазначения".to_owned(),
-        }
-    );
-    assert_eq!(
-        documents.file_of_uri(&bp_uri).unwrap(),
-        file_uri(&bp.root.join("src").join(MODULE))
-    );
+    let located = documents.locate(&ut_uri).unwrap();
+    assert_eq!(located.relative, Path::new(MODULE));
     assert_eq!(
         documents.content(&ut_uri, &reader(&ut.root)).unwrap(),
         Some("// УТ\n".to_owned())
@@ -85,23 +85,27 @@ fn files_and_unica_uris_map_both_ways_and_two_mains_do_not_mix() {
         Err(LspDocumentError::UnknownSourceSet(_))
     ));
 
-    // A file outside the module layout, outside every source set, or of
-    // another scheme has no document.
-    let stray = ut
-        .root
-        .join("src/CommonModules/ОбщегоНазначения/Ext/Other.bsl");
+    // Only a module body is a document: not the module node, not a
+    // method body, not a file path.
+    for address in [
+        "main:CommonModule.ОбщегоНазначения",
+        "main:CommonModule.ОбщегоНазначения.Module",
+        "main:CommonModule.ОбщегоНазначения.Method.Ф.Body",
+    ] {
+        assert!(
+            matches!(
+                documents.locate(&body_uri(&documents, "ут", address)),
+                Err(LspDocumentError::NotAModule)
+            ),
+            "{address}"
+        );
+    }
+    let file = file_uri(&ut.root.join("src").join(MODULE));
     assert!(matches!(
-        documents.uri_of_file(&file_uri(&stray)),
-        Err(LspDocumentError::NotAModule)
+        documents.locate(&file),
+        Err(LspDocumentError::Uri(UriError::Malformed(_)))
     ));
-    assert!(matches!(
-        documents.uri_of_file(&file_uri(&ut.root.join("README.md"))),
-        Err(LspDocumentError::OutsideSourceSets)
-    ));
-    assert!(matches!(
-        documents.uri_of_file("https://example.test/Module.bsl"),
-        Err(LspDocumentError::NotAFile)
-    ));
+    assert!(documents.content(&file, &reader(&ut.root)).is_err());
     // A space of another connection is refused.
     let other = LspDocuments::new("other", vec![layout("УТ", &ut.root)]);
     assert!(matches!(
@@ -116,9 +120,7 @@ fn an_open_buffer_is_what_its_connection_reads_and_the_disk_is_untouched() {
     let overlay = DocumentOverlay::default();
     let mut editor = LspDocuments::new("editor", vec![layout("УТ", &ut.root)]);
     let mut agent = LspDocuments::new("agent", vec![layout("УТ", &ut.root)]);
-    let uri = editor
-        .uri_of_file(&file_uri(&ut.root.join("src").join(MODULE)))
-        .unwrap();
+    let uri = body_uri(&editor, "ут", BODY);
 
     editor
         .open(
@@ -244,9 +246,7 @@ fn a_large_common_module_comes_whole_in_one_request() {
             }],
         }],
     );
-    let uri = documents
-        .uri_of_file(&file_uri(&source.join(MODULE)))
-        .unwrap();
+    let uri = body_uri(&documents, "ут", BODY);
     let read = ProviderReadAuthority::new(
         "main",
         "actor-main",
@@ -267,56 +267,66 @@ fn a_large_common_module_comes_whole_in_one_request() {
 }
 
 #[test]
-fn unica_uris_of_common_object_and_form_modules_read_the_disk_without_open() {
+fn the_body_address_mcp_gives_a_module_is_its_document_without_open() {
     let ws = space("// общий\n");
     let src = ws.root.join("src");
-    let object = src.join("Catalogs/Валюты/Ext/ObjectModule.bsl");
-    let form = src.join("Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl");
-    let manager = src.join("Catalogs/Валюты/Ext/ManagerModule.bsl");
-    for (path, text) in [
-        (&object, "// объект\n"),
-        (&form, "// форма\n"),
-        (&manager, "// менеджер\n"),
-    ] {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
-    }
     let documents = LspDocuments::new("editor", vec![layout("Sendbox", &ws.root)]);
     let read = reader(&ws.root);
-    for (path, expected) in [
+    for (relative, body, text) in [
+        (MODULE, BODY, None),
         (
-            src.join(MODULE),
-            "unica://sendbox/main/CommonModule.ОбщегоНазначения",
+            "Catalogs/Валюты/Ext/ObjectModule.bsl",
+            "main:Catalog.Валюты.Module.Object.Body",
+            Some("// объект\n"),
         ),
         (
-            object.clone(),
-            "unica://sendbox/main/Catalog.Валюты.Module.Object",
+            "Catalogs/Валюты/Ext/ManagerModule.bsl",
+            "main:Catalog.Валюты.Module.Manager.Body",
+            Some("// менеджер\n"),
         ),
         (
-            manager.clone(),
-            "unica://sendbox/main/Catalog.Валюты.Module.Manager",
+            "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+            "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form.Body",
+            Some("// форма\n"),
         ),
         (
-            form.clone(),
-            "unica://sendbox/main/Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+            "CommonForms/Выбор/Ext/Form/Module.bsl",
+            "main:CommonForm.Выбор.Module.Form.Body",
+            Some("// общая форма\n"),
         ),
     ] {
-        let uri = documents.uri_of_file(&file_uri(&path)).unwrap();
+        let path = src.join(relative);
+        if let Some(text) = text {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, text).unwrap();
+        }
+        // The address `unica.resolve` gives the file, with its `Body`, is
+        // the address MCP reads the text by.
+        let module = crate::infrastructure::event_sources::module_address_for_relative(
+            "main",
+            SourceSetKind::Configuration,
+            PlatformProfile::v8_3_27(),
+            Path::new(relative),
+        )
+        .unwrap();
+        assert_eq!(format!("{module}.Body"), body);
+
+        let uri = body_uri(&documents, "sendbox", body);
+        let expected = format!("unica://sendbox/{}", body.replacen(':', "/", 1));
         assert_eq!(
             percent_encoding::percent_decode_str(&uri)
                 .decode_utf8()
                 .unwrap(),
             expected
         );
-        // The address an editor types, unencoded, names the same document.
+        // Encoded or typed as is, the URI reads the file without didOpen.
         let disk = fs::read_to_string(&path).unwrap();
-        for asked in [uri.as_str(), expected] {
+        for asked in [uri.as_str(), expected.as_str()] {
             assert_eq!(
                 documents.content(asked, &read).unwrap().as_deref(),
                 Some(disk.as_str()),
                 "{asked}"
             );
         }
-        assert_eq!(documents.file_of_uri(&uri).unwrap(), file_uri(&path));
     }
 }
