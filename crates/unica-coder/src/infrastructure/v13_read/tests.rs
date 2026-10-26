@@ -7366,7 +7366,10 @@ fn common_template_empty_synonyms_have_no_value_like_other_metadata() {
             .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
         assert!(result.ok, "{synonym:?}: {result:?}");
         let data = result.data.unwrap();
-        assert!(data["props"]["Synonym"].is_null(), "{synonym:?}: {data}");
+        assert!(
+            data["props"]["Synonym"].is_null(),
+            "an empty synonym publishes no Synonym value"
+        );
         assert_eq!(data["props"]["format"], "SpreadsheetDocument");
     }
 }
@@ -7393,7 +7396,10 @@ fn common_template_damaged_synonym_keeps_independent_template_facts() {
         assert!(result.ok, "{synonym}: {result:?}");
         let data = result.data.unwrap();
         assert_eq!(data["title"], "Print");
-        assert!(data["props"]["Synonym"].is_null(), "{synonym}: {data}");
+        assert!(
+            data["props"]["Synonym"].is_null(),
+            "a damaged synonym publishes no Synonym value"
+        );
         assert_eq!(data["props"]["format"], "SpreadsheetDocument");
         assert!(
             data["limits"].to_string().contains("properties.Synonym"),
