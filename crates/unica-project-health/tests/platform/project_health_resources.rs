@@ -1652,10 +1652,13 @@ fn index_eol_scanner_matches_git_ls_files_eol_at_every_piece_boundary() {
     bytes.extend_from_slice(b"\x01\n");
     cases.push(("ratio-under", bytes));
 
+    // A case name such as `nul` is a reserved device name on Windows; the
+    // prefix keeps every case an ordinary file there.
+    let file = |name: &str| format!("case-{name}");
     let repository = TempDir::new().unwrap();
     git(repository.path(), &["init"]);
     for (name, bytes) in &cases {
-        fs::write(repository.path().join(name), bytes).unwrap();
+        fs::write(repository.path().join(file(name)), bytes).unwrap();
     }
     git(
         repository.path(),
@@ -1680,6 +1683,9 @@ fn index_eol_scanner_matches_git_ls_files_eol_at_every_piece_boundary() {
         })
         .collect::<BTreeMap<_, _>>();
     for (name, bytes) in &cases {
+        let expected = expected
+            .get(&file(name))
+            .unwrap_or_else(|| panic!("git ls-files --eol lists no {name} case"));
         // Every split point, so a CR, LF or ^Z lands on a piece boundary.
         for split in 0..=bytes.len() {
             let mut scanner = super::IndexEolScanner::default();
@@ -1687,7 +1693,7 @@ fn index_eol_scanner_matches_git_ls_files_eol_at_every_piece_boundary() {
             scanner.push(&bytes[split..]);
             assert_eq!(
                 scanner.finish().as_git(),
-                expected[*name],
+                *expected,
                 "{name} split at {split}"
             );
         }
@@ -1695,11 +1701,7 @@ fn index_eol_scanner_matches_git_ls_files_eol_at_every_piece_boundary() {
         for byte in bytes {
             scanner.push(std::slice::from_ref(byte));
         }
-        assert_eq!(
-            scanner.finish().as_git(),
-            expected[*name],
-            "{name} byte by byte"
-        );
+        assert_eq!(scanner.finish().as_git(), *expected, "{name} byte by byte");
     }
 }
 
