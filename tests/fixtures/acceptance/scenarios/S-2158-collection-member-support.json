@@ -2,7 +2,7 @@
   "id": "S-2158-collection-member-support",
   "issue": 2158,
   "area": "Навигация",
-  "task": "Увидеть замок поддержки в дереве одним вызовом: элемент коллекции справочников несёт состояние поддержки своего объекта, если оно отлично от «не на поддержке», а объект с нечитаемым состоянием назван в limits коллекции, а не выдан свободным",
+  "task": "Увидеть замок поддержки в дереве одним вызовом: элемент коллекции справочников несёт состояние поддержки своего объекта тем же словарём, что и карточка объекта, если оно отлично от «не на поддержке», а объект с нечитаемым состоянием назван в limits коллекции, а не выдан свободным",
   "workspace": "tests/fixtures/acceptance/workspace-support-collection",
   "wire": [
     {
@@ -68,6 +68,51 @@
         {
           "pointer": "/data/props/support",
           "eq": "locked"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Editable"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/support",
+          "eq": "editableWithSupport"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Removed"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/support",
+          "eq": "removedFromSupport"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Free"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/support",
+          "eq": "notSupported"
         }
       ]
     }

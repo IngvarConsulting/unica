@@ -107,6 +107,9 @@ pub(crate) struct MetadataLocalRead {
     pub(crate) info: unica_metadata::validation_subject::MetaLocalInfo,
     /// `None` — набор не вида `extension`: заимствования там не бывает.
     pub(crate) borrowing: Option<unica_metadata_designer::xml_model::MetaBorrowing>,
+    /// Точное состояние поддержки объекта: его отдаёт `view` (#2158), а
+    /// `info.support` остаётся грубым статусом для проверок.
+    pub(crate) support_state: ObjectSupportState,
 }
 
 /// One actor-issued read authority for one admitted source set. Reads are
@@ -913,11 +916,10 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<MetadataLocalRead, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
-        let support = metadata_support_status(self.object_support_with_descriptor(
-            target,
-            Some(&descriptor),
-            checkpoint,
-        )?);
+        let support_data =
+            self.object_support_with_descriptor(target, Some(&descriptor), checkpoint)?;
+        let support_state = support_data.state;
+        let support = metadata_support_status(support_data);
         // Заимствование отвечает только в наборе вида `extension`: в
         // конфигурации его не бывает, и разбирать дескриптор ради `own` у
         // каждого объекта незачем.
@@ -986,7 +988,11 @@ impl ProviderReadAuthority {
                 );
             }
         }
-        Ok(MetadataLocalRead { info, borrowing })
+        Ok(MetadataLocalRead {
+            info,
+            borrowing,
+            support_state,
+        })
     }
 
     /// Предопределённые элементы объекта.

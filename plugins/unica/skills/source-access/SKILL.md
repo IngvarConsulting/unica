@@ -211,6 +211,9 @@ allowed-tools:
 
 Поддержка поставщика приходит в `props.support` объекта — читай её перед любой
 правкой объекта на замке и решай через release-support, а не правкой напрямую.
+Значения: `locked`, `editableWithSupport`, `removedFromSupport`,
+`configurationReadOnly`, `notSupported`. Элемент коллекции несёт то же поле,
+если объект не `notSupported`, — замки видны без чтения каждого объекта.
 
 ## Страницы
 

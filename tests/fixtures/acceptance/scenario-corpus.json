@@ -3503,7 +3503,7 @@
       },
       {
        "pointer": "/data/props/support",
-       "eq": "unsupported"
+       "eq": "removedFromSupport"
       }
      ]
     }

@@ -1241,6 +1241,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let read = self
             .read
             .metadata_local(target, &mut || self.read_checkpoint())?;
+        let support_state = read.support_state;
         let local = read.info;
         for (kind, children) in [
             (NodeKind::Form, &local.collections.forms),
@@ -1263,7 +1264,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
         payload.insert("synonym".to_string(), json!(local.synonym));
         insert_serialized(&mut payload, "kind", &local.kind)?;
         insert_serialized(&mut payload, "details", &local.details)?;
-        insert_serialized(&mut payload, "support", &local.support)?;
+        // Карточка и элемент коллекции говорят одним словарём состояний (#2158).
+        insert_serialized(&mut payload, "support", &support_state)?;
         insert_serialized(&mut payload, "properties", &local.properties)?;
         if let Some(profile) = local.member_read_profile {
             insert_serialized(&mut payload, "memberReadProfile", &profile)?;
