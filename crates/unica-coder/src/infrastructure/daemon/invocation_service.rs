@@ -221,6 +221,16 @@ impl ActorReadSourceCapability {
         &self,
         cancellation: &'a CancellationToken,
     ) -> Result<crate::infrastructure::v13_read::LogicalViewReadAuthority<'a>, String> {
+        self.logical_view_read_authority_with_documents(cancellation, None)
+    }
+
+    /// The read of an editor session: modules it has open are read from
+    /// their buffers (#2174).
+    pub(in crate::infrastructure::daemon) fn logical_view_read_authority_with_documents<'a>(
+        &self,
+        cancellation: &'a CancellationToken,
+        documents: Option<unica_workspace::documents::SessionDocuments>,
+    ) -> Result<crate::infrastructure::v13_read::LogicalViewReadAuthority<'a>, String> {
         let source_profile = self.binding.source_profile();
         let platform_profile =
             crate::domain::source_capabilities::bsl_profile_for_source(source_profile).ok_or_else(
@@ -233,6 +243,10 @@ impl ActorReadSourceCapability {
             self.binding.retained_root(),
             self.read_identity.clone(),
         );
+        let read = match documents {
+            Some(documents) => read.with_documents(documents),
+            None => read,
+        };
         Ok(
             crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority_and_registration_cache(
                 cancellation,

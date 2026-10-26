@@ -57,6 +57,7 @@ use unica_source_designer::probe::{
 use unica_templates_designer::mxl_codec::parse_mxl_info_xml;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::documents::{DocumentText, SessionDocuments};
 use unica_xdto_designer::info::{parse_xdto_info_bytes, XdtoInfoError};
 
 #[cfg(test)]
@@ -124,6 +125,9 @@ pub(crate) struct ProviderReadAuthority {
     /// one admitted operation, so the marker is read and parsed once instead
     /// of once per owner descriptor that asks for its support state.
     support_state: std::sync::Mutex<Option<RetainedSupportState>>,
+    /// Open editor buffers of the session this read serves; a module with a
+    /// buffer is read from it, never from its file.
+    documents: Option<SessionDocuments>,
     #[cfg(test)]
     module_source_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
     #[cfg(test)]
@@ -166,6 +170,7 @@ impl ProviderReadAuthority {
             snapshot_identity,
             artifacts: Arc::new(RegistrationCache::default()),
             support_state: std::sync::Mutex::new(None),
+            documents: None,
             #[cfg(test)]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             #[cfg(test)]
@@ -180,6 +185,12 @@ impl ProviderReadAuthority {
     /// Shares the actor-retained root artifacts of this source set.
     pub(crate) fn with_artifacts(mut self, artifacts: Arc<RegistrationCache>) -> Self {
         self.artifacts = artifacts;
+        self
+    }
+
+    /// Reads modules of `documents` from their open buffers.
+    pub(crate) fn with_documents(mut self, documents: SessionDocuments) -> Self {
+        self.documents = (!documents.is_empty()).then_some(documents);
         self
     }
 
@@ -1548,6 +1559,9 @@ impl ProviderReadAuthority {
                 .or_default() += 1;
         }
         let relative = self.module_relative(target)?;
+        if let Some(buffer) = self.open_buffer(&relative) {
+            return Ok(Some(buffer.text.trim_start_matches('\u{feff}').to_string()));
+        }
         self.read_optional_relative_whole(&relative)?
             .map(|bytes| {
                 String::from_utf8(bytes)
@@ -1565,7 +1579,14 @@ impl ProviderReadAuthority {
     /// Only proves that the BSL file is present; the text is not read.
     pub(crate) fn module_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
         let relative = self.module_relative(target)?;
+        if self.open_buffer(&relative).is_some() {
+            return Ok(true);
+        }
         self.relative_source_exists(&relative)
+    }
+
+    fn open_buffer(&self, relative: &Path) -> Option<&DocumentText> {
+        self.documents.as_ref()?.get(relative)
     }
 
     pub(crate) fn form_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
