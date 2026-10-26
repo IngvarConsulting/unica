@@ -797,7 +797,7 @@ class StepResultTests(unittest.TestCase):
 
     def test_green_steps_give_green_entries(self) -> None:
         gate = load_gate_module()
-        results = gate.validation_results(steps(queue_steps()), {"Rust (macos-14)": "success"}, "queue")
+        results = gate.validation_results(steps(queue_steps()), {"Rust (macos-14)": "success"})
         self.assertEqual("success", results["test-rust-platforms"])
         self.assertEqual("skipped", results["rust-medium"])
         self.assertEqual("skipped", results["warm-rust-cache"])
@@ -814,7 +814,7 @@ class StepResultTests(unittest.TestCase):
                 # successes, or ran among skips (a PR-only step in the queue).
                 base = queue_steps()
                 outcomes = {**base, ids[-1]: "success" if base[ids[0]] == "skipped" else "skipped"}
-                results = gate.validation_results(steps(outcomes), {"Rust (macos-14)": "success"}, "queue")
+                results = gate.validation_results(steps(outcomes), {"Rust (macos-14)": "success"})
                 self.assertEqual("partial", results[group])
                 evaluation = evaluate(gate, "merge_group", "refs/heads/queue", classification(**ALL_ENABLED),
                                       results, runners=QUEUE_RUNNERS, scope="validation")
@@ -824,31 +824,31 @@ class StepResultTests(unittest.TestCase):
     def test_clippy_is_the_background_step_or_the_pull_request_lint_job_never_both(self) -> None:
         gate = load_gate_module()
         def lint(**outcomes):
-            return gate.validation_results(steps({**queue_steps(), **outcomes}), {"Rust (macos-14)": "success"}, "queue")["lint-rust-platforms"]
+            return gate.validation_results(steps({**queue_steps(), **outcomes}), {"Rust (macos-14)": "success"})["lint-rust-platforms"]
         self.assertEqual("success", lint(clippy="success", **{"lint-job": "skipped"}))
         self.assertEqual("failure", lint(clippy="skipped", **{"lint-job": "failure"}))
         self.assertEqual("success", lint(clippy="skipped", **{"lint-job": "success"}))
         self.assertEqual("skipped", lint(clippy="skipped", **{"lint-job": "skipped"}))
         self.assertEqual("partial", lint(clippy="success", **{"lint-job": "success"}))
         self.assertEqual("missing", gate.validation_results(steps({k: v for k, v in queue_steps().items() if k != "lint-job"}),
-                                                            {"Rust (macos-14)": "success"}, "queue")["lint-rust-platforms"])
+                                                            {"Rust (macos-14)": "success"})["lint-rust-platforms"])
 
     def test_windows_clippy_entry_is_the_outcome_of_its_awaiting_step(self) -> None:
         gate = load_gate_module()
         def windows(**outcomes):
-            return gate.validation_results(steps({**queue_steps(), **outcomes}), {"Rust (macos-14)": "success"},
-                                           "queue")["lint-rust-windows"]
+            return gate.validation_results(steps({**queue_steps(), **outcomes}),
+                                           {"Rust (macos-14)": "success"})["lint-rust-windows"]
         self.assertEqual("success", windows())
         self.assertEqual("failure", windows(**{"windows-clippy": "failure"}))
         self.assertEqual("skipped", windows(**{"windows-clippy": "skipped"}))
         self.assertEqual("missing", gate.validation_results(
             steps({k: v for k, v in queue_steps().items() if k != "windows-clippy"}),
-            {"Rust (macos-14)": "success"}, "queue")["lint-rust-windows"])
+            {"Rust (macos-14)": "success"})["lint-rust-windows"])
 
     def test_python_runs_in_unica_ci_or_in_the_pull_request_job_never_partly_both(self) -> None:
         gate = load_gate_module()
         def python(**outcomes):
-            return gate.validation_results(steps({**queue_steps(), **outcomes}), {"Rust (macos-14)": "success"}, "queue")["test-python"]
+            return gate.validation_results(steps({**queue_steps(), **outcomes}), {"Rust (macos-14)": "success"})["test-python"]
         self.assertEqual("success", python())
         self.assertEqual("success", python(**{"python-plan": "skipped", "python": "skipped", "pr-python": "success"}))
         self.assertEqual("failure", python(**{"python-plan": "skipped", "python": "skipped", "pr-python": "failure"}))
@@ -860,9 +860,9 @@ class StepResultTests(unittest.TestCase):
         gate = load_gate_module()
         outcomes = queue_steps()
         del outcomes["verify"]
-        results = gate.validation_results(steps(outcomes), {"Rust (macos-14)": "success"}, "queue")
+        results = gate.validation_results(steps(outcomes), {"Rust (macos-14)": "success"})
         self.assertEqual("missing", results["test-rust-platforms"])
-        absent = gate.validation_results({}, None, "queue")
+        absent = gate.validation_results({}, None)
         self.assertTrue(all(value == "missing" for key, value in absent.items() if key != "os-jobs"))
         self.assertEqual("skipped", absent["os-jobs"])
 
@@ -873,26 +873,25 @@ class StepResultTests(unittest.TestCase):
         self.assertEqual("missing", gate.combined([]))
         self.assertEqual("missing", gate.combined(["failure", "missing"]))
 
-    def test_windows_failure_is_advisory_only_in_the_large_profile(self) -> None:
+    def test_a_red_windows_job_fails_the_nightly_like_any_other_runner(self) -> None:
+        """Windows в `large` блокирует, как macOS: по зелёному прогону ставят тег (#2152)."""
         gate = load_gate_module()
-        jobs = {"Rust (macos-14)": "success", "Rust (windows-latest)": "failure"}
-        self.assertEqual("success", gate.validation_results({}, jobs, "large")["os-jobs"])
-        for profile in ("queue", "main", "release"):
-            with self.subTest(profile=profile):
-                self.assertEqual("failure", gate.validation_results({}, jobs, profile)["os-jobs"])
-        self.assertEqual("failure", gate.validation_results({}, {"Rust (macos-14)": "failure"}, "large")["os-jobs"])
-        # Advisory Windows is accepted whatever it ended with, as long as it ran:
-        # a timeout or cancellation there must not turn the nightly red.
-        for outcome in ("timed_out", "cancelled", "failure"):
+        for outcome in ("failure", "timed_out", "cancelled", "not_acquired", "missing"):
             with self.subTest(outcome=outcome):
-                self.assertEqual("success", gate.validation_results(
-                    {}, {"Rust (macos-14)": "success", "Rust (windows-latest)": outcome}, "large")["os-jobs"])
-        self.assertEqual("missing", gate.validation_results(
-            {}, {"Rust (macos-14)": "success", "Rust (windows-latest)": "missing"}, "large")["os-jobs"])
-        # macOS is never advisory: its timeout fails the nightly too.
+                jobs = {"Rust (macos-14)": "success", "Rust (windows-latest)": outcome}
+                self.assertEqual(outcome, gate.validation_results({}, jobs)["os-jobs"])
+        self.assertEqual("success", gate.validation_results(
+            {}, {"Rust (macos-14)": "success", "Rust (windows-latest)": "success"})["os-jobs"])
         self.assertNotEqual("success", gate.validation_results(
-            {}, {"Rust (macos-14)": "timed_out", "Rust (windows-latest)": "success"}, "large")["os-jobs"])
-        self.assertEqual("missing", gate.validation_results({}, {}, "queue")["os-jobs"])
+            {}, {"Rust (macos-14)": "timed_out", "Rust (windows-latest)": "success"})["os-jobs"])
+        self.assertEqual("missing", gate.validation_results({}, {})["os-jobs"])
+        # Итог ночи — красный: запись `os-jobs` обязана быть успехом.
+        outputs = classification(**ALL_ENABLED)
+        nightly = {**code_results(), **PACKAGE_SUCCESS, **ASSESSMENT_SUCCESS, **P0_SUCCESS, "probe-thin-bootstrap": "success",
+                   "os-jobs": gate.validation_results({}, {"Rust (macos-14)": "success", "Rust (windows-latest)": "failure"})["os-jobs"]}
+        evaluation = evaluate(gate, "workflow_dispatch", "refs/heads/main", outputs, nightly, gate_profile="large")
+        self.assertFalse(evaluation.ok)
+        self.assertEqual(("failure", "success"), evaluation.unexpected["os-jobs"])
 
 
 class GateMainTests(unittest.TestCase):

@@ -111,7 +111,7 @@ ALTERNATIVE_GROUPS = {
 }
 
 
-def validation_results(steps: Mapping, os_jobs: Mapping[str, str] | None, profile: str | None) -> dict[str, str]:
+def validation_results(steps: Mapping, os_jobs: Mapping[str, str] | None) -> dict[str, str]:
     """Gate entries from the step outcomes of `Unica CI` and the other runners' jobs."""
     results = {}
     for entry, ids in STEP_GROUPS.items():
@@ -128,13 +128,9 @@ def validation_results(steps: Mapping, os_jobs: Mapping[str, str] | None, profil
     if os_jobs is None:
         results[OS_JOBS] = "skipped"
     else:
-        # Windows stays advisory in the nightly until #1523: any outcome of its
-        # job is accepted there, as `continue-on-error` did, but it must exist.
-        accepted = [
-            "success" if outcome == "success" or (profile == "large" and name == "Rust (windows-latest)" and outcome != "missing")
-            else outcome for name, outcome in sorted(os_jobs.items())
-        ]
-        results[OS_JOBS] = combined(accepted) if accepted else "missing"
+        # Every runner blocks, Windows in the nightly too (#2152).
+        outcomes = [outcome for _, outcome in sorted(os_jobs.items())]
+        results[OS_JOBS] = combined(outcomes) if outcomes else "missing"
     return results
 
 
@@ -428,7 +424,7 @@ def main() -> int:
         os_jobs = json.loads(Path(os_jobs_path).read_text(encoding="utf-8")) if os_jobs_path and Path(os_jobs_path).is_file() else None
         classifier = steps.get("classify", {})
         outputs = classifier.get("outputs", {}) if isinstance(classifier, dict) else {}
-        results = validation_results(steps, os_jobs, os.environ.get("GATE_PROFILE"))
+        results = validation_results(steps, os_jobs)
     elif scope == "delivery":
         needs = json.loads(os.environ["NEEDS_JSON"])
         gate = needs.get("unica-ci", {})

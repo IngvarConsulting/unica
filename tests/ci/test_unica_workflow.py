@@ -382,7 +382,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("python scripts/ci/await_os_jobs.py", wait["run"])
         self.assertEqual(gate["permissions"]["actions"], "write")
         self.assertEqual(other["name"], "Rust (${{ matrix.runner }})")
-        self.assertEqual(normalized(other["continue-on-error"]), "${{ matrix.runner == 'windows-latest' }}")
+        # Ни одна ОС не рекомендательная: красная джоба красит прогон (#2152).
+        self.assertNotIn("continue-on-error", other)
 
     def test_build_workflow_does_not_subscribe_to_label_or_milestone_changes(self) -> None:
         # Проверяем все входы сборочного workflow: безопасный pull_request
@@ -1079,14 +1080,16 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 "${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}",
             )
             assert_pinned(self, RELEASE_WORKFLOW, steps_using(found, "actions/setup-python")[0], "v7")
-            # Консоль Windows — cp1252; сбой Windows виден, но упаковку ночи не блокирует.
+            # Консоль Windows — cp1252.
             self.assertEqual(found["env"]["PYTHONUTF8"], "1")
             # Отладочная информация тестовой сборки — одна на джобу: шаг с другим
             # значением пересобрал бы общие артефакты.
             self.assertEqual(found["env"]["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only")
             for step in found["steps"]:
                 self.assertNotIn("CARGO_PROFILE_DEV_DEBUG", step.get("env") or {})
-        self.assertEqual(normalized(platforms["continue-on-error"]), "${{ matrix.runner == 'windows-latest' }}")
+        # Красная Windows-джоба ночи красит прогон и не пускает сборку поставки.
+        self.assertNotIn("continue-on-error", platforms)
+        self.assertIn("needs.rust-os.result == 'success'", condition(job(self.release, "build-tools")))
         self.assertFalse((WORKFLOWS_DIR / "unica-large.yml").exists())
 
     def test_pages_take_results_from_the_queue_red_runs_and_the_nightly(self) -> None:

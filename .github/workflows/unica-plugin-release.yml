@@ -127,10 +127,10 @@ jobs:
       # Раннеры прогона. Pull request идёт только на Linux; метка `ci:full`,
       # прочитанная при старте прогона, добавляет macOS. Очередь, push в
       # ветку и кнопка — Linux и macOS; в очереди macOS исполняет только
-      # платформенные каталоги (профиль nextest `queue-platform`). Windows —
-      # только в ночном ярусе `large`: с остальных снят за нестабильность.
-      # Известные отказы Windows large — #1523; отдельные регрессии — #1714,
-      # #1746, #1776, #1777, #1786. Advisory снимается вместе с ними.
+      # платформенные каталоги (профиль nextest `queue-platform`). Тесты
+      # Windows — только в ночном ярусе `large`, и там его красная джоба
+      # красит прогон, как любая другая ОС. Clippy под Windows очередь и кнопка
+      # `main` исполняют отдельной джобой `Clippy (windows-latest)`.
       - id: runners
         env:
           PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || '' }}
@@ -585,7 +585,7 @@ jobs:
 
   # Остальные раннеры прогона. Очередь — macOS с платформенными каталогами
   # (`queue-platform`); push в релизную ветку, кнопка, тег и ночь — полный
-  # macOS с Clippy, ночью ещё Windows (advisory, #1523). Pull request —
+  # macOS с Clippy, ночью ещё Windows. Pull request —
   # только с меткой `ci:full`. Push в `main` её не запускает: ключ
   # зависимостей macOS пишет ночь, а прогоны берут ближайший по префиксу.
   # Маршрут джоба считает тем же классификатором; расхождение с маршрутом
@@ -600,8 +600,8 @@ jobs:
     if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
-    # Windows advisory до устранения известных отказов large (#1523).
-    continue-on-error: ${{ matrix.runner == 'windows-latest' }}
+    # Без `continue-on-error`: красная Windows-джоба красит ночной прогон
+    # и не пускает сборку поставки, иначе по зелёному прогону ставят тег (#2152).
     strategy:
       fail-fast: false
       matrix:
