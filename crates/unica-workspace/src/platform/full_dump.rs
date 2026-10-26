@@ -5824,9 +5824,13 @@ fn capture_directory_snapshot_recursive(
 
 /// Whether a tree snapshot may reuse a digest it already computed.
 ///
-/// Only a platform installation does: the caller cannot write it, and every
-/// write still changes the file's change time (`ctime`), which no caller sets
-/// by hand. Workspace trees are always read in full.
+/// Only a platform installation does. Reuse rests on the immutable trust
+/// profile checked with every attestation: the caller is unprivileged and
+/// cannot write the installation at all. The stamp then catches in-place
+/// updates by its owner, such as a reinstall over the same path; it is not
+/// proof against an owner who restores the timestamps on purpose, since
+/// Windows lets a writer set `ChangeTime`. Workspace trees are always read in
+/// full.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DigestReuse {
     Never,
@@ -5834,6 +5838,7 @@ enum DigestReuse {
 }
 
 /// The metadata that any write to a file changes.
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ContentStamp {
     identity: FileIdentity,
@@ -5845,18 +5850,38 @@ struct ContentStamp {
 #[cfg(test)]
 thread_local! {
     static HASHED_FILES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SETTLE_WINDOW_OVERRIDE: std::cell::Cell<Option<std::time::Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(any(unix, windows))]
+fn platform_digest_settle_window() -> std::time::Duration {
+    #[cfg(test)]
+    if let Some(window) = SETTLE_WINDOW_OVERRIDE.with(std::cell::Cell::get) {
+        return window;
+    }
+    PLATFORM_DIGEST_SETTLE_WINDOW
 }
 
 /// Remembered platform digests; past this many entries the memory starts over.
+#[cfg(any(unix, windows))]
 const PLATFORM_DIGEST_CACHE_CAPACITY: usize = 65_536;
 
+/// A file changed this recently may still change within the same timestamp
+/// tick, so its digest is not remembered yet.
+#[cfg(any(unix, windows))]
+const PLATFORM_DIGEST_SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(any(unix, windows))]
 type PlatformDigests = std::sync::Mutex<std::collections::HashMap<ContentStamp, [u8; 32]>>;
 
+#[cfg(any(unix, windows))]
 fn platform_digests() -> &'static PlatformDigests {
     static DIGESTS: std::sync::OnceLock<PlatformDigests> = std::sync::OnceLock::new();
     DIGESTS.get_or_init(Default::default)
 }
 
+#[cfg(any(unix, windows))]
 fn remembered_digest(stamp: ContentStamp) -> Option<[u8; 32]> {
     platform_digests()
         .lock()
@@ -5865,6 +5890,23 @@ fn remembered_digest(stamp: ContentStamp) -> Option<[u8; 32]> {
         .copied()
 }
 
+/// When the stamp's change time was taken, if the host reports it.
+#[cfg(unix)]
+fn stamp_changed_at(changed: (i64, i64)) -> Option<std::time::SystemTime> {
+    let seconds = u64::try_from(changed.0).ok()?;
+    let nanos = u32::try_from(changed.1).ok()?;
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(seconds, nanos))
+}
+
+/// When the stamp's change time was taken: Windows counts 100 ns ticks since 1601.
+#[cfg(windows)]
+fn stamp_changed_at(changed: (i64, i64)) -> Option<std::time::SystemTime> {
+    const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
+    let ticks = u64::try_from(changed.0.checked_sub(UNIX_EPOCH_TICKS)?).ok()?;
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_nanos(ticks.checked_mul(100)?))
+}
+
+#[cfg(any(unix, windows))]
 impl DigestReuse {
     fn stamp(
         self,
@@ -5890,10 +5932,13 @@ impl DigestReuse {
         }))
     }
 
-    /// Keeps a digest only for a file whose stamp held across the snapshot.
+    /// Keeps a digest only for a file whose stamp held across the snapshot and
+    /// has settled. A reused digest whose file moved during the pass is refused.
+    #[allow(clippy::too_many_arguments)]
     fn remember(
         self,
         stamp: Option<ContentStamp>,
+        reused: bool,
         file: &File,
         identity: FileIdentity,
         after: &fs::Metadata,
@@ -5904,10 +5949,21 @@ impl DigestReuse {
             return Ok(());
         };
         if self.stamp(file, identity, after, display_path)? != Some(stamp) {
-            return Err(format!(
-                "dump tree file changed while snapshotting: {}",
-                display_path.display()
-            ));
+            if reused {
+                return Err(format!(
+                    "dump tree file changed while snapshotting: {}",
+                    display_path.display()
+                ));
+            }
+            return Ok(());
+        }
+        let settled = stamp_changed_at(stamp.changed).is_some_and(|changed| {
+            std::time::SystemTime::now()
+                .duration_since(changed)
+                .is_ok_and(|age| age >= platform_digest_settle_window())
+        });
+        if reused || !settled {
+            return Ok(());
         }
         let mut digests = platform_digests()
             .lock()
@@ -6262,7 +6318,8 @@ fn capture_directory_snapshot_recursive_with(
             )
         })?;
         let stamp = reuse.stamp(&file, identity, &before, &display_path)?;
-        let (size, sha256) = match stamp.and_then(remembered_digest) {
+        let remembered = stamp.and_then(remembered_digest);
+        let (size, sha256) = match remembered {
             Some(digest) => (before.len(), digest),
             None => hash_open_file(&mut file, &display_path)?,
         };
@@ -6282,7 +6339,15 @@ fn capture_directory_snapshot_recursive_with(
                 display_path.display()
             ));
         }
-        reuse.remember(stamp, &file, identity, &after, sha256, &display_path)?;
+        reuse.remember(
+            stamp,
+            remembered.is_some(),
+            &file,
+            identity,
+            &after,
+            sha256,
+            &display_path,
+        )?;
         if hard_link_count(&file).map_err(|error| {
             format!(
                 "failed to recheck hard links for {}: {error}",
@@ -6431,7 +6496,8 @@ fn capture_directory_snapshot_recursive_with(
                     )
                 })?;
                 let stamp = reuse.stamp(&file, identity, &before, &display_path)?;
-                let (size, sha256) = match stamp.and_then(remembered_digest) {
+                let remembered = stamp.and_then(remembered_digest);
+                let (size, sha256) = match remembered {
                     Some(digest) => (before.len(), digest),
                     None => hash_open_file(&mut file, &display_path)?,
                 };
@@ -6450,7 +6516,15 @@ fn capture_directory_snapshot_recursive_with(
                         display_path.display()
                     ));
                 }
-                reuse.remember(stamp, &file, identity, &after, sha256, &display_path)?;
+                reuse.remember(
+                    stamp,
+                    remembered.is_some(),
+                    &file,
+                    identity,
+                    &after,
+                    sha256,
+                    &display_path,
+                )?;
                 let rebound = open_regular_child_nofollow(directory, &name).map_err(|error| {
                     format!("failed to rebind file {}: {error}", display_path.display())
                 })?;
@@ -8742,9 +8816,16 @@ pub mod test_support_os {
 
 #[cfg(all(test, any(unix, windows)))]
 mod platform_digest_reuse_tests {
-    use super::{TreeEntryKind, TreeSnapshot, HASHED_FILES};
+    use super::SETTLE_WINDOW_OVERRIDE;
+    use super::{PlatformAttestation, TreeEntryKind, TreeSnapshot, HASHED_FILES};
     use std::fs;
     use std::path::Path;
+    use std::time::Duration;
+
+    /// Files written by a test are fresh; let them count as settled.
+    fn settled_at_once() {
+        SETTLE_WINDOW_OVERRIDE.with(|window| window.set(Some(Duration::ZERO)));
+    }
 
     fn hashed_during(capture: impl FnOnce() -> TreeSnapshot) -> (TreeSnapshot, usize) {
         let before = HASHED_FILES.with(|count| count.get());
@@ -8769,6 +8850,7 @@ mod platform_digest_reuse_tests {
 
     #[test]
     fn platform_install_snapshot_reads_each_unchanged_file_once() {
+        settled_at_once();
         let root = tempfile::tempdir().unwrap();
         let install = root.path().join("install");
         fs::create_dir_all(install.join("bin")).unwrap();
@@ -8786,6 +8868,7 @@ mod platform_digest_reuse_tests {
 
     #[test]
     fn platform_install_snapshot_rereads_a_rewrite_that_restores_size_and_content_time() {
+        settled_at_once();
         let root = tempfile::tempdir().unwrap();
         let install = root.path().join("install");
         fs::create_dir_all(&install).unwrap();
@@ -8808,6 +8891,9 @@ mod platform_digest_reuse_tests {
             .set_modified(modified)
             .unwrap();
 
+        let metadata = fs::metadata(&library).unwrap();
+        assert_eq!(metadata.len(), b"original".len() as u64);
+        assert_eq!(metadata.modified().unwrap(), modified);
         let (second, hashed) =
             hashed_during(|| TreeSnapshot::capture_platform_install(&install).unwrap());
         assert_eq!(hashed, 1, "a rewritten platform file must be read again");
@@ -8815,7 +8901,58 @@ mod platform_digest_reuse_tests {
     }
 
     #[test]
+    fn a_freshly_changed_platform_file_is_not_remembered() {
+        SETTLE_WINDOW_OVERRIDE.with(|window| window.set(None));
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("install");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("lib.so"), b"just written").unwrap();
+
+        TreeSnapshot::capture_platform_install(&install).unwrap();
+        let (_, hashed) =
+            hashed_during(|| TreeSnapshot::capture_platform_install(&install).unwrap());
+        assert_eq!(
+            hashed, 1,
+            "a file within its settle window must be read again"
+        );
+    }
+
+    #[test]
+    fn attestation_recheck_rejects_an_install_file_rewritten_in_place() {
+        settled_at_once();
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("install");
+        fs::create_dir_all(&install).unwrap();
+        let executable = install.join(if cfg!(windows) { "1cv8.exe" } else { "1cv8" });
+        let probe = install.join(if cfg!(windows) { "ibcmd.exe" } else { "ibcmd" });
+        let library = install.join("core.dylib");
+        fs::write(&executable, b"designer").unwrap();
+        fs::write(&probe, b"ibcmd").unwrap();
+        fs::write(&library, b"original").unwrap();
+        let attestation = PlatformAttestation::capture_test_fixture(&executable).unwrap();
+        attestation.recheck().unwrap();
+
+        let modified = fs::metadata(&library).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&library)
+            .unwrap()
+            .write_all_at_start(b"tampered");
+        fs::File::options()
+            .write(true)
+            .open(&library)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+
+        let error = attestation.recheck().unwrap_err();
+        assert!(error.contains("platform attestation changed"), "{error}");
+    }
+
+    #[test]
     fn workspace_tree_snapshots_never_reuse_a_digest() {
+        settled_at_once();
         let root = tempfile::tempdir().unwrap();
         let tree = root.path().join("tree");
         fs::create_dir_all(&tree).unwrap();

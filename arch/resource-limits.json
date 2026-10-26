@@ -6246,6 +6246,30 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "pull.platform-digest-settle-window-ms",
+      "class": "step",
+      "resource": "Возраст времени изменения файла установки платформы, после которого его дайджест запоминается.",
+      "unit": "ms",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-workspace/src/platform/full_dump.rs",
+        "symbol": "PLATFORM_DIGEST_SETTLE_WINDOW"
+      },
+      "expr": "std::time::Duration::from_secs(2)",
+      "value": 2000,
+      "applied": [
+        "crates/unica-workspace/src/platform/full_dump.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2193",
+      "problem": "Запись в тот же тик времени, что и запомненный штамп, не меняет ctime на грубых часах файловой системы.",
+      "onReach": "файл моложе окна читается заново при каждом снимке",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [
