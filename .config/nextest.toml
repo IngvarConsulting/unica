@@ -785,6 +785,11 @@ slow-timeout = { period = "300s", terminate-after = 2 }
 # (#2111). Группа ограничивает только одновременность, сроки не меняются.
 [test-groups]
 receipt-runtime = { max-threads = 4 }
+# Изменяющие вызовы через настоящий MCP и демон на двухъядерном Windows
+# получали `store_failed` и истечение срока submit, когда шли одновременно с
+# тяжёлыми тестами поиска по большим корпусам (#2147). Группа не даёт им
+# идти одновременно друг с другом; сроки и остальной прогон не меняются.
+workspace-stdio = { max-threads = 1 }
 
 # Гонка отмены со стартом задания держит отмену, пока задание стартует с
 # записью на диск; срок самой отмены — 2 с. Тест занимает машину целиком,
@@ -796,6 +801,13 @@ threads-required = "num-cpus"
 [[profile.default.overrides]]
 filter = 'binary(unica_coder) & test(/^infrastructure::daemon::receipt_runtime_tests::/)'
 test-group = "receipt-runtime"
+
+[[profile.default.overrides]]
+filter = '''
+binary(v13_workspace_bootstrap)
+| (binary(v13_search_integration) & test(/^(text_search_enumerates_wide_and_aggregate_corpora_without_an_entry_quota|resolve_resources::resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp)$/))
+'''
+test-group = "workspace-stdio"
 
 # Публичная задержка отмены при Windows Job attach должна остаться в логе
 # успешного прогона: общая длительность теста включает подготовку раннера.
