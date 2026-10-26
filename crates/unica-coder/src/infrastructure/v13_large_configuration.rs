@@ -1,5 +1,7 @@
 //! Bounded registration sorting for the root Configuration view. The root
 //! publishes counts, while the owner proof still needs exact set semantics.
+//! Each registration carries its position in `ChildObjects`, so a branch is
+//! listed in the Designer's order although the index is sorted by key.
 
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -19,7 +21,13 @@ use xml::reader::{ParserConfig, XmlEvent};
 const REGISTRATION_RUN_BYTES: usize = 1024 * 1024;
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-type Registration = (String, String);
+/// Kind, name and the position in `ChildObjects`; a repeated key keeps the
+/// first position.
+type Registration = (String, String, u64);
+
+fn same_key(left: &Registration, right: &Registration) -> bool {
+    left.0 == right.0 && left.1 == right.1
+}
 
 fn scratch_error(error: io::Error) -> ViewError {
     ViewError::detailed(
@@ -49,6 +57,7 @@ pub(super) struct RegistrationSorter {
     batch: Vec<Registration>,
     batch_bytes: usize,
     levels: Vec<Option<File>>,
+    position: u64,
 }
 
 impl RegistrationSorter {
@@ -57,6 +66,7 @@ impl RegistrationSorter {
             batch: Vec::new(),
             batch_bytes: 0,
             levels: Vec::new(),
+            position: 0,
         }
     }
 
@@ -70,7 +80,7 @@ impl RegistrationSorter {
         let charge = kind
             .len()
             .checked_add(name.len())
-            .and_then(|length| length.checked_add(8))
+            .and_then(|length| length.checked_add(16))
             .ok_or_else(|| {
                 ViewError::detailed(
                     RefusalDetail::SourceUnreadable,
@@ -88,7 +98,13 @@ impl RegistrationSorter {
                 "registration batch size overflow",
             )
         })?;
-        self.batch.push((kind, name));
+        self.batch.push((kind, name, self.position));
+        self.position = self.position.checked_add(1).ok_or_else(|| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "registration position overflow",
+            )
+        })?;
         Ok(())
     }
 
@@ -98,7 +114,7 @@ impl RegistrationSorter {
         }
         checkpoint()?;
         self.batch.sort_unstable();
-        self.batch.dedup();
+        self.batch.dedup_by(|next, kept| same_key(next, kept));
         let file = tempfile::tempfile().map_err(scratch_error)?;
         let mut writer = BufWriter::new(file);
         for item in &self.batch {
@@ -147,8 +163,8 @@ impl RegistrationSorter {
         // The common small corpus never needs a scratch file.
         if self.levels.is_empty() {
             self.batch.sort_unstable();
-            self.batch.dedup();
-            for (kind, name) in self.batch {
+            self.batch.dedup_by(|next, kept| same_key(next, kept));
+            for (kind, name, _) in self.batch {
                 checkpoint()?;
                 visit(&kind, &name)?;
             }
@@ -167,7 +183,7 @@ impl RegistrationSorter {
             return Ok(());
         };
         let mut reader = BufReader::new(run);
-        while let Some((kind, name)) = read_registration(&mut reader).map_err(scratch_error)? {
+        while let Some((kind, name, _)) = read_registration(&mut reader).map_err(scratch_error)? {
             checkpoint()?;
             visit(&kind, &name)?;
         }
@@ -220,6 +236,8 @@ pub(crate) struct RegistrationIndex {
 /// файл разбирается при каждом обращении. Обхода дерева нет. Отравленная
 /// блокировка сбрасывает запись, а не отказывает дальше.
 pub(crate) struct RegistrationCache {
+    /// Which modules of the set spell a name, built in the background.
+    names: Arc<crate::infrastructure::name_index::SourceNameIndex>,
     registrations: Mutex<Option<(FileStamp, Arc<RegistrationIndex>)>>,
     configuration: Mutex<Option<(ConfigurationStamps, Arc<Value>)>>,
     support: Mutex<Option<RetainedSupportState>>,
@@ -231,11 +249,12 @@ pub(crate) struct RegistrationCache {
 }
 
 /// Timestamp granularity window: a stamp younger than this is never cached.
-const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+pub(crate) const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Default for RegistrationCache {
     fn default() -> Self {
         Self {
+            names: Arc::default(),
             registrations: Mutex::new(None),
             configuration: Mutex::new(None),
             support: Mutex::new(None),
@@ -300,6 +319,11 @@ impl RegistrationCache {
         if let Some(hook) = slot(&self.after_parse).take() {
             hook();
         }
+    }
+
+    /// The set's name index, kept with its other retained artifacts.
+    pub(crate) fn names(&self) -> &Arc<crate::infrastructure::name_index::SourceNameIndex> {
+        &self.names
     }
 
     fn retains(&self, stamp: &FileStamp) -> bool {
@@ -507,8 +531,9 @@ impl RegistrationIndex {
         Ok(false)
     }
 
-    /// Return the complete sorted, duplicate-free branch. The collection
-    /// response itself holds these names, so only output-sized memory is used.
+    /// Return the complete duplicate-free branch in `ChildObjects` order. The
+    /// collection response itself holds these names, so only output-sized
+    /// memory is used.
     pub(crate) fn names_for_kind(
         &self,
         kind: &str,
@@ -568,16 +593,17 @@ impl RegistrationIndex {
             .seek(SeekFrom::Start(u64::from_le_bytes(offset)))
             .map_err(scratch_error)?;
         let mut names = Vec::new();
-        while let Some((candidate_kind, name)) =
+        while let Some((candidate_kind, name, position)) =
             read_registration(&mut files.data).map_err(scratch_error)?
         {
             checkpoint()?;
             if candidate_kind != kind {
                 break;
             }
-            names.push(name);
+            names.push((position, name));
         }
-        Ok(names)
+        names.sort_unstable_by_key(|(position, _)| *position);
+        Ok(names.into_iter().map(|(_, name)| name).collect())
     }
 }
 
@@ -612,7 +638,8 @@ fn merge_runs(
             }
             (None, None) => break,
         };
-        if last.as_ref() != Some(&next) {
+        // Equal keys meet in position order, so the first one is kept.
+        if !last.as_ref().is_some_and(|kept| same_key(kept, &next)) {
             write_registration(&mut writer, &next).map_err(scratch_error)?;
             last = Some(next);
         }
@@ -632,7 +659,7 @@ fn write_registration(writer: &mut impl Write, item: &Registration) -> io::Resul
         writer.write_all(&length.to_le_bytes())?;
         writer.write_all(value.as_bytes())?;
     }
-    Ok(())
+    writer.write_all(&item.2.to_le_bytes())
 }
 
 fn read_registration(reader: &mut impl Read) -> io::Result<Option<Registration>> {
@@ -645,7 +672,9 @@ fn read_registration(reader: &mut impl Read) -> io::Result<Option<Registration>>
     let mut second = [0_u8; 8];
     reader.read_exact(&mut second)?;
     let name = read_field(reader, second)?;
-    Ok(Some((kind, name)))
+    let mut position = [0_u8; 8];
+    reader.read_exact(&mut position)?;
+    Ok(Some((kind, name, u64::from_le_bytes(position))))
 }
 
 fn read_field(reader: &mut impl Read, encoded_length: [u8; 8]) -> io::Result<String> {
@@ -1404,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn registration_index_lists_only_sorted_unique_names_for_kind() {
+    fn registration_index_lists_unique_names_for_kind_in_child_objects_order() {
         let mut sorter = RegistrationSorter::new();
         for (kind, name) in [
             ("Catalog", "Zulu"),
@@ -1420,7 +1449,7 @@ mod tests {
         let index = RegistrationIndex::from_sorter(sorter, &|| Ok(())).unwrap();
         assert_eq!(
             index.names_for_kind("Catalog", &|| Ok(())).unwrap(),
-            ["Alpha", "Zulu"]
+            ["Zulu", "Alpha"]
         );
         assert_eq!(
             index.names_for_kind("CommonModule", &|| Ok(())).unwrap(),
@@ -1430,6 +1459,38 @@ mod tests {
             .names_for_kind("Empty", &|| Ok(()))
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn registration_index_keeps_child_objects_order_across_scratch_runs() {
+        let mut sorter = RegistrationSorter::new();
+        for index in (0..80_000).rev() {
+            let name = format!("Object{index:06}");
+            sorter
+                .push("Catalog".to_string(), name, &|| Ok(()))
+                .unwrap();
+        }
+        // A late repeat keeps the first place of its name.
+        sorter
+            .push(
+                "Catalog".to_string(),
+                "Object079999".to_string(),
+                &|| Ok(()),
+            )
+            .unwrap();
+        assert!(
+            !sorter.levels.is_empty(),
+            "fixture must cross the in-memory run size"
+        );
+        let index = RegistrationIndex::from_sorter(sorter, &|| Ok(())).unwrap();
+        assert!(index
+            .contains("Catalog", "Object000000", &|| Ok(()))
+            .unwrap());
+        let names = index.names_for_kind("Catalog", &|| Ok(())).unwrap();
+        assert_eq!(names.len(), 80_000);
+        assert_eq!(names.first().map(String::as_str), Some("Object079999"));
+        assert_eq!(names.last().map(String::as_str), Some("Object000000"));
+        assert!(names.windows(2).all(|pair| pair[0] > pair[1]));
     }
 
     fn configuration_xml(name: &str) -> String {

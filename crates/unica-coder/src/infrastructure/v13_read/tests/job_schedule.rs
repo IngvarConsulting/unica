@@ -6,7 +6,7 @@ const SCHEDULE: &str = include_str!("../../../../../../tests/fixtures/acceptance
 
 fn read(fixture: &RealReaderFixture, at: &str) -> Value {
     let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
-    assert!(result.ok, "{at}: {result:?}");
+    assert!(result.ok, "{at}: the schedule view failed");
     result.data.unwrap()
 }
 
@@ -52,7 +52,7 @@ fn job_schedule_sidecar_changes_are_observed_on_the_same_service() {
     let at = "main:ScheduledJob.MonthClose.Schedule";
     let view = || {
         let result = service.view(ViewRequest::new(at).unwrap());
-        assert!(result.ok, "{result:?}");
+        assert!(result.ok, "the schedule view failed");
         result.data.unwrap()["props"].clone()
     };
     assert_eq!(view(), json!({"state":"absent"}));
@@ -307,7 +307,7 @@ fn job_schedule_reads_detailed_daily_schedules_in_platform_export_shape() {
     let detailed = props["detailedDailySchedules"]
         .as_array()
         .expect("detailed schedules");
-    assert_eq!(detailed.len(), 2, "{props}");
+    assert_eq!(detailed.len(), 2, "two detailed daily schedules");
     assert_eq!(detailed[0]["BeginTime"], "09:00:00");
     assert_eq!(detailed[0]["EndTime"], "13:00:00");
     assert_eq!(detailed[0]["RepeatPeriodInDay"], 600);
@@ -327,5 +327,5 @@ fn job_schedule_reads_detailed_daily_schedules_in_platform_export_shape() {
     let result = fixture
         .view_service()
         .view(ViewRequest::new("main:ScheduledJob.MonthClose.Schedule").unwrap());
-    assert!(!result.ok, "{result:?}");
+    assert!(!result.ok, "a nested schedule list is refused");
 }

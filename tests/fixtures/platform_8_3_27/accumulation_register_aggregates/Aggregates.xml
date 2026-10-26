@@ -1,0 +1,10 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<AccumulationRegisterAggregates xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Aggregate id="9e0f1a2b-3c4d-4e5f-8a6b-7c8d9e0f1a24">
+		<Use>Always</Use>
+		<Periodicity>Day</Periodicity>
+		<Dimensions>
+			<Dimension ref="AccumulationRegister.CorpusTurnovers.Dimension.Item">true</Dimension>
+		</Dimensions>
+	</Aggregate>
+</AccumulationRegisterAggregates>

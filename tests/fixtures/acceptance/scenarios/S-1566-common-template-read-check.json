@@ -36,40 +36,40 @@
       "assertions": [
         {
           "pointer": "/data/items/0/title",
-          "eq": "Bad"
-        },
-        {
-          "pointer": "/data/items/1/title",
           "eq": "Empty"
         },
         {
-          "pointer": "/data/items/2/title",
-          "eq": "Html"
+          "pointer": "/data/items/1/title",
+          "eq": "Bad"
         },
         {
-          "pointer": "/data/items/3/title",
+          "pointer": "/data/items/2/title",
           "eq": "Print"
         },
         {
-          "pointer": "/data/items/4/title",
+          "pointer": "/data/items/3/title",
           "eq": "Schema"
+        },
+        {
+          "pointer": "/data/items/4/title",
+          "eq": "Html"
         }
       ],
       "captures": {
         "commonMxl": {
-          "pointer": "/data/items/3/at"
-        },
-        "commonDcs": {
-          "pointer": "/data/items/4/at"
-        },
-        "commonHtml": {
           "pointer": "/data/items/2/at"
         },
+        "commonDcs": {
+          "pointer": "/data/items/3/at"
+        },
+        "commonHtml": {
+          "pointer": "/data/items/4/at"
+        },
         "commonBad": {
-          "pointer": "/data/items/0/at"
+          "pointer": "/data/items/1/at"
         },
         "commonEmpty": {
-          "pointer": "/data/items/1/at"
+          "pointer": "/data/items/0/at"
         }
       }
     },

@@ -22,6 +22,8 @@ pub mod internal_adapters;
 pub(crate) mod event_sources;
 #[allow(dead_code)]
 pub(crate) mod logical_tree;
+#[allow(dead_code)]
+pub(crate) mod lsp_documents;
 pub(crate) mod metadata_kinds;
 pub(crate) mod metadata_operations;
 pub mod native_operations;
@@ -43,11 +45,13 @@ pub(crate) mod runtime_jobs_integration;
 mod runtime_preflight_integration;
 pub(crate) mod source_roots;
 // The topology provider is introduced before both public consumers migrate to it.
+pub(crate) mod name_index;
 #[allow(dead_code)]
 pub(crate) mod support_guard;
 #[allow(dead_code)]
 // Hidden v0.13 typed read adapter remains unreachable from the v0.12 tool ledger.
 pub(crate) mod support_state;
+pub(crate) mod symbol_environment;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 pub(crate) mod tool_context;

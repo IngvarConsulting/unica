@@ -456,21 +456,128 @@ fn attribute_item_schema() -> Value {
     )
 }
 
-const FORM_SLOTS: [&str; 13] = [
-    "defaultObjectForm",
-    "defaultListForm",
-    "defaultChoiceForm",
-    "defaultFolderForm",
-    "defaultFolderChoiceForm",
-    "defaultRecordForm",
-    "defaultForm",
-    "defaultSettingsForm",
-    "defaultVariantForm",
-    "defaultSaveForm",
-    "auxiliaryObjectForm",
-    "auxiliaryListForm",
-    "auxiliaryChoiceForm",
+/// Every form slot `form.set` writes: the contract key and its Platform XML
+/// element.
+pub const FORM_SLOTS: [(&str, &str); 21] = [
+    ("defaultObjectForm", "DefaultObjectForm"),
+    ("defaultFolderForm", "DefaultFolderForm"),
+    ("defaultListForm", "DefaultListForm"),
+    ("defaultChoiceForm", "DefaultChoiceForm"),
+    ("defaultFolderChoiceForm", "DefaultFolderChoiceForm"),
+    ("defaultRecordForm", "DefaultRecordForm"),
+    ("defaultForm", "DefaultForm"),
+    ("defaultSettingsForm", "DefaultSettingsForm"),
+    ("defaultVariantForm", "DefaultVariantForm"),
+    ("defaultSaveForm", "DefaultSaveForm"),
+    ("defaultLoadForm", "DefaultLoadForm"),
+    ("auxiliaryObjectForm", "AuxiliaryObjectForm"),
+    ("auxiliaryFolderForm", "AuxiliaryFolderForm"),
+    ("auxiliaryListForm", "AuxiliaryListForm"),
+    ("auxiliaryChoiceForm", "AuxiliaryChoiceForm"),
+    ("auxiliaryFolderChoiceForm", "AuxiliaryFolderChoiceForm"),
+    ("auxiliaryRecordForm", "AuxiliaryRecordForm"),
+    ("auxiliaryForm", "AuxiliaryForm"),
+    ("auxiliarySettingsForm", "AuxiliarySettingsForm"),
+    ("auxiliarySaveForm", "AuxiliarySaveForm"),
+    ("auxiliaryLoadForm", "AuxiliaryLoadForm"),
 ];
+
+/// The form slots an owner kind has in the 8.3.27 export, by contract key;
+/// `None` for a kind without a known set, which accepts every slot.
+pub fn form_slots_of(kind: &str) -> Option<&'static [&'static str]> {
+    const HIERARCHICAL: &[&str] = &[
+        "defaultObjectForm",
+        "defaultFolderForm",
+        "defaultListForm",
+        "defaultChoiceForm",
+        "defaultFolderChoiceForm",
+        "auxiliaryObjectForm",
+        "auxiliaryFolderForm",
+        "auxiliaryListForm",
+        "auxiliaryChoiceForm",
+        "auxiliaryFolderChoiceForm",
+    ];
+    const OBJECT: &[&str] = &[
+        "defaultObjectForm",
+        "defaultListForm",
+        "defaultChoiceForm",
+        "auxiliaryObjectForm",
+        "auxiliaryListForm",
+        "auxiliaryChoiceForm",
+    ];
+    Some(match kind {
+        "Catalog" | "ChartOfCharacteristicTypes" => HIERARCHICAL,
+        "Document"
+        | "BusinessProcess"
+        | "Task"
+        | "ExchangePlan"
+        | "ChartOfAccounts"
+        | "ChartOfCalculationTypes" => OBJECT,
+        "Enum" => &[
+            "defaultListForm",
+            "defaultChoiceForm",
+            "auxiliaryListForm",
+            "auxiliaryChoiceForm",
+        ],
+        "AccumulationRegister" | "AccountingRegister" | "CalculationRegister" => {
+            &["defaultListForm", "auxiliaryListForm"]
+        }
+        "InformationRegister" => &[
+            "defaultRecordForm",
+            "defaultListForm",
+            "auxiliaryRecordForm",
+            "auxiliaryListForm",
+        ],
+        "Constant" => &["defaultForm"],
+        "DataProcessor" | "ExternalDataProcessor" | "DocumentJournal" | "FilterCriterion" => {
+            &["defaultForm", "auxiliaryForm"]
+        }
+        "Report" | "ExternalReport" => &[
+            "defaultForm",
+            "auxiliaryForm",
+            "defaultSettingsForm",
+            "auxiliarySettingsForm",
+            "defaultVariantForm",
+        ],
+        "SettingsStorage" => &[
+            "defaultSaveForm",
+            "defaultLoadForm",
+            "auxiliarySaveForm",
+            "auxiliaryLoadForm",
+        ],
+        _ => return None,
+    })
+}
+
+/// The `form.set` contract for the owner kind, or for any owner.
+pub fn form_set(kind: Option<&str>) -> OperationContract {
+    let at = || ("at", text(true));
+    let slot = json!({"type":"string",
+        "description":"A form name of this owner; an empty string clears the slot, as an export with no such form writes it."});
+    let keys = kind
+        .and_then(form_slots_of)
+        .map(<[&str]>::to_vec)
+        .unwrap_or_else(|| FORM_SLOTS.iter().map(|(key, _)| *key).collect());
+    let mut values = object(
+        &keys
+            .iter()
+            .map(|key| (*key, slot.clone()))
+            .collect::<Vec<_>>(),
+        &[],
+    );
+    values["minProperties"] = json!(1);
+    let mut example = serde_json::Map::new();
+    example.insert(keys[0].to_string(), json!("Sample"));
+    OperationContract {
+        schema: object(&[at(), ("values", values)], &["values"]),
+        target: "The form owner: <source-set>:<Kind>.<Name>.",
+        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted.",
+        notes: "Properties of a form itself (title, size, behaviour) are written by props.set at the form address.",
+        example_args: json!({"values": example}),
+        help: FORM_HELP,
+        format_validators: &[],
+    }
+}
 
 pub fn form(operation: FormOperation) -> OperationContract {
     let at = || ("at", text(true));
@@ -486,22 +593,7 @@ pub fn form(operation: FormOperation) -> OperationContract {
             "Fill the new form with item.add, attribute.add and event.bind at its address after the plan is executed; within one apply call a later operation may already address it.",
             json!({"items":[{"name":"Sample","type":"ObjectForm"}]}),
         ),
-        FormOperation::Set => {
-            let slot = json!({"type":"string","pattern":r"\S",
-                "description":"A form name of this owner."});
-            let mut values = object(
-                &FORM_SLOTS.iter().map(|slot_name| (*slot_name, slot.clone())).collect::<Vec<_>>(),
-                &[],
-            );
-            values["minProperties"] = json!(1);
-            (
-                object(&[at(), ("values", values)], &["values"]),
-                "The form owner: <source-set>:<Kind>.<Name>.",
-                "Point the owner's default and auxiliary form slots at the named forms. Unlisted slots stay.",
-                "Properties of a form itself (title, size, behaviour) are written by props.set at the form address.",
-                json!({"values":{"defaultObjectForm":"Sample"}}),
-            )
-        }
+        FormOperation::Set => return form_set(None),
         FormOperation::Remove => (
             object(&[at()], &[]),
             "The existing form: <source-set>:<Kind>.<Name>.Form.<Form>.",
@@ -767,6 +859,57 @@ mod tests {
                 .unwrap_err();
             assert_eq!(error.path, "args.items[0].path");
         }
+    }
+
+    /// #2144: the contract at an owner offers exactly that kind's form slots
+    /// and takes an empty string to clear one.
+    #[test]
+    fn form_set_contract_is_narrowed_to_the_owner_kind() {
+        let catalog = form_set(Some("Catalog"));
+        let keys = catalog.schema["properties"]["values"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(keys.contains("auxiliaryFolderForm"));
+        assert!(keys.contains("auxiliaryFolderChoiceForm"));
+        for absent in [
+            "defaultRecordForm",
+            "defaultSaveForm",
+            "defaultVariantForm",
+            "defaultSettingsForm",
+        ] {
+            assert!(!keys.contains(absent), "{absent}");
+        }
+        assert!(catalog
+            .normalize(&json!({"values":{"defaultFolderForm":""}}), "args")
+            .is_ok());
+        assert!(catalog
+            .normalize(&json!({"values":{"defaultRecordForm":"Sample"}}), "args")
+            .is_err());
+        for kind in [
+            "Catalog",
+            "Document",
+            "InformationRegister",
+            "Report",
+            "SettingsStorage",
+            "Constant",
+        ] {
+            let contract = form_set(Some(kind));
+            assert!(
+                contract.normalize(&contract.example_args, "args").is_ok(),
+                "{kind}"
+            );
+        }
+        let generic = form_set(None);
+        assert_eq!(
+            generic.schema["properties"]["values"]["properties"]
+                .as_object()
+                .unwrap()
+                .len(),
+            FORM_SLOTS.len()
+        );
     }
 
     #[test]

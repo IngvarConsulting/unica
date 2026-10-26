@@ -1417,6 +1417,9 @@ pub(crate) struct DaemonServerConfig {
     pub(crate) capacity_observer:
         Arc<crate::infrastructure::capacity_observation::CapacityObserver>,
     invocation_service: Arc<dyn CanonicalInvocationService>,
+    /// The LSP service behind the daemon's LSP lane. It declares no
+    /// capability until a product service is composed here (#2171).
+    lsp_host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
     /// Overrides installed by tests and the contract harness. Production
     /// leaves every one of them empty; the fields exist unconditionally so
     /// the runtime reads one configuration whatever the build.
@@ -1449,6 +1452,7 @@ impl DaemonServerConfig {
             idle_grace,
             capacity_observer,
             invocation_service,
+            lsp_host: Arc::new(unica_daemon::lsp_lane::NoLspHost),
             invocation_clock: None,
             v5_epoch_clock: None,
             skip_v5_startup_reconciliation: false,
@@ -1470,6 +1474,15 @@ impl DaemonServerConfig {
         runtime: Arc<V5CanonicalInvocationRuntime>,
     ) -> Self {
         self.canonical_runtime = Some(runtime);
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_lsp_host_for_test(
+        mut self,
+        host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
+    ) -> Self {
+        self.lsp_host = host;
         self
     }
 
@@ -1623,6 +1636,7 @@ impl DaemonServerConfig {
             idle_grace: self.idle_grace,
             runtime,
             observation: CapacityObservation(self.capacity_observer),
+            lsp: self.lsp_host,
         }
     }
 }
@@ -4211,6 +4225,23 @@ pub(crate) mod actor_capacity_tests {
             Self::over(canonical, service)
         }
 
+        /// The same live daemon with an LSP service the test controls.
+        pub(crate) fn start_with_lsp_host(
+            service: Arc<dyn CanonicalInvocationService>,
+            lsp_host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
+        ) -> Self {
+            let canonical = Arc::new(V5CanonicalInvocationRuntime::new(
+                Arc::clone(&service),
+                Arc::new(TokioClock),
+            ));
+            Self::over_configured(
+                canonical,
+                service,
+                Some(Arc::new(AtomicBool::new(false))),
+                Some(lsp_host),
+            )
+        }
+
         fn over(
             canonical: Arc<V5CanonicalInvocationRuntime>,
             service: Arc<dyn CanonicalInvocationService>,
@@ -4223,15 +4254,27 @@ pub(crate) mod actor_capacity_tests {
             service: Arc<dyn CanonicalInvocationService>,
             owned_stop: Option<Arc<AtomicBool>>,
         ) -> Self {
+            Self::over_configured(canonical, service, owned_stop, None)
+        }
+
+        fn over_configured(
+            canonical: Arc<V5CanonicalInvocationRuntime>,
+            service: Arc<dyn CanonicalInvocationService>,
+            owned_stop: Option<Arc<AtomicBool>>,
+            lsp_host: Option<Arc<dyn unica_daemon::lsp_lane::LspHost>>,
+        ) -> Self {
             let state = tempfile::tempdir().unwrap();
             let state_root = std::fs::canonicalize(state.path()).unwrap();
-            let config = DaemonServerConfig::new(
+            let mut config = DaemonServerConfig::new(
                 state_root.clone(),
                 CoreIdentity::production_v5(),
                 LIVE_V5_IDLE_GRACE,
             )
             .with_invocation_service(service)
             .with_canonical_runtime_for_test(Arc::clone(&canonical));
+            if let Some(lsp_host) = lsp_host {
+                config = config.with_lsp_host_for_test(lsp_host);
+            }
             let thread = Self::spawn(config, owned_stop.clone());
             Self {
                 _state: state,
@@ -14622,6 +14665,206 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!(["cf"]),
             "no step without a provider"
         );
+    }
+
+    /// #2177: порт символов на настоящей службе. Справочник и метод модуля
+    /// отвечает сам Unica: читатель и текст модуля; остальное — поставщик,
+    /// которого тест подменяет без изменения службы. Ответ называет места
+    /// адресами Unica и не несёт путей поставщика; изменённый буфер
+    /// отвечает своим текстом, а ответ поставщика помечен `stale`.
+    #[test]
+    fn symbol_port_answers_in_unica_places_with_a_substituted_provider() {
+        use std::sync::Mutex;
+        use unica_code_intelligence::symbols::{
+            CallDirection, ProviderFailure, ProviderPlace, ProviderPlaces, ProviderSymbol,
+            SymbolKind, SymbolPosition, SymbolProvider, SymbolQuery, SymbolRange,
+            SymbolRequestContext,
+        };
+
+        const MODULE: &str = "Процедура Run() Export\n\tСсылка = Справочники.Items.ПустаяСсылка();\n\tПомощник();\n\tВнешний.Метод();\nEndProcedure\n\nПроцедура Помощник()\nEndProcedure\n";
+
+        #[derive(Default)]
+        struct Stub(Mutex<Vec<SymbolQuery>>);
+        impl SymbolProvider for Stub {
+            fn symbol(
+                &self,
+                query: &SymbolQuery,
+                _context: &SymbolRequestContext<'_>,
+            ) -> Result<Option<ProviderSymbol>, ProviderFailure> {
+                self.0.lock().unwrap().push(query.clone());
+                let at = |line| SymbolRange {
+                    start: SymbolPosition { line, column: 10 },
+                    end: SymbolPosition { line, column: 18 },
+                };
+                Ok(Some(ProviderSymbol {
+                    name: "Метод".to_string(),
+                    kind: SymbolKind::Method,
+                    signature: Some("Процедура Метод()".to_string()),
+                    return_type: None,
+                    definitions: vec![
+                        ProviderPlace::Code {
+                            path: "CommonModules/Handlers/Ext/Module.bsl".to_string(),
+                            range: at(6),
+                        },
+                        ProviderPlace::Metadata {
+                            kind: "Catalog".to_string(),
+                            object: "Items".to_string(),
+                            member: None,
+                        },
+                    ],
+                    complete: true,
+                }))
+            }
+            fn references(
+                &self,
+                _query: &SymbolQuery,
+                _context: &SymbolRequestContext<'_>,
+            ) -> Result<ProviderPlaces, ProviderFailure> {
+                Ok(ProviderPlaces {
+                    places: Vec::new(),
+                    complete: true,
+                })
+            }
+            fn calls(
+                &self,
+                _query: &SymbolQuery,
+                _direction: CallDirection,
+                _context: &SymbolRequestContext<'_>,
+            ) -> Result<ProviderPlaces, ProviderFailure> {
+                Ok(ProviderPlaces {
+                    places: Vec::new(),
+                    complete: true,
+                })
+            }
+        }
+
+        let workspace = scheduled_handler_workspace("CONFIGURATION", MODULE);
+        let runtime = bootstrap_runtime();
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let cancellation = CancellationToken::new();
+        let stub = Arc::new(Stub::default());
+        struct ResetOverride;
+        impl Drop for ResetOverride {
+            fn drop(&mut self) {
+                crate::infrastructure::application_ports::SYMBOL_PROVIDER_OVERRIDE
+                    .with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let _reset = ResetOverride;
+        crate::infrastructure::application_ports::SYMBOL_PROVIDER_OVERRIDE
+            .with(|slot| *slot.borrow_mut() = Some(stub.clone()));
+        let position = |text: &str, needle: &str| {
+            let offset = text.find(needle).unwrap();
+            let (line, column) = unica_bsl_parser::symbols::LineIndex::new(text).position(offset);
+            SymbolPosition { line, column }
+        };
+        let ask =
+            |buffer: Option<&str>,
+             needle: &str,
+             operation: crate::infrastructure::daemon::v13_service::SymbolOperation| {
+                let request = InvocationRequest::new(
+                    ToolIdentity::View,
+                    serde_json::json!({"at": "main:CommonModule.Handlers"}),
+                    std::fs::canonicalize(workspace.path())
+                        .unwrap()
+                        .to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                let execution = bind_workspace_invocation(
+                    &request,
+                    &runtime.workspace_actors,
+                    Arc::clone(&runtime.deliveries),
+                    Arc::clone(&runtime.provider_hosts),
+                    Arc::clone(&runtime.runtime_resources),
+                    None,
+                    runtime.capture_response_deadline_for_test(),
+                )
+                .unwrap()
+                .begin_execution(&cancellation)
+                .unwrap();
+                let answer = service.symbols(
+                    &execution,
+                    crate::infrastructure::daemon::v13_service::SymbolRequest {
+                        module: unica_address::address::QualifiedAddress::parse(
+                            "main:CommonModule.Handlers",
+                        )
+                        .unwrap(),
+                        buffer,
+                        position: position(buffer.unwrap_or(MODULE), needle),
+                        operation,
+                    },
+                    &cancellation,
+                );
+                assert!(answer.ok, "the symbol port answers");
+                answer.data.unwrap()
+            };
+        use crate::infrastructure::daemon::v13_service::SymbolOperation;
+
+        let catalog = ask(None, "Items", SymbolOperation::Definition);
+        assert_eq!(
+            catalog,
+            serde_json::json!({"value": [{"at": "main:Catalog.Items"}], "complete": true})
+        );
+        let helper = ask(None, "Помощник();", SymbolOperation::Definition);
+        assert_eq!(helper["complete"], true);
+        assert_eq!(helper["value"][0]["range"]["start"]["line"], 6);
+        // A procedure no other module sees is answered by the module alone.
+        let references = ask(None, "Помощник();", SymbolOperation::References);
+        assert_eq!(references["value"].as_array().unwrap().len(), 2);
+        assert_eq!(references["complete"], true);
+        // An exported one is looked for in other modules by the set's name
+        // index: built in the background, not ready on the first request.
+        let export = ask(None, "Run()", SymbolOperation::References);
+        assert_eq!(export["value"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            export["reasons"],
+            serde_json::json!([{"kind": "namesNotIndexed"}]),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let export = loop {
+            let answer = ask(None, "Run()", SymbolOperation::References);
+            if answer["complete"] == true || std::time::Instant::now() > deadline {
+                break answer;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(export["complete"], true, "{export}");
+        assert!(stub.0.lock().unwrap().is_empty(), "Unica answered alone");
+
+        let external = ask(None, "Метод", SymbolOperation::Definition);
+        let places: Vec<_> = external["value"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|place| place["at"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(places.len(), 2, "both provider places are addressed");
+        assert!(places[0].starts_with("main:CommonModule.Handlers"));
+        assert_eq!(places[1], "main:Catalog.Items");
+        assert_eq!(external["complete"], true);
+        let wire = external.to_string();
+        assert!(!wire.contains(".bsl"), "no provider path on the wire");
+
+        let edited = format!("{MODULE}\nПроцедура Вызвать()\n\tПомощник();\nEndProcedure\n");
+        let stale = ask(Some(&edited), "Метод", SymbolOperation::Hover);
+        assert_eq!(stale["complete"], false);
+        assert_eq!(stale["reasons"], serde_json::json!([{"kind": "stale"}]));
+        let callers = ask(
+            Some(&edited),
+            "Помощник()\nEnd",
+            SymbolOperation::IncomingCalls,
+        );
+        assert_eq!(
+            callers["value"].as_array().unwrap().len(),
+            2,
+            "the buffer's own caller counts"
+        );
+        assert!(matches!(
+            stub.0.lock().unwrap().last(),
+            Some(SymbolQuery::Named { .. })
+        ));
     }
 
     /// #1460: платформа не компилирует модуль, где `Перем` стоит после

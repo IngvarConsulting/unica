@@ -15,12 +15,12 @@
       ],
       "captures": {
         "parent": {
-          "pointer": "/data/items/2/at"
+          "pointer": "/data/items/0/at"
         }
       },
       "assertions": [
         {
-          "pointer": "/data/items/2/at",
+          "pointer": "/data/items/0/at",
           "eq": "main:Subsystem.Parent"
         }
       ]
