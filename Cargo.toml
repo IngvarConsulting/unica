@@ -3,7 +3,7 @@ members = ["crates/unica-daemon", "crates/unica-bindings", "crates/unica-binding
 resolver = "2"
 
 [workspace.package]
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 edition = "2021"
 license = "LGPL-3.0-or-later"
 repository = "https://github.com/IngvarConsulting/unica"

@@ -2320,7 +2320,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "unica-adapter-bsl-analyzer"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "fs2",
  "serde",
@@ -2346,7 +2346,7 @@ dependencies = [
 
 [[package]]
 name = "unica-adapter-lexical"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2363,7 +2363,7 @@ dependencies = [
 
 [[package]]
 name = "unica-adapter-rlm"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "fs2",
  "serde",
@@ -2384,7 +2384,7 @@ dependencies = [
 
 [[package]]
 name = "unica-adapter-v8-runner"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2404,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "unica-address"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2413,7 +2413,7 @@ dependencies = [
 
 [[package]]
 name = "unica-analysis-services"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "fs2",
  "serde",
@@ -2430,7 +2430,7 @@ dependencies = [
 
 [[package]]
 name = "unica-artifact-delivery"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "flate2",
  "fs2",
@@ -2446,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "unica-bindings"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "unica-address",
  "unica-bsl",
@@ -2459,7 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "unica-bindings-integration-tests"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde",
@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "unica-bootstrap"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "flate2",
  "serde",
@@ -2491,7 +2491,7 @@ dependencies = [
 
 [[package]]
 name = "unica-bsl"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "diffy",
  "serde",
@@ -2508,7 +2508,7 @@ dependencies = [
 
 [[package]]
 name = "unica-bsl-parser"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "parser",
  "serde",
@@ -2518,7 +2518,7 @@ dependencies = [
 
 [[package]]
 name = "unica-code-intelligence"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2534,7 +2534,7 @@ dependencies = [
 
 [[package]]
 name = "unica-coder"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "aes-siv",
  "base64 0.22.1",
@@ -2621,7 +2621,7 @@ dependencies = [
 
 [[package]]
 name = "unica-configuration"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2632,7 +2632,7 @@ dependencies = [
 
 [[package]]
 name = "unica-daemon"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2650,7 +2650,7 @@ dependencies = [
 
 [[package]]
 name = "unica-dcs"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2664,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "unica-dcs-designer"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde",
@@ -2681,7 +2681,7 @@ dependencies = [
 
 [[package]]
 name = "unica-dcs-integration-tests"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde_json",
@@ -2696,7 +2696,7 @@ dependencies = [
 
 [[package]]
 name = "unica-diagnostics"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2710,14 +2710,14 @@ dependencies = [
 
 [[package]]
 name = "unica-documentation"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "unica-documentation-sources"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "flate2",
  "percent-encoding",
@@ -2736,7 +2736,7 @@ dependencies = [
 
 [[package]]
 name = "unica-execution"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "fs2",
  "libc",
@@ -2758,7 +2758,7 @@ dependencies = [
 
 [[package]]
 name = "unica-execution-contract"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2771,7 +2771,7 @@ dependencies = [
 
 [[package]]
 name = "unica-forms"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2785,7 +2785,7 @@ dependencies = [
 
 [[package]]
 name = "unica-forms-designer"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde_json",
@@ -2802,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "unica-forms-integration-tests"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde_json",
@@ -2819,7 +2819,7 @@ dependencies = [
 
 [[package]]
 name = "unica-metadata"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "jsonschema",
  "serde",
@@ -2834,7 +2834,7 @@ dependencies = [
 
 [[package]]
 name = "unica-metadata-designer"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "chrono",
  "roxmltree",
@@ -2855,7 +2855,7 @@ dependencies = [
 
 [[package]]
 name = "unica-metadata-integration-tests"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "tempfile",
  "unica-address",
@@ -2869,7 +2869,7 @@ dependencies = [
 
 [[package]]
 name = "unica-navigation"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "aes-siv",
  "base64 0.22.1",
@@ -2887,7 +2887,7 @@ dependencies = [
 
 [[package]]
 name = "unica-network"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "rcgen",
  "rustls",
@@ -2899,7 +2899,7 @@ dependencies = [
 
 [[package]]
 name = "unica-operation-contract"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "regex",
  "serde",
@@ -2908,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "unica-operations"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2919,7 +2919,7 @@ dependencies = [
 
 [[package]]
 name = "unica-process"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "libc",
  "serde_json",
@@ -2932,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "unica-project-health"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2947,15 +2947,15 @@ dependencies = [
 
 [[package]]
 name = "unica-redaction"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 
 [[package]]
 name = "unica-refusal"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 
 [[package]]
 name = "unica-roles"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "jsonschema",
  "regex",
@@ -2970,7 +2970,7 @@ dependencies = [
 
 [[package]]
 name = "unica-roles-designer"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde_json",
@@ -2984,7 +2984,7 @@ dependencies = [
 
 [[package]]
 name = "unica-runner"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2995,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "unica-source-contract"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3004,7 +3004,7 @@ dependencies = [
 
 [[package]]
 name = "unica-source-designer"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde",
@@ -3019,7 +3019,7 @@ dependencies = [
 
 [[package]]
 name = "unica-source-integration-tests"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "tempfile",
  "unica-metadata-designer",
@@ -3032,7 +3032,7 @@ dependencies = [
 
 [[package]]
 name = "unica-templates"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3045,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "unica-templates-designer"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde_json",
@@ -3060,7 +3060,7 @@ dependencies = [
 
 [[package]]
 name = "unica-work-control"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3068,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "unica-workspace"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "cap-fs-ext",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "unica-xdto"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "jsonschema",
  "serde",
@@ -3107,7 +3107,7 @@ dependencies = [
 
 [[package]]
 name = "unica-xdto-designer"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde",
@@ -3123,7 +3123,7 @@ dependencies = [
 
 [[package]]
 name = "unica-xml-format"
-version = "0.14.0-rc.1"
+version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
 ]
