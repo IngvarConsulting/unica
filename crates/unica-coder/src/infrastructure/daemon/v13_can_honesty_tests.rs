@@ -436,12 +436,22 @@ fn walk(workspace: &Path, root: &str) -> Walk {
         }
         *count += 1;
         nodes.push(at);
+        // Коллекция вида в корне идёт в порядке `ChildObjects` (#2156). Обход
+        // берёт её членов по имени: выбор представителей формы адреса не
+        // должен зависеть от авторского порядка фикстуры.
+        let root_collection = matches!(address.segments(), [only] if only.name().is_none());
         for slot in ["branches", "items"] {
-            for child in data[slot].as_array().into_iter().flatten() {
-                if let Some(child) = child.get("at").and_then(Value::as_str) {
-                    queue.push_back(child.to_string());
-                }
+            let mut children = data[slot]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|child| child.get("at").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if root_collection && slot == "items" {
+                children.sort();
             }
+            queue.extend(children);
         }
     }
     Walk { nodes, unroutable }
@@ -591,6 +601,14 @@ fn node_args(descriptor: OperationDescriptor, at: &QualifiedAddress) -> Value {
                 .is_some_and(|s| matches!(s.kind(), NodeKind::Method | NodeKind::Body)) =>
         {
             json!({"text":"// sample\n"})
+        }
+        // Слоты форм у каждого вида владельца свои (#2144): пример берётся
+        // из контракта на этом адресе.
+        "form.set" => {
+            unica_forms::contracts::form_set(
+                at.segments().first().map(|segment| segment.kind().as_str()),
+            )
+            .example_args
         }
         _ => sample_args(descriptor),
     }
@@ -2861,6 +2879,29 @@ fn subsystem_interface_contracts_preview_all_operations_without_source_writes() 
         assert!(preview.ok, "{at}.{op}: {preview:?}");
         assert_eq!(tree_digest(&src), before, "{op}");
     }
+}
+
+/// #2164: a client that always passes `limit` reads an operation contract
+/// like a source node: a page size changes nothing, and only a continuation
+/// stays refused: one node has no pages.
+#[test]
+fn a_contract_node_takes_a_page_size_like_any_single_node() {
+    let fixture = fixture("workspace-code");
+    let view = |args| invoke(&fixture.workspace, ToolIdentity::View, args);
+    let contract = "main:Catalog.Пример.Can.props.set";
+    let plain = view(json!({"at": contract}));
+    assert!(plain.ok, "{plain:?}");
+    for limit in [1, 50] {
+        let limited = view(json!({"at": contract, "limit": limit}));
+        assert!(limited.ok, "limit {limit}: {limited:?}");
+        assert_eq!(limited.data, plain.data, "limit {limit}");
+    }
+    let continued = view(json!({"at": contract, "cursor": "opaque"}));
+    assert!(!continued.ok, "{continued:?}");
+    assert_eq!(
+        continued.diagnostics[0]["code"], "bad_value",
+        "{continued:?}"
+    );
 }
 
 #[test]

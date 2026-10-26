@@ -20,11 +20,14 @@ Guards и Python `small` обоих наборов (`tests/ci`, `tests/dev`) о�
 сверяет весь ожидаемый состав, поэтому неполная кодовая очередь не проходит.
 
 Прогон занимает по одной джобе на ОС. Тариф даёт 20 одновременных джоб,
-из них 5 macOS, поэтому запись очереди — ровно два раннера: Linux-джоба
-`Unica CI` и `Rust (macos-14)`. Pull request — `Unica CI` и `Lint and Python`
+из них 5 macOS, поэтому запись очереди — три раннера: Linux-джоба
+`Unica CI`, `Rust (macos-14)` и лёгкая `Clippy (windows-latest)` (только
+Clippy, кэш зависимостей Windows на чтение; её же запускает кнопка `main`).
+`Unica CI` ждёт её исход по jobs API отдельной записью `lint-rust-windows`:
+при Rust она обязательна, её пропуск — отказ. Pull request — `Unica CI` и `Lint and Python`
 (Clippy и Python small отдельной джобой, параллельно сборке и medium); метка
-`ci:full` добавляет macOS. Ночной `large` добавляет `Rust (windows-latest)`,
-он остаётся advisory. `Unica CI` подряд, в одном каталоге `target`, исполняет
+`ci:full` добавляет macOS. Ночной `large` добавляет `Rust (windows-latest)`;
+его красная джоба красит прогон, как любая другая ОС. `Unica CI` подряд, в одном каталоге `target`, исполняет
 маршрут, guards, теневой selector, продукт для Python, архивы и прогоны
 полос Linux, medium затронутых пакетов (PR), Clippy, Python, сверку
 инвентаря и итог. В очереди и на ветках Clippy исполняется в фоне
@@ -55,9 +58,11 @@ INV.PLATFORM.OS-BEHIND-FACADE. Это nextest-профиль `queue-platform`, �
 выражение пишет `size-filters.py --write`, ручного списка нет. Receipt,
 vendor, doctests и Clippy на macOS в очереди не идут. Ночной `large`,
 релиз, push релизной линии и кнопка исполняют полный набор и Clippy
-на каждой ОС своей матрицы. Цена решения: ветки `cfg` под macOS вне
-платформенных каталогов и Clippy на macOS впервые проверяет ночь, когда
-изменение уже в `main`. SARIF Clippy и zizmor идут в Code Scanning
+на каждой ОС своей матрицы. В джобе ОС Clippy идёт до сборки тестов,
+а сборка и прогон идут и после его отказа: оба сигнала приходят в одном
+прогоне. Цена решения: ветки `cfg` под macOS вне платформенных каталогов
+и Clippy на macOS впервые проверяет ночь, когда изменение уже в `main`.
+Clippy под Windows очередь исполняет сама, отдельной джобой. SARIF Clippy и zizmor идут в Code Scanning
 с Linux; сбой их загрузки гейт не красит.
 
 Каждая джоба собирает nextest archive своих полос, полный план и одну часть
@@ -151,12 +156,12 @@ ignored-кейсом, а не потерей. Вне этих путей OS-cfg 
 | `directory-mtime` | ubuntu, macOS | очередь Linux |
 | `non-utf8-file-names` | ubuntu | очередь Linux |
 | `rename-under-open-handle`, `unix-process-groups`, `unix-permission-bits` | ubuntu, macOS | очередь Linux |
-| `windows-job-object`, `windows-path-syntax` | — | nightly Windows (advisory) |
+| `windows-job-object`, `windows-path-syntax` | — | nightly Windows |
 | `archive-fixture-binary` | ubuntu, macOS, Windows | очередь Linux; PR — medium-фаза на Linux; macOS и Windows — nightly; вне раннера архива — `skipped` |
 
 Для `windows-latest` из возможностей хоста не обязательна ни одна. Это решение,
-а не свойство раннера: Windows остаётся advisory (#1523), поэтому пропуск
-там виден, но не отвергается. `archive-fixture-binary` — свойство самого
+а не свойство раннера: пропуск там виден, но не отвергается, хотя красная
+Windows-джоба красит ночной прогон. `archive-fixture-binary` — свойство самого
 раннера архива, а не хоста, поэтому она обязательна везде. Причины
 пропусков собраны в отчёте в категорию «Нет возможности хоста».
 
@@ -218,9 +223,8 @@ workspace rust-cache перед записью вычищает. Пишут кл
 существующие сроки и повторы. Nextest `large` остаётся точным каталогом
 нагрузочных тестов для size guards. `run.json` архивных конфигураций помечает
 новый объём как `full-nightly-v1`; старые large-only прогоны этим объёмом
-не становятся. Итоговый `verification.json` различает `mandatoryComplete`
-и `fullMatrixPassed`: Windows advisory сохраняет видимую причину и не даёт
-утверждать прохождение полной матрицы или готовность affected admission.
+не становятся. Итоговый `verification.json` даёт один вердикт `mandatoryComplete`
+по всем ОС прогона, Windows ночи тоже: рекомендательных отказов нет.
 
 При правках CI сверяй отбор с событием и профилем запуска. Результат должен
 сохранять коммит, линию, профиль, раннер и попытку прогона. Разные раннеры —
