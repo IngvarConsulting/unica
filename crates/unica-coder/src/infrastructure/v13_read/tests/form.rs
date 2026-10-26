@@ -993,14 +993,14 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
             declaration["UsePurposes"],
             json!(["PlatformApplication", "MobilePlatformApplication"])
         );
-        // Localized text loses its observation wrapper, as node props do.
+        // Localized text is one NStr string, as node props are.
         assert_eq!(
             declaration["Synonym"],
-            json!([{"language":"ru","content":"Описание формы"},{"language":"en","content":"Form declaration"}])
+            "ru = 'Описание формы'; en = 'Form declaration'"
         );
         assert_eq!(
             declaration["Explanation"],
-            json!([{"language":"ru","content":"Пояснение"},{"language":"en","content":"Explanation"}])
+            "ru = 'Пояснение'; en = 'Explanation'"
         );
         assert!(declaration.get("uuid").is_none() && declaration.get("Name").is_none());
         assert!(root_data["limits"]
