@@ -472,6 +472,21 @@ mod tests {
     }
 
     #[test]
+    fn registrations_keep_child_objects_order_and_the_first_place_of_a_repeat() {
+        let xml = format!(
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>Zulu</Form><Template>Alpha</Template><Form>Alpha</Form><Form>Zulu</Form></ChildObjects></Catalog></MetaDataObject>"#
+        );
+        let evidence =
+            prove_already_read_metadata_owner(Path::new("Catalogs/Items.xml"), xml.as_bytes())
+                .unwrap_or_else(|error| panic!("{}", error.message));
+        assert_eq!(
+            evidence.registrations().collect::<Vec<_>>(),
+            vec![("Form", "Zulu"), ("Template", "Alpha"), ("Form", "Alpha")]
+        );
+        assert!(evidence.registers("Form", "Zulu"));
+    }
+
+    #[test]
     fn inline_command_definitions_register_the_command_by_name() {
         let xml = format!(
             r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>ItemForm</Form><Command uuid="10000000-0000-4000-8000-000000000001"><Properties><Name>Refresh</Name><Synonym/></Properties></Command><Command uuid="10000000-0000-4000-8000-000000000002"><Properties><Comment/></Properties></Command></ChildObjects></Catalog></MetaDataObject>"#
