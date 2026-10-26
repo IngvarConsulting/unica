@@ -169,12 +169,7 @@
         },
         {
           "pointer": "/data/props/Synonym",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Номер строки"
-            }
-          ]
+          "eq": "ru = 'Номер строки'"
         },
         {
           "pointer": "/data/props/FillChecking",

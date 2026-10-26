@@ -619,7 +619,7 @@ mod tests {
             let parsed = parse_metadata_plan_operation(
                 "command.set",
                 &json!({"at":at,"values":{
-                    "newName":"PrintCopy","synonym":"Print copy","comment":"kept",
+                    "newName":"PrintCopy","synonym":"ru = 'Print copy'","comment":"kept",
                     "position":{"before":"Other"}
                 }}),
                 3,
@@ -645,7 +645,10 @@ mod tests {
             assert_eq!(elements.len(), 1);
             assert_eq!(elements[0].name, "Print");
             assert_eq!(elements[0].new_name.as_deref(), Some("PrintCopy"));
-            assert_eq!(elements[0].synonym.as_deref(), Some("Print copy"));
+            assert_eq!(
+                elements[0].synonym.as_deref(),
+                Some(&[unica_metadata::LocalizedItem::new("ru", "Print copy")][..])
+            );
             assert_eq!(elements[0].comment.as_deref(), Some("kept"));
             assert_eq!(
                 elements[0].position.as_ref().unwrap().before.as_deref(),
@@ -1653,7 +1656,7 @@ mod tests {
                 ),
                 (
                     "tabularSection.set",
-                    json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"synonym": "Строки"}}),
+                    json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"synonym": "ru = 'Строки'"}}),
                 ),
             ],
         )
@@ -1703,12 +1706,12 @@ mod tests {
         for (operation, args, path) in [
             (
                 "tabularSection.set",
-                json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"name": "Lines", "synonym": "x"}}),
+                json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"name": "Lines", "synonym": "ru = 'x'"}}),
                 "ops[0].args.values.name",
             ),
             (
                 "tabularSection.set",
-                json!({"at": "main:Document.Order", "values": {"synonym": "x"}}),
+                json!({"at": "main:Document.Order", "values": {"synonym": "ru = 'x'"}}),
                 "ops[0].args.at",
             ),
             (
@@ -1723,7 +1726,7 @@ mod tests {
             ),
             (
                 "dimension.set",
-                json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"synonym": "x"}}),
+                json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"synonym": "ru = 'x'"}}),
                 "ops[0].args.at",
             ),
             (
@@ -1733,7 +1736,7 @@ mod tests {
             ),
             (
                 "template.set",
-                json!({"at": "main:Document.Order", "values": {"name": "Print", "synonym": "x"}}),
+                json!({"at": "main:Document.Order", "values": {"name": "Print", "synonym": "ru = 'x'"}}),
                 "ops[0].args.at",
             ),
             (
@@ -1791,7 +1794,7 @@ mod tests {
         for (operation, args) in [
             (
                 "tabularSection.set",
-                json!({"at": "main:Document.Order.TabularSection.Absent", "values": {"synonym": "x"}}),
+                json!({"at": "main:Document.Order.TabularSection.Absent", "values": {"synonym": "ru = 'x'"}}),
             ),
             (
                 "tabularSection.remove",
@@ -1799,7 +1802,7 @@ mod tests {
             ),
             (
                 "attribute.set",
-                json!({"at": "main:Document.Order.Attribute.Absent", "values": {"synonym": "x"}}),
+                json!({"at": "main:Document.Order.Attribute.Absent", "values": {"synonym": "ru = 'x'"}}),
             ),
             (
                 "attribute.add",
@@ -1977,7 +1980,7 @@ mod tests {
                 ]),
                 (_, "set") => samples.extend([
                     (json!({"values": {"newName": "Other"}}), Some(true)),
-                    (json!({"values": {"comment": "x", "synonym": "y"}}), Some(true)),
+                    (json!({"values": {"comment": "x", "synonym": "ru = 'y'"}}), Some(true)),
                     (json!({"values": {"type": string_type}}), Some(typed)),
                     (
                         json!({"values": {"required": true}}),
@@ -3639,10 +3642,10 @@ mod tests {
             ("props.set", json!({"at":"main:Document.Order","values":{"Comment":"first"}})),
             ("attribute.add", json!({"at":"main:Document.Order","items":[{"name":"Total"}]})),
             ("props.set", json!({"at":"main:Document.Order","values":{"Comment":"final"}})),
-            ("props.set", json!({"at":"main:Role.Reader","values":{"synonym":"Reader edited","Comment":"clear later"}})),
+            ("props.set", json!({"at":"main:Role.Reader","values":{"synonym":"ru = 'Reader edited'; en = 'Retained translation'","Comment":"clear later"}})),
             ("props.set", json!({"at":"main:Role.Reader","values":{"comment":""}})),
             ("props.set", json!({"at":"main:Subsystem.Sales","values":{
-                "synonym":"Sales edited","comment":"first","Explanation":"About sales",
+                "synonym":"ru = 'Sales edited'; en = 'Retained translation'","comment":"first","Explanation":"ru = 'About sales'",
                 "IncludeHelpInContents":false,"includeInCommandInterface":false,"useOneCommand":true
             }})),
             ("props.set", json!({"at":"main:Subsystem.Sales","values":{"Comment":"last"}})),
@@ -3712,14 +3715,14 @@ mod tests {
         let before = unica_workspace::test_support::tree_snapshot(fixture.binding.source_root());
         let (staged, effects) = plan_all_with_effects(&fixture, &[
             ("props.set", json!({"at":"main:Configuration","values":{
-                "Synonym":"Учёт & <склад>","comment":"Корень","Vendor":"ООО Пример",
+                "Synonym":"ru = 'Учёт & <склад>'","comment":"Корень","Vendor":"ООО Пример",
                 "Version":"1.0.0.2","UpdateCatalogAddress":"https://example.invalid/upd",
                 "IncludeHelpInContents":true,"UseManagedFormInOrdinaryApplication":true,
-                "BriefInformation":"Кратко","Copyright":"© Пример",
+                "BriefInformation":"ru = 'Кратко'","Copyright":"ru = '© Пример'",
                 "CompatibilityMode":"Version8_3_24","InterfaceCompatibilityMode":"Taxi",
                 "ModalityUseMode":"UseWithWarnings","MainClientApplicationWindowMode":"FullscreenWorkplace",
-                "DetailedInformation":"Подробно","VendorInformationAddress":"https://example.invalid/vendor",
-                "ConfigurationInformationAddress":"https://example.invalid/about",
+                "DetailedInformation":"ru = 'Подробно'","VendorInformationAddress":"ru = 'https://example.invalid/vendor'",
+                "ConfigurationInformationAddress":"ru = 'https://example.invalid/about'",
                 "UseOrdinaryFormInManagedApplication":true,"DefaultRunMode":"Auto",
                 "DataLockControlMode":"AutomaticAndManaged","ObjectAutonumerationMode":"AutoFree",
                 "SynchronousPlatformExtensionAndAddInCallUseMode":"Use"
@@ -3779,17 +3782,24 @@ mod tests {
             effects.events()[0].kind,
             unica_source_contract::events::DomainEventKind::CfeChanged
         );
-        // The extension root has no own text language here, so a localized
-        // property is a typed refusal rather than a guessed `<v8:lang>`.
-        let error = plan_all(
+        // The extension root has no own text language, but a whole NStr value
+        // names its languages, so the write needs none.
+        let staged = plan_all(
             &fixture,
             &[(
                 "props.set",
-                json!({"at":"main:Configuration","values":{"Synonym":"Исправления"}}),
+                json!({"at":"main:Configuration","values":{"Synonym":"ru = 'Исправления'"}}),
             )],
         )
-        .unwrap_err();
-        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+        .unwrap();
+        assert_eq!(
+            ml_values(
+                &staged_texts(&staged)[Path::new("Configuration.xml")],
+                "Корректировки",
+                "Synonym"
+            ),
+            vec![("ru".to_string(), "Исправления".to_string())]
+        );
         // Identity of the adopted configuration stays the platform's own.
         for field in [
             "DefaultRunMode",
@@ -3871,11 +3881,9 @@ mod tests {
 
     #[test]
     fn properties_late_failure_and_stale_inputs_publish_no_partial_patch() {
-        for relative in [
-            "Configuration.xml",
-            "Languages/Русский.xml",
-            "Roles/Reader.xml",
-        ] {
+        // A whole NStr value names its languages, so the configuration and its
+        // languages are not inputs of the role edit.
+        for relative in ["Roles/Reader.xml"] {
             let fixture = MetadataFixture::with_files(&[
                 ("Configuration.xml", RU_CONFIGURATION_XML),
                 ("Languages/Русский.xml", &language_xml("Русский", "ru")),
@@ -3893,7 +3901,7 @@ mod tests {
                 &[
                     fixture.parse(
                         "props.set",
-                        json!({"at":"main:Role.Reader","values":{"synonym":"not published"}}),
+                        json!({"at":"main:Role.Reader","values":{"synonym":"ru = 'not published'"}}),
                         0,
                     ),
                     fixture.parse(
@@ -3914,7 +3922,7 @@ mod tests {
                 &fixture,
                 &[(
                     "props.set",
-                    json!({"at":"main:Role.Reader","values":{"synonym":"not published"}}),
+                    json!({"at":"main:Role.Reader","values":{"synonym":"ru = 'not published'"}}),
                 )],
             )
             .unwrap();
@@ -3955,7 +3963,7 @@ mod tests {
             &[
                 (
                     "props.set",
-                    json!({"at": "main:Document.Order", "values": {"Synonym": "Sales order"}}),
+                    json!({"at": "main:Document.Order", "values": {"Synonym": "en = 'Sales order'"}}),
                 ),
                 (
                     "attribute.add",
@@ -3963,7 +3971,7 @@ mod tests {
                 ),
                 (
                     "attribute.set",
-                    json!({"at": "main:Document.Order.Attribute.Total", "values": {"synonym": "Grand total"}}),
+                    json!({"at": "main:Document.Order.Attribute.Total", "values": {"synonym": "en = 'Grand total'"}}),
                 ),
                 (
                     "tabularSection.add",
@@ -3987,11 +3995,11 @@ mod tests {
                 ),
                 (
                     "props.set",
-                    json!({"at": "main:Role.Reader", "values": {"synonym": "Reader"}}),
+                    json!({"at": "main:Role.Reader", "values": {"synonym": "en = 'Reader'"}}),
                 ),
                 (
                     "props.set",
-                    json!({"at": "main:Subsystem.Sales", "values": {"synonym": "Sales", "explanation": "Sales area"}}),
+                    json!({"at": "main:Subsystem.Sales", "values": {"synonym": "en = 'Sales'", "explanation": "en = 'Sales area'"}}),
                 ),
             ],
         )
@@ -4154,7 +4162,7 @@ mod tests {
     }
 
     #[test]
-    fn editing_a_multilingual_value_changes_only_the_default_language_item() {
+    fn editing_one_language_of_a_whole_value_keeps_the_other_items_byte_for_byte() {
         const WORKSPACE: &str = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/fixtures/acceptance/workspace/src"
@@ -4225,25 +4233,25 @@ mod tests {
             &[
                 (
                     "props.set",
-                    json!({"at": "main:Enum.LanguageAware", "values": {"Synonym": "Короткое & новое"}}),
+                    json!({"at": "main:Enum.LanguageAware", "values": {"Synonym": "ru = 'Короткое & новое'; en = 'A very long enum title intended for the command interface'"}}),
                 ),
                 (
                     "attribute.set",
-                    json!({"at": "main:Document.Order.Attribute.Total", "values": {"synonym": "Всего"}}),
+                    json!({"at": "main:Document.Order.Attribute.Total", "values": {"synonym": "ru = 'Всего'; en = 'Total'"}}),
                 ),
                 (
                     "attribute.set",
-                    json!({"at": "main:Document.Order.TabularSection.Lines.Attribute.Qty", "values": {"synonym": "Кол-во"}}),
+                    json!({"at": "main:Document.Order.TabularSection.Lines.Attribute.Qty", "values": {"synonym": "ru = 'Кол-во'; en = 'Quantity'"}}),
                 ),
                 (
                     "enumValue.set",
-                    json!({"at": "main:Enum.Kinds.EnumValue.Retail", "values": {"synonym": "Розничная"}}),
+                    json!({"at": "main:Enum.Kinds.EnumValue.Retail", "values": {"synonym": "ru = 'Розничная'; en = 'Retail'"}}),
                 ),
                 (
                     "props.set",
                     json!({"at": "main:Subsystem.Sales", "values": {
-                        "synonym": "Продажи и маркетинг",
-                        "explanation": "Новый раздел",
+                        "synonym": "ru = 'Продажи и маркетинг'; en = 'Sales'",
+                        "explanation": "ru = 'Новый раздел'; en = 'Sales area'",
                         "comment": "Отдел"
                     }}),
                 ),
@@ -4251,8 +4259,8 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         let texts = staged_texts(&staged);
-        // The default language is Русский (`ru`): its content is the only
-        // change, and the English items stay byte for byte.
+        // The whole value lists both languages; only the Russian text changes,
+        // so it is the only change and the English items stay byte for byte.
         assert_eq!(
             texts[Path::new("Enums/LanguageAware.xml")],
             language_aware.replace(

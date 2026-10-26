@@ -100,14 +100,28 @@ pub struct LocalizedItem {
     pub content: String,
 }
 
+impl LocalizedItem {
+    pub fn new(language: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            language: language.into(),
+            content: content.into(),
+        }
+    }
+}
+
 /// The JSON Schema of a multilingual property: one string in the NStr form
 /// of 1C, `ru = 'Валюты'; en = 'Currencies'`.
 pub fn localized_value_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "string",
+        "pattern": NSTR_PATTERN,
         "description": "Every language of the value in NStr form: ru = 'Валюты'; en = 'Currencies'. A quote inside the text is doubled. Languages not listed are removed; an empty string clears the value."
     })
 }
+
+/// The NStr grammar `parse_nstr` reads; language codes are ASCII. A repeated
+/// code is refused by the parser alone.
+pub const NSTR_PATTERN: &str = r"^\s*(?:[A-Za-z0-9_-]+\s*=\s*'(?:[^']|'')*'\s*(?:;\s*[A-Za-z0-9_-]+\s*=\s*'(?:[^']|'')*'\s*)*;?\s*)?$";
 
 /// The hint a refused multilingual value carries.
 pub const LOCALIZED_VALUE_FORM: &str =
@@ -121,7 +135,7 @@ pub fn parse_nstr(value: &str) -> Result<Vec<LocalizedItem>, String> {
     let mut rest = value.trim_start();
     while !rest.is_empty() {
         let code_end = rest
-            .find(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '-'))
+            .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
             .unwrap_or(rest.len());
         let language = &rest[..code_end];
         if language.is_empty() {
@@ -171,13 +185,26 @@ pub fn parse_nstr(value: &str) -> Result<Vec<LocalizedItem>, String> {
     Ok(items)
 }
 
-/// The NStr form of `items`, as `view` writes a multilingual value.
-pub fn format_nstr(items: &[LocalizedItem]) -> String {
-    items
-        .iter()
-        .map(|item| format!("{} = '{}'", item.language, item.content.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join("; ")
+/// The NStr form of `items`, as `view` writes a multilingual value. Items an
+/// NStr string cannot carry — a code outside the grammar or a repeated code —
+/// have no form, so a reader never publishes what a write would refuse.
+pub fn format_nstr(items: &[LocalizedItem]) -> Option<String> {
+    let mut seen = Vec::with_capacity(items.len());
+    let mut pairs = Vec::with_capacity(items.len());
+    for item in items {
+        let code = item.language.as_str();
+        if code.is_empty()
+            || !code
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+            || seen.contains(&code)
+        {
+            return None;
+        }
+        seen.push(code);
+        pairs.push(format!("{code} = '{}'", item.content.replace('\'', "''")));
+    }
+    Some(pairs.join("; "))
 }
 
 impl MetaPropertyValue {
@@ -981,13 +1008,18 @@ mod tests {
             ]
         );
         assert_eq!(
-            super::format_nstr(&items),
+            super::format_nstr(&items).unwrap(),
             "ru = 'Товары ''склада'''; en = 'Goods'"
         );
         assert_eq!(
-            super::parse_nstr(&super::format_nstr(&items)).unwrap(),
+            super::parse_nstr(&super::format_nstr(&items).unwrap()).unwrap(),
             items
         );
+        for unwritable in [" custom ", "", "ru"] {
+            let mut items = items.clone();
+            items.push(super::LocalizedItem::new(unwritable, "x"));
+            assert_eq!(super::format_nstr(&items), None, "{unwritable:?}");
+        }
         assert!(super::parse_nstr("").unwrap().is_empty());
         assert!(super::parse_nstr("  ").unwrap().is_empty());
         assert_eq!(

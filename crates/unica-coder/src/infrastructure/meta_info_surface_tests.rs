@@ -1277,7 +1277,7 @@ fn info_observes_every_typed_mutation_field() {
         {"op": "setProperties", "values": {"Comment": "Observed comment"}},
         {"op": "add", "collection": "attributes", "elements": [{
             "name": "Added",
-            "synonym": "Added synonym",
+            "synonym": "ru = 'Added synonym'",
             "comment": "Added comment",
             "type": {"variants": [{"kind": "string", "length": 12, "allowedLength": "fixed"}]},
             "required": true,
@@ -1286,7 +1286,7 @@ fn info_observes_every_typed_mutation_field() {
         }]},
         {"op": "add", "collection": "tabularSections", "elements": [{
             "name": "Rows",
-            "synonym": "Rows synonym",
+            "synonym": "ru = 'Rows synonym'",
             "comment": "Rows comment",
             "attributes": [
                 {"name": "LineText", "type": {"variants": [{"kind": "string", "length": 20, "allowedLength": "variable"}]}, "required": true},
@@ -1296,7 +1296,7 @@ fn info_observes_every_typed_mutation_field() {
         {"op": "update", "collection": "attributes", "elements": [{
             "name": "Existing",
             "newName": "Renamed",
-            "synonym": "Renamed synonym",
+            "synonym": "ru = 'Renamed synonym'",
             "comment": "Renamed comment",
             "type": {"variants": [{"kind": "number", "digits": 6, "fraction": 2, "sign": "any"}]},
             "required": true,

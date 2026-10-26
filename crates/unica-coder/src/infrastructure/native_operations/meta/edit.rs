@@ -1946,7 +1946,10 @@ pub(crate) mod tests {
                     MetaElementInput::named("СуммаЗакупокЗа30Дней"),
                     MetaElementInput {
                         name: "СуммаПродажЗа30Дней".into(),
-                        synonym: Some("Сумма продаж за месяц".into()),
+                        synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                            "ru",
+                            "Сумма продаж за месяц",
+                        )]),
                         ..MetaElementInput::default()
                     },
                 ],
@@ -3316,7 +3319,10 @@ pub(crate) mod tests {
                 None,
                 vec![MetaElementUpdateInput {
                     name: "Missing".into(),
-                    synonym: Some("must not upsert".into()),
+                    synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                        "ru",
+                        "must not upsert",
+                    )]),
                     ..MetaElementUpdateInput::default()
                 }],
             )

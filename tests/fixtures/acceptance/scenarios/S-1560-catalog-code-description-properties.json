@@ -55,25 +55,11 @@
         },
         {
           "pointer": "/data/items/0/props/Synonym",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Цифровой код"
-            },
-            {
-              "language": "en",
-              "content": "Numeric code"
-            }
-          ]
+          "eq": "ru = 'Цифровой код'; en = 'Numeric code'"
         },
         {
           "pointer": "/data/items/0/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Цифровой код валюты"
-            }
-          ]
+          "eq": "ru = 'Цифровой код валюты'"
         },
         {
           "pointer": "/data/items/0/props/FillChecking",
@@ -81,21 +67,11 @@
         },
         {
           "pointer": "/data/items/1/props/Synonym",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Символьный код"
-            }
-          ]
+          "eq": "ru = 'Символьный код'"
         },
         {
           "pointer": "/data/items/1/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Символьный код валюты"
-            }
-          ]
+          "eq": "ru = 'Символьный код валюты'"
         },
         {
           "pointer": "/data/items/1/props/FillChecking",
@@ -125,25 +101,11 @@
         },
         {
           "pointer": "/data/props/Synonym",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Цифровой код"
-            },
-            {
-              "language": "en",
-              "content": "Numeric code"
-            }
-          ]
+          "eq": "ru = 'Цифровой код'; en = 'Numeric code'"
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Цифровой код валюты"
-            }
-          ]
+          "eq": "ru = 'Цифровой код валюты'"
         },
         {
           "pointer": "/data/props/FillChecking",
@@ -173,21 +135,11 @@
         },
         {
           "pointer": "/data/props/Synonym",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Символьный код"
-            }
-          ]
+          "eq": "ru = 'Символьный код'"
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Символьный код валюты"
-            }
-          ]
+          "eq": "ru = 'Символьный код валюты'"
         },
         {
           "pointer": "/data/props/FillChecking",

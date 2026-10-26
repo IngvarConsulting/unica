@@ -97,14 +97,18 @@ fn catalog_standard_attribute_properties_reach_collection_and_detail() {
                                 .text()
                                 .unwrap_or("")
                         };
-                        json!({"language":text("lang"),"content":text("content")})
+                        format!(
+                            "{} = '{}'",
+                            text("lang"),
+                            text("content").replace('\'', "''")
+                        )
                     })
                     .collect::<Vec<_>>();
                 assert!(
                     !expected.is_empty(),
                     "the fixture must carry {key} translations"
                 );
-                assert_eq!(value, json!(expected));
+                assert_eq!(value, json!(expected.join("; ")));
             }
         }
     }

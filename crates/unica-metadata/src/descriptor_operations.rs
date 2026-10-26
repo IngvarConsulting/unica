@@ -431,10 +431,10 @@ mod tests {
     fn normalization_keeps_independent_alias_groups_and_rejects_collisions() {
         for site in [PropertiesSite::Role, PropertiesSite::Subsystem] {
             let contract = PropertiesOperation::Set.contract(site);
-            let args = json!({"values":{"synonym":"S","Comment":"C"}});
+            let args = json!({"values":{"synonym":"ru = 'S'","Comment":"C"}});
             assert_eq!(contract.normalize(&args, "args").unwrap(), args);
             for values in [
-                json!({"Synonym":"S","synonym":"S"}),
+                json!({"Synonym":"ru = 'S'","synonym":"ru = 'S'"}),
                 json!({"Comment":"C","comment":"different"}),
                 json!({}),
             ] {

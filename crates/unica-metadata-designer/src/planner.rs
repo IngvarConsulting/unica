@@ -2032,12 +2032,12 @@ fn stage_template_set(
     };
     let indent = "\t\t\t";
     if let Some(synonym) = string_value("synonym")? {
-        let lang = unica_source_designer::language::staged_text_language(
-            staged,
-            authority.source_kind(),
-            op_index,
-        )?;
-        text = set_ml_property(&text, "Synonym", indent, &lang, &synonym).ok_or_else(|| {
+        // The whole value in NStr form names its languages (#2163).
+        let items = unica_metadata::parse_nstr(&synonym).map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                .at_path(format!("ops[{op_index}].args.values.synonym"))
+        })?;
+        text = set_localized_property(&text, "Synonym", indent, &items).ok_or_else(|| {
             ApplyPlanError::new(
                 ApplyPlanErrorKind::InvalidSource,
                 "the template descriptor has no Synonym property",

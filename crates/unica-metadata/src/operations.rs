@@ -511,7 +511,8 @@ impl Serialize for MetaFillValue {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetaElementInput {
     pub name: String,
-    pub synonym: Option<String>,
+    /// Every language of the synonym, from its NStr form (#2163).
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -535,7 +536,7 @@ impl MetaElementInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetaElementDefinition {
     pub name: String,
-    pub synonym: Option<String>,
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -550,7 +551,7 @@ pub struct MetaElementDefinition {
 pub struct MetaElementUpdateInput {
     pub name: String,
     pub new_name: Option<String>,
-    pub synonym: Option<String>,
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -565,7 +566,7 @@ pub struct MetaElementUpdateInput {
 pub struct MetaElementUpdate {
     pub name: String,
     pub new_name: Option<String>,
-    pub synonym: Option<String>,
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,

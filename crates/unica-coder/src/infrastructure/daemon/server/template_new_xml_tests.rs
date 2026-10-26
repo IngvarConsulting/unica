@@ -443,7 +443,10 @@ fn add_template(name: &str, kind: MetaTemplateKind) -> MetaEditOperation {
         vec![MetaElementInput {
             name: name.into(),
             template_type: Some(kind),
-            synonym: Some("Initial caption".into()),
+            synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                "ru",
+                "Initial caption",
+            )]),
             comment: Some("Initial comment".into()),
             ..MetaElementInput::default()
         }],
@@ -626,7 +629,7 @@ fn retained_batch_keeps_final_fields(kind: MetaTemplateKind, native_descriptor: 
         vec![MetaElementUpdateInput {
             name: "Draft".into(),
             new_name: Some("FinalTemplate".into()),
-            synonym: Some(FINAL_VALUE.into()),
+            synonym: Some(vec![unica_metadata::LocalizedItem::new("ru", FINAL_VALUE)]),
             comment: Some(FINAL_VALUE.into()),
             ..MetaElementUpdateInput::default()
         }],
@@ -842,7 +845,7 @@ fn canonical_set_preserves_new_template(kind: MetaTemplateKind) {
     let planned = invoke(
         ToolIdentity::Apply,
         json!({"at":TEMPLATE_AT,"ops":[{
-            "op":"template.set","args":{"values":{"comment":"Changed & <value>","synonym":"Changed caption"}}
+            "op":"template.set","args":{"values":{"comment":"Changed & <value>","synonym":"ru = 'Changed caption'"}}
         }]}),
     );
     assert!(planned.ok, "template.set preview failed: {planned:?}");

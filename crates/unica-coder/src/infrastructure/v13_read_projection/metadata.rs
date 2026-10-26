@@ -1030,7 +1030,7 @@ mod tabular_standard_attribute_property_tests {
                 let at = QualifiedAddress::parse(raw).unwrap();
                 let node = serde_json::to_value(metadata_item_node(&at, NodeKind::StandardAttribute, &item, None)).unwrap();
                 assert!(node["props"].get("UnknownProviderKey").is_none());
-                assert_eq!(node["props"]["Synonym"], synonym, "{raw}: {node}");
+                assert_eq!(node["props"]["Synonym"], "ru = 'Номер строки'", "{raw}: {node}");
                 // An empty translation set is no value: no key and no limit.
                 assert!(node["props"].get("ToolTip").is_none(), "{raw}: {node}");
                 assert!(!node["limits"].to_string().contains("ToolTip"));

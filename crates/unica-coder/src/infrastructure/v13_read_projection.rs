@@ -1718,7 +1718,7 @@ fn place_prop(
         Some(value) => {
             props.insert(key.to_string(), value);
         }
-        None if !observed || observed_value(value).is_some() => {
+        None if !observed || !observed_absent(value) => {
             limits.push(compact_limit(subject, owner, key));
         }
         None => {}
@@ -1804,10 +1804,29 @@ fn prop_limit(key: &str) -> usize {
     }
 }
 
-/// Значение наблюдения без обёртки `{"kind": …}`. `None` — значения нет:
-/// `nil`, `empty` и многоязычная строка без переводов. Переводы
-/// многоязычной строки остаются массивом `{language, content}` в порядке
-/// источника; прочие составные значения не меняются.
+/// Значения нет: `nil`, `empty` и многоязычная строка без переводов.
+fn observed_absent(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    match object.get("kind").and_then(Value::as_str) {
+        Some("nil" | "empty") => object.len() == 1,
+        Some("localizedString") => {
+            object.len() == 2
+                && object
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .is_some_and(Vec::is_empty)
+        }
+        _ => false,
+    }
+}
+
+/// Значение наблюдения без обёртки `{"kind": …}`. `None` — значения нет
+/// ([`observed_absent`]) или его нельзя опубликовать: многоязычная строка
+/// публикуется строкой НСтр в порядке источника, а переводы, которых НСтр
+/// не выражает, ответ называет в `limits`. Прочие составные значения не
+/// меняются.
 fn observed_value(value: &Value) -> Option<Value> {
     let Some(object) = value.as_object() else {
         return Some(value.clone());
@@ -1818,10 +1837,25 @@ fn observed_value(value: &Value) -> Option<Value> {
         Some("text" | "boolean" | "unsignedInteger") if only("value") => {
             object.get("value").cloned()
         }
-        Some("localizedString") if only("values") => object
-            .get("values")
-            .filter(|values| values.as_array().is_some_and(|values| !values.is_empty()))
-            .cloned(),
+        // A multilingual value is one NStr string with every language
+        // (INV.SOURCE.LOCALIZED-STRING-NSTR); without translations it is absent.
+        Some("localizedString") if only("values") => {
+            let items = object
+                .get("values")
+                .and_then(Value::as_array)?
+                .iter()
+                .map(|item| {
+                    Some(unica_metadata::LocalizedItem {
+                        language: item.get("language")?.as_str()?.to_string(),
+                        content: item.get("content")?.as_str()?.to_string(),
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            if items.is_empty() {
+                return None;
+            }
+            unica_metadata::format_nstr(&items).map(Value::String)
+        }
         _ => Some(value.clone()),
     }
 }
