@@ -1,21 +1,23 @@
 //! Editor documents of one LSP connection (#2174).
 //!
-//! A document is a BSL module named by `unica://<space>/<set>/<address>`.
-//! The connection keeps the buffers its editor opened and mirrors each
-//! version into the overlay of the workspace actor, so analysis on behalf of
-//! this connection reads the buffer; the file on disk is written only by
-//! `unica.apply`. A `file://` path inside a source set maps to the same
-//! address `unica.resolve` gives it, and back.
+//! A document is the body of a BSL module named by
+//! `unica://<space>/<set>/<address>`, where the address is the one MCP gives
+//! that text: `CommonModule.X.Body`, `Catalog.X.Module.Object.Body`. The
+//! connection keeps the buffers its editor opened and mirrors each version
+//! into the overlay of the workspace actor, so analysis on behalf of this
+//! connection reads the buffer; the file on disk is written only by
+//! `unica.apply`. A file path (`file://`) never names a document.
 
 use crate::application::lsp::document::{ContentChange, DocumentChangeError, OpenDocument};
 use crate::application::lsp::uri::{DocumentUri, SpaceRegistry, UriError, WorkspaceFolder};
-use crate::infrastructure::event_sources::module_address_for_relative;
+use crate::infrastructure::lsp_features::{CompletionSources, ModuleOwner, ObjectMembers};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use unica_address::address::QualifiedAddress;
 use unica_bsl::profile::PlatformProfile;
+use unica_documentation_sources::platform_help::provider::GlobalContextMember;
 use unica_execution_contract::view_error::ViewError;
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::module_layout::{module_relative, module_source_address};
@@ -40,13 +42,13 @@ pub(crate) struct SpaceLayout {
 #[derive(Debug)]
 pub(crate) enum LspDocumentError {
     Uri(UriError),
-    /// Not a `file://` URI of a local path.
-    NotAFile,
-    /// The file is in no source set of this connection.
-    OutsideSourceSets,
-    /// The address names no BSL module of the source set layout.
+    /// The address is not the `Body` of a BSL module of the source set
+    /// layout.
     NotAModule,
     UnknownSourceSet(String),
+    /// The answer needs a source that is not ready yet (the platform
+    /// help); answering without it would pass a partial answer as whole.
+    SourceNotReady,
     NotOpen,
     Change(DocumentChangeError),
     Overlay(DocumentOverlayError),
@@ -79,7 +81,7 @@ pub(crate) struct DocumentLocation {
 
 impl LspDocuments {
     pub(crate) fn new(session: impl Into<String>, mut layouts: Vec<SpaceLayout>) -> Self {
-        // Roots are compared with paths an editor sends, which may come
+        // Roots are compared with the root of a read, which may name them
         // through a symlink (`/tmp` and `/private/tmp` on macOS).
         for layout in &mut layouts {
             for set in &mut layout.source_sets {
@@ -119,8 +121,7 @@ impl LspDocuments {
     /// The space, source set and module file a `unica://` URI names.
     pub(crate) fn locate(&self, uri: &str) -> Result<DocumentLocation, LspDocumentError> {
         let document = self.spaces.parse(uri).map_err(LspDocumentError::Uri)?;
-        let at = QualifiedAddress::parse(&document.address)
-            .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))?;
+        let at = module_of_body(&document)?;
         let layout = self.source_set(&document.space, at.source_set())?;
         let relative = module_file(&at, layout).ok_or(LspDocumentError::NotAModule)?;
         Ok(DocumentLocation {
@@ -130,42 +131,30 @@ impl LspDocuments {
         })
     }
 
-    /// The `unica://` URI of a module file, as `unica.resolve` addresses it.
-    pub(crate) fn uri_of_file(&self, file_uri: &str) -> Result<String, LspDocumentError> {
-        let path = url::Url::parse(file_uri)
-            .ok()
-            .filter(|url| url.scheme() == "file")
-            .and_then(|url| url.to_file_path().ok())
-            .map(|path| canonical(&path))
-            .ok_or(LspDocumentError::NotAFile)?;
-        // The innermost source set wins when roots nest.
-        let (space, layout, relative) = self
+    /// The document URI of a module file, for tests that start from a
+    /// fixture path: the module address `unica.resolve` gives it, plus `Body`.
+    #[cfg(test)]
+    pub(crate) fn body_uri_of_file(&self, path: &std::path::Path) -> String {
+        let path = canonical(path);
+        let (space, set, relative) = self
             .source_sets
             .iter()
             .flat_map(|(space, sets)| sets.iter().map(move |set| (space, set)))
-            .filter_map(|(space, set)| {
-                let relative = path.strip_prefix(&set.root).ok()?;
-                Some((space, set, relative.to_path_buf()))
-            })
-            .max_by_key(|(_, set, _)| set.root.components().count())
-            .ok_or(LspDocumentError::OutsideSourceSets)?;
-        let at = module_address_for_relative(&layout.name, layout.kind, layout.profile, &relative)
-            .ok_or(LspDocumentError::NotAModule)?;
+            .find_map(|(space, set)| Some((space, set, path.strip_prefix(&set.root).ok()?)))
+            .expect("the file is in a source set");
+        let at = crate::infrastructure::event_sources::module_address_for_relative(
+            &set.name,
+            set.kind,
+            set.profile,
+            relative,
+        )
+        .expect("the file is a module");
         self.spaces
             .format(&DocumentUri {
                 space: space.clone(),
-                address: at.to_string(),
+                address: format!("{at}.Body"),
             })
-            .map_err(LspDocumentError::Uri)
-    }
-
-    /// The `file://` URI of the module file a `unica://` URI names.
-    pub(crate) fn file_of_uri(&self, uri: &str) -> Result<String, LspDocumentError> {
-        let location = self.locate(uri)?;
-        let layout = self.source_set(&location.document.space, &location.source_set)?;
-        url::Url::from_file_path(layout.root.join(&location.relative))
-            .map(String::from)
-            .map_err(|()| LspDocumentError::NotAFile)
+            .expect("the space is this connection's")
     }
 
     /// `didOpen`: the buffer replaces the file for this connection.
@@ -256,10 +245,155 @@ impl LspDocuments {
         if read.source_set() != location.source_set || canonical(read.root_path()) != layout.root {
             return Err(LspDocumentError::UnknownSourceSet(location.source_set));
         }
-        let at = QualifiedAddress::parse(&location.document.address)
-            .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))?;
+        let at = module_of_body(&location.document)?;
         let target = module_target(&at, layout).ok_or(LspDocumentError::NotAModule)?;
         read.module_source(&target).map_err(LspDocumentError::Read)
+    }
+
+    /// The saved text of the module `uri` names, past any open buffer: what
+    /// an analysis of files sees (#2176). `read` must not see buffers.
+    pub(crate) fn saved_content(
+        &self,
+        uri: &str,
+        read: &ProviderReadAuthority,
+    ) -> Result<Option<String>, LspDocumentError> {
+        let location = self.locate(uri)?;
+        let layout = self.source_set(&location.document.space, &location.source_set)?;
+        if read.source_set() != location.source_set || canonical(read.root_path()) != layout.root {
+            return Err(LspDocumentError::UnknownSourceSet(location.source_set));
+        }
+        let at = module_of_body(&location.document)?;
+        let target = module_target(&at, layout).ok_or(LspDocumentError::NotAModule)?;
+        read.module_source(&target).map_err(LspDocumentError::Read)
+    }
+
+    /// `textDocument/signatureHelp` at `position` of `uri`. A qualified
+    /// call names a common module of the same source set, read through
+    /// `read` (with this connection's buffers); a plain call not declared
+    /// by the module is looked up in `global_context`, which is `None`
+    /// while the platform help is still being indexed.
+    pub(crate) fn signature_help(
+        &self,
+        uri: &str,
+        position: crate::application::lsp::position::Utf16Position,
+        read: &ProviderReadAuthority,
+        global_context: Option<&[GlobalContextMember]>,
+    ) -> Result<Option<serde_json::Value>, LspDocumentError> {
+        let Some(text) = self.content(uri, read)? else {
+            return Ok(None);
+        };
+        let location = self.locate(uri)?;
+        let common_module = |name: &str| self.common_module_content(&location, name, read);
+        crate::infrastructure::lsp_features::signature_help(
+            &text,
+            position,
+            &common_module,
+            global_context,
+        )
+        .map_err(|_| LspDocumentError::SourceNotReady)
+    }
+
+    /// The text of the common module `typed` names in the source set of
+    /// `location`: its buffer, otherwise its file.
+    fn common_module_content(
+        &self,
+        location: &DocumentLocation,
+        typed: &str,
+        read: &ProviderReadAuthority,
+    ) -> Option<String> {
+        let name = self.common_module_name(location, typed);
+        let document = DocumentUri {
+            space: location.document.space.clone(),
+            address: format!("{}:CommonModule.{name}.Body", location.source_set),
+        };
+        let uri = self.spaces.format(&document).ok()?;
+        self.content(&uri, read).ok().flatten()
+    }
+
+    /// `textDocument/completion` at `position` of `uri`. The answer is
+    /// dropped (`None`) when the buffer moved past the version it was
+    /// computed for, or when `cancelled` says the request is gone.
+    pub(crate) fn completion(
+        &self,
+        overlay: &DocumentOverlay,
+        uri: &str,
+        position: crate::application::lsp::position::Utf16Position,
+        read: &ProviderReadAuthority,
+        global_context: &[GlobalContextMember],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<serde_json::Value>, LspDocumentError> {
+        let Some(text) = self.content(uri, read)? else {
+            return Ok(None);
+        };
+        let location = self.locate(uri)?;
+        let version = self
+            .open
+            .get(&location.document)
+            .map(|buffer| buffer.document.version());
+        let sources = CompletionSourcesOver {
+            documents: self,
+            location: &location,
+            read,
+            global_context,
+            stale: &|| {
+                cancelled()
+                    || version.is_some_and(|version| {
+                        // A newer `didChange` reached the overlay; a failed
+                        // read of it says nothing about the edit.
+                        overlay
+                            .get(&self.session, &location.source_set, &location.relative)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|buffer| buffer.version != version)
+                    })
+            },
+        };
+        Ok(crate::infrastructure::lsp_features::completion(
+            &text, position, &sources,
+        ))
+    }
+
+    /// `completionItem/resolve` for an item `completion` gave on `uri`.
+    pub(crate) fn resolve_completion(
+        &self,
+        uri: &str,
+        item: serde_json::Value,
+        read: &ProviderReadAuthority,
+    ) -> Result<serde_json::Value, LspDocumentError> {
+        let location = self.locate(uri)?;
+        let text = match item["data"]["commonModule"].as_str() {
+            Some(module) => self.common_module_content(&location, module, read),
+            None => self.content(uri, read)?,
+        };
+        Ok(match text {
+            Some(text) => crate::infrastructure::lsp_features::resolve_completion(item, &text),
+            None => item,
+        })
+    }
+
+    /// The common module `typed` names, as its buffer or its folder spells
+    /// it: names compare case-insensitively, buffers and files do not.
+    fn common_module_name(&self, location: &DocumentLocation, typed: &str) -> String {
+        let wanted = typed.to_lowercase();
+        let prefix = format!("{}:CommonModule.", location.source_set);
+        let open = self.open.keys().find_map(|document| {
+            let name = document
+                .address
+                .strip_prefix(&prefix)?
+                .strip_suffix(".Body")?;
+            (document.space == location.document.space && name.to_lowercase() == wanted)
+                .then(|| name.to_owned())
+        });
+        open.or_else(|| {
+            let layout = self
+                .source_set(&location.document.space, &location.source_set)
+                .ok()?;
+            std::fs::read_dir(layout.root.join("CommonModules"))
+                .ok()?
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .find(|name| name.to_lowercase() == wanted)
+        })
+        .unwrap_or_else(|| typed.to_owned())
     }
 
     /// The `unica://` URIs to refresh after `apply` published `relatives`
@@ -314,6 +448,100 @@ impl LspDocuments {
 /// The path with symlinks resolved, or as given when it does not exist.
 fn canonical(path: &std::path::Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_owned())
+}
+
+/// Completion sources of one document: the metadata of its source set,
+/// read through the connection's read.
+struct CompletionSourcesOver<'a> {
+    documents: &'a LspDocuments,
+    location: &'a DocumentLocation,
+    read: &'a ProviderReadAuthority,
+    global_context: &'a [GlobalContextMember],
+    stale: &'a dyn Fn() -> bool,
+}
+
+impl CompletionSources for CompletionSourcesOver<'_> {
+    fn global_context(&self) -> &[GlobalContextMember] {
+        self.global_context
+    }
+
+    fn metadata_names(&self, kind: &str) -> Vec<String> {
+        self.read
+            .registered_names(kind, &|| Ok(()))
+            .unwrap_or_default()
+    }
+
+    fn common_module_text(&self, name: &str) -> Option<String> {
+        self.documents
+            .common_module_content(self.location, name, self.read)
+    }
+
+    fn object_members(&self, kind: &str, name: &str) -> Option<ObjectMembers> {
+        let target = unica_address::source_target::MetadataAddress::parse(
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{kind}.{name}"),
+        )
+        .ok()?;
+        let info = self.read.metadata_local(&target, &mut || Ok(())).ok()?.info;
+        let collections = &info.collections;
+        Some(ObjectMembers {
+            attributes: collections
+                .attributes
+                .iter()
+                .map(|attribute| attribute.name.clone())
+                .collect(),
+            tabular_sections: collections
+                .tabular_sections
+                .iter()
+                .map(|section| {
+                    (
+                        section.name.clone(),
+                        section
+                            .attributes
+                            .iter()
+                            .map(|column| column.name.clone())
+                            .collect(),
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    fn module_owner(&self) -> Option<ModuleOwner> {
+        // The object module and the forms of an object reach its members.
+        // The document address is the module's `Body`.
+        let address = self
+            .location
+            .document
+            .address
+            .strip_suffix(".Body")
+            .unwrap_or(&self.location.document.address);
+        let form = address.ends_with(".Module.Form") && address.contains(".Form.");
+        if !(address.ends_with(".Module.Object") || form) {
+            return None;
+        }
+        let at = QualifiedAddress::parse(address).ok()?;
+        let owner = at.segments().first()?;
+        Some(ModuleOwner {
+            kind: owner.kind().as_str().to_owned(),
+            name: owner.name()?.to_owned(),
+            form,
+        })
+    }
+
+    fn cancelled(&self) -> bool {
+        (self.stale)()
+    }
+}
+
+/// The module whose `Body` a document address names.
+pub(crate) fn module_of_body(document: &DocumentUri) -> Result<QualifiedAddress, LspDocumentError> {
+    let module = document
+        .address
+        .strip_suffix(".Body")
+        .ok_or(LspDocumentError::NotAModule)?;
+    QualifiedAddress::parse(module)
+        .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))
 }
 
 fn module_target(
