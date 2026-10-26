@@ -5,6 +5,7 @@
 //! разбирает служба LSP за портом [`crate::lsp_lane::LspHost`].
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fmt;
 use uuid::Uuid;
 
@@ -90,18 +91,82 @@ pub enum V5LspCall {
     /// без файла на диске.
     #[serde(rename = "workspace/textDocumentContent")]
     TextDocumentContent { uri: String },
+    #[serde(rename = "textDocument/documentSymbol")]
+    DocumentSymbol { uri: String },
+    #[serde(rename = "textDocument/foldingRange")]
+    FoldingRange { uri: String },
+    #[serde(rename = "textDocument/semanticTokens/full")]
+    SemanticTokensFull { uri: String },
+    #[serde(rename = "textDocument/signatureHelp")]
+    SignatureHelp {
+        uri: String,
+        position: V5LspPosition,
+    },
+    #[serde(rename = "textDocument/completion")]
+    Completion {
+        uri: String,
+        position: V5LspPosition,
+    },
+    /// Элемент, который служба выдала в `completion`, как его вернул
+    /// редактор: документ служба записала в его `data`.
+    #[serde(rename = "completionItem/resolve")]
+    CompletionResolve { item: Value },
+    #[serde(rename = "textDocument/definition")]
+    Definition {
+        uri: String,
+        position: V5LspPosition,
+    },
+    #[serde(rename = "textDocument/references")]
+    References {
+        uri: String,
+        position: V5LspPosition,
+    },
+    #[serde(rename = "textDocument/prepareCallHierarchy")]
+    PrepareCallHierarchy {
+        uri: String,
+        position: V5LspPosition,
+    },
+    /// Элемент иерархии, который служба выдала в `prepareCallHierarchy`.
+    #[serde(rename = "callHierarchy/incomingCalls")]
+    IncomingCalls { item: Value },
+    #[serde(rename = "callHierarchy/outgoingCalls")]
+    OutgoingCalls { item: Value },
 }
 
 impl V5LspCall {
     /// Документ, к состоянию которого относится ответ.
     pub fn document_uri(&self) -> Option<&str> {
         match self {
-            Self::Hover { uri, .. } | Self::TextDocumentContent { uri } => Some(uri),
+            Self::Hover { uri, .. }
+            | Self::TextDocumentContent { uri }
+            | Self::DocumentSymbol { uri }
+            | Self::FoldingRange { uri }
+            | Self::SemanticTokensFull { uri }
+            | Self::SignatureHelp { uri, .. }
+            | Self::Completion { uri, .. }
+            | Self::Definition { uri, .. }
+            | Self::References { uri, .. }
+            | Self::PrepareCallHierarchy { uri, .. } => Some(uri),
+            Self::CompletionResolve { .. }
+            | Self::IncomingCalls { .. }
+            | Self::OutgoingCalls { .. } => None,
         }
     }
 
     fn validate(&self) -> Result<(), String> {
-        validate_uri(self.document_uri().unwrap_or_default())
+        match self {
+            Self::CompletionResolve { item }
+            | Self::IncomingCalls { item }
+            | Self::OutgoingCalls { item }
+                if item.is_object() =>
+            {
+                Ok(())
+            }
+            Self::CompletionResolve { .. }
+            | Self::IncomingCalls { .. }
+            | Self::OutgoingCalls { .. } => Err("v5 lsp item must be an object".to_string()),
+            _ => validate_uri(self.document_uri().unwrap_or_default()),
+        }
     }
 }
 
@@ -186,13 +251,24 @@ pub enum V5LspTextSync {
 }
 
 /// Возможности, которые служба готова обслужить сейчас.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct V5LspCapabilities {
     pub text_document_sync: V5LspTextSync,
     pub hover: bool,
     /// `workspace/textDocumentContent` для адресов `unica://`.
     pub text_document_content: bool,
+    pub document_symbols: bool,
+    pub folding_ranges: bool,
+    pub signature_help: bool,
+    /// `completion` с `completionItem/resolve`.
+    pub completion: bool,
+    pub definition: bool,
+    pub references: bool,
+    pub call_hierarchy: bool,
+    /// Легенда `semanticTokens/full`, если служба их выдаёт.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_tokens_legend: Option<Value>,
 }
 
 impl V5LspCapabilities {
@@ -200,6 +276,14 @@ impl V5LspCapabilities {
         text_document_sync: V5LspTextSync::None,
         hover: false,
         text_document_content: false,
+        document_symbols: false,
+        folding_ranges: false,
+        signature_help: false,
+        completion: false,
+        definition: false,
+        references: false,
+        call_hierarchy: false,
+        semantic_tokens_legend: None,
     };
 }
 
@@ -269,6 +353,10 @@ pub enum V5LspFailure {
     Unavailable,
     /// Рабочая папка не открылась как рабочая область Unica.
     WorkspaceUnavailable,
+    /// Адрес не называет модуль, доступный этому соединению.
+    DocumentUnknown,
+    /// Ничего не найдено, пока источник ответа не готов: это не «нет».
+    Incomplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,6 +375,10 @@ pub enum V5LspOutcome {
     /// Текст документа.
     Text {
         text: String,
+    },
+    /// Результат метода LSP, который построил код Unica; `null` — ответа нет.
+    Json {
+        value: Value,
     },
     /// Запрос отменён до ответа; его результат не выдаётся.
     Cancelled {},
