@@ -265,3 +265,58 @@ fn a_large_common_module_comes_whole_in_one_request() {
         elapsed.as_secs_f64() * 1000.0
     );
 }
+
+#[test]
+fn unica_uris_of_common_object_and_form_modules_read_the_disk_without_open() {
+    let ws = space("// общий\n");
+    let src = ws.root.join("src");
+    let object = src.join("Catalogs/Валюты/Ext/ObjectModule.bsl");
+    let form = src.join("Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl");
+    let manager = src.join("Catalogs/Валюты/Ext/ManagerModule.bsl");
+    for (path, text) in [
+        (&object, "// объект\n"),
+        (&form, "// форма\n"),
+        (&manager, "// менеджер\n"),
+    ] {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let documents = LspDocuments::new("editor", vec![layout("Sendbox", &ws.root)]);
+    let read = reader(&ws.root);
+    for (path, expected) in [
+        (
+            src.join(MODULE),
+            "unica://sendbox/main/CommonModule.ОбщегоНазначения",
+        ),
+        (
+            object.clone(),
+            "unica://sendbox/main/Catalog.Валюты.Module.Object",
+        ),
+        (
+            manager.clone(),
+            "unica://sendbox/main/Catalog.Валюты.Module.Manager",
+        ),
+        (
+            form.clone(),
+            "unica://sendbox/main/Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+        ),
+    ] {
+        let uri = documents.uri_of_file(&file_uri(&path)).unwrap();
+        assert_eq!(
+            percent_encoding::percent_decode_str(&uri)
+                .decode_utf8()
+                .unwrap(),
+            expected
+        );
+        // The address an editor types, unencoded, names the same document.
+        let disk = fs::read_to_string(&path).unwrap();
+        for asked in [uri.as_str(), expected] {
+            assert_eq!(
+                documents.content(asked, &read).unwrap().as_deref(),
+                Some(disk.as_str()),
+                "{asked}"
+            );
+        }
+        assert_eq!(documents.file_of_uri(&uri).unwrap(), file_uri(&path));
+    }
+}
