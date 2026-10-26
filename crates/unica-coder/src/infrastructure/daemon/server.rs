@@ -1417,6 +1417,9 @@ pub(crate) struct DaemonServerConfig {
     pub(crate) capacity_observer:
         Arc<crate::infrastructure::capacity_observation::CapacityObserver>,
     invocation_service: Arc<dyn CanonicalInvocationService>,
+    /// The LSP service behind the daemon's LSP lane. It declares no
+    /// capability until a product service is composed here (#2171).
+    lsp_host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
     /// Overrides installed by tests and the contract harness. Production
     /// leaves every one of them empty; the fields exist unconditionally so
     /// the runtime reads one configuration whatever the build.
@@ -1449,6 +1452,7 @@ impl DaemonServerConfig {
             idle_grace,
             capacity_observer,
             invocation_service,
+            lsp_host: Arc::new(unica_daemon::lsp_lane::NoLspHost),
             invocation_clock: None,
             v5_epoch_clock: None,
             skip_v5_startup_reconciliation: false,
@@ -1470,6 +1474,15 @@ impl DaemonServerConfig {
         runtime: Arc<V5CanonicalInvocationRuntime>,
     ) -> Self {
         self.canonical_runtime = Some(runtime);
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_lsp_host_for_test(
+        mut self,
+        host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
+    ) -> Self {
+        self.lsp_host = host;
         self
     }
 
@@ -1623,6 +1636,7 @@ impl DaemonServerConfig {
             idle_grace: self.idle_grace,
             runtime,
             observation: CapacityObservation(self.capacity_observer),
+            lsp: self.lsp_host,
         }
     }
 }
@@ -4211,6 +4225,23 @@ pub(crate) mod actor_capacity_tests {
             Self::over(canonical, service)
         }
 
+        /// The same live daemon with an LSP service the test controls.
+        pub(crate) fn start_with_lsp_host(
+            service: Arc<dyn CanonicalInvocationService>,
+            lsp_host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
+        ) -> Self {
+            let canonical = Arc::new(V5CanonicalInvocationRuntime::new(
+                Arc::clone(&service),
+                Arc::new(TokioClock),
+            ));
+            Self::over_configured(
+                canonical,
+                service,
+                Some(Arc::new(AtomicBool::new(false))),
+                Some(lsp_host),
+            )
+        }
+
         fn over(
             canonical: Arc<V5CanonicalInvocationRuntime>,
             service: Arc<dyn CanonicalInvocationService>,
@@ -4223,15 +4254,27 @@ pub(crate) mod actor_capacity_tests {
             service: Arc<dyn CanonicalInvocationService>,
             owned_stop: Option<Arc<AtomicBool>>,
         ) -> Self {
+            Self::over_configured(canonical, service, owned_stop, None)
+        }
+
+        fn over_configured(
+            canonical: Arc<V5CanonicalInvocationRuntime>,
+            service: Arc<dyn CanonicalInvocationService>,
+            owned_stop: Option<Arc<AtomicBool>>,
+            lsp_host: Option<Arc<dyn unica_daemon::lsp_lane::LspHost>>,
+        ) -> Self {
             let state = tempfile::tempdir().unwrap();
             let state_root = std::fs::canonicalize(state.path()).unwrap();
-            let config = DaemonServerConfig::new(
+            let mut config = DaemonServerConfig::new(
                 state_root.clone(),
                 CoreIdentity::production_v5(),
                 LIVE_V5_IDLE_GRACE,
             )
             .with_invocation_service(service)
             .with_canonical_runtime_for_test(Arc::clone(&canonical));
+            if let Some(lsp_host) = lsp_host {
+                config = config.with_lsp_host_for_test(lsp_host);
+            }
             let thread = Self::spawn(config, owned_stop.clone());
             Self {
                 _state: state,

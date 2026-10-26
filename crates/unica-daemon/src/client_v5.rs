@@ -1,6 +1,8 @@
 mod connections;
+mod lsp;
 pub use crate::task_observation::{TaskObservation, TaskObservationStage, TaskObservationTimer};
 pub use connections::V5DaemonClient;
+pub use lsp::V5LspExchangeError;
 
 use super::identity::{CoreIdentity, DaemonStateDirectory};
 use super::protocol_v5::{
