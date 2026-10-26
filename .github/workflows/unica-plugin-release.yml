@@ -48,14 +48,15 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Запись очереди занимает два раннера: эту Linux-джобу и джобу macOS
-  # (`rust-os`). На тарифе с 20 одновременными джобами, из них 5 macOS, так
-  # пачка записей не ждёт раннеров. Всё, что раньше шло отдельными джобами, —
-  # маршрут, guards, сборки, тесты, Clippy, Python, сверка инвентаря и итог —
-  # идёт здесь подряд в одном каталоге `target`: архивы полос не покидают
-  # джобу, продукт для Python собирается из тех же зависимостей. `needs` на
-  # macOS сделал бы запись последовательной, поэтому в конце джоба ждёт её по
-  # jobs API (`await_os_jobs.py`) и забирает её отчёт. У джобы нет `if:`:
+  # Запись очереди занимает три раннера: эту Linux-джобу, джобу macOS
+  # (`rust-os`) и лёгкую `Clippy (windows-latest)`. На тарифе с 20
+  # одновременными джобами, из них 5 macOS, так пачка записей не ждёт раннеров.
+  # Всё, что раньше шло отдельными джобами, — маршрут, guards, сборки, тесты,
+  # Clippy, Python, сверка инвентаря и итог — идёт здесь подряд в одном каталоге
+  # `target`: архивы полос не покидают джобу, продукт для Python собирается из
+  # тех же зависимостей. `needs` на другие ОС сделал бы запись последовательной,
+  # поэтому в конце джоба ждёт их по jobs API (`await_os_jobs.py`) и забирает
+  # отчёт macOS. У джобы нет `if:`:
   # пропущенную обязательную проверку ruleset засчитал бы как пройденную.
   unica-ci:
     # Стабильное имя обязательной проверки ruleset. Смена метки не запускает
@@ -365,6 +366,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/ci/await_os_jobs.py --runners '["ubuntu-latest"]' --job "Lint and Python::Python" --out .build/pr-python.json --timeout 3600 --require-success
+      # Clippy под Windows очереди и кнопки `main` — джоба `Clippy (windows-latest)`
+      # этого прогона (#2152). Отдельная запись гейта: её отказ не прячется
+      # в исходе джоб ОС, а пропуск при Rust — не зелёный.
+      - id: windows-clippy
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && (github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'main')) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci/await_os_jobs.py --runners '[]' --job "Clippy (windows-latest)" --out .build/windows-clippy.json --timeout 3600 --require-success
       # Джобы других ОС этого прогона: их исход и отчёт. Пока они не
       # закончились, Linux ждёт; не дождались за час — `timed_out`.
       - id: os-jobs
@@ -698,6 +707,83 @@ jobs:
           retention-days: 7
           overwrite: true
           if-no-files-found: ignore
+
+  # Clippy под Windows в очереди и по кнопке `main` (#2152). Ветки `cfg(windows)`
+  # и размеры типов Windows (`PathBuf` там крупнее, отсюда `result_large_err`)
+  # иначе впервые видел бы ночной `large`, когда изменение уже в `main`. Только
+  # линт: тесты Windows остаются у `large`, где этот же Clippy исполняет
+  # `Rust (windows-latest)`. Джоба идёт параллельно `Unica CI` и macOS; `Unica CI`
+  # ждёт её исход по jobs API (шаг `windows-clippy`, запись `lint-rust-windows`).
+  windows-clippy:
+    name: Clippy (windows-latest)
+    if: ${{ github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'main') }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # Чтение исходников; `actions: write` — только для самоотмены снятой записи очереди.
+    permissions:
+      contents: read
+      actions: write
+    defaults:
+      run:
+        shell: bash
+    # Переменные `CARGO*` входят в ключ rust-cache: те же, что у
+    # `Rust (windows-latest)`, иначе его кэш сюда не подошёл бы.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      PYTHONUTF8: "1"
+    steps:
+      # Очередь, пересобирая пачку, удаляет ref снятой записи, а её прогон
+      # остаётся ждать раннеров. Прогон, чей ref уже исчез (404), отменяет себя
+      # до занятия раннера Windows: его результат никому не нужен. Любой
+      # другой ответ API — не повод отменять: лишний прогон дешевле ложной отмены.
+      - name: Queue entry still exists
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_REF: ${{ github.ref }}
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/${QUEUE_REF#refs/}")"
+          if [ "$code" != "404" ]; then exit 0; fi
+          echo "::warning::$QUEUE_REF больше нет: очередь сняла эту запись, прогон отменяется"
+          gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Классификатор сравнивает дерево с базой записи очереди.
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - id: line
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "line=$(python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+      # Маршрут — тот же классификатор: без Rust линтовать нечего. Пометку
+      # docs-only он пишет в каталог, который никуда не выгружается.
+      - id: classify
+        env:
+          RUN_LINE: ${{ steps.line.outputs.line }}
+        run: python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix '["windows-latest"]' --line "$RUN_LINE" --results .build/ci-routing-windows >> "$GITHUB_OUTPUT"
+      - if: steps.classify.outputs.rust_required == 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          components: clippy
+      # Только чтение: ключ Windows (ОС входит в ключ rust-cache) пишет ночной
+      # `large` джобой `Rust (windows-latest)`.
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; очередь и кнопка читают область main, джоба ничего не публикует
+        if: steps.classify.outputs.rust_required == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci-rust-ordinary
+          save-if: false
+      - name: Clippy
+        id: clippy
+        if: steps.classify.outputs.rust_required == 'true'
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   build-tools:
     name: Build tools (${{ matrix.target }})

@@ -60,6 +60,7 @@ def source_results() -> dict[str, str]:
         # Заполняются по событию и раннерам в `evaluate`, если тест не задал их сам.
         "rust-medium": "fixture-default",
         "os-jobs": "fixture-default",
+        "lint-rust-windows": "fixture-default",
         "test-rust-platforms": "skipped",
         "lint-rust-platforms": "skipped",
         "warm-rust-cache": "skipped",
@@ -107,6 +108,10 @@ def evaluate(module, event, ref, outputs, results, **kwargs):
     if results.get("os-jobs") == "fixture-default":
         other_runners = kwargs["runners"] is not None and json.loads(kwargs["runners"]) not in (None, ["ubuntu-latest"])
         results = {**results, "os-jobs": "success" if other_runners and not main_push else "skipped"}
+    if results.get("lint-rust-windows") == "fixture-default":
+        windows_lint = (event == "merge_group" or (event == "workflow_dispatch" and kwargs["gate_profile"] == "main")) \
+            and results.get("test-rust-platforms") not in (None, "skipped")
+        results = {**results, "lint-rust-windows": "success" if windows_lint else "skipped"}
     if results.get("rust-medium") == "fixture-default":
         rust_ran = event == "pull_request" and results.get("test-rust-platforms") not in (None, "skipped")
         results = {**results, "rust-medium": "success" if rust_ran else "skipped"}
@@ -187,6 +192,58 @@ class EvaluateCiGateTests(unittest.TestCase):
                     result = evaluate(module, event, ref, outputs, actual)
                     self.assertFalse(result.ok)
                     self.assertEqual((outcome, "success"), result.unexpected["lint-rust-platforms"])
+
+    def test_windows_clippy_is_required_in_the_code_queue_and_the_manual_main_run(self) -> None:
+        """Clippy под Windows — отдельная запись очереди и кнопки `main` (#2152)."""
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        code = {**source_results(), "test-rust-platforms": "success", "lint-rust-platforms": "success"}
+        manual = {**code, **PACKAGE_SUCCESS, **ASSESSMENT_SUCCESS, **P0_SUCCESS, "probe-thin-bootstrap": "success"}
+        for event, ref, results in (
+            ("merge_group", "refs/heads/gh-readonly-queue/main/pr-1", code),
+            ("workflow_dispatch", "refs/heads/main", manual),
+        ):
+            with self.subTest(event=event):
+                green = evaluate(module, event, ref, outputs, {**results, "lint-rust-windows": "success"})
+                self.assertTrue(green.ok, green.unexpected)
+                self.assertEqual("success", green.expected["lint-rust-windows"])
+            # Красный, пропущенный, не дождавшийся или потерянный Clippy Windows —
+            # красный итог, даже когда всё остальное зелёное.
+            for outcome in ("failure", "cancelled", "timed_out", "not_acquired", "skipped", "missing"):
+                with self.subTest(event=event, outcome=outcome):
+                    actual = {**results, "lint-rust-windows": outcome}
+                    if outcome == "missing":
+                        del actual["lint-rust-windows"]
+                    result = evaluate(module, event, ref, outputs, actual)
+                    self.assertFalse(result.ok)
+                    self.assertEqual((outcome, "success"), result.unexpected["lint-rust-windows"])
+
+    def test_windows_clippy_is_skipped_outside_the_queue_and_the_manual_main_run(self) -> None:
+        """Pull request, ветка, тег и ночной `large` джобы Clippy Windows не ждут."""
+        module = load_gate_module()
+        everything = classification(**{name: True for name in OUTPUT_NAMES})
+        code = {**source_results(), "test-rust-platforms": "success", "lint-rust-platforms": "success"}
+        delivery = {**PACKAGE_SUCCESS, **ASSESSMENT_SUCCESS}
+        for event, ref, profile, results in (
+            ("pull_request", "refs/pull/1/merge", "pr", code),
+            ("push", "refs/heads/release-v0.15", "main", code),
+            ("push", "refs/tags/v1.0.0", "release", {**code, **delivery, **{job: "success" for job in PUBLISH_SKIPPED}}),
+            ("workflow_dispatch", "refs/heads/main", "large",
+             {**code, **delivery, **P0_SUCCESS, "probe-thin-bootstrap": "success"}),
+        ):
+            with self.subTest(event=event, profile=profile):
+                skipped = evaluate(module, event, ref, everything, {**results, "lint-rust-windows": "skipped"},
+                                   gate_profile=profile)
+                self.assertTrue(skipped.ok, skipped.unexpected)
+                self.assertEqual("skipped", skipped.expected["lint-rust-windows"])
+                ran = evaluate(module, event, ref, everything, {**results, "lint-rust-windows": "success"},
+                               gate_profile=profile)
+                self.assertEqual(("success", "skipped"), ran.unexpected["lint-rust-windows"])
+        # Очередь из одной прозы Rust не линтует нигде.
+        docs = evaluate(module, "merge_group", "refs/heads/gh-readonly-queue/main/pr-1", classification(docs_only=True),
+                        {**source_results(), "lint-rust-windows": "skipped"}, python_matrix=json.dumps(DOCS_MATRIX))
+        self.assertTrue(docs.ok, docs.unexpected)
+        self.assertEqual("skipped", docs.expected["lint-rust-windows"])
 
     def test_queue_cannot_be_checked_with_pr_profile(self) -> None:
         module = load_gate_module()
@@ -394,6 +451,7 @@ class EvaluateCiGateTests(unittest.TestCase):
                 "release-assessment",
                 "p0-release-proof",
                 "warm-rust-cache",
+                "lint-rust-windows",
                 *PUBLISH_SKIPPED,
             },
             set(evaluation.skipped_jobs),
@@ -775,6 +833,18 @@ class StepResultTests(unittest.TestCase):
         self.assertEqual("missing", gate.validation_results(steps({k: v for k, v in queue_steps().items() if k != "lint-job"}),
                                                             {"Rust (macos-14)": "success"}, "queue")["lint-rust-platforms"])
 
+    def test_windows_clippy_entry_is_the_outcome_of_its_awaiting_step(self) -> None:
+        gate = load_gate_module()
+        def windows(**outcomes):
+            return gate.validation_results(steps({**queue_steps(), **outcomes}), {"Rust (macos-14)": "success"},
+                                           "queue")["lint-rust-windows"]
+        self.assertEqual("success", windows())
+        self.assertEqual("failure", windows(**{"windows-clippy": "failure"}))
+        self.assertEqual("skipped", windows(**{"windows-clippy": "skipped"}))
+        self.assertEqual("missing", gate.validation_results(
+            steps({k: v for k, v in queue_steps().items() if k != "windows-clippy"}),
+            {"Rust (macos-14)": "success"}, "queue")["lint-rust-windows"])
+
     def test_python_runs_in_unica_ci_or_in_the_pull_request_job_never_partly_both(self) -> None:
         gate = load_gate_module()
         def python(**outcomes):
@@ -871,7 +941,8 @@ class GateMainTests(unittest.TestCase):
         outputs = classification(**ALL_ENABLED)
         gate = load_gate_module()
         validation = {job: result for job, result in code_results(**{"os-jobs": "success", "rust-medium": "skipped",
-                                                                      "build-python-product": "success"}).items()
+                                                                      "build-python-product": "success",
+                                                                      "lint-rust-windows": "success"}).items()
                       if job not in gate.DELIVERY_ONLY}
         tail = {**PACKAGE_SUCCESS, **ASSESSMENT_SUCCESS, **P0_SUCCESS, "probe-thin-bootstrap": "success", **PUBLISH_SKIPPED}
         needs = {

@@ -20,8 +20,11 @@ Guards и Python `small` обоих наборов (`tests/ci`, `tests/dev`) о�
 сверяет весь ожидаемый состав, поэтому неполная кодовая очередь не проходит.
 
 Прогон занимает по одной джобе на ОС. Тариф даёт 20 одновременных джоб,
-из них 5 macOS, поэтому запись очереди — ровно два раннера: Linux-джоба
-`Unica CI` и `Rust (macos-14)`. Pull request — `Unica CI` и `Lint and Python`
+из них 5 macOS, поэтому запись очереди — три раннера: Linux-джоба
+`Unica CI`, `Rust (macos-14)` и лёгкая `Clippy (windows-latest)` (только
+Clippy, кэш зависимостей Windows на чтение; её же запускает кнопка `main`).
+`Unica CI` ждёт её исход по jobs API отдельной записью `lint-rust-windows`:
+при Rust она обязательна, её пропуск — отказ. Pull request — `Unica CI` и `Lint and Python`
 (Clippy и Python small отдельной джобой, параллельно сборке и medium); метка
 `ci:full` добавляет macOS. Ночной `large` добавляет `Rust (windows-latest)`,
 он остаётся advisory. `Unica CI` подряд, в одном каталоге `target`, исполняет

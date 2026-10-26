@@ -56,6 +56,9 @@ PUBLISH_JOBS = (
 # are separate entries: a skip of one must not hide inside another's success.
 RUST_MEDIUM = "rust-medium"
 OS_JOBS = "os-jobs"
+# Clippy под Windows очереди и кнопки `main` — своя джоба прогона (#2152);
+# в `large` его исполняет `Rust (windows-latest)` внутри записи `os-jobs`.
+WINDOWS_LINT = "lint-rust-windows"
 # What the `Unica CI` job proves itself; the delivery tail of a tag or a manual
 # run is judged by `Delivery CI` after it, over the same table.
 DELIVERY_ONLY = (*PACKAGE_JOBS, ASSESSMENT_JOB, P0_PROOF_JOB, "probe-thin-bootstrap", *PUBLISH_JOBS)
@@ -75,6 +78,8 @@ STEP_GROUPS = {
     # Clippy — шаг `clippy` (в фоне, очередь и ветки) или ожидание шага
     # джобы `Lint and Python` (pull request).
     "lint-rust-platforms": ("clippy", "lint-job"),
+    # Ожидание джобы `Clippy (windows-latest)` по jobs API.
+    WINDOWS_LINT: ("windows-clippy",),
     CACHE_JOB: ("warm",),
 }
 
@@ -267,6 +272,10 @@ def expected_results(
 
     expected.update({job: "success" if route.required else "skipped" for job in RUST_JOBS})
     expected[RUST_MEDIUM] = "success" if route.required and is_pr else "skipped"
+    # Pull request, ветка и тег Windows не линтуют; ночной `large` линтует его
+    # в джобе ОС. Пропуск записи там, где она обязательна, — отказ.
+    windows_lint = route.required and (is_queue or (is_manual and gate_profile == "main"))
+    expected[WINDOWS_LINT] = "success" if windows_lint else "skipped"
     expected[CACHE_JOB] = "success" if route.warm_cache else "skipped"
     # Every non-main-push run starts the other runners' job (it classifies on
     # its own and may do nothing); a pull request only with `ci:full`.

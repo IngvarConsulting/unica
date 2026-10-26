@@ -335,14 +335,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch'", condition(delivery))
         self.assertIn("startsWith(github.ref, 'refs/tags/')", condition(delivery))
 
-    def test_a_queue_entry_occupies_one_linux_and_one_macos_runner(self) -> None:
-        """Запись очереди — `Unica CI` на Linux и одна джоба macOS; PR — только Linux."""
+    def test_a_queue_entry_occupies_linux_macos_and_a_windows_lint_runner(self) -> None:
+        """Запись очереди — `Unica CI` на Linux, джоба macOS и Clippy Windows; PR — только Linux."""
         validation = {job_id: found for job_id, found in jobs(self.release).items()
                       if job_id not in ("build-tools", "package-thin", "p0-release-proof", "probe-thin-bootstrap",
                                         "release-assessment", "publish-release-assets", "smoke-thin-plugin",
                                         "verify-published-assets", "delivery-ci")}
         # `Lint and Python` — только pull request: у записи очереди её нет.
-        self.assertEqual(set(validation), {"unica-ci", "rust-os", "pr-checks"})
+        self.assertEqual(set(validation), {"unica-ci", "rust-os", "pr-checks", "windows-clippy"})
         self.assertEqual(condition(job(self.release, "pr-checks")), "${{ github.event_name == 'pull_request' }}")
         # Хвост поставки и его итог очередь и pull request не запускают: каждая
         # их джоба сама требует тег или кнопку либо успех такой джобы.
@@ -391,7 +391,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
     def test_an_orphaned_queue_run_cancels_itself_before_holding_runners(self) -> None:
         """Очередь удаляет ref снятой записи; её прогон отменяет себя первым шагом."""
-        for job_id in ("unica-ci", "rust-os"):
+        for job_id in ("unica-ci", "rust-os", "windows-clippy"):
             with self.subTest(job=job_id):
                 found = job(self.release, job_id)
                 first = steps(found)[0]
@@ -503,10 +503,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                     self.assertIn('--line "$RUN_LINE"', step["run"])
                     self.assertEqual(step["env"]["RUN_LINE"], "${{ steps.line.outputs.line }}")
                     self.assertIn("line", {other.get("id") for other in steps(found)})
-        self.assertEqual(calls, 3)
+        self.assertEqual(calls, 4)
 
     def test_classifier_keeps_history_and_does_not_fetch_a_mutable_base(self) -> None:
-        for job_id in ("unica-ci", "rust-os"):
+        for job_id in ("unica-ci", "rust-os", "windows-clippy"):
             with self.subTest(job=job_id):
                 found = job(self.release, job_id)
                 checkout = steps_using(found, "actions/checkout")[0]
@@ -636,6 +636,56 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("env.GATE_PROFILE != 'queue'", condition(os_clippy))
         self.assertIn("!cancelled()", condition(os_clippy))
         self.assertIn("--workspace --all-targets --all-features --locked -- -D warnings", os_clippy["run"])
+
+    def test_windows_clippy_runs_beside_the_queue_and_gates_it(self) -> None:
+        """Ошибка Clippy, видимая только на Windows, не проходит очередь (#2152)."""
+        lint = job(self.release, "windows-clippy")
+        queue_or_manual_main = "github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'main')"
+        self.assertEqual(lint["name"], "Clippy (windows-latest)")
+        self.assertEqual(lint["runs-on"], "windows-latest")
+        self.assertEqual(lint["timeout-minutes"], 30)
+        self.assertEqual(condition(lint), "${{ " + queue_or_manual_main + " }}")
+        # Параллельно `Unica CI` и macOS: `needs` сделал бы запись последовательной.
+        self.assertEqual(needs(lint), [])
+        self.assertNotIn("strategy", lint)
+        self.assertNotIn("continue-on-error", lint)
+        self.assertEqual(lint["permissions"], {"contents": "read", "actions": "write"})
+        self.assertEqual(lint["defaults"]["run"]["shell"], "bash")
+        # Ключ rust-cache включает переменные `CARGO*`: они те же, что у джобы ОС.
+        self.assertEqual(lint["env"]["CARGO_PROFILE_DEV_DEBUG"], job(self.release, "rust-os")["env"]["CARGO_PROFILE_DEV_DEBUG"])
+        classify = step_by_id(lint, "classify")
+        self.assertIn("--runner-matrix '[\"windows-latest\"]'", classify["run"])
+        toolchain = steps_using(lint, "dtolnay/rust-toolchain")
+        self.assertEqual(len(toolchain), 1)
+        self.assertEqual(toolchain[0]["with"], {"toolchain": "stable", "components": "clippy"})
+        # Кэш только читается: ключ Windows пишет ночной `large`.
+        cache = steps_using(lint, "Swatinem/rust-cache")
+        self.assertEqual(len(cache), 1)
+        assert_pinned(self, RELEASE_WORKFLOW, cache[0], "v2")
+        self.assertEqual(cache[0]["with"]["shared-key"], "ci-rust-ordinary")
+        self.assertIs(cache[0]["with"]["save-if"], False)
+        clippy = step_by_id(lint, "clippy")
+        self.assertEqual(clippy["run"], "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings")
+        self.assertNotIn("continue-on-error", clippy)
+        for step in (*toolchain, cache[0], clippy):
+            self.assertIn("steps.classify.outputs.rust_required == 'true'", condition(step))
+        order = steps(lint)
+        self.assertLess(order.index(classify), order.index(toolchain[0]))
+        self.assertLess(order.index(toolchain[0]), order.index(cache[0]))
+        self.assertLess(order.index(cache[0]), order.index(clippy))
+        # `Unica CI` ждёт её по jobs API и без успеха краснеет.
+        gate = job(self.release, "unica-ci")
+        wait = step_by_id(gate, "windows-clippy")
+        self.assertEqual(
+            condition(wait),
+            "${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && (" + queue_or_manual_main + ") }}",
+        )
+        self.assertIn("python scripts/ci/await_os_jobs.py --runners '[]'", wait["run"])
+        self.assertIn('--job "Clippy (windows-latest)"', wait["run"])
+        self.assertIn("--require-success", wait["run"])
+        self.assertEqual(wait["env"]["GH_TOKEN"], "${{ github.token }}")
+        self.assertLess(steps(gate).index(wait), steps(gate).index(step_by_id(gate, "gate")))
+        self.assertIn("windows-clippy", load_gate_module().STEP_GROUPS["lint-rust-windows"])
 
     def test_package_contour_and_pr_smoke_do_not_publish_release_assets(self) -> None:
         build = condition(job(self.release, "build-tools"))
@@ -888,6 +938,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             # набор подряд и ждёт Windows с полным набором.
             "unica-ci": "${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 300 || 120 }}",
             "rust-os": "${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}",
+            "windows-clippy": 30,
             "build-tools": 90,
             "package-thin": 30,
             "probe-thin-bootstrap": 30,
