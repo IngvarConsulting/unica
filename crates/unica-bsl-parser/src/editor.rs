@@ -379,8 +379,8 @@ impl ParsedModule<'_> {
 /// Where a completion is asked: the word being typed and what it follows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionSite {
-    /// The part of a name already typed before the cursor; completion
-    /// replaces it.
+    /// The name the cursor stands in, the part after the cursor included:
+    /// completion replaces the whole word.
     pub prefix_range: Range<usize>,
     /// The names before the dot of a member access (`Справочники.Валюты.`),
     /// `None` for a plain name. An access whose receiver is not a chain of
@@ -415,11 +415,16 @@ impl ParsedModule<'_> {
             .take_while(|(_, character)| is_name_char(*character))
             .last()
             .map_or(offset, |(at, _)| at);
+        let end = offset
+            + self.source[offset..]
+                .char_indices()
+                .find(|(_, character)| !is_name_char(*character))
+                .map_or(self.source.len() - offset, |(at, _)| at);
         let receiver = before[..start]
             .strip_suffix('.')
             .map(|chain| receiver_path(chain).unwrap_or_default());
         Some(CompletionSite {
-            prefix_range: start..offset,
+            prefix_range: start..end,
             receiver,
         })
     }
@@ -465,15 +470,12 @@ impl ParsedModule<'_> {
         names
     }
 
-    /// The collection a `Для Каждого <variable> Из <collection>` loop of the
-    /// method at `offset` walks, when it is a chain of names.
-    pub fn loop_collection(&self, offset: usize, variable: &str) -> Option<Vec<String>> {
+    /// The collection the last `Для Каждого <variable> Из <collection>` loop
+    /// before `offset` in its method walks, with the start of the loop;
+    /// the path is empty when the collection is not a chain of names.
+    pub fn loop_collection(&self, offset: usize, variable: &str) -> Option<(usize, Vec<String>)> {
         let variable = variable.to_lowercase();
-        let method = self.method_nodes().find(|method| {
-            let range = byte_range(method.text_range());
-            range.start <= offset && offset <= range.end
-        })?;
-        method
+        self.enclosing_method(offset)?
             .descendants()
             .filter(|node| node.kind() == SyntaxKind::FOR_EACH_STMT)
             .filter(|node| usize::from(node.text_range().start()) <= offset)
@@ -482,24 +484,25 @@ impl ParsedModule<'_> {
                     .is_some_and(|name| name.text().to_lowercase() == variable)
             })
             .last()
-            .and_then(|node| {
-                let collection = node
+            .map(|node| {
+                let path = node
                     .children()
-                    .find(|child| child.kind() == SyntaxKind::EXPR)?;
-                receiver_path(self.source[byte_range(collection.text_range())].trim())
+                    .find(|child| child.kind() == SyntaxKind::EXPR)
+                    .and_then(|collection| {
+                        receiver_path(self.source[byte_range(collection.text_range())].trim())
+                    })
+                    .unwrap_or_default();
+                (usize::from(node.text_range().start()), path)
             })
     }
 
     /// The call a variable was last assigned from before `offset` in its
-    /// method, as a chain of names: `Объект = Справочники.Валюты.СоздатьЭлемент();`
-    /// gives `[Справочники, Валюты, СоздатьЭлемент]`.
-    pub fn assigned_call(&self, offset: usize, variable: &str) -> Option<Vec<String>> {
+    /// method, with the start of the assignment: `Объект =
+    /// Справочники.Валюты.СоздатьЭлемент();` gives `[Справочники, Валюты,
+    /// СоздатьЭлемент]`. Any other value gives an empty path.
+    pub fn assigned_call(&self, offset: usize, variable: &str) -> Option<(usize, Vec<String>)> {
         let variable = variable.to_lowercase();
-        let method = self.method_nodes().find(|method| {
-            let range = byte_range(method.text_range());
-            range.start <= offset && offset <= range.end
-        })?;
-        method
+        self.enclosing_method(offset)?
             .descendants()
             .filter(|node| node.kind() == SyntaxKind::ASSIGN_STMT)
             .filter(|node| usize::from(node.text_range().end()) <= offset)
@@ -510,13 +513,31 @@ impl ParsedModule<'_> {
                 })
             })
             .last()
-            .and_then(|node| {
-                let call = node
-                    .descendants()
-                    .find(|child| child.kind() == SyntaxKind::CALL_EXPR)?;
-                let callee = call.first_child()?;
-                receiver_path(self.source[byte_range(callee.text_range())].trim())
+            .map(|node| {
+                // The value is the call itself, not a call inside it.
+                let path = node
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::EXPR)
+                    .and_then(|value| {
+                        value
+                            .descendants()
+                            .find(|child| child.kind() != SyntaxKind::EXPR)
+                            .filter(|child| child.kind() == SyntaxKind::CALL_EXPR)
+                    })
+                    .and_then(|call| call.first_child())
+                    .and_then(|callee| {
+                        receiver_path(self.source[byte_range(callee.text_range())].trim())
+                    })
+                    .unwrap_or_default();
+                (usize::from(node.text_range().start()), path)
             })
+    }
+
+    fn enclosing_method(&self, offset: usize) -> Option<SyntaxNode> {
+        self.method_nodes().find(|method| {
+            let range = byte_range(method.text_range());
+            range.start <= offset && offset <= range.end
+        })
     }
 }
 
@@ -995,7 +1016,9 @@ mod tests {
         let member = parsed.completion_site(end_of("Стр.Ко")).unwrap();
         assert_eq!(&text[member.prefix_range.clone()], "Ко");
         assert_eq!(member.receiver, Some(vec!["Стр".to_owned()]));
-        let manager = parsed.completion_site(end_of("Справочники.Ва")).unwrap();
+        let manager = parsed
+            .completion_site(text.rfind("Справочники.Ва").unwrap() + "Справочники.Ва".len())
+            .unwrap();
         assert_eq!(&text[manager.prefix_range], "Ва");
         assert_eq!(manager.receiver, Some(vec!["Справочники".to_owned()]));
         assert_eq!(
@@ -1014,11 +1037,11 @@ mod tests {
         assert_eq!(visible.parameters, ["Парам"]);
         assert_eq!(visible.locals, ["Лок", "Объект", "Стр", "А"]);
         assert_eq!(
-            parsed.loop_collection(at, "стр"),
+            parsed.loop_collection(at, "стр").map(|(_, path)| path),
             Some(vec!["Объект".to_owned(), "Товары".to_owned()])
         );
         assert_eq!(
-            parsed.assigned_call(at, "Объект"),
+            parsed.assigned_call(at, "Объект").map(|(_, path)| path),
             Some(vec![
                 "Справочники".to_owned(),
                 "Валюты".to_owned(),
@@ -1026,5 +1049,9 @@ mod tests {
             ])
         );
         assert_eq!(parsed.assigned_call(at, "Лок"), None);
+        // The cursor inside a word: the edit covers the whole word.
+        let inside = text.find("Справочники.Ва").unwrap() + "Справоч".len();
+        let site = parsed.completion_site(inside).unwrap();
+        assert_eq!(&text[site.prefix_range], "Справочники");
     }
 }
