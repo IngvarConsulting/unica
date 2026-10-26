@@ -17,7 +17,13 @@
         "xdtoPackages": {
           "pointer": "/data/branches/19/at"
         }
-      }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/19/at",
+          "eq": "main:XDTOPackage"
+        }
+      ]
     },
     {
       "tool": "unica.view",

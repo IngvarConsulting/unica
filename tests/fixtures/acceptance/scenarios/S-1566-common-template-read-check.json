@@ -17,7 +17,13 @@
         "commonTemplates": {
           "pointer": "/data/branches/17/at"
         }
-      }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/17/at",
+          "eq": "main:CommonTemplate"
+        }
+      ]
     },
     {
       "tool": "unica.view",
@@ -574,7 +580,13 @@
         "borrowedTemplates": {
           "pointer": "/data/branches/17/at"
         }
-      }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/17/at",
+          "eq": "ext:CommonTemplate"
+        }
+      ]
     },
     {
       "tool": "unica.view",

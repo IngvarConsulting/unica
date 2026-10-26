@@ -750,6 +750,7 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
     NodeKind::WebService,
     NodeKind::HttpService,
     NodeKind::WsReference,
+    NodeKind::WebSocketClient,
     NodeKind::IntegrationService,
     NodeKind::StyleItem,
     NodeKind::Style,
@@ -783,6 +784,17 @@ fn root_branches(
     mut counts: std::collections::BTreeMap<String, usize>,
 ) -> Vec<BranchRef> {
     let source_set = address.source_set();
+    // Корень внешней обработки или отчёта — опись своих владельцев: видов
+    // конфигурации там не бывает, и пустыми они не выдаются.
+    let external = [NodeKind::ExternalDataProcessor, NodeKind::ExternalReport]
+        .iter()
+        .any(|kind| counts.contains_key(kind.as_str()));
+    if external {
+        return counts
+            .into_iter()
+            .map(|(kind, count)| BranchRef::new(format!("{source_set}:{kind}"), count))
+            .collect();
+    }
     let mut branches = Vec::new();
     let remaining = NodeKind::metadata_kinds()
         .iter()
