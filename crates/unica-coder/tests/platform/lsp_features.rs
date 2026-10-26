@@ -189,8 +189,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
     std::fs::write(&caller, "// на диске вызова нет\n").unwrap();
     let mut documents = LspDocuments::new("editor", vec![layout(&space.root)]);
     let overlay = DocumentOverlay::default();
-    let file_uri = |path: &Path| String::from(url::Url::from_file_path(path).unwrap());
-    let caller_uri = documents.uri_of_file(&file_uri(&caller)).unwrap();
+    let caller_uri = documents.body_uri_of_file(&caller);
     let typed = "Процедура П()\n\tНовыйМодуль.Посчитать(1, \nКонецПроцедуры\n";
     documents
         .open(&overlay, &caller_uri, 1, typed.to_owned())
@@ -200,7 +199,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
         .spaces()
         .format(&crate::application::lsp::uri::DocumentUri {
             space: "ут".to_owned(),
-            address: "main:CommonModule.НовыйМодуль".to_owned(),
+            address: "main:CommonModule.НовыйМодуль.Body".to_owned(),
         })
         .unwrap();
     documents

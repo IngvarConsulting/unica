@@ -525,13 +525,9 @@ fn admit_actor(
     ))
 }
 
-/// The `unica://` URI of a document the editor may name by its file.
+/// The `unica://` URI of a document: a file path never names one.
 fn document_uri(documents: &LspDocuments, uri: &str) -> Result<String, LspDocumentError> {
-    if uri.starts_with("file:") {
-        documents.uri_of_file(uri)
-    } else {
-        Ok(uri.to_owned())
-    }
+    documents.locate(uri).map(|_| uri.to_owned())
 }
 
 fn folder_path(uri: &str) -> Option<PathBuf> {

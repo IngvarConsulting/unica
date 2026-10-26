@@ -113,6 +113,32 @@ impl LspDocuments {
         &self.spaces
     }
 
+    /// The document URI of a module file, for tests that start from a
+    /// fixture path: the module address `unica.resolve` gives it, plus `Body`.
+    #[cfg(test)]
+    pub(crate) fn body_uri_of_file(&self, path: &std::path::Path) -> String {
+        let path = canonical(path);
+        let (space, set, relative) = self
+            .source_sets
+            .iter()
+            .flat_map(|(space, sets)| sets.iter().map(move |set| (space, set)))
+            .find_map(|(space, set)| Some((space, set, path.strip_prefix(&set.root).ok()?)))
+            .expect("the file is in a source set");
+        let at = crate::infrastructure::event_sources::module_address_for_relative(
+            &set.name,
+            set.kind,
+            set.profile,
+            relative,
+        )
+        .expect("the file is a module");
+        self.spaces
+            .format(&DocumentUri {
+                space: space.clone(),
+                address: format!("{at}.Body"),
+            })
+            .expect("the space is this connection's")
+    }
+
     /// The space, source set and module file a `unica://` URI names.
     pub(crate) fn locate(&self, uri: &str) -> Result<DocumentLocation, LspDocumentError> {
         let document = self.spaces.parse(uri).map_err(LspDocumentError::Uri)?;
@@ -235,7 +261,7 @@ impl LspDocuments {
         let common_module = |name: &str| {
             let document = DocumentUri {
                 space: location.document.space.clone(),
-                address: format!("{}:CommonModule.{name}", location.source_set),
+                address: format!("{}:CommonModule.{name}.Body", location.source_set),
             };
             let uri = self.spaces.format(&document).ok()?;
             self.content(&uri, read).ok().flatten()
