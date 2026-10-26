@@ -9,19 +9,9 @@ use serde_json::{Map, Value};
 use std::collections::HashSet;
 use unica_operation_contract::{ArgumentShape, ContractError, OperationContract};
 
-/// A multilingual property value: text in the project language, or every
-/// language of the value (#2163).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LocalizedValue {
-    Text(String),
-    Languages(Vec<crate::LocalizedItem>),
-}
-
-impl From<&str> for LocalizedValue {
-    fn from(text: &str) -> Self {
-        Self::Text(text.to_string())
-    }
-}
+/// Every language of a multilingual property, written as the whole value
+/// (#2163).
+pub type LocalizedValue = Vec<crate::LocalizedItem>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RolePropertyChanges {
@@ -183,11 +173,11 @@ impl<'a> PropertyArgumentReader<'a> {
             ));
         }
         self.alias(field)?
-            .map(|(value, path)| match value {
-                Value::String(text) => Ok(LocalizedValue::Text(text.clone())),
-                _ => crate::parse_localized_items(value)
-                    .map(LocalizedValue::Languages)
-                    .map_err(|(suffix, message)| invalid(format!("{path}{suffix}"), message)),
+            .map(|(value, path)| {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| invalid(&path, crate::LOCALIZED_VALUE_FORM))?;
+                crate::parse_nstr(text).map_err(|message| invalid(path, message))
             })
             .transpose()
     }
@@ -358,16 +348,9 @@ fn decode_with_contract(
                     let mut changes = Vec::new();
                     for field in site.descriptor_fields() {
                         let value = match field.kind() {
-                            DescriptorPropertyKind::String if field.localized() => {
-                                values_reader.localized(field)?.map(|value| match value {
-                                    LocalizedValue::Text(text) => {
-                                        DescriptorPropertyValue::Text(text)
-                                    }
-                                    LocalizedValue::Languages(items) => {
-                                        DescriptorPropertyValue::Languages(items)
-                                    }
-                                })
-                            }
+                            DescriptorPropertyKind::String if field.localized() => values_reader
+                                .localized(field)?
+                                .map(DescriptorPropertyValue::Languages),
                             DescriptorPropertyKind::String => values_reader
                                 .string(field)?
                                 .map(DescriptorPropertyValue::Text),
@@ -423,6 +406,13 @@ mod tests {
                     MetaPropertyValueKind::UnsignedInteger => {
                         (json!(0.0), MetaPropertyValue::UnsignedInteger(0))
                     }
+                    MetaPropertyValueKind::String if spec.key == MetaPropertyKey::Synonym => (
+                        json!("ru = 'property text'"),
+                        MetaPropertyValue::Localized(vec![crate::LocalizedItem {
+                            language: "ru".into(),
+                            content: "property text".into(),
+                        }]),
+                    ),
                     MetaPropertyValueKind::String => {
                         let text = spec.enum_values.first().copied().unwrap_or(match spec.key {
                             MetaPropertyKey::Event => "OnWrite",
@@ -451,9 +441,10 @@ mod tests {
         }
     }
 
-    /// #2163: a multilingual descriptor property takes every language.
+    /// #2163: a multilingual descriptor property takes its whole value as
+    /// one NStr string; plain text without a language is refused.
     #[test]
-    fn descriptor_localized_properties_take_every_language() {
+    fn descriptor_localized_properties_take_the_whole_nstr_value() {
         let items = vec![
             crate::LocalizedItem {
                 language: "ru".into(),
@@ -464,18 +455,17 @@ mod tests {
                 content: "Sales".into(),
             },
         ];
-        let full =
-            json!([{"language":"ru","content":"Продажи"},{"language":"en","content":"Sales"}]);
+        let full = "ru = 'Продажи'; en = 'Sales'";
         assert_eq!(
             decode(
                 PropertiesSite::Subsystem,
-                json!({"values":{"Synonym":full.clone(), "Explanation":"Текст"}})
+                json!({"values":{"Synonym":full, "Explanation":""}})
             )
             .unwrap(),
             PropertiesIntent::Subsystem(SubsystemPropertyChanges {
-                synonym: Some(LocalizedValue::Languages(items.clone())),
+                synonym: Some(items.clone()),
                 comment: None,
-                explanation: Some("Текст".into()),
+                explanation: Some(Vec::new()),
                 include_help_in_contents: None,
                 include_in_command_interface: None,
                 use_one_command: None,
@@ -483,7 +473,7 @@ mod tests {
         );
         let PropertiesIntent::Configuration(changes) = decode(
             PropertiesSite::Configuration { extension: false },
-            json!({"values":{"BriefInformation":full.clone(), "Vendor":"V"}}),
+            json!({"values":{"BriefInformation":full, "Vendor":"V"}}),
         )
         .unwrap() else {
             panic!("the root keeps its Configuration intent");
@@ -492,18 +482,11 @@ mod tests {
             *property == DescriptorProperty::BriefInformation
                 && *value == DescriptorPropertyValue::Languages(items.clone())
         }));
-        let error = decode(
-            PropertiesSite::Role,
-            json!({"values":{"Synonym":[{"language":"ru","content":"А"},{"language":"ru","content":"Б"}]}}),
-        )
-        .unwrap_err();
-        assert_eq!(error.path, "ops[7].args.values.Synonym[1].language");
-        let error = decode(
-            PropertiesSite::Configuration { extension: false },
-            json!({"values":{"Vendor":[{"language":"ru","content":"А"}]}}),
-        )
-        .unwrap_err();
-        assert_eq!(error.path, "ops[7].args.values.Vendor");
+        for value in [json!("Продажи"), json!("ru = 'А'; ru = 'Б'"), json!(["ru"])] {
+            let error =
+                decode(PropertiesSite::Role, json!({"values":{"Synonym":value}})).unwrap_err();
+            assert_eq!(error.path, "ops[7].args.values.Synonym", "{value}");
+        }
     }
 
     #[test]
@@ -511,21 +494,24 @@ mod tests {
         assert_eq!(
             decode(
                 PropertiesSite::Role,
-                json!({"values":{"synonym":"S","Comment":""}})
+                json!({"values":{"synonym":"ru = 'S'","Comment":""}})
             )
             .unwrap(),
             PropertiesIntent::Role(RolePropertyChanges {
-                synonym: Some("S".into()),
+                synonym: Some(vec![crate::LocalizedItem {
+                    language: "ru".into(),
+                    content: "S".into()
+                }]),
                 comment: Some(String::new())
             })
         );
         assert_eq!(
             decode(PropertiesSite::Subsystem, json!({"values":{
-                "Synonym":"S", "comment":"C", "explanation":"",
+                "Synonym":"ru = 'S'", "comment":"C", "explanation":"",
                 "includeHelpInContents":false, "IncludeInCommandInterface":true, "useOneCommand":false
             }})).unwrap(),
             PropertiesIntent::Subsystem(SubsystemPropertyChanges {
-                synonym: Some("S".into()), comment: Some("C".into()), explanation: Some("".into()),
+                synonym: Some(vec![crate::LocalizedItem { language: "ru".into(), content: "S".into() }]), comment: Some("C".into()), explanation: Some(Vec::new()),
                 include_help_in_contents: Some(false), include_in_command_interface: Some(true), use_one_command: Some(false),
             })
         );

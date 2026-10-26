@@ -1290,44 +1290,21 @@ pub fn set_ml_property(
     })
 }
 
-/// Writes a multilingual property of the descriptor's own `<Properties>`:
-/// text sets the `lang` item, a full value holds exactly its languages (#2163).
+/// Writes a multilingual property of the descriptor's own `<Properties>` as
+/// exactly the given languages (#2163).
 fn set_localized_property(
     text: &str,
     tag: &str,
     indent: &str,
-    lang: Option<&str>,
-    value: &unica_metadata::property_input::LocalizedValue,
+    items: &[unica_metadata::LocalizedItem],
 ) -> Option<String> {
-    use unica_metadata::property_input::LocalizedValue;
-    match value {
-        LocalizedValue::Text(value) => set_ml_property(
-            text,
-            tag,
-            indent,
-            lang.expect("a project-language text retained its language"),
-            value,
-        ),
-        LocalizedValue::Languages(items) => {
-            let values = items
-                .iter()
-                .map(|item| (item.language.clone(), item.content.clone()))
-                .collect::<Vec<_>>();
-            edit_descriptor_property(text, tag, |source, property| {
-                unica_xml_format::localized::replace_language_values(
-                    source, property, indent, &values,
-                )
-            })
-        }
-    }
-}
-
-/// Whether writing `value` needs the project language.
-fn needs_text_language(value: Option<&unica_metadata::property_input::LocalizedValue>) -> bool {
-    matches!(
-        value,
-        Some(unica_metadata::property_input::LocalizedValue::Text(_))
-    )
+    let values = items
+        .iter()
+        .map(|item| (item.language.clone(), item.content.clone()))
+        .collect::<Vec<_>>();
+    edit_descriptor_property(text, tag, |source, property| {
+        unica_xml_format::localized::replace_language_values(source, property, indent, &values)
+    })
 }
 
 /// Sets a plain-text property of the descriptor's own `<Properties>`,
@@ -1435,23 +1412,14 @@ fn stage_descriptor_properties(
             let mut text = source.clone();
             let indent = "\t\t\t";
             if let Some(synonym) = synonym {
-                let lang = if needs_text_language(Some(synonym)) {
-                    Some(unica_source_designer::language::staged_text_language(
-                        staged,
-                        source_kind,
-                        op_index,
-                    )?)
-                } else {
-                    None
-                };
-                text = set_localized_property(&text, "Synonym", indent, lang.as_deref(), synonym)
-                    .ok_or_else(|| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::InvalidSource,
-                        "the role descriptor has no Synonym property",
-                    )
-                    .at_path(at_path.clone())
-                })?;
+                text =
+                    set_localized_property(&text, "Synonym", indent, synonym).ok_or_else(|| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::InvalidSource,
+                            "the role descriptor has no Synonym property",
+                        )
+                        .at_path(at_path.clone())
+                    })?;
             }
             if let Some(comment) = comment {
                 let block = if comment.is_empty() {
@@ -1501,19 +1469,8 @@ fn stage_descriptor_properties(
                 )
                 .at_path(at_path.clone())
             };
-            let lang = if needs_text_language(synonym.as_ref())
-                || needs_text_language(explanation.as_ref())
-            {
-                Some(unica_source_designer::language::staged_text_language(
-                    staged,
-                    source_kind,
-                    op_index,
-                )?)
-            } else {
-                None
-            };
             if let Some(synonym) = synonym {
-                text = set_localized_property(&text, "Synonym", indent, lang.as_deref(), synonym)
+                text = set_localized_property(&text, "Synonym", indent, synonym)
                     .ok_or_else(|| missing("Synonym"))?;
             }
             if let Some(comment) = comment {
@@ -1521,14 +1478,8 @@ fn stage_descriptor_properties(
                     .ok_or_else(|| missing("Comment"))?;
             }
             if let Some(explanation) = explanation {
-                text = set_localized_property(
-                    &text,
-                    "Explanation",
-                    indent,
-                    lang.as_deref(),
-                    explanation,
-                )
-                .ok_or_else(|| missing("Explanation"))?;
+                text = set_localized_property(&text, "Explanation", indent, explanation)
+                    .ok_or_else(|| missing("Explanation"))?;
             }
             if let Some(value) = include_help_in_contents {
                 text = set_plain_property(&text, "IncludeHelpInContents", &value.to_string())
@@ -1555,36 +1506,12 @@ fn stage_descriptor_properties(
                 )
                 .at_path(at_path.clone())
             };
-            let lang = if changes.iter().any(|(property, value)| {
-                property.localized() && matches!(value, DescriptorPropertyValue::Text(_))
-            }) {
-                Some(unica_source_designer::language::staged_text_language(
-                    staged,
-                    source_kind,
-                    op_index,
-                )?)
-            } else {
-                None
-            };
             for (property, value) in changes {
                 let tag = property.names()[0];
                 text = match value {
-                    DescriptorPropertyValue::Text(value) if property.localized() => {
-                        set_localized_property(
-                            &text,
-                            tag,
-                            "\t\t\t",
-                            lang.as_deref(),
-                            &unica_metadata::property_input::LocalizedValue::Text(value.clone()),
-                        )
+                    DescriptorPropertyValue::Languages(items) => {
+                        set_localized_property(&text, tag, "\t\t\t", items)
                     }
-                    DescriptorPropertyValue::Languages(items) => set_localized_property(
-                        &text,
-                        tag,
-                        "\t\t\t",
-                        None,
-                        &unica_metadata::property_input::LocalizedValue::Languages(items.clone()),
-                    ),
                     DescriptorPropertyValue::Text(value) => set_plain_property(&text, tag, value),
                     DescriptorPropertyValue::Boolean(value) => {
                         set_plain_property(&text, tag, &value.to_string())

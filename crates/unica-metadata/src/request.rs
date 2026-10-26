@@ -715,14 +715,12 @@ pub fn parse_property_changes(
                 MetaPropertyValue::Type(parse_metadata_type(value, &field)?)
             }
             MetaPropertyValueKind::String if spec.key == crate::MetaPropertyKey::Synonym => {
-                match value {
-                    Value::String(value) => MetaPropertyValue::String(value.clone()),
-                    _ => MetaPropertyValue::Localized(
-                        crate::properties::parse_localized_items(value).map_err(
-                            |(suffix, message)| invalid(format!("{field}{suffix}"), message),
-                        )?,
-                    ),
-                }
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| invalid(&field, crate::LOCALIZED_VALUE_FORM))?;
+                MetaPropertyValue::Localized(
+                    crate::parse_nstr(text).map_err(|message| invalid(&field, message))?,
+                )
             }
             MetaPropertyValueKind::String => value
                 .as_str()

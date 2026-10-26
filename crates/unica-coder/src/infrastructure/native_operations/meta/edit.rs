@@ -974,18 +974,18 @@ pub(crate) mod tests {
         .is_err());
     }
 
-    /// #2163: `props.set` takes the synonym as every language
-    /// `[{language, content}]`; the element then holds exactly those
-    /// languages, while plain text still sets only the project language.
+    /// #2163: `props.set` takes the synonym as one NStr string, the whole
+    /// value: the element then holds exactly the listed languages; text
+    /// without a language code is refused.
     #[test]
-    fn synonym_takes_every_language_or_the_project_text() {
+    fn synonym_takes_the_whole_value_in_nstr_form() {
         use unica_metadata::MetadataKind::Catalog;
         let (mut xml, _) =
             unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
                 Catalog, "Evidence",
             )
             .unwrap();
-        let set = |xml: &mut String, value: serde_json::Value| {
+        let set = |xml: &mut String, value: &str| {
             let changes = unica_metadata::request::parse_property_changes(
                 serde_json::json!({ "Synonym": value }).as_object().unwrap(),
                 Catalog,
@@ -1019,66 +1019,34 @@ pub(crate) mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        set(
-            &mut xml,
-            serde_json::json!([{"language":"ru","content":"Товары"},{"language":"en","content":"Goods"}]),
-        );
+        set(&mut xml, "ru = 'Товары ''склада'''; en = 'Goods'");
         assert_eq!(
             synonym(&xml),
             [
-                ("ru".into(), "Товары".into()),
+                ("ru".into(), "Товары 'склада'".into()),
                 ("en".into(), "Goods".into())
             ]
         );
         let before = xml.clone();
-        set(
-            &mut xml,
-            serde_json::json!([{"language":"ru","content":"Товары"},{"language":"en","content":"Goods"}]),
-        );
+        set(&mut xml, "ru = 'Товары ''склада'''; en = 'Goods'");
         assert_eq!(xml, before, "the value read back is written without change");
-        set(&mut xml, serde_json::json!("Номенклатура"));
-        assert_eq!(
-            synonym(&xml),
-            [
-                ("ru".into(), "Номенклатура".into()),
-                ("en".into(), "Goods".into())
-            ]
-        );
-        set(
-            &mut xml,
-            serde_json::json!([{"language":"en","content":"Items"}]),
-        );
+        set(&mut xml, "en = 'Items'");
         assert_eq!(synonym(&xml), [("en".into(), "Items".into())]);
-        for (value, path) in [
-            (
-                serde_json::json!([{"language":"ru","content":"А"},{"language":"ru","content":"Б"}]),
-                "values.Synonym[1].language",
-            ),
-            (
-                serde_json::json!([{"language":"","content":"А"}]),
-                "values.Synonym[0].language",
-            ),
-            (
-                serde_json::json!([{"language":"ru"}]),
-                "values.Synonym[0].content",
-            ),
-            (serde_json::json!(1), "values.Synonym"),
+        set(&mut xml, "");
+        assert!(synonym(&xml).is_empty());
+        for value in [
+            serde_json::json!("Товары"),
+            serde_json::json!("ru = 'А'; ru = 'Б'"),
+            serde_json::json!("ru = 'А"),
+            serde_json::json!(1),
         ] {
             let error = unica_metadata::request::parse_property_changes(
                 serde_json::json!({ "Synonym": value }).as_object().unwrap(),
                 Catalog,
             )
             .unwrap_err();
-            assert_eq!(error.field.as_deref(), Some(path), "{value}");
+            assert_eq!(error.field.as_deref(), Some("values.Synonym"), "{value}");
         }
-        let comment = unica_metadata::request::parse_property_changes(
-            serde_json::json!({"Comment":[{"language":"ru","content":"А"}]})
-                .as_object()
-                .unwrap(),
-            Catalog,
-        )
-        .unwrap_err();
-        assert_eq!(comment.field.as_deref(), Some("values.Comment"));
     }
 
     #[test]
