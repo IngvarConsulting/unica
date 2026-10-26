@@ -207,7 +207,8 @@ pub trait SymbolProvider: Send + Sync {
 
     /// Every place that names the symbol, by a walk over the configuration.
     /// The editor's references do not call it: the walk is the slow first
-    /// pass the background index of #2190 is to run instead.
+    /// pass the background index of #2190 is to run instead, and the shipped
+    /// analyzer session does not enable its `references` tool until then.
     fn references(
         &self,
         query: &SymbolQuery,
