@@ -438,6 +438,68 @@ fn completion_is_incomplete_until_the_platform_context_is_loaded() {
     assert!(labels(&loaded).contains(&"ЗначениеЗаполнено"), "{loaded}");
 }
 
+fn sign(host: &UnicaLspHost, workspace: &Path) -> V5LspOutcome {
+    let editor = V5LspSessionId::new();
+    host.open(&editor, &[folder(workspace, "Work")], client(), soon())
+        .unwrap();
+    let uri = session_uri(host, &editor, &file_uri(&workspace.join(MODULE)));
+    open_buffer(
+        host,
+        &editor,
+        &uri,
+        "Процедура Выполнить()\n    ЗначениеЗаполнено(\nКонецПроцедуры\n",
+    );
+    ask(
+        host,
+        &editor,
+        V5LspCall::SignatureHelp {
+            uri,
+            position: unica_daemon::protocol_v5::lsp::V5LspPosition {
+                line: 1,
+                character: 22,
+            },
+        },
+    )
+}
+
+/// The first signatureHelp before the platform help is indexed is not
+/// "no signature" (INV.LSP.PARTIAL-ANSWERS): it is refused as unavailable,
+/// and once the help is ready the same request is signed.
+#[test]
+fn a_platform_signature_before_the_help_is_indexed_is_unavailable_not_absent() {
+    let (workspace, host) = completion_host("platform/8.3.27.1");
+    let root = workspace
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("platform/8.3.27.1");
+    std::fs::create_dir_all(&root).unwrap();
+    assert_eq!(
+        sign(&host, workspace.path()),
+        V5LspOutcome::Failed {
+            failure: V5LspFailure::Unavailable
+        }
+    );
+    host.platform.ready_for_test(
+        root,
+        vec![GlobalContextMember {
+            kind: unica_documentation_sources::platform_help::provider::GlobalContextMemberKind::Method,
+            name_ru: "ЗначениеЗаполнено".into(),
+            name_en: Some("ValueIsFilled".into()),
+            signature_ru: None,
+            signature_en: None,
+            parameters: vec!["Значение".into()],
+        }],
+    );
+    let V5LspOutcome::Json { value } = sign(&host, workspace.path()) else {
+        panic!("a ready help signs the call");
+    };
+    assert_eq!(
+        value["signatures"][0]["label"],
+        "ЗначениеЗаполнено(Значение)"
+    );
+}
+
 /// A project without a platform installation has nothing to wait for: the
 /// list is whole, and the editor does not ask again on every key.
 #[test]
