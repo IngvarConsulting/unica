@@ -2294,6 +2294,47 @@ fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
 }
 
 #[test]
+fn root_kind_collection_follows_child_objects_order_in_both_readers() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&path).unwrap();
+    // `Владельцы` sorts after `Items` by code points but stands first here.
+    let xml = xml.replacen("<Catalog>Items</Catalog>", "", 1).replacen(
+        "<Catalog>Владельцы</Catalog>",
+        "<Catalog>Владельцы</Catalog><Catalog>Items</Catalog>",
+        1,
+    );
+    fs::write(&path, &xml).unwrap();
+    let names = |fixture: &RealReaderFixture| {
+        let result = fixture
+            .view_service()
+            .view(ViewRequest::new("main:Catalog").unwrap());
+        assert!(result.ok, "Catalog collection failed");
+        result.data.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["title"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let bounded = names(&fixture);
+    assert_eq!(bounded, ["Владельцы", "Items"]);
+    fs::write(
+        &path,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        names(&fixture),
+        bounded,
+        "streaming collection order differs"
+    );
+}
+
+#[test]
 fn large_configuration_root_rejects_malformed_tail() {
     let fixture = RealReaderFixture::new();
     let path = fixture.source.join("Configuration.xml");

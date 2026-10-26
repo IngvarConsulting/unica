@@ -147,6 +147,19 @@ impl unica_operations::FamilyOperation for FormOperation {
     fn content_resource(self) -> Option<&'static str> {
         self.content_resource()
     }
+    fn contract_at(
+        self,
+        site: &unica_source_contract::context::OperationSite<'_>,
+    ) -> Option<unica_operation_contract::OperationContract> {
+        Some(match self {
+            Self::Set => crate::contracts::form_set(
+                site.segments()
+                    .first()
+                    .map(|segment| segment.kind().as_str()),
+            ),
+            _ => self.contract(),
+        })
+    }
 
     fn needs_observation(
         self,
