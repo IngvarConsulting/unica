@@ -11,12 +11,14 @@
 use crate::application::lsp::document::{ContentChange, DocumentChangeError, OpenDocument};
 use crate::application::lsp::uri::{DocumentUri, SpaceRegistry, UriError, WorkspaceFolder};
 use crate::infrastructure::lsp_features::{CompletionSources, ModuleOwner, ObjectMembers};
+use crate::infrastructure::lsp_types::TypeSources;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use unica_address::address::QualifiedAddress;
 use unica_bsl::profile::PlatformProfile;
+use unica_bsl_types::{AppliedMember, AppliedMemberKind, AppliedTypes, PlatformCatalog};
 use unica_documentation_sources::platform_help::provider::GlobalContextMember;
 use unica_execution_contract::view_error::ViewError;
 use unica_source_contract::SourceSetKind;
@@ -261,19 +263,68 @@ impl LspDocuments {
         position: crate::application::lsp::position::Utf16Position,
         read: &ProviderReadAuthority,
         global_context: Option<&[GlobalContextMember]>,
+        catalog: Option<&PlatformCatalog>,
     ) -> Result<Option<serde_json::Value>, LspDocumentError> {
         let Some(text) = self.content(uri, read)? else {
             return Ok(None);
         };
         let location = self.locate(uri)?;
         let common_module = |name: &str| self.common_module_content(&location, name, read);
+        let sources = self.sources(
+            &location,
+            read,
+            global_context.unwrap_or_default(),
+            catalog,
+            &|| false,
+        );
         crate::infrastructure::lsp_features::signature_help(
             &text,
             position,
             &common_module,
             global_context,
+            sources.types().as_ref(),
         )
         .map_err(|_| LspDocumentError::SourceNotReady)
+    }
+
+    /// `textDocument/hover`: the type of the expression under the cursor
+    /// or the signature of the method it calls, from the platform catalog.
+    /// `None` when the catalog is not loaded or the type is not known.
+    pub(crate) fn hover(
+        &self,
+        uri: &str,
+        position: crate::application::lsp::position::Utf16Position,
+        read: &ProviderReadAuthority,
+        catalog: Option<&PlatformCatalog>,
+    ) -> Result<Option<serde_json::Value>, LspDocumentError> {
+        let Some(text) = self.content(uri, read)? else {
+            return Ok(None);
+        };
+        let location = self.locate(uri)?;
+        let sources = self.sources(&location, read, &[], catalog, &|| false);
+        Ok(sources
+            .types()
+            .and_then(|types| crate::infrastructure::lsp_types::hover(&text, position, &types)))
+    }
+
+    fn sources<'a>(
+        &'a self,
+        location: &'a DocumentLocation,
+        read: &'a ProviderReadAuthority,
+        global_context: &'a [GlobalContextMember],
+        catalog: Option<&'a PlatformCatalog>,
+        stale: &'a dyn Fn() -> bool,
+    ) -> CompletionSourcesOver<'a> {
+        CompletionSourcesOver {
+            applied: MetadataGraphAppliedTypes {
+                documents: self,
+                location,
+                read,
+            },
+            global_context,
+            catalog,
+            stale,
+        }
     }
 
     /// The text of the common module `typed` names in the source set of
@@ -296,6 +347,9 @@ impl LspDocuments {
     /// `textDocument/completion` at `position` of `uri`. The answer is
     /// dropped (`None`) when the buffer moved past the version it was
     /// computed for, or when `cancelled` says the request is gone.
+    // The request, the read and the platform's two sources (the help's
+    // global context and the type catalog) come from the route as is.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn completion(
         &self,
         overlay: &DocumentOverlay,
@@ -303,6 +357,7 @@ impl LspDocuments {
         position: crate::application::lsp::position::Utf16Position,
         read: &ProviderReadAuthority,
         global_context: &[GlobalContextMember],
+        catalog: Option<&PlatformCatalog>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Option<serde_json::Value>, LspDocumentError> {
         let Some(text) = self.content(uri, read)? else {
@@ -314,10 +369,13 @@ impl LspDocuments {
             .get(&location.document)
             .map(|buffer| buffer.document.version());
         let sources = CompletionSourcesOver {
-            documents: self,
-            location: &location,
-            read,
+            applied: MetadataGraphAppliedTypes {
+                documents: self,
+                location: &location,
+                read,
+            },
             global_context,
+            catalog,
             stale: &|| {
                 cancelled()
                     || version.is_some_and(|version| {
@@ -433,30 +491,21 @@ fn canonical(path: &std::path::Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_owned())
 }
 
-/// Completion sources of one document: the metadata of its source set,
-/// read through the connection's read.
-struct CompletionSourcesOver<'a> {
+/// The applied half of the type model read from the source set's metadata
+/// graph and module texts. A stand-in behind [`AppliedTypes`]: the applied
+/// model of stage 2 (#2238) replaces this one type, and nothing that infers
+/// types changes.
+struct MetadataGraphAppliedTypes<'a> {
     documents: &'a LspDocuments,
     location: &'a DocumentLocation,
     read: &'a ProviderReadAuthority,
-    global_context: &'a [GlobalContextMember],
-    stale: &'a dyn Fn() -> bool,
 }
 
-impl CompletionSources for CompletionSourcesOver<'_> {
-    fn global_context(&self) -> &[GlobalContextMember] {
-        self.global_context
-    }
-
-    fn metadata_names(&self, kind: &str) -> Vec<String> {
+impl MetadataGraphAppliedTypes<'_> {
+    fn registered(&self, kind: &str) -> Vec<String> {
         self.read
             .registered_names(kind, &|| Ok(()))
             .unwrap_or_default()
-    }
-
-    fn common_module_text(&self, name: &str) -> Option<String> {
-        self.documents
-            .common_module_content(self.location, name, self.read)
     }
 
     fn object_members(&self, kind: &str, name: &str) -> Option<ObjectMembers> {
@@ -490,15 +539,117 @@ impl CompletionSources for CompletionSourcesOver<'_> {
         })
     }
 
+    /// Exported methods of the `role` module (`Manager`, `Object`) of
+    /// `kind` `name`, from its buffer or file.
+    fn module_exports(&self, kind: &str, name: &str, role: &str) -> Vec<AppliedMember> {
+        let document = DocumentUri {
+            space: self.location.document.space.clone(),
+            address: format!(
+                "{}:{kind}.{name}.Module.{role}.Body",
+                self.location.source_set
+            ),
+        };
+        let Some(text) = self
+            .documents
+            .spaces
+            .format(&document)
+            .ok()
+            .and_then(|uri| self.documents.content(&uri, self.read).ok().flatten())
+        else {
+            return Vec::new();
+        };
+        crate::infrastructure::lsp_features::exported_methods(&text)
+            .into_iter()
+            .map(|(method, params)| AppliedMember {
+                name: method,
+                kind: AppliedMemberKind::Method,
+                types: Vec::new(),
+                signature: Some(unica_bsl_types::Signature {
+                    name: String::new(),
+                    params: params
+                        .into_iter()
+                        .map(|param| unica_bsl_types::Param {
+                            ru: param,
+                            en: String::new(),
+                            optional: false,
+                            types: Vec::new(),
+                            default: None,
+                        })
+                        .collect(),
+                    returns: Vec::new(),
+                }),
+            })
+            .collect()
+    }
+}
+
+impl AppliedTypes for MetadataGraphAppliedTypes<'_> {
+    fn names(&self, kind: &str) -> Vec<String> {
+        self.registered(kind)
+    }
+
+    fn members(&self, kind: &str, name: &str, facet: &str) -> Vec<AppliedMember> {
+        let mut members = Vec::new();
+        if matches!(facet, "Object" | "Ref") {
+            if let Some(found) = self.object_members(kind, name) {
+                members.extend(found.attributes.into_iter().map(|attribute| AppliedMember {
+                    name: attribute,
+                    kind: AppliedMemberKind::Attribute,
+                    types: Vec::new(),
+                    signature: None,
+                }));
+                members.extend(found.tabular_sections.into_iter().map(|(section, _)| {
+                    AppliedMember {
+                        name: section,
+                        kind: AppliedMemberKind::TabularSection,
+                        types: Vec::new(),
+                        signature: None,
+                    }
+                }));
+            }
+        }
+        match facet {
+            "Object" => members.extend(self.module_exports(kind, name, "Object")),
+            "Manager" => members.extend(self.module_exports(kind, name, "Manager")),
+            _ => {}
+        }
+        members
+    }
+}
+
+/// Completion sources of one document: the metadata of its source set,
+/// read through the connection's read.
+struct CompletionSourcesOver<'a> {
+    applied: MetadataGraphAppliedTypes<'a>,
+    global_context: &'a [GlobalContextMember],
+    catalog: Option<&'a PlatformCatalog>,
+    stale: &'a dyn Fn() -> bool,
+}
+
+impl CompletionSources for CompletionSourcesOver<'_> {
+    fn global_context(&self) -> &[GlobalContextMember] {
+        self.global_context
+    }
+
+    fn metadata_names(&self, kind: &str) -> Vec<String> {
+        self.applied.registered(kind)
+    }
+
+    fn common_module_text(&self, name: &str) -> Option<String> {
+        self.applied
+            .documents
+            .common_module_content(self.applied.location, name, self.applied.read)
+    }
+
+    fn object_members(&self, kind: &str, name: &str) -> Option<ObjectMembers> {
+        self.applied.object_members(kind, name)
+    }
+
     fn module_owner(&self) -> Option<ModuleOwner> {
         // The object module and the forms of an object reach its members.
         // The document address is the module's `Body`.
-        let address = self
-            .location
-            .document
-            .address
-            .strip_suffix(".Body")
-            .unwrap_or(&self.location.document.address);
+        let address = &self.applied.location.document.address;
+        let address = address.strip_suffix(".Body").unwrap_or(address);
         let form = address.ends_with(".Module.Form") && address.contains(".Form.");
         if !(address.ends_with(".Module.Object") || form) {
             return None;
@@ -514,6 +665,14 @@ impl CompletionSources for CompletionSourcesOver<'_> {
 
     fn cancelled(&self) -> bool {
         (self.stale)()
+    }
+
+    fn types(&self) -> Option<TypeSources<'_>> {
+        Some(TypeSources {
+            catalog: self.catalog?,
+            applied: &self.applied,
+            owner: self.module_owner(),
+        })
     }
 }
 

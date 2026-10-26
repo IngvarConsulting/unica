@@ -2587,6 +2587,7 @@ dependencies = [
  "unica-bootstrap",
  "unica-bsl",
  "unica-bsl-parser",
+ "unica-bsl-types",
  "unica-code-intelligence",
  "unica-configuration",
  "unica-daemon",

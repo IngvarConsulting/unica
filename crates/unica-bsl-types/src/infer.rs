@@ -158,9 +158,11 @@ impl PlatformCatalog {
         if let Some(found) = found.filter(|found| !found.is_empty()) {
             return dedup(found);
         }
-        // A placeholder property stands for every applied object of its
-        // kind: `Справочники.Валюты`.
-        if !call {
+        // A placeholder property of a collection manager stands for every
+        // applied object of its kind: `Справочники.Валюты`. A placeholder
+        // of an applied object's own type stands for what that object
+        // declares (its predefined items), not for other objects.
+        if !call && template.is_none() {
             for property in ty
                 .properties
                 .iter()
@@ -254,8 +256,12 @@ impl PlatformCatalog {
                 }
             }
         }
+        let collection = template_of(ty).is_none();
         for property in &ty.properties {
             if is_placeholder(&property.ru) {
+                if !collection {
+                    continue;
+                }
                 for reference in &property.types {
                     let TypeName::Context(id) = &reference.ty else {
                         continue;

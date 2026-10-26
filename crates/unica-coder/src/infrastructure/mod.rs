@@ -26,6 +26,8 @@ pub(crate) mod logical_tree;
 pub(crate) mod lsp_documents;
 #[allow(dead_code)]
 pub(crate) mod lsp_features;
+#[allow(dead_code)]
+pub(crate) mod lsp_types;
 pub(crate) mod metadata_kinds;
 pub(crate) mod metadata_operations;
 pub mod native_operations;

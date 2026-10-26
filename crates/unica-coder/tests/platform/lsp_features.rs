@@ -117,9 +117,15 @@ fn semantic_tokens_are_relative_utf16_and_one_line_each() {
 #[test]
 fn signature_help_names_the_method_and_the_active_parameter() {
     let no_modules = |_: &str| None;
-    let help = signature_help(MODULE, after(MODULE, "Сложить(А, "), &no_modules, Some(&[]))
-        .unwrap()
-        .unwrap();
+    let help = signature_help(
+        MODULE,
+        after(MODULE, "Сложить(А, "),
+        &no_modules,
+        Some(&[]),
+        None,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(help["activeParameter"], 1);
     let signature = &help["signatures"][0];
     assert_eq!(signature["label"], "Сложить(Знач А, Б = 1) Экспорт");
@@ -137,25 +143,39 @@ fn signature_help_names_the_method_and_the_active_parameter() {
     // exported method has a signature.
     let common = "Процедура Метод(Первый, Второй) Экспорт\nКонецПроцедуры\nПроцедура Скрытый(А)\nКонецПроцедуры\n";
     let modules = |name: &str| (name == "ОбщМод").then(|| common.to_owned());
-    let help = signature_help(MODULE, after(MODULE, "Метод(А, "), &modules, Some(&[]))
-        .unwrap()
-        .unwrap();
+    let help = signature_help(
+        MODULE,
+        after(MODULE, "Метод(А, "),
+        &modules,
+        Some(&[]),
+        None,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(
         help["signatures"][0]["label"],
         "Метод(Первый, Второй) Экспорт"
     );
     assert_eq!(help["activeParameter"], 1);
     let hidden = MODULE.replace("ОбщМод.Метод", "ОбщМод.Скрытый");
-    assert!(
-        signature_help(&hidden, after(&hidden, "Скрытый(А, "), &modules, Some(&[]))
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        signature_help(MODULE, after(MODULE, "Метод(А, "), &no_modules, Some(&[]))
-            .unwrap()
-            .is_none()
-    );
+    assert!(signature_help(
+        &hidden,
+        after(&hidden, "Скрытый(А, "),
+        &modules,
+        Some(&[]),
+        None
+    )
+    .unwrap()
+    .is_none());
+    assert!(signature_help(
+        MODULE,
+        after(MODULE, "Метод(А, "),
+        &no_modules,
+        Some(&[]),
+        None
+    )
+    .unwrap()
+    .is_none());
 }
 
 struct Space {
@@ -229,7 +249,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
         Some(overlay.session_documents("editor", "main").unwrap()),
     );
     let help = documents
-        .signature_help(&caller_uri, after(typed, "(1, "), &read, Some(&[]))
+        .signature_help(&caller_uri, after(typed, "(1, "), &read, Some(&[]), None)
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -254,7 +274,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
         Some(overlay.session_documents("editor", "main").unwrap()),
     );
     let help = documents
-        .signature_help(&caller_uri, after(&lower, "(1, "), &read, Some(&[]))
+        .signature_help(&caller_uri, after(&lower, "(1, "), &read, Some(&[]), None)
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -267,7 +287,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
     let disk = reader(&space.root.join("src"), None);
     assert_eq!(
         other
-            .signature_help(&caller_uri, after(typed, "(1, "), &disk, Some(&[]))
+            .signature_help(&caller_uri, after(typed, "(1, "), &disk, Some(&[]), None)
             .unwrap(),
         None
     );
@@ -328,7 +348,7 @@ fn features_on_a_large_common_module() {
     let position = LineIndex::new(text).position(text, call);
     measure("signatureHelp", &|| {
         usize::from(
-            signature_help(text, position, &|_| None, Some(&[]))
+            signature_help(text, position, &|_| None, Some(&[]), None)
                 .unwrap()
                 .is_some(),
         )
@@ -564,7 +584,15 @@ fn completion_reads_the_buffer_and_the_source_set_metadata() {
     );
     let complete = |needle: &str| {
         documents
-            .completion(&overlay, &uri, after(typed, needle), &read, &[], &|| false)
+            .completion(
+                &overlay,
+                &uri,
+                after(typed, needle),
+                &read,
+                &[],
+                None,
+                &|| false,
+            )
             .unwrap()
             .map(|answer| labels(&answer))
     };
@@ -579,7 +607,7 @@ fn completion_reads_the_buffer_and_the_source_set_metadata() {
     // An answer computed for a version the buffer moved past is dropped.
     let position = after(typed, "\tУтилиты.");
     let stale = documents
-        .completion(&overlay, &uri, position, &read, &[], &|| {
+        .completion(&overlay, &uri, position, &read, &[], None, &|| {
             overlay
                 .put(
                     "editor",
@@ -674,7 +702,7 @@ fn completion_latency_on_a_large_configuration() {
         for _ in 0..5 {
             let started = Instant::now();
             let answer = documents
-                .completion(&overlay, &uri, position, &read, &global, &|| false)
+                .completion(&overlay, &uri, position, &read, &global, None, &|| false)
                 .unwrap()
                 .unwrap();
             times.push(started.elapsed().as_secs_f64() * 1000.0);
@@ -747,7 +775,7 @@ fn platform_methods_are_signed_from_the_global_context() {
     }];
     let text = "Процедура П()\n\tЕсли значениезаполнено( Тогда\n\tValueIsFilled(\nКонецПроцедуры\n";
     for needle in ["значениезаполнено(", "ValueIsFilled("] {
-        let help = signature_help(text, after(text, needle), &|_| None, Some(&global))
+        let help = signature_help(text, after(text, needle), &|_| None, Some(&global), None)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -767,6 +795,7 @@ fn platform_methods_are_signed_from_the_global_context() {
         after(shadowed, "\tЗначениеЗаполнено("),
         &|_| None,
         Some(&global),
+        None,
     )
     .unwrap()
     .unwrap();
@@ -775,13 +804,20 @@ fn platform_methods_are_signed_from_the_global_context() {
     // Before the help is indexed a platform call has no answer yet, not
     // "no signature"; a method of the module answers at once.
     assert_eq!(
-        signature_help(text, after(text, "значениезаполнено("), &|_| None, None),
+        signature_help(
+            text,
+            after(text, "значениезаполнено("),
+            &|_| None,
+            None,
+            None
+        ),
         Err(SourceNotReady)
     );
     assert!(signature_help(
         shadowed,
         after(shadowed, "\tЗначениеЗаполнено("),
         &|_| None,
+        None,
         None
     )
     .unwrap()
@@ -793,7 +829,8 @@ fn platform_methods_are_signed_from_the_global_context() {
             unknown,
             after(unknown, "Неизвестная("),
             &|_| None,
-            Some(&global)
+            Some(&global),
+            None
         ),
         Ok(None)
     );

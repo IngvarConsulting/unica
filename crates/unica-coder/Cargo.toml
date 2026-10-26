@@ -64,6 +64,7 @@ unica-metadata = { path = "../unica-metadata" }
 unica-source-contract = { path = "../unica-source-contract" }
 unica-source-designer = { path = "../unica-source-designer" }
 unica-bsl-parser = { path = "../unica-bsl-parser" }
+unica-bsl-types = { path = "../unica-bsl-types" }
 unica-roles = { path = "../unica-roles" }
 unica-refusal = { path = "../unica-refusal" }
 unica-execution-contract = { path = "../unica-execution-contract" }

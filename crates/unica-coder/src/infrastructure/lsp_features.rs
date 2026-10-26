@@ -4,10 +4,12 @@
 //! answers in LSP JSON: zero-based lines and UTF-16 characters.
 
 use crate::application::lsp::position::{LineIndex, Utf16Position};
+use crate::infrastructure::lsp_types::{chain_types, TypeSources, VARIABLE_DEPTH};
 use serde_json::{json, Value};
 use std::ops::Range;
 use unica_address::source_target::{metadata_collection_kind, metadata_collection_names};
 use unica_bsl_parser::{parse, EditorSymbol, EditorSymbolKind, FoldKind, TokenClass};
+use unica_bsl_types::MemberItemKind;
 use unica_documentation_sources::platform_help::provider::{
     GlobalContextMember, GlobalContextMemberKind,
 };
@@ -192,6 +194,7 @@ pub(crate) fn signature_help(
     position: Utf16Position,
     common_module: &CommonModuleText<'_>,
     global_context: Option<&[GlobalContextMember]>,
+    types: Option<&TypeSources<'_>>,
 ) -> Result<Option<Value>, SourceNotReady> {
     let lines = LineIndex::new(text);
     let Ok(offset) = lines.offset(text, position) else {
@@ -201,16 +204,33 @@ pub(crate) fn signature_help(
     let Some(call) = parsed.call_at(offset) else {
         return Ok(None);
     };
+    // A call on a receiver that is not a plain name is a member call:
+    // only the receiver's type can sign it.
+    let member_call = call.qualifier.is_none() && call.receiver.is_some();
     let method = match &call.qualifier {
+        None if member_call => None,
         None => find_method(&parsed.editor_symbols(), &call.name, false),
         Some(module) => common_module(module)
             .and_then(|text| find_method(&parse(&text).editor_symbols(), &call.name, true)),
+    };
+    let typed = || {
+        let types = types?;
+        let receiver = call.receiver.as_deref().unwrap_or_default();
+        catalog_signature(&parsed, call.name_range.start, receiver, &call.name, types)
     };
     let (label, parameters, description) = match method {
         Some(method) => {
             let (label, parameters) = signature_label(&method);
             (label, parameters, method.description)
         }
+        None if call.receiver.is_some() => match typed() {
+            Some(found) => found,
+            None => return Ok(None),
+        },
+        None if types.is_some() => match typed() {
+            Some(found) => found,
+            None => return Ok(None),
+        },
         None if call.qualifier.is_none() => {
             let Some(member) = global_method(global_context.ok_or(SourceNotReady)?, &call.name)
             else {
@@ -240,6 +260,47 @@ pub(crate) fn signature_help(
         "activeSignature": 0,
         "activeParameter": active,
     })))
+}
+
+/// The signature of `name` called on `receiver` (the global context when
+/// it is empty) as the platform catalog describes it: the label, its
+/// parameters' ranges and the return types.
+fn catalog_signature(
+    parsed: &unica_bsl_parser::ParsedModule<'_>,
+    offset: usize,
+    receiver: &[unica_bsl_parser::ChainSegment],
+    name: &str,
+    types: &TypeSources<'_>,
+) -> Option<(String, Vec<Range<u32>>, Option<String>)> {
+    let receivers = if receiver.is_empty() {
+        vec![unica_bsl_types::Ty {
+            id: types.catalog.global()?.id.clone(),
+            applied: None,
+        }]
+    } else {
+        chain_types(parsed, offset, receiver, types, VARIABLE_DEPTH)
+    };
+    receivers.iter().find_map(|ty| {
+        let method = types.catalog.type_by_id(&ty.id)?.method(name)?;
+        let signature = method.variants.first()?;
+        let mut label = format!("{}(", method.ru);
+        let mut ranges = Vec::new();
+        for (index, param) in signature.params.iter().enumerate() {
+            if index > 0 {
+                label.push_str(", ");
+            }
+            let start = label.encode_utf16().count() as u32;
+            label.push_str(&param.ru);
+            ranges.push(start..label.encode_utf16().count() as u32);
+        }
+        label.push(')');
+        let returns = types.catalog.type_names(&signature.returns);
+        Some((
+            label,
+            ranges,
+            (!returns.is_empty()).then(|| format!("Возвращает: {returns}")),
+        ))
+    })
 }
 
 /// A global context method by its Russian or English name, in any case.
@@ -351,6 +412,11 @@ pub(crate) trait CompletionSources {
     fn module_owner(&self) -> Option<ModuleOwner>;
     /// A newer edit made the answer stale: stop and answer nothing.
     fn cancelled(&self) -> bool;
+    /// The platform catalog and the configuration's applied types, when the
+    /// catalog of the workspace's installation is loaded.
+    fn types(&self) -> Option<TypeSources<'_>> {
+        None
+    }
 }
 
 /// Kinds whose managers are global context properties (`Справочники`).
@@ -456,7 +522,10 @@ pub(crate) fn completion(
     };
     match &site.receiver {
         None => names_in_scope(&parsed, offset, sources, &mut items),
-        Some(path) => members_of(&parsed, offset, path, sources, &mut items),
+        Some(path) => {
+            let chain = site.chain.as_deref().unwrap_or_default();
+            members_of(&parsed, offset, path, chain, sources, &mut items)
+        }
     }
     if sources.cancelled() {
         return None;
@@ -552,9 +621,29 @@ fn members_of(
     parsed: &unica_bsl_parser::ParsedModule<'_>,
     offset: usize,
     path: &[String],
+    chain: &[unica_bsl_parser::ChainSegment],
     sources: &dyn CompletionSources,
     items: &mut Items,
 ) {
+    // A receiver whose type the catalog knows offers that type's members.
+    if let Some(types) = sources.types() {
+        let receivers = chain_types(parsed, offset, chain, &types, VARIABLE_DEPTH);
+        if !receivers.is_empty() {
+            for receiver in &receivers {
+                for member in types.catalog.completion_members(receiver, types.applied) {
+                    let kind = match member.kind {
+                        MemberItemKind::Method => ITEM_METHOD,
+                        MemberItemKind::Property => ITEM_PROPERTY,
+                        MemberItemKind::AppliedObject => ITEM_CLASS,
+                        MemberItemKind::Attribute => ITEM_FIELD,
+                        MemberItemKind::TabularSection => ITEM_STRUCT,
+                    };
+                    items.push(&member.name, kind, 0, member.detail, None);
+                }
+            }
+            return;
+        }
+    }
     match path {
         [] => {}
         [single] => {
@@ -696,6 +785,22 @@ fn object_items(members: &ObjectMembers, rank: u8, items: &mut Items) {
 
 fn manager_kind(name: &str) -> Option<&'static str> {
     metadata_collection_kind(name).filter(|kind| MANAGER_KINDS.contains(kind))
+}
+
+/// The exported methods of a module text and their parameter names.
+pub(crate) fn exported_methods(text: &str) -> Vec<(String, Vec<String>)> {
+    methods(&parse(text).editor_symbols())
+        .into_iter()
+        .filter(|method| method.is_export)
+        .map(|method| {
+            let params = method
+                .parameters
+                .into_iter()
+                .map(|param| param.name)
+                .collect();
+            (method.name, params)
+        })
+        .collect()
 }
 
 /// Every method of a symbol tree, regions flattened.

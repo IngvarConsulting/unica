@@ -1461,9 +1461,10 @@ impl DaemonServerConfig {
             ),
         );
         let workspace_actors = Arc::new(crate::infrastructure::source_workspace::actor_registry());
-        let lsp_host = Arc::new(super::lsp_host::UnicaLspHost::new(Arc::clone(
-            &workspace_actors,
-        )));
+        let lsp_host = Arc::new(
+            super::lsp_host::UnicaLspHost::new(Arc::clone(&workspace_actors))
+                .with_catalog_root(state_root.clone()),
+        );
         Self {
             state_root,
             core_identity,

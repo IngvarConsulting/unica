@@ -71,9 +71,9 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
     let initialized = editor.initialize();
     let capabilities = &initialized["result"]["capabilities"];
     assert_eq!(capabilities["positionEncoding"], "utf-16");
-    assert!(
-        capabilities.get("hoverProvider").is_none(),
-        "hover is not served yet, so it is not declared"
+    assert_eq!(
+        capabilities["hoverProvider"], true,
+        "hover answers types from the platform catalog"
     );
     assert_eq!(
         capabilities["experimental"]["unica"]["workspaces"],
@@ -85,8 +85,9 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
         error_code(&editor.request("initialize", json!({}))),
         INVALID_REQUEST
     );
+    // A file path names no document.
     let hover = editor.request("textDocument/hover", hover_params("file:///a.bsl"));
-    assert_eq!(error_code(&hover), METHOD_NOT_FOUND);
+    assert_eq!(error_code(&hover), REQUEST_FAILED);
     assert_eq!(
         error_code(&editor.request("textDocument/definition", json!({}))),
         METHOD_NOT_FOUND

@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::{Duration, Instant};
+use unica_bsl_types::PlatformCatalog;
 use unica_daemon::lsp_lane::{LspCallContext, LspClientChannel, LspHost};
 use unica_daemon::protocol_v5::lsp::{
     V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspNotification,
@@ -72,6 +73,15 @@ impl UnicaLspHost {
             platform: Arc::new(PlatformContexts::default()),
             sessions: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Keeps the platform catalogs under the user's state root.
+    pub(crate) fn with_catalog_root(mut self, state_root: PathBuf) -> Self {
+        self.platform = Arc::new(PlatformContexts {
+            catalog_root: Some(state_root),
+            ..PlatformContexts::default()
+        });
+        self
     }
 
     fn session(&self, session: &V5LspSessionId) -> Result<Arc<RwLock<Session>>, V5LspFailure> {
@@ -145,7 +155,9 @@ impl LspHost for UnicaLspHost {
         Ok(V5LspOpening {
             capabilities: V5LspCapabilities {
                 text_document_sync: V5LspTextSync::Incremental,
-                hover: false,
+                // Types from the platform catalog; a name whose type is
+                // unknown answers no hover.
+                hover: true,
                 text_document_content: true,
                 document_symbols: true,
                 folding_ranges: true,
@@ -276,6 +288,9 @@ impl LspHost for UnicaLspHost {
 #[derive(Default)]
 struct PlatformContexts {
     loaded: Mutex<HashMap<PathBuf, PlatformContext>>,
+    /// The user's state root, where the platform catalog of an
+    /// installation is kept for every workspace (#2238).
+    catalog_root: Option<PathBuf>,
 }
 
 /// How long a failed load of a platform's global context waits before the
@@ -285,7 +300,7 @@ const PLATFORM_CONTEXT_RETRY_DELAY: Duration = Duration::from_secs(60);
 #[derive(Clone)]
 enum PlatformContext {
     Loading,
-    Ready(Arc<[GlobalContextMember]>),
+    Ready(Arc<[GlobalContextMember]>, Option<Arc<PlatformCatalog>>),
     Unavailable(Instant),
 }
 
@@ -295,7 +310,7 @@ impl PlatformContexts {
     fn members(self: &Arc<Self>, root: &std::path::Path) -> Option<Arc<[GlobalContextMember]>> {
         let mut loaded = lock(&self.loaded);
         match loaded.get(root) {
-            Some(PlatformContext::Ready(members)) => return Some(Arc::clone(members)),
+            Some(PlatformContext::Ready(members, _)) => return Some(Arc::clone(members)),
             Some(PlatformContext::Loading) => return None,
             Some(PlatformContext::Unavailable(at))
                 if at.elapsed() < PLATFORM_CONTEXT_RETRY_DELAY =>
@@ -307,6 +322,7 @@ impl PlatformContexts {
         loaded.insert(root.to_path_buf(), PlatformContext::Loading);
         drop(loaded);
         let (contexts, owned) = (Arc::clone(self), root.to_path_buf());
+        let catalog_root = self.catalog_root.clone();
         let spawned = std::thread::Builder::new()
             .name("unica-lsp-global-context".into())
             .spawn(move || {
@@ -317,15 +333,35 @@ impl PlatformContexts {
                         &owned,
                     )
                 });
+                // The catalog of the installation: from the user's cache, or
+                // built from its help once and cached for every workspace.
+                let catalog = catalog_root.and_then(|state| {
+                    let platform = owned.file_name()?.to_string_lossy().into_owned();
+                    let containers = unica_bsl_types::Containers::of_installation(&owned);
+                    std::panic::catch_unwind(|| {
+                        unica_bsl_types::load_or_build(&platform, &containers, &state)
+                    })
+                    .ok()?
+                    .map_err(|error| {
+                        eprintln!("unica lsp: platform catalog is unavailable: {error}")
+                    })
+                    .ok()
+                    .map(Arc::new)
+                });
                 let context = match loaded {
-                    Ok(Ok(members)) => PlatformContext::Ready(Arc::from(members)),
+                    Ok(Ok(members)) => PlatformContext::Ready(Arc::from(members), catalog),
                     Ok(Err(error)) => {
                         eprintln!("unica lsp: platform global context is unavailable: {error}");
                         PlatformContext::Unavailable(Instant::now())
                     }
                     Err(_) => PlatformContext::Unavailable(Instant::now()),
                 };
-                lock(&contexts.loaded).insert(owned, context);
+                // A context made ready meanwhile is not replaced by a
+                // later failure.
+                let mut loaded = lock(&contexts.loaded);
+                if matches!(loaded.get(&owned), Some(PlatformContext::Loading) | None) {
+                    loaded.insert(owned, context);
+                }
             });
         if spawned.is_err() {
             lock(&self.loaded).remove(root);
@@ -333,9 +369,18 @@ impl PlatformContexts {
         None
     }
 
+    /// The catalog of `root` once loaded; asking starts the load.
+    fn catalog(self: &Arc<Self>, root: &std::path::Path) -> Option<Arc<PlatformCatalog>> {
+        self.members(root)?;
+        match lock(&self.loaded).get(root) {
+            Some(PlatformContext::Ready(_, catalog)) => catalog.clone(),
+            _ => None,
+        }
+    }
+
     #[cfg(test)]
     fn ready_for_test(&self, root: PathBuf, members: Vec<GlobalContextMember>) {
-        lock(&self.loaded).insert(root, PlatformContext::Ready(Arc::from(members)));
+        lock(&self.loaded).insert(root, PlatformContext::Ready(Arc::from(members), None));
     }
 }
 
@@ -496,7 +541,17 @@ fn answer(
             };
             let help = session
                 .documents
-                .signature_help(&uri, position, &read, members.as_deref())
+                .signature_help(
+                    &uri,
+                    position,
+                    &read,
+                    members.as_deref(),
+                    space
+                        .platform_root
+                        .as_ref()
+                        .and_then(|root| platform.catalog(root))
+                        .as_deref(),
+                )
                 .map_err(document_failure)?;
             Ok(json(help.unwrap_or(serde_json::Value::Null)))
         }
@@ -524,6 +579,11 @@ fn answer(
                     },
                     &read,
                     members.as_deref().unwrap_or_default(),
+                    space
+                        .platform_root
+                        .as_ref()
+                        .and_then(|root| platform.catalog(root))
+                        .as_deref(),
                     &|| context.is_cancelled(),
                 )
                 .map_err(document_failure)?;
@@ -550,7 +610,26 @@ fn answer(
                 .map(json)
                 .map_err(document_failure)
         }
-        V5LspCall::Hover { .. } => Err(V5LspFailure::NotSupported),
+        V5LspCall::Hover { uri, position } => {
+            let (uri, space, read) = document_space(session, &uri)?;
+            let catalog = space
+                .platform_root
+                .as_ref()
+                .and_then(|root| platform.catalog(root));
+            let hover = session
+                .documents
+                .hover(
+                    &uri,
+                    Utf16Position {
+                        line: position.line,
+                        character: position.character,
+                    },
+                    &read,
+                    catalog.as_deref(),
+                )
+                .map_err(document_failure)?;
+            Ok(json(hover.unwrap_or(serde_json::Value::Null)))
+        }
     }
 }
 
@@ -629,8 +708,12 @@ fn admit(
     deadline: Instant,
 ) -> Option<AdmittedSpace> {
     let (mut space, _, context) = admit_actor(actors, folder, deadline)?;
-    space.platform_root =
-        crate::infrastructure::application_ports::platform_installation_root(&context);
+    // The runner's choice (by the project's version or its sources'
+    // format) first; the settings when the runner cannot answer.
+    space.platform_root = crate::infrastructure::application_ports::runner_installation_root(
+        &context,
+    )
+    .or_else(|| crate::infrastructure::application_ports::platform_installation_root(&context));
     Some(space)
 }
 

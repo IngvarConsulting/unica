@@ -169,6 +169,15 @@ fn a_chain_keeps_its_applied_object_through_template_types() {
             applied: Some("Валюты".into())
         }]
     );
+    // A manager's own placeholder (predefined items) is not the list of
+    // other catalogs.
+    assert!(catalog
+        .member_types(&manager[0], "Номенклатура", false, &Configuration)
+        .is_empty());
+    assert!(catalog
+        .completion_members(&manager[0], &Configuration)
+        .iter()
+        .all(|item| item.kind != MemberItemKind::AppliedObject));
     // An object the configuration does not have is not a type.
     assert!(catalog
         .member_types(&managers[0], "Нет", false, &Configuration)

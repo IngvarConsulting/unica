@@ -6751,6 +6751,55 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "lsp.runner-platforms-timeout",
+      "class": "deadline",
+      "resource": "Сколько служба LSP ждёт ответа `v8-runner --json-message platforms` о выбранной установке при допуске рабочей папки.",
+      "unit": "ms",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/application_ports.rs",
+        "symbol": "RUNNER_PLATFORMS_TIMEOUT"
+      },
+      "expr": "std::time::Duration::from_secs(5)",
+      "value": 5000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/application_ports.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2238",
+      "problem": null,
+      "onReach": "процесс раннера прерывается, установка выбирается по настройкам рабочей области",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.type-variable-depth",
+      "class": "format",
+      "resource": "Сколько присваиваний и циклов проходит вывод типа переменной, прежде чем остановиться.",
+      "unit": "depth",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_types.rs",
+        "symbol": "VARIABLE_DEPTH"
+      },
+      "expr": "6",
+      "value": 6,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_features.rs",
+        "crates/unica-coder/src/infrastructure/lsp_types.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2238",
+      "problem": "тип переменной, выведенный через более длинную цепочку присваиваний, остаётся неизвестным",
+      "onReach": "неполный ответ, а не отказ: completion и hover отвечают без членов этого типа (политика #1312)",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [

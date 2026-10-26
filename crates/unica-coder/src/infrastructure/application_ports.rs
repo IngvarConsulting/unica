@@ -1338,6 +1338,57 @@ pub(crate) fn platform_installation_root(
     .installation_root
 }
 
+/// How long the runner's `platforms` answer may take before the
+/// workspace settings decide the installation instead.
+const RUNNER_PLATFORMS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The installation the runner would run the workspace on, as
+/// `v8-runner --json-message platforms` reports it (#2202): the designer's
+/// `installation_root`, chosen by the project's version or the format of
+/// its sources. `None` when the runner is absent, predates the command or
+/// does not answer in time; the caller then falls back to the settings.
+pub(crate) fn runner_installation_root(workspace: &WorkspaceContext) -> Option<std::path::PathBuf> {
+    use std::io::Read;
+    let plugin_root = super::plugin_runtime::find_plugin_root(&workspace.cwd)?;
+    let tool = super::bundled_tools::resolve_bundled_tool(&plugin_root, "v8-runner", true).ok()?;
+    let mut child = std::process::Command::new(&tool.program)
+        .args(["--json-message", "platforms"])
+        .current_dir(&workspace.workspace_root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + RUNNER_PLATFORMS_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut output = String::new();
+    child.stdout.take()?.read_to_string(&mut output).ok()?;
+    installation_root_of_platforms(&output)
+}
+
+/// `selected.designer.installation_root` of a `platforms` answer, under its
+/// `data` envelope or bare.
+fn installation_root_of_platforms(output: &str) -> Option<std::path::PathBuf> {
+    let value: serde_json::Value = serde_json::from_str(output.trim()).ok()?;
+    let data = value.get("data").unwrap_or(&value);
+    data.pointer("/selected/designer/installation_root")?
+        .as_str()
+        .filter(|root| !root.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 /// Pure root pick, split out of `documentation_context`'s resolution so it can
 /// be tested without the hard-coded platform roots. Roots are tried in the
 /// declared order and the first one that answers closes the walk.
@@ -1471,6 +1522,31 @@ fn code_intelligence_context(
         &workspace.workspace_root,
     ));
     CodeIntelligenceContext::new(workspace, source_root, reader)
+}
+
+#[cfg(test)]
+mod platforms_answer_tests {
+    use super::installation_root_of_platforms;
+
+    #[test]
+    fn the_runner_chooses_the_designer_installation() {
+        let answer = r#"{"ok":true,"data":{"selected":{"designer":{"path":"/opt/1cv8/8.3.27.2074/1cv8","version":"8.3.27.2074","installation_root":"/opt/1cv8/8.3.27.2074","chosen_by":"source_format"},"thin_client":null}}}"#;
+        assert_eq!(
+            installation_root_of_platforms(answer),
+            Some(std::path::PathBuf::from("/opt/1cv8/8.3.27.2074"))
+        );
+        let bare = r#"{"selected":{"designer":{"installation_root":"/opt/x"}}}"#;
+        assert_eq!(installation_root_of_platforms(bare), Some("/opt/x".into()));
+        // No designer, an older runner's refusal, not JSON: the settings decide.
+        assert_eq!(
+            installation_root_of_platforms(r#"{"data":{"selected":{"designer":null}}}"#),
+            None
+        );
+        assert_eq!(
+            installation_root_of_platforms("error: unknown command"),
+            None
+        );
+    }
 }
 
 #[cfg(test)]
