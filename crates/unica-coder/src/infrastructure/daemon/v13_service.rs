@@ -681,8 +681,8 @@ impl CanonicalV13ReadService {
             }
             Ok(address) => match address.operation_query() {
                 Some((owner, Some(op))) => {
-                    // A contract is one node: like any single node it accepts
-                    // a page size it does not need, but it has no continuation.
+                    // A contract is one node: like a source node it accepts a
+                    // page size it does not need, but it has no continuation.
                     if arguments.contains_key("cursor") {
                         return error_result(
                             Some(at.to_string()),
