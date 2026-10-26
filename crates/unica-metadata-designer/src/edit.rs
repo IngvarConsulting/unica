@@ -592,10 +592,12 @@ const TYPED_COMMAND_STORAGE_PROFILE: TypedChildStorageProfile = TypedChildStorag
 /// template always carries a synonym.
 pub fn typed_operations_write_multilingual_text(operations: &[MetaEditOperation]) -> bool {
     operations.iter().any(|operation| match operation {
-        MetaEditOperation::SetProperties { values } => values
-            .entries()
-            .iter()
-            .any(|(key, _)| *key == MetaPropertyKey::Synonym),
+        // Every language of a full multilingual value is named by the caller.
+        MetaEditOperation::SetProperties { values } => {
+            values.entries().iter().any(|(key, value)| {
+                *key == MetaPropertyKey::Synonym && matches!(value, MetaPropertyValue::String(_))
+            })
+        }
         MetaEditOperation::Add { .. } => true,
         MetaEditOperation::Update { elements, .. } => {
             elements.iter().any(|element| element.synonym.is_some())
@@ -1421,6 +1423,25 @@ pub fn apply_typed_properties(
                     lang,
                     value,
                 )
+            }
+            (MetaPropertyKey::Synonym, MetaPropertyValue::Localized(items)) => {
+                let values = items
+                    .iter()
+                    .map(|item| (item.language.clone(), item.content.clone()))
+                    .collect::<Vec<_>>();
+                unica_xml_format::localized::replace_language_values(
+                    parsed_body,
+                    property,
+                    &indent,
+                    &values,
+                )
+            }
+            (_, MetaPropertyValue::Localized(_)) => {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    format!("property `{tag}` takes a single text value"),
+                    Some("values"),
+                ))
             }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}<{tag}/>")

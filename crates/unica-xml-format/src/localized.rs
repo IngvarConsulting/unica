@@ -149,3 +149,112 @@ pub fn replace_language_value(
     }
     updated
 }
+
+/// The replacement of a multilingual `property` of `source` that holds exactly
+/// `values` (language, text): items of other languages are removed, items of
+/// listed languages are set and new ones appended in the given order. Items
+/// whose language and text stay keep their bytes; an empty `values` empties
+/// the property. Languages must be distinct and non-empty.
+pub fn replace_language_values(
+    source: &str,
+    property: roxmltree::Node<'_, '_>,
+    indent: &str,
+    values: &[(String, String)],
+) -> String {
+    let start = property.range().start;
+    let existing_languages = property
+        .children()
+        .filter(|child| {
+            child.is_element()
+                && child.tag_name().namespace() == Some(DATA_CORE_NS)
+                && child.tag_name().name() == "item"
+        })
+        .filter_map(|item| {
+            item.children()
+                .find(|child| {
+                    child.is_element()
+                        && child.tag_name().namespace() == Some(DATA_CORE_NS)
+                        && child.tag_name().name() == "lang"
+                })
+                .map(|lang| crate::read::direct_text(lang).trim().to_string())
+        })
+        .collect::<Vec<_>>();
+    let steps = existing_languages
+        .iter()
+        .filter(|language| !values.iter().any(|(listed, _)| listed == *language))
+        .map(|language| (language.clone(), String::new()))
+        .chain(values.iter().cloned())
+        .collect::<Vec<_>>();
+    let mut current = source.to_string();
+    let mut end = property.range().end;
+    for (language, text) in &steps {
+        let document = match roxmltree::Document::parse(&current) {
+            Ok(document) => document,
+            Err(_) => break,
+        };
+        let Some(node) = document
+            .descendants()
+            .find(|node| node.is_element() && node.range().start == start)
+        else {
+            break;
+        };
+        let replacement = replace_language_value(&current, node, indent, language, text);
+        let range = node.range();
+        end = range.start + replacement.len();
+        drop(document);
+        current.replace_range(range, &replacement);
+    }
+    current[start..end].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_language_values;
+
+    fn replaced(source: &str, values: &[(&str, &str)]) -> String {
+        let document = roxmltree::Document::parse(source).unwrap();
+        let property = document
+            .descendants()
+            .find(|node| node.has_tag_name("Synonym"))
+            .unwrap();
+        let values = values
+            .iter()
+            .map(|(language, text)| (language.to_string(), text.to_string()))
+            .collect::<Vec<_>>();
+        let replacement = replace_language_values(source, property, "\t\t\t", &values);
+        let mut updated = source.to_string();
+        updated.replace_range(property.range(), &replacement);
+        updated
+    }
+
+    const SOURCE: &str = "<P xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">\r\n\t\t\t<Synonym>\r\n\t\t\t\t<v8:item>\r\n\t\t\t\t\t<v8:lang>ru</v8:lang>\r\n\t\t\t\t\t<v8:content>Товары</v8:content>\r\n\t\t\t\t</v8:item>\r\n\t\t\t\t<v8:item>\r\n\t\t\t\t\t<v8:lang>en</v8:lang>\r\n\t\t\t\t\t<v8:content>Goods</v8:content>\r\n\t\t\t\t</v8:item>\r\n\t\t\t</Synonym>\r\n</P>";
+
+    #[test]
+    fn the_same_values_keep_every_byte() {
+        assert_eq!(
+            replaced(SOURCE, &[("ru", "Товары"), ("en", "Goods")]),
+            SOURCE
+        );
+    }
+
+    #[test]
+    fn listed_languages_are_set_unlisted_removed_and_new_appended() {
+        assert_eq!(
+            replaced(SOURCE, &[("en", "Items"), ("kk", "Тауарлар")]),
+            "<P xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">\r\n\t\t\t<Synonym>\r\n\t\t\t\t<v8:item>\r\n\t\t\t\t\t<v8:lang>en</v8:lang>\r\n\t\t\t\t\t<v8:content>Items</v8:content>\r\n\t\t\t\t</v8:item>\r\n\t\t\t\t<v8:item>\r\n\t\t\t\t\t<v8:lang>kk</v8:lang>\r\n\t\t\t\t\t<v8:content>Тауарлар</v8:content>\r\n\t\t\t\t</v8:item>\r\n\t\t\t</Synonym>\r\n</P>"
+        );
+        assert_eq!(
+            replaced(SOURCE, &[]),
+            "<P xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">\r\n\t\t\t<Synonym/>\r\n</P>"
+        );
+    }
+
+    #[test]
+    fn an_empty_property_takes_all_listed_languages() {
+        let source = "<P xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">\n\t\t\t<Synonym/>\n</P>";
+        assert_eq!(
+            replaced(source, &[("ru", "А"), ("en", "B")]),
+            "<P xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">\n\t\t\t<Synonym>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>ru</v8:lang>\n\t\t\t\t\t<v8:content>А</v8:content>\n\t\t\t\t</v8:item>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>en</v8:lang>\n\t\t\t\t\t<v8:content>B</v8:content>\n\t\t\t\t</v8:item>\n\t\t\t</Synonym>\n</P>"
+        );
+    }
+}

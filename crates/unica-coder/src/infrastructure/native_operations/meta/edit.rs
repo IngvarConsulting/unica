@@ -974,6 +974,113 @@ pub(crate) mod tests {
         .is_err());
     }
 
+    /// #2163: `props.set` takes the synonym as every language
+    /// `[{language, content}]`; the element then holds exactly those
+    /// languages, while plain text still sets only the project language.
+    #[test]
+    fn synonym_takes_every_language_or_the_project_text() {
+        use unica_metadata::MetadataKind::Catalog;
+        let (mut xml, _) =
+            unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
+                Catalog, "Evidence",
+            )
+            .unwrap();
+        let set = |xml: &mut String, value: serde_json::Value| {
+            let changes = unica_metadata::request::parse_property_changes(
+                serde_json::json!({ "Synonym": value }).as_object().unwrap(),
+                Catalog,
+            )
+            .unwrap();
+            apply_typed_operations(xml, &[MetaEditOperation::SetProperties { values: changes }])
+                .unwrap();
+        };
+        let synonym = |xml: &str| {
+            let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+            let properties = document
+                .descendants()
+                .find(|node| node.has_tag_name("Properties"))
+                .unwrap();
+            let synonym = properties
+                .children()
+                .find(|node| node.has_tag_name("Synonym"))
+                .unwrap();
+            synonym
+                .descendants()
+                .filter(|node| node.tag_name().name() == "item")
+                .map(|item| {
+                    let text = |name: &str| {
+                        item.children()
+                            .find(|node| node.tag_name().name() == name)
+                            .and_then(|node| node.text())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    (text("lang"), text("content"))
+                })
+                .collect::<Vec<_>>()
+        };
+        set(
+            &mut xml,
+            serde_json::json!([{"language":"ru","content":"Товары"},{"language":"en","content":"Goods"}]),
+        );
+        assert_eq!(
+            synonym(&xml),
+            [
+                ("ru".into(), "Товары".into()),
+                ("en".into(), "Goods".into())
+            ]
+        );
+        let before = xml.clone();
+        set(
+            &mut xml,
+            serde_json::json!([{"language":"ru","content":"Товары"},{"language":"en","content":"Goods"}]),
+        );
+        assert_eq!(xml, before, "the value read back is written without change");
+        set(&mut xml, serde_json::json!("Номенклатура"));
+        assert_eq!(
+            synonym(&xml),
+            [
+                ("ru".into(), "Номенклатура".into()),
+                ("en".into(), "Goods".into())
+            ]
+        );
+        set(
+            &mut xml,
+            serde_json::json!([{"language":"en","content":"Items"}]),
+        );
+        assert_eq!(synonym(&xml), [("en".into(), "Items".into())]);
+        for (value, path) in [
+            (
+                serde_json::json!([{"language":"ru","content":"А"},{"language":"ru","content":"Б"}]),
+                "values.Synonym[1].language",
+            ),
+            (
+                serde_json::json!([{"language":"","content":"А"}]),
+                "values.Synonym[0].language",
+            ),
+            (
+                serde_json::json!([{"language":"ru"}]),
+                "values.Synonym[0].content",
+            ),
+            (serde_json::json!(1), "values.Synonym"),
+        ] {
+            let error = unica_metadata::request::parse_property_changes(
+                serde_json::json!({ "Synonym": value }).as_object().unwrap(),
+                Catalog,
+            )
+            .unwrap_err();
+            assert_eq!(error.field.as_deref(), Some(path), "{value}");
+        }
+        let comment = unica_metadata::request::parse_property_changes(
+            serde_json::json!({"Comment":[{"language":"ru","content":"А"}]})
+                .as_object()
+                .unwrap(),
+            Catalog,
+        )
+        .unwrap_err();
+        assert_eq!(comment.field.as_deref(), Some("values.Comment"));
+    }
+
     #[test]
     fn typed_set_properties_and_relations_apply_without_legacy_dsl() {
         let mut xml = object_xml(
@@ -1443,7 +1550,9 @@ pub(crate) mod tests {
                 });
 
                 let expected_xml = match value {
-                    MetaPropertyValue::Type(_) => unreachable!("scalar property test matrix"),
+                    MetaPropertyValue::Type(_) | MetaPropertyValue::Localized(_) => {
+                        unreachable!("scalar property test matrix")
+                    }
                     MetaPropertyValue::String(value) => {
                         format!(
                             "<{xml_tag}>{}</{xml_tag}>",

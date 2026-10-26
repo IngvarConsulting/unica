@@ -216,6 +216,9 @@ impl PropertiesSite {
             Self::Role | Self::Subsystem | Self::Configuration { .. } => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
+                        DescriptorPropertyKind::String if field.localized() => {
+                            crate::localized_value_schema()
+                        }
                         DescriptorPropertyKind::String => json!({"type":"string"}),
                         DescriptorPropertyKind::Boolean => json!({"type":"boolean"}),
                         DescriptorPropertyKind::Enum => {

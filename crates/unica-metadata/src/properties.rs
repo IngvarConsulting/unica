@@ -86,15 +86,96 @@ pub enum MetaPropertyValueKind {
 pub enum MetaPropertyValue {
     Type(MetadataType),
     String(String),
+    /// Every language of a multilingual property, as `view` reads it at
+    /// `<node>.Props.<name>` (#2163).
+    Localized(Vec<LocalizedItem>),
     Boolean(bool),
     UnsignedInteger(u32),
+}
+
+/// One language of a multilingual value: `{"language", "content"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalizedItem {
+    pub language: String,
+    pub content: String,
+}
+
+/// The JSON Schema of a multilingual property: the project-language text or
+/// every language as `[{"language", "content"}]`.
+pub fn localized_value_schema() -> serde_json::Value {
+    serde_json::json!({"oneOf": [
+        {"type": "string", "description": "Text in the project language; other languages stay."},
+        {"type": "array", "description": "Every language of the value, as read at <node>.Props.<name>; languages not listed are removed.",
+         "items": {"type": "object", "additionalProperties": false,
+            "required": ["language", "content"],
+            "properties": {
+                "language": {"type": "string", "pattern": "\\S"},
+                "content": {"type": "string"}
+            }}}
+    ]})
+}
+
+/// The `[{"language", "content"}]` form of a multilingual value: distinct,
+/// non-empty languages and text contents. An error names the path below the
+/// value and the reason.
+pub fn parse_localized_items(
+    value: &serde_json::Value,
+) -> Result<Vec<LocalizedItem>, (String, String)> {
+    let items = value.as_array().ok_or_else(|| {
+        (
+            String::new(),
+            "a multilingual value is a string or [{language, content}]".to_string(),
+        )
+    })?;
+    let mut parsed: Vec<LocalizedItem> = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let object = item
+            .as_object()
+            .filter(|object| {
+                object
+                    .keys()
+                    .all(|key| key == "language" || key == "content")
+            })
+            .ok_or_else(|| {
+                (
+                    format!("[{index}]"),
+                    "must be {language, content}".to_string(),
+                )
+            })?;
+        let language = object
+            .get("language")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|language| !language.is_empty())
+            .ok_or_else(|| {
+                (
+                    format!("[{index}].language"),
+                    "must be a language code".to_string(),
+                )
+            })?;
+        let content = object
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| (format!("[{index}].content"), "must be a string".to_string()))?;
+        if parsed.iter().any(|item| item.language == language) {
+            return Err((
+                format!("[{index}].language"),
+                format!("language `{language}` is listed twice"),
+            ));
+        }
+        parsed.push(LocalizedItem {
+            language: language.to_string(),
+            content: content.to_string(),
+        });
+    }
+    Ok(parsed)
 }
 
 impl MetaPropertyValue {
     fn kind(&self) -> MetaPropertyValueKind {
         match self {
             Self::Type(_) => MetaPropertyValueKind::Type,
-            Self::String(_) => MetaPropertyValueKind::String,
+            Self::String(_) | Self::Localized(_) => MetaPropertyValueKind::String,
             Self::Boolean(_) => MetaPropertyValueKind::Boolean,
             Self::UnsignedInteger(_) => MetaPropertyValueKind::UnsignedInteger,
         }

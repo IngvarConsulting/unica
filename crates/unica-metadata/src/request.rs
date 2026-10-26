@@ -714,6 +714,16 @@ pub fn parse_property_changes(
             MetaPropertyValueKind::Type => {
                 MetaPropertyValue::Type(parse_metadata_type(value, &field)?)
             }
+            MetaPropertyValueKind::String if spec.key == crate::MetaPropertyKey::Synonym => {
+                match value {
+                    Value::String(value) => MetaPropertyValue::String(value.clone()),
+                    _ => MetaPropertyValue::Localized(
+                        crate::properties::parse_localized_items(value).map_err(
+                            |(suffix, message)| invalid(format!("{field}{suffix}"), message),
+                        )?,
+                    ),
+                }
+            }
             MetaPropertyValueKind::String => value
                 .as_str()
                 .map(|value| MetaPropertyValue::String(value.to_string()))
