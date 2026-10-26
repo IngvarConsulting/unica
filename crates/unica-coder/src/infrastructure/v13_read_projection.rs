@@ -17,6 +17,8 @@ use role::project_role;
 
 const MAX_PROJECTED_BRANCHES: usize = 256;
 const MAX_COMPACT_PROP_BYTES: usize = 2_048;
+// Заголовок узла ограничен тем же пределом, что и компактное свойство.
+const _: () = assert!(MAX_COMPACT_PROP_BYTES == crate::domain::node_view::MAX_TITLE_BYTES);
 
 pub(super) fn project_typed_payload(
     route: &LogicalTreeRoute,
