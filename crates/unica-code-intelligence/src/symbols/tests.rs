@@ -76,6 +76,7 @@ impl SymbolProvider for StubProvider {
                     range: range(0, 0, 1),
                 },
             ],
+            complete: true,
         }))
     }
 
@@ -297,6 +298,53 @@ fn a_saved_module_asks_by_position_and_an_edited_one_by_saved_declaration_or_nam
             path: MODULE_PATH.to_string(),
             position: position_of(TEXT, "Ф(А)", 0),
         }
+    );
+}
+
+#[test]
+fn an_edited_buffer_asks_unica_resolved_names_by_name_and_marks_new_ones_stale() {
+    let environment = Environment;
+    let provider = StubProvider::default();
+    let service = SymbolService::new(Some(&provider), &environment);
+    let edited = format!("{TEXT}\nПроцедура Новая()\n\tНовая();\nКонецПроцедуры\n");
+    with_context(|context| {
+        let common = service.references(
+            &document(&edited, TEXT),
+            position_of(&edited, "Сделать(Ссылка)", 2),
+            context,
+        );
+        assert!(!common.complete);
+        assert!(common.reasons.contains(&Incompleteness::Stale));
+        assert!(!common.value.is_empty(), "{common:?}");
+
+        let catalog = service.references(
+            &document(&edited, TEXT),
+            position_of(&edited, "Валюты.ПустаяСсылка", 1),
+            context,
+        );
+        assert!(catalog.reasons.contains(&Incompleteness::Stale));
+
+        // The saved text has never seen this method: the buffer alone answers.
+        let new = service.references(
+            &document(&edited, TEXT),
+            position_of(&edited, "Новая();", 0),
+            context,
+        );
+        assert_eq!(new.value.len(), 2);
+        assert_eq!(new.reasons, [Incompleteness::Stale]);
+    });
+    assert_eq!(
+        *provider.queries.lock().unwrap(),
+        [
+            SymbolQuery::Named {
+                name: "Общий.Сделать".to_string(),
+                path: MODULE_PATH.to_string(),
+            },
+            SymbolQuery::Named {
+                name: "Справочники.Валюты".to_string(),
+                path: MODULE_PATH.to_string(),
+            },
+        ]
     );
 }
 

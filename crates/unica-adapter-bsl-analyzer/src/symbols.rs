@@ -69,24 +69,30 @@ impl<'a> BslAnalyzerSymbols<'a> {
     }
 
     /// The analyzer's `symbol_info` for a query: the symbol at a position, or
-    /// the exact candidate of a name.
+    /// the exact candidate of a name, and whether its answer was fresh.
     fn symbol_info(
         &self,
         query: &SymbolQuery,
         context: &SymbolRequestContext<'_>,
-    ) -> Result<Option<Value>, ProviderFailure> {
+    ) -> Result<Option<(Value, bool)>, ProviderFailure> {
         let answer = self.call("symbol_info", anchor(query), context)?;
+        let fresh = is_fresh(&answer);
         if answer.get("status").and_then(Value::as_str) == Some("ok") {
-            return Ok(Some(answer));
-        }
-        if answer.get("index_building") == Some(&Value::Bool(true)) {
-            return Err(ProviderFailure::NotReady);
+            return Ok(Some((answer, fresh)));
         }
         match query {
             SymbolQuery::At { .. } => Ok(None),
-            SymbolQuery::Named { name, path } => Ok(named_candidate(&answer, name, path).cloned()),
+            SymbolQuery::Named { name, path } => Ok(named_candidate(&answer, name, path)
+                .cloned()
+                .map(|candidate| (candidate, fresh))),
         }
     }
+}
+
+/// Whether an answer reports its index current and its lookup whole.
+fn is_fresh(answer: &Value) -> bool {
+    let freshness = &answer["freshness"];
+    freshness["stale"] == false && freshness["completeness"]["status"] == "complete"
 }
 
 /// The candidate a name stands for. A bare name is the method of the module
@@ -189,8 +195,9 @@ fn graph_id(info: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-/// A `symbol_info` answer, or an exact name candidate, as a provider symbol.
-pub fn parse_symbol(info: &Value) -> Option<ProviderSymbol> {
+/// A `symbol_info` answer, or an exact name candidate, as a provider symbol;
+/// `fresh` tells whether the answer it came from was.
+pub fn parse_symbol(info: &Value, fresh: bool) -> Option<ProviderSymbol> {
     let candidate = info.get("address").is_some();
     let mut definitions: Vec<ProviderPlace> = if candidate {
         code_place(&info["address"]["location"])
@@ -227,19 +234,20 @@ pub fn parse_symbol(info: &Value) -> Option<ProviderSymbol> {
             .and_then(Value::as_str)
             .map(str::to_string),
         definitions,
+        complete: fresh,
     })
 }
 
 /// A `references` answer as places. A lower-bound or truncated count is an
-/// incomplete answer, and so is a symbol the analyzer has no walk for: no
-/// walk is not a proven zero.
+/// incomplete answer, and so are a stale index and a symbol the analyzer has
+/// no walk for: no walk is not a proven zero.
 pub fn parse_references(answer: &Value) -> Result<ProviderPlaces, ProviderFailure> {
     match answer.get("outcome").and_then(Value::as_str) {
         Some("resolved") => {}
         Some("not_found") => {
             return Ok(ProviderPlaces {
                 places: Vec::new(),
-                complete: true,
+                complete: is_fresh(answer),
             })
         }
         Some(_) => {
@@ -260,7 +268,8 @@ pub fn parse_references(answer: &Value) -> Result<ProviderPlaces, ProviderFailur
     let complete = answer["total_is_lower_bound"] == false
         && answer["histogram_truncated"] != true
         && answer["total"].as_u64() == Some(references.len() as u64)
-        && places.len() == references.len();
+        && places.len() == references.len()
+        && is_fresh(answer);
     Ok(ProviderPlaces { places, complete })
 }
 
@@ -289,7 +298,7 @@ pub fn parse_call_neighbours(
         && result["dropped_count"].as_u64() == Some(0)
         && result["connectors_dropped"] == false
         && places.len() == nodes.len()
-        && answer.get("stale") != Some(&Value::Bool(true));
+        && is_fresh(answer);
     Ok(ProviderPlaces { places, complete })
 }
 
@@ -301,8 +310,7 @@ impl SymbolProvider for BslAnalyzerSymbols<'_> {
     ) -> Result<Option<ProviderSymbol>, ProviderFailure> {
         Ok(self
             .symbol_info(query, context)?
-            .as_ref()
-            .and_then(parse_symbol))
+            .and_then(|(info, fresh)| parse_symbol(&info, fresh)))
     }
 
     fn references(
@@ -317,7 +325,7 @@ impl SymbolProvider for BslAnalyzerSymbols<'_> {
             SymbolQuery::Named { .. } => {
                 let Some(qualified) = self
                     .symbol_info(query, context)?
-                    .and_then(|info| info["address"]["symbol"].as_str().map(str::to_string))
+                    .and_then(|(info, _)| info["address"]["symbol"].as_str().map(str::to_string))
                 else {
                     return Ok(ProviderPlaces {
                         places: Vec::new(),
@@ -336,7 +344,7 @@ impl SymbolProvider for BslAnalyzerSymbols<'_> {
         direction: CallDirection,
         context: &SymbolRequestContext<'_>,
     ) -> Result<ProviderPlaces, ProviderFailure> {
-        let Some(info) = self.symbol_info(query, context)? else {
+        let Some((info, _)) = self.symbol_info(query, context)? else {
             return Ok(ProviderPlaces {
                 places: Vec::new(),
                 complete: false,
@@ -398,14 +406,20 @@ mod tests {
 
     #[test]
     fn recorded_analyzer_answers_become_provider_places() {
-        let symbol = parse_symbol(&recorded("symbol_at_call")).unwrap();
+        let answer = recorded("symbol_at_call");
+        assert!(super::is_fresh(&answer));
+        let symbol = parse_symbol(&answer, true).unwrap();
         assert_eq!(symbol.kind, SymbolKind::Method);
         assert_eq!(symbol.definitions, [at(22, 8, 9)]);
         assert!(symbol.signature.is_some());
 
         let named = recorded("symbol_named");
+        assert!(!super::is_fresh(&named), "a capped candidate list");
         let candidate = named_candidate(&named, "Ф", MODULE).unwrap();
-        assert_eq!(parse_symbol(candidate).unwrap().definitions, [at(22, 8, 9)]);
+        assert_eq!(
+            parse_symbol(candidate, false).unwrap().definitions,
+            [at(22, 8, 9)]
+        );
         assert!(
             named_candidate(&named, "Ф", "CommonModules/Другой/Ext/Module.bsl").is_some(),
             "the only exact candidate is taken"
@@ -441,8 +455,11 @@ mod tests {
 
     #[test]
     fn a_capped_or_stale_graph_answer_is_incomplete() {
+        let mut answer = recorded("references_at");
+        answer["freshness"]["completeness"]["status"] = "partial".into();
+        assert!(!parse_references(&answer).unwrap().complete);
         let mut answer = recorded("callers");
-        answer["stale"] = Value::Bool(true);
+        answer["freshness"]["stale"] = Value::Bool(true);
         assert!(
             !parse_call_neighbours(&answer, CallDirection::Incoming)
                 .unwrap()

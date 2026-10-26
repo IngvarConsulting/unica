@@ -86,7 +86,8 @@ pub enum Incompleteness {
     ProviderNotReady,
     /// No provider could answer beyond the module's own text.
     ProviderUnavailable,
-    /// The provider answered with part of what it found.
+    /// The provider answered with part of what it found, or from an index
+    /// behind the saved sources.
     Capped,
     /// So many places the provider named have no logical address here.
     Unaddressable(usize),
@@ -160,6 +161,9 @@ pub struct ProviderSymbol {
     pub signature: Option<String>,
     pub return_type: Option<String>,
     pub definitions: Vec<ProviderPlace>,
+    /// `false` when the provider's index is behind the sources or its lookup
+    /// was capped.
+    pub complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +255,12 @@ impl SymbolDocument<'_> {
     fn is_saved(&self) -> bool {
         self.text.trim_start_matches('\u{feff}') == self.saved.trim_start_matches('\u{feff}')
     }
+}
+
+/// The answer for an edited buffer whose name the provider cannot be asked
+/// about: what the buffer alone tells, marked stale.
+fn unasked<T>(value: T) -> SymbolAnswer<T> {
+    SymbolAnswer::partial(value, vec![Incompleteness::Stale])
 }
 
 /// What a position names, as far as the module's own text tells.
@@ -403,6 +413,8 @@ impl<'a> SymbolService<'a> {
     /// The provider query for the name under the position. A saved module is
     /// asked by position. In an edited buffer a name the module declares is
     /// asked at its declaration in the saved text, and any other by name.
+    /// A name declared only in the buffer has no query: the provider has not
+    /// seen it.
     fn query(&self, request: &Request<'_, '_>, resolved: &Resolved) -> Option<SymbolQuery> {
         let document = request.document;
         if document.is_saved() {
@@ -431,8 +443,9 @@ impl<'a> SymbolService<'a> {
                 position: SymbolPosition { line, column },
             });
         }
-        let Resolved::Unknown(path) = resolved else {
-            return None;
+        let path = match resolved {
+            Resolved::Unknown(path) => path.clone(),
+            _ => request.module.name_path_at(request.offset)?,
         };
         Some(SymbolQuery::Named {
             name: path.segments[..=path.cursor]
@@ -546,13 +559,18 @@ impl<'a> SymbolService<'a> {
             }
             Some(unknown @ Resolved::Unknown(_)) => {
                 let Some(query) = self.query(&request, &unknown) else {
-                    return SymbolAnswer::complete(Vec::new());
+                    return unasked(Vec::new());
                 };
                 let (symbol, mut reasons) =
                     self.ask(&request, |provider| provider.symbol(&query, context));
                 let locations = symbol
                     .flatten()
-                    .map(|symbol| self.places(&symbol.definitions, &mut reasons))
+                    .map(|symbol| {
+                        if !symbol.complete {
+                            reasons.push(Incompleteness::Capped);
+                        }
+                        self.places(&symbol.definitions, &mut reasons)
+                    })
                     .unwrap_or_default();
                 SymbolAnswer::partial(locations, reasons)
             }
@@ -598,11 +616,14 @@ impl<'a> SymbolService<'a> {
             }
             Some(unknown @ Resolved::Unknown(_)) => {
                 let Some(query) = self.query(&request, &unknown) else {
-                    return SymbolAnswer::complete(None);
+                    return unasked(None);
                 };
                 let (symbol, mut reasons) =
                     self.ask(&request, |provider| provider.symbol(&query, context));
                 let info = symbol.flatten().map(|symbol| {
+                    if !symbol.complete {
+                        reasons.push(Incompleteness::Capped);
+                    }
                     let location = self
                         .places(&symbol.definitions, &mut reasons)
                         .into_iter()
@@ -656,7 +677,7 @@ impl<'a> SymbolService<'a> {
             own_module = Some(document.at);
         }
         let Some(query) = self.query(&request, &resolved) else {
-            return SymbolAnswer::complete(locations);
+            return unasked(locations);
         };
         // The editor's request never holds the provider past the budget.
         let budgeted = SymbolRequestContext {
@@ -708,7 +729,7 @@ impl<'a> SymbolService<'a> {
             return SymbolAnswer::complete(Vec::new());
         }
         let Some(query) = self.query(&request, &resolved) else {
-            return SymbolAnswer::complete(locations);
+            return unasked(locations);
         };
         let (answer, mut reasons) = self.ask(&request, |provider| {
             provider.calls(&query, direction, context)

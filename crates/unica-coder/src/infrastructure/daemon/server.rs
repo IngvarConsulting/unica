@@ -14661,6 +14661,7 @@ struct ActorLogicalReadLease {"#,
                             member: None,
                         },
                     ],
+                    complete: true,
                 }))
             }
             fn references(

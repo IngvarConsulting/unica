@@ -228,6 +228,8 @@ impl ParsedModule<'_> {
                 | SyntaxKind::FUNCTION_DEF
                 | SyntaxKind::VAR_DEF
                 | SyntaxKind::PARAM
+                | SyntaxKind::FOR_STMT
+                | SyntaxKind::FOR_EACH_STMT
         ) {
             return Some(NamePath {
                 segments: vec![(token.text().to_string(), byte_range(token.text_range()))],
@@ -561,6 +563,10 @@ mod tests {
             .unwrap();
         assert_eq!(variable.kind, LocalSymbolKind::Variable);
         assert_eq!(variable.range.start, at(text, "Строка Из"));
+        let declared = module.name_path_at(at(text, "Строка Из")).unwrap();
+        assert!(declared.plain);
+        assert_eq!(declared.segments[0].0, "Строка");
+        assert_eq!(module.local_references(&variable).len(), 2);
         assert!(!module.local_methods()[0].is_export);
     }
 
