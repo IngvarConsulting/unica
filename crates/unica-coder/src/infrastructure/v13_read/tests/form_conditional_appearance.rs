@@ -18,14 +18,17 @@ fn appearance_fixture(xml: &str) -> RealReaderFixture {
 
 fn read(fixture: &RealReaderFixture, at: &str) -> Value {
     let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
-    assert!(result.ok, "{at}: {result:?}");
+    assert!(result.ok, "{at}: the appearance view failed");
     result.data.unwrap()
 }
 
 /// Rule facts are nested JSON, never a JSON text packed into a string.
 fn fact(node: &Value, key: &str) -> Value {
     let value = node["props"][key].clone();
-    assert!(value.is_array() || value.is_object(), "{key}: {value}");
+    assert!(
+        value.is_array() || value.is_object(),
+        "{key}: a fact is nested JSON"
+    );
     value
 }
 
@@ -152,7 +155,7 @@ fn form_conditional_appearance_absent_empty_aliases_and_bad_values_are_distinct(
         let rule = read(&fixture, &format!("{SETTING}.Item.Rule1"));
         assert!(
             rule["props"].get("appearance").is_none(),
-            "bad fact must not be silently partial: {rule}"
+            "bad fact must not be silently partial"
         );
         assert!(rule["limits"]
             .as_array()
@@ -188,7 +191,7 @@ fn form_conditional_appearance_pages_in_source_order_and_opens_every_rule() {
     let mut request = ViewRequest::new(&at).unwrap().with_limit(1).unwrap();
     for ordinal in 1..=4 {
         let result = service.view(request);
-        assert!(result.ok, "{result:?}");
+        assert!(result.ok, "page {ordinal} of the rules failed");
         let data = result.data.unwrap();
         let items = data["items"].as_array().unwrap();
         assert_eq!(items.len(), 1);
@@ -251,7 +254,7 @@ fn form_conditional_appearance_reports_unknown_container_and_rule_structure() {
                 .unwrap()
                 .iter()
                 .any(|v| v.as_str().unwrap().contains(field)),
-            "{node}"
+            "the limit names {field}"
         );
         assert_eq!(
             read(&fixture, &format!("{FORM}.Attribute"))["items"]
@@ -385,7 +388,7 @@ fn form_conditional_appearance_reads_platform_value_kinds_and_rule_presentation(
     assert!(
         rule.get("limits")
             .is_none_or(|v| v.as_array().unwrap().is_empty()),
-        "{rule}"
+        "the rule has no limits"
     );
     assert_eq!(
         fact(&rule, "presentation"),
@@ -440,7 +443,13 @@ fn form_conditional_appearance_reads_platform_value_kinds_and_rule_presentation(
             &appearance_fixture(&xml.replacen(bad, field, 1)),
             &format!("{SETTING}.Item.Rule1"),
         );
-        assert!(rule["props"].get("appearance").is_none(), "{field}: {rule}");
-        assert!(rule["props"].get("filter").is_some(), "{field}: {rule}");
+        assert!(
+            rule["props"].get("appearance").is_none(),
+            "{field}: the damaged appearance is dropped"
+        );
+        assert!(
+            rule["props"].get("filter").is_some(),
+            "{field}: the filter stays"
+        );
     }
 }
