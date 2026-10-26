@@ -32,16 +32,16 @@
           "eq": false
         },
         {
-          "pointer": "/data/props/declaration/Synonym/0/content",
-          "eq": "Декларация Main"
+          "pointer": "/data/props/declaration/Synonym",
+          "eq": "ru = 'Декларация Main'"
         },
         {
-          "pointer": "/data/props/declaration/ExtendedPresentation/0/content",
-          "eq": "Полное представление"
+          "pointer": "/data/props/declaration/ExtendedPresentation",
+          "eq": "ru = 'Полное представление'"
         },
         {
-          "pointer": "/data/props/declaration/Explanation/0/content",
-          "eq": "Пояснение формы"
+          "pointer": "/data/props/declaration/Explanation",
+          "eq": "ru = 'Пояснение формы'"
         }
       ]
     },
