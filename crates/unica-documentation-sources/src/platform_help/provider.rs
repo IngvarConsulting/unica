@@ -43,6 +43,9 @@ struct IndexedPage {
     title: String,
     snippet: String,
     signature: Option<Signature>,
+    /// `Синтаксис: Имя(<Параметр>, ...)` cut from the whole page: the
+    /// snippet may end before it. Empty on a page without one.
+    syntax: String,
 }
 
 struct IndexedCorpus {
@@ -89,6 +92,7 @@ fn corpus_from_pages(
         .into_iter()
         .map(|page| IndexedPage {
             snippet: page.text.chars().take(SNIPPET_CHARS).collect(),
+            syntax: syntax_line(&page.text),
             path: page.path,
             title: page.title,
             signature: page.signature,
@@ -307,7 +311,7 @@ pub fn global_context_members(root: &Path) -> Result<Vec<GlobalContextMember>, S
                 return None;
             };
             let (name_ru, name_en) = global_context_names(&page.title)?;
-            let parameters = syntax_parameters(&page.snippet, &name_ru);
+            let parameters = syntax_parameters(&page.syntax, &name_ru);
             Some(GlobalContextMember {
                 parameters,
                 kind,
@@ -321,6 +325,15 @@ pub fn global_context_members(root: &Path) -> Result<Vec<GlobalContextMember>, S
     members.sort_by(|a, b| a.name_ru.cmp(&b.name_ru));
     members.dedup_by(|a, b| a.name_ru == b.name_ru && a.kind == b.kind);
     Ok(members)
+}
+
+/// `Синтаксис:` of `text` up to the first closing parenthesis after it.
+fn syntax_line(text: &str) -> String {
+    let Some(start) = text.find("Синтаксис:") else {
+        return String::new();
+    };
+    let rest = &text[start..];
+    rest.find(')').map_or(rest, |end| &rest[..=end]).to_owned()
 }
 
 /// Параметры из `Синтаксис: Сообщить(<ТекстСообщения>, <Статус>)` начала
@@ -2037,6 +2050,29 @@ mod global_context_tests {
         );
         assert!(super::syntax_parameters("Синтаксис: ТекущаяДата()", "ТекущаяДата").is_empty());
         assert!(super::syntax_parameters("без синтаксиса", "Ф").is_empty());
+    }
+
+    #[test]
+    fn parameters_are_read_past_the_search_snippet() {
+        let preamble = "Описание метода. ".repeat(40);
+        let text = format!("{preamble}Синтаксис: Сообщить(&lt;ТекстСообщения&gt;) Параметры:");
+        assert!(text.chars().count() > super::SNIPPET_CHARS);
+        let corpus = super::corpus_from_pages(
+            vec![crate::platform_help::corpus::CorpusPage {
+                path: "objects/Global context/methods/Message.html".into(),
+                title: "Глобальный контекст.Сообщить (Global context.Message)".into(),
+                text,
+                signature: None,
+            }],
+            "ru",
+            Vec::new(),
+        );
+        let page = &corpus.pages[0];
+        assert!(!page.snippet.contains("Синтаксис:"));
+        assert_eq!(
+            super::syntax_parameters(&page.syntax, "Сообщить"),
+            ["ТекстСообщения"]
+        );
     }
 }
 
