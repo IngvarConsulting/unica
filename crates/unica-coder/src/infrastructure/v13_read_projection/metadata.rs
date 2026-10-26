@@ -535,23 +535,28 @@ fn unreadable_entries(payload: &Value) -> impl Iterator<Item = (&str, &str)> {
         })
 }
 
+/// Ветви объекта в порядке дерева Конфигуратора: измерения, ресурсы,
+/// реквизиты, табличные части, значения, графы, перерасчёты, операции,
+/// шаблоны URL, затем формы, команды и макеты. Стандартные реквизиты и
+/// табличные части идут за своими видами; характеристики и предопределённые
+/// элементы, которых дерево не показывает, — в конце.
 fn metadata_branch_kinds() -> &'static [NodeKind] {
     &[
+        NodeKind::Dimension,
+        NodeKind::Resource,
         NodeKind::Attribute,
         NodeKind::StandardAttribute,
         NodeKind::TabularSection,
-        NodeKind::Dimension,
-        NodeKind::Resource,
-        NodeKind::Recalculation,
+        NodeKind::StandardTabularSection,
         NodeKind::EnumValue,
         NodeKind::Column,
-        NodeKind::Form,
-        NodeKind::Template,
-        NodeKind::Command,
-        NodeKind::UrlTemplate,
+        NodeKind::Recalculation,
         NodeKind::Operation,
+        NodeKind::UrlTemplate,
+        NodeKind::Form,
+        NodeKind::Command,
+        NodeKind::Template,
         NodeKind::Characteristic,
-        NodeKind::StandardTabularSection,
         NodeKind::PredefinedItem,
     ]
 }
