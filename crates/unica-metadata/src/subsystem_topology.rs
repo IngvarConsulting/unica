@@ -114,10 +114,10 @@ impl SubsystemTopology {
     }
 }
 
-/// Prefix of the BSP library description module (`ОбновлениеИнформационнойБазыБСП`
+/// Prefix of the library description module (`ОбновлениеИнформационнойБазыБСП`
 /// and its siblings). A root that holds such a module is a library root by
-/// the BSP convention, not by a platform property.
-pub const BSP_LIBRARY_MODULE_PREFIX: &str = "CommonModule.ОбновлениеИнформационнойБазы";
+/// the 1C development standards convention, not by a platform property.
+pub const STANDARD_LIBRARY_MODULE_PREFIX: &str = "CommonModule.ОбновлениеИнформационнойБазы";
 
 /// One subsystem that has an object in its content: `direct` for the
 /// subsystem that lists the object, not for its ancestors.
@@ -127,7 +127,7 @@ pub struct SubsystemMembership {
     pub direct: bool,
 }
 
-/// A library root by the BSP convention and the module that marks it.
+/// A library root by the standards convention and the module that marks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryRoot {
     pub address: SubsystemAddress,
@@ -185,7 +185,7 @@ impl SubsystemTopology {
         output
     }
 
-    /// Library roots by the BSP convention: top-level subsystems outside the
+    /// Library roots by the standards convention: top-level subsystems outside the
     /// command interface whose tree holds a `ОбновлениеИнформационнойБазы…`
     /// common module. Without such a module there are no roots.
     pub fn library_roots(&self) -> Vec<LibraryRoot> {
@@ -194,7 +194,7 @@ impl SubsystemTopology {
                 .iter()
                 .find_map(|reference| match reference {
                     ContentReference::MetadataAddress(address)
-                        if address.as_str().starts_with(BSP_LIBRARY_MODULE_PREFIX) =>
+                        if address.as_str().starts_with(STANDARD_LIBRARY_MODULE_PREFIX) =>
                     {
                         Some(address.clone())
                     }

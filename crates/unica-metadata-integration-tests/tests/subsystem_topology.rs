@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn memberships_name_the_listing_subsystem_its_ancestors_and_bsp_library_roots() {
+    fn memberships_name_the_listing_subsystem_its_ancestors_and_standard_library_roots() {
         let root = tempfile::tempdir().unwrap();
         write_configuration(root.path(), &["Standard", "Exchange", "Sales", "Group"]);
         write_subsystem(
@@ -337,6 +337,29 @@ mod tests {
                     "CommonModule.ОбновлениеИнформационнойБазыБЭД".to_string()
                 ),
             ]
+        );
+        // Content may name the object by its identifier instead of its name.
+        let by_uuid = tempfile::tempdir().unwrap();
+        write_configuration(by_uuid.path(), &["Group"]);
+        write_subsystem(
+            by_uuid.path(),
+            &[],
+            "Group",
+            "false",
+            &["11111111-2222-4333-8444-555555555555"],
+            &[],
+        );
+        let by_uuid_root = by_uuid.path().canonicalize().unwrap();
+        let identified = capture_registered_subsystem_topology(&by_uuid_root, checkpoint).unwrap();
+        assert!(identified.memberships_of(&common, None).is_empty());
+        assert_eq!(
+            identified
+                .memberships_of(
+                    &common,
+                    Some(Uuid::parse_str("11111111-2222-4333-8444-555555555555").unwrap())
+                )
+                .len(),
+            1
         );
         // Without a library module anywhere there are no roots, not a guess.
         let bare = tempfile::tempdir().unwrap();

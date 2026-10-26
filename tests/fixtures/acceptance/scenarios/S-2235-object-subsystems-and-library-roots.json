@@ -64,14 +64,14 @@
               "relation": "library",
               "at": "main:Subsystem.СтандартныеПодсистемы",
               "kind": "Subsystem",
-              "source": "bspLibraryModule",
+              "source": "standardLibraryModule",
               "module": "main:CommonModule.ОбновлениеИнформационнойБазыБСП"
             },
             {
               "relation": "library",
               "at": "main:Subsystem.ЭлектронноеВзаимодействие",
               "kind": "Subsystem",
-              "source": "bspLibraryModule",
+              "source": "standardLibraryModule",
               "module": "main:CommonModule.ОбновлениеИнформационнойБазыБЭД"
             }
           ]
@@ -94,7 +94,7 @@
         {
           "pointer": "/data/props/libraryRoot",
           "eq": {
-            "source": "bspLibraryModule",
+            "source": "standardLibraryModule",
             "module": "main:CommonModule.ОбновлениеИнформационнойБазыБСП"
           }
         }
@@ -116,7 +116,7 @@
         {
           "pointer": "/data/props/libraryRoot",
           "eq": {
-            "source": "bspLibraryModule",
+            "source": "standardLibraryModule",
             "module": "main:CommonModule.ОбновлениеИнформационнойБазыБЭД"
           }
         }

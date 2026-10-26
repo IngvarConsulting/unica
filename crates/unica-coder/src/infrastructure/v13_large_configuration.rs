@@ -481,13 +481,22 @@ impl RegistrationCache {
             root: Arc::clone(root),
             stamps: Arc::clone(&stamps),
         };
-        let mut io_checkpoint =
-            || checkpoint().map_err(|error| io::Error::other(error.to_string()));
-        let topology = Arc::new(
-            read_registered_subsystem_topology(Box::new(reader), &mut io_checkpoint).map_err(
-                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
-            )?,
-        );
+        // Отмена и срок остаются своими кодами, а не «не читается».
+        let mut interrupted = None;
+        let mut io_checkpoint = || {
+            checkpoint().map_err(|error| {
+                let message = error.to_string();
+                interrupted = Some(error);
+                io::Error::other(message)
+            })
+        };
+        let built = read_registered_subsystem_topology(Box::new(reader), &mut io_checkpoint);
+        if let Some(error) = interrupted {
+            return Err(error);
+        }
+        let topology = Arc::new(built.map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?);
         self.parsed();
         let stamps = std::mem::take(&mut *slot_vec(&stamps));
         let settled = stamps.iter().all(|(_, stamp)| self.retains(stamp));

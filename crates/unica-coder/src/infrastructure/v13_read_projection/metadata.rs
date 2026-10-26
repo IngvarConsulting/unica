@@ -682,7 +682,7 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
     }
     // Подсистемы, в состав которых входит объект: `direct` у той, что
     // перечисляет его, и не у её родителей. Корень библиотеки — признак
-    // соглашения БСП, а не платформы, поэтому элемент называет его источник
+    // соглашения стандартов разработки, а не платформы, поэтому элемент называет его источник
     // и модуль, на котором он держится.
     let subsystem_at = |name: &str| {
         format!(
@@ -722,7 +722,7 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
             "relation": "library",
             "at": subsystem_at(name),
             "kind": "Subsystem",
-            "source": "bspLibraryModule",
+            "source": "standardLibraryModule",
             "module": format!("{}:{module}", address.source_set()),
         }));
     }
