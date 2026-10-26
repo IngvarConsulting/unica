@@ -110,17 +110,18 @@ pub(super) fn remaining_invocation_budget(
 #[derive(Debug)]
 pub(super) enum CanonicalCallOutcome {
     Direct(CallToolResult),
+    /// The Task the call continues as: the daemon's handoff, or, when the
+    /// submit answer was lost and could not be recovered, the queued Task
+    /// reserved for the call.
     Task(V5DaemonTaskSnapshot),
-    /// The submit answer was lost and could not be recovered: the call may
-    /// continue as the Task reserved for it. A client with native Tasks gets
-    /// that Task to poll; any other client gets the refusal naming it.
-    LostSubmit(Box<LostSubmit>),
 }
 
-#[derive(Debug)]
-pub(super) struct LostSubmit {
-    pub(super) task: V5DaemonTaskSnapshot,
-    pub(super) refusal: ErrorData,
+/// How recovery of a lost submit answer ended without a daemon answer.
+enum RecoveryEnd {
+    /// The frame reached the daemon: the call may continue as its Task.
+    Lost,
+    /// The answer is a refusal of its own.
+    Refused(ErrorData),
 }
 
 pub(super) type CanonicalCallHandler = dyn Fn(
@@ -373,7 +374,8 @@ fn submit_and_settle(
             let recovery_cutoff = cutoff.max(Instant::now()) + RECOVERY_BUDGET;
             match recover_receipt(client, &receipt_key, recovery_cutoff) {
                 Ok(recovered) => recovered,
-                Err(refusal) => return lost_submit_outcome(refusal, &receipt_key),
+                Err(RecoveryEnd::Lost) => return Ok(lost_submit_task(&receipt_key)),
+                Err(RecoveryEnd::Refused(refusal)) => return Err(refusal),
             }
         }
         // The frame exceeds the daemon bound and was never written: the
@@ -512,20 +514,20 @@ fn receipt_key_for(
 /// Read the durable state of a submission whose response was lost. A receipt
 /// still inside its original budget is polled until that budget settles;
 /// nothing here opens a new invocation budget or submits again. When even the
-/// recovery window closes, the host gets the closed lost-submit refusal that
-/// names the reserved Task: the daemon may hold the work, nobody replays it.
+/// recovery window closes, the host gets the reserved Task: the daemon may
+/// hold the work, nobody replays it.
 fn recover_receipt(
     client: &V5DaemonClient,
     receipt_key: &ReceiptKey,
     cutoff: Instant,
-) -> Result<(V5DaemonProcessOwner, V5ServerResponse), ErrorData> {
+) -> Result<(V5DaemonProcessOwner, V5ServerResponse), RecoveryEnd> {
     loop {
         let mut peer = client
             .connect_peer_before(cutoff)
-            .map_err(|_| lost_submit_refusal(receipt_key))?;
+            .map_err(|_| RecoveryEnd::Lost)?;
         let response = peer
             .recover_invocation_receipt_before(receipt_key.clone(), cutoff)
-            .map_err(|_| lost_submit_refusal(receipt_key))?;
+            .map_err(|_| RecoveryEnd::Lost)?;
         match response {
             V5ServerResponse::Invocation {
                 outcome:
@@ -544,9 +546,9 @@ fn recover_receipt(
                 // A receipt that settles after the recovery window cannot be
                 // delivered by this call: the daemon keeps it and promotes it
                 // on its own, nobody resubmits, and the host gets the same
-                // closed refusal as for a lost submission.
+                // reserved Task as for a lost submission.
                 if until_settled >= remaining || remaining <= RECOVERY_POLL_INTERVAL {
-                    return Err(lost_submit_refusal(receipt_key));
+                    return Err(RecoveryEnd::Lost);
                 }
                 std::thread::sleep(until_settled.max(RECOVERY_POLL_INTERVAL));
             }
@@ -570,7 +572,7 @@ fn fence_unreceived_submit(
     client: &V5DaemonClient,
     receipt_key: &ReceiptKey,
     cutoff: Instant,
-) -> ErrorData {
+) -> RecoveryEnd {
     let fenced = client
         .connect_peer_before(cutoff)
         .and_then(|mut peer| peer.fence_invocation_receipt_before(receipt_key.clone(), cutoff));
@@ -583,10 +585,10 @@ fn fence_unreceived_submit(
                     cancel_requested: true,
                     ..
                 },
-        }) if &fenced_key == receipt_key => not_delivered_refusal(
+        }) if &fenced_key == receipt_key => RecoveryEnd::Refused(not_delivered_refusal(
             "daemon did not receive the invocation submit; it will not run".to_owned(),
-        ),
-        _ => lost_submit_refusal(receipt_key),
+        )),
+        _ => RecoveryEnd::Lost,
     }
 }
 
@@ -669,71 +671,26 @@ fn epoch_ms_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// The closed answer for a submit whose response was lost and whose receipt
-/// could not be recovered in time. The frame reached the daemon, so the call
-/// may already be — or still become — the Task reserved for it: the refusal
-/// names that Task and points at the wait instead of a second submission.
-/// The Task identifier is the frontend's own opaque UUID; no path, argument
-/// or daemon text travels in the data.
-fn lost_submit_refusal(receipt_key: &ReceiptKey) -> ErrorData {
-    let code = RefusalCode::SubmitResponseLost;
-    let task_id = receipt_key.reserved_task_id().to_string();
-    // Hosts often show the model only the message: it names the Task too.
-    ErrorData::new(
-        ErrorCode(TOOL_EXECUTION_ERROR),
-        format!(
-            "daemon deadline expired during invocation submit response; \
-             the call may continue as Task {task_id}: wait for that Task \
-             instead of repeating the call"
-        ),
-        Some(serde_json::json!({
-            "code": code.as_str(),
-            "outcome": code.outcome().as_str(),
-            "taskId": task_id,
-            "next": [{
-                "tool": "unica.task.result",
-                "args": {"taskId": task_id},
-            }],
-        })),
-    )
-}
-
 /// Poll interval the queued Task of a lost submit announces; the daemon's
 /// own receipt-backed snapshots use the same 100 ms.
 const LOST_SUBMIT_POLL_INTERVAL_MS: u64 = 100;
 
-/// A lost-submit refusal becomes the outcome that carries both answers: the
-/// queued Task under the reserved id, which the daemon answers by that id
-/// whether the call is still inline, a Task, or ended directly, and the
-/// refusal for clients without native Tasks.
-fn lost_submit_outcome(
-    refusal: ErrorData,
-    receipt_key: &ReceiptKey,
-) -> Result<CanonicalCallOutcome, ErrorData> {
-    let lost = refusal
-        .data
-        .as_ref()
-        .and_then(|data| data.get("code"))
-        .and_then(Value::as_str)
-        == Some(RefusalCode::SubmitResponseLost.as_str());
-    if !lost {
-        return Err(refusal);
-    }
+/// The queued Task reserved for a call whose submit answer was lost. The
+/// daemon answers it by that id whether the call is still inline, a Task, or
+/// ended directly; an id the daemon never took answers `task_not_found`.
+fn lost_submit_task(receipt_key: &ReceiptKey) -> CanonicalCallOutcome {
     let now = epoch_ms_now();
-    Ok(CanonicalCallOutcome::LostSubmit(Box::new(LostSubmit {
-        task: V5DaemonTaskSnapshot::Queued {
-            task_id: receipt_key.reserved_task_id(),
-            invocation_id: receipt_key.invocation_id(),
-            receipt_key_digest: unica_execution::receipt_ledger::receipt_key_digest(receipt_key),
-            created_at_epoch_ms: now,
-            updated_at_epoch_ms: now,
-            ttl_ms: unica_execution::receipt_ledger::DIRECT_TERMINAL_RETENTION_MS,
-            poll_interval_ms: LOST_SUBMIT_POLL_INTERVAL_MS,
-            version: 1,
-            cancel_requested: false,
-        },
-        refusal,
-    })))
+    CanonicalCallOutcome::Task(V5DaemonTaskSnapshot::Queued {
+        task_id: receipt_key.reserved_task_id(),
+        invocation_id: receipt_key.invocation_id(),
+        receipt_key_digest: unica_execution::receipt_ledger::receipt_key_digest(receipt_key),
+        created_at_epoch_ms: now,
+        updated_at_epoch_ms: now,
+        ttl_ms: unica_execution::receipt_ledger::DIRECT_TERMINAL_RETENTION_MS,
+        poll_interval_ms: LOST_SUBMIT_POLL_INTERVAL_MS,
+        version: 1,
+        cancel_requested: false,
+    })
 }
 
 /// A connection that could not stand before the cutoff is transient: the
@@ -1352,31 +1309,22 @@ mod tests {
             Ok(CanonicalCallOutcome::Task(snapshot)) => {
                 panic!("unexpected Task handoff: {snapshot:?}")
             }
-            Ok(CanonicalCallOutcome::LostSubmit(lost)) => {
-                panic!("unexpected lost submit: {}", lost.refusal)
-            }
             Err(error) => panic!("unexpected refusal: {error}"),
         }
     }
 
-    /// A lost submit answers with the queued Task reserved for the call and
-    /// the refusal naming that same Task.
-    fn lost_refusal(outcome: Result<CanonicalCallOutcome, ErrorData>) -> ErrorData {
-        let lost = match outcome {
-            Ok(CanonicalCallOutcome::LostSubmit(lost)) => lost,
+    /// A lost submit answers with the queued Task reserved for the call.
+    fn lost_task(outcome: Result<CanonicalCallOutcome, ErrorData>) -> V5DaemonTaskSnapshot {
+        let task = match outcome {
+            Ok(CanonicalCallOutcome::Task(task)) => task,
             Ok(CanonicalCallOutcome::Direct(result)) => panic!("unexpected direct: {result:?}"),
-            Ok(CanonicalCallOutcome::Task(snapshot)) => panic!("unexpected Task: {snapshot:?}"),
             Err(error) => panic!("unexpected refusal: {error}"),
         };
         assert_eq!(
-            lost.refusal.data.as_ref().unwrap()["taskId"],
-            json!(lost.task.task_id().to_string())
-        );
-        assert_eq!(
-            lost.task.status(),
+            task.status(),
             unica_execution_contract::invocation::InvocationStatus::Queued
         );
-        lost.refusal
+        task
     }
 
     #[test]
@@ -1710,7 +1658,7 @@ mod tests {
         let outcome = call(&router, Some(host));
         let elapsed = started.elapsed();
         assert!(
-            matches!(&outcome, Ok(CanonicalCallOutcome::LostSubmit(_))),
+            matches!(&outcome, Ok(CanonicalCallOutcome::Task(_))),
             "the trickled submit was not lost by its deadline: {outcome:?}"
         );
         assert!(
@@ -1870,7 +1818,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_receipt_beyond_the_frontend_cutoff_is_a_closed_refusal_not_a_retry() {
+    fn pending_receipt_beyond_the_frontend_cutoff_is_the_reserved_task_not_a_retry() {
         let fake = FakeDaemon::start(Box::new(move |_, request| {
             match request {
             V5ClientRequest::SubmitInvocation { .. } => Step::Close,
@@ -1890,44 +1838,25 @@ mod tests {
         }));
         let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
-        let refusal = lost_refusal(call(&router, Some(Duration::from_millis(400))));
+        let task = lost_task(call(&router, Some(Duration::from_millis(400))));
 
-        assert_names_the_reserved_task(&refusal, &fake);
+        assert_is_the_reserved_task(&task, &fake);
         assert_eq!(fake.submissions(), 1);
     }
 
-    /// The lost-submit refusal names the Task reserved for the one submitted
-    /// call, in the data and in the text a host shows, and points at the
-    /// wait for it instead of a second submission.
-    fn assert_names_the_reserved_task(refusal: &ErrorData, fake: &FakeDaemon) {
+    /// A lost submit answers with the Task reserved for the one submitted
+    /// call, never a Task of its own or of another call.
+    fn assert_is_the_reserved_task(task: &V5DaemonTaskSnapshot, fake: &FakeDaemon) {
         let seen = fake.seen();
-        let reserved = seen
+        let invocation = seen
             .iter()
             .find_map(|request| match request {
-                V5ClientRequest::SubmitInvocation { invocation } => {
-                    Some(invocation.reserved_task_id().to_string())
-                }
+                V5ClientRequest::SubmitInvocation { invocation } => Some(invocation),
                 _ => None,
             })
             .expect("the call was submitted");
-        assert_eq!(refusal.code, ErrorCode(TOOL_EXECUTION_ERROR));
-        assert!(
-            refusal
-                .message
-                .starts_with("daemon deadline expired during invocation submit response"),
-            "{}",
-            refusal.message
-        );
-        assert!(refusal.message.contains(&reserved), "{}", refusal.message);
-        assert_eq!(
-            refusal.data,
-            Some(json!({
-                "code": "submit_response_lost",
-                "outcome": "goElsewhere",
-                "taskId": reserved,
-                "next": [{"tool": "unica.task.result", "args": {"taskId": reserved}}],
-            }))
-        );
+        assert_eq!(task.task_id(), invocation.reserved_task_id());
+        assert_eq!(task.invocation_id(), invocation.invocation_id());
     }
 
     fn assert_not_delivered(refusal: &ErrorData) {
@@ -1948,26 +1877,18 @@ mod tests {
         }));
         let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
-        let Ok(CanonicalCallOutcome::LostSubmit(lost)) = call(&router, None) else {
-            panic!("a lost submit carries its Task");
-        };
+        let task = lost_task(call(&router, None));
 
         let seen = fake.seen();
         let V5ClientRequest::SubmitInvocation { invocation } = &seen[0] else {
             panic!("first frame must be the submission: {seen:?}");
         };
         let key = receipt_key_for(invocation, &V5DaemonClient::from(fake.owner())).unwrap();
-        assert_eq!(lost.task.task_id(), invocation.reserved_task_id());
-        assert_eq!(lost.task.invocation_id(), invocation.invocation_id());
         assert_eq!(
-            lost.task.receipt_key_digest(),
+            task.receipt_key_digest(),
             &unica_execution::receipt_ledger::receipt_key_digest(&key)
         );
-        assert_eq!(
-            lost.task.status(),
-            unica_execution_contract::invocation::InvocationStatus::Queued
-        );
-        assert_names_the_reserved_task(&lost.refusal, &fake);
+        assert_is_the_reserved_task(&task, &fake);
     }
 
     #[test]
@@ -2097,7 +2018,7 @@ mod tests {
     #[test]
     fn recovery_without_a_receipt_whose_fence_meets_the_call_names_its_task() {
         // The frame overtook the fence: the cancel finds the call's own
-        // receipt, so it may run, and the refusal names its Task.
+        // receipt, so it may run, and the answer is its Task.
         let fake = FakeDaemon::start(Box::new(|_, request| match request {
             V5ClientRequest::SubmitInvocation { .. } => Step::Close,
             V5ClientRequest::RecoverInvocationReceipt { .. } => {
@@ -2120,9 +2041,9 @@ mod tests {
         }));
         let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
-        let refusal = lost_refusal(call(&router, None));
+        let task = lost_task(call(&router, None));
 
-        assert_names_the_reserved_task(&refusal, &fake);
+        assert_is_the_reserved_task(&task, &fake);
         assert_eq!(fake.submissions(), 1);
     }
 
@@ -2210,7 +2131,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_window_closing_answers_the_closed_lost_submit_refusal() {
+    fn recovery_window_closing_answers_the_task_reserved_for_the_call() {
         let fake = FakeDaemon::start(Box::new(move |_, request| match request {
             V5ClientRequest::SubmitInvocation { .. } => {
                 thread::sleep(Duration::from_millis(500));
@@ -2225,9 +2146,9 @@ mod tests {
         }));
         let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
-        let refusal = lost_refusal(call(&router, Some(Duration::from_millis(300))));
+        let task = lost_task(call(&router, Some(Duration::from_millis(300))));
 
-        assert_names_the_reserved_task(&refusal, &fake);
+        assert_is_the_reserved_task(&task, &fake);
         assert_eq!(fake.submissions(), 1);
     }
 
@@ -2342,6 +2263,42 @@ mod tests {
         );
         assert!(past.cutoff_expired);
         assert!(past.endpoint_generation_hash.is_none());
+    }
+
+    #[test]
+    fn a_lost_task_the_daemon_does_not_know_answers_task_not_found() {
+        // The answer is lost before the daemon could be asked: the call is
+        // the Task reserved for it. A daemon that never took the call — or no
+        // longer knows it after a restart — answers that id as not found.
+        let fake = FakeDaemon::start(Box::new(|_, request| match request {
+            V5ClientRequest::SubmitInvocation { .. } => Step::Close,
+            V5ClientRequest::RecoverInvocationReceipt { .. } => Step::Close,
+            other => panic!("unexpected frame {other:?}"),
+        }));
+        let lost = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+        let task = lost_task(call(&lost, None));
+
+        let service = Arc::new(ScriptedService {
+            delay: Duration::from_millis(10),
+            known_long: false,
+            outcome: Mutex::new(None),
+            executions: AtomicUsize::new(0),
+        });
+        let daemon = LiveDaemon::start(service.clone());
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        let answer = (router.get)(task.task_id(), deadline(None));
+        assert!(
+            matches!(
+                answer,
+                Err(V5TaskExchangeError::Protocol(
+                    V5DaemonErrorCode::TaskNotFound
+                ))
+            ),
+            "{answer:?}"
+        );
+        assert_eq!(service.executions.load(Ordering::SeqCst), 0);
+        drop(router);
+        daemon.finish();
     }
 
     #[test]
@@ -2674,9 +2631,6 @@ mod tests {
             Ok(CanonicalCallOutcome::Direct(result)) => {
                 panic!("slow work answered directly: {result:?}")
             }
-            Ok(CanonicalCallOutcome::LostSubmit(lost)) => {
-                panic!("slow work lost its answer: {}", lost.refusal)
-            }
             Err(error) => panic!("slow work refused: {error}"),
         };
         let task_id = handoff.task_id();
@@ -2825,9 +2779,6 @@ mod tests {
         match outcome {
             Ok(CanonicalCallOutcome::Task(snapshot)) => snapshot,
             Ok(CanonicalCallOutcome::Direct(result)) => panic!("unexpected direct: {result:?}"),
-            Ok(CanonicalCallOutcome::LostSubmit(lost)) => {
-                panic!("unexpected lost submit: {}", lost.refusal)
-            }
             Err(error) => panic!("unexpected refusal: {error}"),
         }
     }
@@ -2868,17 +2819,9 @@ mod tests {
 
         // The daemon hands the search off to a Task, and the host never
         // learns it: the submit answer and every recovery answer are lost.
-        let refusal = lost_refusal(call_tool(&router, V5ToolIdentity::Search, &search));
+        let task = lost_task(call_tool(&router, V5ToolIdentity::Search, &search));
         hooks.lose_recoveries.store(false, Ordering::SeqCst);
-        let named: TaskId = refusal.data.as_ref().unwrap()["taskId"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(
-            refusal.data.as_ref().unwrap()["code"],
-            "submit_response_lost"
-        );
+        let named = task.task_id();
 
         // The agent repeats the call anyway: it joins the running Task under
         // its own id instead of starting the same traversal again.
@@ -2910,7 +2853,7 @@ mod tests {
     #[test]
     fn a_read_whose_answer_was_lost_inline_is_readable_by_its_task_id() {
         // Inline work that ends directly: its answer is lost and no Task
-        // ever exists, yet the id the refusal names returns the result.
+        // ever exists, yet the id of the reserved Task returns the result.
         let service = Arc::new(ScriptedService {
             delay: Duration::from_millis(10),
             known_long: false,
@@ -2922,12 +2865,7 @@ mod tests {
         let daemon = LiveDaemon::start_with_aged_sources(service.clone(), Some(hooks.clone()));
         let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
 
-        let refusal = lost_refusal(call(&router, None));
-        let named: TaskId = refusal.data.as_ref().unwrap()["taskId"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .unwrap();
+        let named = lost_task(call(&router, None)).task_id();
         let terminal = wait_terminal(&router, named);
 
         assert_eq!(terminal.task_id(), named);

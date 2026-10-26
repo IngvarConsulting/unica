@@ -315,6 +315,7 @@ mod tests {
                     tool_args: json!({"action": "search_code", "query": "Acceptance"}),
                     timeout_seconds: 10,
                     timeout_nanos: 0,
+                    yields: false,
                 },
             );
             assert!(response.ok, "{response:?}");
@@ -1076,6 +1077,7 @@ mod tests {
                     tool_args: json!({"action": "search_code", "query": "Acceptance"}),
                     timeout_seconds: if cancel { 10 } else { 0 },
                     timeout_nanos: if cancel { 0 } else { 500_000_000 },
+                    yields: false,
                 },
             );
             let closing = PathBuf::from(format!("{}.closing", cleanup_gate.display()));
@@ -3942,6 +3944,7 @@ mod tests {
                 tool_args: json!({}),
                 timeout_seconds: 30,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         executor.wait_holder();
@@ -3953,6 +3956,7 @@ mod tests {
                 tool_args: json!({}),
                 timeout_seconds: 30,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         let queued_deadline = Instant::now() + Duration::from_secs(2);
@@ -4534,6 +4538,104 @@ mod tests {
         cleanup(&context);
     }
 
+    fn stalling_runtime(
+        name: &str,
+    ) -> (WorkspaceContext, WorkspaceServiceRuntime, PathBuf, PathBuf) {
+        let context = test_context(&format!("{name}-{}", Uuid::new_v4()));
+        let fixture = compile_stall_first_call_fixture(&context);
+        let pid_file = context.cache_root.join("stall-session-pids.txt");
+        let log_file = context.cache_root.join("stall-session-log.txt");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
+        let mut runtime = new_runtime(identity, &record);
+        let (pids, log) = (pid_file.clone(), log_file.clone());
+        runtime.test_set_analyzer_starter(Arc::new(move |_context, _source_root, cancellation| {
+            let mut command = Command::new(&fixture);
+            command.args([&pids, &log]);
+            PersistentMcpSession::start_with_command(command, cancellation)
+        }));
+        (context, runtime, pid_file, log_file)
+    }
+
+    /// #2189: a call out of time is cancelled at the analyzer, and the next
+    /// call is answered by the same warm process.
+    #[test]
+    fn an_expired_analyzer_call_keeps_the_warm_process_for_the_next_one() {
+        let (context, runtime, pid_file, log_file) = stalling_runtime("expired-call");
+        let expired = runtime.test_handle_yielding_bsl_mcp(
+            "symbol_info",
+            json!({}),
+            Duration::from_millis(500),
+            &CancellationToken::new(),
+        );
+        assert!(!expired.ok, "{expired:?}");
+        let next = runtime.test_handle_bsl_mcp(
+            "unica.code.search",
+            json!({}),
+            SERVICE_REQUEST_TIMEOUT.as_secs(),
+            0,
+            &CancellationToken::new(),
+        );
+        assert!(next.ok, "{:?}", next.error);
+        assert_eq!(fs::read_to_string(&pid_file).unwrap().lines().count(), 1);
+        assert_eq!(
+            fs::read_to_string(&log_file).unwrap(),
+            "holding\ncancelled\n"
+        );
+        cleanup(&context);
+    }
+
+    /// #2189, mcp-priority: an editor's call holding the analyzer gives way to
+    /// an MCP call, which is answered without waiting for it to finish.
+    #[test]
+    fn an_mcp_call_cancels_a_yielding_call_that_holds_the_analyzer() {
+        let (context, runtime, pid_file, log_file) = stalling_runtime("yielding-call");
+        thread::scope(|scope| {
+            let editor = scope.spawn(|| {
+                runtime.test_handle_yielding_bsl_mcp(
+                    "symbol_info",
+                    json!({}),
+                    SERVICE_REQUEST_TIMEOUT,
+                    &CancellationToken::new(),
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !fs::read_to_string(&log_file).is_ok_and(|log| log.contains("holding")) {
+                assert!(
+                    Instant::now() < deadline,
+                    "the editor call never reached the analyzer"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            let started = Instant::now();
+            let agent = runtime.test_handle_bsl_mcp(
+                "unica.code.search",
+                json!({}),
+                SERVICE_REQUEST_TIMEOUT.as_secs(),
+                0,
+                &CancellationToken::new(),
+            );
+            assert!(agent.ok, "{:?}", agent.error);
+            assert!(started.elapsed() < Duration::from_secs(5));
+            let editor = editor.join().unwrap();
+            assert!(!editor.ok);
+            assert!(
+                editor.error.as_deref().is_some_and(
+                    |error| error.starts_with("cancelled:") && error.contains("gave way")
+                ),
+                "{editor:?}"
+            );
+        });
+        assert_eq!(fs::read_to_string(&pid_file).unwrap().lines().count(), 1);
+        assert_eq!(
+            fs::read_to_string(&log_file).unwrap(),
+            "holding\ncancelled\n"
+        );
+        cleanup(&context);
+    }
+
     #[test]
     fn bsl_session_replaces_dead_warm_process_before_next_request() {
         let context = test_context("dead-warm-session");
@@ -4743,6 +4845,54 @@ fn main() {
                 }
             }
             _ => {}
+        }
+        io::stdout().flush().unwrap();
+    }
+}"#,
+        )
+        .unwrap();
+        let status = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        executable
+    }
+
+    /// An analyzer that never answers its first call and records the
+    /// cancellation it receives for it; later calls are answered by id.
+    fn compile_stall_first_call_fixture(context: &WorkspaceContext) -> PathBuf {
+        let source = context.cache_root.join("stall-first-call-fixture.rs");
+        let executable = unica_process::test_support::fixture_executable_path(
+            &context.cache_root,
+            "stall-first-call-fixture",
+        );
+        fs::create_dir_all(&context.cache_root).unwrap();
+        fs::write(
+            &source,
+            r#"use std::{env, fs::OpenOptions, io::{self, BufRead, Write}};
+fn main() {
+    let pid_file = env::args().nth(1).unwrap();
+    let log_file = env::args().nth(2).unwrap();
+    let log = |entry: &str| writeln!(OpenOptions::new().create(true).append(true).open(&log_file).unwrap(), "{entry}").unwrap();
+    writeln!(OpenOptions::new().create(true).append(true).open(pid_file).unwrap(), "{}", std::process::id()).unwrap();
+    let mut calls = 0;
+    for line in io::stdin().lock().lines() {
+        let line = line.unwrap();
+        if line.contains("\"method\":\"initialize\"") {
+            println!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}");
+        } else if line.contains("\"method\":\"notifications/cancelled\"") {
+            log("cancelled");
+        } else if line.contains("\"method\":\"tools/call\"") {
+            calls += 1;
+            if calls == 1 {
+                log("holding");
+                continue;
+            }
+            let id: String = line.split("\"id\":").nth(1).unwrap().chars().take_while(char::is_ascii_digit).collect();
+            println!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"ok\"}}]}}}}");
         }
         io::stdout().flush().unwrap();
     }
@@ -5747,6 +5897,7 @@ fn main() {
                 tool_args: json!({}),
                 timeout_seconds: 120,
                 timeout_nanos: 0,
+                yields: false,
             }),
             &cancellation,
             SERVICE_REQUEST_TIMEOUT,
@@ -5976,6 +6127,7 @@ fn main() {
                         tool_args: json!({}),
                         timeout_seconds: 120,
                         timeout_nanos: 0,
+                        yields: false,
                     }),
                     &cancellation,
                     SERVICE_REQUEST_TIMEOUT,
@@ -6041,6 +6193,7 @@ fn main() {
                 tool_args: json!({}),
                 timeout_seconds: 120,
                 timeout_nanos: 0,
+                yields: false,
             },
             ServiceRequestKind::RlmReady {
                 operation_id: "ready".into(),
@@ -6128,6 +6281,7 @@ fn main() {
             tool_args: json!({"query": "needle"}),
             timeout_seconds: 5,
             timeout_nanos: 0,
+            yields: false,
         };
         let rlm = ServiceRequestKind::RlmReady {
             operation_id: Uuid::new_v4().to_string(),
@@ -6257,6 +6411,7 @@ fn main() {
                         tool_args: json!({}),
                         timeout_seconds: 120,
                         timeout_nanos: 0,
+                        yields: false,
                     },
                 },
                 &caller_token,

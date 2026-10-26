@@ -652,6 +652,7 @@ fn bootstrap_result(
     let mut result = DomainResult::success(match (config_state, infobase.configured, source_map.source_sets.is_empty()) {
         (_, _, false) if external_only => "external artifact source sets discovered; no configuration default is needed; inspect owners by their qualified source-set address",
         ("configured", true, true) => "workspace configuration and infobase target discovered; no source sets are attached",
+        ("configured", false, true) => "workspace configuration discovered; no source sets are attached and no infobase target is configured",
         ("configured", _, _) => "workspace configuration and source sets discovered",
         ("autodetected", _, _) => "source sets autodetected; v8project.yaml is not present",
         _ => "workspace is uninitialized; no v8project.yaml or 1C source roots were found",

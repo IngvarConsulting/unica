@@ -200,6 +200,16 @@ impl ProviderReadAuthority {
         &self.source_set
     }
 
+    /// The retained source root every read of this authority is relative to.
+    pub(crate) fn retained_root(&self) -> &SourceDirectory {
+        &self.root
+    }
+
+    /// The set's artifacts retained by the workspace actor across calls.
+    pub(crate) fn artifacts(&self) -> &Arc<RegistrationCache> {
+        &self.artifacts
+    }
+
     pub(crate) fn source_set_identity(&self) -> &str {
         &self.source_set_identity
     }

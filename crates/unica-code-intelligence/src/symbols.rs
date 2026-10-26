@@ -80,10 +80,17 @@ pub enum Incompleteness {
     /// No provider could answer beyond the module's own text.
     ProviderUnavailable,
     /// The provider answered with part of what it found, or from an index
-    /// behind the saved sources.
+    /// behind the saved sources; or the name index reached its budget and
+    /// left modules out.
     Capped,
     /// Places in other modules are not answered: only this module's are.
     OtherModules,
+    /// The name index of the source set is still being built; asking again
+    /// later can give the places in other modules too.
+    NamesNotIndexed,
+    /// Uses through a variable holding an object are not found: the code
+    /// does not say what a variable holds.
+    UntypedReferences,
     /// So many places the provider named have no logical address here.
     Unaddressable(usize),
 }
@@ -236,6 +243,202 @@ pub trait SymbolEnvironment {
     /// The saved text of the module at a logical address, for a common
     /// module named in code.
     fn module_text(&self, at: &str) -> Option<String>;
+    /// What the module at a logical address belongs to, for the way other
+    /// modules name its exports.
+    fn module_owner(&self, at: &str) -> ModuleOwner;
+    /// The saved text of the module at a source-root-relative path.
+    fn module_source(&self, path: &str) -> Option<String>;
+}
+
+/// What a module belongs to, as far as other modules name its exports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleOwner {
+    /// A common module: its exports are `Name.Method`, or bare when global.
+    Common { name: String, global: bool },
+    /// The manager module of an object: `Справочники.Name.Method`.
+    Manager { kind: String, object: String },
+    /// Any other module: its exports are reached through objects.
+    Other,
+}
+
+/// The modules a name index lists for a name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedModules {
+    /// Source-root-relative paths of the modules that spell the name.
+    pub paths: Vec<String>,
+    /// `false` when the index left modules out (it reached its budget).
+    pub complete: bool,
+}
+
+/// Which modules of the source set may spell a name: the name index.
+pub trait NameLookup {
+    /// The modules that spell `name` in any letter case, or `None` while the
+    /// index is not built yet.
+    fn modules_naming(&self, name: &str) -> Option<NamedModules>;
+}
+
+/// `Справочники.Валюты.Метод` with the cursor on the method: an export of
+/// the catalog's manager module.
+fn manager_method(path: &NamePath) -> Option<Target> {
+    if !path.plain || path.cursor != 2 || path.segments.len() < 3 {
+        return None;
+    }
+    let kind = unica_address::source_target::metadata_collection_kind(&path.segments[0].0)?;
+    Some(Target::Manager {
+        kind: kind.to_string(),
+        object: path.segments[1].0.clone(),
+        method: path.segments[2].0.clone(),
+    })
+}
+
+/// The most threads one reference search parses candidate modules on; the
+/// rest of the machine stays with the agent's calls.
+pub const MAX_REFERENCE_PARSE_THREADS: usize = 8;
+
+/// The target's uses in each module text, the texts parsed in parallel.
+fn uses_in(
+    target: &Target,
+    texts: &[(String, String)],
+    cancellation: &CancellationToken,
+) -> Vec<SymbolLocation> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(MAX_REFERENCE_PARSE_THREADS);
+    let chunk = texts.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        texts
+            .chunks(chunk)
+            .map(|part| {
+                scope.spawn(move || {
+                    let mut found = Vec::new();
+                    for (at, text) in part {
+                        if cancellation.is_cancelled() {
+                            break;
+                        }
+                        let module = unica_bsl_parser::parse(text);
+                        let index = LineIndex::new(text);
+                        found.extend(target.uses(&module).into_iter().map(|bytes| {
+                            SymbolLocation {
+                                at: at.clone(),
+                                range: Some(range(&index, bytes)),
+                            }
+                        }));
+                    }
+                    found
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    })
+}
+
+/// What other modules call a symbol by, for finding its uses there.
+enum Target {
+    /// `module.method`, or a bare `method` when the module is global.
+    Common {
+        module: String,
+        method: String,
+        global: bool,
+    },
+    /// `Справочники.object.method` and the like.
+    Manager {
+        kind: String,
+        object: String,
+        method: String,
+    },
+    /// `Справочники.object`, or a common module's own name.
+    Metadata { kind: String, object: String },
+}
+
+impl Target {
+    /// The modules that may use the target: those spelling every name a use
+    /// must spell. `None` while the index is not built.
+    fn candidates(&self, names: &dyn NameLookup) -> Option<NamedModules> {
+        let mut named = names.modules_naming(self.name())?;
+        let also = match self {
+            Self::Common {
+                module,
+                global: false,
+                ..
+            } => Some(module),
+            Self::Manager { object, .. } => Some(object),
+            _ => None,
+        };
+        if let Some(also) = also {
+            let spelling = names.modules_naming(also)?;
+            named.complete &= spelling.complete;
+            let spelling: std::collections::HashSet<String> = spelling.paths.into_iter().collect();
+            named.paths.retain(|path| spelling.contains(path));
+        }
+        Some(named)
+    }
+
+    /// The name every use spells: the last segment.
+    fn name(&self) -> &str {
+        match self {
+            Self::Common { method, .. } | Self::Manager { method, .. } => method,
+            Self::Metadata { object, .. } => object,
+        }
+    }
+
+    /// The range of this target's name in each path that names it.
+    fn uses(&self, module: &ParsedModule<'_>) -> Vec<std::ops::Range<usize>> {
+        let collection = |raw: &str, kind: &str| {
+            unica_address::source_target::metadata_collection_kind(raw) == Some(kind)
+        };
+        module
+            .paths_naming(&unica_bsl_parser::symbols::name_key(self.name()))
+            .into_iter()
+            .filter(|path| path.plain || path.cursor == 0)
+            .filter(|path| {
+                let segment = |at: usize| path.segments.get(at).map(|(name, _)| name.as_str());
+                match self {
+                    Self::Common {
+                        module: name,
+                        global,
+                        ..
+                    } => match path.cursor {
+                        1 => segment(0).is_some_and(|head| same_name(head, name)),
+                        0 => {
+                            *global
+                                && path.is_call
+                                && module
+                                    .local_definition(
+                                        &path.segments[0].0,
+                                        path.segments[0].1.start,
+                                        true,
+                                    )
+                                    .is_none()
+                        }
+                        _ => false,
+                    },
+                    Self::Manager { kind, object, .. } => {
+                        path.cursor == 2
+                            && segment(0).is_some_and(|head| collection(head, kind))
+                            && segment(1).is_some_and(|name| same_name(name, object))
+                    }
+                    Self::Metadata { kind, .. } if kind == "CommonModule" => {
+                        path.cursor == 0
+                            && path.plain
+                            && path.segments.len() >= 2
+                            && module
+                                .local_definition(
+                                    &path.segments[0].0,
+                                    path.segments[0].1.start,
+                                    false,
+                                )
+                                .is_none()
+                    }
+                    Self::Metadata { kind, .. } => {
+                        path.cursor == 1 && segment(0).is_some_and(|head| collection(head, kind))
+                    }
+                }
+            })
+            .map(|path| path.segments[path.cursor].1.clone())
+            .collect()
+    }
 }
 
 /// The module a request is made in.
@@ -265,7 +468,8 @@ fn unasked<T>(value: T) -> SymbolAnswer<T> {
 /// What a position names, as far as the module's own text tells.
 enum Resolved {
     Local(LocalSymbol),
-    Metadata(SymbolLocation, String),
+    /// A metadata object: its location, name and kind.
+    Metadata(SymbolLocation, String, &'static str),
     /// An exported method of a common module: its location and name.
     CommonMethod(SymbolLocation, String),
     Unknown(NamePath),
@@ -280,6 +484,7 @@ struct CommonModule {
 pub struct SymbolService<'a> {
     provider: Option<&'a dyn SymbolProvider>,
     environment: &'a dyn SymbolEnvironment,
+    names: Option<&'a dyn NameLookup>,
     common_modules: RefCell<HashMap<String, Option<CommonModule>>>,
 }
 
@@ -321,8 +526,15 @@ impl<'a> SymbolService<'a> {
         Self {
             provider,
             environment,
+            names: None,
             common_modules: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Answers references in other modules from the source set's name index.
+    pub fn with_names(mut self, names: &'a dyn NameLookup) -> Self {
+        self.names = Some(names);
+        self
     }
 
     fn resolve(&self, request: &Request<'_, '_>) -> Option<Resolved> {
@@ -352,6 +564,7 @@ impl<'a> SymbolService<'a> {
                     return Some(Resolved::Metadata(
                         SymbolLocation { at, range: None },
                         object.clone(),
+                        kind,
                     ));
                 }
             }
@@ -366,6 +579,7 @@ impl<'a> SymbolService<'a> {
                     return Some(Resolved::Metadata(
                         SymbolLocation { at, range: None },
                         head.clone(),
+                        "CommonModule",
                     ));
                 }
                 let name = &path.segments[1].0;
@@ -545,7 +759,7 @@ impl<'a> SymbolService<'a> {
             Some(Resolved::Local(local)) => {
                 SymbolAnswer::complete(vec![request.location(local.range)])
             }
-            Some(Resolved::Metadata(location, _)) | Some(Resolved::CommonMethod(location, _)) => {
+            Some(Resolved::Metadata(location, ..)) | Some(Resolved::CommonMethod(location, _)) => {
                 SymbolAnswer::complete(vec![location])
             }
             Some(unknown @ Resolved::Unknown(_)) => {
@@ -599,7 +813,7 @@ impl<'a> SymbolService<'a> {
                 let location = request.location(local.range.clone());
                 SymbolAnswer::complete(Some(info(local.name, kind, location)))
             }
-            Some(Resolved::Metadata(location, name)) => {
+            Some(Resolved::Metadata(location, name, _)) => {
                 SymbolAnswer::complete(Some(info(name, SymbolKind::Metadata, location)))
             }
             Some(Resolved::CommonMethod(location, name)) => {
@@ -632,12 +846,11 @@ impl<'a> SymbolService<'a> {
         }
     }
 
-    /// Every place in this module that names the symbol under `position`, its
-    /// declaration included. A parameter or local variable is answered in
-    /// full; for anything visible outside the module the places in other
-    /// modules are reported as not answered. Collecting them means a walk
-    /// over the whole configuration, which an editor request must not start
-    /// (#2190 builds that index in the background).
+    /// Every place that names the symbol under `position`, its declaration
+    /// included. A parameter or local variable is answered from the module
+    /// alone. A symbol other modules name is looked for in the modules the
+    /// name index says spell its name, each parsed and its paths resolved;
+    /// the provider is never asked, since its walk reads the whole corpus.
     pub fn references(
         &self,
         document: &SymbolDocument<'_>,
@@ -651,22 +864,126 @@ impl<'a> SymbolService<'a> {
         let Some(resolved) = self.resolve(&request) else {
             return SymbolAnswer::complete(Vec::new());
         };
-        let Resolved::Local(local) = &resolved else {
-            return SymbolAnswer::partial(Vec::new(), vec![Incompleteness::OtherModules]);
+        let mut locations = Vec::new();
+        let mut reasons = Vec::new();
+        let target = match &resolved {
+            Resolved::Local(local) => {
+                locations.extend(
+                    request
+                        .module
+                        .local_references(local)
+                        .into_iter()
+                        .map(|range| request.location(range)),
+                );
+                if matches!(
+                    local.kind,
+                    LocalSymbolKind::Parameter | LocalSymbolKind::Variable
+                ) || !request.module.is_exported(local)
+                {
+                    return SymbolAnswer::complete(locations);
+                }
+                match (local.kind, self.environment.module_owner(document.at)) {
+                    (LocalSymbolKind::Method, ModuleOwner::Common { name, global }) => {
+                        Target::Common {
+                            module: name,
+                            method: local.name.clone(),
+                            global,
+                        }
+                    }
+                    (LocalSymbolKind::Method, ModuleOwner::Manager { kind, object }) => {
+                        Target::Manager {
+                            kind,
+                            object,
+                            method: local.name.clone(),
+                        }
+                    }
+                    _ => {
+                        return SymbolAnswer::partial(
+                            locations,
+                            vec![Incompleteness::UntypedReferences],
+                        )
+                    }
+                }
+            }
+            Resolved::Metadata(_, object, kind) => Target::Metadata {
+                kind: (*kind).to_string(),
+                object: object.clone(),
+            },
+            Resolved::CommonMethod(location, method) => {
+                match self.environment.module_owner(&location.at) {
+                    ModuleOwner::Common { name, global } => Target::Common {
+                        module: name,
+                        method: method.clone(),
+                        global,
+                    },
+                    _ => {
+                        return SymbolAnswer::partial(
+                            Vec::new(),
+                            vec![Incompleteness::OtherModules],
+                        )
+                    }
+                }
+            }
+            Resolved::Unknown(path) => match manager_method(path) {
+                Some(target) => target,
+                None => {
+                    return SymbolAnswer::partial(Vec::new(), vec![Incompleteness::OtherModules])
+                }
+            },
         };
-        let locations = request
-            .module
-            .local_references(local)
-            .into_iter()
-            .map(|range| request.location(range))
-            .collect();
-        if matches!(
-            local.kind,
-            LocalSymbolKind::Parameter | LocalSymbolKind::Variable
-        ) {
+        for range in target.uses(&request.module) {
+            let location = request.location(range);
+            if !locations.contains(&location) {
+                locations.push(location);
+            }
+        }
+        let Some(names) = self.names else {
+            return SymbolAnswer::partial(locations, vec![Incompleteness::OtherModules]);
+        };
+        let Some(NamedModules { paths, complete }) = target.candidates(names) else {
+            return SymbolAnswer::partial(locations, vec![Incompleteness::NamesNotIndexed]);
+        };
+        if !complete {
+            reasons.push(Incompleteness::Capped);
+        }
+        let mut unaddressable = 0;
+        let mut texts = Vec::with_capacity(paths.len());
+        for path in paths {
+            if context.cancellation.is_cancelled() {
+                reasons.push(Incompleteness::ProviderNotReady);
+                break;
+            }
+            let Some(at) = self.environment.module_address(&path) else {
+                unaddressable += 1;
+                continue;
+            };
+            if at == document.at {
+                continue;
+            }
+            let Some(text) = self.environment.module_source(&path) else {
+                unaddressable += 1;
+                continue;
+            };
+            texts.push((at, text));
+        }
+        locations.extend(uses_in(&target, &texts, context.cancellation));
+        if context.cancellation.is_cancelled()
+            && !reasons.contains(&Incompleteness::ProviderNotReady)
+        {
+            reasons.push(Incompleteness::ProviderNotReady);
+        }
+        if unaddressable > 0 {
+            reasons.push(Incompleteness::Unaddressable(unaddressable));
+        }
+        if matches!(target, Target::Manager { .. }) {
+            // The manager's exports are also reached through a variable
+            // holding the manager, which the code does not type.
+            reasons.push(Incompleteness::UntypedReferences);
+        }
+        if reasons.is_empty() {
             SymbolAnswer::complete(locations)
         } else {
-            SymbolAnswer::partial(locations, vec![Incompleteness::OtherModules])
+            SymbolAnswer::partial(locations, reasons)
         }
     }
 

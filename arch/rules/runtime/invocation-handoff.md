@@ -10,7 +10,7 @@ check:
   - crates/unica-coder/tests/platform/receipt_runtime.rs::committed_canonical_apply_and_saved_replay_keep_their_receipts_after_task_cancel
   - crates/unica-coder/src/interfaces/daemon_router.rs::response_lost_at_the_cutoff_is_recovered_into_the_handed_off_task
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_recovered_task_of_another_key_is_refused
-  - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_window_closing_answers_the_closed_lost_submit_refusal
+  - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_window_closing_answers_the_task_reserved_for_the_call
 ---
 
 # Затянувшийся прямой вызов продолжается в том же фоновом задании

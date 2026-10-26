@@ -143,17 +143,29 @@ fn project_metadata(
             .get("predefinedItems")
             .and_then(|predefined| predefined.get("total"))
             .and_then(Value::as_u64);
+        // Виды `ChildObjects`, которые профиль платформы допускает у вида
+        // объекта, выдаются и пустыми (`count: 0`): «пусто» отличается от
+        // «вид не поддержан», и первый элемент можно создать (#2153).
+        let platform_kinds = match address.segments() {
+            [owner] => unica_source_designer::registration::platform_child_object_order(
+                owner.kind().as_str(),
+            )
+            .unwrap_or_default(),
+            _ => &[],
+        };
         let mut branches = metadata_branch_kinds()
             .iter()
             .filter_map(|kind| {
-                let value = metadata_collection(payload, *kind)?;
+                let value = metadata_collection(payload, *kind);
                 let count = match (kind, predefined_total) {
                     (NodeKind::PredefinedItem, Some(total)) => {
                         usize::try_from(total).unwrap_or(usize::MAX)
                     }
-                    _ => value.as_array().map_or(0, Vec::len),
+                    _ => value.and_then(Value::as_array).map_or(0, Vec::len),
                 };
-                (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
+                let declared = platform_kinds.contains(&kind.as_str());
+                (count > 0 || declared)
+                    .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             })
             .collect::<Vec<_>>();
         let relations = metadata_relations(address, payload);

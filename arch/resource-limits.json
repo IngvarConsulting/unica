@@ -104,6 +104,30 @@
       "review": null
     },
     {
+      "id": "bsl-analyzer.cancel-notice-timeout-ms",
+      "class": "deadline",
+      "resource": "Срок записи уведомления notifications/cancelled для вызова анализатора, брошенного по сроку или отмене.",
+      "unit": "ms",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-process/src/mcp_session.rs",
+        "symbol": "CANCEL_NOTICE_TIMEOUT"
+      },
+      "expr": "Duration::from_secs(1)",
+      "value": 1000,
+      "applied": [
+        "crates/unica-process/src/mcp_session.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2189",
+      "problem": null,
+      "onReach": "запись уведомления считается сбоем потока, сессия анализатора списывается",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "lexical.grep-line-bytes",
       "class": "format",
       "resource": "Байты одной строки вывода git grep, читаемой потоком.",
@@ -2288,7 +2312,7 @@
     {
       "id": "view.registration-settle-window-ms",
       "class": "retention",
-      "resource": "Окно гранулярности отметки времени: файл моложе окна не кешируется в индексе регистраций.",
+      "resource": "Окно гранулярности отметки времени: файл моложе окна не кешируется в индексе регистраций и перечитывается индексом имён при следующем обходе.",
       "unit": "ms",
       "scope": "cache",
       "source": {
@@ -2298,12 +2322,135 @@
       "expr": "std::time::Duration::from_secs(2)",
       "value": 2000,
       "applied": [
-        "crates/unica-coder/src/infrastructure/v13_large_configuration.rs"
+        "crates/unica-coder/src/infrastructure/v13_large_configuration.rs",
+        "crates/unica-coder/src/infrastructure/name_index.rs"
       ],
       "status": "unproven",
       "origin": "b054c6196 (#1457, #1481)",
       "problem": "Отметка времени моложе окна не доказывает неизменность файла (комментарий в v13_large_configuration.rs).",
       "onReach": "Запись не кешируется, корень разбирается заново при следующем вызове.",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "name-index.refresh-interval-ms",
+      "class": "retention",
+      "resource": "Сколько индекс имён набора считается свежим после обхода: раньше этого обращение не начинает новый обход по штампам файлов.",
+      "unit": "ms",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/name_index.rs",
+        "symbol": "NAME_INDEX_REFRESH_INTERVAL"
+      },
+      "expr": "Duration::from_secs(5)",
+      "value": 5000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/name_index.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": "Правка вне Unica видна поиску ссылок не раньше следующего обхода.",
+      "onReach": "обращение начинает фоновый обход; ответ даёт текущий индекс, не дожидаясь обхода",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "name-index.yield-poll-ms",
+      "class": "step",
+      "resource": "Шаг ожидания фоновой сборки индекса имён, пока исполняется вызов MCP.",
+      "unit": "ms",
+      "scope": "process",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/name_index.rs",
+        "symbol": "NAME_INDEX_YIELD_POLL"
+      },
+      "expr": "Duration::from_millis(20)",
+      "value": 20,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/name_index.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": null,
+      "onReach": "сборка проверяет снова; вызов MCP её не ждёт",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "name-index.module-bytes",
+      "class": "format",
+      "resource": "Наибольший текст модуля, который индекс имён читает при сборке.",
+      "unit": "bytes",
+      "scope": "file",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/name_index.rs",
+        "symbol": "NAME_INDEX_MODULE_BYTES"
+      },
+      "expr": "64 * 1024 * 1024",
+      "value": 67108864,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/name_index.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": null,
+      "onReach": "модуль не попадает в индекс, ссылки в нём по индексу не находятся",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "name-index.budget-bytes",
+      "class": "retention",
+      "resource": "Память, до которой растёт индекс имён одного набора (оценка по ключам, путям и спискам модулей).",
+      "unit": "bytes",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/name_index.rs",
+        "symbol": "NAME_INDEX_BUDGET_BYTES"
+      },
+      "expr": "256 * 1024 * 1024",
+      "value": 268435456,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/name_index.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": null,
+      "onReach": "ещё не учтённые модули в индекс не попадают; поиск ссылок отвечает неполным с причиной capped, не отказом",
+      "issue": null,
+      "evidence": [
+        "Замер 26.10.2026, УТ 11 (Sendbox, 12 290 модулей, 7,1 млн строк): индекс около 38 МиБ, сборка 17–48 с в зависимости от нагрузки машины."
+      ],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "symbols.reference-parse-threads",
+      "class": "concurrency",
+      "resource": "Наибольшее число потоков, на которых один поиск ссылок разбирает модули-кандидаты.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-code-intelligence/src/symbols.rs",
+        "symbol": "MAX_REFERENCE_PARSE_THREADS"
+      },
+      "expr": "8",
+      "value": 8,
+      "applied": [
+        "crates/unica-code-intelligence/src/symbols.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": null,
+      "onReach": "разбор идёт на меньшем числе потоков; остальные ядра остаются вызовам MCP",
       "issue": null,
       "evidence": [],
       "decision": null,

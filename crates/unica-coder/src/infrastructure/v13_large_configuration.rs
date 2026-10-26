@@ -236,6 +236,8 @@ pub(crate) struct RegistrationIndex {
 /// файл разбирается при каждом обращении. Обхода дерева нет. Отравленная
 /// блокировка сбрасывает запись, а не отказывает дальше.
 pub(crate) struct RegistrationCache {
+    /// Which modules of the set spell a name, built in the background.
+    names: Arc<crate::infrastructure::name_index::SourceNameIndex>,
     registrations: Mutex<Option<(FileStamp, Arc<RegistrationIndex>)>>,
     configuration: Mutex<Option<(ConfigurationStamps, Arc<Value>)>>,
     support: Mutex<Option<RetainedSupportState>>,
@@ -247,11 +249,12 @@ pub(crate) struct RegistrationCache {
 }
 
 /// Timestamp granularity window: a stamp younger than this is never cached.
-const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+pub(crate) const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Default for RegistrationCache {
     fn default() -> Self {
         Self {
+            names: Arc::default(),
             registrations: Mutex::new(None),
             configuration: Mutex::new(None),
             support: Mutex::new(None),
@@ -316,6 +319,11 @@ impl RegistrationCache {
         if let Some(hook) = slot(&self.after_parse).take() {
             hook();
         }
+    }
+
+    /// The set's name index, kept with its other retained artifacts.
+    pub(crate) fn names(&self) -> &Arc<crate::infrastructure::name_index::SourceNameIndex> {
+        &self.names
     }
 
     fn retains(&self, stamp: &FileStamp) -> bool {

@@ -1,0 +1,31 @@
+{
+  "id": "S-2153-external-root-branches",
+  "issue": 2153,
+  "area": "Навигация",
+  "task": "Корень внешней обработки перечисляет только своих владельцев: видов конфигурации там не бывает, и пустыми ветвями они не выдаются",
+  "workspace": "tests/fixtures/acceptance/workspace-external",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "epf:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "epf:ExternalDataProcessor",
+            "count": 2
+          }
+        },
+        {
+          "pointer": "/data/branches/1",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}
