@@ -27,7 +27,8 @@ pub enum DumpVersionRequirement {
 pub struct DumpValidationFailure {
     pub reason: DumpValidationReason,
     pub path: Option<std::path::PathBuf>,
-    pub root: Option<(String, String)>,
+    /// Boxed so that a failure stays a small `Err` on every platform.
+    pub root: Option<Box<(String, String)>>,
     pub version_requirement: Option<DumpVersionRequirement>,
     detail: Box<str>,
 }
@@ -46,7 +47,7 @@ impl DumpValidationFailure {
         self
     }
     pub fn with_root(mut self, namespace: &str, local_name: &str) -> Self {
-        self.root = Some((namespace.to_owned(), local_name.to_owned()));
+        self.root = Some(Box::new((namespace.to_owned(), local_name.to_owned())));
         self
     }
 }

@@ -561,7 +561,7 @@ fn validation_report(
     if let Some(path) = error.path.as_deref() {
         report["path"] = json!(safe_relative_path(path));
     }
-    if let Some((namespace, local_name)) = &error.root {
+    if let Some((namespace, local_name)) = error.root.as_deref() {
         // The format owner owns the namespace vocabulary. Unknown namespace text
         // may contain connection credentials, a query or a private filesystem URI.
         let namespace = if unica_source_designer::roots::PLATFORM_XML_ROOTS
