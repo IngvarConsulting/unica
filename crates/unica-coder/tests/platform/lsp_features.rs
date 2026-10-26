@@ -117,7 +117,7 @@ fn semantic_tokens_are_relative_utf16_and_one_line_each() {
 #[test]
 fn signature_help_names_the_method_and_the_active_parameter() {
     let no_modules = |_: &str| None;
-    let help = signature_help(MODULE, after(MODULE, "Сложить(А, "), &no_modules).unwrap();
+    let help = signature_help(MODULE, after(MODULE, "Сложить(А, "), &no_modules, &[]).unwrap();
     assert_eq!(help["activeParameter"], 1);
     let signature = &help["signatures"][0];
     assert_eq!(signature["label"], "Сложить(Знач А, Б = 1) Экспорт");
@@ -135,15 +135,15 @@ fn signature_help_names_the_method_and_the_active_parameter() {
     // exported method has a signature.
     let common = "Процедура Метод(Первый, Второй) Экспорт\nКонецПроцедуры\nПроцедура Скрытый(А)\nКонецПроцедуры\n";
     let modules = |name: &str| (name == "ОбщМод").then(|| common.to_owned());
-    let help = signature_help(MODULE, after(MODULE, "Метод(А, "), &modules).unwrap();
+    let help = signature_help(MODULE, after(MODULE, "Метод(А, "), &modules, &[]).unwrap();
     assert_eq!(
         help["signatures"][0]["label"],
         "Метод(Первый, Второй) Экспорт"
     );
     assert_eq!(help["activeParameter"], 1);
     let hidden = MODULE.replace("ОбщМод.Метод", "ОбщМод.Скрытый");
-    assert!(signature_help(&hidden, after(&hidden, "Скрытый(А, "), &modules).is_none());
-    assert!(signature_help(MODULE, after(MODULE, "Метод(А, "), &no_modules).is_none());
+    assert!(signature_help(&hidden, after(&hidden, "Скрытый(А, "), &modules, &[]).is_none());
+    assert!(signature_help(MODULE, after(MODULE, "Метод(А, "), &no_modules, &[]).is_none());
 }
 
 struct Space {
@@ -316,13 +316,14 @@ fn features_on_a_large_common_module() {
         .unwrap();
     let position = LineIndex::new(text).position(text, call);
     measure("signatureHelp", &|| {
-        usize::from(signature_help(text, position, &|_| None).is_some())
+        usize::from(signature_help(text, position, &|_| None, &[]).is_some())
     });
 }
 
 struct FixtureSources {
     global: Vec<GlobalContextMember>,
     stale: bool,
+    form: bool,
 }
 
 impl CompletionSources for FixtureSources {
@@ -355,8 +356,12 @@ impl CompletionSources for FixtureSources {
         })
     }
 
-    fn module_owner(&self) -> Option<(String, String)> {
-        Some(("Catalog".to_owned(), "Номенклатура".to_owned()))
+    fn module_owner(&self) -> Option<ModuleOwner> {
+        Some(ModuleOwner {
+            kind: "Catalog".to_owned(),
+            name: "Номенклатура".to_owned(),
+            form: self.form,
+        })
     }
 
     fn cancelled(&self) -> bool {
@@ -404,8 +409,10 @@ fn completion_offers_scope_names_metadata_and_object_members() {
             name_en: Some("Message".to_owned()),
             signature_ru: Some("Сообщить(<?>,);".to_owned()),
             signature_en: None,
+            parameters: vec!["ТекстСообщения".to_owned(), "Статус".to_owned()],
         }],
         stale: false,
+        form: false,
     };
     let at = OBJECT_MODULE.rfind("\tСу\n").unwrap() + "\tСу".len();
     let answer = completion(
@@ -469,6 +476,7 @@ fn completion_offers_scope_names_metadata_and_object_members() {
     let stale = FixtureSources {
         global: Vec::new(),
         stale: true,
+        form: false,
     };
     assert_eq!(completion_at(OBJECT_MODULE, "\tОбщМод.", &stale), None);
 }
@@ -478,6 +486,7 @@ fn resolve_adds_the_method_description() {
     let sources = FixtureSources {
         global: Vec::new(),
         stale: false,
+        form: false,
     };
     let answer = completion_at(OBJECT_MODULE, "\tОбщМод.", &sources).unwrap();
     let item = answer["items"][0].clone();
@@ -666,4 +675,86 @@ fn completion_latency_on_a_large_configuration() {
             times.iter().cloned().fold(f64::MAX, f64::min)
         );
     }
+}
+
+#[test]
+fn the_module_object_follows_the_module_kind_and_yields_to_variables() {
+    let object = FixtureSources {
+        global: Vec::new(),
+        stale: false,
+        form: false,
+    };
+    let form = FixtureSources {
+        form: true,
+        ..FixtureSources {
+            global: Vec::new(),
+            stale: false,
+            form: false,
+        }
+    };
+    let text = "Процедура П()\n\tЭтотОбъект.\n\tОбъект.\n\tСт\nКонецПроцедуры\n";
+    let members = |needle: &str, sources: &FixtureSources| {
+        labels(&completion_at(text, needle, sources).unwrap())
+    };
+    assert_eq!(members("\tЭтотОбъект.", &object), ["Артикул", "Штрихкоды"]);
+    assert!(members("\tОбъект.", &object).is_empty());
+    // In a form `ЭтотОбъект` is the form; the object is `Объект`, and its
+    // attributes are not bare names of the module.
+    assert!(members("\tЭтотОбъект.", &form).is_empty());
+    assert_eq!(members("\tОбъект.", &form), ["Артикул", "Штрихкоды"]);
+    assert!(!members("\tСт", &form).contains(&"Артикул".to_owned()));
+    assert!(members("\tСт", &object).contains(&"Артикул".to_owned()));
+
+    // A variable named `Объект` takes its own type, even in a form; the
+    // metadata name matches its registration in any case.
+    let assigned = "Процедура П()\n\tОбъект = справочники.номенклатура.СоздатьЭлемент();\n\tОбъект.\nКонецПроцедуры\n";
+    let other_owner = FixtureSources {
+        form: true,
+        ..FixtureSources {
+            global: Vec::new(),
+            stale: false,
+            form: false,
+        }
+    };
+    assert_eq!(
+        labels(&completion_at(assigned, "\tОбъект.", &other_owner).unwrap()),
+        ["Артикул", "Штрихкоды"]
+    );
+    let reassigned = "Процедура П()\n\tОбъект = 1;\n\tОбъект.\nКонецПроцедуры\n";
+    assert!(labels(&completion_at(reassigned, "\tОбъект.", &form).unwrap()).is_empty());
+}
+
+#[test]
+fn platform_methods_are_signed_from_the_global_context() {
+    let global = [GlobalContextMember {
+        kind: GlobalContextMemberKind::Method,
+        name_ru: "ЗначениеЗаполнено".to_owned(),
+        name_en: Some("ValueIsFilled".to_owned()),
+        signature_ru: None,
+        signature_en: None,
+        parameters: vec!["Значение".to_owned()],
+    }];
+    let text = "Процедура П()\n\tЕсли значениезаполнено( Тогда\n\tValueIsFilled(\nКонецПроцедуры\n";
+    for needle in ["значениезаполнено(", "ValueIsFilled("] {
+        let help = signature_help(text, after(text, needle), &|_| None, &global).unwrap();
+        assert_eq!(
+            help["signatures"][0]["label"],
+            "ЗначениеЗаполнено(Значение)"
+        );
+        assert_eq!(
+            help["signatures"][0]["parameters"],
+            json!([{"label": [18, 26]}])
+        );
+        assert_eq!(help["activeParameter"], 0);
+    }
+    // A method of the module shadows the platform one.
+    let shadowed = "Функция ЗначениеЗаполнено(А, Б)\nКонецФункции\nПроцедура П()\n\tЗначениеЗаполнено(\nКонецПроцедуры\n";
+    let help = signature_help(
+        shadowed,
+        after(shadowed, "\tЗначениеЗаполнено("),
+        &|_| None,
+        &global,
+    )
+    .unwrap();
+    assert_eq!(help["signatures"][0]["label"], "ЗначениеЗаполнено(А, Б)");
 }
