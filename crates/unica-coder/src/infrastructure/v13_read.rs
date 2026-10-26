@@ -2237,6 +2237,61 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             && route.reader_metadata_path().is_some_and(|target| {
                 at.segments().len() == target.as_str().split('.').count().div_ceil(2)
             }) {
+            // #2159: the form's declaration (synonym, comment, form type,
+            // standard commands, explanation) is shown next to its structure,
+            // as `declaration`, and changed in the `Metadata` node. A
+            // declaration that cannot be read is named, never the whole form.
+            let metadata_at =
+                QualifiedAddress::parse(&format!("{at}.Metadata")).map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
+            let declaration = match route.reader_metadata_path() {
+                Some(target) => self
+                    .read
+                    .form_metadata_payload(target, &mut || self.read_checkpoint()),
+                None => Err(ViewError::new(
+                    RefusalCode::ProviderUnavailable,
+                    "form route has no typed target",
+                )),
+            };
+            let projected = match declaration {
+                Ok(declaration) => {
+                    let properties = declaration["properties"]
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default();
+                    let (declaration_prop, mut limits) =
+                        crate::infrastructure::v13_read_projection::form_declaration_prop(
+                            at,
+                            &metadata_at,
+                            &properties,
+                        );
+                    limits.extend(
+                        declaration["unreadable"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|item| item["message"].as_str())
+                            .map(|message| format!("declaration: {message}")),
+                    );
+                    let projected = match declaration_prop {
+                        Some(value) => projected.with_prop("declaration", value),
+                        None => projected,
+                    };
+                    projected.with_additional_limits(limits)
+                }
+                Err(error)
+                    if matches!(
+                        error.code(),
+                        RefusalCode::Cancelled | RefusalCode::DeadlineExceeded
+                    ) =>
+                {
+                    return Err(error)
+                }
+                Err(error) => projected.with_additional_limits(vec![format!(
+                    "declaration is unreadable ({error}); read it at {metadata_at}"
+                )]),
+            };
             projected.with_branch(crate::domain::node_view::BranchRef::new(
                 format!("{at}.Metadata"),
                 1,
