@@ -1,3 +1,6 @@
+tools:
+  platform:
+    version: '8.3.27'
 format: DESIGNER
 source-set:
   - name: main
