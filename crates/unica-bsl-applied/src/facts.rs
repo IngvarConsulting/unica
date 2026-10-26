@@ -13,12 +13,16 @@ pub struct ObjectFacts {
     /// The logical address of the object.
     pub at: String,
     /// Attributes, and for a register its dimensions and resources, for a
-    /// journal its columns.
+    /// journal its columns, for a constant its value as one field.
     pub fields: Vec<FieldFacts>,
     pub tabular_sections: Vec<SectionFacts>,
     /// Predefined items of a catalog or a chart, values of an enumeration.
     pub predefined: Vec<String>,
     pub modules: Vec<ModuleFacts>,
+    /// A register whose records belong to a recorder: its record key is the
+    /// recorder and line, not the dimensions, and it has no record manager.
+    /// Accumulation, accounting and calculation registers always are.
+    pub subordinate: bool,
     /// Some facts could not be read: members built from them are partial.
     pub partial: bool,
 }
@@ -74,6 +78,8 @@ pub enum ModuleKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleFacts {
     pub kind: ModuleKind,
+    /// A common module with server call: a client call goes to the server.
+    pub server_call: bool,
     pub methods: Vec<MethodFacts>,
 }
 

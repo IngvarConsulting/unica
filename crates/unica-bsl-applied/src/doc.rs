@@ -5,13 +5,16 @@
 //! Параметры:
 //!   Ссылка - СправочникСсылка.Валюты - the currency.
 //!          - Строка - its code.
+//!   Настройки - Структура:
+//!     * Период - Дата - a key of the structure.
 //! Возвращаемое значение:
-//!   Структура:
-//!     * Код - Строка - a key of the structure.
-//!   Неопределено - nothing was found.
+//!   Неопределено - nothing was found;
+//!                  the description goes on, indented deeper.
 //! ```
 //!
-//! Only the type text is taken; what a type means is decided elsewhere.
+//! An entry starts at the indentation of the first entry of its section;
+//! deeper lines continue a description or list structure keys. Only the
+//! type text is taken; what a type means is decided elsewhere.
 
 /// The type texts of the parameters, by parameter name, and of the result.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -30,41 +33,86 @@ enum Section {
 pub(crate) fn doc_types(doc: &str) -> DocTypes {
     let mut types = DocTypes::default();
     let mut section = Section::None;
+    // The indentation of the entries of the current section.
+    let mut base = None::<usize>;
+    // The last entry may still take alternative types (`- Тип - ...`); a
+    // structure key in between takes them for itself.
+    let mut open = false;
     for raw in doc.lines() {
-        let line = raw.trim_start_matches('/').trim();
-        let header = line.trim_end_matches(':').to_lowercase();
+        // The indentation counts after `//` when the comment keeps it.
+        let body = raw.trim_start().strip_prefix("//").unwrap_or(raw);
+        let line = body.trim();
+        let indent = body.len() - body.trim_start().len();
+        if line.is_empty() {
+            section = Section::None;
+            continue;
+        }
         if line.ends_with(':') && !line.contains(" - ") {
-            match header.as_str() {
+            match line.trim_end_matches(':').to_lowercase().as_str() {
                 "параметры" | "parameters" => {
                     section = Section::Params;
+                    base = None;
+                    open = false;
                     continue;
                 }
                 "возвращаемое значение" | "returns" | "return value" => {
                     section = Section::Returns;
+                    base = None;
+                    open = false;
+                    continue;
+                }
+                // Other sections of the standard end the typed ones.
+                "пример"
+                | "примеры"
+                | "example"
+                | "examples"
+                | "см. также"
+                | "see also"
+                | "варианты вызова"
+                | "call options" => {
+                    section = Section::None;
                     continue;
                 }
                 _ => {}
             }
         }
-        if line.is_empty() {
+        if section == Section::None {
+            continue;
+        }
+        // A line at the margin that is no entry header ends the section
+        // (`Пример:` right after the result).
+        if base.is_some_and(|base| indent < base) {
             section = Section::None;
             continue;
         }
-        // Keys of a structure belong to its description, not to the method.
         if line.starts_with('*') {
+            open = false;
             continue;
         }
+        if let Some(rest) = line.strip_prefix('-') {
+            if open {
+                if let Some(texts) = type_list(first_part(rest)) {
+                    match section {
+                        Section::Params => {
+                            if let Some(last) = types.params.last_mut() {
+                                last.1.extend(texts);
+                            }
+                        }
+                        _ => types.returns.extend(texts),
+                    }
+                }
+            }
+            continue;
+        }
+        let base = *base.get_or_insert(indent);
+        if indent > base {
+            // A description going on.
+            continue;
+        }
+        open = false;
         match section {
             Section::None => {}
             Section::Params => {
-                if let Some(rest) = line.strip_prefix('-') {
-                    if let (Some(texts), Some(last)) =
-                        (type_list(first_part(rest)), types.params.last_mut())
-                    {
-                        last.1.extend(texts);
-                    }
-                    continue;
-                }
                 let mut parts = line.splitn(3, " - ");
                 let (Some(name), Some(text)) = (parts.next(), parts.next()) else {
                     continue;
@@ -75,17 +123,17 @@ pub(crate) fn doc_types(doc: &str) -> DocTypes {
                 }
                 if let Some(texts) = type_list(text) {
                     types.params.push((name.to_string(), texts));
+                    open = true;
                 }
             }
             Section::Returns => {
-                let rest = line.strip_prefix('-').unwrap_or(line);
-                let text = match rest.split_once(" - ") {
+                let text = match line.split_once(" - ") {
                     Some((text, _)) => text,
-                    // `Структура:` opens the keys that follow.
-                    None => rest.trim().trim_end_matches(':'),
+                    None => line,
                 };
                 if let Some(texts) = type_list(text) {
                     types.returns.extend(texts);
+                    open = true;
                 }
             }
         }
@@ -98,11 +146,12 @@ fn first_part(text: &str) -> &str {
 }
 
 /// Comma-separated type texts, or `None` when the text is a description
-/// rather than types.
+/// rather than types. `Структура:` opens structure keys and is a type.
 fn type_list(text: &str) -> Option<Vec<String>> {
+    let text = text.trim().trim_end_matches(':');
     let texts = text
         .split(',')
-        .map(|item| item.trim().trim_end_matches('.').trim().to_string())
+        .map(|item| item.trim().trim_end_matches(['.', ';']).trim().to_string())
         .collect::<Vec<_>>();
     texts.iter().all(|item| is_type_text(item)).then_some(texts)
 }

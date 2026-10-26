@@ -295,6 +295,7 @@ fn an_applied_type_round_trips_and_answers_through_the_seam() {
                         at: Some("main:Catalog.Валюты".into()),
                     }],
                     methods: Vec::new(),
+                    element: None,
                     partial: false,
                 })
             })

@@ -45,10 +45,10 @@ impl AppliedTypes for AppliedModel {
     }
 }
 
-/// The facets an object of `kind` is seen through, tabular sections aside.
-fn facets(kind: &str) -> &'static [AppliedFacet] {
+/// The facets `object` is seen through, tabular sections aside.
+fn facets(object: &ObjectFacts) -> &'static [AppliedFacet] {
     use AppliedFacet::*;
-    match kind {
+    match object.kind.as_str() {
         "Catalog"
         | "Document"
         | "ChartOfCharacteristicTypes"
@@ -59,7 +59,8 @@ fn facets(kind: &str) -> &'static [AppliedFacet] {
         | "Task" => &[Manager, Object, Ref, Selection, List],
         "Enum" => &[Manager, Ref, List],
         "DataProcessor" | "Report" => &[Manager, Object],
-        "InformationRegister" => &[
+        // Only an independent information register has a record manager.
+        "InformationRegister" if !object.subordinate => &[
             Manager,
             RecordSet,
             Record,
@@ -68,6 +69,7 @@ fn facets(kind: &str) -> &'static [AppliedFacet] {
             Selection,
             List,
         ],
+        "InformationRegister" => &[Manager, RecordSet, Record, RecordKey, Selection, List],
         "AccumulationRegister" | "AccountingRegister" | "CalculationRegister" => {
             &[Manager, RecordSet, Record, RecordKey, Selection, List]
         }
@@ -105,8 +107,19 @@ pub fn build(
         .iter()
         .map(|facts| (facts.name.as_str(), facts.types.as_slice()))
         .collect::<HashMap<_, _>>();
+    // Comments name objects in any case; the model keys them as declared.
+    let declared = objects
+        .iter()
+        .map(|object| {
+            (
+                (object.kind.clone(), object.name.to_lowercase()),
+                object.name.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let builder = Builder {
         defined: &defined,
+        declared: &declared,
         templates,
     };
     let mut model = AppliedModel::default();
@@ -117,7 +130,7 @@ pub fn build(
             name: object.name.clone(),
             facet,
         };
-        for facet in facets(&object.kind) {
+        for facet in facets(object) {
             let ty = applied(facet.clone());
             let members = builder.members(object, &ty);
             model.members.insert(ty, Arc::new(members));
@@ -139,7 +152,10 @@ pub fn build(
                 object.name.to_lowercase(),
                 reference(applied(AppliedFacet::Module)),
             );
-        } else if let Some(collection) = templates.collection(&object.kind) {
+        } else if let Some(collection) = (!facets(object).is_empty())
+            .then(|| templates.collection(&object.kind))
+            .flatten()
+        {
             // `Справочники.Валюты` and `Константы.Валюта` are managers.
             let holder = applied(AppliedFacet::Manager);
             let entry = collections.entry(collection).or_default();
@@ -177,6 +193,7 @@ fn property(name: &str, types: Vec<TypeRef>, read_only: bool) -> Property {
 
 struct Builder<'a> {
     defined: &'a HashMap<&'a str, &'a [FieldType]>,
+    declared: &'a HashMap<(String, String), String>,
     templates: &'a dyn Templates,
 }
 
@@ -198,8 +215,13 @@ impl Builder<'_> {
                 .modules
                 .iter()
                 .filter(move |module| module.kind == kind)
-                .flat_map(|module| &module.methods)
-                .filter(|method| method.export)
+                .flat_map(|module| {
+                    module
+                        .methods
+                        .iter()
+                        .filter(|method| method.export)
+                        .map(move |method| (method, module.server_call))
+                })
         };
         match &ty.facet {
             Manager => {
@@ -213,7 +235,7 @@ impl Builder<'_> {
                     }
                 }
                 members.methods = module(ModuleKind::Manager)
-                    .map(|method| self.method(method))
+                    .map(|(method, server_call)| self.method(method, server_call))
                     .collect();
             }
             Object | Ref | Selection => {
@@ -233,14 +255,16 @@ impl Builder<'_> {
                 }
                 if ty.facet == Object {
                     members.methods = module(ModuleKind::Object)
-                        .map(|method| self.method(method))
+                        .map(|(method, server_call)| self.method(method, server_call))
                         .collect();
                 }
             }
             Record | RecordManager => {
                 self.fields(&mut members, &object.fields, |_| true, false);
             }
-            RecordKey => {
+            // The key of a subordinate register is its recorder and line,
+            // which the template names.
+            RecordKey if !object.subordinate => {
                 self.fields(
                     &mut members,
                     &object.fields,
@@ -250,8 +274,16 @@ impl Builder<'_> {
             }
             RecordSet => {
                 members.methods = module(ModuleKind::RecordSet)
-                    .map(|method| self.method(method))
+                    .map(|(method, server_call)| self.method(method, server_call))
                     .collect();
+                members.element = Some(reference(own(Record)));
+            }
+            TabularSection(name) => {
+                members.element = Some(reference(own(TabularSectionRow(name.clone()))));
+            }
+            // The value of a constant is its one field.
+            ValueManager => {
+                self.fields(&mut members, &object.fields, |_| true, false);
             }
             TabularSectionRow(name) => {
                 if let Some(section) = object
@@ -264,7 +296,7 @@ impl Builder<'_> {
             }
             Module => {
                 members.methods = module(ModuleKind::Common)
-                    .map(|method| self.method(method))
+                    .map(|(method, server_call)| self.method(method, server_call))
                     .collect();
             }
             // The template answers these alone.
@@ -330,7 +362,7 @@ impl Builder<'_> {
         }
     }
 
-    fn method(&self, facts: &MethodFacts) -> AppliedMethod {
+    fn method(&self, facts: &MethodFacts, server_call: bool) -> AppliedMethod {
         let documented = facts.doc.as_deref().map(doc::doc_types).unwrap_or_default();
         let params = facts
             .params
@@ -363,7 +395,7 @@ impl Builder<'_> {
                     returns,
                 }],
                 contexts: facts.contexts.clone(),
-                server_call: false,
+                server_call,
             },
             at: facts.at.clone(),
             area: facts.area.clone(),
@@ -396,11 +428,14 @@ impl Builder<'_> {
         }
         if let Some((prefix, name)) = text.split_once('.') {
             if let Some((kind, facet)) = self.templates.applied_prefix(prefix) {
-                return reference(AppliedType {
-                    kind,
-                    name: name.to_string(),
-                    facet,
-                });
+                // Only an object of this configuration, keyed as declared.
+                if let Some(name) = self.declared.get(&(kind.clone(), name.to_lowercase())) {
+                    return reference(AppliedType {
+                        kind,
+                        name: name.clone(),
+                        facet,
+                    });
+                }
             }
         }
         TypeRef {

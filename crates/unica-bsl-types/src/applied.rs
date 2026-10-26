@@ -91,6 +91,10 @@ pub struct AppliedMembers {
     pub platform: Option<TypeId>,
     pub properties: Vec<AppliedProperty>,
     pub methods: Vec<AppliedMethod>,
+    /// What `Для Каждого` walks and what adding an element returns: the row
+    /// of a tabular section, the record of a record set. `None` for a type
+    /// that holds no elements of the configuration.
+    pub element: Option<TypeRef>,
     /// Some members could not be read: the answer is not the whole type
     /// (INV.LSP.PARTIAL-ANSWERS).
     pub partial: bool,

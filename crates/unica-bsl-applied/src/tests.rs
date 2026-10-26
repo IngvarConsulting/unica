@@ -109,6 +109,7 @@ fn currencies() -> ObjectFacts {
         }],
         predefined: vec!["Рубль".into()],
         modules: vec![ModuleFacts {
+            server_call: false,
             kind: ModuleKind::Manager,
             methods: vec![
                 method(
@@ -120,6 +121,7 @@ fn currencies() -> ObjectFacts {
                 method("Скрытый", false, false, ""),
             ],
         }],
+        subordinate: false,
         partial: false,
     }
 }
@@ -133,6 +135,7 @@ fn model() -> AppliedModel {
         tabular_sections: Vec::new(),
         predefined: Vec::new(),
         modules: vec![ModuleFacts {
+            server_call: false,
             kind: ModuleKind::Common,
             methods: vec![method(
                 "Свойства",
@@ -141,6 +144,7 @@ fn model() -> AppliedModel {
                 "Возвращаемое значение:\n  Структура:\n    * Ключ - Строка - a key.\n  Массив из СправочникСсылка.Валюты - refs.\n  Произвольный - anything.",
             )],
         }],
+        subordinate: false,
         partial: false,
     };
     build(
@@ -251,6 +255,22 @@ fn managers_objects_and_references_carry_typed_members_and_their_templates() {
         ))
         .unwrap();
     assert_eq!(row.platform.as_deref(), Some("tabular/Line"));
+    // A tabular section walks and adds its rows.
+    let section = model
+        .members(&applied(
+            "Catalog",
+            "Валюты",
+            AppliedFacet::TabularSection("Курсы".into()),
+        ))
+        .unwrap();
+    assert_eq!(
+        section.element.as_ref().unwrap().ty,
+        applied(
+            "Catalog",
+            "Валюты",
+            AppliedFacet::TabularSectionRow("Курсы".into())
+        )
+    );
     assert_eq!(row.properties[0].property.ru, "Курс");
 }
 
@@ -321,6 +341,7 @@ fn registers_split_dimensions_from_resources_and_partial_facts_mark_members() {
         tabular_sections: Vec::new(),
         predefined: Vec::new(),
         modules: Vec::new(),
+        subordinate: false,
         partial: true,
     };
     let model = build(&[rates], &[], &Catalog);
@@ -339,6 +360,17 @@ fn registers_split_dimensions_from_resources_and_partial_facts_mark_members() {
     assert_eq!(names(AppliedFacet::RecordManager), ["Валюта", "Курс"]);
     assert_eq!(names(AppliedFacet::RecordKey), ["Валюта"]);
     assert!(names(AppliedFacet::RecordSet).is_empty());
+    let set = model
+        .members(&applied(
+            "InformationRegister",
+            "Курсы",
+            AppliedFacet::RecordSet,
+        ))
+        .unwrap();
+    assert_eq!(
+        set.element.as_ref().unwrap().ty,
+        applied("InformationRegister", "Курсы", AppliedFacet::Record)
+    );
     assert!(model
         .members(&applied(
             "InformationRegister",
@@ -364,4 +396,143 @@ fn a_comment_yields_only_type_texts_of_its_parameter_and_result_sections() {
         ]
     );
     assert_eq!(types.returns, ["Булево", "Неопределено"]);
+}
+
+#[test]
+fn a_subordinate_register_keys_by_recorder_and_has_no_record_manager() {
+    let movements = ObjectFacts {
+        kind: "AccumulationRegister".into(),
+        name: "Остатки".into(),
+        at: "main:AccumulationRegister.Остатки".into(),
+        fields: vec![field("Склад", FieldRole::Dimension, Vec::new())],
+        tabular_sections: Vec::new(),
+        predefined: Vec::new(),
+        modules: Vec::new(),
+        subordinate: true,
+        partial: false,
+    };
+    let constant = ObjectFacts {
+        kind: "Constant".into(),
+        name: "ОсновнаяВалюта".into(),
+        at: "main:Constant.ОсновнаяВалюта".into(),
+        fields: vec![field(
+            "Значение",
+            FieldRole::Attribute,
+            vec![FieldType::Reference {
+                kind: "Catalog".into(),
+                name: "Валюты".into(),
+            }],
+        )],
+        tabular_sections: Vec::new(),
+        predefined: Vec::new(),
+        modules: Vec::new(),
+        subordinate: false,
+        partial: false,
+    };
+    let unknown = ObjectFacts {
+        kind: "FilterCriterion".into(),
+        name: "Связи".into(),
+        at: "main:FilterCriterion.Связи".into(),
+        fields: Vec::new(),
+        tabular_sections: Vec::new(),
+        predefined: Vec::new(),
+        modules: Vec::new(),
+        subordinate: false,
+        partial: false,
+    };
+    let model = build(&[movements, constant, unknown], &[], &Catalog);
+    let key = model
+        .members(&applied(
+            "AccumulationRegister",
+            "Остатки",
+            AppliedFacet::RecordKey,
+        ))
+        .unwrap();
+    assert!(key.properties.is_empty());
+    assert!(model
+        .members(&applied(
+            "AccumulationRegister",
+            "Остатки",
+            AppliedFacet::RecordManager
+        ))
+        .is_none());
+    // The value of a constant continues the chain.
+    let value = model
+        .members(&applied(
+            "Constant",
+            "ОсновнаяВалюта",
+            AppliedFacet::ValueManager,
+        ))
+        .unwrap();
+    assert_eq!(
+        value.properties[0].property.types[0].ty,
+        applied("Catalog", "Валюты", AppliedFacet::Ref)
+    );
+    // A kind the model does not know gets no dangling manager.
+    assert!(model
+        .members(&TypeName::Context(
+            "collections/FilterCriterionsManager".into()
+        ))
+        .is_none());
+}
+
+#[test]
+fn comment_types_skip_descriptions_structure_keys_and_other_sections() {
+    let types = doc::doc_types(
+        "Описание.\n\nПараметры:\n  Флаг - Булево - признак\n  Настройки - Структура:\n    * Период - Дата\n             - СтандартныйПериод\n  Ссылка - ЛюбаяСсылка - описание с - дефисом;\n           Иначе - Ложь.\n         - Строка - alternative.\n\nВозвращаемое значение:\n  Строка - представление\n    документа.\n  Булево - Истина, если\n    объект - новый.\nПример:\n  Строка - not a type section.",
+    );
+    assert_eq!(
+        types.params,
+        [
+            ("Флаг".to_string(), vec!["Булево".to_string()]),
+            ("Настройки".to_string(), vec!["Структура".to_string()]),
+            (
+                "Ссылка".to_string(),
+                vec!["ЛюбаяСсылка".to_string(), "Строка".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(types.returns, ["Строка", "Булево"]);
+}
+
+#[test]
+fn comment_names_resolve_to_declared_objects_only() {
+    let model = model();
+    let module = model
+        .members(&applied(
+            "CommonModule",
+            "ОбщегоНазначения",
+            AppliedFacet::Module,
+        ))
+        .unwrap();
+    assert!(!module.methods[0].method.server_call);
+    let builder_model = build(&[currencies()], &[], &Catalog);
+    let manager = builder_model
+        .members(&applied("Catalog", "Валюты", AppliedFacet::Manager))
+        .unwrap();
+    // `СправочникСсылка.Валюты` in the comment matched the declared spelling;
+    // an object the configuration does not declare is not invented.
+    assert_eq!(
+        manager.methods[0].method.variants[0].returns[0].ty,
+        applied("Catalog", "Валюты", AppliedFacet::Ref)
+    );
+    let mut lower = currencies();
+    lower.modules[0].methods[0].doc = Some(
+        "Возвращаемое значение:\n  СправочникСсылка.валюты - ok.\n  СправочникСсылка.Чужой - unknown.".into(),
+    );
+    let model = build(&[lower], &[], &Catalog);
+    let manager = model
+        .members(&applied("Catalog", "Валюты", AppliedFacet::Manager))
+        .unwrap();
+    assert_eq!(
+        manager.methods[0].method.variants[0]
+            .returns
+            .iter()
+            .map(|ty| ty.ty.clone())
+            .collect::<Vec<_>>(),
+        [
+            applied("Catalog", "Валюты", AppliedFacet::Ref),
+            TypeName::Unresolved("СправочникСсылка.Чужой".into()),
+        ]
+    );
 }
