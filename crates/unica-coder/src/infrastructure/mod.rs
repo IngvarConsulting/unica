@@ -43,6 +43,7 @@ pub(crate) mod runtime_jobs_integration;
 mod runtime_preflight_integration;
 pub(crate) mod source_roots;
 // The topology provider is introduced before both public consumers migrate to it.
+pub(crate) mod name_index;
 #[allow(dead_code)]
 pub(crate) mod support_guard;
 #[allow(dead_code)]

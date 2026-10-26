@@ -627,6 +627,53 @@ impl<'a> LogicalViewReadAuthority<'a> {
         })
     }
 
+    /// The saved text of the module at a source-root-relative path, read as
+    /// is, without projecting it.
+    pub(crate) fn module_source_at_path(&self, path: &str) -> Option<String> {
+        let bytes = self
+            .read
+            .read_optional_relative_whole(std::path::Path::new(path))
+            .ok()??;
+        let text = String::from_utf8(bytes).ok()?;
+        Some(text.trim_start_matches('\u{feff}').to_string())
+    }
+
+    /// Whether a common module is global, by its descriptor.
+    pub(crate) fn common_module_is_global(&self, module: &QualifiedAddress) -> Option<bool> {
+        self.with_module_projection(module, |_, projections| {
+            Ok(projections
+                .summary()
+                .props
+                .common_module
+                .as_ref()
+                .and_then(|properties| properties.global))
+        })
+        .ok()
+        .flatten()
+    }
+
+    /// The source-root-relative paths of the modules that spell `name`, from
+    /// the set's name index; `None` until its first build has finished.
+    pub(crate) fn modules_naming(&self, name: &str) -> Option<Vec<String>> {
+        let source_set = self.read.source_set().to_string();
+        let kind = self.read.source_set_kind();
+        let profile = self.profile.clone();
+        let modules: crate::infrastructure::name_index::ModulePaths =
+            std::sync::Arc::new(move |path: &std::path::Path| {
+                crate::infrastructure::event_sources::module_address_for_relative(
+                    &source_set,
+                    kind,
+                    profile.clone(),
+                    path,
+                )
+                .is_some()
+            });
+        self.read
+            .artifacts()
+            .names()
+            .modules_naming(name, self.read.retained_root(), &modules)
+    }
+
     /// Whether the source set declares the node: the same typed read as `view`.
     pub(crate) fn node_exists(&self, at: &QualifiedAddress) -> bool {
         self.snapshot(at)

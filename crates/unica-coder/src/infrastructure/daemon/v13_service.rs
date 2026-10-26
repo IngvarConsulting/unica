@@ -4451,7 +4451,8 @@ impl CanonicalV13ReadService {
             saved: &saved,
         };
         let provider = self.symbol_provider(invocation, &source_set);
-        let service = SymbolService::new(provider.as_deref(), &environment);
+        let service =
+            SymbolService::new(provider.as_deref(), &environment).with_names(&environment);
         // The provider gets the invocation's deadline, as MCP calls do: a
         // shorter editor budget would retire the shared analyzer session on
         // every slow answer until #2189 lets a deadline cancel without that.
