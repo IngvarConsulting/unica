@@ -2656,3 +2656,45 @@ fn props_set_writes_a_nested_subsystem_at_its_own_address() {
     let viewed = view(&runtime, &fixture, at);
     assert_eq!(viewed["props"]["Comment"], "Nested 2217", "{viewed}");
 }
+
+/// #2218: a role synonym longer than the property limit is named in
+/// `limits` by its platform address and reads whole there.
+#[test]
+fn oversized_role_synonym_is_named_by_its_platform_name() {
+    let fixture = Fixture::new("workspace");
+    let runtime = runtime();
+    let at = "main:Role.SalesReader";
+    let descriptor = fixture.source.join("Roles/SalesReader.xml");
+    let synonym = "р".repeat(4096);
+    let xml = std::fs::read_to_string(&descriptor)
+        .unwrap()
+        .replace("Читатель продаж", &synonym);
+    std::fs::write(&descriptor, xml).unwrap();
+    let data = view(&runtime, &fixture, at);
+    assert!(
+        data["props"].get("Synonym").is_none(),
+        "an oversized synonym stays out of props"
+    );
+    let named = data["limits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|limit| limit.contains(".Props."))
+        .collect::<Vec<_>>();
+    assert_eq!(named.len(), 1, "one limit names the dropped property");
+    assert!(
+        named[0].ends_with(&format!("{at}.Props.Synonym")),
+        "the limit names the synonym by its platform address"
+    );
+    let whole = view(&runtime, &fixture, &format!("{at}.Props.Synonym"));
+    assert!(
+        whole["props"]["Synonym"] == synonym,
+        "the synonym reads whole at its address"
+    );
+    let plain = view(&runtime, &Fixture::new("workspace"), at);
+    assert!(
+        plain.get("limits").is_none(),
+        "a short synonym leaves no limit"
+    );
+}
