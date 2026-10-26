@@ -39,6 +39,10 @@ pub(super) mod test_control;
 struct InfobaseTarget {
     configured: bool,
     source: Option<&'static str>,
+    /// The layers that name the infobase by a top-level `connection`: the
+    /// former runner format, which v8-runner 0.15 refuses with the whole
+    /// configuration (#2155).
+    legacy_connection: Vec<&'static str>,
 }
 
 /// Какой вопрос задан корню рабочего пространства.
@@ -509,7 +513,18 @@ fn bootstrap_result(
             ]));
         }
     }
-    let setup = if config_state == "configured"
+    if !infobase.legacy_connection.is_empty() {
+        ready = false;
+        if let Value::Array(items) = &mut diagnostics {
+            items.retain(|item| item["code"] != "source_roots_missing");
+            items.push(legacy_connection_finding(&infobase.legacy_connection));
+        }
+    }
+    // A former top-level `connection` is the one thing to fix first: the
+    // source-set example would lead away from it.
+    let setup = if !infobase.legacy_connection.is_empty() {
+        None
+    } else if config_state == "configured"
         && source_map.source_sets.is_empty()
         && !infobase.configured
     {
@@ -669,6 +684,11 @@ fn bootstrap_result(
         ("sourceSelectionError", value(source_selection_error)),
         ("setup", setup.unwrap_or(Value::Null)),
     ]));
+    if !infobase.legacy_connection.is_empty() {
+        result
+            .warnings
+            .push(legacy_connection_finding(&infobase.legacy_connection));
+    }
     if config_state == "missing" {
         result.next.push(next_action(
             "unica.run",
@@ -744,6 +764,7 @@ fn inspect_infobase_target(
         return Ok(InfobaseTarget {
             configured: false,
             source: None,
+            legacy_connection: Vec::new(),
         });
     }
     let base = read_yaml_config(workspace_root, "v8project.yaml")?
@@ -762,10 +783,84 @@ fn inspect_infobase_target(
     let configured = connection
         .as_deref()
         .is_some_and(|connection| !connection.trim().is_empty());
+    let has_top_level_connection = |layer: &serde_yaml::Value| {
+        layer
+            .as_mapping()
+            .is_some_and(|mapping| mapping.contains_key(serde_yaml::Value::from("connection")))
+    };
+    let mut legacy_connection = Vec::new();
+    if has_top_level_connection(&base) {
+        legacy_connection.push("v8project.yaml");
+    }
+    if local.as_ref().is_some_and(has_top_level_connection) {
+        legacy_connection.push("v8project.local.yaml");
+    }
+    // The runner refuses the whole configuration, so no infobase is usable
+    // even when `infobases.origin` is declared beside the former key.
+    let configured = configured && legacy_connection.is_empty();
     Ok(InfobaseTarget {
         configured,
         source: configured.then_some(source.expect("configured connection has a source")),
+        legacy_connection,
     })
+}
+
+/// The finding about a top-level `connection`: the key, the layers that hold
+/// it and where v8-runner 0.15 reads the infobase address instead.
+fn legacy_connection_finding(files: &[&str]) -> Value {
+    let named = files.join(" and ");
+    object([
+        (
+            "code",
+            Value::String("config.legacy_top_level_connection".to_string()),
+        ),
+        ("severity", Value::String("error".to_string())),
+        ("scope", Value::String("config".to_string())),
+        (
+            "paths",
+            Value::Array(files.iter().map(|file| Value::String(file.to_string())).collect()),
+        ),
+        ("count", Value::Number(files.len().into())),
+        ("key", Value::String("connection".to_string())),
+        (
+            "moveTo",
+            object([
+                ("file", Value::String("v8project.local.yaml".to_string())),
+                ("key", Value::String("infobases.origin.connection".to_string())),
+            ]),
+        ),
+        (
+            "message",
+            Value::String(format!(
+                "{named} names the infobase by a top-level `connection`, the former v8-runner format; v8-runner 0.15 refuses the configuration and the infobase is not configured. Move the value to `infobases.origin.connection` in v8project.local.yaml"
+            )),
+        ),
+        ("evidence", Value::Array(Vec::new())),
+        (
+            "remediation",
+            object([
+                (
+                    "summary",
+                    Value::String(
+                        "Declare the infobase as infobases.origin in the machine-local layer"
+                            .to_string(),
+                    ),
+                ),
+                (
+                    "steps",
+                    Value::Array(vec![
+                        Value::String(format!("Remove the top-level `connection` key from {named}")),
+                        Value::String(
+                            "Write it to v8project.local.yaml as `infobases: {origin: {connection: '<value>'}}`, or run `v8-runner init --infobase '<value>'`"
+                                .to_string(),
+                        ),
+                        Value::String("Run unica.view with an empty object again".to_string()),
+                    ]),
+                ),
+                ("commands", Value::Array(Vec::new())),
+            ]),
+        ),
+    ])
 }
 
 pub(super) fn read_yaml_config(
@@ -1659,6 +1754,110 @@ mod tests {
 
         assert!(target.configured);
         assert_eq!(target.source, Some("v8project.local.yaml"));
+    }
+
+    /// #2155: a top-level `connection`, the former runner format, configures
+    /// nothing, and both root answers name the key and where it belongs.
+    #[test]
+    fn a_top_level_connection_is_named_with_the_place_it_belongs() {
+        use super::{prepare, Preparation};
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use std::sync::Arc;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_work_control::cancellation::CancellationToken;
+
+        for (layers, base, local) in [
+            (
+                vec!["v8project.yaml"],
+                "format: DESIGNER\nconnection: 'File=build/ib'\n",
+                None,
+            ),
+            (
+                vec!["v8project.local.yaml"],
+                "format: DESIGNER\n",
+                Some("connection: 'Srvr=server;Ref=base'\n"),
+            ),
+            // The runner refuses the configuration even beside a declared
+            // origin, so the origin does not make the infobase usable.
+            (
+                vec!["v8project.yaml", "v8project.local.yaml"],
+                "format: DESIGNER\nconnection: 'File=build/ib'\n",
+                Some("connection: 'File=other'\ninfobases:\n  origin:\n    connection: 'File=build/ib'\n"),
+            ),
+        ] {
+            let workspace = tempfile::tempdir().unwrap();
+            std::fs::write(workspace.path().join("v8project.yaml"), base).unwrap();
+            if let Some(local) = local {
+                std::fs::write(workspace.path().join("v8project.local.yaml"), local).unwrap();
+            }
+            let target = inspect_infobase_target(workspace.path(), true).unwrap();
+            assert!(!target.configured, "{layers:?}");
+            assert_eq!(target.legacy_connection, layers);
+
+            let (_state, continuations) = continuation_store();
+            let root = std::fs::canonicalize(workspace.path()).unwrap();
+            let answer = |tool| {
+                let request = InvocationRequest::new(
+                    tool,
+                    serde_json::json!({}),
+                    root.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                let Preparation::Ready(inspection) = prepare(
+                    &request,
+                    InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+                    &continuations,
+                    &Default::default(),
+                ) else {
+                    panic!("root inspection must prepare");
+                };
+                inspection.execute(CancellationToken::new()).unwrap()
+            };
+            let assert_finding = |finding: &serde_json::Value| {
+                assert_eq!(finding["key"], "connection", "{finding}");
+                assert_eq!(finding["paths"], serde_json::json!(layers), "{finding}");
+                assert_eq!(
+                    finding["moveTo"],
+                    serde_json::json!({"file": "v8project.local.yaml", "key": "infobases.origin.connection"})
+                );
+                let message = finding["message"].as_str().unwrap();
+                assert!(
+                    message.contains("infobases.origin.connection")
+                        && message.contains("v8project.local.yaml"),
+                    "{message}"
+                );
+            };
+
+            let facts = answer(ToolIdentity::View);
+            let data = facts.data.as_ref().unwrap();
+            assert_eq!(data["infobase"]["configured"], false, "{data}");
+            assert!(data["setup"].is_null(), "no competing setup advice: {data}");
+            assert!(
+                facts.next.iter().all(|next| next["tool"] != "unica.run"),
+                "no runner preview against a refused configuration: {:?}",
+                facts.next
+            );
+            let warning = facts
+                .warnings
+                .iter()
+                .find(|warning| warning["code"] == "config.legacy_top_level_connection")
+                .unwrap_or_else(|| panic!("view names the key: {facts:?}"));
+            assert_finding(warning);
+
+            let verdict = answer(ToolIdentity::Check);
+            let data = verdict.data.as_ref().unwrap();
+            assert_eq!(data["ready"], false, "{data}");
+            let diagnostic = data["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|diagnostic| diagnostic["code"] == "config.legacy_top_level_connection")
+                .unwrap_or_else(|| panic!("check names the key: {data}"));
+            assert_finding(diagnostic);
+        }
     }
 
     #[test]
