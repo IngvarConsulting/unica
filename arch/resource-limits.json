@@ -1685,7 +1685,7 @@
       "status": "unproven",
       "origin": "8a85591e3 (#693)",
       "problem": null,
-      "onReach": "stdout сверх предела — отказ invalid_result «v8-runner returned an unreadable or oversized JSON result»; stderr тихо сохраняет хвост с пометкой об усечении.",
+      "onReach": "stdout сверх предела — отказ invalid_result «v8-runner returned an unreadable or oversized JSON result»; кадр протокола публикации pull сверх предела не читается — отказ invalid_result с пределом и причиной; отказ после публикации сообщает, что исходники опубликованы, а заменённые сохранены в recovery; stderr тихо сохраняет хвост с пометкой об усечении.",
       "issue": null,
       "evidence": [],
       "decision": null,
