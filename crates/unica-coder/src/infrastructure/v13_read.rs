@@ -2249,8 +2249,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 Some(target) => self
                     .read
                     .form_metadata_payload(target, &mut || self.read_checkpoint()),
-                None => Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                None => Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "form route has no typed target",
                 )),
             };

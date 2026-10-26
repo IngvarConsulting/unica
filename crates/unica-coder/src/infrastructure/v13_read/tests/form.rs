@@ -1054,7 +1054,7 @@ fn form_declaration_never_hides_the_form() {
     ] {
         write(&descriptor, &format!("{header}{properties}{footer}"));
         let view = fixture.view_service().view(ViewRequest::new(root).unwrap());
-        assert!(view.ok, "{view:?}");
+        assert!(view.ok, "the form opens despite its declaration");
         let data = view.data.unwrap();
         assert_eq!(data["kind"], "Form");
         assert!(
@@ -1063,8 +1063,7 @@ fn form_declaration_never_hides_the_form() {
                 .unwrap()
                 .iter()
                 .any(|item| item.as_str().is_some_and(|text| text.contains(&limit))),
-            "{limit}: {}",
-            data["limits"]
+            "the declaration limit is named: {limit}"
         );
         assert!(data["props"]["declaration"].get("Comment").is_none());
     }
