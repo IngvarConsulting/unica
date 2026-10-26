@@ -2360,6 +2360,31 @@
       "review": null
     },
     {
+      "id": "view.title-bytes",
+      "class": "format",
+      "resource": "Размер заголовка узла и кандидата поиска в ответах view, search и resolve.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-coder/src/domain/node_view.rs",
+        "symbol": "MAX_TITLE_BYTES"
+      },
+      "expr": "2_048",
+      "value": 2048,
+      "applied": [
+        "crates/unica-coder/src/domain/node_view.rs",
+        "crates/unica-coder/src/infrastructure/v13_read_projection.rs"
+      ],
+      "status": "unproven",
+      "origin": "02c83648f",
+      "problem": null,
+      "onReach": "Заголовок усекается по границе символа и помечается многоточием; полное значение читается по адресу свойства <узел>.Props.<имя>, который называет предел в limits.",
+      "issue": "#2246",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "view.projected-branches",
       "class": "format",
       "resource": "Число ветвей видов в проекции узла view.",
