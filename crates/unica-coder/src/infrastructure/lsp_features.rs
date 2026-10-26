@@ -178,6 +178,11 @@ fn split_lines(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
 /// connection has open or from the file; `None` when there is none.
 pub(crate) type CommonModuleText<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
+/// The platform help is not indexed yet and the call may be one of its
+/// methods: "no signature" would be an answer given without its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SourceNotReady;
+
 /// `textDocument/signatureHelp` for a call of a method of this module, of
 /// an exported method of a common module, or of a method of the platform
 /// global context. A call of anything else (an object's method) has no
@@ -186,18 +191,20 @@ pub(crate) fn signature_help(
     text: &str,
     position: Utf16Position,
     common_module: &CommonModuleText<'_>,
-    global_context: &[GlobalContextMember],
-) -> Option<Value> {
+    global_context: Option<&[GlobalContextMember]>,
+) -> Result<Option<Value>, SourceNotReady> {
     let lines = LineIndex::new(text);
-    let offset = lines.offset(text, position).ok()?;
+    let Ok(offset) = lines.offset(text, position) else {
+        return Ok(None);
+    };
     let parsed = parse(text);
-    let call = parsed.call_at(offset)?;
+    let Some(call) = parsed.call_at(offset) else {
+        return Ok(None);
+    };
     let method = match &call.qualifier {
         None => find_method(&parsed.editor_symbols(), &call.name, false),
-        Some(module) => {
-            let module_text = common_module(module)?;
-            find_method(&parse(&module_text).editor_symbols(), &call.name, true)
-        }
+        Some(module) => common_module(module)
+            .and_then(|text| find_method(&parse(&text).editor_symbols(), &call.name, true)),
     };
     let (label, parameters, description) = match method {
         Some(method) => {
@@ -205,11 +212,14 @@ pub(crate) fn signature_help(
             (label, parameters, method.description)
         }
         None if call.qualifier.is_none() => {
-            let member = global_method(global_context, &call.name)?;
+            let Some(member) = global_method(global_context.ok_or(SourceNotReady)?, &call.name)
+            else {
+                return Ok(None);
+            };
             let (label, parameters) = global_signature_label(member);
             (label, parameters, None)
         }
-        None => return None,
+        None => return Ok(None),
     };
     let mut signature = json!({
         "label": label,
@@ -225,11 +235,11 @@ pub(crate) fn signature_help(
     }
     // An argument past the last parameter highlights none, as LSP allows.
     let active = call.active_parameter;
-    Some(json!({
+    Ok(Some(json!({
         "signatures": [signature],
         "activeSignature": 0,
         "activeParameter": active,
-    }))
+    })))
 }
 
 /// A global context method by its Russian or English name, in any case.
