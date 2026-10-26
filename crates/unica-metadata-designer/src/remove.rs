@@ -1,4 +1,5 @@
 //! Bounded metadata reference/subsystem removal planning over issued read observations.
+use memchr::memmem;
 use roxmltree::Document;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -666,15 +667,18 @@ pub fn meta_remove_references(
     source_set: &str,
     relative: &Path,
     text: &str,
-    patterns: &[String],
-    query_patterns: &[String],
+    search: &MetaRemoveSearch,
 ) -> Vec<MetaRemoveReference> {
     let is_bsl = relative
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("bsl"));
-    let (owner, descriptor) = meta_remove_referrer(relative);
     let mut found = Vec::new();
+    if !search.may_mention(text, !is_bsl) {
+        return found;
+    }
+    let (patterns, query_patterns) = (&search.patterns, &search.query_patterns);
+    let (owner, descriptor) = meta_remove_referrer(relative);
     if is_bsl {
         let module = unica_source_designer::module_layout::platform_xml_module_identity(relative)
             .ok()
@@ -685,7 +689,7 @@ pub fn meta_remove_references(
             })
             .unwrap_or(owner);
         for (index, line) in text.lines().enumerate() {
-            if patterns.iter().any(|pattern| mentions(line, pattern)) {
+            if patterns.mentioned_in(line) {
                 found.push(MetaRemoveReference::Code {
                     at: format!("{source_set}:{module}"),
                     line: index + 1,
@@ -696,7 +700,7 @@ pub fn meta_remove_references(
     }
     let property_of_file = file_stem_string(relative);
     let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
-        if patterns.iter().any(|pattern| mentions(text, pattern)) {
+        if patterns.mentioned_in(text) {
             found.push(MetaRemoveReference::Metadata {
                 at: format!("{source_set}:{owner}"),
                 property: property_of_file,
@@ -719,9 +723,7 @@ pub fn meta_remove_references(
                     at: at.clone(),
                     line: index + 1,
                 };
-                if query_patterns.iter().any(|pattern| mentions(line, pattern))
-                    && !found.contains(&reference)
-                {
+                if query_patterns.mentioned_in(line) && !found.contains(&reference) {
                     found.push(reference);
                 }
             }
@@ -740,22 +742,17 @@ pub fn meta_remove_references(
                 at: query_text_address(source_set, &owner, node),
                 property: design_time_property(value),
             };
-            if query_patterns.iter().any(|pattern| mentions(text, pattern))
-                && !found.contains(&reference)
-            {
+            if query_patterns.mentioned_in(text) && !found.contains(&reference) {
                 found.push(reference);
             }
             continue;
         }
         let named = if node.is_text() {
             node.text()
-                .is_some_and(|value| patterns.iter().any(|pattern| mentions(value, pattern)))
+                .is_some_and(|value| patterns.mentioned_in(value))
         } else {
-            node.attributes().any(|attribute| {
-                patterns
-                    .iter()
-                    .any(|pattern| mentions(attribute.value(), pattern))
-            })
+            node.attributes()
+                .any(|attribute| patterns.mentioned_in(attribute.value()))
         };
         if !named {
             continue;
@@ -1004,16 +1001,222 @@ fn descriptor_property(node: roxmltree::Node<'_, '_>) -> String {
         .unwrap_or_default()
 }
 
-/// Whether `text` names the object by `pattern` as a whole name: `Catalog.X`
-/// does not match `Catalog.XY` or `MyCatalog.X`. The bare common-module
-/// pattern `X.` must not follow a dot, where it names a member of another object.
-fn mentions(text: &str, pattern: &str) -> bool {
-    let identifier = |ch: char| ch.is_alphanumeric() || ch == '_';
-    let bare = pattern.ends_with('.') && !pattern[..pattern.len() - 1].contains('.');
-    text.match_indices(pattern).any(|(start, _)| {
-        let before = text[..start].chars().next_back();
-        let after = text[start + pattern.len()..].chars().next();
-        !before.is_some_and(|ch| identifier(ch) || (bare && ch == '.'))
-            && (pattern.ends_with('.') || !after.is_some_and(identifier))
-    })
+/// The patterns that name the removed object in one kind of source file,
+/// with the patterns of query-language text held in it. Each pattern has its
+/// searcher built once for the whole scan, not once per searched line.
+pub struct MetaRemoveSearch {
+    /// The object's name, when every pattern contains it and a text without
+    /// it therefore names the object by none of them.
+    name: Option<memmem::Finder<'static>>,
+    patterns: MetaRemovePatterns,
+    query_patterns: MetaRemovePatterns,
+}
+
+impl MetaRemoveSearch {
+    pub fn new(name: &str, patterns: &[String], query_patterns: &[String]) -> Self {
+        // XML is searched after parsing. A name of letters, digits and
+        // underscores is not spelled by the five predefined entities, which
+        // decode to `<>&"'`, nor by normalized line ends and attribute
+        // whitespace; a DTD, which could declare an entity, fails the parse,
+        // and the raw text is searched then. Character references and CDATA
+        // sections, which may spell or join the name, are left to `may_mention`.
+        let identifier =
+            !name.is_empty() && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_');
+        let in_every = patterns
+            .iter()
+            .chain(query_patterns)
+            .all(|pattern| pattern.contains(name));
+        Self {
+            name: (identifier && in_every)
+                .then(|| memmem::Finder::new(name.as_bytes()).into_owned()),
+            patterns: MetaRemovePatterns::new(patterns),
+            query_patterns: MetaRemovePatterns::new(query_patterns),
+        }
+    }
+
+    /// Whether some pattern may name the object in `text`; false means the
+    /// name is absent from the text as searched. An XML text with a character
+    /// reference, which may spell the name once decoded, or with a CDATA
+    /// section, which the parser joins with the text around it, is always
+    /// searched.
+    fn may_mention(&self, text: &str, xml: bool) -> bool {
+        let Some(name) = &self.name else {
+            return true;
+        };
+        let bytes = text.as_bytes();
+        name.find(bytes).is_some()
+            || (xml
+                && (memmem::find(bytes, b"&#").is_some()
+                    || memmem::find(bytes, b"<![CDATA[").is_some()))
+    }
+}
+
+/// Patterns naming the removed object, each with its searcher built once.
+struct MetaRemovePatterns(Vec<MetaRemovePattern>);
+
+struct MetaRemovePattern {
+    finder: memmem::Finder<'static>,
+    /// The pattern ends with a dot: `Catalogs.X.` or the bare `X.` of a
+    /// common module; whatever follows it is a member.
+    open_end: bool,
+    /// The bare common-module pattern `X.` must not follow a dot, where it
+    /// names a member of another object.
+    bare: bool,
+}
+
+impl MetaRemovePatterns {
+    fn new(patterns: &[String]) -> Self {
+        Self(
+            patterns
+                .iter()
+                .map(|pattern| MetaRemovePattern {
+                    finder: memmem::Finder::new(pattern.as_bytes()).into_owned(),
+                    open_end: pattern.ends_with('.'),
+                    bare: pattern.ends_with('.') && !pattern[..pattern.len() - 1].contains('.'),
+                })
+                .collect(),
+        )
+    }
+
+    fn mentioned_in(&self, text: &str) -> bool {
+        self.0.iter().any(|pattern| pattern.mentioned_in(text))
+    }
+}
+
+impl MetaRemovePattern {
+    /// Whether `text` names the object by the pattern as a whole name:
+    /// `Catalog.X` does not match `Catalog.XY` or `MyCatalog.X`. The search
+    /// is case-sensitive and visits the same non-overlapping occurrences,
+    /// left to right, as `str::match_indices`.
+    fn mentioned_in(&self, text: &str) -> bool {
+        let identifier = |ch: char| ch.is_alphanumeric() || ch == '_';
+        let length = self.finder.needle().len();
+        // A match of a UTF-8 pattern in UTF-8 text starts and ends on
+        // character boundaries.
+        self.finder.find_iter(text.as_bytes()).any(|start| {
+            let before = text[..start].chars().next_back();
+            let after = text[start + length..].chars().next();
+            !before.is_some_and(|ch| identifier(ch) || (self.bare && ch == '.'))
+                && (self.open_end || !after.is_some_and(identifier))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(found: &[MetaRemoveReference]) -> Vec<usize> {
+        found
+            .iter()
+            .filter_map(|reference| match reference {
+                MetaRemoveReference::Code { line, .. } => Some(*line),
+                MetaRemoveReference::Metadata { .. } => None,
+            })
+            .collect()
+    }
+
+    fn catalog_code_search(name: &str) -> MetaRemoveSearch {
+        let patterns = meta_remove_search_patterns("Catalog", name, "Catalogs");
+        MetaRemoveSearch::new(name, &patterns, &[])
+    }
+
+    #[test]
+    fn code_reference_is_a_whole_case_sensitive_name() {
+        let module = Path::new("CommonModules/Calls/Ext/Module.bsl");
+        let text = "Справочники.Единицы.СоздатьЭлемент();\n\
+                    Ссылка = Catalogs.Единицы.EmptyRef();\n\
+                    Справочники.ЕдиницыИзмерения.СоздатьЭлемент();\n\
+                    МоиСправочники.Единицы.Создать();\n\
+                    справочники.единицы.СоздатьЭлемент();\n\
+                    Тип(\"CatalogRef.Единицы\");\n";
+        let found = meta_remove_references("main", module, text, &catalog_code_search("Единицы"));
+        assert_eq!(lines(&found), vec![1, 2, 6]);
+    }
+
+    #[test]
+    fn text_without_the_name_names_nothing_in_any_case() {
+        let module = Path::new("CommonModules/Calls/Ext/Module.bsl");
+        // The search is case-sensitive, so the name in another case is no
+        // reference whether the file is searched or passed over.
+        let text = "справочники.единицы.СоздатьЭлемент();\nCATALOGS.ЕДИНИЦЫ.EmptyRef();\n";
+        let search = catalog_code_search("Единицы");
+        assert!(!search.may_mention(text, false));
+        assert!(meta_remove_references("main", module, text, &search).is_empty());
+    }
+
+    #[test]
+    fn bare_common_module_call_does_not_follow_a_dot() {
+        let module = Path::new("CommonModules/Calls/Ext/Module.bsl");
+        let patterns = meta_remove_search_patterns("CommonModule", "Печать", "CommonModules");
+        let search = MetaRemoveSearch::new("Печать", &patterns, &[]);
+        let text = "Печать.Выполнить();\nДругой.Печать.Выполнить();\nПечатьФорм.Выполнить();\n";
+        assert_eq!(
+            lines(&meta_remove_references("main", module, text, &search)),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn xml_spelling_the_name_by_character_reference_is_searched() {
+        let descriptor = Path::new("Documents/Order.xml");
+        let patterns = vec!["CatalogRef.Units".to_string()];
+        let search = MetaRemoveSearch::new("Units", &patterns, &[]);
+        let text = "<MetaDataObject><Document><Properties><Type>\
+                    <v8:Type xmlns:v8=\"v8\">cfg:CatalogRef.&#85;nits</v8:Type>\
+                    </Type></Properties></Document></MetaDataObject>";
+        assert!(!text.contains("Units"));
+        assert_eq!(
+            meta_remove_references("main", descriptor, text, &search).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn xml_joining_the_name_across_cdata_is_searched() {
+        let descriptor = Path::new("Documents/Order.xml");
+        let patterns = vec!["CatalogRef.Units".to_string()];
+        let search = MetaRemoveSearch::new("Units", &patterns, &[]);
+        let text = "<MetaDataObject><Document><Properties><Type>\
+                    <v8:Type xmlns:v8=\"v8\">cfg:CatalogRef.Un<![CDATA[its]]></v8:Type>\
+                    </Type></Properties></Document></MetaDataObject>";
+        assert!(!text.contains("Units"));
+        assert_eq!(
+            meta_remove_references("main", descriptor, text, &search).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn name_beyond_an_identifier_turns_the_name_filter_off() {
+        // A name that is not an identifier may be spelled by an entity.
+        let descriptor = Path::new("Documents/Order.xml");
+        let patterns = vec!["CatalogRef.Un&its".to_string()];
+        let search = MetaRemoveSearch::new("Un&its", &patterns, &[]);
+        let text = "<MetaDataObject><Document><Properties><Type>\
+                    <v8:Type xmlns:v8=\"v8\">cfg:CatalogRef.Un&amp;its</v8:Type>\
+                    </Type></Properties></Document></MetaDataObject>";
+        assert!(!text.contains("Un&its"));
+        assert_eq!(
+            meta_remove_references("main", descriptor, text, &search).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn pattern_without_the_name_turns_the_name_filter_off() {
+        let module = Path::new("CommonModules/Calls/Ext/Module.bsl");
+        let patterns = vec!["Units.".to_string(), "Other.Kind".to_string()];
+        let search = MetaRemoveSearch::new("Units", &patterns, &[]);
+        assert!(search.may_mention("Other.Kind();", false));
+        assert_eq!(
+            lines(&meta_remove_references(
+                "main",
+                module,
+                "Other.Kind();\n",
+                &search
+            )),
+            vec![1]
+        );
+    }
 }

@@ -1,0 +1,760 @@
+{
+ "symbol_at_call": {
+  "tool": "symbol_info",
+  "arguments": {
+   "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+   "line": 29,
+   "column": 13
+  },
+  "answer": {
+   "definition": {
+    "line": 23,
+    "path": "<absolute path>",
+    "snippet": "Функция Ф() Экспорт"
+   },
+   "definitions": [
+    {
+     "location": {
+      "enclosing_range": {
+       "end_character": 12,
+       "end_line": 26,
+       "start_character": 0,
+       "start_line": 22
+      },
+      "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+      "position_encoding": "utf-16",
+      "range": {
+       "end_character": 9,
+       "end_line": 22,
+       "start_character": 8,
+       "start_line": 22
+      },
+      "root_id": "",
+      "schema_version": "1"
+     },
+     "role": "base"
+    }
+   ],
+   "freshness": {
+    "completeness": {
+     "reasons": [],
+     "status": "complete"
+    },
+    "revision": 1,
+    "source": "resident",
+    "stale": false,
+    "topology_fingerprint": "4786cb79b4347de8"
+   },
+   "graph_id": "method/manager/Catalog/Валюты/Ф",
+   "kind": "method",
+   "return_type": "РезультатЗапроса | Неопределено",
+   "schema_version": "1",
+   "signature": "Функция Ф()",
+   "status": "ok",
+   "symbol": "Ф",
+   "usages": {
+    "count": 1,
+    "graph_id": "method/manager/Catalog/Валюты/Ф",
+    "top_modules": [
+     {
+      "count": 1,
+      "module": "Справочник.Валюты.МодульМенеджера"
+     }
+    ]
+   }
+  }
+ },
+ "symbol_named": {
+  "tool": "symbol_info",
+  "arguments": {
+   "symbol": "Ф"
+  },
+  "answer": {
+   "candidates": [
+    {
+     "address": {
+      "graph_id": "method/manager/Catalog/Валюты/Ф",
+      "location": {
+       "enclosing_range": {
+        "end_character": 12,
+        "end_line": 26,
+        "start_character": 0,
+        "start_line": 22
+       },
+       "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+       "position_encoding": "utf-16",
+       "range": {
+        "end_character": 9,
+        "end_line": 22,
+        "start_character": 8,
+        "start_line": 22
+       },
+       "root_id": "",
+       "schema_version": "1"
+      },
+      "symbol": "Справочник.Валюты.Ф"
+     },
+     "category": "module_method",
+     "display": "Ф",
+     "id": "method/manager/Catalog/Валюты/Ф",
+     "match": "exact",
+     "provider": "module_members"
+    },
+    {
+     "address": {
+      "symbol": "ОбъектXDTO.Фабрика",
+      "syntax_help": {
+       "name": "Фабрика",
+       "type_name": "ОбъектXDTO"
+      }
+     },
+     "category": "platform_member",
+     "display": "Фабрика",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "symbol": "ЗначениеXDTO.Фабрика",
+      "syntax_help": {
+       "name": "Фабрика",
+       "type_name": "ЗначениеXDTO"
+      }
+     },
+     "category": "platform_member",
+     "display": "Фабрика",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "Фабрика",
+       "type_name": "СериализаторXDTO"
+      }
+     },
+     "category": "platform_member",
+     "display": "Фабрика",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "ФабрикаXDTO"
+      }
+     },
+     "category": "platform_member",
+     "display": "ФабрикаXDTO",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "ФабрикаXDTO",
+       "type_name": "Global context"
+      }
+     },
+     "category": "platform_member",
+     "display": "ФабрикаXDTO",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "ФабрикаXDTO",
+       "type_name": "WSОпределения"
+      }
+     },
+     "category": "platform_member",
+     "display": "ФабрикаXDTO",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "ФабрикаXDTO",
+       "type_name": "WSПрокси"
+      }
+     },
+     "category": "platform_member",
+     "display": "ФабрикаXDTO",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "Файл"
+      }
+     },
+     "category": "platform_member",
+     "display": "Файл",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "Файл",
+       "type_name": "ФигурыГрафическойСхемы"
+      }
+     },
+     "category": "platform_member",
+     "display": "Файл",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "Файл",
+       "type_name": "СсылкаНаФайл"
+      }
+     },
+     "category": "platform_member",
+     "display": "Файл",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "ФайловыеПотоки",
+       "type_name": "Global context"
+      }
+     },
+     "category": "platform_member",
+     "display": "ФайловыеПотоки",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "ФайловыйПоток"
+      }
+     },
+     "category": "platform_member",
+     "display": "ФайловыйПоток",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "Файлы",
+       "type_name": "РазделДиалогаВыбораФайла"
+      }
+     },
+     "category": "platform_member",
+     "display": "Файлы",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "Файлы",
+       "type_name": "ДанныеЗапросаПоделиться"
+      }
+     },
+     "category": "platform_member",
+     "display": "Файлы",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "Факт",
+       "type_name": "КлассификацияОбъектаАнализаДанных"
+      }
+     },
+     "category": "platform_member",
+     "display": "Факт",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "ФактическийПериодДействия",
+       "type_name": "РегистрРасчетаВыборка.&lt;Имя регистра расчета&gt;"
+      }
+     },
+     "category": "platform_member",
+     "display": "ФактическийПериодДействия",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "ФактическийПериодДействия",
+       "type_name": "РегистрРасчетаЗапись.&lt;Имя регистра расчета&gt;"
+      }
+     },
+     "category": "platform_member",
+     "display": "ФактическийПериодДействия",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "ФактическийПериодДействия",
+       "type_name": "ВидПериодаРегистраРасчета"
+      }
+     },
+     "category": "platform_member",
+     "display": "ФактическийПериодДействия",
+     "match": "prefix",
+     "provider": "platform"
+    },
+    {
+     "address": {
+      "syntax_help": {
+       "name": "Фактор",
+       "type_name": "ЛинияТрендаДиаграммы"
+      }
+     },
+     "category": "platform_member",
+     "display": "Фактор",
+     "match": "prefix",
+     "provider": "platform"
+    }
+   ],
+   "freshness": {
+    "completeness": {
+     "reasons": [
+      {
+       "code": "result_cap",
+       "detail": "candidate list capped; raise the limit or refine the query"
+      }
+     ],
+     "status": "partial"
+    },
+    "revision": 1,
+    "source": "resident",
+    "stale": false,
+    "topology_fingerprint": "4786cb79b4347de8"
+   },
+   "hint": "no exact resident match; feed a candidate's `address.symbol` back to `symbol_info`, open its `address.graph_id` in `graph`, or read its `address.syntax_help` in `syntax_help`",
+   "providers": [
+    {
+     "provider": "module_index",
+     "state": "answered"
+    },
+    {
+     "provider": "metadata_listing",
+     "state": "answered"
+    },
+    {
+     "provider": "platform",
+     "state": "answered"
+    },
+    {
+     "provider": "module_members",
+     "state": "answered"
+    },
+    {
+     "provider": "graph",
+     "state": "answered"
+    }
+   ],
+   "resolved": false,
+   "schema_version": "1",
+   "status": "ambiguous",
+   "symbol": "Ф",
+   "total": 2563,
+   "total_exact": false,
+   "truncated": true
+  }
+ },
+ "symbol_not_found": {
+  "tool": "symbol_info",
+  "arguments": {
+   "symbol": "НетТакогоИмени"
+  },
+  "answer": {
+   "candidates": [],
+   "freshness": {
+    "completeness": {
+     "reasons": [],
+     "status": "complete"
+    },
+    "revision": 1,
+    "source": "resident",
+    "stale": false,
+    "topology_fingerprint": "4786cb79b4347de8"
+   },
+   "hint": "no exact resident match; feed a candidate's `address.symbol` back to `symbol_info`, open its `address.graph_id` in `graph`, or read its `address.syntax_help` in `syntax_help`",
+   "providers": [
+    {
+     "provider": "module_index",
+     "state": "answered"
+    },
+    {
+     "provider": "metadata_listing",
+     "state": "answered"
+    },
+    {
+     "provider": "platform",
+     "state": "answered"
+    },
+    {
+     "provider": "module_members",
+     "state": "answered"
+    },
+    {
+     "provider": "graph",
+     "state": "answered"
+    }
+   ],
+   "resolved": false,
+   "schema_version": "1",
+   "status": "not_found",
+   "symbol": "НетТакогоИмени",
+   "total": 0,
+   "total_exact": true,
+   "truncated": false
+  }
+ },
+ "references_at": {
+  "tool": "references",
+  "arguments": {
+   "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+   "line": 22,
+   "column": 8
+  },
+  "answer": {
+   "anchor": {
+    "graph_id": "method/manager/Catalog/Валюты/Ф",
+    "line": 22,
+    "mode": "position"
+   },
+   "files": [
+    {
+     "count": 2,
+     "location": {
+      "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+      "position_encoding": "utf-16",
+      "root_id": "",
+      "schema_version": "1"
+     }
+    }
+   ],
+   "files_scanned": 1,
+   "freshness": {
+    "completeness": {
+     "reasons": [],
+     "status": "complete"
+    },
+    "revision": 1,
+    "source": "resident",
+    "stale": false,
+    "topology_fingerprint": "4786cb79b4347de8"
+   },
+   "histogram_truncated": false,
+   "narrowing_comparable": true,
+   "outcome": "resolved",
+   "references": [
+    {
+     "kind": "declaration",
+     "location": {
+      "enclosing_range": {
+       "end_character": 12,
+       "end_line": 26,
+       "start_character": 0,
+       "start_line": 22
+      },
+      "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+      "position_encoding": "utf-16",
+      "range": {
+       "end_character": 9,
+       "end_line": 22,
+       "start_character": 8,
+       "start_line": 22
+      },
+      "root_id": "",
+      "schema_version": "1"
+     }
+    },
+    {
+     "kind": "call",
+     "location": {
+      "enclosing_range": {
+       "end_character": 14,
+       "end_line": 31,
+       "start_character": 0,
+       "start_line": 28
+      },
+      "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+      "position_encoding": "utf-16",
+      "range": {
+       "end_character": 14,
+       "end_line": 29,
+       "start_character": 13,
+       "start_line": 29
+      },
+      "root_id": "",
+      "schema_version": "1"
+     }
+    }
+   ],
+   "schema_version": "1",
+   "total": 2,
+   "total_is_lower_bound": false
+  }
+ },
+ "references_unsupported": {
+  "tool": "references",
+  "arguments": {
+   "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+   "line": 30,
+   "column": 14
+  },
+  "answer": {
+   "anchor": {
+    "line": 30,
+    "mode": "position"
+   },
+   "freshness": {
+    "completeness": {
+     "reasons": [],
+     "status": "complete"
+    },
+    "revision": 1,
+    "source": "resident",
+    "stale": false,
+    "topology_fingerprint": "4786cb79b4347de8"
+   },
+   "outcome": "unsupported_symbol",
+   "schema_version": "1",
+   "unsupported": {
+    "category": "unknown_scope",
+    "reason": "this symbol has no reference walk; an empty list would be indistinguishable from a proven zero"
+   }
+  }
+ },
+ "callers": {
+  "tool": "graph",
+  "arguments": {
+   "action": "callers",
+   "id": "method/manager/Catalog/Валюты/Ф",
+   "edge_kinds": [
+    "call"
+   ],
+   "max_nodes": 500
+  },
+  "answer": {
+   "freshness": {
+    "completeness": {
+     "reasons": [],
+     "status": "complete"
+    },
+    "drift_watch": "watching",
+    "revision": 1,
+    "source": "graph",
+    "stale": false,
+    "topology_fingerprint": "4786cb79b4347de8"
+   },
+   "reload": "none",
+   "result": {
+    "by_kind": {
+     "call": 1
+    },
+    "by_provenance": {
+     "resolved": 1
+    },
+    "confidence": "resolved_only",
+    "connectors_dropped": false,
+    "dropped_count": 0,
+    "edges": [
+     {
+      "from": "method/manager/Catalog/Валюты/Вызов",
+      "kind": "call",
+      "provenance": "resolved"
+     }
+    ],
+    "in_total": 1,
+    "nodes": [
+     {
+      "dispatch": [
+       "client"
+      ],
+      "id": "method/manager/Catalog/Валюты/Вызов",
+      "is_export": true,
+      "kind": "method",
+      "location": {
+       "enclosing_range": {
+        "end_character": 14,
+        "end_line": 31,
+        "start_character": 0,
+        "start_line": 28
+       },
+       "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+       "position_encoding": "utf-16",
+       "range": {
+        "end_character": 15,
+        "end_line": 28,
+        "start_character": 10,
+        "start_line": 28
+       },
+       "root_id": "",
+       "schema_version": "1"
+      },
+      "module": "Справочник.Валюты.МодульМенеджера",
+      "name": "Вызов",
+      "signature": "Процедура Вызов() Экспорт"
+     }
+    ],
+    "returned": 1,
+    "root": {
+     "dispatch": [
+      "client"
+     ],
+     "id": "method/manager/Catalog/Валюты/Ф",
+     "is_export": true,
+     "kind": "method",
+     "location": {
+      "enclosing_range": {
+       "end_character": 12,
+       "end_line": 26,
+       "start_character": 0,
+       "start_line": 22
+      },
+      "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+      "position_encoding": "utf-16",
+      "range": {
+       "end_character": 9,
+       "end_line": 22,
+       "start_character": 8,
+       "start_line": 22
+      },
+      "root_id": "",
+      "schema_version": "1"
+     },
+     "module": "Справочник.Валюты.МодульМенеджера",
+     "name": "Ф",
+     "signature": "Функция Ф() Экспорт"
+    },
+    "total": 1
+   },
+   "revision": 1,
+   "stale": false
+  }
+ },
+ "callees": {
+  "tool": "graph",
+  "arguments": {
+   "action": "callees",
+   "id": "method/manager/Catalog/Валюты/Вызов",
+   "edge_kinds": [
+    "call"
+   ],
+   "max_nodes": 500
+  },
+  "answer": {
+   "freshness": {
+    "completeness": {
+     "reasons": [],
+     "status": "complete"
+    },
+    "drift_watch": "watching",
+    "revision": 1,
+    "source": "graph",
+    "stale": false,
+    "topology_fingerprint": "4786cb79b4347de8"
+   },
+   "reload": "none",
+   "result": {
+    "by_kind": {
+     "call": 1
+    },
+    "by_provenance": {
+     "resolved": 1
+    },
+    "confidence": "resolved_only",
+    "connectors_dropped": false,
+    "dropped_count": 0,
+    "edges": [
+     {
+      "kind": "call",
+      "provenance": "resolved",
+      "to": "method/manager/Catalog/Валюты/Ф"
+     }
+    ],
+    "nodes": [
+     {
+      "dispatch": [
+       "client"
+      ],
+      "id": "method/manager/Catalog/Валюты/Ф",
+      "is_export": true,
+      "kind": "method",
+      "location": {
+       "enclosing_range": {
+        "end_character": 12,
+        "end_line": 26,
+        "start_character": 0,
+        "start_line": 22
+       },
+       "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+       "position_encoding": "utf-16",
+       "range": {
+        "end_character": 9,
+        "end_line": 22,
+        "start_character": 8,
+        "start_line": 22
+       },
+       "root_id": "",
+       "schema_version": "1"
+      },
+      "module": "Справочник.Валюты.МодульМенеджера",
+      "name": "Ф",
+      "signature": "Функция Ф() Экспорт"
+     }
+    ],
+    "out_total": 1,
+    "returned": 1,
+    "root": {
+     "dispatch": [
+      "client"
+     ],
+     "id": "method/manager/Catalog/Валюты/Вызов",
+     "is_export": true,
+     "kind": "method",
+     "location": {
+      "enclosing_range": {
+       "end_character": 14,
+       "end_line": 31,
+       "start_character": 0,
+       "start_line": 28
+      },
+      "path": "Catalogs/Валюты/Ext/ManagerModule.bsl",
+      "position_encoding": "utf-16",
+      "range": {
+       "end_character": 15,
+       "end_line": 28,
+       "start_character": 10,
+       "start_line": 28
+      },
+      "root_id": "",
+      "schema_version": "1"
+     },
+     "module": "Справочник.Валюты.МодульМенеджера",
+     "name": "Вызов",
+     "signature": "Процедура Вызов() Экспорт"
+    },
+    "total": 1
+   },
+   "revision": 1,
+   "stale": false
+  }
+ }
+}

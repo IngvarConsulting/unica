@@ -236,6 +236,10 @@ impl ResolvedSource {
         &self.path
     }
 
+    pub(crate) fn at(&self) -> &str {
+        &self.at
+    }
+
     pub(crate) fn kind(&self) -> &str {
         &self.kind
     }

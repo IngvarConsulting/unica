@@ -56,6 +56,10 @@ thread_local! {
     /// on the thread that resolves the registry.
     pub(crate) static CODE_INTELLIGENCE_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Vec<Arc<dyn CodeIntelligenceProvider>>>> =
         const { std::cell::RefCell::new(None) };
+    /// A test's symbol provider in place of the bundled analyzer, read on the
+    /// thread that answers the symbol request.
+    pub(crate) static SYMBOL_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn unica_code_intelligence::symbols::SymbolProvider>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 const NATIVE_TYPED_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);

@@ -55,7 +55,7 @@ DELIVERY_TAIL = (
 # Джобы, чьи логи нужны для образа, toolchain, кеша и строк компиляции.
 # Джобы раскладки до #1813: по ним прогон узнаётся как прежний.
 LEGACY_JOBS = ("Rust tests (", "Build Rust ", "Python tests (", "Guards")
-RUST_JOB = re.compile(r"^(Rust |Build Rust |Warm Rust |Ordinary binary|Unica CI$)")
+RUST_JOB = re.compile(r"^(Rust |Build Rust |Warm Rust |Ordinary binary|Clippy |Unica CI$)")
 RUNNER_ARTIFACT = re.compile(r"(plan|results)-(ubuntu-latest|macos-14|windows-latest)\Z")
 LANE_MEMBER_ROOT = re.compile(r"lane\.json\Z")
 SHARD_MEMBER_ROOT = re.compile(r"shard\.json\Z")

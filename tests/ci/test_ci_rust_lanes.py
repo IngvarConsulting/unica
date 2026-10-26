@@ -144,7 +144,10 @@ class RustLaneTests(unittest.TestCase):
             root = Path(temporary)
             write_configurations(root)
             report = lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
-            self.assertTrue(report["fullMatrixPassed"])
+            self.assertTrue(report["mandatoryComplete"])
+            # Один вердикт на все ОС: второго, «рекомендательного» списка нет (#2152).
+            self.assertNotIn("fullMatrixPassed", report)
+            self.assertNotIn("advisoryFailures", report)
             self.assertFalse(report["affectedAdmission"])
             # A lane of another runner is not part of this one's inventory.
             write_configurations(root / "foreign", host="macos-14")
@@ -157,23 +160,24 @@ class RustLaneTests(unittest.TestCase):
                 lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
             self.assertFalse(json.loads((root / "verification.json").read_text())["mandatoryComplete"])
 
-    def test_large_windows_doctest_failure_is_advisory(self):
+    def test_large_windows_doctest_failure_blocks(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
             root = Path(temporary)
             write_configurations(root, "large", "windows-latest",
                                  mutate=lambda plan: plan["doctests"].update(exitCode=101) if plan["lane"] == "ordinary" else None)
-            report = lanes.verify_union(root, "large", ["windows-latest"], "a" * 40)
-            self.assertTrue(report["mandatoryComplete"])
-            self.assertFalse(report["fullMatrixPassed"])
-            self.assertEqual(report["advisoryFailures"],
-                             ["windows-latest/ordinary: workspace doctests failed with exit code 101"])
+            with self.assertRaisesRegex(ValueError, "windows-latest/ordinary: workspace doctests failed with exit code 101"):
+                lanes.verify_union(root, "large", ["windows-latest"], "a" * 40)
+            report = json.loads((root / "verification.json").read_text())
+            self.assertFalse(report["mandatoryComplete"])
+            self.assertEqual(report["errors"], ["windows-latest/ordinary: workspace doctests failed with exit code 101"])
 
-    def test_windows_advisory_is_visible_and_never_full_matrix_passed(self):
+    def test_lost_windows_lanes_in_large_block(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
-            report = lanes.verify_union(Path(temporary), "large", ["windows-latest"], "a" * 40)
-            self.assertTrue(report["mandatoryComplete"])
-            self.assertFalse(report["fullMatrixPassed"])
-            self.assertEqual(len(report["advisoryFailures"]), 3)
+            with self.assertRaisesRegex(ValueError, "windows-latest/"):
+                lanes.verify_union(Path(temporary), "large", ["windows-latest"], "a" * 40)
+            report = json.loads((Path(temporary) / "verification.json").read_text())
+            self.assertFalse(report["mandatoryComplete"])
+            self.assertEqual(len(report["errors"]), 3)
             with self.assertRaises(ValueError):
                 lanes.verify_union(Path(temporary), "large", [], "a" * 40)
 
@@ -838,16 +842,14 @@ class PreviousInventoryTests(unittest.TestCase):
             with self.subTest(outcome=outcome), \
                  self.assertRaisesRegex(ValueError, rf"Rust \(macos-14\) did not finish as success: {outcome}"):
                 self.verify(self.previous(), jobs=jobs)
-        # Windows stays advisory in the nightly (#1523), macOS does not.
+        # In the nightly Windows blocks like macOS (#2152).
         hosts = ["ubuntu-latest", "macos-14", "windows-latest"]
         previous = self.previous("large", hosts=hosts)
-        report = self.verify(previous, "large", hosts=hosts,
-                             jobs={**self.jobs("large", hosts=hosts), lanes.os_job("windows-latest"): "failure"})
-        self.assertTrue(report["mandatoryComplete"])
-        self.assertFalse(report["fullMatrixPassed"])
-        with self.assertRaisesRegex(ValueError, r"Rust \(macos-14\) did not finish"):
-            self.verify(previous, "large", hosts=hosts,
-                        jobs={**self.jobs("large", hosts=hosts), lanes.os_job("macos-14"): "failure"})
+        self.assertTrue(self.verify(previous, "large", hosts=hosts)["mandatoryComplete"])
+        for host in ("windows-latest", "macos-14"):
+            with self.subTest(host=host), self.assertRaisesRegex(ValueError, rf"Rust \({host}\) did not finish as success: failure"):
+                self.verify(previous, "large", hosts=hosts,
+                            jobs={**self.jobs("large", hosts=hosts), lanes.os_job(host): "failure"})
 
     def test_a_runner_github_never_acquired_is_named_once_not_as_lost_lanes(self):
         # GitHub had no macOS runner: the job was cancelled before start and
@@ -1005,14 +1007,15 @@ class PreviousInventoryTests(unittest.TestCase):
         self.assertEqual(lanes.doctest_problem({**manifest("ordinary", "ubuntu-latest", "queue"), "doctests": None}),
                          "missing doctest outcome")
 
-    def test_windows_losses_in_large_stay_advisory(self):
+    def test_windows_losses_in_large_block(self):
         hosts = ["ubuntu-latest", "macos-14", "windows-latest"]
         previous = self.previous("large", hosts=hosts)
-        report = self.verify(previous, "large", hosts=hosts,
-                             mutate=lambda plan: self.without_target("ureq")(plan) if plan["runner"] == "windows-latest" else None)
-        self.assertTrue(report["mandatoryComplete"])
-        self.assertFalse(report["fullMatrixPassed"])
-        self.assertTrue(all("windows-latest" in item for item in report["advisoryFailures"]))
+        with self.assertRaisesRegex(ValueError, "windows-latest/ordinary: test target ureq disappeared"):
+            self.verify(previous, "large", hosts=hosts,
+                        mutate=lambda plan: self.without_target("ureq")(plan) if plan["runner"] == "windows-latest" else None)
+        self.assertFalse(self.report["mandatoryComplete"])
+        self.assertTrue(self.report["errors"])
+        self.assertTrue(all("windows-latest" in item for item in self.report["errors"]))
 
 
 class PullRequestMediumTests(unittest.TestCase):
