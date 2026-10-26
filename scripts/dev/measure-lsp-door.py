@@ -47,17 +47,29 @@ def code_occurrence(text: str, needle: str) -> int:
     raise ValueError(f"{needle!r} is not in the code of the module")
 
 
-def timed(call, rounds: int) -> tuple[list[float], object]:
-    times, answer = [], None
+def timed(call, rounds: int) -> tuple[list[float], list[object]]:
+    times, answers = [], []
     for _ in range(rounds):
         started = time.perf_counter()
-        answer = call()
+        answers.append(call())
         times.append((time.perf_counter() - started) * 1000)
-    return times, answer
+    return times, answers
 
 
 def describe(times: list[float]) -> str:
     return f"первый {times[0]:.1f} мс, медиана {statistics.median(times):.1f} мс, макс. {max(times):.1f} мс"
+
+
+def outcomes(answers) -> str:
+    """Every distinct outcome of the rounds: a fast refusal in some of them
+    would otherwise hide in the median."""
+    seen = sorted({outcome(answer) for answer in answers})
+    return " | ".join(seen)
+
+
+def view_failures(answers) -> int:
+    return sum(not ((answer or {}).get("result") or {}).get("structuredContent", {}).get("ok")
+               for answer in answers)
 
 
 def outcome(answer) -> str:
@@ -129,35 +141,42 @@ def main() -> int:
             ("textDocument/diagnostic", document),
         ]
         for method, params in requests:
-            times, answer = timed(lambda: editor.request(method, params), arguments.rounds)
-            print(f"{method}: {outcome(answer)}; {describe(times)}")
+            times, answers = timed(lambda: editor.request(method, params), arguments.rounds)
+            print(f"{method}: {outcomes(answers)}; {describe(times)}")
 
         mcp = McpClient(binary, workspace, state)
         try:
             timed(lambda: mcp.view(MODULE), 3)  # прогрев
-            quiet, answer = timed(lambda: mcp.view(MODULE), arguments.rounds)
-            print(f"MCP unica.view без нагрузки: {describe(quiet)}")
+            quiet, answers = timed(lambda: mcp.view(MODULE), arguments.rounds)
+            print(f"MCP unica.view без нагрузки: {describe(quiet)}; отказов {view_failures(answers)}")
             stop = threading.Event()
-            load = LspServer(workspace, state, binary)
+            load = LspServer(workspace, state, binary, name="unica-lsp-load")
             load.initialize()
-            served = [0]
+            served, refused = [0], [0]
 
             def hammer():
                 while not stop.is_set():
-                    load.request("textDocument/semanticTokens/full", document)
-                    served[0] += 1
+                    try:
+                        answer = load.request("textDocument/semanticTokens/full", document)
+                    except TimeoutError:
+                        refused[0] += 1
+                        continue
+                    if answer and "result" in answer:
+                        served[0] += 1
+                    else:
+                        refused[0] += 1
 
             worker = threading.Thread(target=hammer, daemon=True)
             worker.start()
             time.sleep(1)
-            loaded, answer = timed(lambda: mcp.view(MODULE), arguments.rounds)
+            loaded, answers = timed(lambda: mcp.view(MODULE), arguments.rounds)
             stop.set()
             worker.join(timeout=30)
-            print(f"MCP unica.view под нагрузкой LSP: {describe(loaded)}; "
-                  f"параллельно отдано {served[0]} semanticTokens")
+            print(f"MCP unica.view под нагрузкой LSP: {describe(loaded)}; отказов {view_failures(answers)}; "
+                  f"параллельно отдано {served[0]} semanticTokens, отказов LSP {refused[0]}")
             load.close()
-            after, answer = timed(lambda: mcp.view(MODULE), arguments.rounds)
-            print(f"MCP unica.view снова без нагрузки: {describe(after)}")
+            after, answers = timed(lambda: mcp.view(MODULE), arguments.rounds)
+            print(f"MCP unica.view снова без нагрузки: {describe(after)}; отказов {view_failures(answers)}")
         finally:
             mcp.close()
             editor.close()

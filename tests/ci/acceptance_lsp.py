@@ -6,7 +6,8 @@
 `args`. Документ называется адресом тела модуля, как его читает MCP:
 `"$document/main:CommonModule.Tools.Body"` превращается в
 `unica://<пространство>/main/CommonModule.Tools.Body`, где пространство —
-то, что сервер выдал папке в `initialize`. Ответ проверяется теми же
+то, что сервер выдал папке в `initialize`; `"$file/<путь>"` — `file://`
+настоящего файла рабочей папки. Ответ проверяется теми же
 утверждениями по JSON Pointer, что и шаги MCP; `result` ответа лежит под
 `/result`. Отказ демона замораживается его кодом (`lsp_document_unknown`).
 """
@@ -38,6 +39,7 @@ WORKSPACE = "tests/fixtures/acceptance/workspace-lsp"
 DRIVER = "lsp-stdio"
 PREFIX = "lsp:"
 DOCUMENT = "$document/"
+FILE = "$file/"
 RESPONSE_TIMEOUT_SECONDS = 60.0
 # Уведомления редактора: ответа нет, шаг считается `ok`, если сервер принял
 # кадр и продолжает отвечать.
@@ -61,11 +63,18 @@ def is_lsp_step(step) -> bool:
 def validate_scenario(scenario) -> None:
     if scenario.get("driver") != DRIVER or scenario.get("workspace") != WORKSPACE:
         raise ValueError(f"{scenario['id']}: an LSP scenario runs {DRIVER} on {WORKSPACE}")
-    for step in scenario["wire"]:
+    for index, step in enumerate(scenario["wire"]):
         if not is_lsp_step(step) or not step["tool"][len(PREFIX):]:
             raise ValueError(f"{scenario['id']}: an LSP scenario steps through LSP methods only")
         if not isinstance(step.get("args"), dict):
             raise ValueError(f"{scenario['id']}: LSP params are an object")
+        if step["tool"][len(PREFIX):] in NOTIFICATIONS:
+            # A notification has no answer: a request after it proves the
+            # server took it.
+            if step["expect"] != ["ok"] or set(step) - {"tool", "args", "expect"}:
+                raise ValueError(f"{scenario['id']}: a notification step only expects ok")
+            if index == len(scenario["wire"]) - 1:
+                raise ValueError(f"{scenario['id']}: a notification is followed by a request")
 
 
 def document_uri(address: str, space: str) -> str:
@@ -77,6 +86,9 @@ def document_uri(address: str, space: str) -> str:
 def substitute(value, context):
     if isinstance(value, str) and value.startswith(DOCUMENT):
         return document_uri(value[len(DOCUMENT):], context["space"])
+    if isinstance(value, str) and value.startswith(FILE):
+        # The real file of the scenario's workspace, as an editor names it.
+        return Path(context["workspace"]).joinpath(*value[len(FILE):].split("/")).resolve().as_uri()
     if isinstance(value, str) and value.startswith("$capture."):
         return substitute_capture(value, context)
     if isinstance(value, list):
@@ -100,12 +112,12 @@ def classify(response) -> tuple[str, str]:
 class LspServer:
     """Одно соединение редактора с `unica lsp`."""
 
-    def __init__(self, workspace: Path, state: Path, binary: Path | None = None):
+    def __init__(self, workspace: Path, state: Path, binary: Path | None = None, name: str = "unica-lsp"):
         env = dict(os.environ)
         env["UNICA_PROVIDER_STATE_DIR"] = str(state)
         env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
         self.workspace = workspace
-        self.stderr_path = state / "unica-lsp-stderr.log"
+        self.stderr_path = state / f"{name}-stderr.log"
         self.stderr_file = open(self.stderr_path, "wb")  # noqa: SIM115 - lives as long as the process
         self.process = subprocess.Popen(
             [str(binary or binary_path(REPO_ROOT)), "lsp"],
@@ -121,6 +133,13 @@ class LspServer:
         self.reader.start()
 
     def _pump(self) -> None:
+        try:
+            self._read_frames()
+        finally:
+            # A broken frame ends the stream for the waiting request too.
+            self.messages.put(None)
+
+    def _read_frames(self) -> None:
         stream = self.process.stdout
         assert stream is not None
         while True:
@@ -128,7 +147,6 @@ class LspServer:
             while True:
                 line = stream.readline()
                 if not line:
-                    self.messages.put(None)
                     return
                 line = line.strip()
                 if not line:
@@ -137,7 +155,6 @@ class LspServer:
                 if name.lower() == "content-length":
                     length = int(value.strip())
             if length is None:
-                self.messages.put(None)
                 return
             self.messages.put(json.loads(stream.read(length)))
 
@@ -170,6 +187,10 @@ class LspServer:
                 ) from None
             if message is None:
                 return None
+            if message.get("method") == "window/logMessage" and (message.get("params") or {}).get("type") == 1:
+                # The door reports a notification it refused as an error
+                # message: the step must not pass as accepted.
+                return {"error": {"message": "unica: logMessage " + str(message["params"].get("message"))}}
             if message.get("id") == request_id and "method" not in message:
                 return message
 
@@ -222,8 +243,11 @@ def run_scenario(scenario, root: Path, binary: Path | None = None) -> list[str]:
     shutil.copytree(REPO_ROOT / WORKSPACE, workspace)
     state = root / "state"
     state.mkdir()
-    server = LspServer(workspace, state, binary)
     failures: list[str] = []
+    try:
+        server = LspServer(workspace, state, binary)
+    except OSError as error:
+        return [f"{scenario['id']}: unica lsp did not start: {error}"]
     try:
         context = {"captures": {}, "workspace": workspace, "space": granted_space(server.initialize())}
         for index, step in enumerate(scenario["wire"]):
@@ -245,6 +269,9 @@ def run_scenario(scenario, root: Path, binary: Path | None = None) -> list[str]:
                 failures.extend(f"{label}: {failure}" for failure in found)
                 break
             context["captures"] = capture_values(step, structured, workspace, context)
+    except (OSError, RuntimeError, TimeoutError, ValueError, KeyError) as error:
+        # One scenario's failure is reported with the others, not instead.
+        failures.append(f"{scenario['id']}: {type(error).__name__}: {error}")
     finally:
         server.close()
     return failures
@@ -256,6 +283,8 @@ def run_lsp_corpus(test_case, scenarios, binary: Path | None = None) -> None:
     failures: list[str] = []
     for scenario in scenarios:
         validate_scenario(scenario)
-        with tempfile.TemporaryDirectory(prefix="unica-lsp-acceptance-") as raw:
+        # The daemon outlives the door by its idle grace and still holds
+        # its state on Windows when the directory is removed.
+        with tempfile.TemporaryDirectory(prefix="unica-lsp-acceptance-", ignore_cleanup_errors=True) as raw:
             failures.extend(run_scenario(scenario, Path(raw).resolve(), binary))
     test_case.assertEqual(failures, [], "LSP scenarios differ from their frozen answers")

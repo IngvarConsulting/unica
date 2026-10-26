@@ -315,7 +315,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     out("")
     out(
         f"Корпус держит **{len(scenarios)} сценариев** реальных задач разработчика конфигурации "
-        f"и **{len(steps)} шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из "
+        f"и **{len(steps)} шагов** канонических вызовов `unica.*` и методов двери LSP. Каждый шаг заморожен в одном из "
         "классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется "
         "против собранного `target/debug/unica`; основное рабочее пространство — "
         "`tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, "
@@ -338,7 +338,8 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     fault_count = sum(s.get("driver") == "analyzer-jsonl-fault" for s in scenarios)
     delivery_failure_count = sum(s.get("driver") == "analyzer-delivery-failure" for s in scenarios)
     runtime_fault_count = sum(s.get("profile") == "runtime-fault" for s in scenarios)
-    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}; `fault-injection/analyzer-jsonl-fault` — {fault_count}; `fault-injection/analyzer-delivery-failure` — {delivery_failure_count}; `runtime-fault/pull-validation-fault` — {runtime_fault_count}. "
+    lsp_count = sum(s.get("profile") == "lsp" for s in scenarios)
+    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}; `fault-injection/analyzer-jsonl-fault` — {fault_count}; `fault-injection/analyzer-delivery-failure` — {delivery_failure_count}; `runtime-fault/pull-validation-fault` — {runtime_fault_count}; `lsp/lsp-stdio` — {lsp_count}. "
         "Runtime-fault запускается явно на POSIX с настоящей локальной платформой 8.3.27 для аттестации; управляемый provider проверяет отказы pull. Отсутствие платформы означает отказ, а не skip. Этот профиль не входит в обычный CI. "
         "Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной "
         "синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. "

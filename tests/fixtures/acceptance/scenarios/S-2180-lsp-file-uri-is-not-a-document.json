@@ -9,7 +9,7 @@
     {
       "tool": "lsp:workspace/textDocumentContent",
       "args": {
-        "uri": "file:///workspace/src/CommonModules/Tools/Ext/Module.bsl"
+        "uri": "$file/src/CommonModules/Tools/Ext/Module.bsl"
       },
       "expect": [
         "refused"
