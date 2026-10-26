@@ -1771,6 +1771,50 @@ fn dropped_by_size(
 }
 
 /// Предел свойства и адрес, по которому `view` отдаёт его целиком (#2088).
+/// The declaration of a form, shown in its root as `declaration` (#2159).
+/// Each property is placed like a property of the `Metadata` node itself:
+/// observed values lose their wrapper and an oversized one is named by its
+/// whole address in that node, where it is also changed. The declaration as
+/// a whole obeys the same bound and is read whole at `<form>.Props.declaration`.
+pub(crate) fn form_declaration_prop(
+    form: &QualifiedAddress,
+    metadata: &QualifiedAddress,
+    properties: &Map<String, Value>,
+) -> (Option<Value>, Vec<String>) {
+    const KEY: &str = "declaration";
+    let whole = prop_limit(KEY) == usize::MAX;
+    let mut declaration = Map::new();
+    let mut limits = Vec::new();
+    for (key, value) in properties {
+        if matches!(key.as_str(), "uuid" | "Name") {
+            continue;
+        }
+        if whole {
+            if let Some(value) = observed_value(value) {
+                declaration.insert(key.clone(), value);
+            }
+            continue;
+        }
+        place_prop(
+            &mut declaration,
+            &mut limits,
+            metadata,
+            key,
+            value,
+            true,
+            &format!("declaration property {key}"),
+        );
+    }
+    let declaration = Value::Object(declaration);
+    match bounded_prop(KEY, &declaration) {
+        Some(value) => (Some(value), limits),
+        None => {
+            limits.push(compact_limit("declaration", form, KEY));
+            (None, limits)
+        }
+    }
+}
+
 fn compact_limit(subject: &str, owner: &QualifiedAddress, key: &str) -> String {
     format!(
         "{subject} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes; read it whole at {owner}.Props.{key}"
@@ -2392,6 +2436,37 @@ mod interface_command_tests {
 #[cfg(test)]
 mod composite_prop_tests {
     use super::*;
+
+    /// #2159: a form declaration whose properties fit one by one but not
+    /// together is named by its whole address and read there in full.
+    #[test]
+    fn a_large_form_declaration_is_read_whole_at_its_property_address() {
+        let form = QualifiedAddress::parse("main:CommonForm.Main").unwrap();
+        let metadata = QualifiedAddress::parse("main:CommonForm.Main.Metadata").unwrap();
+        let text = |content: String| json!({"kind":"text","value":content});
+        let mut properties = Map::new();
+        for key in ["Comment", "FormType", "Name"] {
+            properties.insert(key.to_string(), text("я".repeat(700)));
+        }
+        properties.insert(
+            "uuid".to_string(),
+            json!("e9455111-1111-4111-8111-111111111111"),
+        );
+        let (compact, limits) = form_declaration_prop(&form, &metadata, &properties);
+        assert!(compact.is_none());
+        assert_eq!(
+            limits,
+            [compact_limit("declaration", &form, "declaration")],
+            "the whole object is named once, not its fitting parts"
+        );
+        let (whole, limits) = with_whole_prop("declaration", || {
+            form_declaration_prop(&form, &metadata, &properties)
+        });
+        assert!(limits.is_empty(), "{limits:?}");
+        let whole = whole.unwrap();
+        assert_eq!(whole["Comment"], "я".repeat(700));
+        assert!(whole.get("Name").is_none() && whole.get("uuid").is_none());
+    }
 
     /// Значение заполнения — тот же объект, что принимает `apply`: булево
     /// не теряет вида, тогда как наблюдённый флаг описания разворачивается.

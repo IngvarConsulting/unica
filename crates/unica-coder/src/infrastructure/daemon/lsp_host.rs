@@ -482,14 +482,24 @@ fn answer(
         V5LspCall::FoldingRange { uri } => text_with(&uri, lsp_features::folding_ranges),
         V5LspCall::SemanticTokensFull { uri } => text_with(&uri, lsp_features::semantic_tokens),
         V5LspCall::SignatureHelp { uri, position } => {
-            let (uri, read) = document_read(session, &uri)?;
+            let (uri, space, read) = document_space(session, &uri)?;
             let position = Utf16Position {
                 line: position.line,
                 character: position.character,
             };
+            // Platform methods are signed once the help is indexed.
+            let members = match &space.platform_root {
+                None => None,
+                Some(root) => platform.members(root),
+            };
             let help = session
                 .documents
-                .signature_help(&uri, position, &read)
+                .signature_help(
+                    &uri,
+                    position,
+                    &read,
+                    members.as_deref().unwrap_or_default(),
+                )
                 .map_err(document_failure)?;
             Ok(json(help.unwrap_or(serde_json::Value::Null)))
         }
@@ -698,13 +708,9 @@ fn admit_actor(
     ))
 }
 
-/// The `unica://` URI of a document the editor may name by its file.
+/// The `unica://` URI of a document: a file path never names one.
 fn document_uri(documents: &LspDocuments, uri: &str) -> Result<String, LspDocumentError> {
-    if uri.starts_with("file:") {
-        documents.uri_of_file(uri)
-    } else {
-        Ok(uri.to_owned())
-    }
+    documents.locate(uri).map(|_| uri.to_owned())
 }
 
 fn folder_path(uri: &str) -> Option<PathBuf> {
