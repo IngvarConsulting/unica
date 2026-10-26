@@ -1,4 +1,10 @@
+pub mod lsp;
+
 use super::identity::CoreIdentity;
+use lsp::{
+    V5LspCall, V5LspCapabilities, V5LspFailure, V5LspNotification, V5LspOutcome,
+    V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fmt;
@@ -217,6 +223,12 @@ pub enum V5ClientRequestKind {
     AcknowledgeInvocationReceipt,
     CancelInvocation,
     FenceInvocationReceipt,
+    LspOpen,
+    LspNotify,
+    LspCall,
+    LspCancel,
+    LspPoll,
+    LspClose,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -378,6 +390,37 @@ pub enum V5ClientRequest {
         #[serde(rename = "receiptKey")]
         receipt_key: ReceiptKey,
     },
+    /// Open an LSP session bound to this connection: it ends when the
+    /// connection ends. Its notifications travel on the same connection.
+    LspOpen {
+        #[serde(rename = "workspaceFolders")]
+        workspace_folders: Vec<V5LspWorkspaceFolder>,
+    },
+    LspNotify {
+        session: V5LspSessionId,
+        notification: V5LspNotification,
+    },
+    /// One editor request on the LSP lane. `request` is the frontend's own
+    /// number for it, unique among the session's requests in flight.
+    LspCall {
+        session: V5LspSessionId,
+        request: u64,
+        #[serde(rename = "budgetMs")]
+        budget_ms: u64,
+        call: V5LspCall,
+    },
+    LspCancel {
+        session: V5LspSessionId,
+        request: u64,
+    },
+    LspPoll {
+        session: V5LspSessionId,
+        #[serde(rename = "waitMs")]
+        wait_ms: u64,
+    },
+    LspClose {
+        session: V5LspSessionId,
+    },
 }
 
 impl V5ClientRequest {
@@ -396,6 +439,12 @@ impl V5ClientRequest {
             }
             Self::CancelInvocation { .. } => V5ClientRequestKind::CancelInvocation,
             Self::FenceInvocationReceipt { .. } => V5ClientRequestKind::FenceInvocationReceipt,
+            Self::LspOpen { .. } => V5ClientRequestKind::LspOpen,
+            Self::LspNotify { .. } => V5ClientRequestKind::LspNotify,
+            Self::LspCall { .. } => V5ClientRequestKind::LspCall,
+            Self::LspCancel { .. } => V5ClientRequestKind::LspCancel,
+            Self::LspPoll { .. } => V5ClientRequestKind::LspPoll,
+            Self::LspClose { .. } => V5ClientRequestKind::LspClose,
         }
     }
 
@@ -432,6 +481,27 @@ impl V5ClientRequest {
             Self::WaitTask { wait_ms, .. } if *wait_ms > MAX_V5_WAIT_MS => {
                 Err("v5 task wait exceeds 7000 ms".to_string())
             }
+            Self::LspOpen { workspace_folders } => lsp::validate_open(workspace_folders),
+            Self::LspNotify {
+                session,
+                notification,
+            } => {
+                session.validate()?;
+                lsp::validate_notification(notification)
+            }
+            Self::LspCall { budget_ms, .. } if *budget_ms > MAX_V5_WAIT_MS => {
+                Err("v5 lsp call budget exceeds 7000 ms".to_string())
+            }
+            Self::LspCall { session, call, .. } => {
+                session.validate()?;
+                lsp::validate_call(call)
+            }
+            Self::LspPoll { wait_ms, .. } if *wait_ms > MAX_V5_WAIT_MS => {
+                Err("v5 lsp poll wait exceeds 7000 ms".to_string())
+            }
+            Self::LspCancel { session, .. }
+            | Self::LspPoll { session, .. }
+            | Self::LspClose { session } => session.validate(),
             Self::Ping {}
             | Self::Release {}
             | Self::GetTask { .. }
@@ -486,6 +556,30 @@ impl fmt::Debug for V5ClientRequest {
             }
             Self::CancelInvocation { .. } => formatter.write_str("V5CancelInvocation"),
             Self::FenceInvocationReceipt { .. } => formatter.write_str("V5FenceInvocationReceipt"),
+            Self::LspOpen { workspace_folders } => formatter
+                .debug_struct("V5LspOpen")
+                .field("workspace_folders", &workspace_folders.len())
+                .finish(),
+            Self::LspNotify { notification, .. } => formatter
+                .debug_struct("V5LspNotify")
+                .field("notification", notification)
+                .finish_non_exhaustive(),
+            Self::LspCall {
+                request, budget_ms, ..
+            } => formatter
+                .debug_struct("V5LspCall")
+                .field("request", request)
+                .field("budget_ms", budget_ms)
+                .finish_non_exhaustive(),
+            Self::LspCancel { request, .. } => formatter
+                .debug_struct("V5LspCancel")
+                .field("request", request)
+                .finish_non_exhaustive(),
+            Self::LspPoll { wait_ms, .. } => formatter
+                .debug_struct("V5LspPoll")
+                .field("wait_ms", wait_ms)
+                .finish_non_exhaustive(),
+            Self::LspClose { .. } => formatter.write_str("V5LspClose"),
         }
     }
 }
@@ -618,6 +712,21 @@ pub enum V5ServerResponse {
     },
     Error {
         code: V5DaemonErrorCode,
+    },
+    LspOpened {
+        session: V5LspSessionId,
+        capabilities: V5LspCapabilities,
+    },
+    LspAnswer {
+        outcome: V5LspOutcome,
+    },
+    /// The LSP notification, cancellation or close was taken.
+    LspAccepted {},
+    LspNotifications {
+        items: Vec<V5LspServerNotification>,
+    },
+    LspRefused {
+        failure: V5LspFailure,
     },
 }
 
@@ -915,6 +1024,13 @@ pub fn decode_v5_server_response(bytes: &[u8]) -> Result<V5ServerResponse, Strin
             return Err("v5 daemon direct receipt terminal digest does not match".to_string());
         }
     }
+    match &response {
+        V5ServerResponse::LspOpened { session, .. } => session.validate()?,
+        V5ServerResponse::LspNotifications { items } => items
+            .iter()
+            .try_for_each(V5LspServerNotification::validate)?,
+        _ => {}
+    }
     Ok(response)
 }
 
@@ -1184,6 +1300,7 @@ mod tests {
     const TASK_ID: &str = "22222222-2222-4222-8222-222222222222";
     const CORE_IDENTITY: &str = "884b76181583ce34907a2a9758e2b493e5b40883e7cbb0d7f88dcec0e468cfa0";
     const ZERO_DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    const LSP_SESSION: &str = "55555555-5555-4555-8555-555555555555";
     const CANCELLED_DIGEST: &str =
         "f2d0423d2613a0d09397b750542e4542f7653d78ebd5e0448f1326d09145d9ae";
 
@@ -1205,6 +1322,14 @@ mod tests {
                 receipt_key_json()
             ),
             "{\"kind\":\"error\",\"code\":\"receipt_not_found\"}".to_string(),
+            "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"incremental\",\"hover\":true}}".to_string(),
+            "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"hover\",\"contents\":\"**x**\"}}".to_string(),
+            "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"hover\"}}".to_string(),
+            "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"cancelled\"}}".to_string(),
+            "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"failed\",\"failure\":\"deadline_exceeded\"}}".to_string(),
+            "{\"kind\":\"lsp_accepted\"}".to_string(),
+            "{\"kind\":\"lsp_notifications\",\"items\":[{\"kind\":\"log_message\",\"level\":\"info\",\"message\":\"ready\"}]}".to_string(),
+            "{\"kind\":\"lsp_refused\",\"failure\":\"session_unknown\"}".to_string(),
         ];
 
         for frame in frames {
@@ -1221,6 +1346,20 @@ mod tests {
     fn strict_v5_server_response_rejects_unknown_kinds_extra_fields_and_invalid_enums() {
         let cases = [
             ("unknown kind", "{\"kind\":\"future_response\"}".to_string()),
+            (
+                "provider failure code",
+                "{\"kind\":\"lsp_refused\",\"failure\":\"bsl_ls_crashed\"}".to_string(),
+            ),
+            (
+                "lsp outcome extra field",
+                "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"cancelled\",\"reason\":\"x\"}}"
+                    .to_string(),
+            ),
+            (
+                "non-canonical lsp session",
+                "{\"kind\":\"lsp_opened\",\"session\":\"x\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false}}"
+                    .to_string(),
+            ),
             (
                 "top-level extra field",
                 "{\"kind\":\"error\",\"code\":\"receipt_not_found\",\"unexpected\":true}"
@@ -1417,6 +1556,34 @@ mod tests {
                     "{{\"kind\":\"fence_invocation_receipt\",\"receiptKey\":{}}}",
                     receipt_key_json()
                 ),
+            ),
+            (
+                V5ClientRequestKind::LspOpen,
+                "{\"kind\":\"lsp_open\",\"workspaceFolders\":[{\"uri\":\"file:///work\",\"name\":\"work\"}]}".into(),
+            ),
+            (
+                V5ClientRequestKind::LspNotify,
+                format!(
+                    "{{\"kind\":\"lsp_notify\",\"session\":\"{LSP_SESSION}\",\"notification\":{{\"method\":\"textDocument/didChange\",\"uri\":\"file:///work/a.bsl\",\"version\":2,\"changes\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":1}},\"end\":{{\"line\":0,\"character\":2}}}},\"text\":\"x\"}},{{\"text\":\"full\"}}]}}}}"
+                ),
+            ),
+            (
+                V5ClientRequestKind::LspCall,
+                format!(
+                    "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":7,\"budgetMs\":7000,\"call\":{{\"method\":\"textDocument/hover\",\"uri\":\"file:///work/a.bsl\",\"position\":{{\"line\":1,\"character\":2}}}}}}"
+                ),
+            ),
+            (
+                V5ClientRequestKind::LspCancel,
+                format!("{{\"kind\":\"lsp_cancel\",\"session\":\"{LSP_SESSION}\",\"request\":7}}"),
+            ),
+            (
+                V5ClientRequestKind::LspPoll,
+                format!("{{\"kind\":\"lsp_poll\",\"session\":\"{LSP_SESSION}\",\"waitMs\":2000}}"),
+            ),
+            (
+                V5ClientRequestKind::LspClose,
+                format!("{{\"kind\":\"lsp_close\",\"session\":\"{LSP_SESSION}\"}}"),
             ),
         ]
     }
@@ -1824,7 +1991,28 @@ mod tests {
             ),
         ];
 
-        for frame in invalid {
+        let lsp_invalid = [
+            "{\"kind\":\"lsp_open\",\"workspaceFolders\":[{\"uri\":\"\",\"name\":\"work\"}]}".to_string(),
+            "{\"kind\":\"lsp_open\",\"workspaceFolders\":[{\"uri\":\"file:///w\",\"name\":\"w\",\"extra\":1}]}".to_string(),
+            "{\"kind\":\"lsp_close\",\"session\":\"not-a-uuid\"}".to_string(),
+            format!("{{\"kind\":\"lsp_poll\",\"session\":\"{LSP_SESSION}\",\"waitMs\":7001}}"),
+            format!(
+                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":7001,\"call\":{{\"method\":\"textDocument/hover\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
+            ),
+            format!(
+                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/definition\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
+            ),
+            format!(
+                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":-1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/hover\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
+            ),
+            format!(
+                "{{\"kind\":\"lsp_notify\",\"session\":\"{LSP_SESSION}\",\"notification\":{{\"method\":\"textDocument/didClose\",\"uri\":\"file:///a\\u0000\"}}}}"
+            ),
+            format!(
+                "{{\"kind\":\"lsp_notify\",\"session\":\"{LSP_SESSION}\",\"notification\":{{\"method\":\"textDocument/didOpen\",\"uri\":\"file:///a\",\"version\":1,\"text\":\"\"}}}}"
+            ),
+        ];
+        for frame in invalid.into_iter().chain(lsp_invalid) {
             assert!(
                 decode_v5_client_request(frame.as_bytes()).is_err(),
                 "invalid v5 request was accepted: {frame}"

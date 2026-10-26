@@ -1,6 +1,8 @@
 //! Private daemon transport, listener ownership and authenticated sessions.
 
 use crate::identity::{CoreIdentity, DaemonStateDirectory};
+use crate::lsp_lane::{LspHost, LspLane};
+use crate::protocol_v5::lsp::{V5LspFailure, V5LspSessionId};
 use crate::protocol_v5::{
     decode_v5_request_frame, read_bounded_v5_handshake_frame_before,
     read_bounded_v5_request_frame_before, DecodedSubmitAdapter, DecodedV5Request, V5ClientRequest,
@@ -45,6 +47,8 @@ pub struct DaemonServerConfig<
     pub idle_grace: Duration,
     pub runtime: ReceiptRuntimeConfig<H>,
     pub observation: O,
+    /// The editor's door into this daemon: served on its own lane.
+    pub lsp: Arc<dyn LspHost>,
 }
 
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -258,6 +262,10 @@ fn run_daemon_configured_until<
             None
         }
     };
+    let lsp = Arc::new(
+        LspLane::start(Arc::clone(&config.lsp))
+            .map_err(|error| state_io_error("start the LSP lane", error))?,
+    );
     let listener_lease = runtime.hooks().listener_lease();
     let active_leases = Arc::new(V5LeaseRegistry::default());
     let admitted_connections = Arc::new(AtomicUsize::new(0));
@@ -303,6 +311,7 @@ fn run_daemon_configured_until<
                         Arc::clone(&active_leases),
                         Arc::clone(&shutting_down),
                         Arc::clone(&runtime),
+                        Arc::clone(&lsp),
                         slot,
                     ) {
                         Ok(handler) => sessions.push(handler),
@@ -404,6 +413,7 @@ fn spawn_v5_connection_handler<H: InvocationHost<Request = V5InvocationRequest>>
     active_leases: Arc<V5LeaseRegistry>,
     shutting_down: Arc<AtomicBool>,
     runtime: Arc<V5ReceiptRuntime<H>>,
+    lsp: Arc<LspLane>,
     slot: V5ConnectionSlot,
 ) -> io::Result<thread::JoinHandle<()>> {
     let hooks = Arc::clone(runtime.hooks());
@@ -415,6 +425,7 @@ fn spawn_v5_connection_handler<H: InvocationHost<Request = V5InvocationRequest>>
             &active_leases,
             &shutting_down,
             &runtime,
+            &lsp,
             slot,
         );
     }))
@@ -520,6 +531,7 @@ impl Drop for V5ConnectionSlot {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_probe_connection<H: InvocationHost<Request = V5InvocationRequest>>(
     mut stream: TcpStream,
     handshake_deadline: Instant,
@@ -527,6 +539,7 @@ fn handle_probe_connection<H: InvocationHost<Request = V5InvocationRequest>>(
     active_leases: &Arc<V5LeaseRegistry>,
     shutting_down: &AtomicBool,
     runtime: &Arc<V5ReceiptRuntime<H>>,
+    lsp: &Arc<LspLane>,
     handshake_slot: V5ConnectionSlot,
 ) -> Result<(), String> {
     runtime.hooks().before_owner_handshake(
@@ -624,6 +637,9 @@ fn handle_probe_connection<H: InvocationHost<Request = V5InvocationRequest>>(
         &V5HandshakeServerResponse::ready(record),
         handshake_deadline,
     )?;
+    // The LSP session this connection opened ends with the connection,
+    // however it ends: a crashed editor leaves no session behind.
+    let mut lsp_session = LspSessionGuard::new(lsp);
     while !shutting_down.load(Ordering::Acquire) {
         let session_read_deadline = Instant::now() + SESSION_READ_TIMEOUT;
         let (decoded, request_received_at) =
@@ -922,6 +938,16 @@ fn handle_probe_connection<H: InvocationHost<Request = V5InvocationRequest>>(
                 &V5ServerResponse::Released,
                 deadlines.response,
             ),
+            V5ClientRequestKind::LspOpen
+            | V5ClientRequestKind::LspNotify
+            | V5ClientRequestKind::LspCall
+            | V5ClientRequestKind::LspCancel
+            | V5ClientRequestKind::LspPoll
+            | V5ClientRequestKind::LspClose => {
+                let response =
+                    serve_lsp_request(&mut lsp_session, decoded.into_request(), &deadlines);
+                write_runtime_json_line_before(&mut stream, runtime, &response, deadlines.response)
+            }
             _ => write_runtime_probe_error_before(
                 &mut stream,
                 runtime,
@@ -935,6 +961,91 @@ fn handle_probe_connection<H: InvocationHost<Request = V5InvocationRequest>>(
         }
     }
     Ok(())
+}
+
+/// The LSP session owned by one connection. Notifications and closing are
+/// accepted only there, which keeps their order and their owner.
+struct LspSessionGuard<'a> {
+    lane: &'a LspLane,
+    owned: Option<V5LspSessionId>,
+}
+
+impl<'a> LspSessionGuard<'a> {
+    fn new(lane: &'a LspLane) -> Self {
+        Self { lane, owned: None }
+    }
+
+    fn owns(&self, session: &V5LspSessionId) -> bool {
+        self.owned.as_ref() == Some(session)
+    }
+}
+
+impl Drop for LspSessionGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(session) = self.owned.take() {
+            self.lane.close(&session);
+        }
+    }
+}
+
+fn serve_lsp_request(
+    guard: &mut LspSessionGuard<'_>,
+    request: V5ClientRequest,
+    deadlines: &V5RequestDeadlines,
+) -> V5ServerResponse {
+    let refused = |failure| V5ServerResponse::LspRefused { failure };
+    let accepted = |result: Result<(), V5LspFailure>| {
+        result.map_or_else(refused, |()| V5ServerResponse::LspAccepted {})
+    };
+    match request {
+        V5ClientRequest::LspOpen { workspace_folders } => {
+            if guard.owned.is_some() {
+                return refused(V5LspFailure::DuplicateRequest);
+            }
+            match guard.lane.open(&workspace_folders) {
+                Ok((session, capabilities)) => {
+                    guard.owned = Some(session.clone());
+                    V5ServerResponse::LspOpened {
+                        session,
+                        capabilities,
+                    }
+                }
+                Err(failure) => refused(failure),
+            }
+        }
+        V5ClientRequest::LspNotify {
+            session,
+            notification,
+        } if guard.owns(&session) => accepted(guard.lane.notify(&session, notification)),
+        V5ClientRequest::LspClose { session } if guard.owns(&session) => {
+            guard.owned = None;
+            guard.lane.close(&session);
+            V5ServerResponse::LspAccepted {}
+        }
+        V5ClientRequest::LspNotify { .. } | V5ClientRequest::LspClose { .. } => {
+            refused(V5LspFailure::SessionUnknown)
+        }
+        V5ClientRequest::LspCall {
+            session,
+            request,
+            call,
+            ..
+        } => V5ServerResponse::LspAnswer {
+            outcome: guard
+                .lane
+                .call(&session, request, call, deadlines.operation),
+        },
+        V5ClientRequest::LspCancel { session, request } => {
+            accepted(guard.lane.cancel(&session, request))
+        }
+        V5ClientRequest::LspPoll { session, .. } => {
+            match guard.lane.poll(&session, deadlines.operation) {
+                Ok(items) => V5ServerResponse::LspNotifications { items },
+                Err(failure) => refused(failure),
+            }
+        }
+        _ => unreachable!("only LSP requests reach the LSP route"),
+    }
 }
 
 struct V5RequestDeadlines {
@@ -958,6 +1069,8 @@ fn v5_request_deadlines(
         V5ClientRequest::WaitTask { wait_ms, .. } => {
             Duration::from_millis(*wait_ms).saturating_add(TASK_RECONCILIATION_BUDGET)
         }
+        V5ClientRequest::LspCall { budget_ms, .. } => Duration::from_millis(*budget_ms),
+        V5ClientRequest::LspPoll { wait_ms, .. } => Duration::from_millis(*wait_ms),
         _ => SESSION_READ_TIMEOUT,
     };
     let operation = request_received_at

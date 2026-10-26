@@ -4,6 +4,11 @@ fn main() {
 
 fn run() {
     let args = std::env::args().collect::<Vec<_>>();
+    // The editor's door is a subcommand in its exact place, so an MCP host
+    // passing arbitrary arguments never lands in it.
+    if args.get(1).map(String::as_str) == Some("lsp") {
+        std::process::exit(unica_coder::interfaces::lsp::run_stdio());
+    }
     if args.iter().any(|arg| arg == "--daemon") {
         if let Err(error) = unica_coder::interfaces::daemon::run_from_args(&args) {
             eprintln!("{error}");
@@ -45,6 +50,7 @@ fn run() {
         println!("unica {}", env!("CARGO_PKG_VERSION"));
         println!("stdio MCP orchestrator for Unica workflows");
         println!("Supported MCP methods: initialize, tools/list, tools/call");
+        println!("Editor LSP over stdio: unica lsp");
         println!("Local capacity observations: --capacity-report");
         return;
     }
