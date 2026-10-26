@@ -282,9 +282,8 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     std::fs::write(&module, "Procedure Disk() EndProcedure\n").unwrap();
     let root = std::fs::canonicalize(workspace.path()).unwrap();
     let folder: String = url::Url::from_file_path(&root).unwrap().into();
-    let module_uri: String = url::Url::from_file_path(std::fs::canonicalize(&module).unwrap())
-        .unwrap()
-        .into();
+    // The document is the module body, as MCP `view` and `resolve` name it.
+    let module_uri = "unica://work/main/CommonModule.Main.Body".to_owned();
     let mut editor = Editor::start(&daemon);
 
     let initialized = editor.request(
@@ -311,7 +310,7 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     let content = |editor: &mut Editor| {
         editor.request(
             "workspace/textDocumentContent",
-            json!({"uri": "unica://work/main/CommonModule.Main"}),
+            json!({"uri": "unica://work/main/CommonModule.Main.Body"}),
         )["result"]["text"]
             .clone()
     };
@@ -336,12 +335,12 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     );
     let foreign = editor.request(
         "workspace/textDocumentContent",
-        json!({"uri": "unica://other/main/CommonModule.Main"}),
+        json!({"uri": "unica://other/main/CommonModule.Main.Body"}),
     );
     assert_eq!(foreign["error"]["message"], "unica: lsp_document_unknown");
 
     // Editor facts come from the buffer the session sees.
-    let document = json!({"textDocument": {"uri": "unica://work/main/CommonModule.Main"}});
+    let document = json!({"textDocument": {"uri": "unica://work/main/CommonModule.Main.Body"}});
     let symbols = editor.request("textDocument/documentSymbol", document.clone());
     assert_eq!(symbols["result"][0]["name"], "Buffer", "{symbols}");
     assert!(editor.request("textDocument/foldingRange", document.clone())["result"].is_array());
@@ -350,7 +349,7 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     let help = editor.request(
         "textDocument/signatureHelp",
         json!({
-            "textDocument": {"uri": "unica://work/main/CommonModule.Main"},
+            "textDocument": {"uri": "unica://work/main/CommonModule.Main.Body"},
             "position": {"line": 0, "character": 0},
         }),
     );

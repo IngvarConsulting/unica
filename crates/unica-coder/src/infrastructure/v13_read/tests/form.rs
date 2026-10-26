@@ -980,6 +980,36 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
         let root_data = root_view.data.unwrap();
         assert_eq!(root_data["kind"], "Form");
         assert!(root_data["props"].get("Comment").is_none());
+        // #2159: the form shows its declaration next to its structure; the
+        // `Metadata` branch is where it is changed.
+        let declaration = &root_data["props"]["declaration"];
+        assert_eq!(
+            declaration["Comment"], "Only descriptor properties",
+            "{root}"
+        );
+        assert_eq!(declaration["FormType"], "Managed");
+        assert_eq!(declaration["UseStandardCommands"], false);
+        assert_eq!(
+            declaration["UsePurposes"],
+            json!(["PlatformApplication", "MobilePlatformApplication"])
+        );
+        // Localized text loses its observation wrapper, as node props do.
+        assert_eq!(
+            declaration["Synonym"],
+            json!([{"language":"ru","content":"Описание формы"},{"language":"en","content":"Form declaration"}])
+        );
+        assert_eq!(
+            declaration["Explanation"],
+            json!([{"language":"ru","content":"Пояснение"},{"language":"en","content":"Explanation"}])
+        );
+        assert!(declaration.get("uuid").is_none() && declaration.get("Name").is_none());
+        assert!(root_data["limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|limit| limit.as_str().is_some_and(
+                |text| text.starts_with("declaration:") && text.contains("FutureProperty")
+            )));
         assert!(root_data["branches"]
             .as_array()
             .unwrap()
@@ -998,6 +1028,44 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
                 .unwrap(),
             descriptor
         );
+    }
+}
+
+/// #2159: an unreadable or oversized declaration is named in `limits`; the
+/// form's structure stays readable.
+#[test]
+fn form_declaration_never_hides_the_form() {
+    let fixture = RealReaderFixture::new();
+    install_form_metadata_test_sources(&fixture);
+    let descriptor = fixture.source.join("CommonForms/ОбщаяФорма.xml");
+    let root = "main:CommonForm.ОбщаяФорма";
+    let header = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><CommonForm uuid="e9455111-1111-4111-8111-111111111111"><Properties><Name>ОбщаяФорма</Name>"#;
+    let footer = "<FormType>Managed</FormType></Properties></CommonForm></MetaDataObject>";
+    let long = "к".repeat(3000);
+    for (properties, limit) in [
+        (
+            "<Comment>first</Comment><Comment>second</Comment>".to_string(),
+            "declaration is unreadable".to_string(),
+        ),
+        (
+            format!("<Comment>{long}</Comment>"),
+            format!("read it whole at {root}.Metadata.Props.Comment"),
+        ),
+    ] {
+        write(&descriptor, &format!("{header}{properties}{footer}"));
+        let view = fixture.view_service().view(ViewRequest::new(root).unwrap());
+        assert!(view.ok, "the form opens despite its declaration");
+        let data = view.data.unwrap();
+        assert_eq!(data["kind"], "Form");
+        assert!(
+            data["limits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str().is_some_and(|text| text.contains(&limit))),
+            "the declaration limit is named: {limit}"
+        );
+        assert!(data["props"]["declaration"].get("Comment").is_none());
     }
 }
 

@@ -3611,6 +3611,11 @@ mod tests {
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
+            "AccumulationRegisters/CorpusTurnovers/Ext/Aggregates.xml",
+            include_bytes!("../../../../tests/fixtures/platform_8_3_27/accumulation_register_aggregates/Aggregates.xml"),
+            StagedRootVersionPolicy::ExactRootVersion,
+        ),
+        (
             "ConfigDumpInfo.xml",
             include_bytes!(
                 "../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"

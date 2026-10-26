@@ -39,8 +39,24 @@ pub struct PlatformXmlSourceSetOwnerEvidence {
     version: Option<String>,
     artifact_kind: String,
     artifact_name: Option<String>,
-    registrations: BTreeSet<(String, String)>,
+    registrations: Registrations,
     configuration_extension: bool,
+}
+
+/// `ChildObjects` registrations in document order, as the Designer lists
+/// them; a repeated registration keeps its first place.
+#[derive(Debug, Clone, Default)]
+struct Registrations {
+    known: BTreeSet<(String, String)>,
+    ordered: Vec<(String, String)>,
+}
+
+impl Registrations {
+    fn insert(&mut self, registration: (String, String)) {
+        if self.known.insert(registration.clone()) {
+            self.ordered.push(registration);
+        }
+    }
 }
 
 impl PlatformXmlSourceSetOwnerEvidence {
@@ -50,6 +66,7 @@ impl PlatformXmlSourceSetOwnerEvidence {
 
     pub fn registers(&self, kind: &str, name: &str) -> bool {
         self.registrations
+            .known
             .contains(&(kind.to_string(), name.to_string()))
     }
 
@@ -61,8 +78,10 @@ impl PlatformXmlSourceSetOwnerEvidence {
         self.artifact_name.as_deref()
     }
 
+    /// Registrations in the document order of `ChildObjects`.
     pub fn registrations(&self) -> impl Iterator<Item = (&str, &str)> {
         self.registrations
+            .ordered
             .iter()
             .map(|(kind, name)| (kind.as_str(), name.as_str()))
     }
@@ -124,7 +143,7 @@ pub fn prove_already_read_source_set_owner(
         .children()
         .find(|node| node.is_element())
         .expect("validated source-set owner has one direct artifact");
-    let mut registrations = BTreeSet::new();
+    let mut registrations = Registrations::default();
     for child_objects in artifact.children().filter(|node| {
         node.is_element()
             && node.tag_name().namespace() == Some(MD_CLASSES_NS)
@@ -164,7 +183,7 @@ pub fn prove_already_read_metadata_owner(
         .children()
         .find(|node| node.is_element())
         .expect("strict standalone metadata owner has one artifact child");
-    let mut registrations = BTreeSet::new();
+    let mut registrations = Registrations::default();
     for child_objects in artifact.children().filter(|node| {
         node.is_element()
             && node.tag_name().namespace() == Some(MD_CLASSES_NS)
@@ -442,6 +461,10 @@ mod tests {
             ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExtPicture"),
             ("http://v8.1c.ru/8.3/xcf/extrnprops", "JobSchedule"),
             ("http://v8.1c.ru/8.3/xcf/extrnprops", "AdditionalIndexes"),
+            (
+                "http://v8.1c.ru/8.3/xcf/extrnprops",
+                "AccumulationRegisterAggregates",
+            ),
             ("http://v8.1c.ru/8.3/xcf/dumpinfo", "ConfigDumpInfo"),
             (
                 "http://v8.1c.ru/8.2/managed-application/core",
@@ -450,6 +473,21 @@ mod tests {
         ] {
             assert!(!known_standalone_root((Some(namespace), local_name)));
         }
+    }
+
+    #[test]
+    fn registrations_keep_child_objects_order_and_the_first_place_of_a_repeat() {
+        let xml = format!(
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>Zulu</Form><Template>Alpha</Template><Form>Alpha</Form><Form>Zulu</Form></ChildObjects></Catalog></MetaDataObject>"#
+        );
+        let evidence =
+            prove_already_read_metadata_owner(Path::new("Catalogs/Items.xml"), xml.as_bytes())
+                .unwrap_or_else(|error| panic!("{}", error.message));
+        assert_eq!(
+            evidence.registrations().collect::<Vec<_>>(),
+            vec![("Form", "Zulu"), ("Template", "Alpha"), ("Form", "Alpha")]
+        );
+        assert!(evidence.registers("Form", "Zulu"));
     }
 
     #[test]
@@ -463,8 +501,8 @@ mod tests {
         let registrations = evidence.registrations().collect::<Vec<_>>();
         assert_eq!(
             registrations,
-            vec![("Command", "Refresh"), ("Form", "ItemForm")],
-            "a command is registered by its inline definition; a nameless one registers nothing"
+            vec![("Form", "ItemForm"), ("Command", "Refresh")],
+            "a command is registered by its inline definition in document order; a nameless one registers nothing"
         );
     }
 
