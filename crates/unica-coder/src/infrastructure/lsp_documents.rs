@@ -262,6 +262,34 @@ impl LspDocuments {
         read.module_source(&target).map_err(LspDocumentError::Read)
     }
 
+    /// `textDocument/signatureHelp` at `position` of `uri`. A qualified
+    /// call names a common module of the same source set, read through
+    /// `read` (with this connection's buffers).
+    pub(crate) fn signature_help(
+        &self,
+        uri: &str,
+        position: crate::application::lsp::position::Utf16Position,
+        read: &ProviderReadAuthority,
+    ) -> Result<Option<serde_json::Value>, LspDocumentError> {
+        let Some(text) = self.content(uri, read)? else {
+            return Ok(None);
+        };
+        let location = self.locate(uri)?;
+        let common_module = |name: &str| {
+            let document = DocumentUri {
+                space: location.document.space.clone(),
+                address: format!("{}:CommonModule.{name}", location.source_set),
+            };
+            let uri = self.spaces.format(&document).ok()?;
+            self.content(&uri, read).ok().flatten()
+        };
+        Ok(crate::infrastructure::lsp_features::signature_help(
+            &text,
+            position,
+            &common_module,
+        ))
+    }
+
     /// The `unica://` URIs to refresh after `apply` published `relatives`
     /// of a source set in a space: every module this connection opened
     /// there whose file changed. After an epoch change pass `None`: every

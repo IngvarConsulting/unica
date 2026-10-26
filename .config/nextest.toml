@@ -295,6 +295,7 @@ default-filter = '''(
     | (binary(unica_coder) & test(/^infrastructure::form_composition::tests::/))
     | (binary(unica_coder) & test(/^infrastructure::full_dump_integration::/))
     | (binary(unica_coder) & test(/^infrastructure::interface_composition::tests::/))
+    | (binary(unica_coder) & test(/^infrastructure::lsp_documents::tests::/))
     | (binary(unica_coder) & test(/^infrastructure::native_operations::code_patch_composition::module_state_tests::/))
     | (binary(unica_coder) & test(/^infrastructure::native_operations::code_patch_composition::tests::/))
     | (binary(unica_coder) & test(/^infrastructure::native_operations::event_implementation::tests::/))
