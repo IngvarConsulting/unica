@@ -1779,6 +1779,14 @@ impl ProviderReadAuthority {
         self.object_support_with_descriptor(target, None, checkpoint)
     }
 
+    /// The parsed support marker of the source set; `None` when it is absent.
+    pub(crate) fn support_marker(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Option<Arc<SupportState>>, ViewError> {
+        self.support_state(checkpoint)
+    }
+
     /// A caller that already holds the descriptor bytes passes them in so the
     /// support lookup does not read the same file a second time.
     fn object_support_with_descriptor(
@@ -2201,6 +2209,24 @@ fn form_support_rule(
         )
     })?;
     Ok(object_support_rule(state.object_rule(&uuid)))
+}
+
+/// Support state of an object whose descriptor `uuid` the caller already
+/// holds: a collection lists its members without reading them again.
+pub(crate) fn object_support_by_uuid(
+    state: &SupportState,
+    uuid: Option<&str>,
+) -> Result<ObjectSupportState, ViewError> {
+    if state.removed() || !state.global_editing_enabled() {
+        return Ok(object_support_from_state(Some(state), None).state);
+    }
+    let uuid = uuid.ok_or_else(|| {
+        ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "metadata descriptor has no support-state UUID evidence",
+        )
+    })?;
+    Ok(object_support_from_state(Some(state), object_support_rule(state.object_rule(uuid))).state)
 }
 
 fn object_support_rule(rule: Option<u8>) -> Option<ObjectSupportState> {

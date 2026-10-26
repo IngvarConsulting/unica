@@ -1802,6 +1802,57 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(())
     }
 
+    /// Состояние поддержки членов коллекции вида по `uuid` их уже доказанных
+    /// дескрипторов. Без маркера поддержки ничего не добавляется; член, чьё
+    /// состояние прочитать нельзя, называется в `limits`, а не выдаётся
+    /// «не на поддержке».
+    fn member_support<'name>(
+        &self,
+        kind: NodeKind,
+        names: impl Iterator<Item = &'name str>,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<crate::infrastructure::v13_read_projection::MemberSupport, ViewError> {
+        use unica_metadata::support_state::ObjectSupportState;
+        let mut support = crate::infrastructure::v13_read_projection::MemberSupport::default();
+        if kind == NodeKind::WebSocketClient {
+            return Ok(support);
+        }
+        let marker = match self.read.support_marker(&mut || self.read_checkpoint()) {
+            Ok(Some(marker)) => marker,
+            Ok(None) => return Ok(support),
+            Err(error) => {
+                support
+                    .limits
+                    .push(format!("support of the members is unknown: {error}"));
+                return Ok(support);
+            }
+        };
+        for name in names {
+            let owner = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("{}.{name}", kind.as_str()),
+            )
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+            let evidence = self.owner_evidence(&owner, admitted)?;
+            match crate::infrastructure::v13_read_port::object_support_by_uuid(
+                &marker,
+                evidence.artifact_uuid(),
+            ) {
+                Ok(ObjectSupportState::NotSupported) => {}
+                Ok(state) => {
+                    support.states.insert(name.to_string(), json!(state));
+                }
+                Err(error) => support.limits.push(format!(
+                    "support of `{}` is unknown: {error}",
+                    owner.as_str()
+                )),
+            }
+        }
+        Ok(support)
+    }
+
     fn owner_evidence(
         &self,
         target: &MetadataAddress,
@@ -2205,9 +2256,12 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                         self.verify_registered_owner(&owner, admitted)?;
                     }
                 }
+                let support =
+                    self.member_support(branch_kind, names.iter().map(String::as_str), admitted)?;
                 crate::infrastructure::v13_read_projection::project_registered_metadata_branch_names(
                     route.at(),
                     &names,
+                    support,
                 )?
             } else {
                 let payload = self.configuration_payload(admitted)?;
@@ -2237,9 +2291,20 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                         self.verify_registered_owner(&owner, admitted)?;
                     }
                 }
+                let names = payload
+                    .get("registeredObjects")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|item| {
+                        item.get("kind").and_then(Value::as_str) == Some(branch_kind.as_str())
+                    })
+                    .filter_map(|item| item.get("name").and_then(Value::as_str));
+                let support = self.member_support(branch_kind, names, admitted)?;
                 crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
                     route.at(),
                     payload.as_ref(),
+                    support,
                 )?
             }
         } else if route.reader() == LogicalReader::Form {

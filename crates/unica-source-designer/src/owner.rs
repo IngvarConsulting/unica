@@ -39,6 +39,7 @@ pub struct PlatformXmlSourceSetOwnerEvidence {
     version: Option<String>,
     artifact_kind: String,
     artifact_name: Option<String>,
+    artifact_uuid: Option<String>,
     registrations: Registrations,
     configuration_extension: bool,
 }
@@ -76,6 +77,12 @@ impl PlatformXmlSourceSetOwnerEvidence {
 
     pub fn artifact_name(&self) -> Option<&str> {
         self.artifact_name.as_deref()
+    }
+
+    /// `uuid` of the artifact element in lower case: the key of its support
+    /// rule in `Ext/ParentConfigurations.bin`.
+    pub fn artifact_uuid(&self) -> Option<&str> {
+        self.artifact_uuid.as_deref()
     }
 
     /// Registrations in the document order of `ChildObjects`.
@@ -162,6 +169,7 @@ pub fn prove_already_read_source_set_owner(
         version: root_version_literal(source, root),
         artifact_kind: artifact.tag_name().name().to_string(),
         artifact_name: metadata_artifact_property(artifact, "Name"),
+        artifact_uuid: artifact.attribute("uuid").map(str::to_ascii_lowercase),
         registrations,
         configuration_extension: is_configuration_extension_artifact(artifact),
     })
@@ -202,6 +210,7 @@ pub fn prove_already_read_metadata_owner(
         version: root_version_literal(source, root),
         artifact_kind: artifact.tag_name().name().to_string(),
         artifact_name: metadata_artifact_property(artifact, "Name"),
+        artifact_uuid: artifact.attribute("uuid").map(str::to_ascii_lowercase),
         registrations,
         configuration_extension: false,
     })

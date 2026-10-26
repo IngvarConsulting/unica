@@ -725,9 +725,18 @@ pub(super) fn project_configuration_with_counts(
     ))
 }
 
+/// Состояние поддержки членов коллекции: значение `props.support` члена,
+/// который не «не на поддержке», и причины, по которым состояние неизвестно.
+#[derive(Debug, Default)]
+pub(super) struct MemberSupport {
+    pub(super) states: std::collections::BTreeMap<String, Value>,
+    pub(super) limits: Vec<String>,
+}
+
 pub(super) fn project_registered_metadata_branch(
     address: &QualifiedAddress,
     payload: &Value,
+    support: MemberSupport,
 ) -> Result<NodeViewData, ViewError> {
     validate_reader_payload(LogicalReader::Configuration, payload)?;
     let kind = address
@@ -742,33 +751,47 @@ pub(super) fn project_registered_metadata_branch(
         .flatten()
         .filter(|item| item.get("kind").and_then(Value::as_str) == Some(kind.as_str()))
         .filter_map(|item| item.get("name").and_then(Value::as_str));
-    project_registered_metadata_branch_names_inner(address, kind, names)
+    project_registered_metadata_branch_names_inner(address, kind, names, support)
 }
 
 pub(super) fn project_registered_metadata_branch_names(
     address: &QualifiedAddress,
     names: &[String],
+    support: MemberSupport,
 ) -> Result<NodeViewData, ViewError> {
     let kind = address
         .segments()
         .last()
         .map(AddressSegment::kind)
         .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "metadata branch kind is missing"))?;
-    project_registered_metadata_branch_names_inner(address, kind, names.iter().map(String::as_str))
+    project_registered_metadata_branch_names_inner(
+        address,
+        kind,
+        names.iter().map(String::as_str),
+        support,
+    )
 }
 
+/// Член коллекции несёт `props.support` только в состоянии, отличном от «не на
+/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158).
 fn project_registered_metadata_branch_names_inner<'a>(
     address: &QualifiedAddress,
     kind: NodeKind,
     names: impl Iterator<Item = &'a str>,
+    mut support: MemberSupport,
 ) -> Result<NodeViewData, ViewError> {
     let items = names
         .map(|name| {
+            let props = support
+                .states
+                .remove(name)
+                .map(|state| Map::from_iter([("support".to_string(), state)]))
+                .unwrap_or_default();
             serde_json::to_value(NodeView::new(
                 member_address(address, name),
                 kind.as_str(),
                 name,
-                Map::new(),
+                props,
             ))
             .expect("NodeView always serializes")
         })
@@ -779,7 +802,8 @@ fn project_registered_metadata_branch_names_inner<'a>(
             kind.as_str(),
             kind.as_str(),
             Map::new(),
-        ),
+        )
+        .with_limits(support.limits),
         items,
     )))
 }

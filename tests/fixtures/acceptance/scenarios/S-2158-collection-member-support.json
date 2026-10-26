@@ -1,0 +1,75 @@
+{
+  "id": "S-2158-collection-member-support",
+  "issue": 2158,
+  "area": "Навигация",
+  "task": "Увидеть замок поддержки в дереве одним вызовом: элемент коллекции справочников несёт состояние поддержки своего объекта, если оно отлично от «не на поддержке», а объект с нечитаемым состоянием назван в limits коллекции, а не выдан свободным",
+  "workspace": "tests/fixtures/acceptance/workspace-support-collection",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Locked"
+        },
+        {
+          "pointer": "/data/items/0/props/support",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Catalog.Free"
+        },
+        {
+          "pointer": "/data/items/1/props",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/props/support",
+          "eq": "editableWithSupport"
+        },
+        {
+          "pointer": "/data/items/3/props/support",
+          "eq": "removedFromSupport"
+        },
+        {
+          "pointer": "/data/items/4/at",
+          "eq": "main:Catalog.NoUuid"
+        },
+        {
+          "pointer": "/data/items/4/props",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "Catalog.NoUuid"
+        },
+        {
+          "pointer": "/data/limits/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Locked"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/support",
+          "eq": "locked"
+        }
+      ]
+    }
+  ]
+}
