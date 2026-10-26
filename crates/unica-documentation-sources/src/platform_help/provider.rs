@@ -281,13 +281,17 @@ pub struct GlobalContextMember {
     pub name_en: Option<String>,
     pub signature_ru: Option<String>,
     pub signature_en: Option<String>,
+    /// Parameter names of the first syntax variant, as the page writes
+    /// them (`Значение`); empty for a property or a method without any.
+    pub parameters: Vec<String>,
 }
 
 /// Методы и свойства глобального контекста установки `root`. Читаются из
 /// того же индекса синтакс-помощника, что и поиск, поэтому вторая выборка
 /// той же установки не перечитывает контейнеры.
 pub fn global_context_members(root: &Path) -> Result<Vec<GlobalContextMember>, String> {
-    let corpora = discover(root, "ru").map_err(|error| format!("установка не разобрана: {error:?}"))?;
+    let corpora =
+        discover(root, "ru").map_err(|error| format!("установка не разобрана: {error:?}"))?;
     let index = indexed(IndexKey::for_corpora(root, &corpora), &corpora);
     let syntax = &index.corpora[0];
     let mut members = syntax
@@ -303,7 +307,9 @@ pub fn global_context_members(root: &Path) -> Result<Vec<GlobalContextMember>, S
                 return None;
             };
             let (name_ru, name_en) = global_context_names(&page.title)?;
+            let parameters = syntax_parameters(&page.snippet, &name_ru);
             Some(GlobalContextMember {
+                parameters,
                 kind,
                 name_ru,
                 name_en,
@@ -317,6 +323,33 @@ pub fn global_context_members(root: &Path) -> Result<Vec<GlobalContextMember>, S
     Ok(members)
 }
 
+/// Параметры из `Синтаксис: Сообщить(<ТекстСообщения>, <Статус>)` начала
+/// страницы. Угловые скобки в тексте страницы экранированы.
+fn syntax_parameters(text: &str, name: &str) -> Vec<String> {
+    let text = text.replace("&lt;", "<").replace("&gt;", ">");
+    let Some(syntax) = text
+        .split_once("Синтаксис:")
+        .map(|(_, rest)| rest.trim_start())
+        .and_then(|rest| rest.strip_prefix(name))
+        .and_then(|rest| rest.strip_prefix('('))
+        .and_then(|rest| rest.split_once(')'))
+        .map(|(arguments, _)| arguments.to_owned())
+    else {
+        return Vec::new();
+    };
+    syntax
+        .split(',')
+        .map(|argument| {
+            argument
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_owned()
+        })
+        .filter(|argument| !argument.is_empty())
+        .collect()
+}
+
 /// `Глобальный контекст.СтрНайти (Global context.StrFind)` — имена члена;
 /// английский заголовок без русского даёт английское имя за русское.
 fn global_context_names(title: &str) -> Option<(String, Option<String>)> {
@@ -324,7 +357,10 @@ fn global_context_names(title: &str) -> Option<(String, Option<String>)> {
         Some((first, rest)) => (first, Some(rest.trim_end_matches(')'))),
         None => (title, None),
     };
-    let member = |text: &str| text.rsplit_once('.').map(|(_, name)| name.trim().to_owned());
+    let member = |text: &str| {
+        text.rsplit_once('.')
+            .map(|(_, name)| name.trim().to_owned())
+    };
     let name = member(first)?;
     let english = rest.and_then(member).filter(|english| *english != name);
     Some((name, english))
@@ -1991,6 +2027,17 @@ mod global_context_tests {
         );
         assert_eq!(global_context_names("Без точки"), None);
     }
+
+    #[test]
+    fn parameters_come_from_the_syntax_line() {
+        let text = "Глобальный контекст.Сообщить Доступен, начиная с версии 8.0. Синтаксис: Сообщить(&lt;ТекстСообщения&gt;, &lt;Статус&gt;) Параметры: &lt;ТекстСообщения&gt;";
+        assert_eq!(
+            super::syntax_parameters(text, "Сообщить"),
+            ["ТекстСообщения", "Статус"]
+        );
+        assert!(super::syntax_parameters("Синтаксис: ТекущаяДата()", "ТекущаяДата").is_empty());
+        assert!(super::syntax_parameters("без синтаксиса", "Ф").is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -2005,7 +2052,13 @@ mod global_context_installation {
         let started = std::time::Instant::now();
         let members = super::global_context_members(std::path::Path::new(&root)).unwrap();
         println!("{} members in {:?}", members.len(), started.elapsed());
-        for name in ["Сообщить", "ТекущаяДата", "НСтр", "Справочники"] {
+        let filled = members
+            .iter()
+            .find(|member| member.name_ru == "ЗначениеЗаполнено")
+            .unwrap();
+        assert_eq!(filled.parameters, ["Значение"]);
+        for name in ["Сообщить", "ТекущаяДата", "НСтр", "Справочники"]
+        {
             let member = members.iter().find(|member| member.name_ru == name);
             println!("{name}: {member:?}");
             assert!(member.is_some(), "{name}");

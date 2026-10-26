@@ -178,13 +178,15 @@ fn split_lines(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
 /// connection has open or from the file; `None` when there is none.
 pub(crate) type CommonModuleText<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
-/// `textDocument/signatureHelp` for a call of a method of this module or
-/// of an exported method of a common module. A call of anything else
-/// (a platform method, an object's method) has no signature here.
+/// `textDocument/signatureHelp` for a call of a method of this module, of
+/// an exported method of a common module, or of a method of the platform
+/// global context. A call of anything else (an object's method) has no
+/// signature here.
 pub(crate) fn signature_help(
     text: &str,
     position: Utf16Position,
     common_module: &CommonModuleText<'_>,
+    global_context: &[GlobalContextMember],
 ) -> Option<Value> {
     let lines = LineIndex::new(text);
     let offset = lines.offset(text, position).ok()?;
@@ -196,8 +198,19 @@ pub(crate) fn signature_help(
             let module_text = common_module(module)?;
             find_method(&parse(&module_text).editor_symbols(), &call.name, true)
         }
-    }?;
-    let (label, parameters) = signature_label(&method);
+    };
+    let (label, parameters, description) = match method {
+        Some(method) => {
+            let (label, parameters) = signature_label(&method);
+            (label, parameters, method.description)
+        }
+        None if call.qualifier.is_none() => {
+            let member = global_method(global_context, &call.name)?;
+            let (label, parameters) = global_signature_label(member);
+            (label, parameters, None)
+        }
+        None => return None,
+    };
     let mut signature = json!({
         "label": label,
         "parameters": parameters
@@ -205,7 +218,7 @@ pub(crate) fn signature_help(
             .map(|range| json!({ "label": [range.start, range.end] }))
             .collect::<Vec<_>>(),
     });
-    if let Some(description) = &method.description {
+    if let Some(description) = &description {
         // Plain text: a description keeps its own line breaks and is not
         // read as markup.
         signature["documentation"] = json!({ "kind": "plaintext", "value": description });
@@ -217,6 +230,38 @@ pub(crate) fn signature_help(
         "activeSignature": 0,
         "activeParameter": active,
     }))
+}
+
+/// A global context method by its Russian or English name, in any case.
+fn global_method<'a>(
+    global_context: &'a [GlobalContextMember],
+    name: &str,
+) -> Option<&'a GlobalContextMember> {
+    let name = name.to_lowercase();
+    global_context.iter().find(|member| {
+        member.kind == GlobalContextMemberKind::Method
+            && (member.name_ru.to_lowercase() == name
+                || member
+                    .name_en
+                    .as_ref()
+                    .is_some_and(|english| english.to_lowercase() == name))
+    })
+}
+
+/// `ЗначениеЗаполнено(Значение)` and the UTF-16 ranges of its parameters.
+fn global_signature_label(member: &GlobalContextMember) -> (String, Vec<Range<u32>>) {
+    let mut label = format!("{}(", member.name_ru);
+    let mut ranges = Vec::new();
+    for (index, parameter) in member.parameters.iter().enumerate() {
+        if index > 0 {
+            label.push_str(", ");
+        }
+        let start = label.encode_utf16().count() as u32;
+        label.push_str(parameter);
+        ranges.push(start..label.encode_utf16().count() as u32);
+    }
+    label.push(')');
+    (label, ranges)
 }
 
 fn find_method(symbols: &[EditorSymbol], name: &str, exported: bool) -> Option<EditorSymbol> {
@@ -266,6 +311,16 @@ pub(crate) struct ObjectMembers {
     pub(crate) tabular_sections: Vec<(String, Vec<String>)>,
 }
 
+/// The metadata object a module belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModuleOwner {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    /// A form module: the object is reached as `Объект`, not as
+    /// `ЭтотОбъект`, and its attributes are not names of the module.
+    pub(crate) form: bool,
+}
+
 /// What completion knows beyond the module text. The LSP route supplies
 /// it over the workspace actor; tests supply a fixture.
 pub(crate) trait CompletionSources {
@@ -277,14 +332,14 @@ pub(crate) trait CompletionSources {
     /// The text of a common module, by its name in any case.
     fn common_module_text(&self, name: &str) -> Option<String>;
     fn object_members(&self, kind: &str, name: &str) -> Option<ObjectMembers>;
-    /// The object whose object or form module is being edited.
-    fn module_owner(&self) -> Option<(String, String)>;
+    /// The object whose object module or form module is being edited.
+    fn module_owner(&self) -> Option<ModuleOwner>;
     /// A newer edit made the answer stale: stop and answer nothing.
     fn cancelled(&self) -> bool;
 }
 
 /// Kinds whose managers are global context properties (`Справочники`).
-const MANAGER_KINDS: [&str; 20] = [
+const MANAGER_KINDS: [&str; 22] = [
     "Catalog",
     "Document",
     "Enum",
@@ -305,6 +360,8 @@ const MANAGER_KINDS: [&str; 20] = [
     "Sequence",
     "FilterCriterion",
     "SettingsStorage",
+    "SessionParameter",
+    "WSReference",
 ];
 
 /// Kinds whose objects carry attributes and tabular sections.
@@ -439,8 +496,9 @@ fn names_in_scope(
             Some(json!({ "method": method.name })),
         );
     }
-    if let Some((kind, name)) = sources.module_owner() {
-        if let Some(members) = sources.object_members(&kind, &name) {
+    // In an object module the object's attributes are names of the module.
+    if let Some(owner) = sources.module_owner().filter(|owner| !owner.form) {
+        if let Some(members) = object_members(sources, &owner.kind, &owner.name) {
             object_items(&members, 2, items);
         }
     }
@@ -466,7 +524,9 @@ fn names_in_scope(
     }
     for member in sources.global_context() {
         let (kind, detail) = match member.kind {
-            GlobalContextMemberKind::Method => (ITEM_FUNCTION, member.signature_ru.clone()),
+            GlobalContextMemberKind::Method => {
+                (ITEM_FUNCTION, Some(global_signature_label(member).0))
+            }
             GlobalContextMemberKind::Property => (ITEM_PROPERTY, None),
         };
         items.push(&member.name_ru, kind, 5, detail, None);
@@ -522,8 +582,11 @@ fn members_of(
 }
 
 /// The members `path` reaches, when it names an object or a row of a
-/// tabular section: `ЭтотОбъект`, `Объект` in a form, a variable created
-/// by `Справочники.X.СоздатьЭлемент()` or a loop variable over a section.
+/// tabular section. A variable takes the type of its last assignment or
+/// loop before the cursor: an object created by
+/// `Справочники.X.СоздатьЭлемент()`, a row of a section the loop walks.
+/// A name neither declares is the module's own object: `ЭтотОбъект` in an
+/// object module, `Объект` in a form.
 fn object_of(
     parsed: &unica_bsl_parser::ParsedModule<'_>,
     offset: usize,
@@ -535,26 +598,38 @@ fn object_of(
     let [variable] = path else {
         return None;
     };
-    let lower = variable.to_lowercase();
-    if matches!(
-        lower.as_str(),
-        "этотобъект" | "thisobject" | "объект" | "object"
-    ) {
-        let (kind, name) = sources.module_owner()?;
-        return sources.object_members(&kind, &name);
-    }
-    if let Some(call) = parsed.assigned_call(offset, variable) {
-        if let [manager, name, create] = call.as_slice() {
-            let kind = manager_kind(manager)?;
-            let create = create.to_lowercase();
-            let creates = create.starts_with("создать") || create.starts_with("create");
-            if creates && OBJECT_KINDS.contains(&kind) {
-                return sources.object_members(kind, name);
-            }
+    let assigned = parsed.assigned_call(offset, variable);
+    let looped = parsed.loop_collection(offset, variable);
+    let assigned_last = match (&assigned, &looped) {
+        (Some((assigned, _)), Some((looped, _))) => assigned > looped,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => {
+            let owner = sources.module_owner()?;
+            let lower = variable.to_lowercase();
+            let names_owner = if owner.form {
+                matches!(lower.as_str(), "объект" | "object")
+            } else {
+                matches!(lower.as_str(), "этотобъект" | "thisobject")
+            };
+            return names_owner
+                .then(|| object_members(sources, &owner.kind, &owner.name))
+                .flatten();
         }
-        return None;
+    };
+    if assigned_last {
+        let (_, call) = assigned?;
+        let [manager, name, create] = call.as_slice() else {
+            return None;
+        };
+        let kind = manager_kind(manager)?;
+        let create = create.to_lowercase();
+        let creates = create.starts_with("создать") || create.starts_with("create");
+        return (creates && OBJECT_KINDS.contains(&kind))
+            .then(|| object_members(sources, kind, name))
+            .flatten();
     }
-    let collection = parsed.loop_collection(offset, variable)?;
+    let (_, collection) = looped?;
     let (owner, section) = collection.split_at(collection.len().checked_sub(1)?);
     let owner = object_of(parsed, offset, owner, sources, depth)?;
     let section = section[0].to_lowercase();
@@ -566,6 +641,21 @@ fn object_of(
             attributes: columns,
             tabular_sections: Vec::new(),
         })
+}
+
+/// The members of `kind` `name`, the name matched to its registration in
+/// any case, as code may spell it.
+fn object_members(
+    sources: &dyn CompletionSources,
+    kind: &str,
+    name: &str,
+) -> Option<ObjectMembers> {
+    let lower = name.to_lowercase();
+    let registered = sources
+        .metadata_names(kind)
+        .into_iter()
+        .find(|known| known.to_lowercase() == lower)?;
+    sources.object_members(kind, &registered)
 }
 
 fn object_items(members: &ObjectMembers, rank: u8, items: &mut Items) {
