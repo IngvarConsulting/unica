@@ -163,6 +163,7 @@ pub struct WorkspaceServiceBslCall<'a> {
     tool_args: Value,
     timeout: Duration,
     request_budget: Duration,
+    yields: bool,
 }
 
 impl<'a> WorkspaceServiceBslCall<'a> {
@@ -177,7 +178,15 @@ impl<'a> WorkspaceServiceBslCall<'a> {
             tool_args,
             timeout,
             request_budget,
+            yields: false,
         }
+    }
+
+    /// A call that gives way to the agent's calls: while it holds the
+    /// analyzer, an arriving call that does not yield cancels it there.
+    pub fn yielding(mut self) -> Self {
+        self.yields = true;
+        self
     }
 }
 
@@ -358,6 +367,7 @@ impl<'a> WorkspaceServiceManager<'a> {
                         tool_args: call.tool_args.clone(),
                         timeout_seconds: attempt_timeout.as_secs(),
                         timeout_nanos: attempt_timeout.subsec_nanos(),
+                        yields: call.yields,
                     },
                 },
                 cancellation,
@@ -1513,7 +1523,32 @@ pub struct AnalyzerLane {
 pub struct AnalyzerLaneState {
     held: bool,
     next_ticket: u64,
-    waiters: VecDeque<u64>,
+    /// Waiting tickets in arrival order, each with whether it yields.
+    waiters: VecDeque<(u64, bool)>,
+    /// The token that cancels a yielding holder's call, while one holds.
+    yielding_holder: Option<CancellationToken>,
+}
+
+impl AnalyzerLaneState {
+    /// The next ticket to hold the lane: the first that does not yield, or
+    /// the first of all when every waiter yields.
+    fn next(&self) -> Option<u64> {
+        self.waiters
+            .iter()
+            .find(|(_, yields)| !yields)
+            .or_else(|| self.waiters.front())
+            .map(|(ticket, _)| *ticket)
+    }
+
+    fn leave(&mut self, ticket: u64) {
+        if let Some(index) = self
+            .waiters
+            .iter()
+            .position(|(waiting, _)| *waiting == ticket)
+        {
+            self.waiters.remove(index);
+        }
+    }
 }
 
 impl AnalyzerLane {
@@ -1532,6 +1567,16 @@ impl AnalyzerLane {
         cancellation: &CancellationToken,
     ) -> Result<AnalyzerLanePermit<'_>, String> {
         self.acquire_with_hook_before(cancellation, None, || {})
+    }
+
+    /// The lane for a call that gives way: it waits behind every call that
+    /// does not, and its permit carries the token such a call cancels.
+    pub fn acquire_yielding_before(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: &ElapsedBudgetDeadline,
+    ) -> Result<AnalyzerLanePermit<'_>, String> {
+        self.acquire_queued(cancellation, Some(deadline), true, || {})
     }
 
     pub fn acquire_before(
@@ -1557,37 +1602,53 @@ impl AnalyzerLane {
         deadline: Option<&ElapsedBudgetDeadline>,
         queued: impl FnOnce(),
     ) -> Result<AnalyzerLanePermit<'_>, String> {
+        self.acquire_queued(cancellation, deadline, false, queued)
+    }
+
+    fn acquire_queued(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: Option<&ElapsedBudgetDeadline>,
+        yields: bool,
+        queued: impl FnOnce(),
+    ) -> Result<AnalyzerLanePermit<'_>, String> {
         let ticket = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             let ticket = state.next_ticket;
             state.next_ticket = state.next_ticket.wrapping_add(1);
-            state.waiters.push_back(ticket);
+            state.waiters.push_back((ticket, yields));
+            if !yields {
+                // A call that must not wait behind a yielding one stops it.
+                if let Some(holder) = &state.yielding_holder {
+                    holder.cancel();
+                }
+            }
             ticket
         };
         queued();
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         loop {
             if cancellation.is_cancelled() {
-                if let Some(index) = state.waiters.iter().position(|waiting| *waiting == ticket) {
-                    state.waiters.remove(index);
-                }
+                state.leave(ticket);
                 self.wake.notify_all();
                 return Err(cancelled_error("workspace analyzer lane wait stopped"));
             }
             if let Some(deadline) = deadline {
                 if deadline.remaining().is_none() {
-                    if let Some(index) = state.waiters.iter().position(|waiting| *waiting == ticket)
-                    {
-                        state.waiters.remove(index);
-                    }
+                    state.leave(ticket);
                     self.wake.notify_all();
                     return Err(workspace_service_request_timeout_error(deadline.budget));
                 }
             }
-            if !state.held && state.waiters.front() == Some(&ticket) {
-                state.waiters.pop_front();
+            if !state.held && state.next() == Some(ticket) {
+                state.leave(ticket);
                 state.held = true;
-                return Ok(AnalyzerLanePermit { lane: self });
+                let preempt = yields.then(|| cancellation.linked_child());
+                state.yielding_holder = preempt.clone();
+                return Ok(AnalyzerLanePermit {
+                    lane: self,
+                    preempt,
+                });
             }
             let wait_slice = deadline
                 .and_then(ElapsedBudgetDeadline::remaining)
@@ -1604,6 +1665,15 @@ impl AnalyzerLane {
 
 pub struct AnalyzerLanePermit<'a> {
     lane: &'a AnalyzerLane,
+    preempt: Option<CancellationToken>,
+}
+
+impl AnalyzerLanePermit<'_> {
+    /// The token a yielding holder runs its call under: the caller's own,
+    /// also cancelled when a call that does not yield arrives.
+    pub fn yielding_cancellation(&self) -> Option<&CancellationToken> {
+        self.preempt.as_ref()
+    }
 }
 
 impl Drop for AnalyzerLanePermit<'_> {
@@ -1614,6 +1684,7 @@ impl Drop for AnalyzerLanePermit<'_> {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         state.held = false;
+        state.yielding_holder = None;
         self.lane.wake.notify_all();
     }
 }
@@ -2155,9 +2226,10 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         tool_args: Value,
         timeout_seconds: u64,
         timeout_nanos: u32,
-        cancellation: &CancellationToken,
+        yields: bool,
+        request_cancellation: &CancellationToken,
     ) -> ServiceResponse {
-        if cancellation.is_cancelled() {
+        if request_cancellation.is_cancelled() {
             return ServiceResponse::error(cancelled_error("workspace analyzer operation stopped"));
         }
         let timeout = match duration_from_timeout_parts(timeout_seconds, timeout_nanos) {
@@ -2165,10 +2237,17 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             Err(error) => return ServiceResponse::error(error),
         };
         let deadline = ElapsedBudgetDeadline::new(timeout);
-        let _lane = match self.acquire_analyzer_lane_before(cancellation, &deadline) {
+        let lane = if yields {
+            self.analyzer_lane()
+                .acquire_yielding_before(request_cancellation, &deadline)
+        } else {
+            self.acquire_analyzer_lane_before(request_cancellation, &deadline)
+        };
+        let lane = match lane {
             Ok(lane) => lane,
             Err(error) => return ServiceResponse::error(error),
         };
+        let cancellation = lane.yielding_cancellation().unwrap_or(request_cancellation);
         if let Err(error) = deadline.remaining_cancellable(cancellation) {
             return ServiceResponse::error(error);
         }
@@ -2240,7 +2319,18 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
                 let failure_snapshot = analyzer
                     .as_mut()
                     .and_then(|session| session.take_failure_snapshot());
-                let stale_session = analyzer.take();
+                // A call given up by its deadline or its cancellation leaves
+                // the session reusable: the analyzer was told to stop it, and
+                // its index stays warm for the next caller. Only a session the
+                // failure broke is retired.
+                let stale_session = if analyzer
+                    .as_mut()
+                    .is_some_and(|session| session.is_reusable())
+                {
+                    None
+                } else {
+                    analyzer.take()
+                };
                 drop(analyzer);
                 if let Some(stale_session) = stale_session {
                     self.retire_session(stale_session);
@@ -2251,6 +2341,11 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
                         .0
                         .bsl_backend
                         .report_failure(snapshot);
+                }
+                if cancellation.is_cancelled() && !request_cancellation.is_cancelled() {
+                    return ServiceResponse::error(cancelled_error(
+                        "workspace analyzer call gave way to a call that does not yield",
+                    ));
                 }
                 ServiceResponse::error(error)
             }
@@ -2449,12 +2544,14 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServiceOperationExecutor<B, R>
                 tool_args,
                 timeout_seconds,
                 timeout_nanos,
+                yields,
                 ..
             } => runtime.handle_bsl_mcp(
                 &tool_name,
                 tool_args,
                 timeout_seconds,
                 timeout_nanos,
+                yields,
                 cancellation,
             ),
             ServiceRequestKind::RlmReady {
@@ -3780,6 +3877,23 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             tool_args,
             timeout_seconds,
             timeout_nanos,
+            false,
+            cancellation,
+        )
+    }
+    pub fn test_handle_yielding_bsl_mcp(
+        &self,
+        tool_name: &str,
+        tool_args: Value,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> ServiceResponse {
+        self.handle_bsl_mcp(
+            tool_name,
+            tool_args,
+            timeout.as_secs(),
+            timeout.subsec_nanos(),
+            true,
             cancellation,
         )
     }

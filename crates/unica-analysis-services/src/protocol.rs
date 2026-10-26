@@ -18,6 +18,10 @@ pub enum ServiceRequestKind {
         tool_args: Value,
         timeout_seconds: u64,
         timeout_nanos: u32,
+        /// The call gives way to one that does not: an editor's call is
+        /// cancelled at the analyzer when an MCP call needs it.
+        #[serde(default)]
+        yields: bool,
     },
     RlmReady {
         operation_id: String,
