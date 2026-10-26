@@ -262,6 +262,24 @@ impl LspDocuments {
         read.module_source(&target).map_err(LspDocumentError::Read)
     }
 
+    /// The saved text of the module `uri` names, past any open buffer: what
+    /// an analysis of files sees (#2176). `read` must not see buffers.
+    pub(crate) fn saved_content(
+        &self,
+        uri: &str,
+        read: &ProviderReadAuthority,
+    ) -> Result<Option<String>, LspDocumentError> {
+        let location = self.locate(uri)?;
+        let layout = self.source_set(&location.document.space, &location.source_set)?;
+        if read.source_set() != location.source_set || canonical(read.root_path()) != layout.root {
+            return Err(LspDocumentError::UnknownSourceSet(location.source_set));
+        }
+        let at = QualifiedAddress::parse(&location.document.address)
+            .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))?;
+        let target = module_target(&at, layout).ok_or(LspDocumentError::NotAModule)?;
+        read.module_source(&target).map_err(LspDocumentError::Read)
+    }
+
     /// `textDocument/signatureHelp` at `position` of `uri`. A qualified
     /// call names a common module of the same source set, read through
     /// `read` (with this connection's buffers).

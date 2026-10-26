@@ -6679,6 +6679,126 @@
       "decision": null,
       "review": null,
       "derived": true
+    },
+    {
+      "id": "lsp.editor-analysis-entries",
+      "class": "retention",
+      "resource": "Число сохранённых текстов модулей, для которых демон держит анализ кода для редактора: готовый или ждущий очереди.",
+      "unit": "count",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs",
+        "symbol": "MAX_EDITOR_ANALYSIS_ENTRIES"
+      },
+      "expr": "256",
+      "value": 256,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2176",
+      "problem": null,
+      "onReach": "вытесняется самый старый готовый анализ, если готовых нет — самый старый ждущий очереди; документ показывает «анализ кода ещё идёт» до следующего запроса",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-diagnostics",
+      "class": "result",
+      "resource": "Находок в одном ответе диагностик документа редактору.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs",
+        "symbol": "MAX_EDITOR_DIAGNOSTICS"
+      },
+      "expr": "1000",
+      "value": 1000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2176",
+      "problem": null,
+      "onReach": "показываются первые находки по тексту, ответ помечается неполным с пробелом `capped`",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-analysis-concurrency",
+      "class": "concurrency",
+      "resource": "Анализов кода, одновременно идущих для редактора во всём демоне.",
+      "unit": "count",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs",
+        "symbol": "MAX_CONCURRENT_EDITOR_ANALYSES"
+      },
+      "expr": "2",
+      "value": 2,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2176",
+      "problem": null,
+      "onReach": "следующий анализ ждёт в очереди; редактор пока видит пробел «анализ кода ещё идёт»",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-analysis-retry",
+      "class": "retry",
+      "resource": "Через сколько неполный анализ кода модуля повторяется для тех, кто его ждал.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs",
+        "symbol": "EDITOR_ANALYSIS_RETRY_DELAY"
+      },
+      "expr": "Duration::from_secs(30)",
+      "value": 30000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2176",
+      "problem": null,
+      "onReach": "ждавшим анализа сообщается снова, и следующий их запрос запускает анализ заново",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.wire-result-id-bytes",
+      "class": "format",
+      "resource": "Длина идентификатора прежнего ответа диагностик в протоколе LSP демона.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "symbol": "MAX_LSP_RESULT_ID_BYTES"
+      },
+      "expr": "128",
+      "value": 128,
+      "applied": [
+        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2176",
+      "problem": null,
+      "onReach": "кадр отвергается ответом invalid_request",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [

@@ -98,7 +98,9 @@ fn wait_until(condition: impl Fn() -> bool) {
 
 fn lane_with(host: &Arc<HeldHost>) -> (Arc<LspLane>, V5LspSessionId) {
     let lane = Arc::new(LspLane::start(Arc::clone(host) as Arc<dyn LspHost>).unwrap());
-    let (session, opening) = lane.open(&[], soon()).unwrap();
+    let (session, opening) = lane
+        .open(&[], V5LspDiagnosticsDelivery::Push, soon())
+        .unwrap();
     assert!(opening.capabilities.hover);
     (lane, session)
 }
@@ -148,7 +150,9 @@ fn every_folder_gets_its_own_space_or_the_session_is_refused() {
     let lane = LspLane::start(Arc::clone(&host) as Arc<dyn LspHost>).unwrap();
     let folders = [folder("file:///a"), folder("file:///b")];
 
-    let (_, opening) = lane.open(&folders, soon()).unwrap();
+    let (_, opening) = lane
+        .open(&folders, V5LspDiagnosticsDelivery::Push, soon())
+        .unwrap();
     assert_eq!(
         opening.workspaces,
         vec![
@@ -159,7 +163,8 @@ fn every_folder_gets_its_own_space_or_the_session_is_refused() {
 
     host.skip_folder.store(true, Ordering::Release);
     assert_eq!(
-        lane.open(&folders, soon()).err(),
+        lane.open(&folders, V5LspDiagnosticsDelivery::Push, soon())
+            .err(),
         Some(V5LspFailure::Unavailable)
     );
     assert_eq!(host.closed.load(Ordering::Acquire), 1);

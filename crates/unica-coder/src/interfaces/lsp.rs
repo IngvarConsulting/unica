@@ -19,9 +19,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unica_daemon::client_v5::{V5DaemonClient, V5DaemonProcessOwner, V5LspExchangeError};
 use unica_daemon::protocol_v5::lsp::{
-    V5LspCall, V5LspContentChange, V5LspFailure, V5LspMessageLevel, V5LspNotification,
-    V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange, V5LspServerNotification, V5LspSessionId,
-    V5LspTextSync, V5LspWorkspaceFolder,
+    V5LspCall, V5LspContentChange, V5LspDiagnosticsDelivery, V5LspFailure, V5LspMessageLevel,
+    V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange,
+    V5LspServerNotification, V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
 };
 use unica_daemon::protocol_v5::V5EndpointRecord;
 
@@ -178,7 +178,8 @@ impl Frontend {
         match (method, id) {
             (Some(method), Some(id)) => self.request(method, id, params),
             (Some(method), None) => self.notification(method, params),
-            // Answers to server requests: this server sends none.
+            // Answers to server requests: the server asks only for a refresh
+            // of diagnostics and needs nothing back.
             (None, Some(_))
                 if message.get("result").is_some() || message.get("error").is_some() =>
             {
@@ -264,7 +265,10 @@ impl Frontend {
                 }
                 Flow::Continue
             }
-            "textDocument/didOpen" | "textDocument/didChange" | "textDocument/didClose" => {
+            "textDocument/didOpen"
+            | "textDocument/didChange"
+            | "textDocument/didSave"
+            | "textDocument/didClose" => {
                 let Phase::Running(_) = self.phase else {
                     return Flow::Continue;
                 };
@@ -273,12 +277,18 @@ impl Frontend {
                 let Some(notification) = notification else {
                     return self.forget_document(&params);
                 };
-                if !matches!(notification, V5LspNotification::DidOpen { .. }) {
+                if matches!(
+                    notification,
+                    V5LspNotification::DidChange { .. } | V5LspNotification::DidClose { .. }
+                ) {
                     // A request about an older version would answer about a
                     // state the editor no longer has.
                     self.withdraw_document(notification.document_uri());
                 }
-                if !matches!(notification, V5LspNotification::DidChange { .. }) {
+                if matches!(
+                    notification,
+                    V5LspNotification::DidOpen { .. } | V5LspNotification::DidClose { .. }
+                ) {
                     // Opening sends the whole text again; closing ends it.
                     self.unsynced.remove(notification.document_uri());
                 }
@@ -290,13 +300,14 @@ impl Frontend {
 
     fn initialize(&mut self, id: Value, params: &Value) -> Flow {
         let deadline = Instant::now() + LSP_SESSION_EXCHANGE_TIMEOUT;
+        let delivery = DiagnosticDelivery::of_client(params);
         let opened = self
             .client
             .connect_peer_before(deadline)
             .map_err(|error| V5LspExchangeError::Transport(error.to_string()))
             .and_then(|mut anchor| {
                 let (session, opening) =
-                    anchor.lsp_open_before(workspace_folders(params), deadline)?;
+                    anchor.lsp_open_before(workspace_folders(params), delivery.wire(), deadline)?;
                 Ok((anchor, session, opening))
             });
         let (anchor, session, opening) = match opened {
@@ -317,6 +328,7 @@ impl Frontend {
             Arc::clone(&self.output),
             Arc::clone(&poll_stop),
             Arc::clone(&self.session_lost),
+            delivery,
         );
         self.phase = Phase::Running(Box::new(Session {
             id: session,
@@ -445,7 +457,8 @@ impl Frontend {
             V5LspNotification::DidOpen { uri, .. } | V5LspNotification::DidChange { uri, .. } => {
                 Some(uri.clone())
             }
-            V5LspNotification::DidClose { .. } => None,
+            // A refused save or close leaves no buffer behind the editor.
+            V5LspNotification::DidSave { .. } | V5LspNotification::DidClose { .. } => None,
         };
         match session
             .anchor
@@ -538,18 +551,80 @@ fn call_daemon(
     }
 }
 
+/// How an editor takes diagnostics (#2176): one that asks for them itself
+/// is never sent them as well, and is asked to ask again when a background
+/// analysis finishes, if it can be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiagnosticDelivery {
+    Push,
+    Pull { refresh: bool },
+}
+
+impl DiagnosticDelivery {
+    fn of_client(initialize: &Value) -> Self {
+        let capabilities = &initialize["capabilities"];
+        if capabilities["textDocument"]["diagnostic"].is_object() {
+            Self::Pull {
+                refresh: capabilities["workspace"]["diagnostics"]["refreshSupport"] == true,
+            }
+        } else {
+            Self::Push
+        }
+    }
+
+    fn wire(self) -> V5LspDiagnosticsDelivery {
+        match self {
+            Self::Push => V5LspDiagnosticsDelivery::Push,
+            Self::Pull { .. } => V5LspDiagnosticsDelivery::Pull,
+        }
+    }
+}
+
+/// The editor messages of one batch of server notifications. A pull editor
+/// is asked once per batch to refresh, however many analyses finished.
+fn server_messages(
+    items: Vec<V5LspServerNotification>,
+    delivery: DiagnosticDelivery,
+    refreshes: &mut u64,
+) -> Vec<Value> {
+    let mut messages = Vec::with_capacity(items.len());
+    let mut refresh = false;
+    for item in items {
+        match (&item, delivery) {
+            (
+                V5LspServerNotification::PublishDiagnostics { analysed, .. },
+                DiagnosticDelivery::Pull { refresh: can },
+            ) => {
+                refresh |= *analysed && can;
+            }
+            _ => messages.push(server_notification_json(item)),
+        }
+    }
+    if refresh {
+        *refreshes += 1;
+        messages.push(json!({
+            "jsonrpc": "2.0",
+            "id": format!("unica-diagnostic-refresh-{refreshes}"),
+            "method": "workspace/diagnostic/refresh",
+        }));
+    }
+    messages
+}
+
 fn spawn_poller(
     client: Arc<V5DaemonClient>,
     session: V5LspSessionId,
     output: Output,
     stop: Arc<AtomicBool>,
     session_lost: SessionLost,
+    delivery: DiagnosticDelivery,
 ) {
     let _ = thread::Builder::new()
         .name("unica-lsp-notifications".into())
         .spawn(move || {
             let mut peer: Option<V5DaemonProcessOwner> = None;
             let mut failures = 0;
+            let mut refreshes = 0;
             while !stop.load(Ordering::Acquire) {
                 let deadline =
                     Instant::now() + Duration::from_millis(LSP_POLL_WAIT_MS) + LSP_EXCHANGE_MARGIN;
@@ -569,8 +644,8 @@ fn spawn_poller(
                 match polled {
                     Ok(items) => {
                         failures = 0;
-                        for item in items {
-                            write(&output, &server_notification_json(item));
+                        for message in server_messages(items, delivery, &mut refreshes) {
+                            write(&output, &message);
                         }
                     }
                     // The daemon answered: this session is gone there.
@@ -649,10 +724,12 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
         V5LspTextSync::Incremental => Some(2),
     };
     if let Some(change) = sync {
-        result.insert(
-            "textDocumentSync".into(),
-            json!({"openClose": true, "change": change}),
-        );
+        let mut sync = json!({"openClose": true, "change": change});
+        // A save starts the analysis of the saved text.
+        if capabilities.diagnostics {
+            sync["save"] = json!(true);
+        }
+        result.insert("textDocumentSync".into(), sync);
     }
     if capabilities.hover {
         result.insert("hoverProvider".into(), json!(true));
@@ -673,6 +750,12 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
         result.insert(
             "semanticTokensProvider".into(),
             json!({"legend": legend, "full": true}),
+        );
+    }
+    if capabilities.diagnostics {
+        result.insert(
+            "diagnosticProvider".into(),
+            json!({"interFileDependencies": false, "workspaceDiagnostics": false}),
         );
     }
     if capabilities.signature_help {
@@ -713,6 +796,11 @@ fn server_notification_json(notification: V5LspServerNotification) -> Value {
                 "params": {"type": kind, "message": message},
             })
         }
+        V5LspServerNotification::PublishDiagnostics { params, .. } => json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": params,
+        }),
     }
 }
 
@@ -766,6 +854,13 @@ fn document_call(method: &str, params: &Value) -> Option<Option<V5LspCall>> {
         "textDocument/semanticTokens/full" => {
             uri().map(|uri| V5LspCall::SemanticTokensFull { uri })
         }
+        "textDocument/diagnostic" => uri().map(|uri| V5LspCall::Diagnostic {
+            uri,
+            previous_result_id: params
+                .get("previousResultId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }),
         "textDocument/signatureHelp" => uri().and_then(|uri| {
             Some(V5LspCall::SignatureHelp {
                 uri,
@@ -816,6 +911,7 @@ fn document_notification(method: &str, params: &Value) -> Option<V5LspNotificati
                 })
                 .collect::<Option<Vec<_>>>()?,
         }),
+        "textDocument/didSave" => Some(V5LspNotification::DidSave { uri }),
         "textDocument/didClose" => Some(V5LspNotification::DidClose { uri }),
         _ => None,
     }
