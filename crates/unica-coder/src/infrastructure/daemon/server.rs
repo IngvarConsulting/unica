@@ -5540,6 +5540,29 @@ fn main() {
     }
 
     #[test]
+    fn canonical_view_bootstrap_does_not_claim_source_sets_in_an_empty_configuration() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\n",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime();
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.summary,
+            "workspace configuration discovered; no source sets are attached and no infobase target is configured"
+        );
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["config"]["state"], "configured");
+        assert_eq!(data["sourceSets"], serde_json::json!([]));
+        assert_eq!(data["infobase"]["configured"], false);
+    }
+
+    #[test]
     fn canonical_view_bootstrap_recognizes_an_infobase_only_workspace() {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -6402,12 +6425,20 @@ fn main() {
                 serde_json::json!({"at": at}),
             )
         };
-        let packages = view("main:Configuration").data.unwrap()["branches"][0]["at"]
-            .as_str()
+        // Ветвь и пакет выбираются по виду и имени: корень перечисляет и
+        // пустые виды (#2153), а коллекция идёт в порядке `ChildObjects`.
+        let packages = "main:XDTOPackage".to_owned();
+        assert!(view("main:Configuration").data.unwrap()["branches"]
+            .as_array()
             .unwrap()
-            .to_owned();
-        let node = view(&packages).data.unwrap()["items"][3]["at"]
-            .as_str()
+            .iter()
+            .any(|branch| branch["at"] == packages.as_str()));
+        let node = view(&packages).data.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["title"] == "Unsupported")
+            .and_then(|item| item["at"].as_str())
             .unwrap()
             .to_owned();
         let node_page = call(serde_json::json!({"at": node, "limit": 1}));
@@ -14802,13 +14833,27 @@ struct ActorLogicalReadLease {"#,
         let helper = ask(None, "Помощник();", SymbolOperation::Definition);
         assert_eq!(helper["complete"], true);
         assert_eq!(helper["value"][0]["range"]["start"]["line"], 6);
+        // A procedure no other module sees is answered by the module alone.
         let references = ask(None, "Помощник();", SymbolOperation::References);
         assert_eq!(references["value"].as_array().unwrap().len(), 2);
+        assert_eq!(references["complete"], true);
+        // An exported one is looked for in other modules by the set's name
+        // index: built in the background, not ready on the first request.
+        let export = ask(None, "Run()", SymbolOperation::References);
+        assert_eq!(export["value"].as_array().unwrap().len(), 1);
         assert_eq!(
-            references["reasons"],
-            serde_json::json!([{"kind": "otherModules"}]),
-            "places in other modules are not answered by an editor request"
+            export["reasons"],
+            serde_json::json!([{"kind": "namesNotIndexed"}]),
         );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let export = loop {
+            let answer = ask(None, "Run()", SymbolOperation::References);
+            if answer["complete"] == true || std::time::Instant::now() > deadline {
+                break answer;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(export["complete"], true, "{export}");
         assert!(stub.0.lock().unwrap().is_empty(), "Unica answered alone");
 
         let external = ask(None, "Метод", SymbolOperation::Definition);

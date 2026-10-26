@@ -27,6 +27,9 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "overridesCount",
     "overridesComplete",
     "overrides",
+    // Подсистемы объекта и корни его библиотек (ветвь `Relation`).
+    "subsystemMemberships",
+    "libraryRoots",
     // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
     "unreadable",
 ];
@@ -167,17 +170,29 @@ fn project_metadata(
             .get("predefinedItems")
             .and_then(|predefined| predefined.get("total"))
             .and_then(Value::as_u64);
+        // Виды `ChildObjects`, которые профиль платформы допускает у вида
+        // объекта, выдаются и пустыми (`count: 0`): «пусто» отличается от
+        // «вид не поддержан», и первый элемент можно создать (#2153).
+        let platform_kinds = match address.segments() {
+            [owner] => unica_source_designer::registration::platform_child_object_order(
+                owner.kind().as_str(),
+            )
+            .unwrap_or_default(),
+            _ => &[],
+        };
         let mut branches = metadata_branch_kinds()
             .iter()
             .filter_map(|kind| {
-                let value = metadata_collection(payload, *kind)?;
+                let value = metadata_collection(payload, *kind);
                 let count = match (kind, predefined_total) {
                     (NodeKind::PredefinedItem, Some(total)) => {
                         usize::try_from(total).unwrap_or(usize::MAX)
                     }
-                    _ => value.as_array().map_or(0, Vec::len),
+                    _ => value.and_then(Value::as_array).map_or(0, Vec::len),
                 };
-                (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
+                let declared = platform_kinds.contains(&kind.as_str());
+                (count > 0 || declared)
+                    .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             })
             .collect::<Vec<_>>();
         let relations = metadata_relations(address, payload);
@@ -302,12 +317,22 @@ fn project_metadata(
             ));
         }
     }
-    let collection = metadata_collection(payload, first.kind()).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("metadata has no {} collection", first.kind().as_str()),
-        )
-    })?;
+    // Вид, который профиль выдаёт пустой ветвью, читается пустой коллекцией,
+    // даже если читатель не прислал для него массива (#2153).
+    let empty = Value::Array(Vec::new());
+    let declared = matches!(address.segments(), [owner] if
+        unica_source_designer::registration::platform_child_object_order(owner.kind().as_str())
+            .is_some_and(|kinds| kinds.contains(&first.kind().as_str())));
+    let collection = match metadata_collection(payload, first.kind()) {
+        Some(collection) => collection,
+        None if declared => &empty,
+        None => {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                format!("metadata has no {} collection", first.kind().as_str()),
+            ))
+        }
+    };
     if first.kind() == NodeKind::Characteristic {
         // Прикладного имени у характеристики нет: она названа парой источников,
         // а не словом. Адресовать в ней нечего, поэтому элементы остаются
@@ -547,23 +572,28 @@ fn unreadable_entries(payload: &Value) -> impl Iterator<Item = (&str, &str)> {
         })
 }
 
+/// Ветви объекта в порядке дерева Конфигуратора: измерения, ресурсы,
+/// реквизиты, табличные части, значения, графы, перерасчёты, операции,
+/// шаблоны URL, затем формы, команды и макеты. Стандартные реквизиты и
+/// табличные части идут за своими видами; характеристики и предопределённые
+/// элементы, которых дерево не показывает, — в конце.
 fn metadata_branch_kinds() -> &'static [NodeKind] {
     &[
+        NodeKind::Dimension,
+        NodeKind::Resource,
         NodeKind::Attribute,
         NodeKind::StandardAttribute,
         NodeKind::TabularSection,
-        NodeKind::Dimension,
-        NodeKind::Resource,
-        NodeKind::Recalculation,
+        NodeKind::StandardTabularSection,
         NodeKind::EnumValue,
         NodeKind::Column,
-        NodeKind::Form,
-        NodeKind::Template,
-        NodeKind::Command,
-        NodeKind::UrlTemplate,
+        NodeKind::Recalculation,
         NodeKind::Operation,
+        NodeKind::UrlTemplate,
+        NodeKind::Form,
+        NodeKind::Command,
+        NodeKind::Template,
         NodeKind::Characteristic,
-        NodeKind::StandardTabularSection,
         NodeKind::PredefinedItem,
     ]
 }
@@ -699,6 +729,52 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
             "kind": "typeId",
             "typeId": type_id,
             "readOnly": true,
+        }));
+    }
+    // Подсистемы, в состав которых входит объект: `direct` у той, что
+    // перечисляет его, и не у её родителей. Корень библиотеки — признак
+    // соглашения стандартов разработки, а не платформы, поэтому элемент называет его источник
+    // и модуль, на котором он держится.
+    let subsystem_at = |name: &str| {
+        format!(
+            "{}:Subsystem.{}",
+            address.source_set(),
+            name.split('.').collect::<Vec<_>>().join(".Subsystem.")
+        )
+    };
+    for membership in payload
+        .get("subsystemMemberships")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(name) = membership.get("subsystem").and_then(Value::as_str) {
+            items.push(json!({
+                "relation": "subsystem",
+                "at": subsystem_at(name),
+                "kind": "Subsystem",
+                "direct": membership.get("direct"),
+            }));
+        }
+    }
+    for root in payload
+        .get("libraryRoots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (Some(name), Some(module)) = (
+            root.get("subsystem").and_then(Value::as_str),
+            root.get("module").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        items.push(json!({
+            "relation": "library",
+            "at": subsystem_at(name),
+            "kind": "Subsystem",
+            "source": "standardLibraryModule",
+            "module": format!("{}:{module}", address.source_set()),
         }));
     }
     items

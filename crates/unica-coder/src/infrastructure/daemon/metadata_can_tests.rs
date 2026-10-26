@@ -2416,6 +2416,7 @@ const UNICA_ROOT_FACTS: &[&str] = &[
     "kind",
     "support",
     "directEditSafe",
+    "libraryRoot",
     "format",
     "content",
     "extends",

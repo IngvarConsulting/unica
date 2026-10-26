@@ -708,10 +708,7 @@ pub(super) fn project_configuration_with_counts(
             _ => {}
         }
     }
-    let branches = counts
-        .into_iter()
-        .map(|(kind, count)| BranchRef::new(format!("{}:{kind}", address.source_set()), count))
-        .collect();
+    let branches = root_branches(address, counts);
     Ok(NodeViewData::Node(
         NodeView::new(
             address.to_string(),
@@ -725,6 +722,122 @@ pub(super) fn project_configuration_with_counts(
         )
         .with_branches(branches),
     ))
+}
+
+/// Порядок групп дерева Конфигуратора 8.3.27: «Общие» (от подсистем до
+/// языков), затем константы, справочники, документы с нумераторами и
+/// последовательностями, журналы и далее до задач. Выгрузка пишет виды
+/// в другом порядке; дерево показывает этот.
+const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
+    NodeKind::Subsystem,
+    NodeKind::CommonModule,
+    NodeKind::SessionParameter,
+    NodeKind::Role,
+    NodeKind::CommonAttribute,
+    NodeKind::ExchangePlan,
+    NodeKind::FilterCriterion,
+    NodeKind::EventSubscription,
+    NodeKind::ScheduledJob,
+    NodeKind::Bot,
+    NodeKind::FunctionalOption,
+    NodeKind::FunctionalOptionsParameter,
+    NodeKind::DefinedType,
+    NodeKind::SettingsStorage,
+    NodeKind::CommonCommand,
+    NodeKind::CommandGroup,
+    NodeKind::CommonForm,
+    NodeKind::CommonTemplate,
+    NodeKind::CommonPicture,
+    NodeKind::XdtoPackage,
+    NodeKind::WebService,
+    NodeKind::HttpService,
+    NodeKind::WsReference,
+    NodeKind::WebSocketClient,
+    NodeKind::IntegrationService,
+    NodeKind::StyleItem,
+    NodeKind::Style,
+    NodeKind::Language,
+    NodeKind::Constant,
+    NodeKind::Catalog,
+    NodeKind::Document,
+    NodeKind::DocumentNumerator,
+    NodeKind::Sequence,
+    NodeKind::DocumentJournal,
+    NodeKind::Enum,
+    NodeKind::Report,
+    NodeKind::DataProcessor,
+    NodeKind::ChartOfCharacteristicTypes,
+    NodeKind::ChartOfAccounts,
+    NodeKind::ChartOfCalculationTypes,
+    NodeKind::InformationRegister,
+    NodeKind::AccumulationRegister,
+    NodeKind::AccountingRegister,
+    NodeKind::CalculationRegister,
+    NodeKind::BusinessProcess,
+    NodeKind::Task,
+];
+
+/// Ветви корня: каждый вид метаданных, который профиль платформы допускает
+/// в корне, в порядке дерева Конфигуратора, в том числе пустой (`count: 0`),
+/// чтобы «пусто» отличалось от «вид не поддержан» (#2153). Вид вне этого
+/// порядка идёт следом; зарегистрированный вне профиля сохраняет ветвь.
+fn root_branches(
+    address: &QualifiedAddress,
+    mut counts: std::collections::BTreeMap<String, usize>,
+) -> Vec<BranchRef> {
+    let source_set = address.source_set();
+    // Корень внешней обработки или отчёта — опись своих владельцев: видов
+    // конфигурации там не бывает, и пустыми они не выдаются.
+    let external = [NodeKind::ExternalDataProcessor, NodeKind::ExternalReport]
+        .iter()
+        .any(|kind| counts.contains_key(kind.as_str()));
+    if external {
+        return counts
+            .into_iter()
+            .map(|(kind, count)| BranchRef::new(format!("{source_set}:{kind}"), count))
+            .collect();
+    }
+    let mut branches = Vec::new();
+    let remaining = NodeKind::metadata_kinds()
+        .iter()
+        .filter(|kind| !CONFIGURATOR_ROOT_ORDER.contains(kind));
+    for kind in CONFIGURATOR_ROOT_ORDER.iter().chain(remaining) {
+        let kind = kind.as_str();
+        let count = counts.remove(kind).unwrap_or(0);
+        let at = format!("{source_set}:{kind}");
+        let admitted = QualifiedAddress::parse(&at).is_ok_and(|branch| {
+            is_root_branch_kind(&branch)
+                && crate::infrastructure::logical_tree::route_logical_address(
+                    &branch,
+                    unica_bsl::profile::PlatformProfile::v8_3_27(),
+                )
+                .is_ok()
+        });
+        if count > 0 || admitted {
+            branches.push(BranchRef::new(at, count));
+        }
+    }
+    branches.extend(
+        counts
+            .into_iter()
+            .map(|(kind, count)| BranchRef::new(format!("{source_set}:{kind}"), count)),
+    );
+    branches
+}
+
+/// Подчинённые объекты и корни внешних обработок в корне конфигурации не
+/// живут: их ветвь пустой не выдаётся.
+fn is_root_branch_kind(branch: &QualifiedAddress) -> bool {
+    !matches!(
+        branch.segments().first().map(AddressSegment::kind),
+        Some(
+            NodeKind::Form
+                | NodeKind::Template
+                | NodeKind::Command
+                | NodeKind::ExternalDataProcessor
+                | NodeKind::ExternalReport
+        )
+    )
 }
 
 pub(super) fn project_registered_metadata_branch(
@@ -838,6 +951,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "children",
             "tree",
             "commandInterface",
+            "libraryRoot",
         ],
         LogicalReader::Dcs => &[
             "support",
@@ -1888,6 +2002,9 @@ const SUBSYSTEM_PLATFORM_PROPS: &[(&str, &str)] = &[
 ];
 
 fn subsystem_support_props(value: &Value, props: &mut Map<String, Value>) {
+    if let Some(root) = value.get("libraryRoot").filter(|root| root.is_object()) {
+        props.insert("libraryRoot".to_string(), root.clone());
+    }
     if let Some(support) = value.get("support") {
         for (source, key) in [("state", "support"), ("directEditSafe", "directEditSafe")] {
             if let Some(value) = support.get(source).filter(|value| safe_prop(key, value)) {

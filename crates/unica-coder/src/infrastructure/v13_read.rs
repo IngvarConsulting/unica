@@ -627,6 +627,56 @@ impl<'a> LogicalViewReadAuthority<'a> {
         })
     }
 
+    /// The saved text of the module at a source-root-relative path, read as
+    /// is, without projecting it.
+    pub(crate) fn module_source_at_path(&self, path: &str) -> Option<String> {
+        let bytes = self
+            .read
+            .read_optional_relative_whole(std::path::Path::new(path))
+            .ok()??;
+        let text = String::from_utf8(bytes).ok()?;
+        Some(text.trim_start_matches('\u{feff}').to_string())
+    }
+
+    /// Whether a common module is global, by its descriptor.
+    pub(crate) fn common_module_is_global(&self, module: &QualifiedAddress) -> Option<bool> {
+        self.with_module_projection(module, |_, projections| {
+            Ok(projections
+                .summary()
+                .props
+                .common_module
+                .as_ref()
+                .and_then(|properties| properties.global))
+        })
+        .ok()
+        .flatten()
+    }
+
+    /// The source-root-relative paths of the modules that spell `name`, from
+    /// the set's name index; `None` until its first build has finished.
+    pub(crate) fn modules_naming(
+        &self,
+        name: &str,
+    ) -> Option<unica_code_intelligence::symbols::NamedModules> {
+        let source_set = self.read.source_set().to_string();
+        let kind = self.read.source_set_kind();
+        let profile = self.profile;
+        let modules: crate::infrastructure::name_index::ModulePaths =
+            std::sync::Arc::new(move |path: &std::path::Path| {
+                crate::infrastructure::event_sources::module_address_for_relative(
+                    &source_set,
+                    kind,
+                    profile,
+                    path,
+                )
+                .is_some()
+            });
+        self.read
+            .artifacts()
+            .names()
+            .modules_naming(name, self.read.retained_root(), &modules)
+    }
+
     /// Whether the source set declares the node: the same typed read as `view`.
     pub(crate) fn node_exists(&self, at: &QualifiedAddress) -> bool {
         self.snapshot(at)
@@ -1108,16 +1158,49 @@ impl<'a> LogicalViewReadAuthority<'a> {
             route.reader(),
             LogicalReader::Subsystem | LogicalReader::Interface
         ) {
-            return self.read.subsystem_payload(
-                route.reader_metadata_path().ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
-                        "subsystem route has no typed target",
-                    )
-                })?,
-                route.nested_subsystems(),
-                &mut || self.read_checkpoint(),
-            );
+            let target = route.reader_metadata_path().ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::ProviderUnavailable,
+                    "subsystem route has no typed target",
+                )
+            })?;
+            let mut payload =
+                self.read
+                    .subsystem_payload(target, route.nested_subsystems(), &mut || {
+                        self.read_checkpoint()
+                    })?;
+            // Корень библиотеки — подсистема верхнего уровня; признак держится
+            // на соглашении стандартов разработки и называет свой источник.
+            if route.reader() == LogicalReader::Subsystem && route.nested_subsystems().is_empty() {
+                let name = target.as_str().split_once('.').map_or("", |(_, name)| name);
+                match self.read.subsystem_topology(&mut || self.read_checkpoint()) {
+                    Ok(topology) => {
+                        if let Some(root) = topology
+                            .library_roots()
+                            .into_iter()
+                            .find(|root| root.address.as_str() == name)
+                        {
+                            payload["libraryRoot"] = json!({
+                                "source": "standardLibraryModule",
+                                "module": format!("{}:{}", self.read.source_set(), root.module.as_str()),
+                            });
+                        }
+                    }
+                    // Признак корня неизвестен — это предел узла, а не «не корень».
+                    Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => {
+                        let limit = format!("libraryRoot не прочитано: {error}");
+                        match payload
+                            .get_mut("propertyLimits")
+                            .and_then(Value::as_array_mut)
+                        {
+                            Some(limits) => limits.push(json!(limit)),
+                            None => payload["propertyLimits"] = json!([limit]),
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            return Ok(payload);
         }
         if route.reader() == LogicalReader::Mxl {
             return self.read.mxl_payload(
@@ -1177,6 +1260,36 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .configuration_payload_with_checkpoint(&mut checkpoint)?;
         cache.insert(key, Arc::clone(&payload));
         Ok(payload)
+    }
+
+    /// Подсистемы, в состав которых входит `target` (`direct` у той, что
+    /// его перечисляет), и корни его библиотек по соглашению стандартов разработки.
+    fn subsystem_relations(
+        &self,
+        target: &MetadataAddress,
+        uuid: Option<uuid::Uuid>,
+    ) -> Result<(Vec<Value>, Vec<Value>), ViewError> {
+        let topology = self
+            .read
+            .subsystem_topology(&mut || self.read_checkpoint())?;
+        let memberships = topology.memberships_of(target, uuid);
+        let libraries = topology
+            .library_roots()
+            .into_iter()
+            .filter(|root| {
+                memberships
+                    .iter()
+                    .any(|membership| membership.address == root.address)
+            })
+            .map(|root| json!({"subsystem": root.address.as_str(), "module": root.module.as_str()}))
+            .collect();
+        let memberships = memberships
+            .iter()
+            .map(|membership| {
+                json!({"subsystem": membership.address.as_str(), "direct": membership.direct})
+            })
+            .collect();
+        Ok((memberships, libraries))
     }
 
     fn metadata_payload(
@@ -1375,6 +1488,24 @@ impl<'a> LogicalViewReadAuthority<'a> {
             }
             Err(error) => return Err(error),
         }
+        // Подсистемы, в состав которых входит объект, и корни его библиотек
+        // по соглашению стандартов разработки (INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH). Одна
+        // топология отвечает всем объектам состояния исходников; непрочитанный
+        // состав подсистем — предел ветви, а не пустой ответ.
+        match self.subsystem_relations(target, read.uuid) {
+            Ok((memberships, libraries)) => {
+                payload.insert(
+                    "subsystemMemberships".to_string(),
+                    Value::Array(memberships),
+                );
+                payload.insert("libraryRoots".to_string(), Value::Array(libraries));
+            }
+            Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => {
+                unreadable
+                    .push(json!({"field": "relations.subsystems", "message": error.to_string()}));
+            }
+            Err(error) => return Err(error),
+        }
         if !unreadable.is_empty() {
             payload.insert("unreadable".to_string(), Value::Array(unreadable));
         }
@@ -1521,7 +1652,51 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(NodeViewData::Node(event_node(&event)));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
-        module_projection_view(route.at(), prefix_len, projections.as_ref())
+        let view = module_projection_view(route.at(), prefix_len, projections.as_ref())?;
+        // Узел общего модуля — и узел объекта метаданных: его ветвь `Relation`
+        // (подсистемы и библиотеки) читается по адресу, поэтому узел её
+        // называет; непрочитанный состав подсистем узел называет пределом.
+        if capability.role() == ModuleRole::Common && route.at().segments().len() == 1 {
+            let target = route.at().segments()[0].name().and_then(|name| {
+                MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("{}.{name}", NodeKind::CommonModule.as_str()),
+                )
+                .ok()
+            });
+            if let (NodeViewData::Node(node), Some(target)) = (&view, target.as_ref()) {
+                // Состав подсистемы может назвать модуль идентификатором
+                // из его описания, а не именем.
+                let uuid = self
+                    .read
+                    .metadata_descriptor(target)
+                    .ok()
+                    .and_then(|descriptor| {
+                        crate::infrastructure::v13_read_port::descriptor_uuid(&descriptor)
+                    });
+                match self.subsystem_relations(target, uuid) {
+                    Ok((memberships, libraries)) => {
+                        let count = memberships.len() + libraries.len();
+                        if count > 0 {
+                            return Ok(NodeViewData::Node(node.clone().with_branch(
+                                BranchRef::new(
+                                    format!("{}.{}", route.at(), NodeKind::Relation.as_str()),
+                                    count,
+                                ),
+                            )));
+                        }
+                    }
+                    // Ветвь, которую нельзя сосчитать, узел называет пределом.
+                    Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => {
+                        return Ok(
+                            view.with_limit(format!("relations.subsystems не прочитано: {error}"))
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(view)
     }
 
     fn module_projection(
@@ -3313,6 +3488,10 @@ fn method_node(method: &MethodProjection) -> NodeView {
     }
     if let Some(extension) = &method.extension {
         props.insert("extension".to_string(), json!(extension));
+    }
+    // Нормативная область метода (INV.SOURCE.MODULE-REGION-INTERFACE).
+    if let Some(area) = method.area {
+        props.insert("area".to_string(), json!(area));
     }
     NodeView::new(&method.at, NodeKind::Method.as_str(), &method.name, props).with_branches(vec![
         BranchRef::new(
