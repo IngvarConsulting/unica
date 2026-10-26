@@ -277,6 +277,7 @@ mod tests {
             "main:Catalog.Валюты.Module.Object",
             "ext:Document.Заказ.Form.ФормаДокумента.Module.Form",
             r"main:CommonTemplate.S.Parameter.A\.B",
+            "main:CommonModule.ОбщегоНазначения.Body",
         ] {
             let document = DocumentUri {
                 space: "ws".to_owned(),

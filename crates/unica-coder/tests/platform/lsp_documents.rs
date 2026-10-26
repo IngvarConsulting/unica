@@ -100,6 +100,16 @@ fn module_bodies_are_documents_and_two_mains_do_not_mix() {
             "{address}"
         );
     }
+    // A line selector is not part of a document address.
+    assert!(documents.locate(&format!("{ut_uri}%23L1")).is_err());
+    // Russian kind names are the same address.
+    assert_eq!(
+        documents
+            .locate("unica://ут/main/ОбщийМодуль.ОбщегоНазначения.Тело")
+            .unwrap()
+            .relative,
+        Path::new(MODULE)
+    );
     let file = file_uri(&ut.root.join("src").join(MODULE));
     assert!(matches!(
         documents.locate(&file),
@@ -294,14 +304,19 @@ fn the_body_address_mcp_gives_a_module_is_its_document_without_open() {
             "main:CommonForm.Выбор.Module.Form.Body",
             Some("// общая форма\n"),
         ),
+        (
+            "Ext/ManagedApplicationModule.bsl",
+            "main:Module.ManagedApplication.Body",
+            Some("// приложение\n"),
+        ),
     ] {
         let path = src.join(relative);
         if let Some(text) = text {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, text).unwrap();
         }
-        // The address `unica.resolve` gives the file, with its `Body`, is
-        // the address MCP reads the text by.
+        // The module address `unica.resolve` gives the file, followed by
+        // `Body`, is the address MCP reads the text by.
         let module = crate::infrastructure::event_sources::module_address_for_relative(
             "main",
             SourceSetKind::Configuration,
