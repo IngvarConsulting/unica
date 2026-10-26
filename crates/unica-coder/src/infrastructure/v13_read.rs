@@ -660,13 +660,13 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Option<unica_code_intelligence::symbols::NamedModules> {
         let source_set = self.read.source_set().to_string();
         let kind = self.read.source_set_kind();
-        let profile = self.profile.clone();
+        let profile = self.profile;
         let modules: crate::infrastructure::name_index::ModulePaths =
             std::sync::Arc::new(move |path: &std::path::Path| {
                 crate::infrastructure::event_sources::module_address_for_relative(
                     &source_set,
                     kind,
-                    profile.clone(),
+                    profile,
                     path,
                 )
                 .is_some()
