@@ -121,17 +121,17 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/branches/3/at",
+          "pointer": "/data/branches/4/at",
           "eq": "cf:Report.F05Report.Template"
         },
         {
-          "pointer": "/data/branches/3/count",
+          "pointer": "/data/branches/4/count",
           "eq": 1
         }
       ],
       "captures": {
         "templates": {
-          "pointer": "/data/branches/3/at"
+          "pointer": "/data/branches/4/at"
         }
       }
     },

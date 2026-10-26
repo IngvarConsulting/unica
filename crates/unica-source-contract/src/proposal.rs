@@ -68,6 +68,9 @@ pub struct ApplyPlanError {
     message: String,
     /// The call that continues past this refusal, when the planner knows it.
     next: Option<Box<serde_json::Value>>,
+    /// The causes the refusal names after its own diagnostic, each with
+    /// its code, message and place (INV.WIRE.V13-REFUSAL-CHANNEL).
+    diagnostics: Vec<serde_json::Value>,
 }
 
 impl ApplyPlanError {
@@ -77,7 +80,17 @@ impl ApplyPlanError {
             path: None,
             message: message.into(),
             next: None,
+            diagnostics: Vec::new(),
         }
+    }
+
+    pub fn with_diagnostics(mut self, diagnostics: Vec<serde_json::Value>) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
+    pub fn diagnostics(&self) -> &[serde_json::Value] {
+        &self.diagnostics
     }
 
     pub fn with_next(mut self, next: serde_json::Value) -> Self {

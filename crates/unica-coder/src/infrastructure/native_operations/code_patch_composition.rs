@@ -55,10 +55,14 @@ enum PatchMode {
     Preview,
 }
 
+/// Plans a run of code operations; `first_index` is the place of the first
+/// of them in the call's `ops`, so a refusal names the operation the caller
+/// sent.
 pub(crate) fn plan_code_batch(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
     operations: &[CodePlanOperation],
+    first_index: usize,
 ) -> Result<PlannedApplyEffects, ApplyPlanError> {
     if !authority.owns_staged_state(staged) {
         return Err(ApplyPlanError::new(
@@ -73,7 +77,7 @@ pub(crate) fn plan_code_batch(
             &mut provisional_effects,
             authority,
             operation,
-            op_index,
+            first_index + op_index,
         )?;
     }
     let final_changes = staged.planned_changes();
@@ -455,7 +459,7 @@ pub(crate) fn plan_code_batch_owned_for_test(
     ),
     ApplyPlanError,
 > {
-    let effects = plan_code_batch(&mut staged.proposal(), &authority, operations)?;
+    let effects = plan_code_batch(&mut staged.proposal(), &authority, operations, 0)?;
     Ok((staged, effects))
 }
 

@@ -2517,6 +2517,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-bsl-types"
+version = "0.15.0-rc.1"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "unica-documentation-sources",
+]
+
+[[package]]
 name = "unica-code-intelligence"
 version = "0.15.0-rc.1"
 dependencies = [
