@@ -2185,7 +2185,7 @@ fn every_body_of_a_module_answers_with_the_revision_of_its_text() {
     let source = "Процедура А()\r\n\tВозврат;\r\nКонецПроцедуры\r\n";
     let rev = |at: &str| {
         let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
-        assert!(result.ok, "{at}: {:?}", result.diagnostics);
+        assert!(result.ok, "view must succeed at {at}");
         result.rev.unwrap()
     };
     for bytes in [source.to_owned(), format!("\u{feff}{source}")] {
@@ -3803,7 +3803,7 @@ pub(crate) fn template_bodies_are_read_only_when_the_template_node_is_addressed(
         "main:Report.ParityReport.Template",
     ] {
         let result = service.view(ViewRequest::new(at).unwrap());
-        assert!(result.ok, "{at}: {:?}", result.diagnostics);
+        assert!(result.ok, "view must succeed at {at}");
     }
     let node = service.view(ViewRequest::new("main:Report.ParityReport.Template.Print").unwrap());
     assert!(
