@@ -370,7 +370,7 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     let completion = editor.request(
         "textDocument/completion",
         json!({
-            "textDocument": {"uri": "unica://work/main/CommonModule.Main"},
+            "textDocument": {"uri": "unica://work/main/CommonModule.Main.Body"},
             "position": {"line": 0, "character": 0},
         }),
     );

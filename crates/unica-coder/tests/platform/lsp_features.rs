@@ -540,16 +540,14 @@ fn completion_reads_the_buffer_and_the_source_set_metadata() {
 
     let mut documents = LspDocuments::new("editor", vec![layout(&root)]);
     let overlay = DocumentOverlay::default();
-    let uri = documents
-        .uri_of_file(&String::from(url::Url::from_file_path(&module).unwrap()))
-        .unwrap();
+    let uri = documents.body_uri_of_file(&module);
     let typed = "Процедура П()\n\tДля Каждого С Из ЭтотОбъект.Lines Цикл\n\t\tС.\n\tКонецЦикла;\n\tЭтотОбъект.\n\tCatalogs.\n\tУтилиты.\nКонецПроцедуры\n";
     documents.open(&overlay, &uri, 1, typed.to_owned()).unwrap();
     let utilities = documents
         .spaces()
         .format(&crate::application::lsp::uri::DocumentUri {
             space: "ут".to_owned(),
-            address: "main:CommonModule.Утилиты".to_owned(),
+            address: "main:CommonModule.Утилиты.Body".to_owned(),
         })
         .unwrap();
     documents
@@ -643,9 +641,7 @@ fn completion_latency_on_a_large_configuration() {
     );
     let overlay = DocumentOverlay::default();
     let module = source.join("CommonModules/ОбщегоНазначения/Ext/Module.bsl");
-    let uri = documents
-        .uri_of_file(&String::from(url::Url::from_file_path(&module).unwrap()))
-        .unwrap();
+    let uri = documents.body_uri_of_file(&module);
     let text = std::fs::read_to_string(&module).unwrap();
     let text = text.trim_start_matches('\u{feff}').to_owned();
     // Type into the last method: a plain name, then a manager.

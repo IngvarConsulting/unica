@@ -499,11 +499,12 @@ fn answer(
                 line: position.line,
                 character: position.character,
             };
-            // A platform function has a signature once its context loaded.
-            let members = space.platform_members(platform).unwrap_or_default();
+            // While the help is being indexed a platform call answers
+            // `lsp_unavailable`, not "no signature", and the editor asks again.
+            let members = space.platform_members(platform);
             let help = session
                 .documents
-                .signature_help(&uri, position, &read, &members)
+                .signature_help(&uri, position, &read, members.as_deref())
                 .map_err(document_failure)?;
             Ok(json(help.unwrap_or(serde_json::Value::Null)))
         }
@@ -616,7 +617,9 @@ fn document_text(
 
 fn document_failure(error: LspDocumentError) -> V5LspFailure {
     match error {
-        LspDocumentError::Read(_) | LspDocumentError::Overlay(_) => V5LspFailure::Unavailable,
+        LspDocumentError::Read(_)
+        | LspDocumentError::Overlay(_)
+        | LspDocumentError::SourceNotReady => V5LspFailure::Unavailable,
         _ => V5LspFailure::DocumentUnknown,
     }
 }
