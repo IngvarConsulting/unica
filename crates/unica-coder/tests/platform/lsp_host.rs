@@ -133,7 +133,7 @@ fn an_editor_folder_reaches_the_mcp_actor_and_its_buffer_stays_in_its_session() 
         DISK
     );
     // MCP admission of the same workspace reaches the actor holding the buffer.
-    let (_, mcp) = admit_actor(&actors, workspace.path(), soon()).unwrap();
+    let (_, mcp, _) = admit_actor(&actors, workspace.path(), soon()).unwrap();
     let session = host.session(&editor).unwrap();
     let editor_actor = read(&session).spaces["work"].actor.upgrade().unwrap();
     assert!(Arc::ptr_eq(&mcp, &editor_actor));
@@ -248,7 +248,8 @@ fn after_the_source_root_is_replaced_the_session_moves_its_buffers_to_the_mcp_ac
     )
     .unwrap();
     fs::write(workspace.path().join(MODULE), DISK).unwrap();
-    let (_, mcp) = admit_actor(&actors, workspace.path(), soon()).expect("MCP admits the new root");
+    let (_, mcp, _) =
+        admit_actor(&actors, workspace.path(), soon()).expect("MCP admits the new root");
 
     assert!(
         before.upgrade().is_none_or(|old| !Arc::ptr_eq(&old, &mcp)),
@@ -359,43 +360,34 @@ fn a_module_is_reached_by_every_spelling_of_its_unica_uri() {
     }
 }
 
-/// Completion offers the names the session's buffer has. Without the
-/// platform's global context the list is marked incomplete; its items carry
-/// their document back to `completionItem/resolve`.
-#[test]
-fn completion_without_the_platform_context_is_marked_incomplete_and_resolves() {
+fn completion_host(platform_path: &str) -> (tempfile::TempDir, UnicaLspHost) {
     let workspace = workspace();
-    // A pinned installation that is not there: the global context stays
-    // unavailable instead of indexing whatever this machine has installed.
     fs::write(
         workspace.path().join("v8project.yaml"),
-        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ntools:\n  platform:\n    path: absent/8.3.27.1\n",
+        format!(
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ntools:\n  platform:\n    path: {platform_path}\n"
+        ),
     )
     .unwrap();
     let host = UnicaLspHost::new(Arc::new(
         crate::infrastructure::source_workspace::actor_registry(),
     ));
-    let editor = V5LspSessionId::new();
-    host.open(
-        &editor,
-        &[folder(workspace.path(), "Work")],
-        client(),
-        soon(),
-    )
-    .unwrap();
-    let uri = session_uri(&host, &editor, &file_uri(&workspace.path().join(MODULE)));
-    open_buffer(
-        &host,
-        &editor,
-        &uri,
-        "Процедура Выполнить()\n    \nКонецПроцедуры\n\nПроцедура Помощник() Экспорт\nКонецПроцедуры\n",
-    );
+    (workspace, host)
+}
 
-    let V5LspOutcome::Json { value: list } = ask(
-        &host,
+const COMPLETION_TEXT: &str = "Процедура Выполнить()\n    \nКонецПроцедуры\n\n// Помогает выполнить.\nПроцедура Помощник() Экспорт\nКонецПроцедуры\n";
+
+fn complete(host: &UnicaLspHost, workspace: &Path) -> (V5LspSessionId, serde_json::Value) {
+    let editor = V5LspSessionId::new();
+    host.open(&editor, &[folder(workspace, "Work")], client(), soon())
+        .unwrap();
+    let uri = session_uri(host, &editor, &file_uri(&workspace.join(MODULE)));
+    open_buffer(host, &editor, &uri, COMPLETION_TEXT);
+    let V5LspOutcome::Json { value } = ask(
+        host,
         &editor,
         V5LspCall::Completion {
-            uri: uri.clone(),
+            uri,
             position: unica_daemon::protocol_v5::lsp::V5LspPosition {
                 line: 1,
                 character: 4,
@@ -404,22 +396,90 @@ fn completion_without_the_platform_context_is_marked_incomplete_and_resolves() {
     ) else {
         panic!("completion answers with a list");
     };
+    (editor, value)
+}
 
-    assert_eq!(list["isIncomplete"], true, "{list}");
-    let items = list["items"].as_array().unwrap();
-    let helper = items
+fn labels(list: &serde_json::Value) -> Vec<&str> {
+    list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .collect()
+}
+
+/// Completion offers the names of the session's buffer and the platform's
+/// global context. While that context is not loaded the list is marked
+/// incomplete; once it is, the list is whole and offers its members.
+#[test]
+fn completion_is_incomplete_until_the_platform_context_is_loaded() {
+    let (workspace, host) = completion_host("absent/8.3.27.1");
+    let (_, unloaded) = complete(&host, workspace.path());
+    assert_eq!(unloaded["isIncomplete"], true, "{unloaded}");
+    assert!(labels(&unloaded).contains(&"Помощник"), "{unloaded}");
+
+    let (workspace, host) = completion_host("platform/8.3.27.1");
+    host.platform.ready_for_test(
+        workspace.path().canonicalize().unwrap().join("platform/8.3.27.1"),
+        vec![GlobalContextMember {
+            kind: unica_documentation_sources::platform_help::provider::GlobalContextMemberKind::Method,
+            name_ru: "ЗначениеЗаполнено".into(),
+            name_en: Some("ValueIsFilled".into()),
+            signature_ru: Some("ЗначениеЗаполнено(Значение)".into()),
+            signature_en: None,
+        }],
+    );
+    let (_, loaded) = complete(&host, workspace.path());
+    assert_eq!(loaded["isIncomplete"], false, "{loaded}");
+    assert!(labels(&loaded).contains(&"ЗначениеЗаполнено"), "{loaded}");
+}
+
+/// A project without a platform installation has nothing to wait for: the
+/// list is whole, and the editor does not ask again on every key.
+#[test]
+fn completion_without_an_installation_is_whole() {
+    let (workspace, host) = completion_host("no-installation-here");
+    let (_, list) = complete(&host, workspace.path());
+    assert_eq!(list["isIncomplete"], false, "{list}");
+}
+
+#[test]
+fn a_completion_item_resolves_from_the_document_it_names() {
+    let (workspace, host) = completion_host("no-installation-here");
+    let (editor, list) = complete(&host, workspace.path());
+    let helper = list["items"]
+        .as_array()
+        .unwrap()
         .iter()
         .find(|item| item["label"] == "Помощник")
-        .unwrap_or_else(|| panic!("{list}"));
-    assert_eq!(helper["data"][COMPLETION_DOCUMENT], uri.as_str());
+        .unwrap()
+        .clone();
+    assert!(helper["data"][COMPLETION_DOCUMENT].is_string(), "{helper}");
+
     let V5LspOutcome::Json { value: resolved } = ask(
         &host,
         &editor,
-        V5LspCall::CompletionResolve {
-            item: helper.clone(),
-        },
+        V5LspCall::CompletionResolve { item: helper },
     ) else {
         panic!("resolve answers with the item");
     };
-    assert_eq!(resolved["label"], "Помощник", "{resolved}");
+    assert!(
+        resolved["documentation"]
+            .to_string()
+            .contains("Помогает выполнить"),
+        "{resolved}"
+    );
+
+    let foreign = serde_json::json!({"label": "Чужой"});
+    assert_eq!(
+        ask(
+            &host,
+            &editor,
+            V5LspCall::CompletionResolve {
+                item: foreign.clone()
+            }
+        ),
+        V5LspOutcome::Json { value: foreign },
+        "an item the service did not give comes back as it was"
+    );
 }

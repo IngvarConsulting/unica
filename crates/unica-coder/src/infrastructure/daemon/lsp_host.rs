@@ -25,7 +25,7 @@ use crate::infrastructure::workspace::discover_workspace;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use unica_daemon::lsp_lane::{LspCallContext, LspClientChannel, LspHost};
 use unica_daemon::protocol_v5::lsp::{
     V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspNotification,
@@ -34,6 +34,7 @@ use unica_daemon::protocol_v5::lsp::{
 };
 use unica_documentation_sources::platform_help::provider::GlobalContextMember;
 use unica_execution_contract::invocation::SafeIdentityHash;
+use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::{SourceFormat, SourceProfile};
 use unica_workspace::actor::{ProviderRootBinding, WorkspaceSourceSetInput};
 use unica_workspace::documents::{DocumentOverlay, DocumentOverlayError, DocumentText};
@@ -112,6 +113,13 @@ impl LspHost for UnicaLspHost {
                 })
             })
             .collect();
+        // The platform's global context starts loading now, not on the
+        // first completion: the editor's first answers should be whole.
+        for (_, space) in admitted.iter().flatten() {
+            if let Some(root) = &space.platform_root {
+                self.platform.members(root);
+            }
+        }
         let documents = LspDocuments::new(session.as_str(), layouts);
         let mut spaces = BTreeMap::new();
         let mut workspaces = Vec::with_capacity(folders.len());
@@ -223,9 +231,13 @@ impl LspHost for UnicaLspHost {
         }
         // A replaced actor is swapped under the write lock; the answer itself
         // reads under the read lock, beside other requests of the session.
-        let space = call
-            .document_uri()
-            .and_then(|uri| read(&session).space_of(uri));
+        let document = match &call {
+            V5LspCall::CompletionResolve { item } => item["data"][COMPLETION_DOCUMENT]
+                .as_str()
+                .map(str::to_owned),
+            call => call.document_uri().map(str::to_owned),
+        };
+        let space = document.and_then(|uri| read(&session).space_of(&uri));
         if let Some(space) = space {
             if !read(&session).is_current(&space) {
                 if let Err(failure) =
@@ -266,22 +278,31 @@ struct PlatformContexts {
     loaded: Mutex<HashMap<PathBuf, PlatformContext>>,
 }
 
+/// How long a failed load of a platform's global context waits before the
+/// next ask tries again: the installation may still be being written.
+const PLATFORM_CONTEXT_RETRY_DELAY: Duration = Duration::from_secs(60);
+
 #[derive(Clone)]
 enum PlatformContext {
     Loading,
     Ready(Arc<[GlobalContextMember]>),
-    Unavailable,
+    Unavailable(Instant),
 }
 
 impl PlatformContexts {
     /// The members of `root`, or `None` while they are not known; the first
-    /// ask starts the load.
+    /// ask starts the load, and a failed one is retried after a delay.
     fn members(self: &Arc<Self>, root: &std::path::Path) -> Option<Arc<[GlobalContextMember]>> {
         let mut loaded = lock(&self.loaded);
         match loaded.get(root) {
             Some(PlatformContext::Ready(members)) => return Some(Arc::clone(members)),
-            Some(PlatformContext::Loading | PlatformContext::Unavailable) => return None,
-            None => {}
+            Some(PlatformContext::Loading) => return None,
+            Some(PlatformContext::Unavailable(at))
+                if at.elapsed() < PLATFORM_CONTEXT_RETRY_DELAY =>
+            {
+                return None
+            }
+            Some(PlatformContext::Unavailable(_)) | None => {}
         }
         loaded.insert(root.to_path_buf(), PlatformContext::Loading);
         drop(loaded);
@@ -289,9 +310,20 @@ impl PlatformContexts {
         let spawned = std::thread::Builder::new()
             .name("unica-lsp-global-context".into())
             .spawn(move || {
-                let context = match unica_documentation_sources::platform_help::provider::global_context_members(&owned) {
-                    Ok(members) => PlatformContext::Ready(Arc::from(members)),
-                    Err(_) => PlatformContext::Unavailable,
+                // A panic in the help index must not leave the root loading
+                // for the life of the daemon.
+                let loaded = std::panic::catch_unwind(|| {
+                    unica_documentation_sources::platform_help::provider::global_context_members(
+                        &owned,
+                    )
+                });
+                let context = match loaded {
+                    Ok(Ok(members)) => PlatformContext::Ready(Arc::from(members)),
+                    Ok(Err(error)) => {
+                        eprintln!("unica lsp: platform global context is unavailable: {error}");
+                        PlatformContext::Unavailable(Instant::now())
+                    }
+                    Err(_) => PlatformContext::Unavailable(Instant::now()),
                 };
                 lock(&contexts.loaded).insert(owned, context);
             });
@@ -299,6 +331,11 @@ impl PlatformContexts {
             lock(&self.loaded).remove(root);
         }
         None
+    }
+
+    #[cfg(test)]
+    fn ready_for_test(&self, root: PathBuf, members: Vec<GlobalContextMember>) {
+        lock(&self.loaded).insert(root, PlatformContext::Ready(Arc::from(members)));
     }
 }
 
@@ -334,8 +371,9 @@ impl Session {
                 return Ok(actor);
             }
         }
-        let (renewed, actor) = admit_actor(actors, &admitted.folder, deadline)
+        let (mut renewed, actor, _) = admit_actor(actors, &admitted.folder, deadline)
             .ok_or(V5LspFailure::WorkspaceUnavailable)?;
+        renewed.platform_root = admitted.platform_root.clone();
         // Every buffer reaches the new actor before the session switches to
         // it; a failure keeps the old one and the next request tries again.
         for binding in &renewed.bindings {
@@ -463,10 +501,11 @@ fn answer(
                 .ok_or(V5LspFailure::WorkspaceUnavailable)?;
             // Without the platform's global context the list lacks its
             // methods: it is marked incomplete, so the editor asks again.
-            let members = space
-                .platform_root
-                .as_deref()
-                .and_then(|root| platform.members(root));
+            // No installation at all: nothing to wait for, the list is whole.
+            let members = match &space.platform_root {
+                None => Some(Arc::from(Vec::new())),
+                Some(root) => platform.members(root),
+            };
             let list = session
                 .documents
                 .completion(
@@ -490,10 +529,13 @@ fn answer(
             }))
         }
         V5LspCall::CompletionResolve { item } => {
-            let uri = item["data"][COMPLETION_DOCUMENT]
+            // An item this service did not give comes back as it was.
+            let Some(uri) = item["data"][COMPLETION_DOCUMENT]
                 .as_str()
-                .ok_or(V5LspFailure::DocumentUnknown)?
-                .to_owned();
+                .map(str::to_owned)
+            else {
+                return Ok(json(item));
+            };
             let (uri, read) = document_read(session, &uri)?;
             session
                 .documents
@@ -577,7 +619,10 @@ fn admit(
     folder: &std::path::Path,
     deadline: Instant,
 ) -> Option<AdmittedSpace> {
-    admit_actor(actors, folder, deadline).map(|(space, _)| space)
+    let (mut space, _, context) = admit_actor(actors, folder, deadline)?;
+    space.platform_root =
+        crate::infrastructure::application_ports::platform_installation_root(&context);
+    Some(space)
 }
 
 /// The admitted space and its actor, held only while the caller needs it.
@@ -585,7 +630,7 @@ fn admit_actor(
     actors: &WorkspaceActorRegistry,
     folder: &std::path::Path,
     deadline: Instant,
-) -> Option<(AdmittedSpace, Arc<WorkspaceActor>)> {
+) -> Option<(AdmittedSpace, Arc<WorkspaceActor>, WorkspaceContext)> {
     let context = discover_workspace(Some(folder.to_path_buf())).ok()?;
     // The walk stops at the editor's deadline instead of outliving it.
     let mut checkpoint = || {
@@ -643,14 +688,13 @@ fn admit_actor(
     Some((
         AdmittedSpace {
             folder: folder.to_path_buf(),
-            platform_root: crate::infrastructure::application_ports::platform_installation_root(
-                &context,
-            ),
+            platform_root: None,
             actor: Arc::downgrade(&actor),
             bindings,
             identity,
         },
         actor,
+        context,
     ))
 }
 

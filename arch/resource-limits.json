@@ -6679,6 +6679,30 @@
       "decision": null,
       "review": null,
       "derived": true
+    },
+    {
+      "id": "lsp.platform-context-retry-delay",
+      "class": "retry",
+      "resource": "Задержка перед повторной загрузкой глобального контекста платформы для completion после неудачной загрузки.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs",
+        "symbol": "PLATFORM_CONTEXT_RETRY_DELAY"
+      },
+      "expr": "Duration::from_secs(60)",
+      "value": 60000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2178",
+      "problem": null,
+      "onReach": "следующий запрос completion снова запускает загрузку; до неё список помечен isIncomplete",
+      "issue": "#2178",
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [
