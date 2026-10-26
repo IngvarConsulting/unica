@@ -609,6 +609,34 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.with_body_line_projection(module, from, to, |body, _| body)
     }
 
+    /// The module address a source-root-relative BSL file path has by the
+    /// source layout, for a place a symbol provider names by file.
+    pub(crate) fn module_address_for_path(&self, path: &str) -> Option<QualifiedAddress> {
+        crate::infrastructure::event_sources::module_address_for_relative(
+            self.read.source_set(),
+            self.read.source_set_kind(),
+            self.profile,
+            std::path::Path::new(path),
+        )
+    }
+
+    /// The saved text of a module, read by the same projection as `view`.
+    pub(crate) fn module_text(&self, module: &QualifiedAddress) -> Result<String, ViewError> {
+        self.with_module_projection(module, |_, projections| {
+            Ok(projections.source_text().to_string())
+        })
+    }
+
+    /// Whether the source set declares the node: the same typed read as `view`.
+    pub(crate) fn node_exists(&self, at: &QualifiedAddress) -> bool {
+        self.snapshot(at)
+            .and_then(|admitted| {
+                let canonical = self.canonical_address(at, &admitted)?;
+                self.read_exact(&canonical, &admitted)
+            })
+            .is_ok()
+    }
+
     pub(crate) fn module_address_for_source_target(
         &self,
         target: &MetadataAddress,

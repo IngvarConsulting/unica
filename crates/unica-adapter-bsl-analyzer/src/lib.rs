@@ -8,6 +8,7 @@ pub mod jsonl;
 mod private_failure;
 pub mod provider;
 pub mod session;
+pub mod symbols;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {

@@ -589,6 +589,21 @@ pub fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static s
         })
 }
 
+/// The kind a BSL manager collection names in code: `Справочники.Валюты` and
+/// `Catalogs.Валюты` both name a `Catalog`. BSL names are case-insensitive, so
+/// `справочники` matches too.
+pub fn metadata_collection_kind(raw: &str) -> Option<&'static str> {
+    let raw = raw.to_lowercase();
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| {
+            kind.collection_aliases
+                .iter()
+                .any(|alias| alias.to_lowercase() == raw)
+        })
+        .map(|kind| kind.canonical)
+}
+
 fn canonical_kind_or_collection(raw: &str) -> Result<&'static str, SourceTargetError> {
     ADDRESS_KINDS
         .iter()
@@ -683,6 +698,21 @@ fn is_root_module_terminal(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_manager_collection_in_code_names_its_kind_in_any_case() {
+        use super::metadata_collection_kind;
+        assert_eq!(metadata_collection_kind("Справочники"), Some("Catalog"));
+        assert_eq!(metadata_collection_kind("справочники"), Some("Catalog"));
+        assert_eq!(metadata_collection_kind("Catalogs"), Some("Catalog"));
+        assert_eq!(
+            metadata_collection_kind("РегистрыСведений"),
+            Some("InformationRegister")
+        );
+        assert_eq!(metadata_collection_kind("Справочник"), None);
+        assert_eq!(metadata_collection_kind("ОбщийМодуль"), None);
+    }
+
     use super::{
         xml_ncname_is_valid, AddressProfile, MetadataAddress, MetadataAddressPrefix,
         SourceTargetErrorCode, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
