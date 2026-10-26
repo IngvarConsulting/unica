@@ -300,10 +300,10 @@ class AcceptanceProfileTests(unittest.TestCase):
     def test_corrupt_pinned_asset_never_creates_a_runnable_manifest(self):
         builder = tools_builder()
         def corrupt(_url, destination, *, timeout):
-            self.assertEqual(timeout, 60)
-            destination.parent.mkdir(parents=True)
+            self.assertEqual(timeout, 25)
             destination.write_bytes(b"corrupt analyzer")
-        with tempfile.TemporaryDirectory() as raw, patch.object(builder, "download", corrupt):
+        with tempfile.TemporaryDirectory() as raw, patch.object(builder, "download", corrupt), \
+                patch.dict(os.environ, {"UNICA_TOOL_CACHE": str(Path(raw) / "cache")}):
             plugin = Path(raw) / "plugin"
             with self.assertRaisesRegex(SystemExit, "checksum mismatch"):
                 stage_analyzer(plugin, builder=builder, system="Linux", machine="x86_64")
@@ -314,8 +314,10 @@ class AcceptanceProfileTests(unittest.TestCase):
         builder = tools_builder()
         with tempfile.TemporaryDirectory() as raw:
             for timeout, expected in [(None, {}), (60, {"timeout": 60})]:
+                response = BytesIO(b"asset")
+                response.headers = {"Content-Length": "5"}
                 with self.subTest(timeout=timeout), patch.object(
-                    builder.urllib.request, "urlopen", return_value=BytesIO(b"asset")
+                    builder.urllib.request, "urlopen", return_value=response
                 ) as open_url:
                     destination = Path(raw) / "asset"
                     builder.download("https://example.invalid/asset", destination, timeout=timeout)

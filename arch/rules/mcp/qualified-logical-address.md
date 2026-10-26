@@ -10,6 +10,7 @@ check:
   - crates/unica-address/src/address.rs::qualified_addresses_are_table_driven_canonical_and_arbitrarily_deep
   - crates/unica-address/src/address.rs::qualified_addresses_reject_unqualified_malformed_and_noncanonical_roots
   - crates/unica-address/src/address.rs::metadata_aliases_reuse_v12_evidence_while_structural_aliases_stay_separate
+  - crates/unica-address/src/address.rs::a_property_address_names_its_owner_and_one_property
   - crates/unica-address/src/address.rs::unqualified_input_resolves_only_with_one_source_set_and_stays_qualified
   - crates/unica-address/src/address.rs::configuration_kind_is_rejected_everywhere_except_the_sole_root
   - crates/unica-address/src/address.rs::nameless_kinds_do_not_consume_the_next_segment_as_a_name
@@ -80,6 +81,13 @@ check:
 `main:Configuration.Can.<op>`. Такой адрес называет операцию, а не узел
 исходников: его читает только `unica.view`, другие инструменты отклоняют
 его по [правилу словаря операций](operation-dictionary.md).
+
+Сегмент `Props` называет одно свойство узла и тоже всегда последний:
+`main:Catalog.Валюты.Attribute.Код.Props.type`. Узел — адрес до `Props`, имя
+свойства — одна часть. Так `view` отдаёт целиком свойство, которое не
+поместилось в `props` узла. Корень `Configuration` таким адресом не
+спрашивают. `check`, `resolve`, `search` и `apply` отклоняют адрес свойства
+с переходом к `view`; `diff` сравнивает два свойства как значения.
 
 Разрешение входного адреса в контексте проекта может подставить пропущенный
 набор, только если доступен ровно один. Результат всё равно содержит набор;

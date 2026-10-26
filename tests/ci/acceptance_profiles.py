@@ -200,8 +200,9 @@ def stage_analyzer(plugin, *, builder=None, system=None, machine=None):
     tool = next(tool for tool in lock["tools"] if tool["name"] == "bsl-analyzer")
     asset = tool["assets"][target]
     binary = plugin / "bin" / target / (tool["binaryName"] + config["exe"])
-    builder.download(builder.release_asset_url(tool, asset), binary, timeout=60)
-    builder.verify_asset_checksum(binary, asset, tool_name=tool["name"], target=target)
+    # Три попытки по 25 с укладываются в 90 с, которые приёмка даёт подготовке.
+    builder.fetch_verified_asset(builder.release_asset_url(tool, asset), binary, asset,
+                                 tool_name=tool["name"], target=target, timeout=25)
     builder.set_file_mode(binary, executable=True)
     entry = builder.tool_entry(
         target=target, target_triple=config["targetTriple"], name=tool["name"],

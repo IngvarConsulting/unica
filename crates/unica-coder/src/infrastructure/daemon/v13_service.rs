@@ -660,7 +660,25 @@ impl CanonicalV13ReadService {
         // `<узел>.Can.<op>` спрашивает контракт одной операции словаря узла:
         // читается сам узел, а ответ — его операция.
         let mut operation = None;
+        // `<узел>.Props.<имя>` читает одно свойство узла целиком (#2088):
+        // узел проецируется без предела размера, ответ — это свойство.
+        let mut property = None;
         let read_at = match QualifiedAddress::parse(at) {
+            Ok(address) if address.property_query().is_some() => {
+                let (owner, name) = address.property_query().expect("checked above");
+                if let Some(paging) = ["cursor", "limit"]
+                    .into_iter()
+                    .find(|name| arguments.contains_key(*name))
+                {
+                    return error_result(
+                        Some(at.to_string()),
+                        RefusalCode::BadValue,
+                        format!("a node property is one value and has no pages; omit {paging}"),
+                    );
+                }
+                property = Some(name.to_string());
+                owner.to_string()
+            }
             Ok(address) => match address.operation_query() {
                 Some((owner, Some(op))) => {
                     if let Some(paging) = ["cursor", "limit"]
@@ -1015,7 +1033,16 @@ impl CanonicalV13ReadService {
                 }
             }
         };
-        let mut result = service.view_projected(request, &enrich_and_project);
+        let mut result = match property.as_deref() {
+            Some(name) => property_view(
+                crate::infrastructure::v13_read_projection::with_whole_prop(name, || {
+                    service.view_projected(request, &enrich_and_project)
+                }),
+                at,
+                name,
+            ),
+            None => service.view_projected(request, &enrich_and_project),
+        };
         // Ответ операции адресован ею самой, а не узлом, который читался.
         if let Some(op) = operation.as_deref() {
             let owner = result.at.clone();
@@ -9722,4 +9749,49 @@ mod tests {
             assert_eq!(last["complete"], false, "{engine:?}: {last}");
         }
     }
+}
+
+/// Ответ на `<узел>.Props.<имя>`: одно свойство узла в той же форме, что и
+/// в его `props`, по каноническому адресу владельца. Свойства у узла нет —
+/// отказ ведёт к самому узлу. Ветви, продолжения и переходы владельца к
+/// ответу о свойстве не относятся.
+fn property_view(result: DomainResult, at: &str, name: &str) -> DomainResult {
+    if !result.ok {
+        let mut result = result;
+        result.at = Some(at.to_string());
+        return result;
+    }
+    let owner = result.at.clone().unwrap_or_default();
+    let property_at = format!("{owner}.Props.{name}");
+    let value = result
+        .data
+        .as_ref()
+        .and_then(|data| data.get("props"))
+        .and_then(|props| props.get(name))
+        .cloned();
+    let Some(value) = value else {
+        let mut refusal = error_result(
+            Some(property_at),
+            RefusalCode::NotFound,
+            format!("node `{owner}` has no property `{name}`"),
+        );
+        refusal.next.push(json!({
+            "tool": "unica.view",
+            "args": {"at": owner},
+            "reason": "свойства узла перечислены в его props",
+        }));
+        return refusal;
+    };
+    let mut props = Map::new();
+    props.insert(name.to_string(), value);
+    let mut answer = DomainResult::success("node property resolved");
+    answer.at = Some(property_at.clone());
+    answer.data = Some(json!({
+        "at": property_at,
+        "kind": NodeKind::Props.as_str(),
+        "title": name,
+        "props": props,
+    }));
+    answer.rev = result.rev;
+    answer
 }

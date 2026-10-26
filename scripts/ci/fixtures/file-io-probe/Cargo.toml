@@ -1,0 +1,13 @@
+# Проба прохода Clippy для пакетов без файлового ввода-вывода: каждый запрет
+# `.config/clippy/file-io-free/clippy.toml` вызывается здесь ровно одной
+# строкой с маркером, и проход обязан отвергнуть каждую.
+[package]
+name = "file-io-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]

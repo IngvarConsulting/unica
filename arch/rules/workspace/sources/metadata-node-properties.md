@@ -11,6 +11,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::role_right_projection_never_serializes_an_unbounded_rights_array_into_props
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::metadata_node_props_carry_the_observed_object_properties
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::metadata_node_props_lay_out_the_per_kind_facts_by_role
+  - crates/unica-coder/src/infrastructure/v13_read_projection.rs::an_oversize_value_names_its_whole_address_and_an_empty_one_does_not
 ---
 
 # Свойства объекта доступны в его логическом узле
@@ -29,7 +30,8 @@ JSON, а не строкой с JSON внутри. У наблюдаемого �
 типизированного поля, например `type` или `fillValue`, сохраняет форму,
 которую принимает `apply`. Составное значение,
 которое в сериализованном виде больше 2048 байт, не публикуется, а ответ
-называет превышенный предел в `limits`.
+называет превышенный предел в `limits` и адрес `<узел>.Props.<имя>`, по
+которому `view` отдаёт свойство целиком в той же форме, что и в `props`.
 
 Для прямой табличной части справочника обычной конфигурации в XML 2.20
 коллекция и деталь публикуют наблюдённые `LineNumberLength` числом и `Use`

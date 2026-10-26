@@ -117,6 +117,13 @@ CI_CONTRACT_PATHS = {
 PLATFORM_CONTRACT_PATHS = {
     "scripts/ci/check-rust-platform-boundary.py",
     "tests/ci/test_rust_platform_boundary.py",
+    # Проход Clippy по файловым методам (#1894): конфигурация, проба и скрипт.
+    "scripts/ci/check-file-io-methods.py",
+    "tests/ci/test_file_io_methods.py",
+    ".config/clippy/file-io-free/clippy.toml",
+    "scripts/ci/fixtures/file-io-probe/Cargo.toml",
+    "scripts/ci/fixtures/file-io-probe/Cargo.lock",
+    "scripts/ci/fixtures/file-io-probe/src/lib.rs",
 }
 PLATFORM_SOURCE_PATHS = {
     "crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs",

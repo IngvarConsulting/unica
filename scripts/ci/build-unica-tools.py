@@ -4,18 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import http.client
 import json
 import os
 import platform
 import re
 import shutil
+import ssl
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from collections import defaultdict
@@ -126,12 +130,90 @@ def verify_asset_size(path: Path, asset: dict, *, tool_name: str, target: str) -
         )
 
 
+# Сетевой сбой повторяется: попытки различаются только сетью, а полное тело
+# всё равно сверяется с суммой из lock. Несовпадение суммы не повторяется.
+DOWNLOAD_ATTEMPTS = 3
+TOOL_CACHE_ENV = "UNICA_TOOL_CACHE"
+
+
+class DownloadInterrupted(OSError):
+    """The response ended before the length the server announced."""
+
+
 def download(url: str, dest: Path, *, timeout: float | None = None) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"download {url}", flush=True)
     response = urllib.request.urlopen(url) if timeout is None else urllib.request.urlopen(url, timeout=timeout)
     with response, dest.open("wb") as out:
         shutil.copyfileobj(response, out)
+        announced = response.headers.get("Content-Length")
+        received = out.tell()
+    if announced is not None and received != int(announced):
+        raise DownloadInterrupted(f"download of {url} ended after {received} of {announced} bytes")
+
+
+def is_network_failure(error: BaseException) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code >= 500
+    return isinstance(
+        error,
+        (
+            urllib.error.URLError,
+            http.client.HTTPException,
+            ConnectionError,
+            TimeoutError,
+            ssl.SSLError,
+            DownloadInterrupted,
+        ),
+    )
+
+
+def tool_cache_dir() -> Path:
+    # Умолчание совпадает с путём `~/.cache/unica-tools`, который CI сохраняет.
+    configured = os.environ.get(TOOL_CACHE_ENV)
+    return Path(configured) if configured else Path.home() / ".cache" / "unica-tools"
+
+
+def fetch_verified_asset(
+    url: str,
+    dest: Path,
+    asset: dict,
+    *,
+    tool_name: str,
+    target: str,
+    timeout: float | None = None,
+) -> None:
+    """Place the asset whose sha256 the lock pins, from the cache or the network."""
+
+    expected = asset.get("sha256")
+    if not expected:
+        raise SystemExit(f"{tool_name} {target} asset {asset.get('assetName')} is missing sha256 in tools lock")
+    cached = tool_cache_dir() / expected
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if cached.is_file() and sha256(cached) == expected:
+        print(f"cache {expected} for {url}", flush=True)
+        shutil.copyfile(cached, dest)
+        return
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            download(url, dest, timeout=timeout)
+            break
+        except Exception as error:
+            if not is_network_failure(error) or attempt == DOWNLOAD_ATTEMPTS:
+                raise
+            print(f"download attempt {attempt} failed, retrying: {error}", flush=True)
+    verify_asset_checksum(dest, asset, tool_name=tool_name, target=target)
+    # Кеш только ускоряет следующие прогоны: недоступный для записи каталог
+    # не отменяет уже проверенную загрузку.
+    partial = cached.with_name(f"{cached.name}.{os.getpid()}.part")
+    try:
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(dest, partial)
+        os.replace(partial, cached)
+    except OSError as error:
+        print(f"tool cache not updated: {error}", flush=True)
+        with contextlib.suppress(OSError):
+            partial.unlink(missing_ok=True)
 
 
 def release_asset_url(tool: dict, asset: dict) -> str:
@@ -225,9 +307,14 @@ def materialize_archive_group(
 
     downloaded = downloads_dir / f"{identity[4][:16]}-{identity[3]}"
     download_started_at = time.monotonic()
-    download(release_asset_url(first, first_asset), downloaded)
+    fetch_verified_asset(
+        release_asset_url(first, first_asset),
+        downloaded,
+        first_asset,
+        tool_name=first["name"],
+        target=target,
+    )
     download_seconds = time.monotonic() - download_started_at
-    verify_asset_checksum(downloaded, first_asset, tool_name=first["name"], target=target)
     verify_asset_size(downloaded, first_asset, tool_name=first["name"], target=target)
     verified = load_verified_archive(
         downloaded,
@@ -388,9 +475,10 @@ def materialize_upstream_archive(
     identity = archive_identity(tool, asset, target=target)
     downloaded = downloads_dir / f"{identity[4][:16]}-{identity[3]}"
     started_at = time.monotonic()
-    download(release_asset_url(tool, asset), downloaded)
+    fetch_verified_asset(
+        release_asset_url(tool, asset), downloaded, asset, tool_name=tool["name"], target=target
+    )
     download_seconds = time.monotonic() - started_at
-    verify_asset_checksum(downloaded, asset, tool_name=tool["name"], target=target)
     verify_asset_size(downloaded, asset, tool_name=tool["name"], target=target)
     members = read_upstream_archive(downloaded, asset_name=asset["assetName"], binary=binary)
 
@@ -675,8 +763,7 @@ def build_locked_bundle(
         dest = target_bin_dir / f"{tool['binaryName']}{exe}"
         url = release_asset_url(tool, asset)
         downloaded = downloads_dir / asset["assetName"]
-        download(url, downloaded)
-        verify_asset_checksum(downloaded, asset, tool_name=tool["name"], target=args.target)
+        fetch_verified_asset(url, downloaded, asset, tool_name=tool["name"], target=args.target)
         shutil.copy2(downloaded, dest)
         set_file_mode(dest, executable=True)
         built_paths[tool["name"]] = dest

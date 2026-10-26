@@ -1,4 +1,6 @@
-use super::{member_properties, place_prop, safe_prop, select_named, selected_scalar_props};
+use super::{
+    dropped_by_size, member_properties, place_prop, safe_prop, select_named, selected_scalar_props,
+};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_execution_contract::view_error::ViewError;
 
@@ -27,6 +29,51 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "overrides",
     // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
     "unreadable",
+];
+
+/// Скаляры корня объекта метаданных в его `props`.
+const ROOT_SCALAR_KEYS: &[&str] = &[
+    "kind",
+    "synonym",
+    "support",
+    // Заимствование расширением: ключи есть только в наборе
+    // расширения и только у заимствованного объекта, кроме
+    // `belonging` — он отвечает у всякого объекта расширения.
+    "belonging",
+    "parentId",
+    "parentStatus",
+    "overridesCount",
+    "overridesComplete",
+    "overrides",
+];
+
+/// Скаляры члена объекта метаданных в его `props`.
+const ITEM_SCALAR_KEYS: &[&str] = &[
+    "synonym",
+    "comment",
+    "required",
+    "fillValue",
+    "addressingDimension",
+    "incomplete",
+    "template",
+    "httpMethod",
+    "handler",
+    "procedure",
+    "nillable",
+    "transactioned",
+    "direction",
+    // Предопределённый элемент: собственные скаляры и поля по виду
+    // владельца. Без них ветвь отвечала бы одним заголовком, то есть
+    // домом без содержимого.
+    "id",
+    "parentId",
+    "code",
+    "description",
+    "isFolder",
+    "accountType",
+    "offBalance",
+    "order",
+    "actionPeriodIsBase",
 ];
 
 pub(super) fn project_metadata_for_source(
@@ -81,26 +128,14 @@ fn project_metadata(
     member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> Result<NodeViewData, ViewError> {
     if suffix.is_empty() {
-        let mut props = selected_scalar_props(
-            payload,
-            &[
-                "kind",
-                "synonym",
-                "support",
-                // Заимствование расширением: ключи есть только в наборе
-                // расширения и только у заимствованного объекта, кроме
-                // `belonging` — он отвечает у всякого объекта расширения.
-                "belonging",
-                "parentId",
-                "parentStatus",
-                "overridesCount",
-                "overridesComplete",
-                "overrides",
-            ],
-        );
+        let mut props = selected_scalar_props(payload, ROOT_SCALAR_KEYS);
+        let size_limits = dropped_by_size(payload, &props, address, |probe| {
+            selected_scalar_props(probe, ROOT_SCALAR_KEYS)
+        });
         let mut limits = metadata_limits(payload);
-        props.extend(metadata_property_props(payload, &mut limits));
-        props.extend(metadata_detail_props(payload, &mut limits));
+        limits.extend(size_limits);
+        props.extend(metadata_property_props(address, payload, &mut limits));
+        props.extend(metadata_detail_props(address, payload, &mut limits));
         // Счёт предопределённых элементов берётся из ответа читателя, а не из
         // длины страницы: при урезанной странице они расходятся, и ветвь
         // обещала бы меньше, чем есть.
@@ -201,6 +236,7 @@ fn project_metadata(
             place_prop(
                 &mut props,
                 &mut limits,
+                address,
                 "detailedDailySchedules",
                 detailed,
                 false,
@@ -723,37 +759,10 @@ fn metadata_item_node(
     item: &Value,
     member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> NodeView {
-    let mut limits = Vec::new();
-    let mut props = selected_scalar_props(
-        item,
-        &[
-            "synonym",
-            "comment",
-            "required",
-            "fillValue",
-            "addressingDimension",
-            "incomplete",
-            "template",
-            "httpMethod",
-            "handler",
-            "procedure",
-            "nillable",
-            "transactioned",
-            "direction",
-            // Предопределённый элемент: собственные скаляры и поля по виду
-            // владельца. Без них ветвь отвечала бы одним заголовком, то есть
-            // домом без содержимого.
-            "id",
-            "parentId",
-            "code",
-            "description",
-            "isFolder",
-            "accountType",
-            "offBalance",
-            "order",
-            "actionPeriodIsBase",
-        ],
-    );
+    let mut props = selected_scalar_props(item, ITEM_SCALAR_KEYS);
+    let mut limits = dropped_by_size(item, &props, address, |probe| {
+        selected_scalar_props(probe, ITEM_SCALAR_KEYS)
+    });
     if kind == NodeKind::StandardAttribute {
         let tabular = address
             .segments()
@@ -785,6 +794,7 @@ fn metadata_item_node(
             place_prop(
                 &mut props,
                 &mut limits,
+                address,
                 key,
                 value,
                 true,
@@ -801,7 +811,15 @@ fn metadata_item_node(
     ] {
         if let Some(value) = item.get(key) {
             let subject = format!("metadata {key}");
-            place_prop(&mut props, &mut limits, key, value, false, &subject);
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                key,
+                value,
+                false,
+                &subject,
+            );
         }
     }
     let mut branches = [
@@ -850,7 +868,7 @@ fn metadata_item_node(
                     .collect();
                 (Map::new(), limits)
             },
-            |(profile, context)| member_properties::project(profile, context, item),
+            |(profile, context)| member_properties::project(address, profile, context, item),
         );
     props.extend(member_props);
     limits.extend(member_limits);
@@ -873,7 +891,11 @@ fn metadata_item_node(
 /// не заслуживает ветви: адресовать внутри него нечего. Роль каждого поля
 /// называет ключ, и родительный падеж уходит в имя: `handlerModule`, а не
 /// `method.metadataPath`.
-fn metadata_detail_props(payload: &Value, limits: &mut Vec<String>) -> Map<String, Value> {
+fn metadata_detail_props(
+    address: &QualifiedAddress,
+    payload: &Value,
+    limits: &mut Vec<String>,
+) -> Map<String, Value> {
     let mut props = Map::new();
     let Some(details) = payload
         .get("details")
@@ -904,17 +926,29 @@ fn metadata_detail_props(payload: &Value, limits: &mut Vec<String>) -> Map<Strin
         for (field, role) in roles {
             if let Some(value) = composite.get(field) {
                 let subject = format!("metadata {role}");
-                place_prop(&mut props, limits, role, value, false, &subject);
+                place_prop(&mut props, limits, address, role, value, false, &subject);
             }
         }
     }
     if let Some(value) = details.get("type") {
-        place_prop(&mut props, limits, "type", value, false, "metadata type");
+        place_prop(
+            &mut props,
+            limits,
+            address,
+            "type",
+            value,
+            false,
+            "metadata type",
+        );
     }
     props
 }
 
-fn metadata_property_props(payload: &Value, limits: &mut Vec<String>) -> Map<String, Value> {
+fn metadata_property_props(
+    address: &QualifiedAddress,
+    payload: &Value,
+    limits: &mut Vec<String>,
+) -> Map<String, Value> {
     let mut props = Map::new();
     for property in payload
         .get("properties")
@@ -933,7 +967,7 @@ fn metadata_property_props(payload: &Value, limits: &mut Vec<String>) -> Map<Str
             continue;
         }
         let subject = format!("metadata property {key}");
-        place_prop(&mut props, limits, key, value, true, &subject);
+        place_prop(&mut props, limits, address, key, value, true, &subject);
     }
     props
 }

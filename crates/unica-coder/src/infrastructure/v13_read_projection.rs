@@ -1030,7 +1030,7 @@ fn project_subsystem(
                 payload,
             )
             .with_branches(branches)
-            .with_limits(limits),
+            .with_additional_limits(limits),
         ));
     }
     let first = &suffix[0];
@@ -1539,7 +1539,7 @@ fn project_xdto(
                 if let Some(value) = bounded_prop(key, value) {
                     props.insert(key.to_string(), value);
                 } else {
-                    limits.push(format!("XDTO {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+                    limits.push(compact_limit(&format!("XDTO {key}"), address, key));
                 }
             }
         }
@@ -1635,7 +1635,7 @@ fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) 
     let mut limits: Vec<String> = ["type", "reference", "bounds"]
         .into_iter()
         .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
-        .map(|key| format!("XDTO property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"))
+        .map(|key| compact_limit(&format!("XDTO property {key}"), address, key))
         .collect();
     if let Some([definition]) = property
         .get("typeDefs")
@@ -1653,7 +1653,11 @@ fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) 
                         if let Some(value) = bounded_prop(key, value) {
                             props.insert(key.to_string(), value);
                         } else {
-                            limits.push(format!("XDTO anonymous {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+                            limits.push(compact_limit(
+                                &format!("XDTO anonymous {key}"),
+                                address,
+                                key,
+                            ));
                         }
                     }
                 }
@@ -1682,7 +1686,7 @@ fn bounded_prop(key: &str, value: &Value) -> Option<Value> {
     match value {
         Value::Object(_) | Value::Array(_) => {
             let rendered = serde_json::to_string(value).ok()?;
-            (rendered.len() <= MAX_COMPACT_PROP_BYTES).then(|| value.clone())
+            (rendered.len() <= prop_limit(key)).then(|| value.clone())
         }
         scalar => safe_prop(key, scalar).then(|| scalar.clone()),
     }
@@ -1699,6 +1703,7 @@ fn bounded_observed_prop(key: &str, value: &Value) -> Option<Value> {
 fn place_prop(
     props: &mut Map<String, Value>,
     limits: &mut Vec<String>,
+    owner: &QualifiedAddress,
     key: &str,
     value: &Value,
     observed: bool,
@@ -1713,10 +1718,89 @@ fn place_prop(
         Some(value) => {
             props.insert(key.to_string(), value);
         }
-        None if !observed || observed_value(value).is_some() => limits.push(format!(
-            "{subject} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"
-        )),
+        None if !observed || observed_value(value).is_some() => {
+            limits.push(compact_limit(subject, owner, key));
+        }
         None => {}
+    }
+}
+
+/// Пределы свойств профиля, которые `project` отбросил только из-за размера.
+///
+/// Профиль узла здесь не повторяется: поле больше предела заменяется
+/// коротким значением того же типа, и если проекция тогда его публикует,
+/// это свойство профиля, потерянное по размеру. Составное значение, которое
+/// профиль не публикует вовсе, предела не даёт.
+fn dropped_by_size(
+    value: &Value,
+    props: &Map<String, Value>,
+    owner: &QualifiedAddress,
+    project: impl Fn(&Value) -> Map<String, Value>,
+) -> Vec<String> {
+    let Some(object) = value.as_object() else {
+        return Vec::new();
+    };
+    let mut limits = Vec::new();
+    for (key, field) in object {
+        if props.contains_key(key) {
+            continue;
+        }
+        // Та же мера, что у `safe_prop` и `bounded_prop`.
+        let (oversize, stand_in) = match field {
+            Value::String(text) => (text.len() > prop_limit(key), json!("")),
+            Value::Array(_) | Value::Object(_) => (
+                serde_json::to_string(field).is_ok_and(|rendered| rendered.len() > prop_limit(key)),
+                if field.is_array() {
+                    json!([])
+                } else {
+                    json!({})
+                },
+            ),
+            _ => continue,
+        };
+        if !oversize {
+            continue;
+        }
+        let mut probe = object.clone();
+        probe.insert(key.clone(), stand_in);
+        if project(&Value::Object(probe)).contains_key(key) {
+            limits.push(compact_limit(key, owner, key));
+        }
+    }
+    limits
+}
+
+/// Предел свойства и адрес, по которому `view` отдаёт его целиком (#2088).
+fn compact_limit(subject: &str, owner: &QualifiedAddress, key: &str) -> String {
+    format!(
+        "{subject} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes; read it whole at {owner}.Props.{key}"
+    )
+}
+
+thread_local! {
+    /// Свойство, которое читается по адресу `<узел>.Props.<имя>`: только оно
+    /// проецируется без предела размера. Предел сжимает обзор узла, а не само
+    /// свойство; остальные свойства узла остаются в пределе.
+    static WHOLE_PROP: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Проецирует узел на время `read`, снимая предел размера со свойства `key`.
+pub(crate) fn with_whole_prop<T>(key: &str, read: impl FnOnce() -> T) -> T {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WHOLE_PROP.with(|whole| *whole.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(WHOLE_PROP.with(|whole| whole.replace(Some(key.to_string()))));
+    read()
+}
+
+fn prop_limit(key: &str) -> usize {
+    if WHOLE_PROP.with(|whole| whole.borrow().as_deref() == Some(key)) {
+        usize::MAX
+    } else {
+        MAX_COMPACT_PROP_BYTES
     }
 }
 
@@ -1819,7 +1903,15 @@ fn node_from_value(
         })
         .unwrap_or_else(|| kind.as_str());
     let props = reader_node_props(reader, kind, value);
-    NodeView::new(address.to_string(), kind.as_str(), title, props)
+    let limits = dropped_by_size(value, &props, address, |probe| {
+        reader_node_props(reader, kind, probe)
+    });
+    let node = NodeView::new(address.to_string(), kind.as_str(), title, props);
+    if limits.is_empty() {
+        node
+    } else {
+        node.with_limits(limits)
+    }
 }
 
 /// Отбирает публичные свойства из внутренних фактов читателя.
@@ -1993,10 +2085,10 @@ fn known_reader_branches(
         .collect()
 }
 
-fn safe_prop(_key: &str, value: &Value) -> bool {
+fn safe_prop(key: &str, value: &Value) -> bool {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => true,
-        Value::String(text) => text.len() <= MAX_COMPACT_PROP_BYTES,
+        Value::String(text) => text.len() <= prop_limit(key),
         Value::Object(_) => false,
         Value::Array(_) => false,
     }
@@ -2324,10 +2416,12 @@ mod composite_prop_tests {
         }
     }
 
-    /// Ни одно значение не пропадает молча: превышение предела названо, а
-    /// пустое наблюдение — нет, ведь значения нет.
+    /// Ни одно значение не пропадает молча: превышение предела названо
+    /// вместе с адресом, где свойство читается целиком; пустое наблюдение
+    /// предела не даёт, ведь значения нет.
     #[test]
-    fn an_oversize_value_names_the_limit_and_an_empty_one_does_not() {
+    fn an_oversize_value_names_its_whole_address_and_an_empty_one_does_not() {
+        let owner = QualifiedAddress::parse("main:Constant.Limit").unwrap();
         let oversize =
             json!({"variants":[{"kind":"string","length":"x".repeat(MAX_COMPACT_PROP_BYTES)}]});
         let mut props = Map::new();
@@ -2335,6 +2429,7 @@ mod composite_prop_tests {
         place_prop(
             &mut props,
             &mut limits,
+            &owner,
             "type",
             &oversize,
             false,
@@ -2343,27 +2438,74 @@ mod composite_prop_tests {
         place_prop(
             &mut props,
             &mut limits,
+            &owner,
             "ToolTip",
             &json!({"kind":"nil"}),
             true,
             "ToolTip",
         );
+        let boolean = json!({"kind":"boolean","value":true});
         place_prop(
             &mut props,
             &mut limits,
+            &owner,
             "fillValue",
-            &json!({"kind":"boolean","value":true}),
+            &boolean,
             false,
             "metadata fillValue",
         );
         assert!(props.get("type").is_none());
         assert!(props.get("ToolTip").is_none());
-        assert_eq!(props["fillValue"], json!({"kind":"boolean","value":true}));
+        assert_eq!(props["fillValue"], boolean);
         assert_eq!(
             limits,
             vec![format!(
-                "metadata type exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"
+                "metadata type exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes; read it whole at main:Constant.Limit.Props.type"
             )]
         );
+        // По этому адресу предел снят только с названного свойства.
+        let mut whole = Map::new();
+        let mut whole_limits = Vec::new();
+        with_whole_prop("type", || {
+            for key in ["type", "fillValue"] {
+                place_prop(
+                    &mut whole,
+                    &mut whole_limits,
+                    &owner,
+                    key,
+                    &oversize,
+                    false,
+                    key,
+                );
+            }
+        });
+        assert_eq!(whole["type"], oversize);
+        assert!(whole.get("fillValue").is_none());
+        assert_eq!(whole_limits.len(), 1);
+        // Режим не переживает чтение.
+        assert_eq!(prop_limit("type"), MAX_COMPACT_PROP_BYTES);
+    }
+
+    /// Скаляр профиля длиннее предела называет предел и адрес; составное
+    /// значение, которое профиль скаляров не публикует вовсе, предела не даёт.
+    #[test]
+    fn a_profile_scalar_dropped_for_size_is_named_with_its_address() {
+        let owner = QualifiedAddress::parse("main:Catalog.Items").unwrap();
+        let keys: &[&str] = &["comment", "details"];
+        let item = json!({
+            "comment": "к".repeat(MAX_COMPACT_PROP_BYTES),
+            "details": {"text": "x".repeat(MAX_COMPACT_PROP_BYTES)},
+            "internal": "y".repeat(MAX_COMPACT_PROP_BYTES * 2),
+        });
+        let props = selected_scalar_props(&item, keys);
+        assert!(props.is_empty());
+        assert_eq!(
+            dropped_by_size(&item, &props, &owner, |probe| selected_scalar_props(probe, keys)),
+            vec![format!(
+                "comment exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes; read it whole at main:Catalog.Items.Props.comment"
+            )]
+        );
+        let whole = with_whole_prop("comment", || selected_scalar_props(&item, keys));
+        assert_eq!(whole["comment"], item["comment"]);
     }
 }
