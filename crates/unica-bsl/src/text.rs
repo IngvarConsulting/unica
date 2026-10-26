@@ -405,6 +405,17 @@ pub fn plan_code_postimage(
     Ok(StagedCodePostimage { after, no_op })
 }
 
+/// The revision of a module's text: SHA-256 of its file bytes. Any change of
+/// the bytes changes it, and nothing else does (#2225).
+pub fn module_text_revision(bytes: &[u8]) -> String {
+    revision_hex(&Sha256::digest(bytes))
+}
+
+/// A digest as the revision string `view` gives and `ifRev` takes.
+pub fn revision_hex(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Адрес замены и её охват.
 pub struct ReplacementTarget {
     pub at: QualifiedAddress,
@@ -2053,6 +2064,24 @@ mod tests {
         assert!(diff.starts_with("--- a/src/CommonModules/X/Ext/Module.bsl\n"));
     }
 
+    /// #2225: the revision is the digest of the file bytes, a byte order
+    /// mark included.
+    #[test]
+    fn a_module_text_revision_follows_every_byte_of_the_file() {
+        let text = "Procedure Base()\nEndProcedure\n";
+        let revision = module_text_revision(text.as_bytes());
+        assert_eq!(revision.len(), 64);
+        assert_eq!(revision, module_text_revision(text.as_bytes()));
+        assert_ne!(
+            revision,
+            module_text_revision(format!("\u{feff}{text}").as_bytes())
+        );
+        assert_ne!(
+            revision,
+            module_text_revision(text.replace('\n', "\r\n").as_bytes())
+        );
+    }
+
     #[test]
     fn addressed_method_body_replaces_statements_on_the_closing_line() {
         for before in [
@@ -2066,6 +2095,7 @@ mod tests {
                 .unwrap(),
                 text: "    Value = 2;".to_owned(),
                 anchor: None,
+                if_rev: None,
             });
             let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
             assert_eq!(

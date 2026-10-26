@@ -166,8 +166,27 @@ fn plan_one_code_operation(
     let before = staged
         .read(&relative)
         .map_err(|error| staged_code_error(error, &at_path))?;
-    let postimage =
-        plan_code_postimage(before.as_deref().unwrap_or_default(), operation, op_index)?;
+    let postimage = plan_code_postimage(before.as_deref().unwrap_or_default(), operation, op_index);
+    if let CodePlanOperation::Replace(CodeReplaceArgs {
+        if_rev: Some(expected),
+        ..
+    }) = operation
+    {
+        // The revision names the text before this call: earlier operations
+        // of the same call on the module do not make it stale. A repeat of
+        // a replacement already in the text writes nothing and is no
+        // conflict (#2225).
+        let original = staged.original_image(&relative).unwrap_or_default();
+        let repeat = matches!(&postimage, Ok(planned) if planned.no_op);
+        if module_text_revision(original) != *expected && !repeat {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::StaleRevision,
+                "the module text changed since it was read: read its Body again and redo the edit on that text",
+            )
+            .at_path(format!("ops[{op_index}].args.ifRev")));
+        }
+    }
+    let postimage = postimage?;
     stage_borrowed_module_state(staged, effects, authority, &identity, &at_path)?;
     if postimage.no_op {
         return Ok(());

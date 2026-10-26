@@ -1,0 +1,109 @@
+{
+ "id": "S-2225-code-replace-stale-text",
+ "issue": 2225,
+ "area": "Код BSL",
+ "task": "Прочитать тело модуля, дать другому изменить модуль, затем заменить текст по прочитанной ревизии: отказ stale_revision по ifRev, чужая правка сохранена, новое чтение даёт новую ревизию",
+ "wire": [
+  {
+   "tool": "unica.view",
+   "args": {
+    "at": "main:CommonModule.GoogleПереводчик.Body"
+   },
+   "expect": [
+    "ok"
+   ],
+   "captures": {
+    "readRev": {
+     "pointer": "/rev"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:CommonModule.GoogleПереводчик",
+    "ops": [
+     {
+      "op": "code.insert",
+      "args": {
+       "text": "// Чужая правка после чтения.\n"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$executionToken"
+   },
+   "expect": [
+    "ok"
+   ],
+   "captures": {
+    "foreign": {
+     "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+     "kind": "sha256"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:CommonModule.GoogleПереводчик.Body",
+    "ops": [
+     {
+      "op": "code.replace",
+      "args": {
+       "text": "Процедура Заменённая()\nКонецПроцедуры\n",
+       "ifRev": "$capture.readRev"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "refusal": "stale_revision: the module text changed since it was read: read its Body again and redo the edit on that text",
+   "assertions": [
+    {
+     "pointer": "/diagnostics/0/code",
+     "eq": "stale_revision"
+    },
+    {
+     "pointer": "/diagnostics/0/outcome",
+     "eq": "fixCall"
+    },
+    {
+     "pointer": "/at",
+     "eq": "ops[0].args.ifRev"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+     "eq": "$capture.foreign"
+    }
+   ]
+  },
+  {
+   "tool": "unica.view",
+   "args": {
+    "at": "main:CommonModule.GoogleПереводчик.Body"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/rev",
+     "notEq": "$capture.readRev"
+    }
+   ]
+  }
+ ]
+}

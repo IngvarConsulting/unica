@@ -47,6 +47,14 @@ impl CodeOperation {
         if self == Self::Replace && !addressed {
             required.push("selector");
         }
+        if self == Self::Replace {
+            // For editors that hold a read module text (#2225); agents are
+            // not steered to it.
+            fields.push((
+                "ifRev",
+                json!({"type":"string","pattern":r"\S","description":"необязательно: ревизия текста модуля, прочитанная клиентом; если модуль изменился, отказ stale_revision"}),
+            ));
+        }
         let mut schema = object(&fields, &required);
         if self == Self::Insert && !addressed {
             schema["anyOf"] = json!([

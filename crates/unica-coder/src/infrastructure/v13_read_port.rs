@@ -1630,6 +1630,23 @@ impl ProviderReadAuthority {
         }
     }
 
+    /// The revision of the module's text from its file bytes, read as a
+    /// stream (#2225). An absent file has the revision of an empty text: a
+    /// replacement plans over empty bytes there too.
+    pub(crate) fn module_text_revision(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: impl FnMut() -> Result<(), ViewError>,
+    ) -> Result<String, ViewError> {
+        use sha2::Digest;
+        let mut digest = sha2::Sha256::new();
+        self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
+            digest.update(chunk);
+            Ok(())
+        })?;
+        Ok(unica_bsl::text::revision_hex(&digest.finalize()))
+    }
+
     /// Counts Body lines the way the Body snapshot numbers them, without
     /// copying or decoding the module. An absent file is `None`, not zero.
     pub(crate) fn module_line_count(

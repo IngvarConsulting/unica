@@ -152,6 +152,13 @@ pub(crate) trait ViewReadAuthority: Send + Sync {
     ) -> Result<Option<ModuleText>, ViewError> {
         Ok(None)
     }
+
+    /// Ревизия текста модуля, чей `Body` или `Body` метода назван адресом:
+    /// её принимает `ifRev` у `code.replace` (#2225). `None` — адрес не
+    /// текст модуля BSL.
+    fn module_text_revision(&self, _at: &QualifiedAddress) -> Result<Option<String>, ViewError> {
+        Ok(None)
+    }
 }
 
 pub(crate) struct ViewService<A> {
@@ -296,6 +303,9 @@ impl<A: ViewReadAuthority> ViewService<A> {
         let binding = request.binding(&canonical_at, &snapshot);
 
         let mut text = None;
+        // The revision of a Body's module text (#2225), read on both sides
+        // of the text: equal, it names the very bytes this answer gives.
+        let mut text_revision = None;
         let serialized = if let Some((_, _, data)) = supplied {
             data.ok_or_else(|| {
                 ViewError::new(
@@ -304,11 +314,21 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 )
             })?
         } else {
+            let revision_before = self.authority.module_text_revision(&canonical_at)?;
             let mut view = match self.authority.read_module_text(&canonical_at, &snapshot)? {
                 Some(text) => module_body_view(&canonical_at, text)?,
                 None => self.authority.read_exact(&canonical_at, &snapshot)?,
             };
             text = view.take_text();
+            if let (Some(before), Some(_)) = (revision_before, &text) {
+                if self.authority.module_text_revision(&canonical_at)?.as_ref() != Some(&before) {
+                    return Err(ViewError::new(
+                        RefusalCode::ConcurrentChange,
+                        "the module changed while its text was read; retry the question",
+                    ));
+                }
+                text_revision = Some(before);
+            }
             let serialized = serde_json::to_value(view).map_err(|error| {
                 ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
             })?;
@@ -355,7 +375,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                         json!({"lines": {"state": "range", "from": from, "to": to}}),
                     );
                 }
-                let mut result = body_text_result(&canonical_at, object, Some(snapshot.revision));
+                let mut result = body_text_result(&canonical_at, object, text_revision.take());
                 match text {
                     SourceText::Whole(text) => {
                         result.source_text = Some(text);
