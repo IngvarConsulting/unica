@@ -2904,6 +2904,29 @@ fn a_contract_node_takes_a_page_size_like_any_single_node() {
     );
 }
 
+/// #2182: a node property is one value; a page size changes nothing, and
+/// only a continuation stays refused.
+#[test]
+fn a_node_property_takes_a_page_size_like_any_single_node() {
+    let fixture = fixture("workspace-code");
+    let view = |args| invoke(&fixture.workspace, ToolIdentity::View, args);
+    let property = "main:Catalog.Пример.Props.CodeLength";
+    let plain = view(json!({"at": property}));
+    assert!(plain.ok, "{plain:?}");
+    assert_eq!(plain.data.as_ref().unwrap()["kind"], "Props", "{plain:?}");
+    for limit in [1, 50] {
+        let limited = view(json!({"at": property, "limit": limit}));
+        assert!(limited.ok, "limit {limit}: {limited:?}");
+        assert_eq!(limited.data, plain.data, "limit {limit}");
+    }
+    let continued = view(json!({"at": property, "cursor": "opaque"}));
+    assert!(!continued.ok, "{continued:?}");
+    assert_eq!(
+        continued.diagnostics[0]["code"], "bad_value",
+        "{continued:?}"
+    );
+}
+
 #[test]
 fn object_remove_skeleton_previews_with_only_the_outer_target() {
     let fixture = fixture("workspace-code");

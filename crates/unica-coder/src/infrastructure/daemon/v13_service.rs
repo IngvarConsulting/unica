@@ -666,14 +666,13 @@ impl CanonicalV13ReadService {
         let read_at = match QualifiedAddress::parse(at) {
             Ok(address) if address.property_query().is_some() => {
                 let (owner, name) = address.property_query().expect("checked above");
-                if let Some(paging) = ["cursor", "limit"]
-                    .into_iter()
-                    .find(|name| arguments.contains_key(*name))
-                {
+                // A property is one value: like any single node it accepts a
+                // page size it does not need, but it has no continuation.
+                if arguments.contains_key("cursor") {
                     return error_result(
                         Some(at.to_string()),
                         RefusalCode::BadValue,
-                        format!("a node property is one value and has no pages; omit {paging}"),
+                        "a node property is one value and has no pages; omit cursor",
                     );
                 }
                 property = Some(name.to_string());
