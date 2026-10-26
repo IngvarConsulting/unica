@@ -35,8 +35,19 @@ impl V5LspSessionId {
         &self.0
     }
 
+    /// The id names a session and is checked without carrying it into the
+    /// error: a refused frame's text reaches logs.
     pub(super) fn validate(&self) -> Result<(), String> {
-        super::validate_uuid_v4(&self.0, "v5 lsp session")
+        let canonical = Uuid::parse_str(&self.0).is_ok_and(|parsed| {
+            parsed.get_version() == Some(uuid::Version::Random)
+                && parsed.get_variant() == uuid::Variant::RFC4122
+                && parsed.hyphenated().to_string() == self.0
+        });
+        if canonical {
+            Ok(())
+        } else {
+            Err("v5 lsp session is not a canonical UUIDv4".to_string())
+        }
     }
 }
 
