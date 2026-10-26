@@ -324,3 +324,37 @@ fn a_change_the_buffer_cannot_take_is_refused_so_the_editor_drops_it() {
         text("Procedure Again() EndProcedure\n")
     );
 }
+
+/// Every form an editor may send for one module reaches it: the encoded
+/// URI the service gives, its decoded text and an authority in any case.
+#[test]
+fn a_module_is_reached_by_every_spelling_of_its_unica_uri() {
+    let workspace = workspace();
+    let module = workspace
+        .path()
+        .join("src/CommonModules/ОбщегоНазначения/Ext/Module.bsl");
+    fs::create_dir_all(module.parent().unwrap()).unwrap();
+    fs::write(&module, "// УТ\n").unwrap();
+    let host = UnicaLspHost::new(Arc::new(
+        crate::infrastructure::source_workspace::actor_registry(),
+    ));
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "УТ Проект")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+    let given = session_uri(&host, &editor, &file_uri(&module));
+
+    for uri in [
+        given.as_str(),
+        "unica://ут%20проект/main/CommonModule.ОбщегоНазначения",
+        "unica://ут проект/main/CommonModule.ОбщегоНазначения",
+        "unica://УТ%20Проект/main/CommonModule.ОбщегоНазначения",
+        "unica://%D0%A3%D0%A2%20%D0%9F%D1%80%D0%BE%D0%B5%D0%BA%D1%82/main/CommonModule.ОбщегоНазначения",
+    ] {
+        assert_eq!(content(&host, &editor, uri), text("// УТ\n"), "{uri}");
+    }
+}
