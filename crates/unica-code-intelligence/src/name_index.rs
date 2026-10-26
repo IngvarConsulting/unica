@@ -26,6 +26,8 @@ pub struct NameIndex<S> {
     /// Name key to the slots of the modules that spell it, dead ones included.
     postings: HashMap<Box<str>, Vec<u32>>,
     dead: usize,
+    /// The running estimate of the heap held, dead slots included.
+    bytes: usize,
 }
 
 impl<S> Default for NameIndex<S> {
@@ -35,6 +37,7 @@ impl<S> Default for NameIndex<S> {
             by_path: HashMap::new(),
             postings: HashMap::new(),
             dead: 0,
+            bytes: 0,
         }
     }
 }
@@ -71,8 +74,17 @@ impl<S> NameIndex<S> {
             stamp,
         }));
         self.by_path.insert(path.into(), slot);
+        self.bytes += module_bytes::<S>(path);
         for key in keys {
-            self.postings.entry(key.into()).or_default().push(slot);
+            let posting = match self.postings.get_mut(key.as_str()) {
+                Some(posting) => posting,
+                None => {
+                    self.bytes += key_bytes(&key);
+                    self.postings.entry(key.into()).or_default()
+                }
+            };
+            posting.push(slot);
+            self.bytes += 4;
         }
     }
 
@@ -123,23 +135,39 @@ impl<S> NameIndex<S> {
         }
         self.slots = slots;
         self.dead = 0;
+        self.bytes = self.recount();
     }
 
     /// An estimate of the heap the index holds, for its resource account.
     pub fn approximate_bytes(&self) -> usize {
-        let word = std::mem::size_of::<usize>();
+        self.bytes
+    }
+
+    fn recount(&self) -> usize {
         let postings: usize = self
             .postings
             .iter()
-            .map(|(key, slots)| key.len() + 2 * word + 4 * slots.capacity() + 3 * word)
+            .map(|(key, slots)| key_bytes(key) + 4 * slots.len())
             .sum();
         let modules: usize = self
             .by_path
             .keys()
-            .map(|path| 2 * path.len() + 6 * word + std::mem::size_of::<S>())
+            .map(|path| module_bytes::<S>(path))
             .sum();
         postings + modules
     }
+}
+
+const WORD: usize = std::mem::size_of::<usize>();
+
+/// A key's entry: its text, the map slot and the posting vector's header.
+fn key_bytes(key: &str) -> usize {
+    key.len() + 5 * WORD
+}
+
+/// A module's path, held twice, its slot and its stamp.
+fn module_bytes<S>(path: &str) -> usize {
+    2 * path.len() + 6 * WORD + std::mem::size_of::<S>()
 }
 
 #[cfg(test)]

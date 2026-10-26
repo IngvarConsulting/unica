@@ -2,7 +2,7 @@
 //! module texts and metadata nodes proved by the logical reader.
 
 use unica_address::address::QualifiedAddress;
-use unica_code_intelligence::symbols::{ModuleOwner, NameLookup, SymbolEnvironment};
+use unica_code_intelligence::symbols::{ModuleOwner, NameLookup, NamedModules, SymbolEnvironment};
 
 use crate::infrastructure::v13_read::LogicalViewReadAuthority;
 
@@ -72,7 +72,7 @@ impl SymbolEnvironment for ReaderSymbolEnvironment<'_, '_> {
 }
 
 impl NameLookup for ReaderSymbolEnvironment<'_, '_> {
-    fn modules_naming(&self, name: &str) -> Option<Vec<String>> {
+    fn modules_naming(&self, name: &str) -> Option<NamedModules> {
         self.authority.modules_naming(name)
     }
 }

@@ -80,7 +80,8 @@ pub enum Incompleteness {
     /// No provider could answer beyond the module's own text.
     ProviderUnavailable,
     /// The provider answered with part of what it found, or from an index
-    /// behind the saved sources.
+    /// behind the saved sources; or the name index reached its budget and
+    /// left modules out.
     Capped,
     /// Places in other modules are not answered: only this module's are.
     OtherModules,
@@ -260,11 +261,20 @@ pub enum ModuleOwner {
     Other,
 }
 
+/// The modules a name index lists for a name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedModules {
+    /// Source-root-relative paths of the modules that spell the name.
+    pub paths: Vec<String>,
+    /// `false` when the index left modules out (it reached its budget).
+    pub complete: bool,
+}
+
 /// Which modules of the source set may spell a name: the name index.
 pub trait NameLookup {
-    /// The source-root-relative paths of the modules that spell `name` in any
-    /// letter case, or `None` while the index is not built yet.
-    fn modules_naming(&self, name: &str) -> Option<Vec<String>>;
+    /// The modules that spell `name` in any letter case, or `None` while the
+    /// index is not built yet.
+    fn modules_naming(&self, name: &str) -> Option<NamedModules>;
 }
 
 /// `Справочники.Валюты.Метод` with the cursor on the method: an export of
@@ -278,6 +288,49 @@ fn manager_method(path: &NamePath) -> Option<Target> {
         kind: kind.to_string(),
         object: path.segments[1].0.clone(),
         method: path.segments[2].0.clone(),
+    })
+}
+
+/// The most threads one reference search parses candidate modules on; the
+/// rest of the machine stays with the agent's calls.
+pub const MAX_REFERENCE_PARSE_THREADS: usize = 8;
+
+/// The target's uses in each module text, the texts parsed in parallel.
+fn uses_in(
+    target: &Target,
+    texts: &[(String, String)],
+    cancellation: &CancellationToken,
+) -> Vec<SymbolLocation> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(MAX_REFERENCE_PARSE_THREADS);
+    let chunk = texts.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        texts
+            .chunks(chunk)
+            .map(|part| {
+                scope.spawn(move || {
+                    let mut found = Vec::new();
+                    for (at, text) in part {
+                        if cancellation.is_cancelled() {
+                            break;
+                        }
+                        let module = unica_bsl_parser::parse(text);
+                        let index = LineIndex::new(text);
+                        found.extend(target.uses(&module).into_iter().map(|bytes| {
+                            SymbolLocation {
+                                at: at.clone(),
+                                range: Some(range(&index, bytes)),
+                            }
+                        }));
+                    }
+                    found
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
     })
 }
 
@@ -300,6 +353,28 @@ enum Target {
 }
 
 impl Target {
+    /// The modules that may use the target: those spelling every name a use
+    /// must spell. `None` while the index is not built.
+    fn candidates(&self, names: &dyn NameLookup) -> Option<NamedModules> {
+        let mut named = names.modules_naming(self.name())?;
+        let also = match self {
+            Self::Common {
+                module,
+                global: false,
+                ..
+            } => Some(module),
+            Self::Manager { object, .. } => Some(object),
+            _ => None,
+        };
+        if let Some(also) = also {
+            let spelling = names.modules_naming(also)?;
+            named.complete &= spelling.complete;
+            let spelling: std::collections::HashSet<String> = spelling.paths.into_iter().collect();
+            named.paths.retain(|path| spelling.contains(path));
+        }
+        Some(named)
+    }
+
     /// The name every use spells: the last segment.
     fn name(&self) -> &str {
         match self {
@@ -865,10 +940,14 @@ impl<'a> SymbolService<'a> {
         let Some(names) = self.names else {
             return SymbolAnswer::partial(locations, vec![Incompleteness::OtherModules]);
         };
-        let Some(paths) = names.modules_naming(target.name()) else {
+        let Some(NamedModules { paths, complete }) = target.candidates(names) else {
             return SymbolAnswer::partial(locations, vec![Incompleteness::NamesNotIndexed]);
         };
+        if !complete {
+            reasons.push(Incompleteness::Capped);
+        }
         let mut unaddressable = 0;
+        let mut texts = Vec::with_capacity(paths.len());
         for path in paths {
             if context.cancellation.is_cancelled() {
                 reasons.push(Incompleteness::ProviderNotReady);
@@ -885,17 +964,13 @@ impl<'a> SymbolService<'a> {
                 unaddressable += 1;
                 continue;
             };
-            let module = unica_bsl_parser::parse(&text);
-            let index = LineIndex::new(&text);
-            locations.extend(
-                target
-                    .uses(&module)
-                    .into_iter()
-                    .map(|bytes| SymbolLocation {
-                        at: at.clone(),
-                        range: Some(range(&index, bytes)),
-                    }),
-            );
+            texts.push((at, text));
+        }
+        locations.extend(uses_in(&target, &texts, context.cancellation));
+        if context.cancellation.is_cancelled()
+            && !reasons.contains(&Incompleteness::ProviderNotReady)
+        {
+            reasons.push(Incompleteness::ProviderNotReady);
         }
         if unaddressable > 0 {
             reasons.push(Incompleteness::Unaddressable(unaddressable));

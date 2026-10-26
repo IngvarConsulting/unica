@@ -71,15 +71,16 @@ const CALLER_TEXT: &str = "Процедура П() Экспорт\n\tОБЩИЙ.
 struct Names(Option<Vec<(&'static str, &'static [&'static str])>>);
 
 impl NameLookup for Names {
-    fn modules_naming(&self, name: &str) -> Option<Vec<String>> {
+    fn modules_naming(&self, name: &str) -> Option<NamedModules> {
         let entries = self.0.as_ref()?;
-        Some(
-            entries
+        Some(NamedModules {
+            paths: entries
                 .iter()
                 .filter(|(_, names)| names.iter().any(|known| same_name(known, name)))
                 .map(|(path, _)| path.to_string())
                 .collect(),
-        )
+            complete: true,
+        })
     }
 }
 

@@ -2383,6 +2383,56 @@
       "review": null
     },
     {
+      "id": "name-index.budget-bytes",
+      "class": "retention",
+      "resource": "Память, до которой растёт индекс имён одного набора (оценка по ключам, путям и спискам модулей).",
+      "unit": "bytes",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/name_index.rs",
+        "symbol": "NAME_INDEX_BUDGET_BYTES"
+      },
+      "expr": "256 * 1024 * 1024",
+      "value": 268435456,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/name_index.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": null,
+      "onReach": "ещё не учтённые модули в индекс не попадают; поиск ссылок отвечает неполным с причиной capped, не отказом",
+      "issue": null,
+      "evidence": [
+        "Замер 26.10.2026, УТ 11 (Sendbox, 12 290 модулей, 7,1 млн строк): индекс около 38 МиБ, сборка 17–48 с в зависимости от нагрузки машины."
+      ],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "symbols.reference-parse-threads",
+      "class": "concurrency",
+      "resource": "Наибольшее число потоков, на которых один поиск ссылок разбирает модули-кандидаты.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-code-intelligence/src/symbols.rs",
+        "symbol": "MAX_REFERENCE_PARSE_THREADS"
+      },
+      "expr": "8",
+      "value": 8,
+      "applied": [
+        "crates/unica-code-intelligence/src/symbols.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": null,
+      "onReach": "разбор идёт на меньшем числе потоков; остальные ядра остаются вызовам MCP",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "view.configuration-streaming-threshold-bytes",
       "class": "step",
       "resource": "Размер Configuration.xml, с которого корень разбирается потоковым путём вместо полного дерева.",

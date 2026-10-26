@@ -654,7 +654,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// The source-root-relative paths of the modules that spell `name`, from
     /// the set's name index; `None` until its first build has finished.
-    pub(crate) fn modules_naming(&self, name: &str) -> Option<Vec<String>> {
+    pub(crate) fn modules_naming(
+        &self,
+        name: &str,
+    ) -> Option<unica_code_intelligence::symbols::NamedModules> {
         let source_set = self.read.source_set().to_string();
         let kind = self.read.source_set_kind();
         let profile = self.profile.clone();

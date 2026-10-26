@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
 use unica_code_intelligence::name_index::NameIndex;
+use unica_code_intelligence::symbols::NamedModules;
 use unica_source_contract::read::{FileStamp, SourceDirectory, SourceEntry};
 
 use crate::infrastructure::v13_large_configuration::SETTLE_WINDOW;
@@ -23,6 +24,9 @@ pub(crate) const NAME_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) const NAME_INDEX_YIELD_POLL: Duration = Duration::from_millis(20);
 /// The largest module text the index reads; a larger module is left out.
 pub(crate) const NAME_INDEX_MODULE_BYTES: usize = 64 * 1024 * 1024;
+/// The heap the index may grow to; past it, modules not yet indexed are left
+/// out and every answer says so. Measured on УТ 11: about 38 MiB.
+pub(crate) const NAME_INDEX_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 
 static FOREGROUND_CALLS: AtomicUsize = AtomicUsize::new(0);
 
@@ -53,15 +57,27 @@ pub(crate) type ModulePaths = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 struct BuildState {
     /// A full walk has finished at least once.
     ready: bool,
+    /// The last walk left modules out: the index reached its budget.
+    capped: bool,
     running: bool,
     last_end: Option<Instant>,
 }
 
-#[derive(Default)]
 pub(crate) struct SourceNameIndex {
     /// `None` stamps are unsettled: the next walk reads the module again.
     index: RwLock<NameIndex<Option<FileStamp>>>,
     state: Mutex<BuildState>,
+    budget: usize,
+}
+
+impl Default for SourceNameIndex {
+    fn default() -> Self {
+        Self {
+            index: RwLock::default(),
+            state: Mutex::default(),
+            budget: NAME_INDEX_BUDGET_BYTES,
+        }
+    }
 }
 
 impl SourceNameIndex {
@@ -73,22 +89,25 @@ impl SourceNameIndex {
         name: &str,
         root: &SourceDirectory,
         modules: &ModulePaths,
-    ) -> Option<Vec<String>> {
-        let ready = self.refresh(root, modules);
-        ready.then(|| {
-            self.index
+    ) -> Option<NamedModules> {
+        let (ready, capped) = self.refresh(root, modules);
+        ready.then(|| NamedModules {
+            paths: self
+                .index
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .modules_naming(name)
                 .into_iter()
                 .map(str::to_string)
-                .collect()
+                .collect(),
+            complete: !capped,
         })
     }
 
     /// Starts a background walk unless one runs or the last one is recent;
-    /// answers whether the first build has finished.
-    fn refresh(self: &Arc<Self>, root: &SourceDirectory, modules: &ModulePaths) -> bool {
+    /// answers whether the first build has finished and whether the last
+    /// walk left modules out.
+    fn refresh(self: &Arc<Self>, root: &SourceDirectory, modules: &ModulePaths) -> (bool, bool) {
         let mut state = self
             .state
             .lock()
@@ -103,16 +122,19 @@ impl SourceNameIndex {
             let modules = Arc::clone(modules);
             std::thread::spawn(move || walk(&owner, &root, &modules));
         }
-        state.ready
+        (state.ready, state.capped)
     }
 
-    fn finish(&self, complete: bool) {
+    fn finish(&self, complete: bool, capped: bool) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.running = false;
         state.ready |= complete;
+        if complete {
+            state.capped = capped;
+        }
         state.last_end = Some(Instant::now());
     }
 
@@ -154,7 +176,8 @@ enum Stop {
 /// indexed again, and modules no longer there are dropped.
 fn walk(owner: &Weak<SourceNameIndex>, root: &SourceDirectory, modules: &ModulePaths) {
     let mut seen = std::collections::HashSet::new();
-    let outcome = visit(owner, root, modules, &mut seen);
+    let mut capped = false;
+    let outcome = visit(owner, root, modules, &mut seen, &mut capped);
     let Some(index) = owner.upgrade() else {
         return;
     };
@@ -172,7 +195,7 @@ fn walk(owner: &Weak<SourceNameIndex>, root: &SourceDirectory, modules: &ModuleP
             names.remove(&path);
         }
     }
-    index.finish(outcome.is_ok());
+    index.finish(outcome.is_ok(), capped);
 }
 
 fn visit(
@@ -180,6 +203,7 @@ fn visit(
     root: &SourceDirectory,
     modules: &ModulePaths,
     seen: &mut std::collections::HashSet<String>,
+    capped: &mut bool,
 ) -> Result<(), Stop> {
     let mut stack = vec![(PathBuf::new(), root.clone())];
     while let Some((relative, directory)) = stack.pop() {
@@ -198,8 +222,11 @@ fn visit(
                 Ok(SourceEntry::RegularFile(_)) if modules(&path) => {
                     give_way(owner)?;
                     let key = path.to_string_lossy().replace('\\', "/");
-                    index_module(owner, root, &path, &key)?;
-                    seen.insert(key);
+                    if index_module(owner, root, &path, &key)? {
+                        seen.insert(key);
+                    } else {
+                        *capped = true;
+                    }
                 }
                 _ => {}
             }
@@ -226,7 +253,7 @@ fn index_module(
     root: &SourceDirectory,
     path: &Path,
     key: &str,
-) -> Result<(), Stop> {
+) -> Result<bool, Stop> {
     let index = owner.upgrade().ok_or(Stop::Released)?;
     let stamp = root
         .relative_file_stamp(path)
@@ -243,7 +270,17 @@ fn index_module(
             .stamp(key)
             == Some(&stamp);
     if unchanged {
-        return Ok(());
+        return Ok(true);
+    }
+    let over_budget = {
+        let names = index
+            .index
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        names.stamp(key).is_none() && names.approximate_bytes() >= index.budget
+    };
+    if over_budget {
+        return Ok(false);
     }
     let keys = root
         .read_relative_regular_bounded(path, NAME_INDEX_MODULE_BYTES)
@@ -260,7 +297,7 @@ fn index_module(
         Some(keys) => names.insert(key, stamp, keys),
         None => names.remove(key),
     }
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -296,7 +333,10 @@ mod tests {
         assert!(index.wait_ready_for_test(Duration::from_secs(10)));
         assert_eq!(
             index.modules_naming("сделать", &root, &modules()),
-            Some(vec!["CommonModules/А/Ext/Module.bsl".to_string()])
+            Some(NamedModules {
+                paths: vec!["CommonModules/А/Ext/Module.bsl".to_string()],
+                complete: true
+            })
         );
 
         std::fs::remove_file(directory.path().join("CommonModules/А/Ext/Module.bsl")).unwrap();
@@ -306,9 +346,34 @@ mod tests {
         assert!(index.wait_ready_for_test(Duration::from_secs(10)));
         assert_eq!(
             index.modules_naming("Сделать", &root, &modules()),
-            Some(vec!["CommonModules/Б/Ext/Module.bsl".to_string()])
+            Some(NamedModules {
+                paths: vec!["CommonModules/Б/Ext/Module.bsl".to_string()],
+                complete: true
+            })
         );
         assert!(index.approximate_bytes() > 0);
+    }
+
+    #[test]
+    fn an_index_past_its_budget_answers_incomplete_rather_than_refusing() {
+        let directory = tempfile::tempdir().unwrap();
+        for module in ["А", "Б", "В"] {
+            std::fs::write(
+                directory.path().join(format!("{module}.bsl")),
+                "Сделать();\n",
+            )
+            .unwrap();
+        }
+        let root = root(directory.path());
+        let index = Arc::new(SourceNameIndex {
+            budget: 1,
+            ..SourceNameIndex::default()
+        });
+        index.modules_naming("сделать", &root, &modules());
+        assert!(index.wait_ready_for_test(Duration::from_secs(10)));
+        let answer = index.modules_naming("сделать", &root, &modules()).unwrap();
+        assert_eq!(answer.paths.len(), 1);
+        assert!(!answer.complete);
     }
 
     #[test]
