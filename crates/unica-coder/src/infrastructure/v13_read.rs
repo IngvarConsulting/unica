@@ -1808,6 +1808,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     /// «не на поддержке».
     fn member_support<'name>(
         &self,
+        source_set: &str,
         kind: NodeKind,
         names: impl Iterator<Item = &'name str>,
         admitted: &ViewSourceSnapshot,
@@ -1820,12 +1821,15 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let marker = match self.read.support_marker(&mut || self.read_checkpoint()) {
             Ok(Some(marker)) => marker,
             Ok(None) => return Ok(support),
-            Err(error) => {
+            // Нечитаемый маркер называется в `limits`; отмена, срок и
+            // отравленный кеш остаются ошибкой вызова.
+            Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => {
                 support
                     .limits
                     .push(format!("support of the members is unknown: {error}"));
                 return Ok(support);
             }
+            Err(error) => return Err(error),
         };
         for name in names {
             let owner = MetadataAddress::parse(
@@ -1845,7 +1849,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     support.states.insert(name.to_string(), json!(state));
                 }
                 Err(error) => support.limits.push(format!(
-                    "support of `{}` is unknown: {error}",
+                    "support of `{}:{}` is unknown: {error}",
+                    source_set,
                     owner.as_str()
                 )),
             }
@@ -2256,8 +2261,12 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                         self.verify_registered_owner(&owner, admitted)?;
                     }
                 }
-                let support =
-                    self.member_support(branch_kind, names.iter().map(String::as_str), admitted)?;
+                let support = self.member_support(
+                    route.at().source_set(),
+                    branch_kind,
+                    names.iter().map(String::as_str),
+                    admitted,
+                )?;
                 crate::infrastructure::v13_read_projection::project_registered_metadata_branch_names(
                     route.at(),
                     &names,
@@ -2300,7 +2309,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                         item.get("kind").and_then(Value::as_str) == Some(branch_kind.as_str())
                     })
                     .filter_map(|item| item.get("name").and_then(Value::as_str));
-                let support = self.member_support(branch_kind, names, admitted)?;
+                let support =
+                    self.member_support(route.at().source_set(), branch_kind, names, admitted)?;
                 crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
                     route.at(),
                     payload.as_ref(),
