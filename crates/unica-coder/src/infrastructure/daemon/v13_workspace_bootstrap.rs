@@ -824,9 +824,10 @@ fn platform_pinned(workspace_root: &std::path::Path) -> bool {
     ["v8project.yaml", "v8project.local.yaml"]
         .iter()
         .any(|file| match read_yaml_config(workspace_root, file) {
-            Ok(Some(layer)) => ["version", "path"]
-                .iter()
-                .any(|key| !layer["tools"]["platform"][*key].is_null()),
+            Ok(Some(layer)) => ["version", "path"].iter().any(|key| {
+                let value = &layer["tools"]["platform"][*key];
+                !value.is_null() && value.as_str() != Some("")
+            }),
             Ok(None) => false,
             Err(_) => true,
         })
