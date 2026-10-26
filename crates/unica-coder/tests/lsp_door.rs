@@ -37,7 +37,8 @@ fn a_killed_lsp_client_leaves_the_same_daemon_serving_mcp_and_a_new_editor() {
     // The editor's process dies with its session open and a request sent.
     editor.kill();
 
-    let mut mcp = Frontend::start(workspace.path(), &state, &[]);
+    // `unica mcp` is the same MCP as a bare `unica`: tooling starts it so.
+    let mut mcp = Frontend::start(workspace.path(), &state, &["mcp"]);
     mcp.mcp_request(json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "lsp-door", "version": "0"}},
