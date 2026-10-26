@@ -1,0 +1,64 @@
+{
+  "id": "S-2159-form-declaration-props",
+  "name": "form-view-shows-its-declaration",
+  "issue": 2159,
+  "area": "Навигация по исходникам",
+  "task": "Прочитать общую форму и форму документа и увидеть рядом со структурой их декларацию: синоним, комментарий, тип формы и стандартные команды, а для изменения — ветвь Metadata",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve-resources",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        },
+        {
+          "pointer": "/data/props/declaration/Comment",
+          "eq": "Metadata descriptor only"
+        },
+        {
+          "pointer": "/data/props/declaration/FormType",
+          "eq": "Managed"
+        },
+        {
+          "pointer": "/data/props/declaration/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/declaration/Synonym/0/content",
+          "eq": "Декларация Main"
+        },
+        {
+          "pointer": "/data/props/declaration/ExtendedPresentation/0/content",
+          "eq": "Полное представление"
+        },
+        {
+          "pointer": "/data/props/declaration/Explanation/0/content",
+          "eq": "Пояснение формы"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Invoice.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/declaration/FormType",
+          "eq": "Managed"
+        }
+      ]
+    }
+  ]
+}

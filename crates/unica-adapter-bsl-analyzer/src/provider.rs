@@ -33,19 +33,6 @@ pub trait BslToolClient: Send + Sync {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<McpToolOutput, String>;
-
-    /// The same call for an editor: it does not wait behind an agent's call
-    /// for the analyzer and fails with `ANALYZER_BUSY` instead.
-    fn call_background(
-        &self,
-        tool: &'static str,
-        context: &CodeIntelligenceContext,
-        arguments: Value,
-        timeout: Duration,
-        cancellation: &CancellationToken,
-    ) -> Result<McpToolOutput, String> {
-        self.call(tool, context, arguments, timeout, cancellation)
-    }
 }
 
 pub struct WorkspaceBslToolClient {
@@ -66,22 +53,6 @@ impl BslToolClient for WorkspaceBslToolClient {
             &context.workspace,
             &context.source_root.path,
             WorkspaceServiceBslCall::new(tool, arguments, timeout, timeout),
-            cancellation,
-        )
-    }
-
-    fn call_background(
-        &self,
-        tool: &'static str,
-        context: &CodeIntelligenceContext,
-        arguments: Value,
-        timeout: Duration,
-        cancellation: &CancellationToken,
-    ) -> Result<McpToolOutput, String> {
-        WorkspaceServiceManager::new((self.environment)()).call_bsl_mcp_cancellable_with_budget(
-            &context.workspace,
-            &context.source_root.path,
-            WorkspaceServiceBslCall::new(tool, arguments, timeout, timeout).background(),
             cancellation,
         )
     }

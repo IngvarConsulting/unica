@@ -555,21 +555,6 @@ pub fn metadata_address_kind_matches(canonical: &str, raw: &str) -> bool {
         .is_some_and(|kind| kind.canonical == raw || kind.russian_aliases.contains(&raw))
 }
 
-/// The canonical kind whose collection `alias` names, in either language
-/// and any case, as code spells it: `Справочники` and `catalogs` name
-/// `Catalog`.
-pub fn metadata_collection_kind(alias: &str) -> Option<&'static str> {
-    let alias = alias.to_lowercase();
-    ADDRESS_KINDS
-        .iter()
-        .find(|kind| {
-            kind.collection_aliases
-                .iter()
-                .any(|known| known.to_lowercase() == alias)
-        })
-        .map(|kind| kind.canonical)
-}
-
 /// The collection names of a canonical kind: English first, then Russian.
 pub fn metadata_collection_names(canonical: &str) -> Option<&'static [&'static str]> {
     ADDRESS_KINDS
@@ -587,6 +572,21 @@ pub fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static s
                 .chain(kind.russian_aliases.iter().copied())
                 .collect()
         })
+}
+
+/// The kind a BSL manager collection names in code: `Справочники.Валюты` and
+/// `Catalogs.Валюты` both name a `Catalog`. BSL names are case-insensitive, so
+/// `справочники` matches too.
+pub fn metadata_collection_kind(raw: &str) -> Option<&'static str> {
+    let raw = raw.to_lowercase();
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| {
+            kind.collection_aliases
+                .iter()
+                .any(|alias| alias.to_lowercase() == raw)
+        })
+        .map(|kind| kind.canonical)
 }
 
 fn canonical_kind_or_collection(raw: &str) -> Result<&'static str, SourceTargetError> {

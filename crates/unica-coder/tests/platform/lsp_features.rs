@@ -117,7 +117,9 @@ fn semantic_tokens_are_relative_utf16_and_one_line_each() {
 #[test]
 fn signature_help_names_the_method_and_the_active_parameter() {
     let no_modules = |_: &str| None;
-    let help = signature_help(MODULE, after(MODULE, "Сложить(А, "), &no_modules, &[]).unwrap();
+    let help = signature_help(MODULE, after(MODULE, "Сложить(А, "), &no_modules, Some(&[]))
+        .unwrap()
+        .unwrap();
     assert_eq!(help["activeParameter"], 1);
     let signature = &help["signatures"][0];
     assert_eq!(signature["label"], "Сложить(Знач А, Б = 1) Экспорт");
@@ -135,15 +137,25 @@ fn signature_help_names_the_method_and_the_active_parameter() {
     // exported method has a signature.
     let common = "Процедура Метод(Первый, Второй) Экспорт\nКонецПроцедуры\nПроцедура Скрытый(А)\nКонецПроцедуры\n";
     let modules = |name: &str| (name == "ОбщМод").then(|| common.to_owned());
-    let help = signature_help(MODULE, after(MODULE, "Метод(А, "), &modules, &[]).unwrap();
+    let help = signature_help(MODULE, after(MODULE, "Метод(А, "), &modules, Some(&[]))
+        .unwrap()
+        .unwrap();
     assert_eq!(
         help["signatures"][0]["label"],
         "Метод(Первый, Второй) Экспорт"
     );
     assert_eq!(help["activeParameter"], 1);
     let hidden = MODULE.replace("ОбщМод.Метод", "ОбщМод.Скрытый");
-    assert!(signature_help(&hidden, after(&hidden, "Скрытый(А, "), &modules, &[]).is_none());
-    assert!(signature_help(MODULE, after(MODULE, "Метод(А, "), &no_modules, &[]).is_none());
+    assert!(
+        signature_help(&hidden, after(&hidden, "Скрытый(А, "), &modules, Some(&[]))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        signature_help(MODULE, after(MODULE, "Метод(А, "), &no_modules, Some(&[]))
+            .unwrap()
+            .is_none()
+    );
 }
 
 struct Space {
@@ -190,8 +202,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
     std::fs::write(&caller, "// на диске вызова нет\n").unwrap();
     let mut documents = LspDocuments::new("editor", vec![layout(&space.root)]);
     let overlay = DocumentOverlay::default();
-    let file_uri = |path: &Path| String::from(url::Url::from_file_path(path).unwrap());
-    let caller_uri = documents.uri_of_file(&file_uri(&caller)).unwrap();
+    let caller_uri = documents.body_uri_of_file(&caller);
     let typed = "Процедура П()\n\tНовыйМодуль.Посчитать(1, \nКонецПроцедуры\n";
     documents
         .open(&overlay, &caller_uri, 1, typed.to_owned())
@@ -201,7 +212,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
         .spaces()
         .format(&crate::application::lsp::uri::DocumentUri {
             space: "ут".to_owned(),
-            address: "main:CommonModule.НовыйМодуль".to_owned(),
+            address: "main:CommonModule.НовыйМодуль.Body".to_owned(),
         })
         .unwrap();
     documents
@@ -218,7 +229,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
         Some(overlay.session_documents("editor", "main").unwrap()),
     );
     let help = documents
-        .signature_help(&caller_uri, after(typed, "(1, "), &read, &[])
+        .signature_help(&caller_uri, after(typed, "(1, "), &read, Some(&[]))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -243,7 +254,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
         Some(overlay.session_documents("editor", "main").unwrap()),
     );
     let help = documents
-        .signature_help(&caller_uri, after(&lower, "(1, "), &read, &[])
+        .signature_help(&caller_uri, after(&lower, "(1, "), &read, Some(&[]))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -256,7 +267,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
     let disk = reader(&space.root.join("src"), None);
     assert_eq!(
         other
-            .signature_help(&caller_uri, after(typed, "(1, "), &disk, &[])
+            .signature_help(&caller_uri, after(typed, "(1, "), &disk, Some(&[]))
             .unwrap(),
         None
     );
@@ -316,7 +327,11 @@ fn features_on_a_large_common_module() {
         .unwrap();
     let position = LineIndex::new(text).position(text, call);
     measure("signatureHelp", &|| {
-        usize::from(signature_help(text, position, &|_| None, &[]).is_some())
+        usize::from(
+            signature_help(text, position, &|_| None, Some(&[]))
+                .unwrap()
+                .is_some(),
+        )
     });
 }
 
@@ -525,16 +540,14 @@ fn completion_reads_the_buffer_and_the_source_set_metadata() {
 
     let mut documents = LspDocuments::new("editor", vec![layout(&root)]);
     let overlay = DocumentOverlay::default();
-    let uri = documents
-        .uri_of_file(&String::from(url::Url::from_file_path(&module).unwrap()))
-        .unwrap();
+    let uri = documents.body_uri_of_file(&module);
     let typed = "Процедура П()\n\tДля Каждого С Из ЭтотОбъект.Lines Цикл\n\t\tС.\n\tКонецЦикла;\n\tЭтотОбъект.\n\tCatalogs.\n\tУтилиты.\nКонецПроцедуры\n";
     documents.open(&overlay, &uri, 1, typed.to_owned()).unwrap();
     let utilities = documents
         .spaces()
         .format(&crate::application::lsp::uri::DocumentUri {
             space: "ут".to_owned(),
-            address: "main:CommonModule.Утилиты".to_owned(),
+            address: "main:CommonModule.Утилиты.Body".to_owned(),
         })
         .unwrap();
     documents
@@ -628,9 +641,7 @@ fn completion_latency_on_a_large_configuration() {
     );
     let overlay = DocumentOverlay::default();
     let module = source.join("CommonModules/ОбщегоНазначения/Ext/Module.bsl");
-    let uri = documents
-        .uri_of_file(&String::from(url::Url::from_file_path(&module).unwrap()))
-        .unwrap();
+    let uri = documents.body_uri_of_file(&module);
     let text = std::fs::read_to_string(&module).unwrap();
     let text = text.trim_start_matches('\u{feff}').to_owned();
     // Type into the last method: a plain name, then a manager.
@@ -736,7 +747,9 @@ fn platform_methods_are_signed_from_the_global_context() {
     }];
     let text = "Процедура П()\n\tЕсли значениезаполнено( Тогда\n\tValueIsFilled(\nКонецПроцедуры\n";
     for needle in ["значениезаполнено(", "ValueIsFilled("] {
-        let help = signature_help(text, after(text, needle), &|_| None, &global).unwrap();
+        let help = signature_help(text, after(text, needle), &|_| None, Some(&global))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             help["signatures"][0]["label"],
             "ЗначениеЗаполнено(Значение)"
@@ -753,8 +766,35 @@ fn platform_methods_are_signed_from_the_global_context() {
         shadowed,
         after(shadowed, "\tЗначениеЗаполнено("),
         &|_| None,
-        &global,
+        Some(&global),
     )
+    .unwrap()
     .unwrap();
     assert_eq!(help["signatures"][0]["label"], "ЗначениеЗаполнено(А, Б)");
+
+    // Before the help is indexed a platform call has no answer yet, not
+    // "no signature"; a method of the module answers at once.
+    assert_eq!(
+        signature_help(text, after(text, "значениезаполнено("), &|_| None, None),
+        Err(SourceNotReady)
+    );
+    assert!(signature_help(
+        shadowed,
+        after(shadowed, "\tЗначениеЗаполнено("),
+        &|_| None,
+        None
+    )
+    .unwrap()
+    .is_some());
+    // An unknown call is not a platform method either way once indexed.
+    let unknown = "Процедура П()\n\tНеизвестная(\nКонецПроцедуры\n";
+    assert_eq!(
+        signature_help(
+            unknown,
+            after(unknown, "Неизвестная("),
+            &|_| None,
+            Some(&global)
+        ),
+        Ok(None)
+    );
 }

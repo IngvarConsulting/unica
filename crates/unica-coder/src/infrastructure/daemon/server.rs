@@ -14726,8 +14726,14 @@ struct ActorLogicalReadLease {"#,
             fn symbol(
                 &self,
                 query: &SymbolQuery,
-                _context: &SymbolRequestContext<'_>,
+                context: &SymbolRequestContext<'_>,
             ) -> Result<Option<ProviderSymbol>, ProviderFailure> {
+                // The analyzer answers a call without a deadline as not
+                // ready: the MCP entry gives the call graph's read timeout.
+                assert!(
+                    context.deadline.remaining().is_some(),
+                    "the provider gets a finite deadline"
+                );
                 self.0.lock().unwrap().push(query.clone());
                 let at = |line| SymbolRange {
                     start: SymbolPosition { line, column: 10 },

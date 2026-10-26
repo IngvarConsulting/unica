@@ -92,17 +92,25 @@ fn an_editor_folder_reaches_the_mcp_actor_and_its_buffer_stays_in_its_session() 
     let uri = {
         let session = host.session(&editor).unwrap();
         let session = read(&session);
-        session.documents.uri_of_file(&module).unwrap()
+        session
+            .documents
+            .body_uri_of_file(&workspace.path().join(MODULE))
     };
     assert!(uri.starts_with("unica://work/"), "{uri}");
+    assert!(uri.ends_with(".Body"), "{uri}");
     assert_eq!(content(&host, &editor, &uri), text(DISK));
-    // The editor may name the module by its file as well.
-    assert_eq!(content(&host, &editor, &module), text(DISK));
+    // A file path names no document: only `unica://` does.
+    assert_eq!(
+        content(&host, &editor, &module),
+        V5LspOutcome::Failed {
+            failure: V5LspFailure::DocumentUnknown
+        }
+    );
 
     host.notify(
         &editor,
         V5LspNotification::DidOpen {
-            uri: module.clone(),
+            uri: uri.clone(),
             language_id: "bsl".into(),
             version: 1,
             text: "Procedure Buffer() EndProcedure\n".into(),
@@ -199,10 +207,12 @@ fn a_folder_without_sources_or_off_disk_gets_a_failure_and_no_space() {
     );
 }
 
+/// The document URI of a module file: its body's `unica://` address.
 fn session_uri(host: &UnicaLspHost, session: &V5LspSessionId, file: &str) -> String {
+    let path = url::Url::parse(file).unwrap().to_file_path().unwrap();
     let session = host.session(session).unwrap();
     let session = read(&session);
-    session.documents.uri_of_file(file).unwrap()
+    session.documents.body_uri_of_file(&path)
 }
 
 fn open_buffer(host: &UnicaLspHost, session: &V5LspSessionId, uri: &str, text: &str) {
@@ -356,10 +366,10 @@ fn a_module_is_reached_by_every_spelling_of_its_unica_uri() {
 
     for uri in [
         given.as_str(),
-        "unica://ут%20проект/main/CommonModule.ОбщегоНазначения",
-        "unica://ут проект/main/CommonModule.ОбщегоНазначения",
-        "unica://УТ%20Проект/main/CommonModule.ОбщегоНазначения",
-        "unica://%D0%A3%D0%A2%20%D0%9F%D1%80%D0%BE%D0%B5%D0%BA%D1%82/main/CommonModule.ОбщегоНазначения",
+        "unica://ут%20проект/main/CommonModule.ОбщегоНазначения.Body",
+        "unica://ут проект/main/CommonModule.ОбщегоНазначения.Body",
+        "unica://УТ%20Проект/main/CommonModule.ОбщегоНазначения.Body",
+        "unica://%D0%A3%D0%A2%20%D0%9F%D1%80%D0%BE%D0%B5%D0%BA%D1%82/main/CommonModule.ОбщегоНазначения.Body",
     ] {
         assert_eq!(content(&host, &editor, uri), text("// УТ\n"), "{uri}");
     }

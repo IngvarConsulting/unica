@@ -315,7 +315,6 @@ mod tests {
                     tool_args: json!({"action": "search_code", "query": "Acceptance"}),
                     timeout_seconds: 10,
                     timeout_nanos: 0,
-                    background: false,
                 },
             );
             assert!(response.ok, "{response:?}");
@@ -1077,7 +1076,6 @@ mod tests {
                     tool_args: json!({"action": "search_code", "query": "Acceptance"}),
                     timeout_seconds: if cancel { 10 } else { 0 },
                     timeout_nanos: if cancel { 0 } else { 500_000_000 },
-                    background: false,
                 },
             );
             let closing = PathBuf::from(format!("{}.closing", cleanup_gate.display()));
@@ -3944,7 +3942,6 @@ mod tests {
                 tool_args: json!({}),
                 timeout_seconds: 30,
                 timeout_nanos: 0,
-                background: false,
             },
         );
         executor.wait_holder();
@@ -3956,7 +3953,6 @@ mod tests {
                 tool_args: json!({}),
                 timeout_seconds: 30,
                 timeout_nanos: 0,
-                background: false,
             },
         );
         let queued_deadline = Instant::now() + Duration::from_secs(2);
@@ -4347,71 +4343,6 @@ mod tests {
 
         assert_eq!(read_record(&identity).unwrap(), expected);
         cleanup(&context);
-    }
-
-    /// An editor's call never waits behind an agent's for the analyzer: while
-    /// an agent's call holds the lane it is answered busy at once.
-    #[test]
-    fn an_editor_call_gives_way_to_an_agent_call_holding_the_analyzer() {
-        let executor = Arc::new(AnalyzerLaneExecutor::default());
-        let (_context, record, runtime, server) = workspace_test_server_with_executor(
-            "analyzer-lane-editor",
-            executor.clone(),
-            Duration::from_secs(2),
-        );
-        let mut holder = open_test_request(
-            &record,
-            ServiceRequestKind::BslMcp {
-                operation_id: "analyzer-holder-agent".to_string(),
-                tool_name: "hold".to_string(),
-                tool_args: json!({}),
-                timeout_seconds: 30,
-                timeout_nanos: 0,
-                background: false,
-            },
-        );
-        executor.wait_holder();
-
-        let started = Instant::now();
-        let editor = runtime.test_handle_background_bsl_mcp("search", &CancellationToken::new());
-
-        assert_eq!(
-            editor.error.as_deref(),
-            Some(unica_analysis_services::ANALYZER_BUSY)
-        );
-        assert!(started.elapsed() < Duration::from_millis(500));
-        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
-        assert!(read_test_response(&mut holder)
-            .error
-            .unwrap()
-            .starts_with("cancelled:"));
-        server.join().unwrap().unwrap();
-    }
-
-    #[test]
-    fn a_background_permit_is_taken_only_from_an_idle_lane() {
-        let lane = Arc::new(AnalyzerLane::default());
-        drop(lane.try_acquire_idle().expect("an idle lane"));
-        let holder = lane.acquire(&CancellationToken::new()).unwrap();
-        assert!(lane.try_acquire_idle().is_none(), "a held lane");
-        let (queued_tx, queued_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel::<()>();
-        let waiter = {
-            let lane = lane.clone();
-            thread::spawn(move || {
-                let _permit = lane
-                    .acquire_with_hook(&CancellationToken::new(), || queued_tx.send(()).unwrap())
-                    .unwrap();
-                release_rx.recv().unwrap();
-            })
-        };
-        queued_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        drop(holder);
-        // The queued agent call goes first; the editor's call does not cut in.
-        assert!(lane.try_acquire_idle().is_none(), "a queued lane");
-        release_tx.send(()).unwrap();
-        waiter.join().unwrap();
-        assert!(lane.try_acquire_idle().is_some());
     }
 
     #[test]
@@ -5816,7 +5747,6 @@ fn main() {
                 tool_args: json!({}),
                 timeout_seconds: 120,
                 timeout_nanos: 0,
-                background: false,
             }),
             &cancellation,
             SERVICE_REQUEST_TIMEOUT,
@@ -6046,7 +5976,6 @@ fn main() {
                         tool_args: json!({}),
                         timeout_seconds: 120,
                         timeout_nanos: 0,
-                        background: false,
                     }),
                     &cancellation,
                     SERVICE_REQUEST_TIMEOUT,
@@ -6112,7 +6041,6 @@ fn main() {
                 tool_args: json!({}),
                 timeout_seconds: 120,
                 timeout_nanos: 0,
-                background: false,
             },
             ServiceRequestKind::RlmReady {
                 operation_id: "ready".into(),
@@ -6200,7 +6128,6 @@ fn main() {
             tool_args: json!({"query": "needle"}),
             timeout_seconds: 5,
             timeout_nanos: 0,
-            background: false,
         };
         let rlm = ServiceRequestKind::RlmReady {
             operation_id: Uuid::new_v4().to_string(),
@@ -6330,7 +6257,6 @@ fn main() {
                         tool_args: json!({}),
                         timeout_seconds: 120,
                         timeout_nanos: 0,
-                        background: false,
                     },
                 },
                 &caller_token,
@@ -8585,7 +8511,6 @@ fn main() {
                     operation_id,
                     timeout_seconds,
                     timeout_nanos,
-                    background: false,
                     ..
                 } => {
                     self.operation_ids.borrow_mut().push(operation_id);

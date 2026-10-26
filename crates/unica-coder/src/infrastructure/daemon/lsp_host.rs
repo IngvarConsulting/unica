@@ -10,7 +10,7 @@
 //! тем, которого реестр выдаёт и MCP, и переносит в него свои буферы.
 
 use super::server::closed_daemon_source_relative_path;
-use super::v13_service::{CanonicalV13ReadService, SymbolCaller, SymbolOperation, SymbolRequest};
+use super::v13_service::{CanonicalV13ReadService, SymbolOperation, SymbolRequest};
 use crate::application::lsp::document::ContentChange;
 use crate::application::lsp::position::Utf16Position;
 use crate::application::lsp::uri::WorkspaceFolder;
@@ -45,8 +45,8 @@ use unica_workspace::documents::{DocumentOverlay, DocumentOverlayError, Document
 const ACTOR_SCOPE: &str = "canonical-v0.13";
 
 /// What the symbol provider may spend on one editor request. The analyzer
-/// answers in about a second cold; a provider call is not cut shorter by the
-/// editor's budget, since that would retire the session MCP shares (#2189).
+/// answers in about a second cold. The call is not cut shorter by the
+/// editor's budget; it gives way to MCP calls on its own.
 const LSP_PROVIDER_BUDGET: Duration = Duration::from_secs(30);
 
 pub(crate) struct UnicaLspHost {
@@ -573,11 +573,12 @@ fn answer(
                 line: position.line,
                 character: position.character,
             };
-            // A platform function has a signature once its context loaded.
-            let members = space.platform_members(platform).unwrap_or_default();
+            // While the help is being indexed a platform call answers
+            // `lsp_unavailable`, not "no signature", and the editor asks again.
+            let members = space.platform_members(platform);
             let help = session
                 .documents
-                .signature_help(&uri, position, &read, &members)
+                .signature_help(&uri, position, &read, members.as_deref())
                 .map_err(document_failure)?;
             Ok(json(help.unwrap_or(serde_json::Value::Null)))
         }
@@ -751,10 +752,9 @@ fn ask_symbols(
     operation: SymbolOperation,
 ) -> Result<SymbolData, V5LspFailure> {
     let call = prepare_symbol_call(&read(session), uri)?;
-    // The provider runs to its own deadline, never the editor's budget:
-    // cancelling it would retire the analyzer session MCP shares (#2189).
-    // The lane gives the editor its answer or a server cancellation by the
-    // editor's budget while the provider call ends on its own.
+    // Срок вызова, как у MCP; вызов уступает MCP. The lane gives the editor
+    // its answer or a server cancellation by the editor's budget while the
+    // provider call ends on its own.
     let cancellation = unica_work_control::cancellation::CancellationToken::new();
     let deadline =
         unica_work_control::provider_deadline::ProviderDeadline::from_budget(LSP_PROVIDER_BUDGET);
@@ -770,7 +770,6 @@ fn ask_symbols(
         &authority,
         &call.context,
         deadline,
-        SymbolCaller::Editor,
         SymbolRequest {
             module: call.module,
             buffer: call.buffer.as_deref(),
@@ -1056,7 +1055,9 @@ fn document_text(
 
 fn document_failure(error: LspDocumentError) -> V5LspFailure {
     match error {
-        LspDocumentError::Read(_) | LspDocumentError::Overlay(_) => V5LspFailure::Unavailable,
+        LspDocumentError::Read(_)
+        | LspDocumentError::Overlay(_)
+        | LspDocumentError::SourceNotReady => V5LspFailure::Unavailable,
         _ => V5LspFailure::DocumentUnknown,
     }
 }
@@ -1149,13 +1150,9 @@ fn admit_actor(
     ))
 }
 
-/// The `unica://` URI of a document the editor may name by its file.
+/// The `unica://` URI of a document: a file path never names one.
 fn document_uri(documents: &LspDocuments, uri: &str) -> Result<String, LspDocumentError> {
-    if uri.starts_with("file:") {
-        documents.uri_of_file(uri)
-    } else {
-        Ok(uri.to_owned())
-    }
+    documents.locate(uri).map(|_| uri.to_owned())
 }
 
 fn folder_path(uri: &str) -> Option<PathBuf> {

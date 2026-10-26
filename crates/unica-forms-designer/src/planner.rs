@@ -263,22 +263,10 @@ pub fn form_purpose(
     })
 }
 pub fn default_form_property(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "defaultObjectForm" => "DefaultObjectForm",
-        "defaultListForm" => "DefaultListForm",
-        "defaultChoiceForm" => "DefaultChoiceForm",
-        "defaultFolderForm" => "DefaultFolderForm",
-        "defaultFolderChoiceForm" => "DefaultFolderChoiceForm",
-        "defaultRecordForm" => "DefaultRecordForm",
-        "defaultForm" => "DefaultForm",
-        "defaultSettingsForm" => "DefaultSettingsForm",
-        "defaultVariantForm" => "DefaultVariantForm",
-        "defaultSaveForm" => "DefaultSaveForm",
-        "auxiliaryObjectForm" => "AuxiliaryObjectForm",
-        "auxiliaryListForm" => "AuxiliaryListForm",
-        "auxiliaryChoiceForm" => "AuxiliaryChoiceForm",
-        _ => return None,
-    })
+    unica_forms::contracts::FORM_SLOTS
+        .iter()
+        .find(|(slot, _)| *slot == key)
+        .map(|(_, tag)| *tag)
 }
 /// Тип реквизита формы с квалификаторами, которые пишет выгрузка 8.3.27.
 /// Имена контракта `String`, `Number`, `Date`, `Boolean` (и русские) раньше
@@ -740,30 +728,48 @@ pub fn parse_form_operation(
                 .and_then(Value::as_object)
                 .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
             let mut defaults = Vec::new();
+            let owner_kind = target.owner.segments().next();
+            let kind_slots = owner_kind.and_then(unica_forms::contracts::form_slots_of);
             for (key, value) in values {
-                let property = default_form_property(key).ok_or_else(|| {
-                    bad(
-                        op_index,
-                        &format!("values.{key}"),
-                        format!("unknown form slot `{key}`; use defaultObjectForm, defaultListForm, defaultChoiceForm, defaultRecordForm, defaultForm, defaultSettingsForm, ..."),
-                    )
-                })?;
-                let form_name = value
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
+                let property = default_form_property(key)
+                    .filter(|_| kind_slots.is_none_or(|slots| slots.contains(&key.as_str())))
                     .ok_or_else(|| {
+                        let slots = kind_slots.map_or_else(
+                            || {
+                                unica_forms::contracts::FORM_SLOTS
+                                    .iter()
+                                    .map(|(slot, _)| *slot)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            },
+                            |slots| slots.join(", "),
+                        );
                         bad(
                             op_index,
                             &format!("values.{key}"),
-                            "the form slot takes a form name",
+                            format!("unknown form slot `{key}` for this owner; use {slots}"),
                         )
                     })?;
-                let form_name = form_name
-                    .rsplit(".Form.")
-                    .next()
-                    .unwrap_or(form_name)
-                    .to_string();
+                // An empty name clears the slot, as an export of an owner
+                // without such a form writes `<Slot/>` (#2144).
+                let slot_value = || {
+                    bad(
+                        op_index,
+                        &format!("values.{key}"),
+                        "the form slot takes a form name, or an empty string to clear it",
+                    )
+                };
+                let raw = value.as_str().ok_or_else(slot_value)?;
+                let form_name = if raw.is_empty() {
+                    String::new()
+                } else {
+                    let trimmed = raw.trim();
+                    let name = trimmed.rsplit(".Form.").next().unwrap_or(trimmed);
+                    if name.is_empty() {
+                        return Err(slot_value());
+                    }
+                    name.to_string()
+                };
                 defaults.push((property.to_string(), form_name));
             }
             if defaults.is_empty() {
@@ -934,27 +940,32 @@ pub fn parse_form_operation(
 /// Clears every default-form slot of the owner that points at `form`.
 pub fn clear_default_form_slots(owner_text: &str, reference: &str) -> String {
     let mut text = owner_text.to_string();
-    for property in [
-        "DefaultObjectForm",
-        "DefaultListForm",
-        "DefaultChoiceForm",
-        "DefaultFolderForm",
-        "DefaultFolderChoiceForm",
-        "DefaultRecordForm",
-        "DefaultForm",
-        "DefaultSettingsForm",
-        "DefaultVariantForm",
-        "DefaultSaveForm",
-        "AuxiliaryObjectForm",
-        "AuxiliaryListForm",
-        "AuxiliaryChoiceForm",
-    ] {
+    for (_, property) in unica_forms::contracts::FORM_SLOTS {
         let filled = format!("<{property}>{reference}</{property}>");
         if text.contains(&filled) {
             text = text.replace(&filled, &format!("<{property}/>"));
         }
     }
     text
+}
+
+/// The owner text with the slot `property` written empty, `<Property/>`, as
+/// the export writes an owner without such a form.
+fn clear_form_default_property(owner_text: &str, property: &str) -> String {
+    let start_tag = format!("<{property}>");
+    let end_tag = format!("</{property}>");
+    let Some(start) = owner_text.find(&start_tag) else {
+        return owner_text.to_string();
+    };
+    let Some(relative_end) = owner_text[start..].find(&end_tag) else {
+        return owner_text.to_string();
+    };
+    let end = start + relative_end + end_tag.len();
+    format!(
+        "{}<{property}/>{}",
+        &owner_text[..start],
+        &owner_text[end..]
+    )
 }
 pub fn form_owner_child<'a, 'input>(
     parent: roxmltree::Node<'a, 'input>,
@@ -1326,6 +1337,19 @@ pub fn stage_form_set(
     let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
     let mut owner_text = owner_source.clone();
     for (property, form_name) in defaults {
+        if form_name.is_empty() {
+            if !owner_text.contains(&format!("<{property}>"))
+                && !owner_text.contains(&format!("<{property}/>"))
+            {
+                return Err(bad(
+                    op_index,
+                    "values",
+                    format!("`{}` has no `{property}` slot", owner.as_str()),
+                ));
+            }
+            owner_text = clear_form_default_property(&owner_text, property);
+            continue;
+        }
         if !owner_text.contains(&format!("<Form>{form_name}</Form>")) {
             return Err(ApplyPlanError::new(
                 ApplyPlanErrorKind::NotFound,
@@ -1657,6 +1681,61 @@ pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> Str
 #[cfg(test)]
 #[path = "../tests/platform/dump_parity.rs"]
 mod dump_parity_tests;
+
+/// #2144: the form slots of each owner kind are those an 8.3.27 export
+/// writes in its properties.
+#[cfg(test)]
+mod form_slot_kind_tests {
+    #[test]
+    fn form_slots_of_each_kind_match_an_8_3_27_export() {
+        // The exports are compiled in: this component reads no files itself.
+        macro_rules! export {
+            ($path:literal) => {
+                (
+                    $path,
+                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../", $path)),
+                )
+            };
+        }
+        for (kind, (fixture, text)) in [
+            ("Catalog", export!("crates/unica-forms-designer/tests/platform/dump_parity/Catalog.before.xml")),
+            ("Document", export!("crates/unica-metadata-designer/tests/platform/dump_parity/Document.before.xml")),
+            ("ChartOfAccounts", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfAccounts.before.xml")),
+            ("ChartOfCalculationTypes", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfCalculationTypes.before.xml")),
+            ("ChartOfCharacteristicTypes", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfCharacteristicTypes.before.xml")),
+            ("Constant", export!("tests/fixtures/platform_8_3_27/meta_info_surface/constant/Constants/MainCurrency.xml")),
+            ("Enum", export!("tests/fixtures/platform_8_3_27/meta_info_surface/enum/Enums/PresentationEnum.xml")),
+            ("InformationRegister", export!("tests/fixtures/platform_8_3_27/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
+            ("Report", export!("tests/fixtures/platform_8_3_27/template-new-xml/seed/Reports/CorpusReport.xml")),
+            ("ExternalDataProcessor", export!("tests/fixtures/platform_8_3_27/external_artifacts/epf/SyntheticProcessor.xml")),
+            ("ExternalReport", export!("tests/fixtures/platform_8_3_27/external_artifacts/erf/SyntheticReport.xml")),
+        ] {
+            let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+            let owner = document.root_element().first_element_child().unwrap();
+            assert_eq!(owner.tag_name().name(), kind, "{fixture}");
+            let properties = owner
+                .children()
+                .find(|node| node.has_tag_name((super::FORM_OWNER_MD_NS, "Properties")))
+                .unwrap();
+            let exported = properties
+                .children()
+                .filter(|node| node.is_element())
+                .map(|node| node.tag_name().name())
+                .filter(|name| {
+                    unica_forms::contracts::FORM_SLOTS
+                        .iter()
+                        .any(|(_, tag)| tag == name)
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            let declared = unica_forms::contracts::form_slots_of(kind)
+                .unwrap()
+                .iter()
+                .map(|key| super::default_form_property(key).unwrap())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(declared, exported, "{kind}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod attribute_type_tests {

@@ -19,8 +19,6 @@ const CALL_NEIGHBOURS: usize = 500;
 pub struct BslAnalyzerSymbols<'a> {
     client: &'a (dyn BslToolClient + Send + Sync),
     context: CodeIntelligenceContext,
-    /// An editor's provider: its calls give way to an agent's.
-    background: bool,
 }
 
 impl<'a> BslAnalyzerSymbols<'a> {
@@ -28,18 +26,7 @@ impl<'a> BslAnalyzerSymbols<'a> {
         client: &'a (dyn BslToolClient + Send + Sync),
         context: CodeIntelligenceContext,
     ) -> Self {
-        Self {
-            client,
-            context,
-            background: false,
-        }
-    }
-
-    /// The provider for an editor: a call that would wait behind an agent's
-    /// call for the analyzer is answered "not ready" instead.
-    pub fn background(mut self) -> Self {
-        self.background = true;
-        self
+        Self { client, context }
     }
 
     /// One tool call. Running out of the request's time is "not ready". The
@@ -59,33 +46,22 @@ impl<'a> BslAnalyzerSymbols<'a> {
             .deadline
             .finite_remaining()
             .map_err(|_| ProviderFailure::NotReady)?;
-        let call = if self.background {
-            self.client.call_background(
+        let output = self
+            .client
+            .call(
                 tool,
                 &self.context,
                 arguments,
                 timeout,
                 context.cancellation,
             )
-        } else {
-            self.client.call(
-                tool,
-                &self.context,
-                arguments,
-                timeout,
-                context.cancellation,
-            )
-        };
-        let output = call.map_err(|error| {
-            if error == unica_analysis_services::ANALYZER_BUSY
-                || context.deadline.is_elapsed()
-                || context.cancellation.is_cancelled()
-            {
-                ProviderFailure::NotReady
-            } else {
-                ProviderFailure::Unavailable
-            }
-        })?;
+            .map_err(|_| {
+                if context.deadline.is_elapsed() || context.cancellation.is_cancelled() {
+                    ProviderFailure::NotReady
+                } else {
+                    ProviderFailure::Unavailable
+                }
+            })?;
         let answer: Value = serde_json::from_str(output.result_text.trim())
             .map_err(|_| ProviderFailure::Unavailable)?;
         if answer.get("status").and_then(Value::as_str) == Some("loading") {

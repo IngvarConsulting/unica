@@ -1,0 +1,85 @@
+{
+  "id": "S-2156-collection-child-objects-order",
+  "issue": 2156,
+  "area": "Навигация",
+  "task": "Прочитать справочники корня постранично: элементы и продолжение по курсору идут в порядке ChildObjects из Configuration.xml, как в Конфигураторе, а не по кодам символов",
+  "workspace": "tests/fixtures/acceptance/workspace-event-source-order",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.ПримерВ"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "c1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog",
+        "cursor": "$capture.c1",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.ПримерА"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "c2": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog",
+        "cursor": "$capture.c2",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.ПримерБ"
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ]
+    }
+  ]
+}

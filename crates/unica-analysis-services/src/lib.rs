@@ -7,7 +7,6 @@ pub use service::{
     checked_persistent_provider_working_directory, persistent_provider_working_directory,
     run_workspace_service_from_args, WorkspaceServiceBslCall, WorkspaceServiceConfig,
     WorkspaceServiceIdentity, WorkspaceServiceManager, WorkspaceServiceRecord, WorkspaceServices,
-    ANALYZER_BUSY,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
