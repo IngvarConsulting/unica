@@ -58,11 +58,15 @@ impl<'a> LineIndex<'a> {
 
 /// A dotted name in code: `Справочники.Валюты.ПустаяСсылка` with the segment
 /// under the position. `is_call` tells whether the whole path is called.
+/// A name inside a path that is not plain names alone (`Запрос.Выполнить().
+/// Выбрать`, `Массив[0].Поле`) is reported as its own segment with `plain`
+/// unset: the module's text cannot tell what it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamePath {
     pub segments: Vec<(String, Range<usize>)>,
     pub cursor: usize,
     pub is_call: bool,
+    pub plain: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +94,7 @@ pub struct LocalMethod {
     pub name: String,
     pub name_range: Range<usize>,
     pub range: Range<usize>,
+    pub is_export: bool,
 }
 
 /// A call written in a method: the called path and the range of the last name.
@@ -99,8 +104,21 @@ pub struct LocalCall {
     pub range: Range<usize>,
 }
 
-fn same_name(left: &str, right: &str) -> bool {
-    left.to_lowercase() == right.to_lowercase()
+/// BSL names are case-insensitive.
+pub fn same_name(left: &str, right: &str) -> bool {
+    left.chars()
+        .flat_map(char::to_lowercase)
+        .eq(right.chars().flat_map(char::to_lowercase))
+}
+
+/// A token that names something: an identifier, or a keyword spelled as a
+/// member after a dot (`Запрос.Выполнить`).
+fn is_name(token: &SyntaxToken) -> bool {
+    token.kind() == SyntaxKind::IDENT
+        || (token.kind().is_keyword()
+            && token
+                .parent()
+                .is_some_and(|parent| parent.kind() == SyntaxKind::FIELD_EXPR))
 }
 
 fn is_method(node: &SyntaxNode) -> bool {
@@ -146,7 +164,7 @@ fn flatten(node: &SyntaxNode) -> Option<Vec<SyntaxToken>> {
             segments.push(
                 node.children_with_tokens()
                     .filter_map(|element| element.into_token())
-                    .filter(|token| token.kind() == SyntaxKind::IDENT)
+                    .filter(is_name)
                     .last()?,
             );
             Some(segments)
@@ -185,7 +203,7 @@ impl ParsedModule<'_> {
         if offset > root.text_range().end() {
             return None;
         }
-        let pick = |token: &SyntaxToken| token.kind() == SyntaxKind::IDENT;
+        let pick = is_name;
         match root.token_at_offset(offset) {
             TokenAtOffset::None => None,
             TokenAtOffset::Single(token) => pick(&token).then_some(token),
@@ -215,10 +233,25 @@ impl ParsedModule<'_> {
                 segments: vec![(token.text().to_string(), byte_range(token.text_range()))],
                 cursor: 0,
                 is_call: false,
+                plain: true,
             });
         }
-        let root = path_root(&token)?;
-        let segments = flatten(&root)?;
+        let lone = |is_call| NamePath {
+            segments: vec![(token.text().to_string(), byte_range(token.text_range()))],
+            cursor: 0,
+            is_call,
+            plain: false,
+        };
+        let Some(root) = path_root(&token) else {
+            return Some(lone(false));
+        };
+        let Some(segments) = flatten(&root) else {
+            let is_call = token
+                .parent()
+                .and_then(|parent| parent.parent())
+                .is_some_and(|grand| grand.kind() == SyntaxKind::CALL_EXPR);
+            return Some(lone(is_call));
+        };
         let cursor = segments.iter().position(|segment| *segment == token)?;
         let is_call = root.parent().is_some_and(|parent| {
             parent.kind() == SyntaxKind::CALL_EXPR && parent.first_child().as_ref() == Some(&root)
@@ -230,6 +263,7 @@ impl ParsedModule<'_> {
                 .collect(),
             cursor,
             is_call,
+            plain: true,
         })
     }
 
@@ -242,6 +276,9 @@ impl ParsedModule<'_> {
                     name: name.text().to_string(),
                     name_range: byte_range(name.text_range()),
                     range: byte_range(node.text_range()),
+                    is_export: node
+                        .children_with_tokens()
+                        .any(|element| element.kind() == SyntaxKind::KW_EXPORT),
                 })
             })
             .collect()
@@ -313,6 +350,20 @@ impl ParsedModule<'_> {
             return None;
         }
         let method = method?;
+        // A loop variable is declared by its `Для` or `Для Каждого`.
+        if let Some(token) = method
+            .descendants()
+            .filter(|node| {
+                matches!(
+                    node.kind(),
+                    SyntaxKind::FOR_STMT | SyntaxKind::FOR_EACH_STMT
+                )
+            })
+            .filter_map(|node| declared_name(&node))
+            .find(|token| same_name(token.text(), name))
+        {
+            return Some(symbol(token, LocalSymbolKind::Variable, Some(&method)));
+        }
         let assigned = method
             .descendants()
             .filter(|node| node.kind() == SyntaxKind::ASSIGN_STMT)
@@ -370,7 +421,7 @@ impl ParsedModule<'_> {
                 let Some(path) = self.name_path_at(range.start) else {
                     return false;
                 };
-                if path.cursor != 0 {
+                if path.cursor != 0 || !path.plain {
                     return false;
                 }
                 let called = path.is_call && path.segments.len() == 1;
@@ -494,6 +545,23 @@ mod tests {
                 "ОбщийМодуль.Сделать"
             ]
         );
+    }
+
+    #[test]
+    fn a_name_inside_a_call_chain_is_not_plain_and_loop_variables_are_declared() {
+        let text = "Процедура А(Таблица)\n\tДля Каждого Строка Из Таблица Цикл\n\t\tСтрока.Поле = 1;\n\tКонецЦикла;\n\tЗапрос.Выполнить().Выбрать();\nКонецПроцедуры\n";
+        let module = parse(text);
+        let chained = module.name_path_at(at(text, "Выбрать")).unwrap();
+        assert!(!chained.plain);
+        assert!(chained.is_call);
+        let member = module.name_path_at(at(text, "Выполнить")).unwrap();
+        assert!(member.plain, "a keyword member of a plain path is a name");
+        let variable = module
+            .local_definition("Строка", at(text, "Строка.Поле"), false)
+            .unwrap();
+        assert_eq!(variable.kind, LocalSymbolKind::Variable);
+        assert_eq!(variable.range.start, at(text, "Строка Из"));
+        assert!(module.local_methods()[0].is_export == false);
     }
 
     /// A real module keeps its methods and variables inside regions.

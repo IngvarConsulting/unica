@@ -4430,25 +4430,28 @@ impl CanonicalV13ReadService {
                 return error_result_detailed(Some(at), RefusalDetail::SourceUnreadable, error)
             }
         };
-        let (path, saved) = match Self::resolve_with_authority(&authority, &request.module, None)
-            .and_then(|resolved| {
-                authority
-                    .module_text(&request.module)
-                    .map(|text| (resolved.path().to_string(), text))
-            }) {
-            Ok(module) => module,
-            Err(error) => return view_error_result(Some(at), error),
-        };
+        // The module's canonical address and path, so the places the
+        // provider names in this module compare equal to the document.
+        let (at, path, saved) =
+            match Self::resolve_with_authority(&authority, &request.module, None).and_then(
+                |resolved| {
+                    authority
+                        .module_text(&request.module)
+                        .map(|text| (resolved.at().to_string(), resolved.path().to_string(), text))
+                },
+            ) {
+                Ok(module) => module,
+                Err(error) => return view_error_result(Some(at), error),
+            };
         let environment = crate::infrastructure::symbol_environment::ReaderSymbolEnvironment {
             authority: &authority,
             source_set: &source_set,
         };
-        let text = request.buffer.unwrap_or(&saved);
         let document = SymbolDocument {
             at: &at,
             path: &path,
-            text,
-            saved: text == saved,
+            text: request.buffer.unwrap_or(&saved),
+            saved: &saved,
         };
         let provider = self.symbol_provider(invocation, &source_set);
         let service = SymbolService::new(provider.as_deref(), &environment);
@@ -4523,7 +4526,10 @@ impl unica_code_intelligence::symbols::SymbolProvider for SharedSymbolProvider {
         &self,
         query: &unica_code_intelligence::symbols::SymbolQuery,
         context: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
-    ) -> Result<Option<unica_code_intelligence::symbols::ProviderSymbol>, String> {
+    ) -> Result<
+        Option<unica_code_intelligence::symbols::ProviderSymbol>,
+        unica_code_intelligence::symbols::ProviderFailure,
+    > {
         self.0.symbol(query, context)
     }
 
@@ -4531,7 +4537,10 @@ impl unica_code_intelligence::symbols::SymbolProvider for SharedSymbolProvider {
         &self,
         query: &unica_code_intelligence::symbols::SymbolQuery,
         context: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
-    ) -> Result<unica_code_intelligence::symbols::ProviderPlaces, String> {
+    ) -> Result<
+        unica_code_intelligence::symbols::ProviderPlaces,
+        unica_code_intelligence::symbols::ProviderFailure,
+    > {
         self.0.references(query, context)
     }
 
@@ -4540,7 +4549,10 @@ impl unica_code_intelligence::symbols::SymbolProvider for SharedSymbolProvider {
         query: &unica_code_intelligence::symbols::SymbolQuery,
         direction: unica_code_intelligence::symbols::CallDirection,
         context: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
-    ) -> Result<unica_code_intelligence::symbols::ProviderPlaces, String> {
+    ) -> Result<
+        unica_code_intelligence::symbols::ProviderPlaces,
+        unica_code_intelligence::symbols::ProviderFailure,
+    > {
         self.0.calls(query, direction, context)
     }
 }

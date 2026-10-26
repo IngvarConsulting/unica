@@ -9,9 +9,21 @@
 //! revision, not the buffer.
 
 use serde::Serialize;
-use unica_bsl_parser::symbols::{LineIndex, LocalSymbol, LocalSymbolKind, NamePath};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::Duration;
+use unica_bsl_parser::symbols::{
+    same_name, LineIndex, LocalMethod, LocalSymbol, LocalSymbolKind, NamePath,
+};
+use unica_bsl_parser::ParsedModule;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
+
+/// The longest a references request waits for the provider. Its first walk
+/// over a large configuration reads every candidate file and can take a
+/// minute on a cold disk; an editor request must not hold the provider for
+/// that, so it answers from the module's text and says the rest is not ready.
+pub const PROVIDER_REFERENCES_BUDGET: Duration = Duration::from_secs(2);
 
 /// A position in a module: 0-based line and 0-based UTF-16 column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -61,16 +73,22 @@ pub struct SymbolInfo {
     pub location: Option<SymbolLocation>,
 }
 
-/// Why an answer may miss something.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind", content = "detail")]
+/// Why an answer may miss something. Unica's own codes: a provider's words
+/// never reach the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "count")]
 pub enum Incompleteness {
     /// The buffer differs from the saved module; the part answered beyond the
     /// module's own text describes the saved revision.
     Stale,
-    /// Nobody could answer beyond the module's own text.
-    ProviderUnavailable(String),
-    /// A place the provider named has no logical address in this source set.
+    /// The provider is still preparing this answer; asking again later can
+    /// give the full one.
+    ProviderNotReady,
+    /// No provider could answer beyond the module's own text.
+    ProviderUnavailable,
+    /// The provider answered with part of what it found.
+    Capped,
+    /// So many places the provider named have no logical address here.
     Unaddressable(usize),
 }
 
@@ -92,7 +110,8 @@ impl<T> SymbolAnswer<T> {
         }
     }
 
-    fn partial(value: T, reasons: Vec<Incompleteness>) -> Self {
+    fn partial(value: T, mut reasons: Vec<Incompleteness>) -> Self {
+        reasons.dedup();
         Self {
             complete: reasons.is_empty(),
             value,
@@ -112,6 +131,9 @@ pub enum SymbolQuery {
     },
     Named {
         name: String,
+        /// The module the name is written in: a bare name is looked up there
+        /// first, so another module's method of the same name is not taken.
+        path: String,
     },
 }
 
@@ -147,6 +169,23 @@ pub struct ProviderPlaces {
     pub complete: bool,
 }
 
+/// Why a provider gave no answer, in Unica's terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderFailure {
+    /// Still indexing, or out of the time this request allowed.
+    NotReady,
+    Unavailable,
+}
+
+impl ProviderFailure {
+    const fn reason(self) -> Incompleteness {
+        match self {
+            Self::NotReady => Incompleteness::ProviderNotReady,
+            Self::Unavailable => Incompleteness::ProviderUnavailable,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallDirection {
     Incoming,
@@ -165,13 +204,13 @@ pub trait SymbolProvider: Send + Sync {
         &self,
         query: &SymbolQuery,
         context: &SymbolRequestContext<'_>,
-    ) -> Result<Option<ProviderSymbol>, String>;
+    ) -> Result<Option<ProviderSymbol>, ProviderFailure>;
 
     fn references(
         &self,
         query: &SymbolQuery,
         context: &SymbolRequestContext<'_>,
-    ) -> Result<ProviderPlaces, String>;
+    ) -> Result<ProviderPlaces, ProviderFailure>;
 
     /// The methods that call (`Incoming`) or are called by (`Outgoing`) the
     /// method the query names, each as the place of the other method's name.
@@ -180,7 +219,7 @@ pub trait SymbolProvider: Send + Sync {
         query: &SymbolQuery,
         direction: CallDirection,
         context: &SymbolRequestContext<'_>,
-    ) -> Result<ProviderPlaces, String>;
+    ) -> Result<ProviderPlaces, ProviderFailure>;
 }
 
 /// What the service needs from the source set: module addresses and texts,
@@ -204,22 +243,66 @@ pub struct SymbolDocument<'a> {
     pub path: &'a str,
     /// The text being edited.
     pub text: &'a str,
-    /// Whether `text` is the saved module.
-    pub saved: bool,
+    /// The saved text of the module.
+    pub saved: &'a str,
 }
 
-pub struct SymbolService<'a> {
-    provider: Option<&'a dyn SymbolProvider>,
-    environment: &'a dyn SymbolEnvironment,
+impl SymbolDocument<'_> {
+    fn is_saved(&self) -> bool {
+        self.text.trim_start_matches('\u{feff}') == self.saved.trim_start_matches('\u{feff}')
+    }
 }
 
 /// What a position names, as far as the module's own text tells.
 enum Resolved {
     Local(LocalSymbol),
     Metadata(SymbolLocation, String),
-    /// A method of a common module: its location and name.
+    /// An exported method of a common module: its location and name.
     CommonMethod(SymbolLocation, String),
     Unknown(NamePath),
+}
+
+/// A common module named in code, parsed once per request.
+struct CommonModule {
+    text: String,
+    methods: Vec<LocalMethod>,
+}
+
+pub struct SymbolService<'a> {
+    provider: Option<&'a dyn SymbolProvider>,
+    environment: &'a dyn SymbolEnvironment,
+    references_budget: Duration,
+    common_modules: RefCell<HashMap<String, Option<CommonModule>>>,
+}
+
+/// One request's parsed module and its line index.
+struct Request<'d, 't> {
+    document: &'d SymbolDocument<'t>,
+    module: ParsedModule<'t>,
+    index: LineIndex<'t>,
+    offset: usize,
+    position: SymbolPosition,
+}
+
+impl<'d, 't> Request<'d, 't> {
+    fn new(document: &'d SymbolDocument<'t>, position: SymbolPosition) -> Self {
+        let index = LineIndex::new(document.text);
+        let offset = index.offset(position.line, position.column);
+        Self {
+            document,
+            module: unica_bsl_parser::parse(document.text),
+            index,
+            offset,
+            position,
+        }
+    }
+
+    fn location(&self, bytes: std::ops::Range<usize>) -> SymbolLocation {
+        SymbolLocation {
+            at: self.document.at.to_string(),
+            range: Some(range(&self.index, bytes)),
+        }
+    }
 }
 
 impl<'a> SymbolService<'a> {
@@ -230,98 +313,135 @@ impl<'a> SymbolService<'a> {
         Self {
             provider,
             environment,
+            references_budget: PROVIDER_REFERENCES_BUDGET,
+            common_modules: RefCell::new(HashMap::new()),
         }
     }
 
-    fn resolve(
-        &self,
-        module: &unica_bsl_parser::ParsedModule<'_>,
-        offset: usize,
-    ) -> Option<Resolved> {
-        let path = module.name_path_at(offset)?;
+    /// A shorter wait for provider references, for tests.
+    pub fn with_references_budget(mut self, budget: Duration) -> Self {
+        self.references_budget = budget;
+        self
+    }
+
+    fn resolve(&self, request: &Request<'_, '_>) -> Option<Resolved> {
+        let path = request.module.name_path_at(request.offset)?;
+        if !path.plain {
+            return Some(Resolved::Unknown(path));
+        }
         let (head, _) = &path.segments[0];
-        if path.cursor == 0 || path.segments.len() == 1 {
+        if path.cursor == 0 {
             let is_call = path.is_call && path.segments.len() == 1;
-            if let Some(local) = module.local_definition(head, offset, is_call) {
-                if path.cursor == 0 {
-                    return Some(Resolved::Local(local));
-                }
+            if let Some(local) = request
+                .module
+                .local_definition(head, request.offset, is_call)
+            {
+                return Some(Resolved::Local(local));
             }
         }
         if let Some(kind) = unica_address::source_target::metadata_collection_kind(head) {
             // `Справочники.Валюты` names the catalog; a segment past the
             // object is a manager method, which only a provider knows.
-            if path.cursor == 1 {
-                let object = &path.segments[1].0;
-                let at = self.environment.metadata_address(kind, object, None)?;
-                return Some(Resolved::Metadata(
-                    SymbolLocation { at, range: None },
-                    object.clone(),
-                ));
-            }
             if path.cursor == 0 {
                 return None;
             }
+            if path.cursor == 1 {
+                let object = &path.segments[1].0;
+                if let Some(at) = self.environment.metadata_address(kind, object, None) {
+                    return Some(Resolved::Metadata(
+                        SymbolLocation { at, range: None },
+                        object.clone(),
+                    ));
+                }
+            }
+            return Some(Resolved::Unknown(path));
         }
-        if path.segments.len() >= 2 && path.cursor == 1 {
+        if path.segments.len() >= 2 && path.cursor <= 1 {
             if let Some(at) = self
                 .environment
                 .metadata_address("CommonModule", head, None)
             {
+                if path.cursor == 0 {
+                    return Some(Resolved::Metadata(
+                        SymbolLocation { at, range: None },
+                        head.clone(),
+                    ));
+                }
                 let name = &path.segments[1].0;
                 if let Some(location) = self.common_method(&at, name) {
                     return Some(Resolved::CommonMethod(location, name.clone()));
                 }
             }
         }
-        if path.cursor == 0 && path.segments.len() > 1 {
-            if let Some(at) = self
-                .environment
-                .metadata_address("CommonModule", head, None)
-            {
-                return Some(Resolved::Metadata(
-                    SymbolLocation { at, range: None },
-                    head.clone(),
-                ));
-            }
-        }
         Some(Resolved::Unknown(path))
     }
 
+    /// An exported method of a common module, by the module's saved text.
     fn common_method(&self, module_at: &str, name: &str) -> Option<SymbolLocation> {
-        let text = self.environment.module_text(module_at)?;
-        let module = unica_bsl_parser::parse(&text);
+        let mut modules = self.common_modules.borrow_mut();
+        let module = modules
+            .entry(module_at.to_string())
+            .or_insert_with(|| {
+                let text = self.environment.module_text(module_at)?;
+                let methods = unica_bsl_parser::parse(&text).local_methods();
+                Some(CommonModule { text, methods })
+            })
+            .as_ref()?;
         let method = module
-            .local_methods()
-            .into_iter()
-            .find(|method| method.name.to_lowercase() == name.to_lowercase())?;
-        let index = LineIndex::new(&text);
+            .methods
+            .iter()
+            .find(|method| method.is_export && same_name(&method.name, name))?;
         Some(SymbolLocation {
             at: module_at.to_string(),
-            range: Some(range(&index, method.name_range)),
+            range: Some(range(
+                &LineIndex::new(&module.text),
+                method.name_range.clone(),
+            )),
         })
     }
 
-    fn query(
-        &self,
-        document: &SymbolDocument<'_>,
-        path: &NamePath,
-        position: SymbolPosition,
-    ) -> SymbolQuery {
-        if document.saved {
-            SymbolQuery::At {
+    /// The provider query for the name under the position. A saved module is
+    /// asked by position. In an edited buffer a name the module declares is
+    /// asked at its declaration in the saved text, and any other by name.
+    fn query(&self, request: &Request<'_, '_>, resolved: &Resolved) -> Option<SymbolQuery> {
+        let document = request.document;
+        if document.is_saved() {
+            return Some(SymbolQuery::At {
                 path: document.path.to_string(),
-                position,
-            }
-        } else {
-            SymbolQuery::Named {
-                name: path.segments[..=path.cursor]
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>()
-                    .join("."),
-            }
+                position: request.position,
+            });
         }
+        if let Resolved::Local(local) = resolved {
+            let saved = unica_bsl_parser::parse(document.saved);
+            let declared = match local.kind {
+                LocalSymbolKind::Method => saved
+                    .local_methods()
+                    .into_iter()
+                    .find(|method| same_name(&method.name, &local.name))
+                    .map(|method| method.name_range),
+                LocalSymbolKind::ModuleVariable => saved
+                    .local_definition(&local.name, 0, false)
+                    .filter(|symbol| symbol.kind == LocalSymbolKind::ModuleVariable)
+                    .map(|symbol| symbol.range),
+                _ => None,
+            }?;
+            let (line, column) = LineIndex::new(document.saved).position(declared.start);
+            return Some(SymbolQuery::At {
+                path: document.path.to_string(),
+                position: SymbolPosition { line, column },
+            });
+        }
+        let Resolved::Unknown(path) = resolved else {
+            return None;
+        };
+        Some(SymbolQuery::Named {
+            name: path.segments[..=path.cursor]
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join("."),
+            path: document.path.to_string(),
+        })
     }
 
     fn place(&self, place: &ProviderPlace) -> Option<SymbolLocation> {
@@ -365,37 +485,43 @@ impl<'a> SymbolService<'a> {
 
     fn ask<T>(
         &self,
-        document: &SymbolDocument<'_>,
-        ask: impl FnOnce(&dyn SymbolProvider) -> Result<T, String>,
+        request: &Request<'_, '_>,
+        ask: impl FnOnce(&dyn SymbolProvider) -> Result<T, ProviderFailure>,
     ) -> (Option<T>, Vec<Incompleteness>) {
         let Some(provider) = self.provider else {
-            return (
-                None,
-                vec![Incompleteness::ProviderUnavailable(
-                    "no symbol provider is configured".to_string(),
-                )],
-            );
+            return (None, vec![Incompleteness::ProviderUnavailable]);
         };
-        let stale = if document.saved {
+        let stale = if request.document.is_saved() {
             Vec::new()
         } else {
             vec![Incompleteness::Stale]
         };
         match ask(provider) {
             Ok(value) => (Some(value), stale),
-            Err(error) => (None, vec![Incompleteness::ProviderUnavailable(error)]),
+            Err(failure) => (None, vec![failure.reason()]),
         }
     }
 
-    fn local_location(
+    /// Provider places joined to `locations`. Where the module's own text has
+    /// already answered for this module, the provider's places in it are not
+    /// repeated: the buffer may have moved them.
+    fn join(
         &self,
-        document: &SymbolDocument<'_>,
-        index: &LineIndex<'_>,
-        range_bytes: std::ops::Range<usize>,
-    ) -> SymbolLocation {
-        SymbolLocation {
-            at: document.at.to_string(),
-            range: Some(range(index, range_bytes)),
+        answer: Option<ProviderPlaces>,
+        reasons: &mut Vec<Incompleteness>,
+        locations: &mut Vec<SymbolLocation>,
+        own_module: Option<&str>,
+    ) {
+        let Some(answer) = answer else {
+            return;
+        };
+        if !answer.complete {
+            reasons.push(Incompleteness::Capped);
+        }
+        for location in self.places(&answer.places, reasons) {
+            if Some(location.at.as_str()) != own_module && !locations.contains(&location) {
+                locations.push(location);
+            }
         }
     }
 
@@ -406,21 +532,24 @@ impl<'a> SymbolService<'a> {
         position: SymbolPosition,
         context: &SymbolRequestContext<'_>,
     ) -> SymbolAnswer<Vec<SymbolLocation>> {
-        let index = LineIndex::new(document.text);
-        let offset = index.offset(position.line, position.column);
-        let module = unica_bsl_parser::parse(document.text);
-        match self.resolve(&module, offset) {
+        if context.cancellation.is_cancelled() {
+            return SymbolAnswer::partial(Vec::new(), vec![Incompleteness::ProviderNotReady]);
+        }
+        let request = Request::new(document, position);
+        match self.resolve(&request) {
             None => SymbolAnswer::complete(Vec::new()),
             Some(Resolved::Local(local)) => {
-                SymbolAnswer::complete(vec![self.local_location(document, &index, local.range)])
+                SymbolAnswer::complete(vec![request.location(local.range)])
             }
             Some(Resolved::Metadata(location, _)) | Some(Resolved::CommonMethod(location, _)) => {
                 SymbolAnswer::complete(vec![location])
             }
-            Some(Resolved::Unknown(path)) => {
-                let query = self.query(document, &path, position);
+            Some(unknown @ Resolved::Unknown(_)) => {
+                let Some(query) = self.query(&request, &unknown) else {
+                    return SymbolAnswer::complete(Vec::new());
+                };
                 let (symbol, mut reasons) =
-                    self.ask(document, |provider| provider.symbol(&query, context));
+                    self.ask(&request, |provider| provider.symbol(&query, context));
                 let locations = symbol
                     .flatten()
                     .map(|symbol| self.places(&symbol.definitions, &mut reasons))
@@ -437,10 +566,18 @@ impl<'a> SymbolService<'a> {
         position: SymbolPosition,
         context: &SymbolRequestContext<'_>,
     ) -> SymbolAnswer<Option<SymbolInfo>> {
-        let index = LineIndex::new(document.text);
-        let offset = index.offset(position.line, position.column);
-        let module = unica_bsl_parser::parse(document.text);
-        match self.resolve(&module, offset) {
+        if context.cancellation.is_cancelled() {
+            return SymbolAnswer::partial(None, vec![Incompleteness::ProviderNotReady]);
+        }
+        let request = Request::new(document, position);
+        let info = |name, kind, location| SymbolInfo {
+            name,
+            kind,
+            signature: None,
+            return_type: None,
+            location: Some(location),
+        };
+        match self.resolve(&request) {
             None => SymbolAnswer::complete(None),
             Some(Resolved::Local(local)) => {
                 let kind = match local.kind {
@@ -450,35 +587,21 @@ impl<'a> SymbolService<'a> {
                         SymbolKind::Variable
                     }
                 };
-                let location = self.local_location(document, &index, local.range.clone());
-                SymbolAnswer::complete(Some(SymbolInfo {
-                    name: local.name,
-                    kind,
-                    signature: None,
-                    return_type: None,
-                    location: Some(location),
-                }))
+                let location = request.location(local.range.clone());
+                SymbolAnswer::complete(Some(info(local.name, kind, location)))
             }
-            Some(Resolved::Metadata(location, name)) => SymbolAnswer::complete(Some(SymbolInfo {
-                name,
-                kind: SymbolKind::Metadata,
-                signature: None,
-                return_type: None,
-                location: Some(location),
-            })),
+            Some(Resolved::Metadata(location, name)) => {
+                SymbolAnswer::complete(Some(info(name, SymbolKind::Metadata, location)))
+            }
             Some(Resolved::CommonMethod(location, name)) => {
-                SymbolAnswer::complete(Some(SymbolInfo {
-                    name,
-                    kind: SymbolKind::Method,
-                    signature: None,
-                    return_type: None,
-                    location: Some(location),
-                }))
+                SymbolAnswer::complete(Some(info(name, SymbolKind::Method, location)))
             }
-            Some(Resolved::Unknown(path)) => {
-                let query = self.query(document, &path, position);
+            Some(unknown @ Resolved::Unknown(_)) => {
+                let Some(query) = self.query(&request, &unknown) else {
+                    return SymbolAnswer::complete(None);
+                };
                 let (symbol, mut reasons) =
-                    self.ask(document, |provider| provider.symbol(&query, context));
+                    self.ask(&request, |provider| provider.symbol(&query, context));
                 let info = symbol.flatten().map(|symbol| {
                     let location = self
                         .places(&symbol.definitions, &mut reasons)
@@ -498,54 +621,53 @@ impl<'a> SymbolService<'a> {
     }
 
     /// Every place that names the symbol under `position`, its declaration
-    /// included. A parameter or variable is answered from the module alone; a
-    /// method of the module also by the provider, for its callers elsewhere.
+    /// included. A parameter or local variable is answered from the module
+    /// alone; anything visible outside the module is asked of the provider
+    /// too, within [`PROVIDER_REFERENCES_BUDGET`].
     pub fn references(
         &self,
         document: &SymbolDocument<'_>,
         position: SymbolPosition,
         context: &SymbolRequestContext<'_>,
     ) -> SymbolAnswer<Vec<SymbolLocation>> {
-        let index = LineIndex::new(document.text);
-        let offset = index.offset(position.line, position.column);
-        let module = unica_bsl_parser::parse(document.text);
-        let resolved = self.resolve(&module, offset);
-        let mut locations = Vec::new();
-        let mut reasons = Vec::new();
-        let Some(resolved) = resolved else {
-            return SymbolAnswer::complete(locations);
+        if context.cancellation.is_cancelled() {
+            return SymbolAnswer::partial(Vec::new(), vec![Incompleteness::ProviderNotReady]);
+        }
+        let request = Request::new(document, position);
+        let Some(resolved) = self.resolve(&request) else {
+            return SymbolAnswer::complete(Vec::new());
         };
+        let mut locations = Vec::new();
+        let mut own_module = None;
         if let Resolved::Local(local) = &resolved {
             locations.extend(
-                module
+                request
+                    .module
                     .local_references(local)
                     .into_iter()
-                    .map(|range| self.local_location(document, &index, range)),
+                    .map(|range| request.location(range)),
             );
-            if local.kind != LocalSymbolKind::Method {
+            if matches!(
+                local.kind,
+                LocalSymbolKind::Parameter | LocalSymbolKind::Variable
+            ) {
                 return SymbolAnswer::complete(locations);
             }
+            own_module = Some(document.at);
         }
-        let Some(path) = module.name_path_at(offset) else {
+        let Some(query) = self.query(&request, &resolved) else {
             return SymbolAnswer::complete(locations);
         };
-        let query = self.query(document, &path, position);
-        let (answer, more) = self.ask(document, |provider| provider.references(&query, context));
-        reasons.extend(more);
-        if let Some(answer) = answer {
-            if !answer.complete {
-                reasons.push(Incompleteness::ProviderUnavailable(
-                    "the provider capped its references".to_string(),
-                ));
-            }
-            for location in self.places(&answer.places, &mut reasons) {
-                // The module's own places come from its text, which may be a
-                // buffer the provider has not seen.
-                if location.at != document.at && !locations.contains(&location) {
-                    locations.push(location);
-                }
-            }
-        }
+        // The editor's request never holds the provider past the budget.
+        let budgeted = SymbolRequestContext {
+            deadline: context
+                .deadline
+                .earlier(ProviderDeadline::from_budget(self.references_budget)),
+            cancellation: context.cancellation,
+        };
+        let (answer, mut reasons) =
+            self.ask(&request, |provider| provider.references(&query, &budgeted));
+        self.join(answer, &mut reasons, &mut locations, own_module);
         SymbolAnswer::partial(locations, reasons)
     }
 
@@ -557,117 +679,106 @@ impl<'a> SymbolService<'a> {
         direction: CallDirection,
         context: &SymbolRequestContext<'_>,
     ) -> SymbolAnswer<Vec<SymbolLocation>> {
-        let index = LineIndex::new(document.text);
-        let offset = index.offset(position.line, position.column);
-        let module = unica_bsl_parser::parse(document.text);
-        let methods = module.local_methods();
+        if context.cancellation.is_cancelled() {
+            return SymbolAnswer::partial(Vec::new(), vec![Incompleteness::ProviderNotReady]);
+        }
+        let request = Request::new(document, position);
+        let Some(resolved) = self.resolve(&request) else {
+            return SymbolAnswer::complete(Vec::new());
+        };
         let mut locations: Vec<SymbolLocation> = Vec::new();
-        let push = |location: SymbolLocation, locations: &mut Vec<SymbolLocation>| {
+        let mut own_module = None;
+        if let Resolved::Local(local) = &resolved {
+            if local.kind != LocalSymbolKind::Method {
+                return SymbolAnswer::complete(Vec::new());
+            }
+            let methods = request.module.local_methods();
+            let Some(method) = methods
+                .iter()
+                .find(|method| method.name_range == local.range)
+            else {
+                return SymbolAnswer::complete(Vec::new());
+            };
+            self.local_calls(&request, &methods, method, direction, &mut locations);
+            if context.cancellation.is_cancelled() {
+                return SymbolAnswer::partial(locations, vec![Incompleteness::ProviderNotReady]);
+            }
+            own_module = Some(document.at);
+        } else if !matches!(resolved, Resolved::Unknown(_) | Resolved::CommonMethod(..)) {
+            return SymbolAnswer::complete(Vec::new());
+        }
+        let Some(query) = self.query(&request, &resolved) else {
+            return SymbolAnswer::complete(locations);
+        };
+        let (answer, mut reasons) = self.ask(&request, |provider| {
+            provider.calls(&query, direction, context)
+        });
+        self.join(answer, &mut reasons, &mut locations, own_module);
+        SymbolAnswer::partial(locations, reasons)
+    }
+
+    /// The calls between `method` and the module's own methods, and the
+    /// exported common-module methods it calls, by the buffer.
+    fn local_calls(
+        &self,
+        request: &Request<'_, '_>,
+        methods: &[LocalMethod],
+        method: &LocalMethod,
+        direction: CallDirection,
+        locations: &mut Vec<SymbolLocation>,
+    ) {
+        let mut push = |location: SymbolLocation| {
             if !locations.contains(&location) {
                 locations.push(location);
             }
         };
-        let Some(Resolved::Local(local)) = self.resolve(&module, offset) else {
-            return self.provider_calls(
-                document,
-                &module,
-                offset,
-                position,
-                direction,
-                context,
-                Vec::new(),
-            );
-        };
-        if local.kind != LocalSymbolKind::Method {
-            return SymbolAnswer::complete(Vec::new());
-        }
-        let Some(method) = methods
-            .iter()
-            .find(|method| method.name_range == local.range)
-        else {
-            return SymbolAnswer::complete(Vec::new());
-        };
+        let calls = request.module.calls();
         match direction {
             CallDirection::Outgoing => {
-                for call in module.calls_in(method) {
-                    if let [name] = call.path.as_slice() {
-                        if let Some(callee) = methods
-                            .iter()
-                            .find(|candidate| candidate.name.to_lowercase() == name.to_lowercase())
-                        {
-                            push(
-                                self.local_location(document, &index, callee.name_range.clone()),
-                                &mut locations,
-                            );
-                        }
-                    } else if let [module_name, name] = call.path.as_slice() {
-                        if let Some(at) =
-                            self.environment
-                                .metadata_address("CommonModule", module_name, None)
-                        {
-                            if let Some(location) = self.common_method(&at, name) {
-                                push(location, &mut locations);
+                for call in calls
+                    .iter()
+                    .filter(|call| method.range.contains(&call.range.start))
+                {
+                    match call.path.as_slice() {
+                        [name] => {
+                            if let Some(callee) = methods
+                                .iter()
+                                .find(|candidate| same_name(&candidate.name, name))
+                            {
+                                push(request.location(callee.name_range.clone()));
                             }
                         }
+                        [module, name] => {
+                            if let Some(at) =
+                                self.environment
+                                    .metadata_address("CommonModule", module, None)
+                            {
+                                if let Some(location) = self.common_method(&at, name) {
+                                    push(location);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
             CallDirection::Incoming => {
                 // One pass over the module's calls; each call belongs to the
                 // method whose declaration holds it.
-                let name = method.name.to_lowercase();
-                for call in module.calls() {
-                    if !matches!(call.path.as_slice(), [called] if called.to_lowercase() == name) {
+                for call in &calls {
+                    if !matches!(call.path.as_slice(), [called] if same_name(called, &method.name))
+                    {
                         continue;
                     }
                     if let Some(caller) = methods
                         .iter()
                         .find(|caller| caller.range.contains(&call.range.start))
                     {
-                        push(
-                            self.local_location(document, &index, caller.name_range.clone()),
-                            &mut locations,
-                        );
+                        push(request.location(caller.name_range.clone()));
                     }
                 }
             }
         }
-        self.provider_calls(
-            document, &module, offset, position, direction, context, locations,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn provider_calls(
-        &self,
-        document: &SymbolDocument<'_>,
-        module: &unica_bsl_parser::ParsedModule<'_>,
-        offset: usize,
-        position: SymbolPosition,
-        direction: CallDirection,
-        context: &SymbolRequestContext<'_>,
-        mut locations: Vec<SymbolLocation>,
-    ) -> SymbolAnswer<Vec<SymbolLocation>> {
-        let Some(path) = module.name_path_at(offset) else {
-            return SymbolAnswer::complete(locations);
-        };
-        let query = self.query(document, &path, position);
-        let (answer, mut reasons) = self.ask(document, |provider| {
-            provider.calls(&query, direction, context)
-        });
-        if let Some(answer) = answer {
-            if !answer.complete {
-                reasons.push(Incompleteness::ProviderUnavailable(
-                    "the provider capped its call hierarchy".to_string(),
-                ));
-            }
-            for location in self.places(&answer.places, &mut reasons) {
-                if location.at != document.at && !locations.contains(&location) {
-                    locations.push(location);
-                }
-            }
-        }
-        SymbolAnswer::partial(locations, reasons)
     }
 }
 

@@ -14625,8 +14625,9 @@ struct ActorLogicalReadLease {"#,
     fn symbol_port_answers_in_unica_places_with_a_substituted_provider() {
         use std::sync::Mutex;
         use unica_code_intelligence::symbols::{
-            CallDirection, ProviderPlace, ProviderPlaces, ProviderSymbol, SymbolKind,
-            SymbolPosition, SymbolProvider, SymbolQuery, SymbolRange, SymbolRequestContext,
+            CallDirection, ProviderFailure, ProviderPlace, ProviderPlaces, ProviderSymbol,
+            SymbolKind, SymbolPosition, SymbolProvider, SymbolQuery, SymbolRange,
+            SymbolRequestContext,
         };
 
         const MODULE: &str = "Процедура Run() Export\n\tСсылка = Справочники.Items.ПустаяСсылка();\n\tПомощник();\n\tВнешний.Метод();\nEndProcedure\n\nПроцедура Помощник()\nEndProcedure\n";
@@ -14638,7 +14639,7 @@ struct ActorLogicalReadLease {"#,
                 &self,
                 query: &SymbolQuery,
                 _context: &SymbolRequestContext<'_>,
-            ) -> Result<Option<ProviderSymbol>, String> {
+            ) -> Result<Option<ProviderSymbol>, ProviderFailure> {
                 self.0.lock().unwrap().push(query.clone());
                 let at = |line| SymbolRange {
                     start: SymbolPosition { line, column: 10 },
@@ -14666,7 +14667,7 @@ struct ActorLogicalReadLease {"#,
                 &self,
                 _query: &SymbolQuery,
                 _context: &SymbolRequestContext<'_>,
-            ) -> Result<ProviderPlaces, String> {
+            ) -> Result<ProviderPlaces, ProviderFailure> {
                 Ok(ProviderPlaces {
                     places: Vec::new(),
                     complete: true,
@@ -14677,7 +14678,7 @@ struct ActorLogicalReadLease {"#,
                 _query: &SymbolQuery,
                 _direction: CallDirection,
                 _context: &SymbolRequestContext<'_>,
-            ) -> Result<ProviderPlaces, String> {
+            ) -> Result<ProviderPlaces, ProviderFailure> {
                 Ok(ProviderPlaces {
                     places: Vec::new(),
                     complete: true,
