@@ -266,19 +266,9 @@ impl LspDocuments {
 
     /// `textDocument/signatureHelp` at `position` of `uri`. A qualified
     /// call names a common module of the same source set, read through
-    /// `read` (with this connection's buffers).
+    /// `read` (with this connection's buffers); a plain call not declared
+    /// by the module is looked up in `global_context`.
     pub(crate) fn signature_help(
-        &self,
-        uri: &str,
-        position: crate::application::lsp::position::Utf16Position,
-        read: &ProviderReadAuthority,
-    ) -> Result<Option<serde_json::Value>, LspDocumentError> {
-        self.signature_help_with_global_context(uri, position, read, &[])
-    }
-
-    /// [`Self::signature_help`] that also signs methods of the platform
-    /// global context.
-    pub(crate) fn signature_help_with_global_context(
         &self,
         uri: &str,
         position: crate::application::lsp::position::Utf16Position,

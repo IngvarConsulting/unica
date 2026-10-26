@@ -218,7 +218,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
         Some(overlay.session_documents("editor", "main").unwrap()),
     );
     let help = documents
-        .signature_help(&caller_uri, after(typed, "(1, "), &read)
+        .signature_help(&caller_uri, after(typed, "(1, "), &read, &[])
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -243,7 +243,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
         Some(overlay.session_documents("editor", "main").unwrap()),
     );
     let help = documents
-        .signature_help(&caller_uri, after(&lower, "(1, "), &read)
+        .signature_help(&caller_uri, after(&lower, "(1, "), &read, &[])
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -256,7 +256,7 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
     let disk = reader(&space.root.join("src"), None);
     assert_eq!(
         other
-            .signature_help(&caller_uri, after(typed, "(1, "), &disk)
+            .signature_help(&caller_uri, after(typed, "(1, "), &disk, &[])
             .unwrap(),
         None
     );
