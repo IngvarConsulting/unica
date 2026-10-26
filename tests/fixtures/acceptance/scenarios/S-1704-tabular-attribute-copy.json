@@ -1,0 +1,309 @@
+{
+  "id": "S-1704-tabular-attribute-copy",
+  "issue": 1704,
+  "area": "Реквизиты и состав",
+  "task": "Скопировать реквизит табличной части справочника под новым именем с новым UUID, сохранив тип, настройки и переводы синонима и подсказки, прочитать копию и отклонить занятое имя, отсутствующий источник, неподдержанный контекст и лишние поля без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-tabular-attribute-copy",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Catalog.Валюты.TabularSection.Представления.Attribute.ПараметрыПрописи"
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.ПараметрыПрописи.Can.attribute.copy"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/required",
+          "eq": [
+            "name"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.ПараметрыПрописи",
+        "ops": [
+          {
+            "op": "attribute.copy",
+            "args": {
+              "values": {
+                "name": "ПараметрыПрописиКопия"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "after": {
+          "file": "src/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "КодЯзыка",
+            "ПараметрыПрописи",
+            "ПараметрыПрописиКопия"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ПараметрыПрописиКопия\"]/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}lang",
+          "eq": [
+            "ru",
+            "en"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ПараметрыПрописиКопия\"]/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Параметры прописи",
+            "Amount in words settings"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ПараметрыПрописиКопия\"]/{http://v8.1c.ru/8.3/MDClasses}ToolTip/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Настройки представления суммы прописью",
+            "How the amount is spelled out"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ПараметрыПрописиКопия\"]/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string",
+            "xs:decimal"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ПараметрыПрописиКопия\"]/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ПараметрыПрописиКопия\"]/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ПараметрыПрописиКопия\"]/{http://v8.1c.ru/8.3/MDClasses}MultiLine",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ПараметрыПрописи\"]/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Параметры прописи",
+            "Amount in words settings"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ПараметрыПрописи\"]/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Параметры прописи"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.ПараметрыПрописиКопия"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Валюты.TabularSection.Представления.Attribute.ПараметрыПрописиКопия"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Параметры прописи"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.ПараметрыПрописи",
+        "ops": [
+          {
+            "op": "attribute.copy",
+            "args": {
+              "values": {
+                "name": "ПараметрыПрописиКопия"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `ПараметрыПрописиКопия` is already the name of a member of this collection",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.Нет",
+        "ops": [
+          {
+            "op": "attribute.copy",
+            "args": {
+              "values": {
+                "name": "Копия"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: element `Нет` was not found",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ПараметрыПрописи",
+        "ops": [
+          {
+            "op": "attribute.copy",
+            "args": {
+              "values": {
+                "name": "Копия"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `attribute.copy` does not apply to Attribute `main:Catalog.Валюты.Attribute.ПараметрыПрописи`; it addresses `Catalog.Name.TabularSection.T.Attri",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.ПараметрыПрописи",
+        "ops": [
+          {
+            "op": "attribute.copy",
+            "args": {
+              "values": {
+                "name": "Копия",
+                "synonym": "x"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: attribute.copy takes only the copy's name; the rest comes from the source",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    }
+  ]
+}

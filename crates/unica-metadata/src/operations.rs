@@ -1262,6 +1262,14 @@ pub enum MetaEditOperation {
         scope: Option<MetaScope>,
         names: Vec<String>,
     },
+    /// A new member made from an existing one: every setting and translation
+    /// of `name` under `new_name` with its own UUID.
+    Copy {
+        collection: MetaCollection,
+        scope: Option<MetaScope>,
+        name: String,
+        new_name: String,
+    },
     EditRelations {
         relation: MetaRelation,
         mode: RelationEditMode,
@@ -1636,6 +1644,21 @@ pub fn validate_metadata_operation_capabilities(
         // facet, so help has no per-kind capability gate; existence checks
         // belong to the materializing writer.
         MetaEditOperation::AddHelp { .. } => Ok(()),
+        // The first slice copies attributes of a catalog tabular section only.
+        MetaEditOperation::Copy {
+            collection, scope, ..
+        } => {
+            if owner_kind != MetadataKind::Catalog
+                || *collection != MetaCollection::Attributes
+                || scope.is_none()
+            {
+                return Err(MetaDiagnostic::error(
+                    MetaDiagnosticCode::UnsupportedKind,
+                    "only an attribute of a catalog tabular section can be copied",
+                ));
+            }
+            Ok(())
+        }
         MetaEditOperation::Add {
             collection,
             scope,
@@ -2086,6 +2109,18 @@ impl MetaEditOperation {
                         )
                         .with_field(format!("elements[{index}].newName")));
                     }
+                }
+            }
+            Self::Copy { name, new_name, .. } => {
+                if !existing_keys.contains(&metadata_name_key(name)) {
+                    return Err(missing_target(name, "name".to_string()));
+                }
+                if existing_keys.contains(&metadata_name_key(new_name)) {
+                    return Err(MetaDiagnostic::error(
+                        MetaDiagnosticCode::AlreadyExists,
+                        format!("element `{new_name}` already exists"),
+                    )
+                    .with_field("newName"));
                 }
             }
             Self::Remove { names, .. } => {

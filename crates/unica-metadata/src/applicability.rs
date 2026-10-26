@@ -19,6 +19,8 @@ pub enum OperationApplicability {
     MetadataOrCommonTemplate,
     MetadataAttribute,
     MetadataAttributeContainer,
+    /// An attribute of a catalog tabular section in a configuration source.
+    CatalogTabularAttribute,
     MetadataColumn,
     MetadataColumns,
     MetadataCommand,
@@ -65,6 +67,9 @@ impl OperationApplicability {
             Self::MetadataCommands => "`Kind.Name` of a kind with commands",
             Self::MetadataPredefinedItems => "`Kind.Name` of a kind with predefined items",
             Self::MetadataAttribute => "`Kind.Name[.TabularSection.T].Attribute.A`",
+            Self::CatalogTabularAttribute => {
+                "`Catalog.Name.TabularSection.T.Attribute.A` of a configuration"
+            }
             Self::MetadataTabularSection => "`Kind.Name.TabularSection.T`",
             Self::MetadataDimension => "`Kind.Name.Dimension.D` of a register",
             Self::MetadataResource => "`Kind.Name.Resource.R` of a register",
@@ -144,6 +149,17 @@ impl OperationApplicability {
                         }
                         _ => false,
                     }
+            }
+            Self::CatalogTabularAttribute => {
+                site.route() == RouteClass::Metadata
+                    && site.source().kind() == SourceSetKind::Configuration
+                    && matches!(segments, [owner, section, attribute]
+                        if owner.kind() == NodeKind::Catalog
+                            && owner.name().is_some()
+                            && section.kind() == NodeKind::TabularSection
+                            && section.name().is_some()
+                            && attribute.kind() == NodeKind::Attribute
+                            && attribute.name().is_some())
             }
             Self::MetadataTabularSection => {
                 site.metadata_member(NodeKind::TabularSection, MetaCollection::TabularSections)

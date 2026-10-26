@@ -199,6 +199,18 @@ pub fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::AttributeRemove => {
                 parse_attribute_remove(object, op_index, binding)?
             }
+            RegisteredMetadataOperation::AttributeCopy => {
+                let contract = operation.contract_at(None);
+                let shape = ArgumentShape::new(&contract.schema);
+                reject_unknown_args_with(
+                    operation.name(),
+                    object,
+                    |key| shape.property(key).is_some(),
+                    op_index,
+                    binding.registry,
+                )?;
+                parse_attribute_copy(object, op_index, binding)?
+            }
             RegisteredMetadataOperation::TabularSectionAdd => parse_member_add(
                 operation
                     .member_collection()
@@ -1241,6 +1253,58 @@ pub fn parse_attribute_remove(
         )?,
         AddressedFields::None,
     ))
+}
+/// `attribute.copy` on `Catalog.C.TabularSection.T.Attribute.A`: the source
+/// is the address, `values.name` the copy's name.
+pub fn parse_attribute_copy(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &MetadataDecodeContext<'_>,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    let target = unica_source_contract::proposal::input::qualified_target(
+        args,
+        op_index,
+        binding.source_set_name(),
+    )?;
+    let (owner, kind, name, scope) = attribute_owner_and_name(&target, op_index)?;
+    let Some(section) = scope.filter(|_| kind == MetadataKind::Catalog) else {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "attribute.copy copies an attribute of a catalog tabular section: `Catalog.C.TabularSection.T.Attribute.A`",
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    };
+    let values = required_object(args, "values", op_index)?;
+    if let Some(field) = values.keys().find(|field| *field != "name") {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "attribute.copy takes only the copy's name; the rest comes from the source",
+        )
+        .at_path(format!("ops[{op_index}].args.values.{field}")));
+    }
+    let new_name = values
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| unica_metadata::identifier::is_1c_identifier(name))
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "values.name must be a valid 1C identifier",
+            )
+            .at_path(format!("ops[{op_index}].args.values.name"))
+        })?;
+    Ok(MetadataPlanKind::Edit {
+        target: owner,
+        operation: MetaEditOperation::Copy {
+            collection: MetaCollection::Attributes,
+            scope: Some(unica_metadata::MetaScope {
+                tabular_section: section,
+            }),
+            name,
+            new_name: new_name.to_string(),
+        },
+        addressed: Some(AddressedFields::Values),
+    })
 }
 /// One member-collection add: `at` names the owner, `items` carry the new
 /// elements exactly as the typed metadata contract defines them.

@@ -1860,7 +1860,10 @@ mod tests {
             let op = descriptor.name();
             // Реквизит и команда формы носят то же имя (#1465): здесь сверяются
             // члены метаданных.
+            // Копия реквизита берёт содержимое из источника, а не из полей
+            // члена; её договор проверяют сценарий S-1704 и тесты копии.
             if op == "template.add"
+                || op == "attribute.copy"
                 || descriptor.argument_contract().is_none()
                 || descriptor.family() != unica_operations::OperationFamily::Metadata
             {
