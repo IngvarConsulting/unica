@@ -10,12 +10,14 @@
 use crate::application::lsp::document::{ContentChange, DocumentChangeError, OpenDocument};
 use crate::application::lsp::uri::{DocumentUri, SpaceRegistry, UriError, WorkspaceFolder};
 use crate::infrastructure::event_sources::module_address_for_relative;
+use crate::infrastructure::lsp_features::{CompletionSources, ObjectMembers};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use unica_address::address::QualifiedAddress;
 use unica_bsl::profile::PlatformProfile;
+use unica_documentation_sources::platform_help::provider::GlobalContextMember;
 use unica_execution_contract::view_error::ViewError;
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::module_layout::{module_relative, module_source_address};
@@ -275,19 +277,110 @@ impl LspDocuments {
             return Ok(None);
         };
         let location = self.locate(uri)?;
-        let common_module = |name: &str| {
-            let document = DocumentUri {
-                space: location.document.space.clone(),
-                address: format!("{}:CommonModule.{name}", location.source_set),
-            };
-            let uri = self.spaces.format(&document).ok()?;
-            self.content(&uri, read).ok().flatten()
-        };
+        let common_module = |name: &str| self.common_module_content(&location, name, read);
         Ok(crate::infrastructure::lsp_features::signature_help(
             &text,
             position,
             &common_module,
         ))
+    }
+
+    /// The text of the common module `typed` names in the source set of
+    /// `location`: its buffer, otherwise its file.
+    fn common_module_content(
+        &self,
+        location: &DocumentLocation,
+        typed: &str,
+        read: &ProviderReadAuthority,
+    ) -> Option<String> {
+        let name = self.common_module_name(location, typed);
+        let document = DocumentUri {
+            space: location.document.space.clone(),
+            address: format!("{}:CommonModule.{name}", location.source_set),
+        };
+        let uri = self.spaces.format(&document).ok()?;
+        self.content(&uri, read).ok().flatten()
+    }
+
+    /// `textDocument/completion` at `position` of `uri`. The answer is
+    /// dropped (`None`) when the buffer moved past the version it was
+    /// computed for, or when `cancelled` says the request is gone.
+    pub(crate) fn completion(
+        &self,
+        overlay: &DocumentOverlay,
+        uri: &str,
+        position: crate::application::lsp::position::Utf16Position,
+        read: &ProviderReadAuthority,
+        global_context: &[GlobalContextMember],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<serde_json::Value>, LspDocumentError> {
+        let Some(text) = self.content(uri, read)? else {
+            return Ok(None);
+        };
+        let location = self.locate(uri)?;
+        let version = self
+            .open
+            .get(&location.document)
+            .map(|buffer| buffer.document.version());
+        let sources = CompletionSourcesOver {
+            documents: self,
+            location: &location,
+            read,
+            global_context,
+            stale: &|| {
+                cancelled()
+                    || version.is_some()
+                        && overlay
+                            .get(&self.session, &location.source_set, &location.relative)
+                            .ok()
+                            .flatten()
+                            .map(|buffer| buffer.version)
+                            != version
+            },
+        };
+        Ok(crate::infrastructure::lsp_features::completion(
+            &text, position, &sources,
+        ))
+    }
+
+    /// `completionItem/resolve` for an item `completion` gave on `uri`.
+    pub(crate) fn resolve_completion(
+        &self,
+        uri: &str,
+        item: serde_json::Value,
+        read: &ProviderReadAuthority,
+    ) -> Result<serde_json::Value, LspDocumentError> {
+        let location = self.locate(uri)?;
+        let text = match item["data"]["commonModule"].as_str() {
+            Some(module) => self.common_module_content(&location, module, read),
+            None => self.content(uri, read)?,
+        };
+        Ok(match text {
+            Some(text) => crate::infrastructure::lsp_features::resolve_completion(item, &text),
+            None => item,
+        })
+    }
+
+    /// The common module `typed` names, as its buffer or its folder spells
+    /// it: names compare case-insensitively, buffers and files do not.
+    fn common_module_name(&self, location: &DocumentLocation, typed: &str) -> String {
+        let wanted = typed.to_lowercase();
+        let prefix = format!("{}:CommonModule.", location.source_set);
+        let open = self.open.keys().find_map(|document| {
+            let name = document.address.strip_prefix(&prefix)?;
+            (document.space == location.document.space && name.to_lowercase() == wanted)
+                .then(|| name.to_owned())
+        });
+        open.or_else(|| {
+            let layout = self
+                .source_set(&location.document.space, &location.source_set)
+                .ok()?;
+            std::fs::read_dir(layout.root.join("CommonModules"))
+                .ok()?
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .find(|name| name.to_lowercase() == wanted)
+        })
+        .unwrap_or_else(|| typed.to_owned())
     }
 
     /// The `unica://` URIs to refresh after `apply` published `relatives`
@@ -342,6 +435,79 @@ impl LspDocuments {
 /// The path with symlinks resolved, or as given when it does not exist.
 fn canonical(path: &std::path::Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_owned())
+}
+
+/// Completion sources of one document: the metadata of its source set,
+/// read through the connection's read.
+struct CompletionSourcesOver<'a> {
+    documents: &'a LspDocuments,
+    location: &'a DocumentLocation,
+    read: &'a ProviderReadAuthority,
+    global_context: &'a [GlobalContextMember],
+    stale: &'a dyn Fn() -> bool,
+}
+
+impl CompletionSources for CompletionSourcesOver<'_> {
+    fn global_context(&self) -> &[GlobalContextMember] {
+        self.global_context
+    }
+
+    fn metadata_names(&self, kind: &str) -> Vec<String> {
+        self.read
+            .registered_names(kind, &|| Ok(()))
+            .unwrap_or_default()
+    }
+
+    fn common_module_text(&self, name: &str) -> Option<String> {
+        self.documents
+            .common_module_content(self.location, name, self.read)
+    }
+
+    fn object_members(&self, kind: &str, name: &str) -> Option<ObjectMembers> {
+        let target = unica_address::source_target::MetadataAddress::parse(
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{kind}.{name}"),
+        )
+        .ok()?;
+        let info = self.read.metadata_local(&target, &mut || Ok(())).ok()?.info;
+        let collections = &info.collections;
+        Some(ObjectMembers {
+            attributes: collections
+                .attributes
+                .iter()
+                .map(|attribute| attribute.name.clone())
+                .collect(),
+            tabular_sections: collections
+                .tabular_sections
+                .iter()
+                .map(|section| {
+                    (
+                        section.name.clone(),
+                        section
+                            .attributes
+                            .iter()
+                            .map(|column| column.name.clone())
+                            .collect(),
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    fn module_owner(&self) -> Option<(String, String)> {
+        // The object module and the forms of an object reach its members.
+        let address = &self.location.document.address;
+        if !(address.ends_with(".Module.Object") || address.contains(".Form.")) {
+            return None;
+        }
+        let at = QualifiedAddress::parse(address).ok()?;
+        let owner = at.segments().first()?;
+        Some((owner.kind().as_str().to_owned(), owner.name()?.to_owned()))
+    }
+
+    fn cancelled(&self) -> bool {
+        (self.stale)()
+    }
 }
 
 fn module_target(

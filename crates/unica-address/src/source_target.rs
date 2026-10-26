@@ -555,6 +555,29 @@ pub fn metadata_address_kind_matches(canonical: &str, raw: &str) -> bool {
         .is_some_and(|kind| kind.canonical == raw || kind.russian_aliases.contains(&raw))
 }
 
+/// The canonical kind whose collection `alias` names, in either language
+/// and any case, as code spells it: `Справочники` and `catalogs` name
+/// `Catalog`.
+pub fn metadata_collection_kind(alias: &str) -> Option<&'static str> {
+    let alias = alias.to_lowercase();
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| {
+            kind.collection_aliases
+                .iter()
+                .any(|known| known.to_lowercase() == alias)
+        })
+        .map(|kind| kind.canonical)
+}
+
+/// The collection names of a canonical kind: English first, then Russian.
+pub fn metadata_collection_names(canonical: &str) -> Option<&'static [&'static str]> {
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| kind.canonical == canonical)
+        .map(|kind| kind.collection_aliases)
+}
+
 pub fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static str>> {
     ADDRESS_KINDS
         .iter()

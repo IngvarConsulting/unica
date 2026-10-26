@@ -125,6 +125,7 @@ fn signature_help_names_the_method_and_the_active_parameter() {
         signature["parameters"],
         json!([{"label": [8, 14]}, {"label": [16, 21]}])
     );
+    assert_eq!(signature["documentation"]["kind"], "plaintext");
     assert_eq!(
         signature["documentation"]["value"],
         "Складывает 😀 числа.\nВторое необязательно."
@@ -225,6 +226,30 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
         "Посчитать(Сколько, Чего) Экспорт"
     );
     assert_eq!(help["activeParameter"], 1);
+    // The qualifier is matched without case, against the buffer's name.
+    let lower = typed.replace("НовыйМодуль", "новыймодуль");
+    documents
+        .change(
+            &overlay,
+            &caller_uri,
+            2,
+            &[crate::application::lsp::document::ContentChange::Full(
+                lower.clone(),
+            )],
+        )
+        .unwrap();
+    let read = reader(
+        &space.root.join("src"),
+        Some(overlay.session_documents("editor", "main").unwrap()),
+    );
+    let help = documents
+        .signature_help(&caller_uri, after(&lower, "(1, "), &read)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Посчитать(Сколько, Чего) Экспорт"
+    );
 
     // Another connection reads the disk, where neither exists.
     let other = LspDocuments::new("other", vec![layout(&space.root)]);
@@ -278,9 +303,367 @@ fn features_on_a_large_common_module() {
     measure("semanticTokens", &|| {
         semantic_tokens(text)["data"].as_array().unwrap().len() / 5
     });
-    let last_call = text.rfind("ОбщегоНазначения").unwrap_or(0);
-    let position = LineIndex::new(text).position(text, last_call);
+    // The last call of a method of this module, just inside its `(`.
+    let call = unica_bsl_parser::parse(text)
+        .editor_symbols()
+        .iter()
+        .flat_map(|symbol| std::iter::once(symbol).chain(symbol.children.iter()))
+        .filter_map(|symbol| {
+            text.rfind(&format!("{}(", symbol.name))
+                .map(|at| at + symbol.name.len() + 1)
+        })
+        .max()
+        .unwrap();
+    let position = LineIndex::new(text).position(text, call);
     measure("signatureHelp", &|| {
         usize::from(signature_help(text, position, &|_| None).is_some())
     });
+}
+
+struct FixtureSources {
+    global: Vec<GlobalContextMember>,
+    stale: bool,
+}
+
+impl CompletionSources for FixtureSources {
+    fn global_context(&self) -> &[GlobalContextMember] {
+        &self.global
+    }
+
+    fn metadata_names(&self, kind: &str) -> Vec<String> {
+        match kind {
+            "CommonModule" => vec!["ОбщМод".to_owned()],
+            "Catalog" => vec!["Валюты".to_owned(), "Номенклатура".to_owned()],
+            _ => Vec::new(),
+        }
+    }
+
+    fn common_module_text(&self, name: &str) -> Option<String> {
+        (name.to_lowercase() == "общмод").then(|| {
+            "// Описание метода.\nПроцедура Метод(Первый) Экспорт\nКонецПроцедуры\nПроцедура Скрытый()\nКонецПроцедуры\n"
+                .to_owned()
+        })
+    }
+
+    fn object_members(&self, kind: &str, name: &str) -> Option<ObjectMembers> {
+        (kind == "Catalog" && name == "Номенклатура").then(|| ObjectMembers {
+            attributes: vec!["Артикул".to_owned()],
+            tabular_sections: vec![(
+                "Штрихкоды".to_owned(),
+                vec!["Штрихкод".to_owned(), "Упаковка".to_owned()],
+            )],
+        })
+    }
+
+    fn module_owner(&self) -> Option<(String, String)> {
+        Some(("Catalog".to_owned(), "Номенклатура".to_owned()))
+    }
+
+    fn cancelled(&self) -> bool {
+        self.stale
+    }
+}
+
+fn labels(answer: &Value) -> Vec<String> {
+    answer["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["label"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+const OBJECT_MODULE: &str = "Перем МодульнаяПеременная;
+
+// Пересчитывает строки.
+Процедура Пересчитать(Режим) Экспорт
+\tПерем Сумма;
+\tЭлемент = Справочники.Номенклатура.СоздатьЭлемент();
+\tДля Каждого Строка Из ЭтотОбъект.Штрихкоды Цикл
+\t\tСтрока.
+\tКонецЦикла;
+\tЭлемент.
+\tСправочники.Ном
+\tОбщМод.
+\tЭтотОбъект.
+\tСу // Сумма
+\tСу
+КонецПроцедуры
+";
+
+fn completion_at(text: &str, needle: &str, sources: &FixtureSources) -> Option<Value> {
+    completion(text, after(text, needle), sources)
+}
+
+#[test]
+fn completion_offers_scope_names_metadata_and_object_members() {
+    let sources = FixtureSources {
+        global: vec![GlobalContextMember {
+            kind: GlobalContextMemberKind::Method,
+            name_ru: "Сообщить".to_owned(),
+            name_en: Some("Message".to_owned()),
+            signature_ru: Some("Сообщить(<?>,);".to_owned()),
+            signature_en: None,
+        }],
+        stale: false,
+    };
+    let at = OBJECT_MODULE.rfind("\tСу\n").unwrap() + "\tСу".len();
+    let answer = completion(
+        OBJECT_MODULE,
+        LineIndex::new(OBJECT_MODULE).position(OBJECT_MODULE, at),
+        &sources,
+    )
+    .unwrap();
+    let names = labels(&answer);
+    for expected in [
+        "Режим",
+        "Сумма",
+        "Элемент",
+        "Строка",
+        "МодульнаяПеременная",
+        "Пересчитать",
+        "Артикул",
+        "Штрихкоды",
+        "ОбщМод",
+        "Справочники",
+        "Документы",
+        "Сообщить",
+    ] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "{expected} in {names:?}"
+        );
+    }
+    // Locals sort before module names and the global context.
+    let rank = |label: &str| {
+        answer["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["label"] == label)
+            .unwrap()["sortText"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert!(rank("Сумма") < rank("Пересчитать") && rank("Пересчитать") < rank("Сообщить"));
+    // The edit replaces the typed «Су».
+    let item = &answer["items"][0];
+    let line = LineIndex::new(OBJECT_MODULE)
+        .position(OBJECT_MODULE, at)
+        .line;
+    assert_eq!(
+        item["textEdit"]["range"],
+        json!({"start": {"line": line, "character": 1}, "end": {"line": line, "character": 3}})
+    );
+
+    let members = |needle: &str| labels(&completion_at(OBJECT_MODULE, needle, &sources).unwrap());
+    assert_eq!(members("Справочники.Ном"), ["Валюты", "Номенклатура"]);
+    assert_eq!(members("\tОбщМод."), ["Метод"]);
+    assert_eq!(members("\tЭтотОбъект."), ["Артикул", "Штрихкоды"]);
+    assert_eq!(members("\tЭлемент."), ["Артикул", "Штрихкоды"]);
+    assert_eq!(members("\t\tСтрока."), ["Штрихкод", "Упаковка"]);
+
+    // No completion in a comment; a stale request answers nothing.
+    assert_eq!(completion_at(OBJECT_MODULE, "// Сум", &sources), None);
+    let stale = FixtureSources {
+        global: Vec::new(),
+        stale: true,
+    };
+    assert_eq!(completion_at(OBJECT_MODULE, "\tОбщМод.", &stale), None);
+}
+
+#[test]
+fn resolve_adds_the_method_description() {
+    let sources = FixtureSources {
+        global: Vec::new(),
+        stale: false,
+    };
+    let answer = completion_at(OBJECT_MODULE, "\tОбщМод.", &sources).unwrap();
+    let item = answer["items"][0].clone();
+    assert_eq!(
+        item["data"],
+        json!({"commonModule": "ОбщМод", "method": "Метод"})
+    );
+    let resolved = resolve_completion(item, &sources.common_module_text("ОбщМод").unwrap());
+    assert_eq!(resolved["documentation"]["value"], "Описание метода.");
+    assert_eq!(resolved["detail"], "Метод(Первый) Экспорт");
+}
+
+#[test]
+fn completion_reads_the_buffer_and_the_source_set_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let source = root.join("src");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/acceptance/workspace-catalog-tabular-properties/src");
+    std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+    std::fs::copy(
+        fixture.join("Catalogs/Items.xml"),
+        source.join("Catalogs/Items.xml"),
+    )
+    .unwrap();
+    let configuration = std::fs::read_to_string(fixture.join("Configuration.xml"))
+        .unwrap()
+        .replace(
+            "<Catalog>Items</Catalog>",
+            "<CommonModule>Утилиты</CommonModule><Catalog>Items</Catalog>",
+        );
+    std::fs::write(source.join("Configuration.xml"), configuration).unwrap();
+    let module = source.join("Catalogs/Items/Ext/ObjectModule.bsl");
+    std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+    std::fs::write(&module, "").unwrap();
+
+    let mut documents = LspDocuments::new("editor", vec![layout(&root)]);
+    let overlay = DocumentOverlay::default();
+    let uri = documents
+        .uri_of_file(&String::from(url::Url::from_file_path(&module).unwrap()))
+        .unwrap();
+    let typed = "Процедура П()\n\tДля Каждого С Из ЭтотОбъект.Lines Цикл\n\t\tС.\n\tКонецЦикла;\n\tЭтотОбъект.\n\tCatalogs.\n\tУтилиты.\nКонецПроцедуры\n";
+    documents.open(&overlay, &uri, 1, typed.to_owned()).unwrap();
+    let utilities = documents
+        .spaces()
+        .format(&crate::application::lsp::uri::DocumentUri {
+            space: "ут".to_owned(),
+            address: "main:CommonModule.Утилиты".to_owned(),
+        })
+        .unwrap();
+    documents
+        .open(
+            &overlay,
+            &utilities,
+            1,
+            "Функция Сумма(А, Б) Экспорт\nКонецФункции\n".to_owned(),
+        )
+        .unwrap();
+    let read = reader(
+        &source,
+        Some(overlay.session_documents("editor", "main").unwrap()),
+    );
+    let complete = |needle: &str| {
+        documents
+            .completion(&overlay, &uri, after(typed, needle), &read, &[], &|| false)
+            .unwrap()
+            .map(|answer| labels(&answer))
+    };
+    assert_eq!(complete("\t\tС."), Some(vec!["Quantity".to_owned()]));
+    assert_eq!(
+        complete("\tЭтотОбъект."),
+        Some(vec!["Lines".to_owned(), "Notes".to_owned()])
+    );
+    assert_eq!(complete("\tCatalogs."), Some(vec!["Items".to_owned()]));
+    assert_eq!(complete("\tУтилиты."), Some(vec!["Сумма".to_owned()]));
+
+    // An answer computed for a version the buffer moved past is dropped.
+    let position = after(typed, "\tУтилиты.");
+    let stale = documents
+        .completion(&overlay, &uri, position, &read, &[], &|| {
+            overlay
+                .put(
+                    "editor",
+                    "main",
+                    Path::new("Catalogs/Items/Ext/ObjectModule.bsl"),
+                    unica_workspace::documents::DocumentText {
+                        version: 2,
+                        text: Arc::from(""),
+                    },
+                )
+                .is_err()
+        })
+        .unwrap();
+    assert_eq!(stale, None);
+}
+
+/// Completion latency on a large module and configuration. Point
+/// `UNICA_LSP_UT_SOURCE` at the dump's `src` and, for the global context,
+/// `UNICA_PLATFORM_ROOT` at an installed platform; run in release with
+/// `--ignored --nocapture`.
+#[test]
+#[ignore = "needs a large local Designer dump in UNICA_LSP_UT_SOURCE"]
+fn completion_latency_on_a_large_configuration() {
+    let Some(source) = std::env::var_os("UNICA_LSP_UT_SOURCE").map(PathBuf::from) else {
+        return;
+    };
+    let source = source.canonicalize().unwrap();
+    let global = match std::env::var_os("UNICA_PLATFORM_ROOT") {
+        Some(root) => {
+            let started = Instant::now();
+            let members =
+                unica_documentation_sources::platform_help::provider::global_context_members(
+                    Path::new(&root),
+                )
+                .unwrap();
+            println!(
+                "global context: {} members, indexed in {:.1} s",
+                members.len(),
+                started.elapsed().as_secs_f64()
+            );
+            members
+        }
+        None => Vec::new(),
+    };
+    let mut documents = LspDocuments::new(
+        "editor",
+        vec![SpaceLayout {
+            folder: WorkspaceFolder {
+                name: "УТ".to_owned(),
+                root: source.parent().unwrap().to_owned(),
+            },
+            source_sets: vec![SourceSetLayout {
+                name: "main".to_owned(),
+                kind: SourceSetKind::Configuration,
+                root: source.clone(),
+                profile: PlatformProfile::v8_3_27(),
+            }],
+        }],
+    );
+    let overlay = DocumentOverlay::default();
+    let module = source.join("CommonModules/ОбщегоНазначения/Ext/Module.bsl");
+    let uri = documents
+        .uri_of_file(&String::from(url::Url::from_file_path(&module).unwrap()))
+        .unwrap();
+    let text = std::fs::read_to_string(&module).unwrap();
+    let text = text.trim_start_matches('\u{feff}').to_owned();
+    // Type into the last method: a plain name, then a manager.
+    let end = text
+        .rfind("КонецФункции")
+        .or_else(|| text.rfind("КонецПроцедуры"))
+        .unwrap();
+    let mut typed = text.clone();
+    typed.insert_str(
+        end,
+        "Спр\n\tСправочники.\n\tОбщегоНазначенияКлиентСервер.\n",
+    );
+    documents.open(&overlay, &uri, 1, typed.clone()).unwrap();
+    let read = reader(
+        &source,
+        Some(overlay.session_documents("editor", "main").unwrap()),
+    );
+    let lines = LineIndex::new(&typed);
+    for (name, at) in [
+        ("plain name", end + "Спр".len()),
+        ("Справочники.", end + "Спр\n\tСправочники.".len()),
+        (
+            "common module",
+            end + "Спр\n\tСправочники.\n\tОбщегоНазначенияКлиентСервер.".len(),
+        ),
+    ] {
+        let position = lines.position(&typed, at);
+        let mut times = Vec::new();
+        let mut size = 0;
+        for _ in 0..5 {
+            let started = Instant::now();
+            let answer = documents
+                .completion(&overlay, &uri, position, &read, &global, &|| false)
+                .unwrap()
+                .unwrap();
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+            size = answer["items"].as_array().unwrap().len();
+        }
+        println!(
+            "completion {name}: {size} items, first {:.1} ms, best of 5 {:.1} ms",
+            times[0],
+            times.iter().cloned().fold(f64::MAX, f64::min)
+        );
+    }
 }

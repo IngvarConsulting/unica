@@ -265,6 +265,71 @@ fn indexed(key: IndexKey, corpora: &InstallationCorpora) -> Arc<InstallationInde
     index
 }
 
+/// Вид члена глобального контекста платформы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalContextMemberKind {
+    Method,
+    Property,
+}
+
+/// Член глобального контекста по справке установки: русское и английское
+/// имя и сигнатура метода.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalContextMember {
+    pub kind: GlobalContextMemberKind,
+    pub name_ru: String,
+    pub name_en: Option<String>,
+    pub signature_ru: Option<String>,
+    pub signature_en: Option<String>,
+}
+
+/// Методы и свойства глобального контекста установки `root`. Читаются из
+/// того же индекса синтакс-помощника, что и поиск, поэтому вторая выборка
+/// той же установки не перечитывает контейнеры.
+pub fn global_context_members(root: &Path) -> Result<Vec<GlobalContextMember>, String> {
+    let corpora = discover(root, "ru").map_err(|error| format!("установка не разобрана: {error:?}"))?;
+    let index = indexed(IndexKey::for_corpora(root, &corpora), &corpora);
+    let syntax = &index.corpora[0];
+    let mut members = syntax
+        .pages
+        .iter()
+        .filter_map(|page| {
+            let rest = page.path.strip_prefix("objects/Global context/")?;
+            let kind = if rest.starts_with("methods/") {
+                GlobalContextMemberKind::Method
+            } else if rest.starts_with("properties/") {
+                GlobalContextMemberKind::Property
+            } else {
+                return None;
+            };
+            let (name_ru, name_en) = global_context_names(&page.title)?;
+            Some(GlobalContextMember {
+                kind,
+                name_ru,
+                name_en,
+                signature_ru: page.signature.as_ref().and_then(|value| value.ru.clone()),
+                signature_en: page.signature.as_ref().and_then(|value| value.en.clone()),
+            })
+        })
+        .collect::<Vec<_>>();
+    members.sort_by(|a, b| a.name_ru.cmp(&b.name_ru));
+    members.dedup_by(|a, b| a.name_ru == b.name_ru && a.kind == b.kind);
+    Ok(members)
+}
+
+/// `Глобальный контекст.СтрНайти (Global context.StrFind)` — имена члена;
+/// английский заголовок без русского даёт английское имя за русское.
+fn global_context_names(title: &str) -> Option<(String, Option<String>)> {
+    let (first, rest) = match title.split_once(" (") {
+        Some((first, rest)) => (first, Some(rest.trim_end_matches(')'))),
+        None => (title, None),
+    };
+    let member = |text: &str| text.rsplit_once('.').map(|(_, name)| name.trim().to_owned());
+    let name = member(first)?;
+    let english = rest.and_then(member).filter(|english| *english != name);
+    Some((name, english))
+}
+
 /// Сигнатура на локали КОРПУСА, а не запроса. `.st` хранит обе локали, поэтому
 /// выбор — вопрос предпочтения, а не наличия: одна идёт первой, вторая остаётся
 /// запасной, чтобы вопрос про член платформы не остался вовсе без сигнатуры.
@@ -1907,5 +1972,43 @@ mod tests {
             syntax.status
         );
         assert_eq!(syntax.hits.len(), 1, "попадание приходит из индекса");
+    }
+}
+
+#[cfg(test)]
+mod global_context_tests {
+    use super::global_context_names;
+
+    #[test]
+    fn member_names_come_from_both_halves_of_the_title() {
+        assert_eq!(
+            global_context_names("Глобальный контекст.СтрНайти (Global context.StrFind)"),
+            Some(("СтрНайти".to_owned(), Some("StrFind".to_owned())))
+        );
+        assert_eq!(
+            global_context_names("Global context.Message"),
+            Some(("Message".to_owned(), None))
+        );
+        assert_eq!(global_context_names("Без точки"), None);
+    }
+}
+
+#[cfg(test)]
+mod global_context_installation {
+    /// Point `UNICA_PLATFORM_ROOT` at an installed platform version.
+    #[test]
+    #[ignore = "needs an installed platform in UNICA_PLATFORM_ROOT"]
+    fn an_installation_lists_its_global_context() {
+        let Some(root) = std::env::var_os("UNICA_PLATFORM_ROOT") else {
+            return;
+        };
+        let started = std::time::Instant::now();
+        let members = super::global_context_members(std::path::Path::new(&root)).unwrap();
+        println!("{} members in {:?}", members.len(), started.elapsed());
+        for name in ["Сообщить", "ТекущаяДата", "НСтр", "Справочники"] {
+            let member = members.iter().find(|member| member.name_ru == name);
+            println!("{name}: {member:?}");
+            assert!(member.is_some(), "{name}");
+        }
     }
 }

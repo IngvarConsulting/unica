@@ -6,7 +6,11 @@
 use crate::application::lsp::position::{LineIndex, Utf16Position};
 use serde_json::{json, Value};
 use std::ops::Range;
+use unica_address::source_target::{metadata_collection_kind, metadata_collection_names};
 use unica_bsl_parser::{parse, EditorSymbol, EditorSymbolKind, FoldKind, TokenClass};
+use unica_documentation_sources::platform_help::provider::{
+    GlobalContextMember, GlobalContextMemberKind,
+};
 
 /// Semantic token types in legend order; a token's type is its index.
 const TOKEN_TYPES: [&str; 11] = [
@@ -202,11 +206,12 @@ pub(crate) fn signature_help(
             .collect::<Vec<_>>(),
     });
     if let Some(description) = &method.description {
-        signature["documentation"] = json!({ "kind": "markdown", "value": description });
+        // Plain text: a description keeps its own line breaks and is not
+        // read as markup.
+        signature["documentation"] = json!({ "kind": "plaintext", "value": description });
     }
-    let active = call
-        .active_parameter
-        .min(parameters.len().saturating_sub(1));
+    // An argument past the last parameter highlights none, as LSP allows.
+    let active = call.active_parameter;
     Some(json!({
         "signatures": [signature],
         "activeSignature": 0,
@@ -251,6 +256,369 @@ fn signature_label(method: &EditorSymbol) -> (String, Vec<Range<u32>>) {
         label.push_str(" Экспорт");
     }
     (label, ranges)
+}
+
+/// Members of a metadata object a module can reach through it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ObjectMembers {
+    pub(crate) attributes: Vec<String>,
+    /// Each tabular section with its columns.
+    pub(crate) tabular_sections: Vec<(String, Vec<String>)>,
+}
+
+/// What completion knows beyond the module text. The LSP route supplies
+/// it over the workspace actor; tests supply a fixture.
+pub(crate) trait CompletionSources {
+    /// Methods and properties of the platform global context; empty while
+    /// the platform help is not indexed yet.
+    fn global_context(&self) -> &[GlobalContextMember];
+    /// Names of the registered objects of `kind` (`CommonModule`, `Catalog`).
+    fn metadata_names(&self, kind: &str) -> Vec<String>;
+    /// The text of a common module, by its name in any case.
+    fn common_module_text(&self, name: &str) -> Option<String>;
+    fn object_members(&self, kind: &str, name: &str) -> Option<ObjectMembers>;
+    /// The object whose object or form module is being edited.
+    fn module_owner(&self) -> Option<(String, String)>;
+    /// A newer edit made the answer stale: stop and answer nothing.
+    fn cancelled(&self) -> bool;
+}
+
+/// Kinds whose managers are global context properties (`Справочники`).
+const MANAGER_KINDS: [&str; 20] = [
+    "Catalog",
+    "Document",
+    "Enum",
+    "Report",
+    "DataProcessor",
+    "ChartOfCharacteristicTypes",
+    "ChartOfAccounts",
+    "ChartOfCalculationTypes",
+    "InformationRegister",
+    "AccumulationRegister",
+    "AccountingRegister",
+    "CalculationRegister",
+    "BusinessProcess",
+    "Task",
+    "ExchangePlan",
+    "Constant",
+    "DocumentJournal",
+    "Sequence",
+    "FilterCriterion",
+    "SettingsStorage",
+];
+
+/// Kinds whose objects carry attributes and tabular sections.
+const OBJECT_KINDS: [&str; 10] = [
+    "Catalog",
+    "Document",
+    "ChartOfCharacteristicTypes",
+    "ChartOfAccounts",
+    "ChartOfCalculationTypes",
+    "BusinessProcess",
+    "Task",
+    "ExchangePlan",
+    "DataProcessor",
+    "Report",
+];
+
+// LSP `CompletionItemKind`.
+const ITEM_METHOD: u32 = 2;
+const ITEM_FUNCTION: u32 = 3;
+const ITEM_FIELD: u32 = 5;
+const ITEM_VARIABLE: u32 = 6;
+const ITEM_CLASS: u32 = 7;
+const ITEM_MODULE: u32 = 9;
+const ITEM_PROPERTY: u32 = 10;
+const ITEM_STRUCT: u32 = 22;
+
+/// How deep a variable's type is followed through loops and assignments.
+const INFERENCE_DEPTH: usize = 4;
+
+struct Items {
+    items: Vec<Value>,
+    seen: std::collections::BTreeSet<String>,
+}
+
+impl Items {
+    fn push(
+        &mut self,
+        label: &str,
+        kind: u32,
+        rank: u8,
+        detail: Option<String>,
+        data: Option<Value>,
+    ) {
+        if label.is_empty() || !self.seen.insert(label.to_lowercase()) {
+            return;
+        }
+        let mut item = json!({
+            "label": label,
+            "kind": kind,
+            "sortText": format!("{rank}{}", label.to_lowercase()),
+        });
+        if let Some(detail) = detail {
+            item["detail"] = Value::String(detail);
+        }
+        if let Some(data) = data {
+            item["data"] = data;
+        }
+        self.items.push(item);
+    }
+}
+
+/// `textDocument/completion` at `position`: the names the code there can
+/// use. `None` inside a comment or a string, or when `sources` reports the
+/// request stale.
+pub(crate) fn completion(
+    text: &str,
+    position: Utf16Position,
+    sources: &dyn CompletionSources,
+) -> Option<Value> {
+    let lines = LineIndex::new(text);
+    let offset = lines.offset(text, position).ok()?;
+    let parsed = parse(text);
+    let site = parsed.completion_site(offset)?;
+    let mut items = Items {
+        items: Vec::new(),
+        seen: Default::default(),
+    };
+    match &site.receiver {
+        None => names_in_scope(&parsed, offset, sources, &mut items),
+        Some(path) => members_of(&parsed, offset, path, sources, &mut items),
+    }
+    if sources.cancelled() {
+        return None;
+    }
+    let edit_range = range(text, &lines, &site.prefix_range);
+    for item in &mut items.items {
+        item["textEdit"] = json!({ "range": edit_range, "newText": item["label"] });
+    }
+    Some(json!({ "isIncomplete": false, "items": items.items }))
+}
+
+fn names_in_scope(
+    parsed: &unica_bsl_parser::ParsedModule<'_>,
+    offset: usize,
+    sources: &dyn CompletionSources,
+    items: &mut Items,
+) {
+    let visible = parsed.visible_names(offset);
+    for name in &visible.parameters {
+        items.push(name, ITEM_VARIABLE, 0, Some("Параметр".to_owned()), None);
+    }
+    for name in &visible.locals {
+        items.push(
+            name,
+            ITEM_VARIABLE,
+            0,
+            Some("Локальная переменная".to_owned()),
+            None,
+        );
+    }
+    for name in &visible.module_variables {
+        items.push(
+            name,
+            ITEM_VARIABLE,
+            1,
+            Some("Переменная модуля".to_owned()),
+            None,
+        );
+    }
+    for method in methods(&parsed.editor_symbols()) {
+        let (label, _) = signature_label(&method);
+        let kind = if method.kind == EditorSymbolKind::Function {
+            ITEM_FUNCTION
+        } else {
+            ITEM_METHOD
+        };
+        items.push(
+            &method.name,
+            kind,
+            1,
+            Some(label),
+            Some(json!({ "method": method.name })),
+        );
+    }
+    if let Some((kind, name)) = sources.module_owner() {
+        if let Some(members) = sources.object_members(&kind, &name) {
+            object_items(&members, 2, items);
+        }
+    }
+    if sources.cancelled() {
+        return;
+    }
+    for module in sources.metadata_names("CommonModule") {
+        items.push(
+            &module,
+            ITEM_MODULE,
+            3,
+            Some("Общий модуль".to_owned()),
+            None,
+        );
+    }
+    for kind in MANAGER_KINDS {
+        if let Some(names) = metadata_collection_names(kind) {
+            // English first, then the Russian name code uses.
+            if let Some(name) = names.get(1) {
+                items.push(name, ITEM_PROPERTY, 4, None, None);
+            }
+        }
+    }
+    for member in sources.global_context() {
+        let (kind, detail) = match member.kind {
+            GlobalContextMemberKind::Method => (ITEM_FUNCTION, member.signature_ru.clone()),
+            GlobalContextMemberKind::Property => (ITEM_PROPERTY, None),
+        };
+        items.push(&member.name_ru, kind, 5, detail, None);
+    }
+}
+
+fn members_of(
+    parsed: &unica_bsl_parser::ParsedModule<'_>,
+    offset: usize,
+    path: &[String],
+    sources: &dyn CompletionSources,
+    items: &mut Items,
+) {
+    match path {
+        [] => {}
+        [single] => {
+            if let Some(kind) = manager_kind(single) {
+                for name in sources.metadata_names(kind) {
+                    items.push(&name, ITEM_CLASS, 0, None, None);
+                }
+                return;
+            }
+            let lower = single.to_lowercase();
+            let is_module = sources
+                .metadata_names("CommonModule")
+                .iter()
+                .any(|module| module.to_lowercase() == lower);
+            if is_module {
+                if let Some(module) = sources.common_module_text(single) {
+                    for method in methods(&parse(&module).editor_symbols()) {
+                        if method.is_export {
+                            let (label, _) = signature_label(&method);
+                            items.push(
+                                &method.name,
+                                ITEM_METHOD,
+                                0,
+                                Some(label),
+                                Some(json!({ "commonModule": single, "method": method.name })),
+                            );
+                        }
+                    }
+                }
+                return;
+            }
+            if let Some(members) = object_of(parsed, offset, path, sources, INFERENCE_DEPTH) {
+                object_items(&members, 0, items);
+            }
+        }
+        // `Объект.Товары.` gives no columns: a tabular section is a
+        // collection. A loop variable over it does (see `object_of`).
+        _ => {}
+    }
+}
+
+/// The members `path` reaches, when it names an object or a row of a
+/// tabular section: `ЭтотОбъект`, `Объект` in a form, a variable created
+/// by `Справочники.X.СоздатьЭлемент()` or a loop variable over a section.
+fn object_of(
+    parsed: &unica_bsl_parser::ParsedModule<'_>,
+    offset: usize,
+    path: &[String],
+    sources: &dyn CompletionSources,
+    depth: usize,
+) -> Option<ObjectMembers> {
+    let depth = depth.checked_sub(1)?;
+    let [variable] = path else {
+        return None;
+    };
+    let lower = variable.to_lowercase();
+    if matches!(
+        lower.as_str(),
+        "этотобъект" | "thisobject" | "объект" | "object"
+    ) {
+        let (kind, name) = sources.module_owner()?;
+        return sources.object_members(&kind, &name);
+    }
+    if let Some(call) = parsed.assigned_call(offset, variable) {
+        if let [manager, name, create] = call.as_slice() {
+            let kind = manager_kind(manager)?;
+            let create = create.to_lowercase();
+            let creates = create.starts_with("создать") || create.starts_with("create");
+            if creates && OBJECT_KINDS.contains(&kind) {
+                return sources.object_members(kind, name);
+            }
+        }
+        return None;
+    }
+    let collection = parsed.loop_collection(offset, variable)?;
+    let (owner, section) = collection.split_at(collection.len().checked_sub(1)?);
+    let owner = object_of(parsed, offset, owner, sources, depth)?;
+    let section = section[0].to_lowercase();
+    owner
+        .tabular_sections
+        .into_iter()
+        .find(|(name, _)| name.to_lowercase() == section)
+        .map(|(_, columns)| ObjectMembers {
+            attributes: columns,
+            tabular_sections: Vec::new(),
+        })
+}
+
+fn object_items(members: &ObjectMembers, rank: u8, items: &mut Items) {
+    for attribute in &members.attributes {
+        items.push(
+            attribute,
+            ITEM_FIELD,
+            rank,
+            Some("Реквизит".to_owned()),
+            None,
+        );
+    }
+    for (section, _) in &members.tabular_sections {
+        items.push(
+            section,
+            ITEM_STRUCT,
+            rank,
+            Some("Табличная часть".to_owned()),
+            None,
+        );
+    }
+}
+
+fn manager_kind(name: &str) -> Option<&'static str> {
+    metadata_collection_kind(name).filter(|kind| MANAGER_KINDS.contains(kind))
+}
+
+/// Every method of a symbol tree, regions flattened.
+fn methods(symbols: &[EditorSymbol]) -> Vec<EditorSymbol> {
+    let mut found = Vec::new();
+    for symbol in symbols {
+        if symbol.kind == EditorSymbolKind::Region {
+            found.extend(methods(&symbol.children));
+        } else {
+            found.push(symbol.clone());
+        }
+    }
+    found
+}
+
+/// `completionItem/resolve`: the description of a module method, read
+/// from `module_text` (this module, or the common module the item names).
+pub(crate) fn resolve_completion(mut item: Value, module_text: &str) -> Value {
+    let Some(method) = item["data"]["method"].as_str() else {
+        return item;
+    };
+    let exported = item["data"]["commonModule"].is_string();
+    if let Some(found) = find_method(&parse(module_text).editor_symbols(), method, exported) {
+        if let Some(description) = found.description {
+            item["documentation"] = json!({ "kind": "plaintext", "value": description });
+        }
+    }
+    item
 }
 
 fn range(text: &str, lines: &LineIndex, range: &Range<usize>) -> Value {
