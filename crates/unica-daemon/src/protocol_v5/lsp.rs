@@ -91,6 +91,15 @@ pub enum V5LspCall {
         uri: String,
         position: V5LspPosition,
     },
+    #[serde(rename = "textDocument/completion")]
+    Completion {
+        uri: String,
+        position: V5LspPosition,
+    },
+    /// Элемент, который служба выдала в `completion`, как его вернул
+    /// редактор: документ служба записала в его `data`.
+    #[serde(rename = "completionItem/resolve")]
+    CompletionResolve { item: Value },
 }
 
 impl V5LspCall {
@@ -102,12 +111,20 @@ impl V5LspCall {
             | Self::DocumentSymbol { uri }
             | Self::FoldingRange { uri }
             | Self::SemanticTokensFull { uri }
-            | Self::SignatureHelp { uri, .. } => Some(uri),
+            | Self::SignatureHelp { uri, .. }
+            | Self::Completion { uri, .. } => Some(uri),
+            Self::CompletionResolve { .. } => None,
         }
     }
 
     fn validate(&self) -> Result<(), String> {
-        validate_uri(self.document_uri().unwrap_or_default())
+        match self {
+            Self::CompletionResolve { item } if item.is_object() => Ok(()),
+            Self::CompletionResolve { .. } => {
+                Err("v5 lsp completion item must be an object".to_string())
+            }
+            _ => validate_uri(self.document_uri().unwrap_or_default()),
+        }
     }
 }
 
@@ -202,6 +219,8 @@ pub struct V5LspCapabilities {
     pub document_symbols: bool,
     pub folding_ranges: bool,
     pub signature_help: bool,
+    /// `completion` с `completionItem/resolve`.
+    pub completion: bool,
     /// Легенда `semanticTokens/full`, если служба их выдаёт.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_tokens_legend: Option<Value>,
@@ -215,6 +234,7 @@ impl V5LspCapabilities {
         document_symbols: false,
         folding_ranges: false,
         signature_help: false,
+        completion: false,
         semantic_tokens_legend: None,
     };
 }

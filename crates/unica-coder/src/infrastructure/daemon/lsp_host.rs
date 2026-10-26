@@ -32,6 +32,7 @@ use unica_daemon::protocol_v5::lsp::{
     V5LspOpening, V5LspOutcome, V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
     V5LspWorkspaceSpace,
 };
+use unica_documentation_sources::platform_help::provider::GlobalContextMember;
 use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_source_contract::{SourceFormat, SourceProfile};
 use unica_workspace::actor::{ProviderRootBinding, WorkspaceSourceSetInput};
@@ -43,6 +44,7 @@ const ACTOR_SCOPE: &str = "canonical-v0.13";
 
 pub(crate) struct UnicaLspHost {
     actors: Arc<WorkspaceActorRegistry>,
+    platform: Arc<PlatformContexts>,
     sessions: Mutex<HashMap<V5LspSessionId, Arc<RwLock<Session>>>>,
 }
 
@@ -55,6 +57,8 @@ struct Session {
 /// of its source sets.
 struct AdmittedSpace {
     folder: PathBuf,
+    /// The platform installation whose global context completion offers.
+    platform_root: Option<PathBuf>,
     actor: Weak<WorkspaceActor>,
     bindings: Vec<ProviderRootBinding>,
     identity: SafeIdentityHash,
@@ -64,6 +68,7 @@ impl UnicaLspHost {
     pub(crate) fn new(actors: Arc<WorkspaceActorRegistry>) -> Self {
         Self {
             actors,
+            platform: Arc::new(PlatformContexts::default()),
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -137,6 +142,7 @@ impl LspHost for UnicaLspHost {
                 document_symbols: true,
                 folding_ranges: true,
                 signature_help: true,
+                completion: true,
                 semantic_tokens_legend: Some(lsp_features::semantic_tokens_legend()),
             },
             workspaces,
@@ -233,7 +239,7 @@ impl LspHost for UnicaLspHost {
             return V5LspOutcome::Cancelled {};
         }
         let session = read(&session);
-        answer(&session, call).unwrap_or_else(failed)
+        answer(&session, call, context, &self.platform).unwrap_or_else(failed)
     }
 
     fn close(&self, session: &V5LspSessionId) {
@@ -250,6 +256,49 @@ impl LspHost for UnicaLspHost {
         {
             let _ = actor.documents().close_session(session.documents.session());
         }
+    }
+}
+
+/// The global context of each platform installation, loaded once in the
+/// background: a cold syntax-help index takes far longer than a request.
+#[derive(Default)]
+struct PlatformContexts {
+    loaded: Mutex<HashMap<PathBuf, PlatformContext>>,
+}
+
+#[derive(Clone)]
+enum PlatformContext {
+    Loading,
+    Ready(Arc<[GlobalContextMember]>),
+    Unavailable,
+}
+
+impl PlatformContexts {
+    /// The members of `root`, or `None` while they are not known; the first
+    /// ask starts the load.
+    fn members(self: &Arc<Self>, root: &std::path::Path) -> Option<Arc<[GlobalContextMember]>> {
+        let mut loaded = lock(&self.loaded);
+        match loaded.get(root) {
+            Some(PlatformContext::Ready(members)) => return Some(Arc::clone(members)),
+            Some(PlatformContext::Loading | PlatformContext::Unavailable) => return None,
+            None => {}
+        }
+        loaded.insert(root.to_path_buf(), PlatformContext::Loading);
+        drop(loaded);
+        let (contexts, owned) = (Arc::clone(self), root.to_path_buf());
+        let spawned = std::thread::Builder::new()
+            .name("unica-lsp-global-context".into())
+            .spawn(move || {
+                let context = match unica_documentation_sources::platform_help::provider::global_context_members(&owned) {
+                    Ok(members) => PlatformContext::Ready(Arc::from(members)),
+                    Err(_) => PlatformContext::Unavailable,
+                };
+                lock(&contexts.loaded).insert(owned, context);
+            });
+        if spawned.is_err() {
+            lock(&self.loaded).remove(root);
+        }
+        None
     }
 }
 
@@ -373,7 +422,12 @@ impl AdmittedSpace {
 
 /// The answer to one editor request, from the document as this session
 /// sees it: its open buffer, otherwise the file.
-fn answer(session: &Session, call: V5LspCall) -> Result<V5LspOutcome, V5LspFailure> {
+fn answer(
+    session: &Session,
+    call: V5LspCall,
+    context: &LspCallContext,
+    platform: &Arc<PlatformContexts>,
+) -> Result<V5LspOutcome, V5LspFailure> {
     let json = |value| V5LspOutcome::Json { value };
     let text_with = |uri: &str, build: fn(&str) -> serde_json::Value| {
         let (uri, read) = document_read(session, uri)?;
@@ -401,8 +455,73 @@ fn answer(session: &Session, call: V5LspCall) -> Result<V5LspOutcome, V5LspFailu
                 .map_err(document_failure)?;
             Ok(json(help.unwrap_or(serde_json::Value::Null)))
         }
+        V5LspCall::Completion { uri, position } => {
+            let (uri, space, read) = document_space(session, &uri)?;
+            let actor = space
+                .actor
+                .upgrade()
+                .ok_or(V5LspFailure::WorkspaceUnavailable)?;
+            // Without the platform's global context the list lacks its
+            // methods: it is marked incomplete, so the editor asks again.
+            let members = space
+                .platform_root
+                .as_deref()
+                .and_then(|root| platform.members(root));
+            let list = session
+                .documents
+                .completion(
+                    actor.documents(),
+                    &uri,
+                    Utf16Position {
+                        line: position.line,
+                        character: position.character,
+                    },
+                    &read,
+                    members.as_deref().unwrap_or_default(),
+                    &|| context.is_cancelled(),
+                )
+                .map_err(document_failure)?;
+            if context.is_cancelled() {
+                return Ok(V5LspOutcome::Cancelled {});
+            }
+            Ok(json(match list {
+                Some(list) => completion_list(list, &uri, members.is_none()),
+                None => serde_json::Value::Null,
+            }))
+        }
+        V5LspCall::CompletionResolve { item } => {
+            let uri = item["data"][COMPLETION_DOCUMENT]
+                .as_str()
+                .ok_or(V5LspFailure::DocumentUnknown)?
+                .to_owned();
+            let (uri, read) = document_read(session, &uri)?;
+            session
+                .documents
+                .resolve_completion(&uri, item, &read)
+                .map(json)
+                .map_err(document_failure)
+        }
         V5LspCall::Hover { .. } => Err(V5LspFailure::NotSupported),
     }
+}
+
+/// Where a completion item keeps its document for `completionItem/resolve`:
+/// the editor returns the item as it got it.
+const COMPLETION_DOCUMENT: &str = "unicaDocument";
+
+fn completion_list(mut list: serde_json::Value, uri: &str, incomplete: bool) -> serde_json::Value {
+    if incomplete {
+        list["isIncomplete"] = serde_json::Value::Bool(true);
+    }
+    if let Some(items) = list["items"].as_array_mut() {
+        for item in items {
+            if !item["data"].is_object() {
+                item["data"] = serde_json::json!({});
+            }
+            item["data"][COMPLETION_DOCUMENT] = serde_json::Value::String(uri.to_owned());
+        }
+    }
+    list
 }
 
 /// The `unica://` URI of a document and a read of its source set that sees
@@ -411,6 +530,13 @@ fn document_read(
     session: &Session,
     uri: &str,
 ) -> Result<(String, ProviderReadAuthority), V5LspFailure> {
+    document_space(session, uri).map(|(uri, _, read)| (uri, read))
+}
+
+fn document_space<'a>(
+    session: &'a Session,
+    uri: &str,
+) -> Result<(String, &'a AdmittedSpace, ProviderReadAuthority), V5LspFailure> {
     let uri = document_uri(&session.documents, uri).map_err(|_| V5LspFailure::DocumentUnknown)?;
     let location = session
         .documents
@@ -421,7 +547,7 @@ fn document_read(
         .get(&location.document.space)
         .ok_or(V5LspFailure::DocumentUnknown)?;
     let read = space.read(session.documents.session(), &location.source_set)?;
-    Ok((uri, read))
+    Ok((uri, space, read))
 }
 
 fn document_text(
@@ -517,6 +643,9 @@ fn admit_actor(
     Some((
         AdmittedSpace {
             folder: folder.to_path_buf(),
+            platform_root: crate::infrastructure::application_ports::platform_installation_root(
+                &context,
+            ),
             actor: Arc::downgrade(&actor),
             bindings,
             identity,

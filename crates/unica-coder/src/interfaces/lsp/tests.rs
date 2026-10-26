@@ -269,6 +269,12 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     let daemon = LiveV5Daemon::start_with_product_lsp(canonical_v13_service());
     let owner = daemon.owner();
     let workspace = catalog_workspace();
+    // No platform installation: completion stays without the global context.
+    std::fs::write(
+        workspace.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ntools:\n  platform:\n    path: absent/8.3.27.1\n",
+    )
+    .unwrap();
     let module = workspace
         .path()
         .join("src/CommonModules/Main/Ext/Module.bsl");
@@ -358,6 +364,25 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
         capabilities["signatureHelpProvider"],
         json!({"triggerCharacters": ["(", ","]})
     );
+    assert_eq!(
+        capabilities["completionProvider"],
+        json!({"triggerCharacters": ["."], "resolveProvider": true})
+    );
+    let completion = editor.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "unica://work/main/CommonModule.Main"},
+            "position": {"line": 0, "character": 0},
+        }),
+    );
+    assert_eq!(completion["result"]["isIncomplete"], true, "{completion}");
+    if let Some(item) = completion["result"]["items"]
+        .as_array()
+        .and_then(|items| items.first())
+    {
+        let resolved = editor.request("completionItem/resolve", item.clone());
+        assert_eq!(resolved["result"]["label"], item["label"], "{resolved}");
+    }
 
     // A change the buffer cannot take puts the document out of sync: no
     // answer about it until the editor sends its whole text again.

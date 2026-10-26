@@ -358,3 +358,68 @@ fn a_module_is_reached_by_every_spelling_of_its_unica_uri() {
         assert_eq!(content(&host, &editor, uri), text("// УТ\n"), "{uri}");
     }
 }
+
+/// Completion offers the names the session's buffer has. Without the
+/// platform's global context the list is marked incomplete; its items carry
+/// their document back to `completionItem/resolve`.
+#[test]
+fn completion_without_the_platform_context_is_marked_incomplete_and_resolves() {
+    let workspace = workspace();
+    // A pinned installation that is not there: the global context stays
+    // unavailable instead of indexing whatever this machine has installed.
+    fs::write(
+        workspace.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ntools:\n  platform:\n    path: absent/8.3.27.1\n",
+    )
+    .unwrap();
+    let host = UnicaLspHost::new(Arc::new(
+        crate::infrastructure::source_workspace::actor_registry(),
+    ));
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+    let uri = session_uri(&host, &editor, &file_uri(&workspace.path().join(MODULE)));
+    open_buffer(
+        &host,
+        &editor,
+        &uri,
+        "Процедура Выполнить()\n    \nКонецПроцедуры\n\nПроцедура Помощник() Экспорт\nКонецПроцедуры\n",
+    );
+
+    let V5LspOutcome::Json { value: list } = ask(
+        &host,
+        &editor,
+        V5LspCall::Completion {
+            uri: uri.clone(),
+            position: unica_daemon::protocol_v5::lsp::V5LspPosition {
+                line: 1,
+                character: 4,
+            },
+        },
+    ) else {
+        panic!("completion answers with a list");
+    };
+
+    assert_eq!(list["isIncomplete"], true, "{list}");
+    let items = list["items"].as_array().unwrap();
+    let helper = items
+        .iter()
+        .find(|item| item["label"] == "Помощник")
+        .unwrap_or_else(|| panic!("{list}"));
+    assert_eq!(helper["data"][COMPLETION_DOCUMENT], uri.as_str());
+    let V5LspOutcome::Json { value: resolved } = ask(
+        &host,
+        &editor,
+        V5LspCall::CompletionResolve {
+            item: helper.clone(),
+        },
+    ) else {
+        panic!("resolve answers with the item");
+    };
+    assert_eq!(resolved["label"], "Помощник", "{resolved}");
+}

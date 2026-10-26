@@ -675,6 +675,12 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
             json!({"legend": legend, "full": true}),
         );
     }
+    if capabilities.completion {
+        result.insert(
+            "completionProvider".into(),
+            json!({"triggerCharacters": ["."], "resolveProvider": true}),
+        );
+    }
     if capabilities.signature_help {
         result.insert(
             "signatureHelpProvider".into(),
@@ -771,6 +777,16 @@ fn document_call(method: &str, params: &Value) -> Option<Option<V5LspCall>> {
                 uri,
                 position: position(params.get("position")?)?,
             })
+        }),
+        "textDocument/completion" => uri().and_then(|uri| {
+            Some(V5LspCall::Completion {
+                uri,
+                position: position(params.get("position")?)?,
+            })
+        }),
+        // The params are the item the service gave, as the editor returns it.
+        "completionItem/resolve" => params.is_object().then(|| V5LspCall::CompletionResolve {
+            item: params.clone(),
         }),
         _ => return None,
     })
