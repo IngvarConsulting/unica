@@ -1961,6 +1961,81 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
     mcp.finish();
 }
 
+/// The next name search after a publication through the daemon sees the
+/// created object, without a restart. Fresh files are not kept in the names
+/// catalog (see the settle window), so this checks the observable answer;
+/// how a publication resets the catalog is checked by
+/// `a_published_collection_is_read_again_and_the_others_are_kept`.
+#[test]
+fn names_search_sees_an_apply_publication_on_the_next_call() {
+    let root = tempfile::tempdir().expect("names publication workspace");
+    let workspace = root.path();
+    let source = workspace.join("src");
+    std::fs::create_dir_all(source.join("Catalogs")).expect("catalog collection");
+    std::fs::create_dir_all(source.join("Languages")).expect("language collection");
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        source.join("Configuration.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Store</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration descriptor");
+    std::fs::write(
+        source.join("Languages/Русский.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Русский</Name><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#,
+    )
+    .expect("language descriptor");
+    std::fs::write(
+        source.join("Catalogs/Items.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Items</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+    )
+    .expect("catalog descriptor");
+
+    let mut mcp = McpProcess::start(workspace);
+    mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-names-publication", "version": "1"}}
+    }));
+    mcp.notify(json!({
+        "jsonrpc": "2.0", "method": "notifications/initialized", "params": {}
+    }));
+    let search = |mcp: &mut McpProcess, id: u64| {
+        let page = mcp.completed_tool_call(call_tool(
+            id,
+            "unica.search",
+            json!({"query": "Readers", "corpus": "names", "kind": "Subsystem"}),
+        ));
+        assert_eq!(page["ok"], true, "{page:#}");
+        page["data"]["matches"]
+            .as_array()
+            .expect("name matches")
+            .iter()
+            .map(|item| item["at"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert!(search(&mut mcp, 10).is_empty());
+
+    let preview = mcp.completed_tool_call(call_tool(
+        11,
+        "unica.apply",
+        json!({"at": "main:Configuration",
+               "ops": [{"op": "subsystem.create", "args": {"values": {"name": "Readers"}}}]}),
+    ));
+    assert_eq!(preview["ok"], true, "{preview:#}");
+    let published = mcp.completed_tool_call(call_tool(
+        12,
+        "unica.apply",
+        json!({"executionToken": preview["data"]["executionToken"]}),
+    ));
+    assert_eq!(published["ok"], true, "{published:#}");
+    assert_eq!(search(&mut mcp, 13), ["main:Subsystem.Readers"]);
+    mcp.finish();
+}
+
 fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
     std::fs::create_dir_all(to).expect("create fixture copy directory");
     for entry in std::fs::read_dir(from).expect("list fixture directory") {

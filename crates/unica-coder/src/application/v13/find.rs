@@ -518,14 +518,12 @@ impl FindIndex {
     }
 }
 
-/// One page of the ranked answer of [`FindIndex::find_all_checked`], built
-/// while the layout is walked. Each document is scored as it is read and
-/// dropped; only the `keep` best candidates ranked after the previous page's
-/// last item stay, so memory follows the page size at any depth. Every
-/// match still counts toward the total and a fingerprint that does not
-/// depend on the order it was met in.
-/// Nearest names are scored on a second walk, only when nothing matched
-/// directly.
+/// One page of the ranked answer of [`FindIndex::find_all_checked`]. Each
+/// document is scored as it is offered; only the `keep` best candidates
+/// ranked after the previous page's last item stay. Every match still counts
+/// toward the total and a fingerprint that does not depend on the order it
+/// was met in. Nearest names are scored on a second pass over the same
+/// documents, only when nothing matched directly.
 pub(crate) struct NameRanker {
     request: FindRequest,
     query: String,
@@ -623,7 +621,7 @@ impl NameRanker {
         }
     }
 
-    pub(crate) fn offer(&mut self, document: FindDocument) {
+    pub(crate) fn offer(&mut self, document: &FindDocument) {
         if !self.nearest_pass {
             if let Some(present) = self.watched.get_mut(&document.at) {
                 *present = true;
@@ -639,9 +637,9 @@ impl NameRanker {
             return;
         }
         let found = if self.nearest_pass {
-            nearest_match(&document, &self.query)
+            nearest_match(document, &self.query)
         } else {
-            best_direct_match(&document, &self.query)
+            best_direct_match(document, &self.query)
         };
         if let Some(found) = found {
             self.admit(found.score, found.into_candidate());

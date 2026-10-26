@@ -195,6 +195,12 @@ impl SourceDirectoryReadPort for DirectoryRead {
     fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
         self.retained.relative_file_stamp(relative)
     }
+    fn relative_entry_stamp_nofollow(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
+        self.retained.relative_entry_stamp_nofollow(relative)
+    }
+    fn validate_relative_entry(&self, relative: &Path, expected: &FileStamp) -> io::Result<()> {
+        self.retained.validate_relative_entry(relative, expected)
+    }
     fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadHandle> {
         self.retained
             .open_relative_regular_nofollow(relative)
@@ -367,4 +373,57 @@ impl ReadFile {
 /// Read a regular child through the same retained directory observation.
 pub fn open_read_regular_child_nofollow(parent: &ReadFile, name: &OsStr) -> io::Result<ReadFile> {
     filesystem::open_regular_child_nofollow(&parent.file, name).map(|file| ReadFile { file })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::open_source_directory;
+    use std::path::Path;
+
+    #[test]
+    fn a_relative_entry_stamp_names_the_entry_itself_and_changes_with_it() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("Catalogs")).unwrap();
+        std::fs::write(root.join("Catalogs/Items.xml"), b"first").unwrap();
+        let directory = open_source_directory(&root).unwrap();
+        let stamp = |relative: &str| {
+            directory
+                .relative_entry_stamp_nofollow(Path::new(relative))
+                .unwrap()
+        };
+
+        let own = stamp("").expect("an empty path names the directory itself");
+        assert_eq!(own.identity(), directory.identity());
+        assert_eq!(stamp("Catalogs/Absent.xml"), None);
+        let file = stamp("Catalogs/Items.xml").unwrap();
+        assert_eq!(stamp("Catalogs/Items.xml"), Some(file));
+        directory
+            .validate_relative_entry(Path::new("Catalogs/Items.xml"), &file)
+            .unwrap();
+
+        std::fs::write(root.join("Catalogs/Items.xml"), b"second, longer").unwrap();
+        assert_ne!(stamp("Catalogs/Items.xml"), Some(file));
+        assert!(directory
+            .validate_relative_entry(Path::new("Catalogs/Items.xml"), &file)
+            .is_err());
+        assert!(directory
+            .relative_entry_stamp_nofollow(Path::new("../Catalogs"))
+            .is_err());
+
+        let target = stamp("Catalogs").unwrap();
+        match crate::platform::filesystem::create_test_directory_link(
+            &root.join("Catalogs"),
+            &root.join("Linked"),
+        ) {
+            Ok(()) => {
+                let link = stamp("Linked").unwrap();
+                assert_ne!(link.identity(), target.identity(), "a link is not followed");
+            }
+            Err(error) => unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                &error.to_string(),
+            ),
+        }
+    }
 }

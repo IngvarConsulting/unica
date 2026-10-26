@@ -4,6 +4,7 @@ use crate::application::v13::find::{
 };
 use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::event_sources::module_address_for_relative;
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io;
@@ -12,7 +13,9 @@ use std::sync::Arc;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_bsl::profile::PlatformProfile;
 use unica_refusal::{RefusalCode, RefusalDetail};
-use unica_source_contract::read::{FileIdentity, SourceDirectory, SourceEntry, SourceFile};
+use unica_source_contract::read::{
+    FileIdentity, FileStamp, SourceDirectory, SourceEntry, SourceFile,
+};
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::layout::metadata_kind_by_directory;
 use unica_source_designer::module_layout::{module_relative, module_source_address};
@@ -68,17 +71,35 @@ impl AttachedPathResource {
     }
 }
 
+mod catalog;
+
+pub(crate) use catalog::NameCatalog;
+use catalog::{CachedEntry, CatalogCheckout, DescriptorFacts};
+
 /// One admitted source-set root. The directory is read through the retained
 /// no-follow capability the actor owns; no path is reopened by name.
 pub(crate) struct LayoutFindSource<'a> {
     name: &'a str,
     kind: SourceSetKind,
     root: &'a SourceDirectory,
+    /// The names catalog the actor retains for this root: a name search
+    /// reads again only what changed since it was filled.
+    names: Option<&'a NameCatalog>,
 }
 
 impl<'a> LayoutFindSource<'a> {
     pub(crate) const fn new(name: &'a str, kind: SourceSetKind, root: &'a SourceDirectory) -> Self {
-        Self { name, kind, root }
+        Self {
+            name,
+            kind,
+            root,
+            names: None,
+        }
+    }
+
+    pub(crate) const fn with_names(mut self, names: &'a NameCatalog) -> Self {
+        self.names = Some(names);
+        self
     }
 }
 
@@ -87,6 +108,9 @@ pub(crate) struct FindBuildError {
     code: RefusalCode,
     detail: Option<RefusalDetail>,
     message: String,
+    /// Raised by a directory the walk opened on its way to an entry: it is
+    /// no evidence about that entry alone.
+    beyond_entry: bool,
 }
 
 impl FindBuildError {
@@ -95,6 +119,7 @@ impl FindBuildError {
             code,
             detail: None,
             message: message.into(),
+            beyond_entry: false,
         }
     }
 
@@ -103,7 +128,13 @@ impl FindBuildError {
             code: detail.code(),
             detail: Some(detail),
             message: message.into(),
+            beyond_entry: false,
         }
+    }
+
+    const fn beyond_entry(mut self) -> Self {
+        self.beyond_entry = true;
+        self
     }
 
     pub(crate) const fn code(&self) -> RefusalCode {
@@ -115,7 +146,7 @@ impl FindBuildError {
     }
 
     fn is_local_unreadable(&self) -> bool {
-        self.detail == Some(RefusalDetail::SourceUnreadable)
+        !self.beyond_entry && self.detail == Some(RefusalDetail::SourceUnreadable)
     }
 }
 
@@ -196,9 +227,9 @@ struct DirectoryBuild {
     attempted_fact_bytes: usize,
     omissions: FindOmissions,
     include_module_aliases: bool,
-    /// A name search scores each document as it is read instead of keeping
-    /// the directory, so the directory budgets do not apply to it.
-    ranker: Option<NameRanker>,
+    /// A name search ranks every document of the layout, so the directory
+    /// budgets do not apply to it.
+    search: bool,
     /// Addresses already pushed for the kind being walked, kept only when
     /// two collection directories of the source name that kind (they can
     /// differ in letter case alone): the first document of an address wins.
@@ -295,23 +326,23 @@ impl WorkspaceFindDirectoryBuilder {
         cancellation: &CancellationToken,
         include_module_aliases: bool,
     ) -> Result<FindIndex, FindBuildError> {
-        let (outcome, _) = self.build_internal(
+        let (documents, omissions) = self.build_internal(
             sources,
             deadline,
             cancellation,
             include_module_aliases,
-            None,
+            false,
         )?;
-        if outcome.omissions.total != 0 {
+        if omissions.total != 0 {
             return Err(FindBuildError::with_detail(
                 RefusalDetail::SourceUnreadable,
                 format!(
                     "resolve cannot prove a complete source layout: {} descriptor reads failed",
-                    outcome.omissions.total
+                    omissions.total
                 ),
             ));
         }
-        Ok(outcome.index)
+        Ok(FindIndex::new(documents))
     }
 
     #[cfg(test)]
@@ -321,52 +352,55 @@ impl WorkspaceFindDirectoryBuilder {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<FindBuildOutcome, FindBuildError> {
-        self.build_internal(sources, deadline, cancellation, false, None)
-            .map(|(outcome, _)| outcome)
+        self.build_internal(sources, deadline, cancellation, false, false)
+            .map(|(documents, omissions)| FindBuildOutcome {
+                index: FindIndex::new(documents),
+                omissions,
+            })
     }
 
-    /// Search the names of `sources` by walking the layout: each document is
-    /// scored while it is read and dropped, and only the page's best
-    /// candidates stay (see [`NameRanker`]). Neither the directory entry
-    /// count nor its facts are budgeted. Nearest names take a second walk,
-    /// only when nothing matched directly. Each page walks the layout again
-    /// (#2106).
+    /// Search the names of `sources`: one walk of the layout yields every
+    /// document, reading again only what changed since the names catalog
+    /// of the source was filled. The documents are ranked for one page (see
+    /// [`NameRanker`]); nearest names are ranked over the same documents
+    /// when nothing matched directly. Neither the directory entry count nor
+    /// its facts are budgeted. Each page walks the layout again (#2106).
     pub(crate) fn search_names(
         &self,
         sources: &[LayoutFindSource<'_>],
-        ranker: NameRanker,
+        mut ranker: NameRanker,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<NameSearchOutcome, FindBuildError> {
-        let (mut outcome, ranker) =
-            self.build_internal(sources, deadline, cancellation, false, Some(ranker))?;
-        let mut ranker = ranker.expect("a name search keeps its ranker");
+        let (documents, omissions) =
+            self.build_internal(sources, deadline, cancellation, false, true)?;
+        for (index, document) in documents.iter().enumerate() {
+            if index % 1024 == 0 {
+                find_checkpoint(deadline, cancellation)?;
+            }
+            ranker.offer(document);
+        }
         if ranker.needs_nearest_pass() {
-            let (second, nearest) = self.build_internal(
-                sources,
-                deadline,
-                cancellation,
-                false,
-                Some(ranker.into_nearest_pass()),
-            )?;
-            outcome = second;
-            ranker = nearest.expect("a name search keeps its ranker");
+            ranker = ranker.into_nearest_pass();
+            for (index, document) in documents.iter().enumerate() {
+                if index % 1024 == 0 {
+                    find_checkpoint(deadline, cancellation)?;
+                }
+                ranker.offer(document);
+            }
         }
         find_checkpoint(deadline, cancellation)?;
         Ok(NameSearchOutcome {
             present: ranker.watched_presence(),
             names: ranker.finish(),
-            omissions: outcome.omissions,
+            omissions,
         })
     }
 
     /// A name search lists a collection whole; the layout directory that
     /// address resolution and call-graph neighbours hold keeps its limit.
     fn collection_limit(&self, build: &DirectoryBuild) -> Option<usize> {
-        build
-            .ranker
-            .is_none()
-            .then_some(self.max_collection_entries)
+        (!build.search).then_some(self.max_collection_entries)
     }
 
     fn build_internal(
@@ -375,8 +409,8 @@ impl WorkspaceFindDirectoryBuilder {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
         include_module_aliases: bool,
-        ranker: Option<NameRanker>,
-    ) -> Result<(FindBuildOutcome, Option<NameRanker>), FindBuildError> {
+        search: bool,
+    ) -> Result<(Vec<FindDocument>, FindOmissions), FindBuildError> {
         if sources.len() > MAX_SOURCE_SETS {
             return Err(FindBuildError::new(
                 RefusalCode::ProviderLimitExceeded,
@@ -390,13 +424,13 @@ impl WorkspaceFindDirectoryBuilder {
             attempted_fact_bytes: 0,
             omissions: FindOmissions::default(),
             include_module_aliases,
-            ranker,
+            search,
             repeated_kind: None,
         };
         let result = (|| {
             for source in sources {
                 find_checkpoint(deadline, cancellation)?;
-                self.add_source(source, &mut build, deadline, cancellation)?;
+                self.walk_source(source, &mut build, deadline, cancellation)?;
             }
             Ok::<(), FindBuildError>(())
         })();
@@ -414,13 +448,7 @@ impl WorkspaceFindDirectoryBuilder {
             }
         }
         result?;
-        Ok((
-            FindBuildOutcome {
-                index: FindIndex::new(build.documents),
-                omissions: build.omissions,
-            },
-            build.ranker,
-        ))
+        Ok((build.documents, build.omissions))
     }
 
     /// Resolve only paths that could be the requested object. The name-search
@@ -1330,7 +1358,7 @@ impl WorkspaceFindDirectoryBuilder {
             attempted_fact_bytes: 0,
             omissions: FindOmissions::default(),
             include_module_aliases: false,
-            ranker: None,
+            search: false,
             repeated_kind: None,
         };
         let head = self.read_descriptor_head(
@@ -1360,27 +1388,75 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(Some((name, synonym)))
     }
 
-    fn add_source(
+    /// Walks one source root. Directories are entered through the retained
+    /// root without checking their names again for each file; the root and
+    /// every directory the walk opened are confirmed once before the answer.
+    fn walk_source(
         &self,
         source: &LayoutFindSource<'_>,
         build: &mut DirectoryBuild,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), FindBuildError> {
-        if matches!(
+        let root_stamp = source
+            .root
+            .relative_entry_stamp_nofollow(Path::new(""))
+            .map_err(child_read_error)?
+            .ok_or_else(layout_changed)?;
+        let root = WalkDirectory {
+            relative: PathBuf::new(),
+            parent: None,
+            stamp: root_stamp,
+            handle: OnceCell::from(source.root.clone()),
+        };
+        let mut walk = SourceWalk {
+            source,
+            catalog: build
+                .search
+                .then_some(source.names)
+                .flatten()
+                .map(|names| names.checkout(source.root.identity())),
+            opened: Vec::new(),
+        };
+        let walked = if matches!(
             source.kind,
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
         ) {
-            return self.add_external_source(source, build, deadline, cancellation);
+            self.add_external_source(&mut walk, &root, build, deadline, cancellation)
+        } else {
+            self.add_source(&mut walk, &root, build, deadline, cancellation)
         }
+        .and_then(|()| find_checkpoint(deadline, cancellation))
+        .and_then(|()| walk.confirm(&root));
+        // Every kept entry is keyed by the stamp of what it was read from, so
+        // even an interrupted or refused walk leaves only true entries; only
+        // a whole walk shows which ones the layout no longer has.
+        if let Some(catalog) = walk.catalog.take() {
+            catalog.checkin(walked.is_ok());
+        }
+        walked
+    }
+
+    fn add_source(
+        &self,
+        walk: &mut SourceWalk<'_>,
+        root: &WalkDirectory<'_>,
+        build: &mut DirectoryBuild,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FindBuildError> {
+        let source = walk.source;
         let configuration = Path::new("Configuration.xml");
-        let configuration_file = match retain_optional_child(
-            source.root,
+        let configuration_facts = match walk.entry(
+            root,
             OsStr::new("Configuration.xml"),
+            WalkProbe::optional(Descriptor::Any),
+            build,
+            self,
             deadline,
             cancellation,
         ) {
-            Ok(Some(SourceEntry::RegularFile(file))) => Some(file),
+            Ok(Some(WalkEntry::Descriptor(facts))) => facts,
             Ok(Some(_)) => return Err(unsafe_layout_entry()),
             Ok(None) => None,
             Err(error) if error.is_local_unreadable() => {
@@ -1389,47 +1465,32 @@ impl WorkspaceFindDirectoryBuilder {
             }
             Err(error) => return Err(error),
         };
-        if let Some(head) = configuration_file
-            .as_ref()
-            .map(|file| {
-                self.read_descriptor_head(
-                    file,
-                    configuration,
-                    source,
-                    build,
-                    deadline,
-                    cancellation,
-                )
-            })
-            .transpose()?
-            .flatten()
-        {
-            let (name, synonym) = descriptor_identity(&head);
+        if let Some(facts) = configuration_facts {
             self.push(
                 build,
                 source,
                 &format!("{}:Configuration", source.name),
                 NodeKind::Configuration.as_str(),
-                name.as_deref().unwrap_or("Configuration"),
-                synonym.as_deref(),
+                facts.name.as_deref().unwrap_or("Configuration"),
+                facts.synonym.as_deref(),
                 configuration,
             )?;
         }
-        let collections = immediate_names(
-            source.root,
+        let collections = walk.names(
+            root,
             self.collection_limit(build),
+            self.capacity_observer.as_deref(),
             deadline,
             cancellation,
-            self.capacity_observer.as_deref(),
         )?;
         let mut kind_directories = HashMap::<&str, usize>::new();
-        for entry in &collections {
+        for entry in collections.iter() {
             if let Some(layout) = entry.to_str().and_then(metadata_kind_by_directory) {
                 *kind_directories.entry(layout.tag).or_default() += 1;
             }
         }
         let mut repeated_kinds = HashMap::<&str, HashSet<String>>::new();
-        for entry in collections {
+        for entry in collections.iter() {
             find_checkpoint(deadline, cancellation)?;
             let Some(directory) = entry.to_str() else {
                 continue;
@@ -1439,60 +1500,66 @@ impl WorkspaceFindDirectoryBuilder {
             };
             build.repeated_kind = (kind_directories[layout.tag] > 1)
                 .then(|| repeated_kinds.remove(layout.tag).unwrap_or_default());
-            let collection =
-                match retain_enumerated_child(source.root, &entry, deadline, cancellation)? {
-                    SourceEntry::Directory(collection) => collection,
-                    _ => return Err(unsafe_layout_entry()),
-                };
+            let collection = match walk.entry(
+                root,
+                entry,
+                WalkProbe::listed(Descriptor::None).keep_open(),
+                build,
+                self,
+                deadline,
+                cancellation,
+            )? {
+                Some(WalkEntry::Directory(collection)) => collection,
+                _ => return Err(unsafe_layout_entry()),
+            };
             let mut proved_owners = HashMap::new();
             let mut owner_directories = Vec::new();
             let mut unsafe_owner_directories = HashSet::new();
-            for owner in immediate_names(
+            let owners = walk.names(
                 &collection,
                 self.collection_limit(build),
+                self.capacity_observer.as_deref(),
                 deadline,
                 cancellation,
-                self.capacity_observer.as_deref(),
-            )? {
+            )?;
+            for owner in owners.iter() {
                 find_checkpoint(deadline, cancellation)?;
                 let Some(owner_name) = owner.to_str() else {
                     continue;
                 };
-                let owner_child =
-                    match retain_enumerated_child(&collection, &owner, deadline, cancellation) {
-                        Ok(child) => child,
-                        Err(error)
-                            if error.is_local_unreadable() && owner_name.ends_with(".xml") =>
-                        {
-                            build.record_omission(source.name, "descriptor_unreadable");
-                            continue;
-                        }
-                        Err(error) => return Err(error),
-                    };
+                let stem = owner_name.strip_suffix(".xml");
+                let descriptor = stem.map_or(Descriptor::None, |stem| Descriptor::Owner {
+                    kind: layout.tag,
+                    name: stem,
+                });
+                let owner_child = match walk.entry(
+                    &collection,
+                    owner,
+                    WalkProbe::listed(descriptor),
+                    build,
+                    self,
+                    deadline,
+                    cancellation,
+                ) {
+                    Ok(Some(child)) => child,
+                    Ok(None) => return Err(unsafe_layout_entry()),
+                    Err(error) if error.is_local_unreadable() && stem.is_some() => {
+                        build.record_omission(source.name, "descriptor_unreadable");
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 match owner_child {
-                    SourceEntry::RegularFile(file) => {
-                        let Some(stem) = owner_name.strip_suffix(".xml") else {
-                            continue;
+                    WalkEntry::Descriptor(facts) => {
+                        let Some(stem) = stem else {
+                            return Err(unsafe_layout_entry());
                         };
-                        let relative = PathBuf::from(directory).join(owner_name);
                         // A file whose name looks like an object is not one:
                         // only a descriptor that declares the expected owner
                         // element and name enters the directory.
-                        let Some(head) = self.read_descriptor_head(
-                            &file,
-                            &relative,
-                            source,
-                            build,
-                            deadline,
-                            cancellation,
-                        )?
-                        else {
+                        let Some(facts) = facts.filter(|facts| facts.declares_owner) else {
                             continue;
                         };
-                        if !declares_owner(&head, layout.tag, stem) {
-                            continue;
-                        }
-                        let synonym = descriptor_identity(&head).1;
                         let document_index = build.documents.len();
                         self.push(
                             build,
@@ -1500,22 +1567,23 @@ impl WorkspaceFindDirectoryBuilder {
                             &format!("{}:{}.{stem}", source.name, layout.tag),
                             layout.tag,
                             stem,
-                            synonym.as_deref(),
-                            &relative,
+                            facts.synonym.as_deref(),
+                            &PathBuf::from(directory).join(owner_name),
                         )?;
                         proved_owners.insert(
                             stem.to_string(),
                             (build.documents.len() > document_index).then_some(document_index),
                         );
                     }
-                    SourceEntry::Directory(owner_root) => {
-                        if owner_name.ends_with(".xml") {
+                    WalkEntry::File => {}
+                    WalkEntry::Directory(owner_root) => {
+                        if stem.is_some() {
                             return Err(unsafe_layout_entry());
                         }
-                        owner_directories.push((owner_name.to_string(), owner_root.identity()));
+                        owner_directories.push((owner_name.to_string(), owner_root));
                     }
-                    _ if owner_name.ends_with(".xml") => return Err(unsafe_layout_entry()),
-                    SourceEntry::ReparsePoint | SourceEntry::Unsupported => {
+                    _ if stem.is_some() => return Err(unsafe_layout_entry()),
+                    WalkEntry::Linked | WalkEntry::Unsupported => {
                         // The descriptor is the proof that this directory is
                         // an owner. A linked or unsupported matching directory
                         // must not silently hide its nested objects.
@@ -1529,73 +1597,60 @@ impl WorkspaceFindDirectoryBuilder {
             {
                 return Err(unsafe_layout_entry());
             }
-            for (owner_name, original_identity) in owner_directories {
+            for (owner_name, owner_root) in owner_directories {
                 find_checkpoint(deadline, cancellation)?;
-                if let Some(document_index) = proved_owners.get(&owner_name) {
-                    let owner_root = match retain_enumerated_child(
-                        &collection,
-                        OsStr::new(&owner_name),
-                        deadline,
-                        cancellation,
-                    )? {
-                        SourceEntry::Directory(owner_root)
-                            if owner_root.identity() == original_identity =>
-                        {
-                            owner_root
-                        }
-                        _ => return Err(unsafe_layout_entry()),
-                    };
-                    if build.include_module_aliases && layout.tag == "CommonModule" {
-                        if let Some(document_index) = document_index {
-                            let alias = match common_module_path(
-                                &owner_root,
-                                &PathBuf::from(directory).join(&owner_name),
-                                None,
-                                None,
-                                deadline,
-                                cancellation,
-                            ) {
-                                Ok(alias) => alias,
-                                Err(error) if error.is_local_unreadable() => {
-                                    find_checkpoint(deadline, cancellation)?;
-                                    build.record_omission(source.name, "module_unreadable");
-                                    None
-                                }
-                                Err(error) => return Err(error),
-                            };
-                            let alias = alias.map(|relative| FindPathAlias {
-                                absolute: source
-                                    .root
-                                    .path()
-                                    .join(&relative)
-                                    .to_string_lossy()
-                                    .into_owned(),
-                                relative,
-                            });
-                            let next_total = build.fact_bytes.saturating_add(
-                                alias.as_ref().map_or(0, FindPathAlias::estimated_bytes),
-                            );
-                            if next_total > self.max_total_fact_bytes {
-                                return Err(FindBuildError::new(
-                                    RefusalCode::ProviderLimitExceeded,
-                                    "find directory exceeds the bounded workspace byte budget",
-                                ));
+                let Some(document_index) = proved_owners.get(&owner_name) else {
+                    continue;
+                };
+                if build.include_module_aliases && layout.tag == "CommonModule" {
+                    if let Some(document_index) = document_index {
+                        let alias = match common_module_path(
+                            walk.open(&owner_root, deadline, cancellation)?,
+                            &PathBuf::from(directory).join(&owner_name),
+                            None,
+                            None,
+                            deadline,
+                            cancellation,
+                        ) {
+                            Ok(alias) => alias,
+                            Err(error) if error.is_local_unreadable() => {
+                                find_checkpoint(deadline, cancellation)?;
+                                build.record_omission(source.name, "module_unreadable");
+                                None
                             }
-                            build.fact_bytes = next_total;
-                            build.documents[*document_index].set_path_alias(alias);
+                            Err(error) => return Err(error),
+                        };
+                        let alias = alias.map(|relative| FindPathAlias {
+                            absolute: source
+                                .root
+                                .path()
+                                .join(&relative)
+                                .to_string_lossy()
+                                .into_owned(),
+                            relative,
+                        });
+                        let next_total = build.fact_bytes.saturating_add(
+                            alias.as_ref().map_or(0, FindPathAlias::estimated_bytes),
+                        );
+                        if next_total > self.max_total_fact_bytes {
+                            return Err(FindBuildError::new(
+                                RefusalCode::ProviderLimitExceeded,
+                                "find directory exceeds the bounded workspace byte budget",
+                            ));
                         }
+                        build.fact_bytes = next_total;
+                        build.documents[*document_index].set_path_alias(alias);
                     }
-                    self.add_nested_families(
-                        source,
-                        build,
-                        &owner_root,
-                        layout.tag,
-                        &owner_name,
-                        &PathBuf::from(directory).join(&owner_name),
-                        deadline,
-                        cancellation,
-                    )?;
                 }
+                self.add_nested_families(
+                    walk,
+                    build,
+                    &owner_root,
+                    layout.tag,
+                    &owner_name,
+                    deadline,
+                    cancellation,
+                )?;
             }
             if let Some(seen) = build.repeated_kind.take() {
                 repeated_kinds.insert(layout.tag, seen);
@@ -1608,23 +1663,26 @@ impl WorkspaceFindDirectoryBuilder {
     /// the root of the source set.
     fn add_external_source(
         &self,
-        source: &LayoutFindSource<'_>,
+        walk: &mut SourceWalk<'_>,
+        root: &WalkDirectory<'_>,
         build: &mut DirectoryBuild,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), FindBuildError> {
+        let source = walk.source;
         let kind = if source.kind == SourceSetKind::ExternalProcessor {
             NodeKind::ExternalDataProcessor
         } else {
             NodeKind::ExternalReport
         };
-        for entry in immediate_names(
-            source.root,
+        let entries = walk.names(
+            root,
             self.collection_limit(build),
+            self.capacity_observer.as_deref(),
             deadline,
             cancellation,
-            self.capacity_observer.as_deref(),
-        )? {
+        )?;
+        for entry in entries.iter() {
             find_checkpoint(deadline, cancellation)?;
             let Some(entry_name) = entry.to_str() else {
                 continue;
@@ -1632,8 +1690,22 @@ impl WorkspaceFindDirectoryBuilder {
             let Some(stem) = entry_name.strip_suffix(".xml") else {
                 continue;
             };
-            let file = match retain_enumerated_child(source.root, &entry, deadline, cancellation) {
-                Ok(SourceEntry::RegularFile(file)) => file,
+            // A Designer dump keeps `ConfigDumpInfo.xml` next to the owner
+            // descriptor; only a file that declares the expected owner element
+            // is an object.
+            let facts = match walk.entry(
+                root,
+                entry,
+                WalkProbe::listed(Descriptor::Owner {
+                    kind: kind.as_str(),
+                    name: stem,
+                }),
+                build,
+                self,
+                deadline,
+                cancellation,
+            ) {
+                Ok(Some(WalkEntry::Descriptor(facts))) => facts,
                 Err(error) if error.is_local_unreadable() => {
                     build.record_omission(source.name, "descriptor_unreadable");
                     continue;
@@ -1641,37 +1713,34 @@ impl WorkspaceFindDirectoryBuilder {
                 Err(error) => return Err(error),
                 Ok(_) => return Err(unsafe_layout_entry()),
             };
-            let relative = PathBuf::from(entry_name);
-            // A Designer dump keeps `ConfigDumpInfo.xml` next to the owner
-            // descriptor; only a file that declares the expected owner element
-            // is an object.
-            let Some(head) =
-                self.read_descriptor_head(&file, &relative, source, build, deadline, cancellation)?
-            else {
+            let Some(facts) = facts.filter(|facts| facts.declares_owner) else {
                 continue;
             };
-            if !declares_owner(&head, kind.as_str(), stem) {
-                continue;
-            }
-            let synonym = descriptor_identity(&head).1;
             self.push(
                 build,
                 source,
                 &format!("{}:{}.{stem}", source.name, kind.as_str()),
                 kind.as_str(),
                 stem,
-                synonym.as_deref(),
-                &relative,
+                facts.synonym.as_deref(),
+                Path::new(entry_name),
             )?;
-            match retain_optional_child(source.root, OsStr::new(stem), deadline, cancellation)? {
-                Some(SourceEntry::Directory(owner_root)) => {
+            match walk.entry(
+                root,
+                OsStr::new(stem),
+                WalkProbe::optional(Descriptor::None),
+                build,
+                self,
+                deadline,
+                cancellation,
+            )? {
+                Some(WalkEntry::Directory(owner_root)) => {
                     self.add_nested_families(
-                        source,
+                        walk,
                         build,
                         &owner_root,
                         kind.as_str(),
                         stem,
-                        &PathBuf::from(stem),
                         deadline,
                         cancellation,
                     )?;
@@ -1688,93 +1757,99 @@ impl WorkspaceFindDirectoryBuilder {
     #[allow(clippy::too_many_arguments)]
     fn add_nested_families(
         &self,
-        source: &LayoutFindSource<'_>,
+        walk: &mut SourceWalk<'_>,
         build: &mut DirectoryBuild,
-        owner_root: &SourceDirectory,
+        owner_root: &WalkDirectory<'_>,
         owner_kind: &str,
         owner_name: &str,
-        owner_relative: &Path,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), FindBuildError> {
+        let source = walk.source;
         for (family_directory, family_kind) in NESTED_FAMILIES {
             find_checkpoint(deadline, cancellation)?;
-            let family = match retain_optional_child(
+            let family = match walk.entry(
                 owner_root,
                 OsStr::new(family_directory),
+                WalkProbe::optional(Descriptor::None).keep_open(),
+                build,
+                self,
                 deadline,
                 cancellation,
             )? {
-                Some(SourceEntry::Directory(family)) => family,
+                Some(WalkEntry::Directory(family)) => family,
                 Some(_) => return Err(unsafe_layout_entry()),
                 None => continue,
             };
             // A command is named by its directory and by a stray `.xml`
             // alike: the first of them in the listing is the command.
             let mut family_names = HashSet::new();
-            for entry in immediate_names(
+            let entries = walk.names(
                 &family,
                 self.collection_limit(build),
+                self.capacity_observer.as_deref(),
                 deadline,
                 cancellation,
-                self.capacity_observer.as_deref(),
-            )? {
+            )?;
+            for entry in entries.iter() {
                 find_checkpoint(deadline, cancellation)?;
                 let Some(entry_name) = entry.to_str() else {
                     continue;
                 };
-                let child = match retain_enumerated_child(&family, &entry, deadline, cancellation) {
-                    Ok(child) => child,
-                    Err(error) if error.is_local_unreadable() && entry_name.ends_with(".xml") => {
+                let stem = entry_name.strip_suffix(".xml");
+                // A command has no descriptor of its own to read.
+                let descriptor = match stem {
+                    Some(stem) if family_kind != NodeKind::Command => Descriptor::Owner {
+                        kind: family_kind.as_str(),
+                        name: stem,
+                    },
+                    _ => Descriptor::None,
+                };
+                let child = match walk.entry(
+                    &family,
+                    entry,
+                    WalkProbe::listed(descriptor),
+                    build,
+                    self,
+                    deadline,
+                    cancellation,
+                ) {
+                    Ok(Some(child)) => child,
+                    Ok(None) => return Err(unsafe_layout_entry()),
+                    Err(error) if error.is_local_unreadable() && stem.is_some() => {
                         build.record_omission(source.name, "descriptor_unreadable");
                         continue;
                     }
                     Err(error) => return Err(error),
                 };
-                let (child_name, relative, descriptor) = match child {
-                    SourceEntry::RegularFile(file) => {
-                        let Some(stem) = entry_name.strip_suffix(".xml") else {
+                let relative = family.relative.join(entry_name);
+                let (child_name, synonym) = match child {
+                    WalkEntry::Descriptor(facts) => {
+                        let Some(facts) = facts.filter(|facts| facts.declares_owner) else {
                             continue;
                         };
-                        (
-                            stem.to_string(),
-                            owner_relative.join(family_directory).join(entry_name),
-                            Some(file),
-                        )
+                        let Some(stem) = stem else {
+                            return Err(unsafe_layout_entry());
+                        };
+                        (stem.to_string(), facts.synonym.clone())
                     }
+                    // A command is named by a stray descriptor file too.
+                    WalkEntry::File => match stem {
+                        Some(stem) if family_kind == NodeKind::Command => (stem.to_string(), None),
+                        _ => continue,
+                    },
                     // A command has no descriptor file: its directory carries
                     // only the module, and the name is the directory itself.
-                    SourceEntry::Directory(_) if family_kind == NodeKind::Command => (
-                        entry_name.to_string(),
-                        owner_relative.join(family_directory).join(entry_name),
-                        None,
-                    ),
-                    _ if entry_name.ends_with(".xml") => return Err(unsafe_layout_entry()),
-                    SourceEntry::ReparsePoint | SourceEntry::Unsupported
+                    WalkEntry::Directory(_) if family_kind == NodeKind::Command => {
+                        (entry_name.to_string(), None)
+                    }
+                    _ if stem.is_some() => return Err(unsafe_layout_entry()),
+                    WalkEntry::Linked | WalkEntry::Unsupported
                         if family_kind == NodeKind::Command =>
                     {
                         return Err(unsafe_layout_entry());
                     }
                     _ => continue,
-                };
-                let synonym = if family_kind == NodeKind::Command {
-                    None
-                } else {
-                    let Some(head) = self.read_descriptor_head(
-                        descriptor.as_ref().expect("non-command has descriptor"),
-                        &relative,
-                        source,
-                        build,
-                        deadline,
-                        cancellation,
-                    )?
-                    else {
-                        continue;
-                    };
-                    if !declares_owner(&head, family_kind.as_str(), &child_name) {
-                        continue;
-                    }
-                    descriptor_identity(&head).1
                 };
                 if !family_names.insert(child_name.clone()) {
                     continue;
@@ -1829,12 +1904,12 @@ impl WorkspaceFindDirectoryBuilder {
         }
         let title = synonym.filter(|value| !value.is_empty()).unwrap_or(name);
         let document = FindDocument::new(at, kind, title, facts).with_path(path);
-        if let Some(ranker) = build.ranker.as_mut() {
+        if build.search {
             build.attempted_entries = build.attempted_entries.saturating_add(1);
             build.attempted_fact_bytes = build
                 .attempted_fact_bytes
                 .saturating_add(document.estimated_identity_bytes());
-            ranker.offer(document);
+            build.documents.push(document);
             return Ok(());
         }
         let next_total = build
@@ -1859,6 +1934,8 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(())
     }
 
+    /// Reads the head of a descriptor a point lookup retained by itself: its
+    /// name is checked before and after the read.
     fn read_descriptor_head(
         &self,
         file: &SourceFile,
@@ -1875,30 +1952,380 @@ impl WorkspaceFindDirectoryBuilder {
         find_checkpoint(deadline, cancellation)?;
         file.validate_named_identity()
             .map_err(|_| unsafe_layout_entry())?;
-        match head {
-            Ok(head) => Ok(Some(head)),
-            Err(DescriptorHeadReadError::Local(io::ErrorKind::NotFound)) => {
-                Err(FindBuildError::new(
-                    RefusalCode::ConcurrentChange,
-                    "retained descriptor disappeared during reading",
-                ))
-            }
-            Err(DescriptorHeadReadError::Local(io::ErrorKind::OutOfMemory)) => {
-                Err(FindBuildError::new(
-                    RefusalCode::ProviderUnavailable,
-                    "find could not allocate the descriptor read buffer",
-                ))
-            }
-            Err(DescriptorHeadReadError::Local(_)) => {
-                build.record_omission(source.name, "descriptor_unreadable");
-                Ok(None)
-            }
-            Err(DescriptorHeadReadError::Capability) => Err(FindBuildError::new(
+        descriptor_head_outcome(head, source, build)
+    }
+
+    /// Reads the head of a descriptor opened in a directory the walk
+    /// entered. The file is not checked by name: the walk confirms that
+    /// directory once, before its answer.
+    fn read_walk_head(
+        &self,
+        file: &SourceFile,
+        relative: &Path,
+        source: &LayoutFindSource<'_>,
+        build: &mut DirectoryBuild,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Vec<u8>>, FindBuildError> {
+        find_checkpoint(deadline, cancellation)?;
+        let head = (self.read_head)(file, relative);
+        find_checkpoint(deadline, cancellation)?;
+        descriptor_head_outcome(head, source, build)
+    }
+}
+
+fn descriptor_head_outcome(
+    head: Result<Vec<u8>, DescriptorHeadReadError>,
+    source: &LayoutFindSource<'_>,
+    build: &mut DirectoryBuild,
+) -> Result<Option<Vec<u8>>, FindBuildError> {
+    match head {
+        Ok(head) => Ok(Some(head)),
+        Err(DescriptorHeadReadError::Local(io::ErrorKind::NotFound)) => Err(FindBuildError::new(
+            RefusalCode::ConcurrentChange,
+            "retained descriptor disappeared during reading",
+        )),
+        Err(DescriptorHeadReadError::Local(io::ErrorKind::OutOfMemory)) => {
+            Err(FindBuildError::new(
                 RefusalCode::ProviderUnavailable,
-                "find could not retain a descriptor read handle",
-            )),
+                "find could not allocate the descriptor read buffer",
+            ))
+        }
+        Err(DescriptorHeadReadError::Local(_)) => {
+            build.record_omission(source.name, "descriptor_unreadable");
+            Ok(None)
+        }
+        Err(DescriptorHeadReadError::Capability) => Err(FindBuildError::new(
+            RefusalCode::ProviderUnavailable,
+            "find could not retain a descriptor read handle",
+        )),
+    }
+}
+
+/// What a walk reads of a regular file it meets.
+#[derive(Clone, Copy)]
+enum Descriptor<'a> {
+    /// Only its kind matters.
+    None,
+    /// Its head names an object wherever it is.
+    Any,
+    /// Its head must declare this owner element and name.
+    Owner { kind: &'a str, name: &'a str },
+}
+
+/// How a walk meets one name below a directory.
+#[derive(Clone, Copy)]
+struct WalkProbe<'a> {
+    descriptor: Descriptor<'a>,
+    /// The name is probed rather than listed, so it may be absent.
+    optional: bool,
+    /// A directory found here is read at once: the handle that classified
+    /// it stays open.
+    keep_open: bool,
+}
+
+impl<'a> WalkProbe<'a> {
+    const fn listed(descriptor: Descriptor<'a>) -> Self {
+        Self {
+            descriptor,
+            optional: false,
+            keep_open: false,
         }
     }
+
+    const fn optional(descriptor: Descriptor<'a>) -> Self {
+        Self {
+            descriptor,
+            optional: true,
+            keep_open: false,
+        }
+    }
+
+    const fn keep_open(mut self) -> Self {
+        self.keep_open = true;
+        self
+    }
+}
+
+/// One directory of a walk: its place below the root, the stamp the walk
+/// met it with, and its handle once something below it had to be read.
+struct WalkDirectory<'p> {
+    relative: PathBuf,
+    parent: Option<&'p WalkDirectory<'p>>,
+    stamp: FileStamp,
+    handle: OnceCell<SourceDirectory>,
+}
+
+impl<'p> WalkDirectory<'p> {
+    fn below(parent: &'p WalkDirectory<'p>, relative: PathBuf, stamp: FileStamp) -> Self {
+        Self {
+            relative,
+            parent: Some(parent),
+            stamp,
+            handle: OnceCell::new(),
+        }
+    }
+}
+
+enum WalkEntry<'p> {
+    /// The facts of a descriptor head, or `None` when reading it failed
+    /// locally and the omission is recorded.
+    Descriptor(Option<Arc<DescriptorFacts>>),
+    File,
+    Directory(WalkDirectory<'p>),
+    Linked,
+    Unsupported,
+}
+
+/// One source root walked for the name directory. A name search reuses what
+/// the names catalog holds under an unchanged stamp; everything else is read
+/// through directories the walk opens below the retained root.
+struct SourceWalk<'s> {
+    source: &'s LayoutFindSource<'s>,
+    catalog: Option<CatalogCheckout<'s>>,
+    /// Every directory the walk opened, with the stamp it met it with.
+    opened: Vec<(PathBuf, FileStamp)>,
+}
+
+impl SourceWalk<'_> {
+    fn observe(&self, relative: &Path) -> Option<FileStamp> {
+        self.source
+            .root
+            .relative_entry_stamp_nofollow(relative)
+            .ok()
+            .flatten()
+    }
+
+    /// The handle of `directory`, opening it and the directories above it
+    /// below the retained root on first use.
+    fn open<'d>(
+        &mut self,
+        directory: &'d WalkDirectory<'d>,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<&'d SourceDirectory, FindBuildError> {
+        if let Some(handle) = directory.handle.get() {
+            return Ok(handle);
+        }
+        let parent = directory.parent.ok_or_else(unsafe_layout_entry)?;
+        let name = directory
+            .relative
+            .file_name()
+            .ok_or_else(unsafe_layout_entry)?;
+        let parent = self.open(parent, deadline, cancellation)?;
+        let SourceEntry::Directory(handle) =
+            retain_enumerated_child(parent, name, deadline, cancellation)?
+        else {
+            return Err(unsafe_layout_entry());
+        };
+        if handle.identity() != directory.stamp.identity() {
+            return Err(unsafe_layout_entry());
+        }
+        self.opened
+            .push((directory.relative.clone(), directory.stamp));
+        Ok(directory.handle.get_or_init(|| handle))
+    }
+
+    /// The names in `directory`: kept ones while its stamp is unchanged.
+    fn names(
+        &mut self,
+        directory: &WalkDirectory<'_>,
+        maximum_entries: Option<usize>,
+        observer: Option<&CapacityObserver>,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<Arc<[std::ffi::OsString]>, FindBuildError> {
+        find_checkpoint(deadline, cancellation)?;
+        if let Some(names) = self
+            .catalog
+            .as_mut()
+            .and_then(|catalog| catalog.listing(&directory.relative, &directory.stamp))
+            .filter(|names| maximum_entries.is_none_or(|maximum| names.len() <= maximum))
+        {
+            if let Some(observer) = observer {
+                observer.record_find_collection(names.len() as u64, true);
+            }
+            return Ok(names);
+        }
+        let handle = self.open(directory, deadline, cancellation)?;
+        let names: Arc<[std::ffi::OsString]> =
+            immediate_names(handle, maximum_entries, deadline, cancellation, observer)?.into();
+        if let Some(catalog) = self.catalog.as_mut() {
+            catalog.keep_listing(&directory.relative, directory.stamp, &names);
+        }
+        Ok(names)
+    }
+
+    /// Meets `name` below `directory`: what the catalog keeps under its
+    /// unchanged stamp, or what reading it now shows.
+    #[allow(clippy::too_many_arguments)]
+    fn entry<'p>(
+        &mut self,
+        directory: &'p WalkDirectory<'p>,
+        name: &OsStr,
+        probe: WalkProbe<'_>,
+        build: &mut DirectoryBuild,
+        builder: &WorkspaceFindDirectoryBuilder,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<WalkEntry<'p>>, FindBuildError> {
+        find_checkpoint(deadline, cancellation)?;
+        let relative = directory.relative.join(name);
+        let cached = self
+            .catalog
+            .as_mut()
+            .and_then(|catalog| catalog.entry(&relative));
+        if probe.optional {
+            if let Some(CachedEntry::Absent(parent)) = &cached {
+                if *parent == directory.stamp {
+                    return Ok(None);
+                }
+            }
+        }
+        // Without a catalog only a directory needs its stamp, taken once it
+        // is classified.
+        let observed = self
+            .catalog
+            .is_some()
+            .then(|| self.observe(&relative))
+            .flatten();
+        if let (Some(cached), Some(stamp)) = (cached, observed) {
+            match (cached, probe.descriptor) {
+                (CachedEntry::Directory(kept), _) if kept == stamp => {
+                    return Ok(Some(WalkEntry::Directory(WalkDirectory::below(
+                        directory, relative, stamp,
+                    ))));
+                }
+                (CachedEntry::File(kept), Descriptor::None) if kept == stamp => {
+                    return Ok(Some(WalkEntry::File));
+                }
+                (
+                    CachedEntry::Descriptor(kept, facts),
+                    Descriptor::Any | Descriptor::Owner { .. },
+                ) if kept == stamp => {
+                    return Ok(Some(WalkEntry::Descriptor(Some(facts))));
+                }
+                _ => {}
+            }
+        }
+        if let Some(catalog) = self.catalog.as_mut() {
+            catalog.forget_entry(&relative);
+        }
+        let parent = self
+            .open(directory, deadline, cancellation)
+            .map_err(FindBuildError::beyond_entry)?;
+        let child = if probe.optional {
+            match retain_optional_child(parent, name, deadline, cancellation)? {
+                Some(child) => child,
+                None => {
+                    if let Some(catalog) = self.catalog.as_mut() {
+                        catalog.keep_entry(relative, CachedEntry::Absent(directory.stamp));
+                    }
+                    return Ok(None);
+                }
+            }
+        } else {
+            retain_enumerated_child(parent, name, deadline, cancellation)?
+        };
+        let entry = match child {
+            SourceEntry::RegularFile(file) => {
+                // Only a stamp of this very file may key what it shows.
+                let stamp = observed.filter(|stamp| stamp.identity() == file.identity());
+                match probe.descriptor {
+                    Descriptor::None => {
+                        if let (Some(catalog), Some(stamp)) = (self.catalog.as_mut(), stamp) {
+                            catalog.keep_entry(relative, CachedEntry::File(stamp));
+                        }
+                        WalkEntry::File
+                    }
+                    descriptor => {
+                        let facts = builder
+                            .read_walk_head(
+                                &file,
+                                &relative,
+                                self.source,
+                                build,
+                                deadline,
+                                cancellation,
+                            )?
+                            .map(|head| Arc::new(descriptor_facts(&head, descriptor)));
+                        if let (Some(catalog), Some(stamp), Some(facts)) =
+                            (self.catalog.as_mut(), stamp, &facts)
+                        {
+                            catalog.keep_entry(
+                                relative,
+                                CachedEntry::Descriptor(stamp, Arc::clone(facts)),
+                            );
+                        }
+                        WalkEntry::Descriptor(facts)
+                    }
+                }
+            }
+            SourceEntry::Directory(handle) => {
+                // The stamp the walk keeps and confirms is that of this very
+                // directory; one observed before it was opened may be older.
+                let stamp = observed
+                    .filter(|stamp| stamp.identity() == handle.identity())
+                    .or_else(|| {
+                        self.observe(&relative)
+                            .filter(|stamp| stamp.identity() == handle.identity())
+                    })
+                    .ok_or_else(layout_changed)?;
+                if let Some(catalog) = self.catalog.as_mut() {
+                    catalog.keep_entry(relative.clone(), CachedEntry::Directory(stamp));
+                }
+                let below = WalkDirectory::below(directory, relative, stamp);
+                if probe.keep_open {
+                    self.opened.push((below.relative.clone(), stamp));
+                    let _ = below.handle.set(handle);
+                }
+                WalkEntry::Directory(below)
+            }
+            SourceEntry::ReparsePoint => WalkEntry::Linked,
+            SourceEntry::Unsupported => WalkEntry::Unsupported,
+        };
+        Ok(Some(entry))
+    }
+
+    /// The single check of the walk: the retained root still has its name,
+    /// and every directory the walk read through is still the one it met,
+    /// unchanged. A substitution or a change during the walk refuses it.
+    fn confirm(&self, root_directory: &WalkDirectory<'_>) -> Result<(), FindBuildError> {
+        let root = self.source.root;
+        root.validate_named_identity()
+            .map_err(|_| unsafe_layout_entry())?;
+        if root
+            .relative_entry_stamp_nofollow(Path::new(""))
+            .map_err(|_| layout_changed())?
+            != Some(root_directory.stamp)
+        {
+            return Err(layout_changed());
+        }
+        for (relative, stamp) in &self.opened {
+            root.validate_relative_entry(relative, stamp)
+                .map_err(|_| layout_changed())?;
+        }
+        Ok(())
+    }
+}
+
+fn descriptor_facts(head: &[u8], descriptor: Descriptor<'_>) -> DescriptorFacts {
+    let (name, synonym) = descriptor_identity(head);
+    DescriptorFacts {
+        name,
+        synonym,
+        declares_owner: match descriptor {
+            Descriptor::Owner { kind, name } => declares_owner(head, kind, name),
+            Descriptor::None | Descriptor::Any => false,
+        },
+    }
+}
+
+fn layout_changed() -> FindBuildError {
+    FindBuildError::new(
+        RefusalCode::InvalidSource,
+        "find source layout changed during reading",
+    )
 }
 
 fn matching_names(
@@ -2479,6 +2906,9 @@ fn find_checkpoint(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod catalog_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4365,7 +4795,7 @@ mod tests {
             attempted_fact_bytes: 0,
             omissions: super::FindOmissions::default(),
             include_module_aliases: false,
-            ranker: None,
+            search: false,
             repeated_kind: None,
         };
         for _ in 0..=super::MAX_OMISSION_DETAILS {

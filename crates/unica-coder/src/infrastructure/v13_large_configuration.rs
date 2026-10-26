@@ -3,6 +3,7 @@
 //! Each registration carries its position in `ChildObjects`, so a branch is
 //! listed in the Designer's order although the index is sorted by key.
 
+use crate::infrastructure::v13_find::NameCatalog;
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -234,11 +235,13 @@ pub(crate) struct RegistrationIndex {
 /// со штампом записи и будет разобран заново. Запись сохраняется, только
 /// если штамп устоялся (обе метки времени известны и старше окна); иначе
 /// файл разбирается при каждом обращении. Обхода дерева нет. Отравленная
-/// блокировка сбрасывает запись, а не отказывает дальше.
+/// блокировка сбрасывает запись, а не отказывает дальше. Каталог имён набора
+/// живёт здесь же и устроен так же (см. [`NameCatalog`]).
 pub(crate) struct RegistrationCache {
     registrations: Mutex<Option<(FileStamp, Arc<RegistrationIndex>)>>,
     configuration: Mutex<Option<(ConfigurationStamps, Arc<Value>)>>,
     support: Mutex<Option<RetainedSupportState>>,
+    names: NameCatalog,
     settle_window: std::time::Duration,
     #[cfg(test)]
     registration_builds: std::sync::atomic::AtomicUsize,
@@ -247,7 +250,7 @@ pub(crate) struct RegistrationCache {
 }
 
 /// Timestamp granularity window: a stamp younger than this is never cached.
-const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+pub(crate) const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Default for RegistrationCache {
     fn default() -> Self {
@@ -255,6 +258,7 @@ impl Default for RegistrationCache {
             registrations: Mutex::new(None),
             configuration: Mutex::new(None),
             support: Mutex::new(None),
+            names: NameCatalog::default(),
             settle_window: SETTLE_WINDOW,
             #[cfg(test)]
             registration_builds: std::sync::atomic::AtomicUsize::new(0),
@@ -300,6 +304,7 @@ impl RegistrationCache {
     #[cfg(test)]
     pub(crate) fn with_settle_window_for_test(window: std::time::Duration) -> Self {
         Self {
+            names: NameCatalog::with_settle_window_for_test(window),
             settle_window: window,
             ..Self::default()
         }
@@ -316,6 +321,11 @@ impl RegistrationCache {
         if let Some(hook) = slot(&self.after_parse).take() {
             hook();
         }
+    }
+
+    /// The names catalog of this source set.
+    pub(crate) const fn names(&self) -> &NameCatalog {
+        &self.names
     }
 
     fn retains(&self, stamp: &FileStamp) -> bool {
