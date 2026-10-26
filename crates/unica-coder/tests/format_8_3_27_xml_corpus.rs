@@ -3703,35 +3703,19 @@ pub(crate) fn configured_output_directory() -> Result<PathBuf, String> {
     configured_output_directory_from(raw.as_deref(), repo_root, &home)
 }
 
-/// Канонические операции `unica.apply` с доказанным планировщиком и
-/// публикацией: список `IMPLEMENTED_APPLY_OPERATIONS` продукта. Цель
-/// интеграционная и видит только публичный API, поэтому список читается из
-/// исходника, где он объявлен.
-fn implemented_apply_operations() -> BTreeSet<String> {
-    let source =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/domain/apply.rs"))
-            .expect("domain/apply.rs");
-    let start = source
-        .find("pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[")
-        .expect("IMPLEMENTED_APPLY_OPERATIONS declaration");
-    let body = &source[start..];
-    let body = &body[body.find("= &[").unwrap() + 4..body.find("];").unwrap()];
-    body.split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .map(|item| {
-            item.strip_prefix('"')
-                .and_then(|item| item.strip_suffix('"'))
-                .unwrap_or_else(|| panic!("unexpected operation literal: {item}"))
-                .to_string()
-        })
+/// Зарегистрированные операции `unica.apply`: тот же реестр, по которому
+/// словарь `can` публикует операции узла.
+fn registered_apply_operations() -> BTreeSet<String> {
+    unica_coder::registered_apply_operation_names()
+        .into_iter()
+        .map(str::to_string)
         .collect()
 }
 
 #[test]
 fn every_corpus_case_publishes_registered_canonical_operations() {
-    let implemented = implemented_apply_operations();
-    assert!(implemented.contains("object.create"), "{implemented:?}");
+    let registered = registered_apply_operations();
+    assert!(registered.contains("object.create"), "{registered:?}");
     let mut executable = BTreeMap::new();
     for case in EXECUTABLE_CASES {
         assert!(
@@ -3758,8 +3742,8 @@ fn every_corpus_case_publishes_registered_canonical_operations() {
         );
         for op in entry.ops {
             assert!(
-                implemented.contains(*op),
-                "{}: `{op}` is not an implemented unica.apply operation",
+                registered.contains(*op),
+                "{}: `{op}` is not a registered unica.apply operation",
                 entry.operation
             );
         }

@@ -90,7 +90,7 @@ def structured(envelope: dict) -> dict:
 class ObserverDraftTests(unittest.TestCase):
     def test_operation_without_published_contract_is_named_unavailable(self):
         at = "main:Catalog.Items"
-        node = {"ok": True, "at": at, "data": {"at": at, "can": [{"op": "sample.set", "args": "values", "implemented": True}]}}
+        node = {"ok": True, "at": at, "data": {"at": at, "can": [{"op": "sample.set", "args": "values"}]}}
         refusal = {"ok": False, "summary": "no detailed contract", "diagnostics": [{"code": observer.CONTRACT_UNAVAILABLE_CODE}]}
         draft = observer.Observer(client_for(structured(node), structured(refusal))).draft({"at": at, "op": "sample.set"})
         self.assertEqual(draft["contract"], "unavailable")
@@ -99,7 +99,7 @@ class ObserverDraftTests(unittest.TestCase):
 
     def test_order_draft_permutes_the_stored_sequence_across_pages(self):
         at = "main:Subsystem.Sales.Interface.Group.NavigationPanelImportant"
-        can = [{"op": "commandOrder.set", "args": "values", "implemented": True}]
+        can = [{"op": "commandOrder.set", "args": "values"}]
         schema = {"type": "object", "additionalProperties": False, "required": ["values"], "properties": {
             "values": {"type": "object", "additionalProperties": False, "required": ["commands"], "properties": {
                 "commands": {"type": "array", "minItems": 1, "items": {"type": "string"}}}}}}

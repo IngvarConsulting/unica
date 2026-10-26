@@ -2484,7 +2484,7 @@ fn every_role_family_contract_builds_a_preview_without_source_writes() {
         );
         assert!(
             detailed.ok,
-            "implemented {operation} must publish its contract at {at}: {detailed:?}"
+            "{operation} must publish its contract at {at}: {detailed:?}"
         );
         let data = detailed.data.unwrap();
         assert_eq!(data["kind"], "Can");
@@ -2581,7 +2581,7 @@ fn support_can_contract_examples_preview_without_source_changes() {
         );
         assert!(
             detailed.ok,
-            "implemented {operation} at {at} has no usable detailed contract: {detailed:?}"
+            "{operation} at {at} has no usable detailed contract: {detailed:?}"
         );
         let data = detailed.data.unwrap();
         assert_eq!(data["kind"], "Can");
