@@ -2538,10 +2538,7 @@ fn metadata_root_props_use_the_names_props_set_accepts() {
                 let accepted: BTreeSet<String> = if WITHOUT_PROPS_SET.contains(&kind) {
                     BTreeSet::new()
                 } else {
-                    // Вложенную подсистему `props.set` не адресует; её
-                    // имена сверяются с профилем подсистемы верхнего уровня.
-                    let writable = at.split(".Subsystem.").next().unwrap();
-                    let can = contract(&runtime, &fixture, writable, "props.set");
+                    let can = contract(&runtime, &fixture, &at, "props.set");
                     can["argsSchema"]["properties"]["values"]["properties"]
                         .as_object()
                         .unwrap_or_else(|| panic!("{at}: props.set lists no values: {can}"))
@@ -2612,4 +2609,50 @@ fn oversized_subsystem_property_is_named_by_its_platform_name() {
     assert!(limits.contains(&format!("{at}.Props.Comment")), "{limits}");
     let whole = view(&runtime, &fixture, &format!("{at}.Props.Comment"));
     assert_eq!(whole["props"]["Comment"], comment, "{whole}");
+}
+
+/// #2217: a nested subsystem is written at the address `view` reads it by,
+/// in its own descriptor; its owners stay byte-identical.
+#[test]
+fn props_set_writes_a_nested_subsystem_at_its_own_address() {
+    let fixture = Fixture::new("workspace-subsystem-presence");
+    let runtime = runtime();
+    let at = "main:Subsystem.Parent.Subsystem.Child.Subsystem.Leaf";
+    let can = contract(&runtime, &fixture, at, "props.set");
+    assert!(
+        can["argsSchema"]["properties"]["values"]["properties"]
+            .get("IncludeInCommandInterface")
+            .is_some(),
+        "{can}"
+    );
+    let owners = [
+        "Subsystems/Parent.xml",
+        "Subsystems/Parent/Subsystems/Child.xml",
+    ]
+    .map(|relative| std::fs::read(fixture.source.join(relative)).unwrap());
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at": at, "ops": [{"op": "props.set", "args": {"values": {
+            "Comment": "Nested 2217",
+            "IncludeInCommandInterface": false,
+        }}}]}),
+    );
+    let leaf = std::fs::read_to_string(
+        fixture
+            .source
+            .join("Subsystems/Parent/Subsystems/Child/Subsystems/Leaf.xml"),
+    )
+    .unwrap();
+    assert!(leaf.contains("<Comment>Nested 2217</Comment>"), "{leaf}");
+    assert_eq!(
+        [
+            "Subsystems/Parent.xml",
+            "Subsystems/Parent/Subsystems/Child.xml"
+        ]
+        .map(|relative| std::fs::read(fixture.source.join(relative)).unwrap()),
+        owners
+    );
+    let viewed = view(&runtime, &fixture, at);
+    assert_eq!(viewed["props"]["Comment"], "Nested 2217", "{viewed}");
 }
