@@ -409,6 +409,18 @@ impl Session {
 }
 
 impl AdmittedSpace {
+    /// The platform's global context for this space, or `None` while it is
+    /// not loaded. No installation at all: nothing to wait for, it is empty.
+    fn platform_members(
+        &self,
+        platform: &Arc<PlatformContexts>,
+    ) -> Option<Arc<[GlobalContextMember]>> {
+        match &self.platform_root {
+            None => Some(Arc::from(Vec::new())),
+            Some(root) => platform.members(root),
+        }
+    }
+
     fn layouts(&self) -> Vec<SourceSetLayout> {
         self.bindings
             .iter()
@@ -482,14 +494,16 @@ fn answer(
         V5LspCall::FoldingRange { uri } => text_with(&uri, lsp_features::folding_ranges),
         V5LspCall::SemanticTokensFull { uri } => text_with(&uri, lsp_features::semantic_tokens),
         V5LspCall::SignatureHelp { uri, position } => {
-            let (uri, read) = document_read(session, &uri)?;
+            let (uri, space, read) = document_space(session, &uri)?;
             let position = Utf16Position {
                 line: position.line,
                 character: position.character,
             };
+            // A platform function has a signature once its context loaded.
+            let members = space.platform_members(platform).unwrap_or_default();
             let help = session
                 .documents
-                .signature_help(&uri, position, &read)
+                .signature_help(&uri, position, &read, &members)
                 .map_err(document_failure)?;
             Ok(json(help.unwrap_or(serde_json::Value::Null)))
         }
@@ -501,11 +515,7 @@ fn answer(
                 .ok_or(V5LspFailure::WorkspaceUnavailable)?;
             // Without the platform's global context the list lacks its
             // methods: it is marked incomplete, so the editor asks again.
-            // No installation at all: nothing to wait for, the list is whole.
-            let members = match &space.platform_root {
-                None => Some(Arc::from(Vec::new())),
-                Some(root) => platform.members(root),
-            };
+            let members = space.platform_members(platform);
             let list = session
                 .documents
                 .completion(

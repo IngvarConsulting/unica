@@ -427,6 +427,7 @@ fn completion_is_incomplete_until_the_platform_context_is_loaded() {
             name_en: Some("ValueIsFilled".into()),
             signature_ru: Some("ЗначениеЗаполнено(Значение)".into()),
             signature_en: None,
+            parameters: vec!["Значение".into()],
         }],
     );
     let (_, loaded) = complete(&host, workspace.path());
@@ -482,4 +483,61 @@ fn a_completion_item_resolves_from_the_document_it_names() {
         V5LspOutcome::Json { value: foreign },
         "an item the service did not give comes back as it was"
     );
+}
+
+/// A platform function has its signature once the global context loaded.
+#[test]
+fn signature_help_names_a_platform_function_from_the_loaded_context() {
+    let (workspace, host) = completion_host("platform/8.3.27.1");
+    host.platform.ready_for_test(
+        workspace.path().canonicalize().unwrap().join("platform/8.3.27.1"),
+        vec![GlobalContextMember {
+            kind: unica_documentation_sources::platform_help::provider::GlobalContextMemberKind::Method,
+            name_ru: "ЗначениеЗаполнено".into(),
+            name_en: Some("ValueIsFilled".into()),
+            signature_ru: Some("ЗначениеЗаполнено(Значение)".into()),
+            signature_en: None,
+            parameters: vec!["Значение".into()],
+        }],
+    );
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+    let uri = session_uri(&host, &editor, &file_uri(&workspace.path().join(MODULE)));
+    open_buffer(
+        &host,
+        &editor,
+        &uri,
+        "Процедура А()\n    ЗначениеЗаполнено(\nКонецПроцедуры\n",
+    );
+
+    let help = json_of(ask(
+        &host,
+        &editor,
+        V5LspCall::SignatureHelp {
+            uri,
+            position: unica_daemon::protocol_v5::lsp::V5LspPosition {
+                line: 1,
+                character: 22,
+            },
+        },
+    ));
+    assert!(
+        help["signatures"][0]["label"]
+            .as_str()
+            .is_some_and(|label| label.contains("ЗначениеЗаполнено")),
+        "{help}"
+    );
+}
+
+fn json_of(outcome: V5LspOutcome) -> serde_json::Value {
+    match outcome {
+        V5LspOutcome::Json { value } => value,
+        other => panic!("not a JSON answer: {other:?}"),
+    }
 }
