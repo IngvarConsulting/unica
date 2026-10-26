@@ -31,6 +31,10 @@ pub enum AppliedFacet {
     RecordManager,
     /// `РегистрСведенийКлючЗаписи.Курсы`.
     RecordKey,
+    /// `РегистрСведенийЗапись.Курсы`: one record of a record set.
+    Record,
+    /// `КонстантаМенеджерЗначения.Валюта`.
+    ValueManager,
     /// The tabular section with this name.
     TabularSection(String),
     /// A row of the tabular section with this name.
