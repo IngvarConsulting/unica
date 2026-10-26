@@ -2739,7 +2739,7 @@ impl PlatformAttestation {
             SecureFileDigest::capture(&executable_path, "platform executable attestation")?;
         let probe_digest =
             SecureFileDigest::capture(&probe_path, "platform version probe attestation")?;
-        let install_inventory = TreeSnapshot::capture_target(&install_path)?;
+        let install_inventory = TreeSnapshot::capture_platform_install(&install_path)?;
         if !matches!(install_inventory, TreeSnapshot::Directory { .. }) {
             return Err(format!(
                 "platform installation disappeared during attestation: {}",
@@ -5781,12 +5781,163 @@ impl TreeSnapshot {
         capture_tree_target_nofollow(path)
     }
 
+    /// [`TreeSnapshot::capture_target`] for a platform installation: a file
+    /// whose content stamp is unchanged keeps its remembered digest unread.
+    fn capture_platform_install(path: &Path) -> Result<Self, String> {
+        capture_tree_target_with(path, DigestReuse::PlatformInstall)
+    }
+
     fn root_identity(&self) -> Option<FileIdentity> {
         match self {
             Self::Absent => None,
             Self::Directory { identity, .. } => Some(*identity),
         }
     }
+}
+
+pub fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String> {
+    capture_tree_target_with(path, DigestReuse::Never)
+}
+
+fn capture_tree_child_nofollow(
+    parent: &File,
+    name: &OsStr,
+    display_path: &Path,
+) -> Result<TreeSnapshot, String> {
+    capture_tree_child_with(parent, name, display_path, DigestReuse::Never)
+}
+
+fn capture_directory_snapshot_recursive(
+    directory: &File,
+    relative_root: &Path,
+    display_root: &Path,
+    entries: &mut Vec<TreeEntrySnapshot>,
+) -> Result<(), String> {
+    capture_directory_snapshot_recursive_with(
+        directory,
+        relative_root,
+        display_root,
+        entries,
+        DigestReuse::Never,
+    )
+}
+
+/// Whether a tree snapshot may reuse a digest it already computed.
+///
+/// Only a platform installation does: the caller cannot write it, and every
+/// write still changes the file's change time (`ctime`), which no caller sets
+/// by hand. Workspace trees are always read in full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DigestReuse {
+    Never,
+    PlatformInstall,
+}
+
+/// The metadata that any write to a file changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ContentStamp {
+    identity: FileIdentity,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+    changed: (i64, i64),
+}
+
+#[cfg(test)]
+thread_local! {
+    static HASHED_FILES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Remembered platform digests; past this many entries the memory starts over.
+const PLATFORM_DIGEST_CACHE_CAPACITY: usize = 65_536;
+
+type PlatformDigests = std::sync::Mutex<std::collections::HashMap<ContentStamp, [u8; 32]>>;
+
+fn platform_digests() -> &'static PlatformDigests {
+    static DIGESTS: std::sync::OnceLock<PlatformDigests> = std::sync::OnceLock::new();
+    DIGESTS.get_or_init(Default::default)
+}
+
+fn remembered_digest(stamp: ContentStamp) -> Option<[u8; 32]> {
+    platform_digests()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&stamp)
+        .copied()
+}
+
+impl DigestReuse {
+    fn stamp(
+        self,
+        file: &File,
+        identity: FileIdentity,
+        metadata: &fs::Metadata,
+        display_path: &Path,
+    ) -> Result<Option<ContentStamp>, String> {
+        if self == Self::Never {
+            return Ok(None);
+        }
+        let changed = super::filesystem::file_change_time(file, metadata).map_err(|error| {
+            format!(
+                "failed to inspect change time of {}: {error}",
+                display_path.display()
+            )
+        })?;
+        Ok(Some(ContentStamp {
+            identity,
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+            changed,
+        }))
+    }
+
+    /// Keeps a digest only for a file whose stamp held across the snapshot.
+    fn remember(
+        self,
+        stamp: Option<ContentStamp>,
+        file: &File,
+        identity: FileIdentity,
+        after: &fs::Metadata,
+        digest: [u8; 32],
+        display_path: &Path,
+    ) -> Result<(), String> {
+        let Some(stamp) = stamp else {
+            return Ok(());
+        };
+        if self.stamp(file, identity, after, display_path)? != Some(stamp) {
+            return Err(format!(
+                "dump tree file changed while snapshotting: {}",
+                display_path.display()
+            ));
+        }
+        let mut digests = platform_digests()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if digests.len() >= PLATFORM_DIGEST_CACHE_CAPACITY && !digests.contains_key(&stamp) {
+            digests.clear();
+        }
+        digests.insert(stamp, digest);
+        Ok(())
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn hash_open_file(file: &mut File, display_path: &Path) -> Result<(u64, [u8; 32]), String> {
+    #[cfg(test)]
+    HASHED_FILES.with(|count| count.set(count.get() + 1));
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read {}: {error}", display_path.display()))?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        hasher.update(&buffer[..read]);
+    }
+    Ok((size, hasher.finalize().into()))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -5825,7 +5976,7 @@ pub fn capture_directory_snapshot(root: &Path) -> Result<Vec<TreeEntrySnapshot>,
 }
 
 #[cfg(unix)]
-pub fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String> {
+fn capture_tree_target_with(path: &Path, reuse: DigestReuse) -> Result<TreeSnapshot, String> {
     let normalized = normalize_leaf_path(path)?;
     let (parent_path, name) = split_parent_and_name(&normalized)?;
     let parent = open_directory_nofollow(&parent_path).map_err(|error| {
@@ -5835,14 +5986,15 @@ pub fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String>
         )
     })?;
     run_tree_open_hook(path);
-    capture_tree_child_nofollow(&parent, &name, path)
+    capture_tree_child_with(&parent, &name, path, reuse)
 }
 
 #[cfg(unix)]
-fn capture_tree_child_nofollow(
+fn capture_tree_child_with(
     parent: &File,
     name: &OsStr,
     display_path: &Path,
+    reuse: DigestReuse,
 ) -> Result<TreeSnapshot, String> {
     let directory = match open_directory_child_nofollow(parent, name) {
         Ok(directory) => directory,
@@ -5869,7 +6021,13 @@ fn capture_tree_child_nofollow(
         )
     })?;
     let mut entries = Vec::new();
-    capture_directory_snapshot_recursive(&directory, Path::new(""), display_path, &mut entries)?;
+    capture_directory_snapshot_recursive_with(
+        &directory,
+        Path::new(""),
+        display_path,
+        &mut entries,
+        reuse,
+    )?;
     let rebound = open_directory_child_nofollow(parent, name).map_err(|error| {
         format!(
             "failed to rebind dump target directory {}: {error}",
@@ -5893,7 +6051,7 @@ fn capture_tree_child_nofollow(
 }
 
 #[cfg(windows)]
-pub fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String> {
+fn capture_tree_target_with(path: &Path, reuse: DigestReuse) -> Result<TreeSnapshot, String> {
     let normalized = normalize_leaf_path(path)?;
     let (parent_path, name) = split_parent_and_name(&normalized)?;
     let parent = open_directory_nofollow(&parent_path).map_err(|error| {
@@ -5903,14 +6061,15 @@ pub fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String>
         )
     })?;
     run_tree_open_hook(path);
-    capture_tree_child_nofollow(&parent, &name, path)
+    capture_tree_child_with(&parent, &name, path, reuse)
 }
 
 #[cfg(windows)]
-fn capture_tree_child_nofollow(
+fn capture_tree_child_with(
     parent: &File,
     name: &OsStr,
     display_path: &Path,
+    reuse: DigestReuse,
 ) -> Result<TreeSnapshot, String> {
     let directory = match open_directory_child_nofollow(parent, name) {
         Ok(directory) => directory,
@@ -5929,7 +6088,13 @@ fn capture_tree_child_nofollow(
         )
     })?;
     let mut entries = Vec::new();
-    capture_directory_snapshot_recursive(&directory, Path::new(""), display_path, &mut entries)?;
+    capture_directory_snapshot_recursive_with(
+        &directory,
+        Path::new(""),
+        display_path,
+        &mut entries,
+        reuse,
+    )?;
     let rebound = open_directory_child_nofollow(parent, name).map_err(|error| {
         format!(
             "failed to rebind dump target directory {}: {error}",
@@ -5953,7 +6118,7 @@ fn capture_tree_child_nofollow(
 }
 
 #[cfg(not(any(unix, windows)))]
-pub fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String> {
+fn capture_tree_target_with(path: &Path, _reuse: DigestReuse) -> Result<TreeSnapshot, String> {
     Err(format!(
         "secure no-follow directory snapshots are unavailable on this host: {}",
         path.display()
@@ -5961,10 +6126,11 @@ pub fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String>
 }
 
 #[cfg(not(any(unix, windows)))]
-fn capture_tree_child_nofollow(
+fn capture_tree_child_with(
     _parent: &File,
     _name: &OsStr,
     display_path: &Path,
+    _reuse: DigestReuse,
 ) -> Result<TreeSnapshot, String> {
     Err(format!(
         "secure no-follow directory snapshots are unavailable on this host: {}",
@@ -5973,11 +6139,12 @@ fn capture_tree_child_nofollow(
 }
 
 #[cfg(windows)]
-fn capture_directory_snapshot_recursive(
+fn capture_directory_snapshot_recursive_with(
     directory: &File,
     relative_root: &Path,
     display_root: &Path,
     entries: &mut Vec<TreeEntrySnapshot>,
+    reuse: DigestReuse,
 ) -> Result<(), String> {
     let initial_names =
         crate::platform::filesystem::read_directory_names(directory).map_err(|error| {
@@ -6024,7 +6191,13 @@ fn capture_directory_snapshot_recursive(
                 relative_path: relative.clone(),
                 kind: TreeEntryKind::Directory { identity },
             });
-            capture_directory_snapshot_recursive(&child, &relative, display_root, entries)?;
+            capture_directory_snapshot_recursive_with(
+                &child,
+                &relative,
+                display_root,
+                entries,
+                reuse,
+            )?;
             let rebound = open_directory_child_nofollow(directory, name).map_err(|error| {
                 format!(
                     "failed to rebind directory {}: {error}",
@@ -6088,19 +6261,11 @@ fn capture_directory_snapshot_recursive(
                 display_path.display()
             )
         })?;
-        let mut hasher = Sha256::new();
-        let mut size = 0_u64;
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = file
-                .read(&mut buffer)
-                .map_err(|error| format!("failed to read {}: {error}", display_path.display()))?;
-            if read == 0 {
-                break;
-            }
-            size += read as u64;
-            hasher.update(&buffer[..read]);
-        }
+        let stamp = reuse.stamp(&file, identity, &before, &display_path)?;
+        let (size, sha256) = match stamp.and_then(remembered_digest) {
+            Some(digest) => (before.len(), digest),
+            None => hash_open_file(&mut file, &display_path)?,
+        };
         run_tree_open_hook(&display_path);
         let after = file.metadata().map_err(|error| {
             format!(
@@ -6117,6 +6282,7 @@ fn capture_directory_snapshot_recursive(
                 display_path.display()
             ));
         }
+        reuse.remember(stamp, &file, identity, &after, sha256, &display_path)?;
         if hard_link_count(&file).map_err(|error| {
             format!(
                 "failed to recheck hard links for {}: {error}",
@@ -6149,7 +6315,7 @@ fn capture_directory_snapshot_recursive(
             kind: TreeEntryKind::File {
                 identity,
                 size,
-                sha256: hasher.finalize().into(),
+                sha256,
             },
         });
     }
@@ -6170,11 +6336,12 @@ fn capture_directory_snapshot_recursive(
 }
 
 #[cfg(unix)]
-fn capture_directory_snapshot_recursive(
+fn capture_directory_snapshot_recursive_with(
     directory: &File,
     relative_root: &Path,
     display_root: &Path,
     entries: &mut Vec<TreeEntrySnapshot>,
+    reuse: DigestReuse,
 ) -> Result<(), String> {
     for name in read_directory_names(directory).map_err(|error| {
         format!(
@@ -6196,7 +6363,13 @@ fn capture_directory_snapshot_recursive(
                     relative_path: relative.clone(),
                     kind: TreeEntryKind::Directory { identity },
                 });
-                capture_directory_snapshot_recursive(&child, &relative, display_root, entries)?;
+                capture_directory_snapshot_recursive_with(
+                    &child,
+                    &relative,
+                    display_root,
+                    entries,
+                    reuse,
+                )?;
                 let rebound = open_directory_child_nofollow(directory, &name).map_err(|error| {
                     format!(
                         "failed to rebind directory {}: {error}",
@@ -6257,19 +6430,11 @@ fn capture_directory_snapshot_recursive(
                         display_path.display()
                     )
                 })?;
-                let mut hasher = Sha256::new();
-                let mut size = 0_u64;
-                let mut buffer = [0_u8; 64 * 1024];
-                loop {
-                    let read = file.read(&mut buffer).map_err(|error| {
-                        format!("failed to read {}: {error}", display_path.display())
-                    })?;
-                    if read == 0 {
-                        break;
-                    }
-                    size += read as u64;
-                    hasher.update(&buffer[..read]);
-                }
+                let stamp = reuse.stamp(&file, identity, &before, &display_path)?;
+                let (size, sha256) = match stamp.and_then(remembered_digest) {
+                    Some(digest) => (before.len(), digest),
+                    None => hash_open_file(&mut file, &display_path)?,
+                };
                 let after = file.metadata().map_err(|error| {
                     format!(
                         "failed to recheck opened file {}: {error}",
@@ -6285,6 +6450,7 @@ fn capture_directory_snapshot_recursive(
                         display_path.display()
                     ));
                 }
+                reuse.remember(stamp, &file, identity, &after, sha256, &display_path)?;
                 let rebound = open_regular_child_nofollow(directory, &name).map_err(|error| {
                     format!("failed to rebind file {}: {error}", display_path.display())
                 })?;
@@ -6305,7 +6471,7 @@ fn capture_directory_snapshot_recursive(
                     kind: TreeEntryKind::File {
                         identity,
                         size,
-                        sha256: hasher.finalize().into(),
+                        sha256,
                     },
                 });
             }
@@ -6365,11 +6531,12 @@ fn read_directory_names(directory: &File) -> std::io::Result<Vec<OsString>> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn capture_directory_snapshot_recursive(
+fn capture_directory_snapshot_recursive_with(
     _directory: &File,
     _relative_root: &Path,
     display_root: &Path,
     _entries: &mut Vec<TreeEntrySnapshot>,
+    _reuse: DigestReuse,
 ) -> Result<(), String> {
     Err(format!(
         "secure no-follow directory snapshots are unavailable on this host: {}",
@@ -8571,4 +8738,106 @@ pub mod test_support_os {
         pending_writer_scrub_contract::run as pending_writer_scrub_contract,
         with_effective_config_create_hook,
     };
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod platform_digest_reuse_tests {
+    use super::{TreeEntryKind, TreeSnapshot, HASHED_FILES};
+    use std::fs;
+    use std::path::Path;
+
+    fn hashed_during(capture: impl FnOnce() -> TreeSnapshot) -> (TreeSnapshot, usize) {
+        let before = HASHED_FILES.with(|count| count.get());
+        let snapshot = capture();
+        (snapshot, HASHED_FILES.with(|count| count.get()) - before)
+    }
+
+    fn digest_of(snapshot: &TreeSnapshot, name: &str) -> [u8; 32] {
+        let TreeSnapshot::Directory { entries, .. } = snapshot else {
+            panic!("installation must be a directory: {snapshot:?}");
+        };
+        entries
+            .iter()
+            .find_map(|entry| match &entry.kind {
+                TreeEntryKind::File { sha256, .. } if entry.relative_path == Path::new(name) => {
+                    Some(*sha256)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{name} is missing from {snapshot:?}"))
+    }
+
+    #[test]
+    fn platform_install_snapshot_reads_each_unchanged_file_once() {
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("install");
+        fs::create_dir_all(install.join("bin")).unwrap();
+        fs::write(install.join("1cv8"), b"designer").unwrap();
+        fs::write(install.join("bin/lib.so"), b"library").unwrap();
+
+        let (first, hashed) =
+            hashed_during(|| TreeSnapshot::capture_platform_install(&install).unwrap());
+        assert_eq!(hashed, 2);
+        let (second, hashed) =
+            hashed_during(|| TreeSnapshot::capture_platform_install(&install).unwrap());
+        assert_eq!(hashed, 0, "unchanged platform files must not be read again");
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn platform_install_snapshot_rereads_a_rewrite_that_restores_size_and_content_time() {
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("install");
+        fs::create_dir_all(&install).unwrap();
+        let library = install.join("lib.so");
+        fs::write(&library, b"original").unwrap();
+        let first = TreeSnapshot::capture_platform_install(&install).unwrap();
+        let modified = fs::metadata(&library).unwrap().modified().unwrap();
+
+        // Same inode, same size, content time put back: only the change time moves.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&library)
+            .unwrap()
+            .write_all_at_start(b"tampered");
+        fs::File::options()
+            .write(true)
+            .open(&library)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+
+        let (second, hashed) =
+            hashed_during(|| TreeSnapshot::capture_platform_install(&install).unwrap());
+        assert_eq!(hashed, 1, "a rewritten platform file must be read again");
+        assert_ne!(digest_of(&second, "lib.so"), digest_of(&first, "lib.so"));
+    }
+
+    #[test]
+    fn workspace_tree_snapshots_never_reuse_a_digest() {
+        let root = tempfile::tempdir().unwrap();
+        let tree = root.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("Configuration.xml"), b"<x/>").unwrap();
+        TreeSnapshot::capture_platform_install(&tree).unwrap();
+
+        let (_, hashed) = hashed_during(|| TreeSnapshot::capture_target(&tree).unwrap());
+        assert_eq!(hashed, 1);
+        let (_, hashed) = hashed_during(|| TreeSnapshot::capture_target(&tree).unwrap());
+        assert_eq!(hashed, 1);
+    }
+
+    trait WriteAtStart {
+        fn write_all_at_start(self, bytes: &[u8]);
+    }
+
+    impl WriteAtStart for fs::File {
+        fn write_all_at_start(mut self, bytes: &[u8]) {
+            use std::io::{Seek, SeekFrom, Write};
+            self.seek(SeekFrom::Start(0)).unwrap();
+            self.write_all(bytes).unwrap();
+            self.sync_all().unwrap();
+        }
+    }
 }
