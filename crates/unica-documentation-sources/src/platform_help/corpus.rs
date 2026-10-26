@@ -167,10 +167,10 @@ pub fn read_page_from_container(
     }))
 }
 
-/// Страницы контейнера разметкой, как они лежат: путь и HTML. Нужна тем,
-/// кто разбирает разделы страницы (синтаксис, параметры, доступность), а не
-/// её плоский текст.
-pub fn read_markup_pages(bytes: &[u8]) -> Result<Vec<(String, String)>, CorpusError> {
+/// Страницы контейнера разметкой, как они лежат: путь и HTML — те, чей путь
+/// начинается с `prefix`. Нужна тем, кто разбирает разделы страницы
+/// (синтаксис, параметры, доступность), а не её плоский текст.
+pub fn read_markup_pages(bytes: &[u8], prefix: &str) -> Result<Vec<(String, String)>, CorpusError> {
     let container = V8Container::parse(bytes).map_err(CorpusError::Container)?;
     let storage = container
         .entry("FileStorage")
@@ -181,7 +181,7 @@ pub fn read_markup_pages(bytes: &[u8]) -> Result<Vec<(String, String)>, CorpusEr
     for index in 0..zip.len() {
         let mut file = zip.by_index(index).map_err(|_| CorpusError::BadArchive)?;
         let name = file.name().to_string();
-        if name.ends_with(".st") {
+        if name.ends_with(".st") || !name.starts_with(prefix) {
             continue;
         }
         let mut body = Vec::new();

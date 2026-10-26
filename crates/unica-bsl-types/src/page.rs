@@ -122,39 +122,36 @@ pub(crate) fn parse(path: &str, html: &str) -> Option<Page> {
         server_call: false,
         collection_element: Vec::new(),
     };
-    let mut variant: Option<String> = None;
+    // A syntax variant opens its own signature; parameters and the return
+    // value belong to the signature opened last.
+    let mut syntax_seen = false;
     for (title, content) in chapters(html) {
         let title = title.trim().trim_end_matches(':').trim();
         if let Some(name) = title
             .strip_prefix("Вариант синтаксиса:")
             .or_else(|| title.strip_prefix("Syntax variant:"))
         {
-            variant = Some(name.trim().to_owned());
+            page.variants.push(RawSignature {
+                name: name.trim().to_owned(),
+                ..RawSignature::default()
+            });
+            syntax_seen = false;
             continue;
         }
         match title {
-            "Синтаксис" | "Syntax" => page.variants.push(RawSignature {
-                name: variant.clone().unwrap_or_default(),
-                ..RawSignature::default()
-            }),
-            "Параметры" | "Parameters" => {
-                let params = parameters(content);
-                match page.variants.last_mut() {
-                    Some(signature) => signature.params = params,
-                    None => page.variants.push(RawSignature {
-                        name: variant.clone().unwrap_or_default(),
-                        params,
-                        returns: Vec::new(),
-                    }),
-                }
-            }
-            "Возвращаемое значение" | "Returned value" => {
-                if page.variants.is_empty() {
+            "Синтаксис" | "Syntax" => {
+                // A second syntax without a variant name is a signature of
+                // its own.
+                if syntax_seen || page.variants.is_empty() {
                     page.variants.push(RawSignature::default());
                 }
-                if let Some(signature) = page.variants.last_mut() {
-                    signature.returns = type_list(content);
-                }
+                syntax_seen = true;
+            }
+            "Параметры" | "Parameters" => {
+                current(&mut page.variants).params = parameters(content)
+            }
+            "Возвращаемое значение" | "Returned value" => {
+                current(&mut page.variants).returns = type_list(content);
             }
             "Описание" | "Description" if kind == PageKind::Property => {
                 page.types = type_list(content);
@@ -181,6 +178,13 @@ pub(crate) fn parse(path: &str, html: &str) -> Option<Page> {
         }
     }
     Some(page)
+}
+
+fn current(variants: &mut Vec<RawSignature>) -> &mut RawSignature {
+    if variants.is_empty() {
+        variants.push(RawSignature::default());
+    }
+    variants.last_mut().expect("a signature was just ensured")
 }
 
 /// The text of the first `<p class="{class}">`.
@@ -249,8 +253,10 @@ fn parameters(content: &str) -> Vec<RawParam> {
         .collect()
 }
 
-/// The types after `Тип:` (`Type:`): links separated by `,` or `;`, up to
-/// the first text that is not one. An array with a stated element
+/// The types after `Тип:` (`Type:`): links and words separated by `,` or
+/// `;`. A word is a type only when it is a language type spelled exactly
+/// (`Строка`); any other word (`Произвольный`) stays as written, unknown.
+/// An array whose element the same sentence names
 /// (`Массив из элементов типа X`) carries X.
 fn type_list(content: &str) -> Vec<TypeRef> {
     let Some(start) = content.find("Тип:").or_else(|| content.find("Type:")) else {
@@ -262,19 +268,22 @@ fn type_list(content: &str) -> Vec<TypeRef> {
     let mut types = Vec::new();
     loop {
         rest = rest.trim_start_matches([' ', '\n', '\r', '\t']);
-        if rest.starts_with("<a ") || rest.starts_with("<A ") {
-            let Some(end) = rest.find("</a>").or_else(|| rest.find("</A>")) else {
+        if rest
+            .get(..3)
+            .is_some_and(|head| head.eq_ignore_ascii_case("<a "))
+        {
+            let Some(end) = rest.to_ascii_lowercase().find("</a>") else {
                 break;
             };
             types.extend(links(&rest[..end + 4]));
             rest = &rest[end + 4..];
         } else {
-            // A plain word (`Произвольный`) is a type the help names in text.
             let word: String = rest.chars().take_while(|c| c.is_alphanumeric()).collect();
-            if !word.is_empty() && types.is_empty() {
-                types.push(TypeName::Unresolved(word));
+            if word.is_empty() {
+                break;
             }
-            break;
+            rest = &rest[word.len()..];
+            types.push(primitive(&word).unwrap_or(TypeName::Unresolved(word)));
         }
         rest = rest.trim_start_matches([' ', '\n']);
         match rest.chars().next() {
@@ -286,15 +295,30 @@ fn type_list(content: &str) -> Vec<TypeRef> {
     types
         .into_iter()
         .map(|ty| {
-            let element = element
-                .clone()
-                .filter(|_| matches!(&ty, TypeName::Context(id) if id.ends_with("/Array") || id.ends_with("/FixedArray")));
+            let element = element.clone().filter(|_| {
+                matches!(&ty, TypeName::Context(id) if id.ends_with("/Array") || id.ends_with("/FixedArray"))
+            });
             TypeRef { ty, element }
         })
         .collect()
 }
 
-/// X of `Массив из ... типа <a>X</a>` / `Array of ... <a>X</a>`.
+/// A language type the help names in text, as its link would name it.
+fn primitive(word: &str) -> Option<TypeName> {
+    let name = match word {
+        "Строка" | "String" => "String",
+        "Число" | "Number" => "Number",
+        "Булево" | "Boolean" => "Boolean",
+        "Дата" | "Date" => "Date",
+        "Неопределено" | "Undefined" => "Undefined",
+        "Null" => "Null",
+        _ => return None,
+    };
+    Some(TypeName::Primitive(name.to_owned()))
+}
+
+/// X of `Массив из элементов типа <a>X</a>` / `Array of ... <a>X</a>`: the
+/// link must stand in the same sentence as the phrase.
 fn array_element(content: &str) -> Option<TypeName> {
     let at = content
         .find("Массив из")
@@ -304,14 +328,23 @@ fn array_element(content: &str) -> Option<TypeName> {
         .char_indices()
         .nth(ARRAY_ELEMENT_WINDOW)
         .map_or(window.len(), |(index, _)| index);
-    links(&window[..cut]).into_iter().next()
+    let window = &window[..cut];
+    // A sentence ends at a period followed by a space or a tag; periods in
+    // a link's address are followed by neither.
+    let sentence = window
+        .match_indices('.')
+        .find(|(index, _)| matches!(window.as_bytes().get(index + 1), Some(b' ' | b'<')))
+        .map_or(window, |(index, _)| &window[..index]);
+    links(sentence).into_iter().next()
 }
 
 /// The types of every help link in `markup`.
 fn links(markup: &str) -> Vec<TypeName> {
     let mut found = Vec::new();
     let mut rest = markup;
-    while let Some(at) = rest.find("href=\"") {
+    // ASCII lower-casing keeps byte offsets, so positions found in the copy
+    // cut the original.
+    while let Some(at) = rest.to_ascii_lowercase().find("href=\"") {
         let after = &rest[at + 6..];
         let Some(end) = after.find('"') else {
             break;
@@ -376,6 +409,7 @@ pub(crate) fn text(markup: &str) -> String {
     out.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&nbsp;", " ")
+        .replace("&#160;", " ")
         .replace("&quot;", "\"")
         .replace("&amp;", "&")
         .trim_start_matches('\u{feff}')

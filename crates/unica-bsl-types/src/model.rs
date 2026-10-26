@@ -119,12 +119,16 @@ impl PlatformCatalog {
             .map(|index| &self.types[index])
     }
 
-    /// A type by its Russian or English name, in any case.
+    /// The type with this Russian or English name, in any case; `None`
+    /// when no type or more than one has it.
     pub fn type_by_name(&self, name: &str) -> Option<&PlatformType> {
         let name = name.to_lowercase();
-        self.types
+        let mut found = self
+            .types
             .iter()
-            .find(|ty| ty.ru.to_lowercase() == name || ty.en.to_lowercase() == name)
+            .filter(|ty| ty.ru.to_lowercase() == name || ty.en.to_lowercase() == name);
+        let first = found.next()?;
+        found.next().is_none().then_some(first)
     }
 }
 

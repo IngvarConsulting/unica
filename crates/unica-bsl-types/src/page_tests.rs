@@ -146,3 +146,79 @@ fn a_property_reads_its_type_and_use_and_a_type_page_its_collection() {
 fn ty_html() -> String {
     page("<p class=\"V8SH_title\">X (X)</p>")
 }
+
+#[test]
+fn types_named_in_text_are_language_types_or_stay_unknown() {
+    let types = |content: &str| {
+        type_list(content)
+            .into_iter()
+            .map(|reference| reference.ty)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        types("Тип: Число, Строка. Описание."),
+        vec![
+            TypeName::Primitive("Number".into()),
+            TypeName::Primitive("String".into())
+        ]
+    );
+    assert_eq!(
+        types(&format!("Тип: {STRING}; Произвольный.")),
+        vec![
+            TypeName::Primitive("String".into()),
+            TypeName::Unresolved("Произвольный".into())
+        ]
+    );
+    // A word that only looks like a type name is not matched to a page.
+    assert_eq!(
+        types("Тип: Ссылка."),
+        vec![TypeName::Unresolved("Ссылка".into())]
+    );
+    assert_eq!(
+        types(&format!(
+            "Тип: <A HREF=\"v8help://SyntaxHelperContext/objects/c/X.html\">X</A>."
+        )),
+        vec![TypeName::Context("objects/c/X".into())]
+    );
+}
+
+#[test]
+fn an_array_element_is_named_in_the_same_sentence_only() {
+    let element = |content: &str| type_list(content)[0].element.clone();
+    assert_eq!(
+        element(&format!(
+            "Тип: {ARRAY}. <br>Массив из элементов типа {ITEM}."
+        )),
+        Some(TypeName::Context("objects/catalog9/Item".into()))
+    );
+    assert_eq!(
+        element(&format!("Тип: {ARRAY}. <br>Массив из строк. См. {ITEM}.")),
+        None
+    );
+}
+
+#[test]
+fn parameters_of_a_variant_without_its_own_syntax_stay_with_it() {
+    let html = page(&format!(
+        "<p class=\"V8SH_heading\">Сделать (Do)</p>\
+         {}Первый</p>{}Сделать(&lt;А&gt;){}{}Тип: {STRING}.\
+         {}Второй</p>{}{}Тип: {NUMBER}.",
+        chapter("Вариант синтаксиса:").trim_end_matches("</p>"),
+        chapter("Синтаксис:"),
+        chapter("Параметры:"),
+        rubric("А", false),
+        chapter("Вариант синтаксиса:").trim_end_matches("</p>"),
+        chapter("Параметры:"),
+        rubric("Б", true),
+    ));
+    let page = parse("objects/c/Sample/methods/Do1.html", &html).unwrap();
+    assert_eq!(page.variants.len(), 2);
+    assert_eq!(page.variants[0].params[0].name, "А");
+    assert_eq!(
+        (
+            page.variants[1].name.as_str(),
+            page.variants[1].params[0].name.as_str()
+        ),
+        ("Второй", "Б")
+    );
+}

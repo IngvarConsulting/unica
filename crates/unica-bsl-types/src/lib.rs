@@ -98,13 +98,12 @@ pub fn build_catalog(
     }
 
     let known = types.keys().cloned().collect::<BTreeSet<_>>();
-    let names = type_names(&types);
     let mut types = types.into_values().collect::<Vec<_>>();
     for ty in &mut types {
         ty.properties.sort_by(|a, b| a.ru.cmp(&b.ru));
         ty.methods.sort_by(|a, b| a.ru.cmp(&b.ru));
         ty.events.sort_by(|a, b| a.ru.cmp(&b.ru));
-        resolve_type(ty, &known, &names);
+        resolve_type(ty, &known);
     }
     PlatformCatalog {
         platform: platform.to_owned(),
@@ -123,13 +122,17 @@ fn english_name(page: &Page, english: Option<&Page>) -> String {
 }
 
 /// The Russian variants with the English parameter names of the same
-/// variant, by position.
+/// variant, by position, when the English variant has as many.
 fn signatures(russian: &[RawSignature], english: Option<&Page>) -> Vec<Signature> {
     russian
         .iter()
         .enumerate()
         .map(|(index, variant)| {
-            let english = english.and_then(|page| page.variants.get(index));
+            // Positions match only when both pages list as many parameters;
+            // otherwise the English names stay empty rather than misplaced.
+            let english = english
+                .and_then(|page| page.variants.get(index))
+                .filter(|english| english.params.len() == variant.params.len());
             Signature {
                 name: variant.name.clone(),
                 params: variant
@@ -153,58 +156,15 @@ fn signatures(russian: &[RawSignature], english: Option<&Page>) -> Vec<Signature
         .collect()
 }
 
-/// Language types as the help names them in text.
-const PRIMITIVES: [(&str, &str); 7] = [
-    ("строка", "String"),
-    ("число", "Number"),
-    ("булево", "Boolean"),
-    ("дата", "Date"),
-    ("неопределено", "Undefined"),
-    ("null", "Null"),
-    ("тип", "Type"),
-];
-
-/// Type pages by a name only one of them has, in either language.
-fn type_names(types: &BTreeMap<String, PlatformType>) -> BTreeMap<String, Option<String>> {
-    let mut names = BTreeMap::<String, Option<String>>::new();
-    for ty in types.values() {
-        for name in [&ty.ru, &ty.en] {
-            if name.is_empty() {
-                continue;
-            }
-            names
-                .entry(name.to_lowercase())
-                .and_modify(|id| {
-                    if id.as_deref() != Some(ty.id.as_str()) {
-                        *id = None;
-                    }
-                })
-                .or_insert_with(|| Some(ty.id.clone()));
-        }
-    }
-    names
-}
-
-/// A link to a page the catalog has no type for stays as written; a name
-/// in text resolves when exactly one type or a language type has it.
-fn resolve_type(
-    ty: &mut PlatformType,
-    known: &BTreeSet<String>,
-    names: &BTreeMap<String, Option<String>>,
-) {
-    let resolve = |name: &mut TypeName| match name {
-        TypeName::Context(id) if !known.contains(id.as_str()) => {
-            *name = TypeName::Unresolved(std::mem::take(id));
-        }
-        TypeName::Unresolved(word) => {
-            let lower = word.to_lowercase();
-            if let Some((_, primitive)) = PRIMITIVES.iter().find(|(text, _)| *text == lower) {
-                *name = TypeName::Primitive((*primitive).to_owned());
-            } else if let Some(Some(id)) = names.get(&lower) {
-                *name = TypeName::Context(id.clone());
+/// A link to a page the catalog has no type for stays as written: the
+/// help named it, the catalog cannot say what it is.
+fn resolve_type(ty: &mut PlatformType, known: &BTreeSet<String>) {
+    let resolve = |name: &mut TypeName| {
+        if let TypeName::Context(id) = name {
+            if !known.contains(id.as_str()) {
+                *name = TypeName::Unresolved(std::mem::take(id));
             }
         }
-        _ => {}
     };
     let resolve_ref = |reference: &mut TypeRef| {
         resolve(&mut reference.ty);
