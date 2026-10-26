@@ -34,7 +34,7 @@
         },
         {
           "pointer": "/data/items/1/title",
-          "eq": "Mixed"
+          "eq": "Unsupported"
         },
         {
           "pointer": "/data/items/2/title",
@@ -42,7 +42,7 @@
         },
         {
           "pointer": "/data/items/3/title",
-          "eq": "Unsupported"
+          "eq": "Mixed"
         }
       ],
       "captures": {
@@ -50,13 +50,13 @@
           "pointer": "/data/items/0/at"
         },
         "xdtoMixed": {
-          "pointer": "/data/items/1/at"
+          "pointer": "/data/items/3/at"
         },
         "xdtoPaged": {
           "pointer": "/data/items/2/at"
         },
         "xdtoUnsupported": {
-          "pointer": "/data/items/3/at"
+          "pointer": "/data/items/1/at"
         }
       }
     },

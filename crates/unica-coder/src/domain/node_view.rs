@@ -207,6 +207,14 @@ impl NodeViewData {
     }
 
     #[must_use]
+    pub(crate) fn with_additional_limits(mut self, limits: Vec<String>) -> Self {
+        if let Self::Node(node) = &mut self {
+            node.limits.extend(limits);
+        }
+        self
+    }
+
+    #[must_use]
     pub(crate) fn with_branch(mut self, branch: BranchRef) -> Self {
         if let Self::Node(node) = &mut self {
             node.branches.push(branch);
