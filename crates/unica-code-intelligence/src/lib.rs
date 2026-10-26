@@ -3,6 +3,7 @@
 pub mod coordinator;
 pub mod deadlines;
 pub mod model;
+pub mod symbols;
 
 pub mod source_locations;
 

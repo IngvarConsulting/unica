@@ -48,6 +48,7 @@ pub(crate) mod support_guard;
 #[allow(dead_code)]
 // Hidden v0.13 typed read adapter remains unreachable from the v0.12 tool ledger.
 pub(crate) mod support_state;
+pub(crate) mod symbol_environment;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 pub(crate) mod tool_context;

@@ -1,0 +1,52 @@
+{
+  "id": "S-2161-defined-type-reference",
+  "name": "defined-type-composition-and-attribute-reference",
+  "issue": 2161,
+  "area": "Навигация по исходникам",
+  "task": "Узнать, из чего состоит тип реквизита-определяемого типа: реквизит называет тип путём метаданных, состав читается по адресу самого типа",
+  "workspace": "tests/fixtures/acceptance/workspace-defined-type-attribute",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.ПримерА.Attribute.Сумма"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/variants/0/kind",
+          "eq": "definedType"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/metadataPath",
+          "eq": "DefinedType.Деньги"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DefinedType.Деньги"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "DefinedType"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/kind",
+          "eq": "number"
+        },
+        {
+          "pointer": "/data/props/type/variants/0/digits",
+          "eq": 15
+        }
+      ]
+    }
+  ]
+}

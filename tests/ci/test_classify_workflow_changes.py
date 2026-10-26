@@ -66,7 +66,7 @@ class GitEventClassificationTests(unittest.TestCase):
         self.assertFalse(scope.docs_only)
         self.assertTrue(all(scope.classification.as_dict().values()), scope)
 
-    def invoke_workflow(self, repo: Path, event: dict, head: str):
+    def invoke_workflow(self, repo: Path, event: dict, head: str, runners: str = '["ubuntu-latest", "macos-14"]'):
         payload = repo / "event.json"
         payload.write_text(json.dumps(event))
         script = Path(__file__).resolve().parents[2] / "scripts/ci/classify-workflow-changes.py"
@@ -75,7 +75,7 @@ class GitEventClassificationTests(unittest.TestCase):
             "GITHUB_SHA": head, "GATE_PROFILE": "queue", "GITHUB_REPOSITORY": "owner/repo",
             "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
         return subprocess.run([sys.executable, str(script), "--github-event", "--runner-matrix",
-            '["ubuntu-latest", "macos-14"]', "--line", "main", "--results", str(repo / "routing")],
+            runners, "--line", "main", "--results", str(repo / "routing")],
             cwd=repo, env=environment, capture_output=True, text=True)
 
     def test_workflow_cli_routes_docs_and_signs_skip_without_fabricating_results(self) -> None:
@@ -112,6 +112,21 @@ class GitEventClassificationTests(unittest.TestCase):
         self.assertEqual({"ubuntu-latest", "macos-14"}, {item["runner"] for item in report["routing_skips"]})
         self.assertTrue(all(item["inventory_count"] == 0 for item in report["routing_skips"]))
         self.assertEqual([], list((repo / "report").rglob("*-result.json")))
+
+    def test_windows_clippy_job_routes_a_docs_only_queue_on_its_own(self) -> None:
+        """Джоба `Clippy (windows-latest)` маршрутизирует себя тем же классификатором (#2152)."""
+        repo, base = self.repository()
+        (repo / "README.md").write_text("After\n")
+        head = self.commit(repo)
+        result = self.invoke_workflow(repo, {"merge_group": {"base_sha": base, "head_sha": head}}, head,
+                                      runners='["windows-latest"]')
+        self.assertEqual(0, result.returncode, result.stderr)
+        outputs = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual("true", outputs["docs_only"])
+        self.assertEqual("false", outputs["rust_required"])
+        marker = json.loads((repo / "routing/results-rust-windows-latest/run.json").read_text())
+        self.assertEqual("Windows", marker["os"])
+        self.assertEqual({"reason": "docs_only", "base_sha": base, "head_sha": head}, marker["scope_skip"])
 
     def test_workflow_cli_unknown_diff_runs_full_queue_and_emits_no_skip_artifact(self) -> None:
         repo, base = self.repository()

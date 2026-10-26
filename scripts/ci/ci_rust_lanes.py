@@ -329,8 +329,9 @@ REQUIRED_HOST_CAPABILITIES = {
     | {"case-sensitive-filesystem", "non-utf8-file-names"},
     "macos-14": UNIX_RUNNER_CAPABILITIES | ARCHIVE_RUNNER_CAPABILITIES
     | {"case-insensitive-filesystem", "normalization-insensitive-filesystem"},
-    # A decision, not a fact about the runner: Windows stays advisory (#1523)
-    # for host capabilities, so those skips are visible but none is refused yet.
+    # A decision, not a fact about the runner: no host capability is required
+    # on Windows yet, so those skips are visible but none is refused. A red
+    # Windows job itself blocks the nightly like any other runner (#2152).
     "windows-latest": ARCHIVE_RUNNER_CAPABILITIES,
 }
 CAPABILITY_SKIP_REASON = re.compile(r"host capability (?P<capability>[a-z0-9-]+): ")
@@ -821,8 +822,8 @@ def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[s
                for pattern in tests)
 
 
-def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[str], dict]:
-    """Return blocking losses, Windows-advisory losses and the explained drift."""
+def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
+    """Return the blocking losses and the explained drift."""
     explanations = baseline.get("explanations")
     if (not isinstance(explanations, dict) or not isinstance(explanations.get("reset"), bool)
         or any(not isinstance(explanations.get(key), list)
@@ -837,12 +838,12 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[st
              "removedTests": sorted(tests), "removedCases": {}}
     if previous is None:
         if explanations["reset"]:
-            return [], [], drift
+            return [], drift
         return ["no previous inventory of this configuration; declare 'Rust-inventory-baseline: reset' "
-                "in the description of the pull request under test (for a push or tag: the one named by HEAD)"], [], drift
+                "in the description of the pull request under test (for a push or tag: the one named by HEAD)"], drift
     if previous.get("schemaVersion") != 1 or not isinstance(previous.get("configurations"), list):
         raise ValueError("malformed previous inventory")
-    problems, advisory = [], []
+    problems = []
     # Jobs depend on the profile's runners: a pull request has no macOS job.
     same_jobs = all(same_selection(previous.get("profile"), current["profile"], host) for host in HOSTS)
     if same_jobs and previous.get("jobs") is not None and current["jobs"] is not None:
@@ -853,16 +854,15 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[st
         label = f"{key[0]}/{key[1]}"
         # Comparable per host: the queue narrows macOS, not Linux.
         same_profile = same_selection(previous.get("profile"), current["profile"], key[0])
-        target = advisory if current["profile"] == "large" and old["runner"] == "windows-latest" else problems
         new = present.get(key)
         if new is None:
             if same_profile or old["lane"] not in lanes(previous["profile"], key[0]):
-                target.append(f"{label}: configuration and its results disappeared since the previous inventory")
+                problems.append(f"{label}: configuration and its results disappeared since the previous inventory")
             continue
         gone = (set(old["binaries"]) - set(new["binaries"])) & removed
         for binary in sorted(set(old["binaries"]) - set(new["binaries"]) - removed):
-            target.append(f"{label}: test target {binary} disappeared; declare 'Removes-test-target: {binary}' "
-                          "in the pull request description if intended")
+            problems.append(f"{label}: test target {binary} disappeared; declare 'Removes-test-target: {binary}' "
+                            "in the pull request description if intended")
         if not same_profile:
             continue
         lost = sorted(set(old["cases"]) - set(new["cases"]))
@@ -872,15 +872,15 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[st
         for binary, count in sorted(old["selected"].items()):
             if (count and binary in new["binaries"] and not new["selected"].get(binary)
                 and any(binary_of(case, old["binaries"]) == binary for case in unexplained)):
-                target.append(f"{label}: selection of test target {binary} became empty")
+                problems.append(f"{label}: selection of test target {binary} became empty")
         if unexplained:
             shown = ", ".join(unexplained[:20]) + (f" and {len(unexplained) - 20} more" if len(unexplained) > 20 else "")
-            target.append(f"{label}: {len(unexplained)} test result(s) disappeared: {shown}; "
-                          "declare 'Removes-test: <binary-id>::<name or prefix*>' in the pull request description if intended")
+            problems.append(f"{label}: {len(unexplained)} test result(s) disappeared: {shown}; "
+                            "declare 'Removes-test: <binary-id>::<name or prefix*>' in the pull request description if intended")
     if explanations["reset"]:
-        drift["resetSuppressed"] = problems + advisory
-        return [], [], drift
-    return problems, advisory, drift
+        drift["resetSuppressed"] = problems
+        return [], drift
+    return problems, drift
 
 
 def read_baseline(path: Path | None) -> dict | None:
@@ -901,7 +901,7 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
         raise ValueError("missing, duplicate or unknown OS inventory")
     manifests = [json.loads(path.read_text()) for path in directory.rglob("lane.json")]
     results = [json.loads(path.read_text()) for path in directory.rglob("shard.json")]
-    problems, advisory, verified, job_names = [], [], [], None
+    problems, verified, job_names = [], [], None
     # The Linux gate job runs this verifier itself; the other runners' jobs
     # report their conclusions through `await_os_jobs.py`, read from the run.
     in_ci = bool(os.environ.get("CI_JOB_RESULTS"))
@@ -916,15 +916,14 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
                 continue
             outcome = jobs.get(os_job(host))
             if outcome != "success":
-                target = advisory if profile == "large" and host == "windows-latest" else problems
                 if outcome == "not_acquired":
                     # Not a lost part of the plan: GitHub had no runner of this
                     # type for the job. Its lanes are reported once, here.
                     unacquired.add(host)
-                    target.append(f"{os_job(host)} got no {host} runner from GitHub (cancelled before start); "
-                                  "its tests did not run, re-run the workflow")
+                    problems.append(f"{os_job(host)} got no {host} runner from GitHub (cancelled before start); "
+                                    "its tests did not run, re-run the workflow")
                 else:
-                    target.append(f"{os_job(host)} did not finish as success: {outcome or 'missing'}")
+                    problems.append(f"{os_job(host)} did not finish as success: {outcome or 'missing'}")
     expected_configs = {(host, lane) for host in hosts for lane in lanes(profile, host)}
     if any((item.get("runner"), item.get("lane")) not in expected_configs for item in manifests + results):
         raise ValueError("unexpected runner or lane in the collected inventory")
@@ -941,7 +940,7 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
             if problem is not None:
                 # Recorded beside the shard checks, which still run: a red
                 # doctest must not hide a test failure in the same lane.
-                (advisory if profile == "large" and host == "windows-latest" else problems).append(f"{host}/{lane}: {problem}")
+                problems.append(f"{host}/{lane}: {problem}")
             if os.environ.get("GITHUB_RUN_ID") and any(manifest.get(key) != os.environ.get(env) for key, env in (("runId", "GITHUB_RUN_ID"), ("attempt", "GITHUB_RUN_ATTEMPT"))):
                 raise ValueError("lane plan belongs to another workflow run or attempt")
             matching_results = [item for item in results if (item.get("runner"), item.get("lane")) == (host, lane)]
@@ -953,9 +952,7 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
                 validate_result(manifest, result, result["shard"])
             verified.append(manifest)
         except (KeyError, TypeError, ValueError) as error:
-            # Windows large is advisory until its known failures (#1523) are fixed.
-            target = advisory if profile == "large" and host == "windows-latest" else problems
-            target.append(f"{host}/{lane}: {error}")
+            problems.append(f"{host}/{lane}: {error}")
     mediums = [json.loads(path.read_text()) for path in directory.rglob("medium.json")]
     if profile == "pr" and (mediums or in_ci):
         try:
@@ -980,18 +977,14 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
     write(directory / "inventory.json", summary)
     drift = None
     if baseline is not None:
-        lost, lost_advisory, drift = compare_inventory(baseline, summary)
+        lost, drift = compare_inventory(baseline, summary)
         # A runner that never started loses all its configurations at once;
         # that is the one reason above, not a list of vanished lanes.
-        lost = [item for item in lost if not any(item.startswith(f"{host}/") for host in unacquired)]
-        lost_advisory = [item for item in lost_advisory if not any(item.startswith(f"{host}/") for host in unacquired)]
-        problems += lost
-        advisory += lost_advisory
+        problems += [item for item in lost if not any(item.startswith(f"{host}/") for host in unacquired)]
     elif in_ci:
         problems.append("the plan was not compared with the previous inventory")
-    report = {"sha": sha, "profile": profile, "mandatoryComplete": not problems,
-              "fullMatrixPassed": not problems and not advisory, "errors": problems,
-              "advisoryFailures": advisory, "affectedAdmission": False, "previousInventory": drift,
+    report = {"sha": sha, "profile": profile, "mandatoryComplete": not problems, "errors": problems,
+              "affectedAdmission": False, "previousInventory": drift,
               "medium": [{key: item.get(key) for key in ("reason", "packages", "exitCode")} | {"tests": len(item.get("plan", []))}
                          for item in mediums]}
     write(directory / "verification.json", report)

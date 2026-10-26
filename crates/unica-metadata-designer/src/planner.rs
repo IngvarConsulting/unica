@@ -935,6 +935,7 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         meta_remove_composition, meta_remove_composition_image, meta_remove_references,
         meta_remove_referrer, meta_remove_search_patterns, meta_remove_should_skip_file,
         plan_meta_remove_subsystem_replacements, remove_composition_entries, MetaRemoveReference,
+        MetaRemoveSearch,
     };
     let at_path = format!("ops[{op_index}].args.at");
     unica_source_designer::registration::require_untouched_staged_state(
@@ -1004,6 +1005,8 @@ fn stage_object_remove<R: MetadataPlanningRead>(
     }
     code_patterns.sort();
     code_patterns.dedup();
+    let metadata_search = MetaRemoveSearch::new(name, &metadata_patterns, &query_patterns);
+    let code_search = MetaRemoveSearch::new(name, &code_patterns, &query_patterns);
     let source_set = authority.source_set_name();
     let removed = format!("{source_set}:{}", target.as_str());
     let qualified = format!("{}.{name}", kind);
@@ -1018,10 +1021,10 @@ fn stage_object_remove<R: MetadataPlanningRead>(
             .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("");
-        let patterns = if extension.eq_ignore_ascii_case("xml") {
-            &metadata_patterns
+        let search = if extension.eq_ignore_ascii_case("xml") {
+            &metadata_search
         } else if extension.eq_ignore_ascii_case("bsl") {
-            &code_patterns
+            &code_search
         } else {
             continue;
         };
@@ -1077,9 +1080,7 @@ fn stage_object_remove<R: MetadataPlanningRead>(
         if skipped {
             continue;
         }
-        for reference in
-            meta_remove_references(source_set, relative, &text, patterns, &query_patterns)
-        {
+        for reference in meta_remove_references(source_set, relative, &text, search) {
             match reference {
                 MetaRemoveReference::Metadata { at, property } => {
                     metadata_references.push(format!("`{at}` → {property}"));
