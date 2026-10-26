@@ -216,6 +216,41 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
     assert_eq!(slots["DefaultObjectForm"], "Document.Order.Form.Main");
     assert_eq!(slots["DefaultChoiceForm"], "Document.Order.Form.Main");
 
+    // #2144: an empty string clears the slot to `<DefaultChoiceForm/>`, as an
+    // export writes it, and leaves every other byte; a slot the owner kind
+    // does not have is refused at its key.
+    apply_pair(
+        "main:Document.Order",
+        serde_json::json!([{"op":"form.set","args":{"values":{"defaultChoiceForm":""}}}]),
+    );
+    image = assert_exact_effects(&source, &image, &[], &["Documents/Order.xml"], &[]);
+    assert_eq!(std::fs::read_to_string(&owner).unwrap(), crlf_owner);
+    let refused = call(
+        ToolIdentity::Apply,
+        serde_json::json!({"at":"main:Document.Order","ops":[{"op":"form.set","args":{"values":{"defaultRecordForm":"Main"}}}]}),
+    );
+    assert!(
+        !refused.ok,
+        "a slot of another kind must be refused: {refused:?}"
+    );
+    assert_eq!(
+        refused.at.as_deref(),
+        Some("ops[0].args.values.defaultRecordForm")
+    );
+    assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+    for blank in ["  ", "Document.Order.Form."] {
+        let refused = call(
+            ToolIdentity::Apply,
+            serde_json::json!({"at":"main:Document.Order","ops":[{"op":"form.set","args":{"values":{"defaultObjectForm":blank}}}]}),
+        );
+        assert_eq!(
+            refused.at.as_deref(),
+            Some("ops[0].args.values.defaultObjectForm"),
+            "{blank:?} is neither a form name nor the empty clear: {refused:?}"
+        );
+    }
+    assert_eq!(unica_workspace::test_support::tree_snapshot(&source), image);
+
     apply_pair(
         form_at,
         serde_json::json!([{"op":"item.add","args":{"items":[{"name":"Container","type":"Group"},{"name":"Marker","type":"LabelField"}]}}]),

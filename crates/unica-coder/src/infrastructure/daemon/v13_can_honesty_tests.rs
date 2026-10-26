@@ -592,6 +592,14 @@ fn node_args(descriptor: OperationDescriptor, at: &QualifiedAddress) -> Value {
         {
             json!({"text":"// sample\n"})
         }
+        // Слоты форм у каждого вида владельца свои (#2144): пример берётся
+        // из контракта на этом адресе.
+        "form.set" => {
+            unica_forms::contracts::form_set(
+                at.segments().first().map(|segment| segment.kind().as_str()),
+            )
+            .example_args
+        }
         _ => sample_args(descriptor),
     }
 }
