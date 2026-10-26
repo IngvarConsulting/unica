@@ -1,4 +1,4 @@
-use super::{platform_scalar_props, selected_scalar_props};
+use super::{dropped_by_size, platform_scalar_props, selected_scalar_props};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_execution_contract::view_error::ViewError;
 
@@ -7,6 +7,9 @@ use std::collections::BTreeMap;
 use unica_address::address::{escape_name, AddressSegment, NodeKind, QualifiedAddress};
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_designer::layout::metadata_kind;
+
+/// Свойства роли под именами платформы; слева имя в сведениях читателя.
+const ROLE_PLATFORM_PROPS: &[(&str, &str)] = &[("synonym", "Synonym")];
 
 #[derive(Debug, Clone)]
 struct RoleObject {
@@ -23,7 +26,12 @@ pub(super) fn project_role(
 ) -> Result<NodeViewData, ViewError> {
     let objects = role_objects(payload)?;
     if suffix.is_empty() {
-        let mut props = platform_scalar_props(payload, &[("synonym", "Synonym")]);
+        let mut props = platform_scalar_props(payload, ROLE_PLATFORM_PROPS);
+        // Синоним длиннее предела не пропадает молча: предел называет
+        // адрес, по которому он читается целиком.
+        let limits = dropped_by_size(payload, &props, address, |probe| {
+            platform_scalar_props(probe, ROLE_PLATFORM_PROPS)
+        });
         if let Some(totals) = payload.get("totals") {
             props.extend(
                 selected_scalar_props(totals, &["allowed", "denied"])
@@ -46,7 +54,8 @@ pub(super) fn project_role(
                     .unwrap_or("Role"),
                 props,
             )
-            .with_branches(branches),
+            .with_branches(branches)
+            .with_limits(limits),
         ));
     }
     let segment = &suffix[0];
