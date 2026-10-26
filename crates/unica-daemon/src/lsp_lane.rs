@@ -6,10 +6,10 @@
 //! не выдаёт. Паника службы остаётся внутри полосы: демон и MCP её не видят.
 
 use crate::protocol_v5::lsp::{
-    V5LspCall, V5LspCapabilities, V5LspFailure, V5LspNotification, V5LspOutcome,
-    V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder,
+    V5LspCall, V5LspCapabilities, V5LspFailure, V5LspNotification, V5LspOpening, V5LspOutcome,
+    V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder, V5LspWorkspaceSpace,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,20 +28,23 @@ const MAX_EARLY_CANCELLATIONS: usize = 256;
 
 /// Служба LSP за полосой. Реализуется продуктом; демон знает только этот порт.
 pub trait LspHost: Send + Sync + 'static {
-    /// Открыть сессию для рабочих папок и назвать готовые возможности.
+    /// Открыть сессию для рабочих папок: назвать готовые возможности и
+    /// пространство или отказ для каждой папки, в порядке папок.
     fn open(
         &self,
         session: &V5LspSessionId,
         folders: &[V5LspWorkspaceFolder],
         client: LspClientChannel,
-    ) -> Result<V5LspCapabilities, V5LspFailure>;
+        deadline: Instant,
+    ) -> Result<V5LspOpening, V5LspFailure>;
 
     /// Уведомление о документе. Исполняется на соединении сессии по порядку,
-    /// поэтому должно быть быстрым.
+    /// и следующее ждёт его: ответ нужен до `deadline`.
     fn notify(
         &self,
         session: &V5LspSessionId,
         notification: V5LspNotification,
+        deadline: Instant,
     ) -> Result<(), V5LspFailure>;
 
     /// Ответить на запрос. Долгая работа проверяет `context.is_cancelled()`.
@@ -62,13 +65,25 @@ impl LspHost for NoLspHost {
     fn open(
         &self,
         _: &V5LspSessionId,
-        _: &[V5LspWorkspaceFolder],
+        folders: &[V5LspWorkspaceFolder],
         _: LspClientChannel,
-    ) -> Result<V5LspCapabilities, V5LspFailure> {
-        Ok(V5LspCapabilities::NONE)
+        _: Instant,
+    ) -> Result<V5LspOpening, V5LspFailure> {
+        Ok(V5LspOpening {
+            capabilities: V5LspCapabilities::NONE,
+            workspaces: folders
+                .iter()
+                .map(|folder| V5LspWorkspaceSpace::refused(&folder.uri, V5LspFailure::NotSupported))
+                .collect(),
+        })
     }
 
-    fn notify(&self, _: &V5LspSessionId, _: V5LspNotification) -> Result<(), V5LspFailure> {
+    fn notify(
+        &self,
+        _: &V5LspSessionId,
+        _: V5LspNotification,
+        _: Instant,
+    ) -> Result<(), V5LspFailure> {
         Ok(())
     }
 
@@ -192,7 +207,8 @@ struct LaneState {
 struct SessionEntry {
     client: LspClientChannel,
     in_flight: HashMap<u64, Arc<AtomicBool>>,
-    cancelled_early: HashSet<u64>,
+    /// Oldest first: when full, the oldest early cancellation is forgotten.
+    cancelled_early: VecDeque<u64>,
 }
 
 struct Job {
@@ -228,31 +244,49 @@ impl LspLane {
     pub fn open(
         &self,
         folders: &[V5LspWorkspaceFolder],
-    ) -> Result<(V5LspSessionId, V5LspCapabilities), V5LspFailure> {
+        deadline: Instant,
+    ) -> Result<(V5LspSessionId, V5LspOpening), V5LspFailure> {
         let session = V5LspSessionId::new();
         let client = LspClientChannel::new();
-        let capabilities = guarded(|| self.shared.host.open(&session, folders, client.clone()))
-            .unwrap_or(Err(V5LspFailure::Unavailable))?;
+        let opening = guarded(|| {
+            self.shared
+                .host
+                .open(&session, folders, client.clone(), deadline)
+        })
+        .unwrap_or(Err(V5LspFailure::Unavailable))?;
+        // One answer per folder, in the editor's order: the editor maps its
+        // folders to spaces by position as well as by uri.
+        let answers_every_folder = opening.workspaces.len() == folders.len()
+            && opening
+                .workspaces
+                .iter()
+                .zip(folders)
+                .all(|(space, folder)| space.folder == folder.uri && space.validate().is_ok());
+        if !answers_every_folder {
+            let _ = guarded(|| self.shared.host.close(&session));
+            return Err(V5LspFailure::Unavailable);
+        }
         self.state()?.sessions.insert(
             session.clone(),
             SessionEntry {
                 client,
                 in_flight: HashMap::new(),
-                cancelled_early: HashSet::new(),
+                cancelled_early: VecDeque::new(),
             },
         );
-        Ok((session, capabilities))
+        Ok((session, opening))
     }
 
     pub fn notify(
         &self,
         session: &V5LspSessionId,
         notification: V5LspNotification,
+        deadline: Instant,
     ) -> Result<(), V5LspFailure> {
         if !self.state()?.sessions.contains_key(session) {
             return Err(V5LspFailure::SessionUnknown);
         }
-        guarded(|| self.shared.host.notify(session, notification))
+        guarded(|| self.shared.host.notify(session, notification, deadline))
             .unwrap_or(Err(V5LspFailure::Unavailable))
     }
 
@@ -275,7 +309,12 @@ impl LspLane {
             let Some(entry) = state.sessions.get_mut(session) else {
                 return failed(V5LspFailure::SessionUnknown);
             };
-            if entry.cancelled_early.remove(&request) {
+            if let Some(index) = entry
+                .cancelled_early
+                .iter()
+                .position(|early| *early == request)
+            {
+                entry.cancelled_early.remove(index);
                 return V5LspOutcome::Cancelled {};
             }
             if entry.in_flight.contains_key(&request) {
@@ -329,9 +368,9 @@ impl LspLane {
             Some(cancelled) => cancelled.store(true, Ordering::Release),
             None => {
                 if entry.cancelled_early.len() >= MAX_EARLY_CANCELLATIONS {
-                    entry.cancelled_early.clear();
+                    entry.cancelled_early.pop_front();
                 }
-                entry.cancelled_early.insert(request);
+                entry.cancelled_early.push_back(request);
             }
         }
         Ok(())

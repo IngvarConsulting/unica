@@ -6305,8 +6305,8 @@
         "file": "crates/unica-coder/src/interfaces/lsp.rs",
         "symbol": "LSP_SESSION_EXCHANGE_TIMEOUT"
       },
-      "expr": "Duration::from_secs(5)",
-      "value": 5000,
+      "expr": "Duration::from_secs(8)",
+      "value": 8000,
       "applied": [
         "crates/unica-coder/src/interfaces/lsp.rs"
       ],
@@ -6584,30 +6584,6 @@
       "review": null
     },
     {
-      "id": "lsp.wire-content-changes",
-      "class": "format",
-      "resource": "Правок в одном уведомлении didChange.",
-      "unit": "count",
-      "scope": "request",
-      "source": {
-        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
-        "symbol": "MAX_LSP_CONTENT_CHANGES"
-      },
-      "expr": "4 * 1024",
-      "value": 4096,
-      "applied": [
-        "crates/unica-daemon/src/protocol_v5/lsp.rs"
-      ],
-      "status": "unproven",
-      "origin": "#2173",
-      "problem": null,
-      "onReach": "уведомление отвергается ответом invalid_request; frontend завершается с кодом 1",
-      "issue": "#2173",
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
       "id": "lsp.wire-log-message-bytes",
       "class": "format",
       "resource": "Длина текста уведомления демона редактору.",
@@ -6630,6 +6606,79 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "lsp.poll-failures",
+      "class": "retry",
+      "resource": "Подряд потерянных обменов опроса уведомлений, после которых frontend LSP считает сессию потерянной.",
+      "unit": "count",
+      "scope": "session",
+      "source": {
+        "file": "crates/unica-coder/src/interfaces/lsp.rs",
+        "symbol": "MAX_LSP_POLL_FAILURES"
+      },
+      "expr": "3",
+      "value": 3,
+      "applied": [
+        "crates/unica-coder/src/interfaces/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "`unica lsp` пишет причину в stderr и завершается с кодом 1; редактор перезапускает сервер",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.wire-space-bytes",
+      "class": "format",
+      "resource": "Длина пространства — сегмента адреса unica:// — в ответе на открытие сессии LSP.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "symbol": "MAX_LSP_SPACE_BYTES"
+      },
+      "expr": "64",
+      "value": 64,
+      "applied": [
+        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "ответ демона отвергается как нестрогий, initialize получает RequestFailed",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.session-step-budget",
+      "class": "deadline",
+      "resource": "Срок, который служба LSP в демоне тратит на открытие сессии или приём уведомления о документе.",
+      "unit": "ms",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-daemon/src/transport.rs",
+        "symbol": "LSP_SESSION_STEP_BUDGET"
+      },
+      "expr": "Duration::from_millis(unica_execution::receipt_ledger::MAX_ORIGINAL_RESPONSE_BUDGET_MS)",
+      "value": null,
+      "applied": [
+        "crates/unica-daemon/src/transport.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "ответ не успевает к сроку, соединение сессии закрывается вместе с сессией",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null,
+      "derived": true
     }
   ],
   "excluded": [

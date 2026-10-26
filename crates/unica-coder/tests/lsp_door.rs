@@ -62,6 +62,54 @@ fn a_killed_lsp_client_leaves_the_same_daemon_serving_mcp_and_a_new_editor() {
     mcp.close();
 }
 
+#[test]
+fn an_unknown_subcommand_fails_at_once_instead_of_starting_mcp() {
+    let workspace = catalog_workspace();
+    let state = workspace.path().join(".unica-test-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let _teardown = Teardown(state.clone());
+    for command in ["lspx", "serve", "LSP"] {
+        let started = Instant::now();
+        // Stdin stays open: MCP would wait on it instead of exiting.
+        let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
+            .arg(command)
+            .current_dir(workspace.path())
+            .env("UNICA_PROVIDER_STATE_DIR", &state)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut frontend = Frontend {
+            stdin: child.stdin.take(),
+            stdout: BufReader::new(child.stdout.take().unwrap()),
+            child,
+        };
+        let code = frontend.wait();
+        let mut stderr = String::new();
+        frontend
+            .child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        assert_eq!(code, Some(2), "{command}: {stderr}");
+        assert!(
+            stderr.contains(&format!("unknown command `{command}`")),
+            "{stderr}"
+        );
+        let mut stdout = String::new();
+        frontend.stdout.read_to_string(&mut stdout).unwrap();
+        assert!(stdout.is_empty(), "nothing is written to stdout: {stdout}");
+        assert!(started.elapsed() < RESPONSE_DEADLINE);
+        assert!(
+            std::fs::read_dir(&state).unwrap().next().is_none(),
+            "no daemon was started for {command}"
+        );
+    }
+}
+
 struct Teardown(PathBuf);
 
 impl Drop for Teardown {

@@ -11,14 +11,16 @@ use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{mpsc, Condvar};
 use unica_daemon::lsp_lane::{LspCallContext, LspClientChannel, LspHost, MAX_LSP_LANE_WORKERS};
+use unica_daemon::protocol_v5::lsp::{V5LspCapabilities, V5LspWorkspaceSpace};
 use unica_execution::invocation_store::ToolIdentity;
 
 /// Допуск задержки MCP под потоком hover: медиана вызова MCP при занятой
-/// полосе LSP не больше `MCP_LATENCY_FACTOR` медиан без LSP плюс
-/// `MCP_LATENCY_TOLERANCE`. Множитель следует за скоростью машины: на
-/// загруженной машине медленнее и вызов без LSP.
-const MCP_LATENCY_FACTOR: u32 = 2;
+/// полосе LSP не больше полутора медиан без LSP плюс `MCP_LATENCY_TOLERANCE`.
+/// Доля следует за скоростью машины: на загруженной машине медленнее и
+/// вызов без LSP. Hover стоит `HOVER_COST`, больше допуска: вызов MCP,
+/// вставший в очередь хотя бы за одним hover, его превысит.
 const MCP_LATENCY_TOLERANCE: Duration = Duration::from_millis(100);
+const HOVER_COST: Duration = Duration::from_millis(300);
 const MCP_SAMPLES: usize = 9;
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -70,8 +72,13 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
     let capabilities = &initialized["result"]["capabilities"];
     assert_eq!(
         capabilities,
-        &json!({"positionEncoding": "utf-16"}),
-        "the daemon has no LSP service yet, so nothing beyond the encoding is declared"
+        &json!({
+            "positionEncoding": "utf-16",
+            "experimental": {"unica": {"workspaces": [
+                {"folder": "file:///work", "failure": "lsp_not_supported"},
+            ]}},
+        }),
+        "the daemon has no LSP service yet: no capability, and no folder became a space"
     );
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     assert_eq!(
@@ -119,6 +126,8 @@ fn capabilities_follow_what_the_lsp_service_declares() {
             "positionEncoding": "utf-16",
             "textDocumentSync": {"openClose": true, "change": 2},
             "hoverProvider": true,
+            "workspace": {"textDocumentContent": {"schemes": ["unica"]}},
+            "experimental": {"unica": {"workspaces": [{"folder": "file:///work", "space": "w0"}]}},
         })
     );
     assert_eq!(
@@ -143,6 +152,104 @@ fn capabilities_follow_what_the_lsp_service_declares() {
         hover["result"],
         json!({"contents": {"kind": "markdown", "value": "answer"}})
     );
+}
+
+#[test]
+fn every_workspace_folder_is_answered_with_its_space_or_a_failure_in_order() {
+    let host = Arc::new(HeldHost::default());
+    let daemon = LiveV5Daemon::start_with_lsp_host(
+        canonical_v13_service(),
+        Arc::clone(&host) as Arc<dyn LspHost>,
+    );
+    let mut editor = Editor::start(&daemon);
+    let initialized = editor.request(
+        "initialize",
+        json!({"workspaceFolders": [
+            {"uri": "file:///b", "name": "b"},
+            {"uri": "file:///broken", "name": "broken"},
+            {"uri": "file:///a", "name": "a"},
+        ]}),
+    );
+    assert_eq!(
+        initialized["result"]["capabilities"]["experimental"]["unica"]["workspaces"],
+        json!([
+            {"folder": "file:///b", "space": "w0"},
+            {"folder": "file:///broken", "failure": "lsp_workspace_unavailable"},
+            {"folder": "file:///a", "space": "w2"},
+        ])
+    );
+
+    let content = editor.request(
+        "workspace/textDocumentContent",
+        json!({"uri": "unica://w0/main/CommonModule.A.Module"}),
+    );
+    assert_eq!(
+        content["result"],
+        json!({"text": "// unica://w0/main/CommonModule.A.Module"})
+    );
+    assert_eq!(
+        error_code(&editor.request("workspace/textDocumentContent", json!({}))),
+        INVALID_PARAMS
+    );
+}
+
+#[test]
+fn a_document_notification_the_daemon_would_refuse_keeps_the_session() {
+    let host = Arc::new(HeldHost::default());
+    let daemon = LiveV5Daemon::start_with_lsp_host(
+        canonical_v13_service(),
+        Arc::clone(&host) as Arc<dyn LspHost>,
+    );
+    let mut editor = Editor::start(&daemon);
+    editor.initialize();
+    let waiting = editor.send_request("textDocument/hover", hover_params("file:///work/a.bsl"));
+    wait_until(|| host.started.load(Ordering::Acquire) == 1);
+
+    editor.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": "file:///work/a.bsl", "languageId": "", "version": 1, "text": "",
+        }}),
+    );
+    editor.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": "file:///work/a.bsl", "version": 3_000_000_000_u64},
+            "contentChanges": [{"text": ""}],
+        }),
+    );
+
+    assert_eq!(error_code(&editor.response(&waiting)), CONTENT_MODIFIED);
+    wait_until(|| host.notified.lock().unwrap().len() == 2);
+    assert_eq!(
+        *host.notified.lock().unwrap(),
+        vec![
+            "textDocument/didClose file:///work/a.bsl".to_string(),
+            "textDocument/didClose file:///work/a.bsl".to_string(),
+        ],
+        "the daemon drops the document instead of keeping a text the editor no longer has"
+    );
+    host.release();
+    let hover = editor.request("textDocument/hover", hover_params("file:///work/a.bsl"));
+    assert!(hover["result"]["contents"].is_object(), "{hover}");
+    assert!(!editor.lost.load(Ordering::Acquire));
+}
+
+#[test]
+fn a_session_the_daemon_no_longer_serves_ends_the_frontend() {
+    let host = Arc::new(HeldHost::default());
+    let mut daemon = LiveV5Daemon::start_with_lsp_host(
+        canonical_v13_service(),
+        Arc::clone(&host) as Arc<dyn LspHost>,
+    );
+    let editor = Editor::start(&daemon);
+    let mut editor = editor;
+    editor.initialize();
+    assert!(!editor.lost.load(Ordering::Acquire));
+
+    daemon.stop(daemon.owner());
+
+    wait_until(|| editor.lost.load(Ordering::Acquire));
 }
 
 /// Приёмка #2173: поток hover не задерживает параллельный вызов MCP.
@@ -179,7 +286,7 @@ fn an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call() {
     );
     assert!(editor.try_response(&held[0]).is_none());
 
-    host.spin_for(Duration::from_millis(20));
+    host.spin_for(HOVER_COST);
     for id in &held {
         assert!(editor.response(id)["result"]["contents"].is_object());
     }
@@ -204,15 +311,22 @@ fn an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call() {
         })
     };
     wait_until(|| hovers.load(Ordering::Acquire) > 0);
+    let before = host.answered.load(Ordering::Acquire);
+    let started = Instant::now();
     let under_lsp = median((0..MCP_SAMPLES).map(|_| mcp_view(&daemon, &owner, &view)));
+    let window = started.elapsed();
+    let during = host.answered.load(Ordering::Acquire) - before;
     stop.store(true, Ordering::Release);
     let _editor = stream.join().unwrap();
 
+    // The lane was computing hovers through the window: at least half of
+    // what its workers fit in it, the rest lost between the stream's batches.
+    let capacity = (window.as_millis() / HOVER_COST.as_millis()) as usize * MAX_LSP_LANE_WORKERS;
     assert!(
-        hovers.load(Ordering::Acquire) >= MAX_LSP_LANE_WORKERS,
-        "the LSP lane stayed busy during the measurement"
+        during * 2 >= capacity,
+        "the LSP lane answered {during} hovers in {window:?}, under half of its {capacity}"
     );
-    let allowed = baseline * MCP_LATENCY_FACTOR + MCP_LATENCY_TOLERANCE;
+    let allowed = baseline * 3 / 2 + MCP_LATENCY_TOLERANCE;
     assert!(
         under_lsp <= allowed,
         "MCP median {under_lsp:?} under a hover stream exceeds {allowed:?} (median {baseline:?} without LSP)"
@@ -354,12 +468,27 @@ impl LspHost for HeldHost {
         _: &V5LspSessionId,
         folders: &[V5LspWorkspaceFolder],
         client: LspClientChannel,
-    ) -> Result<V5LspCapabilities, V5LspFailure> {
+        _: Instant,
+    ) -> Result<V5LspOpening, V5LspFailure> {
         *self.folders.lock().unwrap() = folders.to_vec();
         *self.client.lock().unwrap() = Some(client);
-        Ok(V5LspCapabilities {
-            text_document_sync: V5LspTextSync::Incremental,
-            hover: true,
+        Ok(V5LspOpening {
+            capabilities: V5LspCapabilities {
+                text_document_sync: V5LspTextSync::Incremental,
+                hover: true,
+                text_document_content: true,
+            },
+            workspaces: folders
+                .iter()
+                .enumerate()
+                .map(|(index, folder)| match folder.name.as_str() {
+                    "broken" => V5LspWorkspaceSpace::refused(
+                        &folder.uri,
+                        V5LspFailure::WorkspaceUnavailable,
+                    ),
+                    _ => V5LspWorkspaceSpace::opened(&folder.uri, format!("w{index}")),
+                })
+                .collect(),
         })
     }
 
@@ -367,18 +496,25 @@ impl LspHost for HeldHost {
         &self,
         _: &V5LspSessionId,
         notification: V5LspNotification,
+        _: Instant,
     ) -> Result<(), V5LspFailure> {
         let entry = match &notification {
             V5LspNotification::DidChange { uri, version, .. } => {
                 format!("textDocument/didChange {uri} v{version}")
             }
+            V5LspNotification::DidClose { uri } => format!("textDocument/didClose {uri}"),
             other => format!("{other:?}"),
         };
         self.notified.lock().unwrap().push(entry);
         Ok(())
     }
 
-    fn call(&self, _: &V5LspSessionId, _: V5LspCall, context: &LspCallContext) -> V5LspOutcome {
+    fn call(&self, _: &V5LspSessionId, call: V5LspCall, context: &LspCallContext) -> V5LspOutcome {
+        if let V5LspCall::TextDocumentContent { uri } = call {
+            return V5LspOutcome::Text {
+                text: format!("// {uri}"),
+            };
+        }
         self.started.fetch_add(1, Ordering::AcqRel);
         while !self.released.load(Ordering::Acquire) {
             if context.is_cancelled() {
@@ -413,6 +549,7 @@ struct Editor {
     received: VecDeque<Value>,
     next_id: u64,
     thread: Option<thread::JoinHandle<i32>>,
+    lost: Arc<AtomicBool>,
 }
 
 impl Editor {
@@ -421,6 +558,11 @@ impl Editor {
         let output = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
         let client = Arc::new(V5DaemonClient::from(daemon.owner()));
         let writer = SharedWriter(Arc::clone(&output));
+        let lost = Arc::new(AtomicBool::new(false));
+        let session_lost: SessionLost = {
+            let lost = Arc::clone(&lost);
+            Arc::new(move || lost.store(true, Ordering::Release))
+        };
         let thread = thread::spawn(move || {
             serve(
                 BufReader::new(ChannelReader {
@@ -429,6 +571,7 @@ impl Editor {
                 }),
                 writer,
                 client,
+                session_lost,
             )
         });
         Self {
@@ -437,6 +580,7 @@ impl Editor {
             received: VecDeque::new(),
             next_id: 0,
             thread: Some(thread),
+            lost,
         }
     }
 

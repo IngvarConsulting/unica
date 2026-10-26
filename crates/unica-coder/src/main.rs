@@ -4,10 +4,16 @@ fn main() {
 
 fn run() {
     let args = std::env::args().collect::<Vec<_>>();
-    // The editor's door is a subcommand in its exact place, so an MCP host
-    // passing arbitrary arguments never lands in it.
-    if args.get(1).map(String::as_str) == Some("lsp") {
-        std::process::exit(unica_coder::interfaces::lsp::run_stdio());
+    // A subcommand is the first argument that is not a flag. MCP is started
+    // without one; an unknown subcommand is refused at once instead of
+    // starting MCP, whose silence a client would only notice by its timeout.
+    match args.get(1).map(String::as_str) {
+        Some("lsp") => std::process::exit(unica_coder::interfaces::lsp::run_stdio()),
+        Some(command) if !command.starts_with('-') => {
+            eprintln!("unica: unknown command `{command}`; supported commands: lsp");
+            std::process::exit(2);
+        }
+        _ => {}
     }
     if args.iter().any(|arg| arg == "--daemon") {
         if let Err(error) = unica_coder::interfaces::daemon::run_from_args(&args) {

@@ -89,7 +89,7 @@ MEASURED_MEDIUM_CASES = (
     ("unica-coder", "unica_coder", "infrastructure::daemon::server::apply_large_input_tests::object_remove_scans_a_module_larger_than_the_former_bound"),
     ("unica-coder", "unica_coder", "infrastructure::daemon::server::apply_large_input_tests::apply_edits_a_descriptor_larger_than_the_former_staging_bound"),
     # Замер задержки MCP под потоком hover (#2173). Локально, macOS arm64,
-    # 26.10.2026: 4,5–7 с.
+    # 26.10.2026: 4,5–7 с, под фоновой нагрузкой до 16 с.
     ("unica-coder", "unica_coder", "interfaces::lsp::tests::an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call"),
 )
 

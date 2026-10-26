@@ -10,12 +10,12 @@ use uuid::Uuid;
 
 /// Длиннейший адрес документа или рабочей папки.
 const MAX_LSP_URI_BYTES: usize = 4 * 1024;
+/// Длина пространства — сегмента адреса `unica://`.
+const MAX_LSP_SPACE_BYTES: usize = 64;
 /// Рабочих папок у одного соединения.
 const MAX_LSP_WORKSPACE_FOLDERS: usize = 64;
 const MAX_LSP_FOLDER_NAME_BYTES: usize = 1024;
 const MAX_LSP_LANGUAGE_ID_BYTES: usize = 64;
-/// Правок в одном `didChange`.
-const MAX_LSP_CONTENT_CHANGES: usize = 4 * 1024;
 /// Сообщение уведомления редактору.
 const MAX_LSP_LOG_MESSAGE_BYTES: usize = 4 * 1024;
 
@@ -75,20 +75,22 @@ pub enum V5LspCall {
         uri: String,
         position: V5LspPosition,
     },
+    /// Текст документа по адресу `unica://`, который редактор открывает
+    /// без файла на диске.
+    #[serde(rename = "workspace/textDocumentContent")]
+    TextDocumentContent { uri: String },
 }
 
 impl V5LspCall {
     /// Документ, к состоянию которого относится ответ.
     pub fn document_uri(&self) -> Option<&str> {
         match self {
-            Self::Hover { uri, .. } => Some(uri),
+            Self::Hover { uri, .. } | Self::TextDocumentContent { uri } => Some(uri),
         }
     }
 
     fn validate(&self) -> Result<(), String> {
-        match self {
-            Self::Hover { uri, .. } => validate_uri(uri),
-        }
+        validate_uri(self.document_uri().unwrap_or_default())
     }
 }
 
@@ -130,14 +132,13 @@ impl V5LspNotification {
         }
     }
 
-    fn validate(&self) -> Result<(), String> {
+    /// Примет ли демон это уведомление. Frontend проверяет его до отправки:
+    /// отвергнутый кадр закрыл бы соединение, а с ним и сессию.
+    pub fn validate(&self) -> Result<(), String> {
         validate_uri(self.document_uri())?;
         match self {
             Self::DidOpen { language_id, .. } => {
                 validate_short_text(language_id, MAX_LSP_LANGUAGE_ID_BYTES, "v5 lsp language id")
-            }
-            Self::DidChange { changes, .. } if changes.len() > MAX_LSP_CONTENT_CHANGES => {
-                Err("v5 lsp didChange carries too many changes".to_string())
             }
             Self::DidChange { .. } | Self::DidClose { .. } => Ok(()),
         }
@@ -179,13 +180,64 @@ pub enum V5LspTextSync {
 pub struct V5LspCapabilities {
     pub text_document_sync: V5LspTextSync,
     pub hover: bool,
+    /// `workspace/textDocumentContent` для адресов `unica://`.
+    pub text_document_content: bool,
 }
 
 impl V5LspCapabilities {
     pub const NONE: Self = Self {
         text_document_sync: V5LspTextSync::None,
         hover: false,
+        text_document_content: false,
     };
+}
+
+/// Чем стала одна рабочая папка соединения: пространством адресов
+/// `unica://<space>/...` или отказом. Ровно одно из двух.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct V5LspWorkspaceSpace {
+    /// Адрес папки ровно в том виде, в каком его прислал редактор.
+    pub folder: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<V5LspFailure>,
+}
+
+impl V5LspWorkspaceSpace {
+    pub fn opened(folder: impl Into<String>, space: impl Into<String>) -> Self {
+        Self {
+            folder: folder.into(),
+            space: Some(space.into()),
+            failure: None,
+        }
+    }
+
+    pub fn refused(folder: impl Into<String>, failure: V5LspFailure) -> Self {
+        Self {
+            folder: folder.into(),
+            space: None,
+            failure: Some(failure),
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_uri(&self.folder)?;
+        match (&self.space, self.failure) {
+            (Some(space), None) => validate_space(space),
+            (None, Some(_)) => Ok(()),
+            _ => Err("v5 lsp workspace space names exactly one of space and failure".to_string()),
+        }
+    }
+}
+
+/// Ответ службы на открытие сессии.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct V5LspOpening {
+    pub capabilities: V5LspCapabilities,
+    /// По одной записи на рабочую папку, в порядке папок.
+    pub workspaces: Vec<V5LspWorkspaceSpace>,
 }
 
 /// Почему запрос не получил ответа. Закрытый набор кодов Unica: поставщик
@@ -204,6 +256,8 @@ pub enum V5LspFailure {
     DeadlineExceeded,
     /// Служба не смогла ответить.
     Unavailable,
+    /// Рабочая папка не открылась как рабочая область Unica.
+    WorkspaceUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +272,10 @@ pub enum V5LspOutcome {
     Hover {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         contents: Option<String>,
+    },
+    /// Текст документа.
+    Text {
+        text: String,
     },
     /// Запрос отменён до ответа; его результат не выдаётся.
     Cancelled {},
@@ -281,6 +339,19 @@ pub(super) fn validate_call(call: &V5LspCall) -> Result<(), String> {
 
 pub(super) fn validate_notification(notification: &V5LspNotification) -> Result<(), String> {
     notification.validate()
+}
+
+/// Пространство — сегмент адреса `unica://`: только буквы, цифры, `-`, `_`.
+fn validate_space(space: &str) -> Result<(), String> {
+    if space.is_empty()
+        || space.len() > MAX_LSP_SPACE_BYTES
+        || !space
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("v5 lsp workspace space is not an address segment".to_string());
+    }
+    Ok(())
 }
 
 fn validate_uri(uri: &str) -> Result<(), String> {

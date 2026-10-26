@@ -4234,7 +4234,12 @@ pub(crate) mod actor_capacity_tests {
                 Arc::clone(&service),
                 Arc::new(TokioClock),
             ));
-            Self::over_configured(canonical, service, None, Some(lsp_host))
+            Self::over_configured(
+                canonical,
+                service,
+                Some(Arc::new(AtomicBool::new(false))),
+                Some(lsp_host),
+            )
         }
 
         fn over(

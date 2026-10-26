@@ -12,29 +12,50 @@ struct HeldHost {
     calls: AtomicUsize,
     release: AtomicBool,
     client: Mutex<Option<LspClientChannel>>,
+    /// Answer for fewer folders than asked: a broken service.
+    skip_folder: AtomicBool,
+    closed: AtomicUsize,
 }
 
 impl LspHost for HeldHost {
     fn open(
         &self,
         _: &V5LspSessionId,
-        _: &[V5LspWorkspaceFolder],
+        folders: &[V5LspWorkspaceFolder],
         client: LspClientChannel,
-    ) -> Result<V5LspCapabilities, V5LspFailure> {
+        _: Instant,
+    ) -> Result<V5LspOpening, V5LspFailure> {
         *self.client.lock().unwrap() = Some(client);
-        Ok(V5LspCapabilities {
-            text_document_sync: crate::protocol_v5::lsp::V5LspTextSync::Full,
-            hover: true,
+        let skip = usize::from(self.skip_folder.load(Ordering::Acquire));
+        Ok(V5LspOpening {
+            capabilities: V5LspCapabilities {
+                text_document_sync: crate::protocol_v5::lsp::V5LspTextSync::Full,
+                hover: true,
+                text_document_content: false,
+            },
+            workspaces: folders
+                .iter()
+                .skip(skip)
+                .enumerate()
+                .map(|(index, folder)| {
+                    V5LspWorkspaceSpace::opened(&folder.uri, format!("w{index}"))
+                })
+                .collect(),
         })
     }
 
-    fn notify(&self, _: &V5LspSessionId, _: V5LspNotification) -> Result<(), V5LspFailure> {
+    fn notify(
+        &self,
+        _: &V5LspSessionId,
+        _: V5LspNotification,
+        _: Instant,
+    ) -> Result<(), V5LspFailure> {
         Ok(())
     }
 
     fn call(&self, _: &V5LspSessionId, call: V5LspCall, context: &LspCallContext) -> V5LspOutcome {
         self.calls.fetch_add(1, Ordering::AcqRel);
-        let V5LspCall::Hover { uri, .. } = call;
+        let uri = call.document_uri().unwrap_or_default();
         if uri.ends_with("panic.bsl") {
             panic!("the host failed inside one request");
         }
@@ -51,7 +72,9 @@ impl LspHost for HeldHost {
         }
     }
 
-    fn close(&self, _: &V5LspSessionId) {}
+    fn close(&self, _: &V5LspSessionId) {
+        self.closed.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 fn hover(uri: &str) -> V5LspCall {
@@ -74,9 +97,71 @@ fn wait_until(condition: impl Fn() -> bool) {
 
 fn lane_with(host: &Arc<HeldHost>) -> (Arc<LspLane>, V5LspSessionId) {
     let lane = Arc::new(LspLane::start(Arc::clone(host) as Arc<dyn LspHost>).unwrap());
-    let (session, capabilities) = lane.open(&[]).unwrap();
-    assert!(capabilities.hover);
+    let (session, opening) = lane.open(&[], soon()).unwrap();
+    assert!(opening.capabilities.hover);
     (lane, session)
+}
+
+fn soon() -> Instant {
+    Instant::now() + Duration::from_secs(5)
+}
+
+#[test]
+fn a_full_memory_of_early_cancellations_forgets_only_the_oldest() {
+    let host = Arc::new(HeldHost::default());
+    host.release.store(true, Ordering::Release);
+    let (lane, session) = lane_with(&host);
+    for request in 0..=MAX_EARLY_CANCELLATIONS as u64 {
+        lane.cancel(&session, request).unwrap();
+    }
+
+    assert!(matches!(
+        lane.call(&session, 0, hover("file:///a.bsl"), soon()),
+        V5LspOutcome::Hover { .. }
+    ));
+    assert_eq!(
+        lane.call(&session, 1, hover("file:///a.bsl"), soon()),
+        V5LspOutcome::Cancelled {}
+    );
+    assert_eq!(
+        lane.call(
+            &session,
+            MAX_EARLY_CANCELLATIONS as u64,
+            hover("file:///a.bsl"),
+            soon()
+        ),
+        V5LspOutcome::Cancelled {}
+    );
+}
+
+fn folder(uri: &str) -> V5LspWorkspaceFolder {
+    V5LspWorkspaceFolder {
+        uri: uri.into(),
+        name: "work".into(),
+    }
+}
+
+#[test]
+fn every_folder_gets_its_own_space_or_the_session_is_refused() {
+    let host = Arc::new(HeldHost::default());
+    let lane = LspLane::start(Arc::clone(&host) as Arc<dyn LspHost>).unwrap();
+    let folders = [folder("file:///a"), folder("file:///b")];
+
+    let (_, opening) = lane.open(&folders, soon()).unwrap();
+    assert_eq!(
+        opening.workspaces,
+        vec![
+            V5LspWorkspaceSpace::opened("file:///a", "w0"),
+            V5LspWorkspaceSpace::opened("file:///b", "w1"),
+        ]
+    );
+
+    host.skip_folder.store(true, Ordering::Release);
+    assert_eq!(
+        lane.open(&folders, soon()).err(),
+        Some(V5LspFailure::Unavailable)
+    );
+    assert_eq!(host.closed.load(Ordering::Acquire), 1);
 }
 
 #[test]

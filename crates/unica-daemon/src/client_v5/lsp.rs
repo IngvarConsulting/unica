@@ -2,7 +2,7 @@
 //! соединение; запросы идут по своим соединениям, отмена — по отдельному.
 use super::*;
 use crate::protocol_v5::lsp::{
-    V5LspCall, V5LspCapabilities, V5LspFailure, V5LspNotification, V5LspOutcome,
+    V5LspCall, V5LspFailure, V5LspNotification, V5LspOpening, V5LspOutcome,
     V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder,
 };
 
@@ -36,7 +36,7 @@ impl V5DaemonProcessOwner {
         &mut self,
         workspace_folders: Vec<V5LspWorkspaceFolder>,
         deadline: Instant,
-    ) -> Result<(V5LspSessionId, V5LspCapabilities), V5LspExchangeError> {
+    ) -> Result<(V5LspSessionId, V5LspOpening), V5LspExchangeError> {
         match self.lsp_exchange(
             V5ClientRequest::LspOpen { workspace_folders },
             "lsp open",
@@ -45,7 +45,14 @@ impl V5DaemonProcessOwner {
             V5ServerResponse::LspOpened {
                 session,
                 capabilities,
-            } => Ok((session, capabilities)),
+                workspaces,
+            } => Ok((
+                session,
+                V5LspOpening {
+                    capabilities,
+                    workspaces,
+                },
+            )),
             other => Err(unexpected(other)),
         }
     }

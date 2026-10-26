@@ -64,6 +64,10 @@ const SESSION_FRAME_READ_TIMEOUT: Duration =
 
 const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// What the LSP service may spend opening a session or taking a document.
+const LSP_SESSION_STEP_BUDGET: Duration =
+    Duration::from_millis(unica_execution::receipt_ledger::MAX_ORIGINAL_RESPONSE_BUDGET_MS);
+
 pub fn run_daemon<H: InvocationHost<Request = V5InvocationRequest>, O: ObservationLifecycle>(
     config: DaemonServerConfig<H, O>,
 ) -> Result<(), String> {
@@ -1002,12 +1006,13 @@ fn serve_lsp_request(
             if guard.owned.is_some() {
                 return refused(V5LspFailure::DuplicateRequest);
             }
-            match guard.lane.open(&workspace_folders) {
-                Ok((session, capabilities)) => {
+            match guard.lane.open(&workspace_folders, deadlines.operation) {
+                Ok((session, opening)) => {
                     guard.owned = Some(session.clone());
                     V5ServerResponse::LspOpened {
                         session,
-                        capabilities,
+                        capabilities: opening.capabilities,
+                        workspaces: opening.workspaces,
                     }
                 }
                 Err(failure) => refused(failure),
@@ -1016,7 +1021,11 @@ fn serve_lsp_request(
         V5ClientRequest::LspNotify {
             session,
             notification,
-        } if guard.owns(&session) => accepted(guard.lane.notify(&session, notification)),
+        } if guard.owns(&session) => accepted(guard.lane.notify(
+            &session,
+            notification,
+            deadlines.operation,
+        )),
         V5ClientRequest::LspClose { session } if guard.owns(&session) => {
             guard.owned = None;
             guard.lane.close(&session);
@@ -1071,6 +1080,11 @@ fn v5_request_deadlines(
         }
         V5ClientRequest::LspCall { budget_ms, .. } => Duration::from_millis(*budget_ms),
         V5ClientRequest::LspPoll { wait_ms, .. } => Duration::from_millis(*wait_ms),
+        // Opening a workspace and taking a document may take the service
+        // longer than an idle session poll.
+        V5ClientRequest::LspOpen { .. } | V5ClientRequest::LspNotify { .. } => {
+            LSP_SESSION_STEP_BUDGET
+        }
         _ => SESSION_READ_TIMEOUT,
     };
     let operation = request_received_at

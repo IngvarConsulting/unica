@@ -3,7 +3,7 @@ pub mod lsp;
 use super::identity::CoreIdentity;
 use lsp::{
     V5LspCall, V5LspCapabilities, V5LspFailure, V5LspNotification, V5LspOutcome,
-    V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder,
+    V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder, V5LspWorkspaceSpace,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -716,6 +716,7 @@ pub enum V5ServerResponse {
     LspOpened {
         session: V5LspSessionId,
         capabilities: V5LspCapabilities,
+        workspaces: Vec<V5LspWorkspaceSpace>,
     },
     LspAnswer {
         outcome: V5LspOutcome,
@@ -1025,7 +1026,16 @@ pub fn decode_v5_server_response(bytes: &[u8]) -> Result<V5ServerResponse, Strin
         }
     }
     match &response {
-        V5ServerResponse::LspOpened { session, .. } => session.validate()?,
+        V5ServerResponse::LspOpened {
+            session,
+            workspaces,
+            ..
+        } => {
+            session.validate()?;
+            workspaces
+                .iter()
+                .try_for_each(V5LspWorkspaceSpace::validate)?
+        }
         V5ServerResponse::LspNotifications { items } => items
             .iter()
             .try_for_each(V5LspServerNotification::validate)?,
@@ -1322,7 +1332,8 @@ mod tests {
                 receipt_key_json()
             ),
             "{\"kind\":\"error\",\"code\":\"receipt_not_found\"}".to_string(),
-            "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"incremental\",\"hover\":true}}".to_string(),
+            "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"incremental\",\"hover\":true,\"textDocumentContent\":true},\"workspaces\":[{\"folder\":\"file:///work\",\"space\":\"w1\"},{\"folder\":\"file:///other\",\"failure\":\"workspace_unavailable\"}]}".to_string(),
+            "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"text\",\"text\":\"Процедура А()\"}}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"hover\",\"contents\":\"**x**\"}}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"hover\"}}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"cancelled\"}}".to_string(),
@@ -1357,7 +1368,17 @@ mod tests {
             ),
             (
                 "non-canonical lsp session",
-                "{\"kind\":\"lsp_opened\",\"session\":\"x\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false}}"
+                "{\"kind\":\"lsp_opened\",\"session\":\"x\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false},\"workspaces\":[]}"
+                    .to_string(),
+            ),
+            (
+                "workspace with both space and failure",
+                "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false},\"workspaces\":[{\"folder\":\"file:///w\",\"space\":\"w1\",\"failure\":\"workspace_unavailable\"}]}"
+                    .to_string(),
+            ),
+            (
+                "space that is not an address segment",
+                "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false},\"workspaces\":[{\"folder\":\"file:///w\",\"space\":\"a/b\"}]}"
                     .to_string(),
             ),
             (

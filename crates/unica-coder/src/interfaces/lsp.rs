@@ -19,9 +19,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unica_daemon::client_v5::{V5DaemonClient, V5DaemonProcessOwner, V5LspExchangeError};
 use unica_daemon::protocol_v5::lsp::{
-    V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspMessageLevel,
-    V5LspNotification, V5LspOutcome, V5LspPosition, V5LspRange, V5LspServerNotification,
-    V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
+    V5LspCall, V5LspContentChange, V5LspFailure, V5LspMessageLevel, V5LspNotification,
+    V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange, V5LspServerNotification, V5LspSessionId,
+    V5LspTextSync, V5LspWorkspaceFolder,
 };
 use unica_daemon::protocol_v5::V5EndpointRecord;
 
@@ -30,9 +30,13 @@ const LSP_CALL_BUDGET: Duration = Duration::from_secs(5);
 /// Запас на обмен поверх бюджета запроса.
 const LSP_EXCHANGE_MARGIN: Duration = Duration::from_secs(1);
 /// Срок обмена сессии: открытие, уведомление, закрытие.
-const LSP_SESSION_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Above the daemon's own budget for these steps (7 s), so the daemon
+/// answers, even with a refusal, before the frontend gives up.
+const LSP_SESSION_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(8);
 /// Ожидание уведомлений демона одним опросом.
 const LSP_POLL_WAIT_MS: u64 = 2_000;
+/// Подряд неудавшихся опросов, после которых сессия считается потерянной.
+const MAX_LSP_POLL_FAILURES: u32 = 3;
 /// Запросов редактора, ждущих ответа демона.
 const MAX_LSP_REQUESTS_IN_FLIGHT: usize = 32;
 
@@ -61,8 +65,18 @@ pub fn run_stdio() -> i32 {
         }
     };
     let stdin = io::stdin();
-    serve(stdin.lock(), io::stdout(), Arc::new(client))
+    // The main loop waits on the editor's input. A session the daemon no
+    // longer has ends the process from the poller, so the editor restarts
+    // the server instead of getting refusals forever.
+    let session_lost: SessionLost = Arc::new(|| {
+        eprintln!("unica lsp lost its daemon session");
+        std::process::exit(1);
+    });
+    serve(stdin.lock(), io::stdout(), Arc::new(client), session_lost)
 }
+
+/// Called once the daemon no longer serves this connection's session.
+pub(crate) type SessionLost = Arc<dyn Fn() + Send + Sync>;
 
 /// Обслужить одно соединение редактора до `exit` или конца ввода.
 /// Возвращает код выхода процесса.
@@ -70,9 +84,11 @@ pub(crate) fn serve(
     mut input: impl BufRead,
     output: impl Write + Send + 'static,
     client: Arc<V5DaemonClient>,
+    session_lost: SessionLost,
 ) -> i32 {
     let mut frontend = Frontend {
         client,
+        session_lost,
         output: Arc::new(Mutex::new(Box::new(output))),
         phase: Phase::Uninitialized,
         in_flight: Arc::new(Mutex::new(HashMap::new())),
@@ -105,6 +121,7 @@ type Output = Arc<Mutex<Box<dyn Write + Send>>>;
 
 struct Frontend {
     client: Arc<V5DaemonClient>,
+    session_lost: SessionLost,
     output: Output,
     phase: Phase,
     in_flight: InFlight,
@@ -199,6 +216,17 @@ impl Frontend {
                 Some(call) => self.dispatch(id, call),
                 None => self.send(error_response(id, INVALID_PARAMS, "invalid hover params")),
             },
+            (Phase::Running(_), "workspace/textDocumentContent") => {
+                match params.get("uri").and_then(Value::as_str) {
+                    Some(uri) => self.dispatch(
+                        id,
+                        V5LspCall::TextDocumentContent {
+                            uri: uri.to_owned(),
+                        },
+                    ),
+                    None => self.send(error_response(id, INVALID_PARAMS, "invalid content params")),
+                }
+            }
             (Phase::Running(_), _) => {
                 self.send(error_response(
                     id,
@@ -230,8 +258,10 @@ impl Frontend {
                 let Phase::Running(_) = self.phase else {
                     return Flow::Continue;
                 };
-                let Some(notification) = document_notification(method, &params) else {
-                    return Flow::Continue;
+                let notification = document_notification(method, &params)
+                    .filter(|notification| notification.validate().is_ok());
+                let Some(notification) = notification else {
+                    return self.forget_document(&params);
                 };
                 if !matches!(notification, V5LspNotification::DidOpen { .. }) {
                     // A request about an older version would answer about a
@@ -251,11 +281,11 @@ impl Frontend {
             .connect_peer_before(deadline)
             .map_err(|error| V5LspExchangeError::Transport(error.to_string()))
             .and_then(|mut anchor| {
-                let (session, capabilities) =
+                let (session, opening) =
                     anchor.lsp_open_before(workspace_folders(params), deadline)?;
-                Ok((anchor, session, capabilities))
+                Ok((anchor, session, opening))
             });
-        let (anchor, session, capabilities) = match opened {
+        let (anchor, session, opening) = match opened {
             Ok(opened) => opened,
             Err(error) => {
                 self.send(error_response(
@@ -272,6 +302,7 @@ impl Frontend {
             session.clone(),
             Arc::clone(&self.output),
             Arc::clone(&poll_stop),
+            Arc::clone(&self.session_lost),
         );
         self.phase = Phase::Running(Box::new(Session {
             id: session,
@@ -283,7 +314,7 @@ impl Frontend {
             "jsonrpc": "2.0",
             "id": id,
             "result": {
-                "capabilities": capabilities_json(capabilities),
+                "capabilities": capabilities_json(opening),
                 "serverInfo": {"name": "unica", "version": env!("CARGO_PKG_VERSION")},
             }
         }));
@@ -363,6 +394,22 @@ impl Frontend {
             });
     }
 
+    /// A document notification the daemon would not take. Its requests are
+    /// withdrawn and the daemon drops the document, so no answer is given
+    /// about a text the editor no longer has; the session itself stays.
+    fn forget_document(&mut self, params: &Value) -> Flow {
+        let Some(uri) = document_uri(params) else {
+            return Flow::Continue;
+        };
+        eprintln!("unica lsp ignored a document notification it cannot pass on");
+        self.withdraw_document(&uri);
+        let close = V5LspNotification::DidClose { uri };
+        if close.validate().is_err() {
+            return Flow::Continue;
+        }
+        self.forward(close)
+    }
+
     fn forward(&mut self, notification: V5LspNotification) -> Flow {
         let Phase::Running(session) = &mut self.phase else {
             return Flow::Continue;
@@ -435,6 +482,9 @@ fn call_daemon(
             "id": id,
             "result": contents.map(|value| json!({"contents": {"kind": "markdown", "value": value}})),
         }),
+        Ok(V5LspOutcome::Text { text }) => {
+            json!({"jsonrpc": "2.0", "id": id, "result": {"text": text}})
+        }
         Ok(V5LspOutcome::Cancelled {}) => {
             error_response(id, REQUEST_CANCELLED, "request cancelled")
         }
@@ -453,30 +503,48 @@ fn spawn_poller(
     session: V5LspSessionId,
     output: Output,
     stop: Arc<AtomicBool>,
+    session_lost: SessionLost,
 ) {
     let _ = thread::Builder::new()
         .name("unica-lsp-notifications".into())
         .spawn(move || {
-            let mut peer = None;
+            let mut peer: Option<V5DaemonProcessOwner> = None;
+            let mut failures = 0;
             while !stop.load(Ordering::Acquire) {
                 let deadline =
                     Instant::now() + Duration::from_millis(LSP_POLL_WAIT_MS) + LSP_EXCHANGE_MARGIN;
-                if peer.is_none() {
-                    peer = client.connect_peer_before(deadline).ok();
-                }
-                let Some(owner) = peer.as_mut() else {
-                    return;
+                let polled = match peer.as_mut() {
+                    Some(owner) => owner.lsp_poll_before(&session, LSP_POLL_WAIT_MS, deadline),
+                    None => client
+                        .connect_peer_before(deadline)
+                        .map_err(|error| V5LspExchangeError::Transport(error.to_string()))
+                        .and_then(|owner| {
+                            peer.insert(owner)
+                                .lsp_poll_before(&session, LSP_POLL_WAIT_MS, deadline)
+                        }),
                 };
-                match owner.lsp_poll_before(&session, LSP_POLL_WAIT_MS, deadline) {
+                if stop.load(Ordering::Acquire) {
+                    return;
+                }
+                match polled {
                     Ok(items) => {
-                        if stop.load(Ordering::Acquire) {
-                            return;
-                        }
+                        failures = 0;
                         for item in items {
                             write(&output, &server_notification_json(item));
                         }
                     }
-                    Err(_) => return,
+                    // The daemon answered: this session is gone there.
+                    Err(V5LspExchangeError::Refused(_) | V5LspExchangeError::Unexpected) => {
+                        return session_lost();
+                    }
+                    // A lost exchange may be load; a fresh connection decides.
+                    Err(V5LspExchangeError::Transport(_)) => {
+                        peer = None;
+                        failures += 1;
+                        if failures >= MAX_LSP_POLL_FAILURES {
+                            return session_lost();
+                        }
+                    }
                 }
             }
         });
@@ -504,15 +572,19 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
 }
 
 fn failure_message(failure: V5LspFailure) -> String {
-    let code = match failure {
+    format!("unica: {}", failure_code(failure))
+}
+
+fn failure_code(failure: V5LspFailure) -> &'static str {
+    match failure {
         V5LspFailure::NotSupported => "lsp_not_supported",
         V5LspFailure::SessionUnknown => "lsp_session_unknown",
         V5LspFailure::DuplicateRequest => "lsp_duplicate_request",
         V5LspFailure::Busy => "lsp_busy",
         V5LspFailure::DeadlineExceeded => "lsp_deadline_exceeded",
         V5LspFailure::Unavailable => "lsp_unavailable",
-    };
-    format!("unica: {code}")
+        V5LspFailure::WorkspaceUnavailable => "lsp_workspace_unavailable",
+    }
 }
 
 fn exchange_message(error: &V5LspExchangeError) -> String {
@@ -524,7 +596,10 @@ fn exchange_message(error: &V5LspExchangeError) -> String {
     }
 }
 
-fn capabilities_json(capabilities: V5LspCapabilities) -> Value {
+/// Возможности по готовности службы и пространство каждой рабочей папки
+/// в `experimental.unica.workspaces`, в порядке папок `initialize`.
+fn capabilities_json(opening: V5LspOpening) -> Value {
+    let capabilities = opening.capabilities;
     let mut result = Map::new();
     result.insert("positionEncoding".into(), json!("utf-16"));
     let sync = match capabilities.text_document_sync {
@@ -541,6 +616,27 @@ fn capabilities_json(capabilities: V5LspCapabilities) -> Value {
     if capabilities.hover {
         result.insert("hoverProvider".into(), json!(true));
     }
+    if capabilities.text_document_content {
+        result.insert(
+            "workspace".into(),
+            json!({"textDocumentContent": {"schemes": ["unica"]}}),
+        );
+    }
+    let workspaces = opening
+        .workspaces
+        .into_iter()
+        .map(|workspace| match (workspace.space, workspace.failure) {
+            (Some(space), _) => json!({"folder": workspace.folder, "space": space}),
+            (None, failure) => json!({
+                "folder": workspace.folder,
+                "failure": failure_code(failure.unwrap_or(V5LspFailure::Unavailable)),
+            }),
+        })
+        .collect::<Vec<_>>();
+    result.insert(
+        "experimental".into(),
+        json!({"unica": {"workspaces": workspaces}}),
+    );
     Value::Object(result)
 }
 
