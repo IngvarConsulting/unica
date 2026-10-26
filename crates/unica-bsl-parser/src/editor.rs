@@ -312,9 +312,13 @@ impl ParsedModule<'_> {
             } else if kind.is_keyword() {
                 Some((TokenClass::Keyword, false))
             } else if kind == SyntaxKind::IDENT {
-                let scope = scopes
-                    .iter()
-                    .find(|(method, _, _)| method.start <= range.start && range.end <= method.end);
+                // Methods do not nest: the last one starting before the
+                // token is the only one that can hold it.
+                let before = scopes.partition_point(|(method, _, _)| method.start <= range.start);
+                let scope = before
+                    .checked_sub(1)
+                    .map(|index| &scopes[index])
+                    .filter(|(method, _, _)| range.end <= method.end);
                 classify_name(&token, scope, &module_variables)
             } else {
                 None

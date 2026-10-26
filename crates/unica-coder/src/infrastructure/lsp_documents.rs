@@ -276,6 +276,7 @@ impl LspDocuments {
         };
         let location = self.locate(uri)?;
         let common_module = |name: &str| {
+            let name = self.common_module_name(&location, name);
             let document = DocumentUri {
                 space: location.document.space.clone(),
                 address: format!("{}:CommonModule.{name}", location.source_set),
@@ -288,6 +289,28 @@ impl LspDocuments {
             position,
             &common_module,
         ))
+    }
+
+    /// The common module `typed` names, as its buffer or its folder spells
+    /// it: names compare case-insensitively, buffers and files do not.
+    fn common_module_name(&self, location: &DocumentLocation, typed: &str) -> String {
+        let wanted = typed.to_lowercase();
+        let prefix = format!("{}:CommonModule.", location.source_set);
+        let open = self.open.keys().find_map(|document| {
+            let name = document.address.strip_prefix(&prefix)?;
+            (document.space == location.document.space && name.to_lowercase() == wanted)
+                .then(|| name.to_owned())
+        });
+        open.or_else(|| {
+            let layout = self
+                .source_set(&location.document.space, &location.source_set)
+                .ok()?;
+            std::fs::read_dir(layout.root.join("CommonModules"))
+                .ok()?
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .find(|name| name.to_lowercase() == wanted)
+        })
+        .unwrap_or_else(|| typed.to_owned())
     }
 
     /// The `unica://` URIs to refresh after `apply` published `relatives`

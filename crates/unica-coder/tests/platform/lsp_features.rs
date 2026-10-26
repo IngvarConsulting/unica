@@ -125,6 +125,7 @@ fn signature_help_names_the_method_and_the_active_parameter() {
         signature["parameters"],
         json!([{"label": [8, 14]}, {"label": [16, 21]}])
     );
+    assert_eq!(signature["documentation"]["kind"], "plaintext");
     assert_eq!(
         signature["documentation"]["value"],
         "Складывает 😀 числа.\nВторое необязательно."
@@ -225,6 +226,30 @@ fn signature_help_reads_the_open_buffers_not_the_disk() {
         "Посчитать(Сколько, Чего) Экспорт"
     );
     assert_eq!(help["activeParameter"], 1);
+    // The qualifier is matched without case, against the buffer's name.
+    let lower = typed.replace("НовыйМодуль", "новыймодуль");
+    documents
+        .change(
+            &overlay,
+            &caller_uri,
+            2,
+            &[crate::application::lsp::document::ContentChange::Full(
+                lower.clone(),
+            )],
+        )
+        .unwrap();
+    let read = reader(
+        &space.root.join("src"),
+        Some(overlay.session_documents("editor", "main").unwrap()),
+    );
+    let help = documents
+        .signature_help(&caller_uri, after(&lower, "(1, "), &read)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Посчитать(Сколько, Чего) Экспорт"
+    );
 
     // Another connection reads the disk, where neither exists.
     let other = LspDocuments::new("other", vec![layout(&space.root)]);
@@ -278,8 +303,18 @@ fn features_on_a_large_common_module() {
     measure("semanticTokens", &|| {
         semantic_tokens(text)["data"].as_array().unwrap().len() / 5
     });
-    let last_call = text.rfind("ОбщегоНазначения").unwrap_or(0);
-    let position = LineIndex::new(text).position(text, last_call);
+    // The last call of a method of this module, just inside its `(`.
+    let call = unica_bsl_parser::parse(text)
+        .editor_symbols()
+        .iter()
+        .flat_map(|symbol| std::iter::once(symbol).chain(symbol.children.iter()))
+        .filter_map(|symbol| {
+            text.rfind(&format!("{}(", symbol.name))
+                .map(|at| at + symbol.name.len() + 1)
+        })
+        .max()
+        .unwrap();
+    let position = LineIndex::new(text).position(text, call);
     measure("signatureHelp", &|| {
         usize::from(signature_help(text, position, &|_| None).is_some())
     });

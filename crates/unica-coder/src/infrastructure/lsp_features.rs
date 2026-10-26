@@ -202,11 +202,12 @@ pub(crate) fn signature_help(
             .collect::<Vec<_>>(),
     });
     if let Some(description) = &method.description {
-        signature["documentation"] = json!({ "kind": "markdown", "value": description });
+        // Plain text: a description keeps its own line breaks and is not
+        // read as markup.
+        signature["documentation"] = json!({ "kind": "plaintext", "value": description });
     }
-    let active = call
-        .active_parameter
-        .min(parameters.len().saturating_sub(1));
+    // An argument past the last parameter highlights none, as LSP allows.
+    let active = call.active_parameter;
     Some(json!({
         "signatures": [signature],
         "activeSignature": 0,
