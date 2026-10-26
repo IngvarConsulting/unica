@@ -85,6 +85,9 @@ pub struct ClassifiedToken {
 pub struct CallSite {
     /// `ОбщМод` of `ОбщМод.Метод(...)`; `None` for a call of a plain name.
     pub qualifier: Option<String>,
+    /// The receiver of the callee with its calls (`Запрос.Выполнить()` of
+    /// `Запрос.Выполнить().Выбрать(`); `None` for a plain call.
+    pub receiver: Option<Vec<ChainSegment>>,
     pub name: String,
     pub name_range: Range<usize>,
     /// Zero-based: the commas of the argument list before the cursor.
@@ -314,9 +317,9 @@ impl ParsedModule<'_> {
                 Some((TokenClass::Directive, false))
             } else if kind.is_annotation() {
                 Some((TokenClass::Annotation, false))
-            } else if kind.is_keyword() {
+            } else if kind.is_keyword() && !is_member_name(&token) {
                 Some((TokenClass::Keyword, false))
-            } else if kind == SyntaxKind::IDENT {
+            } else if kind == SyntaxKind::IDENT || is_member_name(&token) {
                 // Methods do not nest: the last one starting before the
                 // token is the only one that can hold it.
                 let before = scopes.partition_point(|(method, _, _)| method.start <= range.start);
@@ -371,8 +374,13 @@ impl ParsedModule<'_> {
                     })
                     .count();
                 let (qualifier, name) = callee(&call.first_child()?)?;
+                let start = usize::from(name.text_range().start());
+                let receiver = self.source[..start]
+                    .strip_suffix('.')
+                    .and_then(receiver_chain);
                 Some(CallSite {
                     qualifier,
+                    receiver,
                     name: name.text().to_owned(),
                     name_range: byte_range(name.text_range()),
                     active_parameter,
@@ -391,6 +399,27 @@ pub struct CompletionSite {
     /// `None` for a plain name. An access whose receiver is not a chain of
     /// names (`Ф().`, `М[0].`) has an empty path.
     pub receiver: Option<Vec<String>>,
+    /// The receiver with its calls (`Запрос.Выполнить().`); empty when it
+    /// is not a chain of names and calls (`М[0].`).
+    pub chain: Option<Vec<ChainSegment>>,
+}
+
+/// One step of a receiver chain: a name, called or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainSegment {
+    pub name: String,
+    pub call: bool,
+}
+
+/// What a variable was last assigned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssignedValue {
+    /// `Новый Запрос(...)`: the type name as written.
+    New(String),
+    /// A chain of names and calls (`Справочники.Валюты.СоздатьЭлемент()`).
+    Chain(Vec<ChainSegment>),
+    /// Anything else: a literal, an operation.
+    Other,
 }
 
 /// Names the code at a point can use, as declared.
@@ -428,9 +457,13 @@ impl ParsedModule<'_> {
         let receiver = before[..start]
             .strip_suffix('.')
             .map(|chain| receiver_path(chain).unwrap_or_default());
+        let chain = before[..start]
+            .strip_suffix('.')
+            .map(|chain| receiver_chain(chain).unwrap_or_default());
         Some(CompletionSite {
             prefix_range: start..end,
             receiver,
+            chain,
         })
     }
 
@@ -544,6 +577,142 @@ impl ParsedModule<'_> {
             range.start <= offset && offset <= range.end
         })
     }
+}
+
+impl ParsedModule<'_> {
+    /// What `variable` was last assigned before `offset` in its method,
+    /// with the start of the assignment.
+    pub fn assigned_value(&self, offset: usize, variable: &str) -> Option<(usize, AssignedValue)> {
+        let variable = variable.to_lowercase();
+        self.enclosing_method(offset)?
+            .descendants()
+            .filter(|node| node.kind() == SyntaxKind::ASSIGN_STMT)
+            .filter(|node| usize::from(node.text_range().end()) <= offset)
+            .filter(|node| {
+                node.first_child().is_some_and(|target| {
+                    target.kind() == SyntaxKind::IDENT
+                        && target.text().to_string().trim().to_lowercase() == variable
+                })
+            })
+            .last()
+            .map(|node| {
+                let value = node
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::EXPR);
+                let new = value.as_ref().and_then(|value| {
+                    value
+                        .descendants()
+                        .find(|child| child.kind() != SyntaxKind::EXPR)
+                        .filter(|child| child.kind() == SyntaxKind::NEW_EXPR)
+                        .and_then(|new| direct_token(&new, SyntaxKind::IDENT))
+                        .map(|name| name.text().to_owned())
+                });
+                let assigned = match (new, value) {
+                    (Some(name), _) => AssignedValue::New(name),
+                    (None, Some(value)) => {
+                        receiver_chain(self.source[byte_range(value.text_range())].trim())
+                            .map_or(AssignedValue::Other, AssignedValue::Chain)
+                    }
+                    (None, None) => AssignedValue::Other,
+                };
+                (usize::from(node.text_range().start()), assigned)
+            })
+    }
+
+    /// The collection the last `Для Каждого <variable> Из <collection>`
+    /// before `offset` walks, as a chain, with the start of the loop.
+    pub fn loop_chain(&self, offset: usize, variable: &str) -> Option<(usize, Vec<ChainSegment>)> {
+        let variable = variable.to_lowercase();
+        self.enclosing_method(offset)?
+            .descendants()
+            .filter(|node| node.kind() == SyntaxKind::FOR_EACH_STMT)
+            .filter(|node| usize::from(node.text_range().start()) <= offset)
+            .filter(|node| {
+                direct_token(node, SyntaxKind::IDENT)
+                    .is_some_and(|name| name.text().to_lowercase() == variable)
+            })
+            .last()
+            .map(|node| {
+                let chain = node
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::EXPR)
+                    .and_then(|collection| {
+                        receiver_chain(self.source[byte_range(collection.text_range())].trim())
+                    })
+                    .unwrap_or_default();
+                (usize::from(node.text_range().start()), chain)
+            })
+    }
+}
+
+/// `А.Б().В` as its segments, read backwards from the end of `text`;
+/// `None` when the text does not end in a chain of names and calls (an
+/// index, a literal, an operation).
+fn receiver_chain(text: &str) -> Option<Vec<ChainSegment>> {
+    let mut segments = Vec::new();
+    let mut rest = text.trim_end();
+    loop {
+        let mut call = false;
+        if let Some(inside) = rest.strip_suffix(')') {
+            rest = &rest[..opening_paren(inside)?];
+            call = true;
+        }
+        let start = rest
+            .char_indices()
+            .rev()
+            .take_while(|(_, character)| is_name_char(*character))
+            .last()
+            .map(|(at, _)| at)?;
+        let name = &rest[start..];
+        if name
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_digit())
+        {
+            return None;
+        }
+        segments.push(ChainSegment {
+            name: name.to_owned(),
+            call,
+        });
+        match rest[..start].strip_suffix('.') {
+            Some(before) => rest = before,
+            None => {
+                // The chain must be the whole expression it was read from.
+                if !rest[..start].trim().is_empty() && !rest[..start].ends_with(is_boundary) {
+                    return None;
+                }
+                break;
+            }
+        }
+    }
+    segments.reverse();
+    Some(segments)
+}
+
+fn is_boundary(character: char) -> bool {
+    !is_name_char(character) && character != '.' && character != ')' && character != ']'
+}
+
+/// The byte offset of the `(` that opens the call whose `)` ends `text`;
+/// parentheses inside string literals do not count.
+fn opening_paren(text: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut in_string = false;
+    for (at, character) in text.char_indices().rev() {
+        match character {
+            '"' => in_string = !in_string,
+            ')' if !in_string => depth += 1,
+            '(' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `А.Б.В` as `[А, Б, В]`, read backwards from the end of `chain`; `None`
@@ -810,15 +979,34 @@ fn classify_name(
 
 /// `Имя` of a plain call, or `Квалификатор.Имя` when the qualifier is a
 /// plain name. Any other callee (`А.Б.В()`, `Ф()()`) has no signature here.
+/// The name after the dot of a member access. A member may be spelled
+/// like a keyword (`Запрос.Выполнить`): after a dot it is a name.
+fn member_name(field: &SyntaxNode) -> Option<SyntaxToken> {
+    field
+        .children_with_tokens()
+        .filter_map(|element| element.into_token())
+        .skip_while(|token| token.kind() != SyntaxKind::DOT)
+        .skip(1)
+        .find(|token| token.kind() == SyntaxKind::IDENT || token.kind().is_keyword())
+}
+
+fn is_member_name(token: &SyntaxToken) -> bool {
+    token.parent().is_some_and(|parent| {
+        parent.kind() == SyntaxKind::FIELD_EXPR && member_name(&parent).as_ref() == Some(token)
+    })
+}
+
 fn callee(node: &SyntaxNode) -> Option<(Option<String>, SyntaxToken)> {
     match node.kind() {
         SyntaxKind::IDENT => Some((None, direct_token(node, SyntaxKind::IDENT)?)),
         SyntaxKind::FIELD_EXPR => {
+            // A plain-name qualifier is named; any other receiver is read
+            // from the source as a chain by the caller.
             let qualifier = node
                 .first_child()
-                .filter(|q| q.kind() == SyntaxKind::IDENT)?;
-            let name = direct_token(node, SyntaxKind::IDENT)?;
-            Some((Some(qualifier.text().to_string()), name))
+                .filter(|q| q.kind() == SyntaxKind::IDENT)
+                .map(|qualifier| qualifier.text().to_string());
+            Some((qualifier, member_name(node)?))
         }
         _ => None,
     }
@@ -1059,5 +1247,74 @@ mod tests {
         let inside = text.find("Справочники.Ва").unwrap() + "Справоч".len();
         let site = parsed.completion_site(inside).unwrap();
         assert_eq!(&text[site.prefix_range], "Справочники");
+    }
+
+    #[test]
+    fn a_receiver_chain_keeps_its_calls() {
+        let chain = |text: &str| {
+            receiver_chain(text).map(|segments| {
+                segments
+                    .into_iter()
+                    .map(|segment| {
+                        format!("{}{}", segment.name, if segment.call { "()" } else { "" })
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            chain("Запрос.Выполнить()"),
+            Some(vec!["Запрос".into(), "Выполнить()".into()])
+        );
+        assert_eq!(
+            chain("\tА = Справочники.Валюты.НайтиПоКоду(\"(\", Ф(1)).ПолучитьОбъект()"),
+            Some(vec![
+                "Справочники".into(),
+                "Валюты".into(),
+                "НайтиПоКоду()".into(),
+                "ПолучитьОбъект()".into()
+            ])
+        );
+        assert_eq!(chain("М[0]"), None);
+        assert_eq!(chain("1 + Ф()"), Some(vec!["Ф()".into()]));
+        assert_eq!(chain("Ф())"), None);
+    }
+
+    #[test]
+    fn an_assignment_and_a_loop_give_the_chain_of_their_value() {
+        let text = "Процедура П()\n\tЗ = Новый Запрос(\"ВЫБРАТЬ 1\");\n\tР = З.Выполнить();\n\tДля Каждого С Из Р.Выгрузить() Цикл\n\tКонецЦикла;\n\tЧ = 1 + 2;\nКонецПроцедуры\n";
+        let parsed = parse(text);
+        let end = text.find("КонецПроцедуры").unwrap();
+        assert_eq!(
+            parsed.assigned_value(end, "з").map(|(_, value)| value),
+            Some(AssignedValue::New("Запрос".into()))
+        );
+        assert_eq!(
+            parsed.assigned_value(end, "Р").map(|(_, value)| value),
+            Some(AssignedValue::Chain(vec![
+                ChainSegment {
+                    name: "З".into(),
+                    call: false
+                },
+                ChainSegment {
+                    name: "Выполнить".into(),
+                    call: true
+                },
+            ]))
+        );
+        assert_eq!(
+            parsed.assigned_value(end, "Ч").map(|(_, value)| value),
+            Some(AssignedValue::Other)
+        );
+        assert_eq!(
+            parsed.loop_chain(end, "С").map(|(_, chain)| chain.len()),
+            Some(2)
+        );
+        let site = parsed
+            .completion_site(text.find("З.Выполнить").unwrap() + "З.".len())
+            .unwrap();
+        assert_eq!(site.chain.unwrap()[0].name, "З");
+        let at = text.find("Выполнить(").unwrap() + "Выполнить(".len();
+        let call = parsed.call_at(at).unwrap();
+        assert_eq!(call.receiver.unwrap()[0].name, "З");
     }
 }

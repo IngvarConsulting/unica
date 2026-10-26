@@ -5,10 +5,15 @@
 //! paths: a page path is the key that matches the two languages.
 
 mod cache;
+mod infer;
 mod model;
 mod page;
 
 pub use cache::{catalog_path, load_or_build, CatalogError, Containers};
+pub use infer::{
+    template_of, AppliedMember, AppliedMemberKind, AppliedTypes, MemberItem, MemberItemKind,
+    NoAppliedTypes, Ty,
+};
 pub use model::{
     Context, Method, Param, PlatformCatalog, PlatformType, Property, Signature, TypeId, TypeName,
     TypeRef,

@@ -10,8 +10,8 @@ use serde::Serialize;
 use std::ops::Range;
 
 pub use editor::{
-    CallSite, ClassifiedToken, CompletionSite, EditorParameter, EditorSymbol, EditorSymbolKind,
-    FoldBlock, FoldKind, TokenClass, VisibleNames,
+    AssignedValue, CallSite, ChainSegment, ClassifiedToken, CompletionSite, EditorParameter,
+    EditorSymbol, EditorSymbolKind, FoldBlock, FoldKind, TokenClass, VisibleNames,
 };
 pub use outline::{
     bsl_method_parameters, exact_bsl_method_facts, exported_bsl_procedure_matches,
