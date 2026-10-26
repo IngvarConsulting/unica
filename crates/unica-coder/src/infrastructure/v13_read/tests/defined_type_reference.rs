@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 fn read(fixture: &RealReaderFixture, at: &str) -> Value {
     let view = fixture.view_service().view(ViewRequest::new(at).unwrap());
-    assert!(view.ok, "{at}: {view:?}");
+    assert!(view.ok, "view must succeed at {at}");
     view.data.unwrap()
 }
 
