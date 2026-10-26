@@ -111,6 +111,22 @@ pub struct DefinedTypeFacts {
     pub types: Vec<FieldType>,
 }
 
+/// The objects of the configuration by name, beyond those being built: a
+/// comment names any of them (`СправочникСсылка.Валюты` in a module of
+/// another object).
+pub trait Declared {
+    /// The declared spelling of the object of `kind` named `name` in any
+    /// case, or `None` when the configuration has no such object.
+    fn declared(&self, kind: &str, name: &str) -> Option<String>;
+}
+
+/// No objects beyond those being built.
+impl Declared for () {
+    fn declared(&self, _kind: &str, _name: &str) -> Option<String> {
+        None
+    }
+}
+
 /// What the platform catalog tells the builder. The stage 3 side
 /// implements it over the catalog: the translation between template pages
 /// and applied types lives there, once.

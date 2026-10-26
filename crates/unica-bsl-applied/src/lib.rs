@@ -11,8 +11,8 @@ mod doc;
 mod facts;
 
 pub use facts::{
-    DefinedTypeFacts, FieldFacts, FieldRole, FieldType, MethodFacts, ModuleFacts, ModuleKind,
-    ObjectFacts, ParamFacts, SectionFacts, Templates,
+    Declared, DefinedTypeFacts, FieldFacts, FieldRole, FieldType, MethodFacts, ModuleFacts,
+    ModuleKind, ObjectFacts, ParamFacts, SectionFacts, Templates,
 };
 
 use std::collections::{BTreeMap, HashMap};
@@ -98,9 +98,13 @@ fn has_tabular_sections(kind: &str) -> bool {
 }
 
 /// Builds the model of one configuration.
+/// Builds the model of `objects`. `declared` answers for the objects of
+/// the configuration that are not built here, so a model of one object still
+/// resolves the names its comments give.
 pub fn build(
     objects: &[ObjectFacts],
     defined: &[DefinedTypeFacts],
+    declared: &dyn Declared,
     templates: &dyn Templates,
 ) -> AppliedModel {
     let defined = defined
@@ -108,7 +112,7 @@ pub fn build(
         .map(|facts| (facts.name.as_str(), facts.types.as_slice()))
         .collect::<HashMap<_, _>>();
     // Comments name objects in any case; the model keys them as declared.
-    let declared = objects
+    let built = objects
         .iter()
         .map(|object| {
             (
@@ -119,7 +123,8 @@ pub fn build(
         .collect::<HashMap<_, _>>();
     let builder = Builder {
         defined: &defined,
-        declared: &declared,
+        built: &built,
+        declared,
         templates,
     };
     let mut model = AppliedModel::default();
@@ -193,7 +198,8 @@ fn property(name: &str, types: Vec<TypeRef>, read_only: bool) -> Property {
 
 struct Builder<'a> {
     defined: &'a HashMap<&'a str, &'a [FieldType]>,
-    declared: &'a HashMap<(String, String), String>,
+    built: &'a HashMap<(String, String), String>,
+    declared: &'a dyn Declared,
     templates: &'a dyn Templates,
 }
 
@@ -429,12 +435,13 @@ impl Builder<'_> {
         if let Some((prefix, name)) = text.split_once('.') {
             if let Some((kind, facet)) = self.templates.applied_prefix(prefix) {
                 // Only an object of this configuration, keyed as declared.
-                if let Some(name) = self.declared.get(&(kind.clone(), name.to_lowercase())) {
-                    return reference(AppliedType {
-                        kind,
-                        name: name.clone(),
-                        facet,
-                    });
+                let declared = self
+                    .built
+                    .get(&(kind.clone(), name.to_lowercase()))
+                    .cloned()
+                    .or_else(|| self.declared.declared(&kind, name));
+                if let Some(name) = declared {
+                    return reference(AppliedType { kind, name, facet });
                 }
             }
         }

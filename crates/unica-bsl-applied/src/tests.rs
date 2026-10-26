@@ -156,6 +156,7 @@ fn model() -> AppliedModel {
                 FieldType::Platform("ХранилищеЗначения".into()),
             ],
         }],
+        &(),
         &Catalog,
     )
 }
@@ -344,7 +345,7 @@ fn registers_split_dimensions_from_resources_and_partial_facts_mark_members() {
         subordinate: false,
         partial: true,
     };
-    let model = build(&[rates], &[], &Catalog);
+    let model = build(&[rates], &[], &(), &Catalog);
     let names = |facet: AppliedFacet| {
         let members = model
             .members(&applied("InformationRegister", "Курсы", facet))
@@ -440,7 +441,7 @@ fn a_subordinate_register_keys_by_recorder_and_has_no_record_manager() {
         subordinate: false,
         partial: false,
     };
-    let model = build(&[movements, constant, unknown], &[], &Catalog);
+    let model = build(&[movements, constant, unknown], &[], &(), &Catalog);
     let key = model
         .members(&applied(
             "AccumulationRegister",
@@ -506,7 +507,7 @@ fn comment_names_resolve_to_declared_objects_only() {
         ))
         .unwrap();
     assert!(!module.methods[0].method.server_call);
-    let builder_model = build(&[currencies()], &[], &Catalog);
+    let builder_model = build(&[currencies()], &[], &(), &Catalog);
     let manager = builder_model
         .members(&applied("Catalog", "Валюты", AppliedFacet::Manager))
         .unwrap();
@@ -520,7 +521,7 @@ fn comment_names_resolve_to_declared_objects_only() {
     lower.modules[0].methods[0].doc = Some(
         "Возвращаемое значение:\n  СправочникСсылка.валюты - ok.\n  СправочникСсылка.Чужой - unknown.".into(),
     );
-    let model = build(&[lower], &[], &Catalog);
+    let model = build(&[lower], &[], &(), &Catalog);
     let manager = model
         .members(&applied("Catalog", "Валюты", AppliedFacet::Manager))
         .unwrap();
@@ -534,5 +535,27 @@ fn comment_names_resolve_to_declared_objects_only() {
             applied("Catalog", "Валюты", AppliedFacet::Ref),
             TypeName::Unresolved("СправочникСсылка.Чужой".into()),
         ]
+    );
+}
+
+#[test]
+fn a_model_of_one_object_resolves_comment_names_through_the_declared_objects() {
+    struct Configuration;
+    impl Declared for Configuration {
+        fn declared(&self, kind: &str, name: &str) -> Option<String> {
+            (kind == "Catalog" && name.to_lowercase() == "контрагенты")
+                .then(|| "Контрагенты".to_string())
+        }
+    }
+    let mut currencies = currencies();
+    currencies.modules[0].methods[0].doc =
+        Some("Возвращаемое значение:\n  СправочникСсылка.КОНТРАГЕНТЫ - another object.".into());
+    let model = build(&[currencies], &[], &Configuration, &Catalog);
+    let manager = model
+        .members(&applied("Catalog", "Валюты", AppliedFacet::Manager))
+        .unwrap();
+    assert_eq!(
+        manager.methods[0].method.variants[0].returns[0].ty,
+        applied("Catalog", "Контрагенты", AppliedFacet::Ref)
     );
 }
