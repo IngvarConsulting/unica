@@ -7929,7 +7929,8 @@ impl CanonicalInvocationService for HeldPrepareService {
     ) -> Result<DomainResult, InvocationFailure> {
         self.executions.fetch_add(1, Ordering::SeqCst);
         let _ = self.executing.send(());
-        let watchdog = Instant::now() + TEST_STEP;
+        // Shorter than the exit wait, so a missing cancel fails on its assert.
+        let watchdog = Instant::now() + TEST_STEP / 2;
         while !cancellation.is_cancelled() && Instant::now() < watchdog {
             thread::sleep(Duration::from_millis(5));
         }
@@ -7944,14 +7945,11 @@ fn fail_stop_daemon(
 ) -> (PromisedWorkIdleDaemon, Arc<FailStopHooks>) {
     let hooks = Arc::new(FailStopHooks::default());
     let installed = Arc::clone(&hooks);
-    let daemon = PromisedWorkIdleDaemon::with_service_and_hooks(
-        Duration::from_secs(5),
-        service,
-        move |observations| {
+    let daemon =
+        PromisedWorkIdleDaemon::with_service_and_hooks(TEST_STEP, service, move |observations| {
             *installed.observations.lock().unwrap() = Some(observations);
             installed
-        },
-    );
+        });
     (daemon, hooks)
 }
 
@@ -8039,6 +8037,43 @@ fn fail_stop_signals_cancellation_to_running_subject_work() {
     );
 }
 
+/// Submits `call` and reads the Task it names. On a slow machine the answer
+/// that hands the call into its Task may miss its window (#2089); the call is
+/// then recovered by its key, as the frontend does, and names the same Task.
+fn submit_or_recover_task(
+    owner: &mut V5DaemonProcessOwner,
+    call: &V5InvocationRequest,
+) -> V5DaemonTaskSnapshot {
+    match owner.submit_invocation(call.clone()) {
+        Ok(response) => submitted_task_snapshot(Ok(response)),
+        Err(lost) => {
+            let key = ReceiptKey::new(
+                call.invocation_id(),
+                call.reserved_task_id(),
+                RequestIdentity::new(
+                    CoreIdentity::production_v5().digest().clone(),
+                    call.tool(),
+                    normalized_arguments_hash(call.arguments()),
+                    request_scope_hash(call.workspace_hint()).expect("request scope"),
+                ),
+            );
+            let until = Instant::now() + TEST_STEP;
+            loop {
+                match owner.recover_invocation_receipt(key.clone()) {
+                    Ok(V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Task { snapshot },
+                    }) => return snapshot,
+                    other => assert!(
+                        Instant::now() < until,
+                        "the lost submit ({lost}) never recovered its Task: {other:?}"
+                    ),
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 /// #1384: the exact repeat of a submit whose receipt already passed into its
 /// Task reads that Task — while it runs and after it ends. The key is never
 /// reserved again, nothing is prepared a second time, and the daemon keeps
@@ -8085,13 +8120,13 @@ fn exact_repeat_submit_reads_its_bound_task_without_a_second_attempt() {
     let task_id = TaskId::new();
     let call = view_catalog_request(task_id, &root);
 
-    let first = submitted_task_snapshot(owner.submit_invocation(call.clone()));
+    let first = submit_or_recover_task(&mut owner, &call);
     assert_eq!(first.task_id(), task_id);
     entered_rx
         .recv_timeout(TEST_STEP)
         .expect("the bound Task starts its execution");
 
-    let running = submitted_task_snapshot(owner.submit_invocation(call.clone()));
+    let running = submit_or_recover_task(&mut owner, &call);
     assert_eq!(running.task_id(), task_id);
     assert_eq!(running.invocation_id(), call.invocation_id());
     assert!(
@@ -8139,7 +8174,7 @@ fn exact_repeat_submit_reads_its_bound_task_without_a_second_attempt() {
         matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. } if result.ok),
         "the single attempt completes: {terminal:?}"
     );
-    let after = submitted_task_snapshot(owner.submit_invocation(call));
+    let after = submit_or_recover_task(&mut owner, &call);
     assert_eq!(
         after, terminal,
         "the repeat after the end reads the same terminal"
