@@ -1402,7 +1402,7 @@ impl WorkspaceFindDirectoryBuilder {
             .root
             .relative_entry_stamp_nofollow(Path::new(""))
             .map_err(child_read_error)?
-            .ok_or_else(layout_changed)?;
+            .ok_or_else(layout_replaced)?;
         let root = WalkDirectory {
             relative: PathBuf::new(),
             parent: None,
@@ -2270,7 +2270,7 @@ impl SourceWalk<'_> {
                         self.observe(&relative)
                             .filter(|stamp| stamp.identity() == handle.identity())
                     })
-                    .ok_or_else(layout_changed)?;
+                    .ok_or_else(layout_replaced)?;
                 if let Some(catalog) = self.catalog.as_mut() {
                     catalog.keep_entry(relative.clone(), CachedEntry::Directory(stamp));
                 }
@@ -2289,23 +2289,39 @@ impl SourceWalk<'_> {
 
     /// The single check of the walk: the retained root still has its name,
     /// and every directory the walk read through is still the one it met,
-    /// unchanged. A substitution or a change during the walk refuses it.
+    /// unchanged. A substitution refuses the walk as an invalid source; a
+    /// change of the same directory during the walk is a concurrent change
+    /// that a repeated call can read.
     fn confirm(&self, root_directory: &WalkDirectory<'_>) -> Result<(), FindBuildError> {
         let root = self.source.root;
         root.validate_named_identity()
             .map_err(|_| unsafe_layout_entry())?;
-        if root
-            .relative_entry_stamp_nofollow(Path::new(""))
-            .map_err(|_| layout_changed())?
-            != Some(root_directory.stamp)
-        {
-            return Err(layout_changed());
-        }
+        // A substitution anywhere outweighs a change: replacing a directory
+        // also changes the one that holds it.
+        let mut changed = None;
         for (relative, stamp) in &self.opened {
-            root.validate_relative_entry(relative, stamp)
-                .map_err(|_| layout_changed())?;
+            if root.validate_relative_entry(relative, stamp).is_err() {
+                let current = root
+                    .relative_entry_stamp_nofollow(relative)
+                    .map_err(|_| layout_replaced())?;
+                let drift = stamp_drift(current, stamp);
+                if drift.code() != RefusalCode::ConcurrentChange {
+                    return Err(drift);
+                }
+                changed.get_or_insert(drift);
+            }
         }
-        Ok(())
+        let current = root
+            .relative_entry_stamp_nofollow(Path::new(""))
+            .map_err(|_| layout_replaced())?;
+        if current.as_ref() != Some(&root_directory.stamp) {
+            let drift = stamp_drift(current, &root_directory.stamp);
+            if drift.code() != RefusalCode::ConcurrentChange {
+                return Err(drift);
+            }
+            changed.get_or_insert(drift);
+        }
+        changed.map_or(Ok(()), Err)
     }
 }
 
@@ -2321,10 +2337,22 @@ fn descriptor_facts(head: &[u8], descriptor: Descriptor<'_>) -> DescriptorFacts 
     }
 }
 
-fn layout_changed() -> FindBuildError {
+/// The same entry with other contents changed during the walk; another
+/// entry in its place is a substitution.
+fn stamp_drift(current: Option<FileStamp>, expected: &FileStamp) -> FindBuildError {
+    match current {
+        Some(current) if current.identity() == expected.identity() => FindBuildError::new(
+            RefusalCode::ConcurrentChange,
+            "find source layout changed during reading",
+        ),
+        _ => layout_replaced(),
+    }
+}
+
+fn layout_replaced() -> FindBuildError {
     FindBuildError::new(
         RefusalCode::InvalidSource,
-        "find source layout changed during reading",
+        "find source layout was replaced during reading",
     )
 }
 
@@ -4895,7 +4923,9 @@ mod tests {
                 &CancellationToken::new(),
             )
             .expect_err("replacement after retention must refuse the build");
-        assert_eq!(refusal.code(), RefusalCode::InvalidSource);
+        // The directory is the same one with other contents: a repeated call
+        // can read it.
+        assert_eq!(refusal.code(), RefusalCode::ConcurrentChange);
     }
 
     #[test]

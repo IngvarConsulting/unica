@@ -1,6 +1,7 @@
 //! Owned syntax facts for the existing BSL readers and planners.
 
 mod outline;
+pub mod symbols;
 
 use bsl_syntax::ast::{Annotation, AstNode, FunctionDef, PreIfDir, PreRegionDir, ProcedureDef};
 use bsl_syntax::{SyntaxKind, SyntaxNode};

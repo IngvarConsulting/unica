@@ -1685,7 +1685,7 @@
       "status": "unproven",
       "origin": "8a85591e3 (#693)",
       "problem": null,
-      "onReach": "stdout сверх предела — отказ invalid_result «v8-runner returned an unreadable or oversized JSON result»; stderr тихо сохраняет хвост с пометкой об усечении.",
+      "onReach": "stdout сверх предела — отказ invalid_result «v8-runner returned an unreadable or oversized JSON result»; кадр протокола публикации pull сверх предела не читается — отказ invalid_result с пределом и причиной; отказ после публикации сообщает, что исходники опубликованы, а заменённые сохранены в recovery; stderr тихо сохраняет хвост с пометкой об усечении.",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -2288,7 +2288,7 @@
     {
       "id": "view.registration-settle-window-ms",
       "class": "retention",
-      "resource": "Окно гранулярности отметки времени: файл или каталог моложе окна не кешируется в индексе регистраций и каталоге имён.",
+      "resource": "Окно гранулярности отметки времени: файл или каталог моложе окна не кешируется в индексе регистраций и каталоге имён метаданных и перечитывается индексом имён модулей при следующем обходе.",
       "unit": "ms",
       "scope": "cache",
       "source": {
@@ -2299,12 +2299,135 @@
       "value": 2000,
       "applied": [
         "crates/unica-coder/src/infrastructure/v13_find/catalog.rs",
-        "crates/unica-coder/src/infrastructure/v13_large_configuration.rs"
+        "crates/unica-coder/src/infrastructure/v13_large_configuration.rs",
+        "crates/unica-coder/src/infrastructure/name_index.rs"
       ],
       "status": "unproven",
       "origin": "b054c6196 (#1457, #1481)",
       "problem": "Отметка времени моложе окна не доказывает неизменность файла (комментарий в v13_large_configuration.rs).",
       "onReach": "Запись не кешируется: корень разбирается, а дескриптор или каталог читается заново при следующем вызове.",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "name-index.refresh-interval-ms",
+      "class": "retention",
+      "resource": "Сколько индекс имён набора считается свежим после обхода: раньше этого обращение не начинает новый обход по штампам файлов.",
+      "unit": "ms",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/name_index.rs",
+        "symbol": "NAME_INDEX_REFRESH_INTERVAL"
+      },
+      "expr": "Duration::from_secs(5)",
+      "value": 5000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/name_index.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": "Правка вне Unica видна поиску ссылок не раньше следующего обхода.",
+      "onReach": "обращение начинает фоновый обход; ответ даёт текущий индекс, не дожидаясь обхода",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "name-index.yield-poll-ms",
+      "class": "step",
+      "resource": "Шаг ожидания фоновой сборки индекса имён, пока исполняется вызов MCP.",
+      "unit": "ms",
+      "scope": "process",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/name_index.rs",
+        "symbol": "NAME_INDEX_YIELD_POLL"
+      },
+      "expr": "Duration::from_millis(20)",
+      "value": 20,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/name_index.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": null,
+      "onReach": "сборка проверяет снова; вызов MCP её не ждёт",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "name-index.module-bytes",
+      "class": "format",
+      "resource": "Наибольший текст модуля, который индекс имён читает при сборке.",
+      "unit": "bytes",
+      "scope": "file",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/name_index.rs",
+        "symbol": "NAME_INDEX_MODULE_BYTES"
+      },
+      "expr": "64 * 1024 * 1024",
+      "value": 67108864,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/name_index.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": null,
+      "onReach": "модуль не попадает в индекс, ссылки в нём по индексу не находятся",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "name-index.budget-bytes",
+      "class": "retention",
+      "resource": "Память, до которой растёт индекс имён одного набора (оценка по ключам, путям и спискам модулей).",
+      "unit": "bytes",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/name_index.rs",
+        "symbol": "NAME_INDEX_BUDGET_BYTES"
+      },
+      "expr": "256 * 1024 * 1024",
+      "value": 268435456,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/name_index.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": null,
+      "onReach": "ещё не учтённые модули в индекс не попадают; поиск ссылок отвечает неполным с причиной capped, не отказом",
+      "issue": null,
+      "evidence": [
+        "Замер 26.10.2026, УТ 11 (Sendbox, 12 290 модулей, 7,1 млн строк): индекс около 38 МиБ, сборка 17–48 с в зависимости от нагрузки машины."
+      ],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "symbols.reference-parse-threads",
+      "class": "concurrency",
+      "resource": "Наибольшее число потоков, на которых один поиск ссылок разбирает модули-кандидаты.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-code-intelligence/src/symbols.rs",
+        "symbol": "MAX_REFERENCE_PARSE_THREADS"
+      },
+      "expr": "8",
+      "value": 8,
+      "applied": [
+        "crates/unica-code-intelligence/src/symbols.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2190",
+      "problem": null,
+      "onReach": "разбор идёт на меньшем числе потоков; остальные ядра остаются вызовам MCP",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -6223,6 +6346,463 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "lsp.frontend-message-bytes",
+      "class": "format",
+      "resource": "Тело одного сообщения редактора в потоке LSP stdio.",
+      "unit": "bytes",
+      "scope": "frame",
+      "source": {
+        "file": "crates/unica-coder/src/interfaces/lsp/codec.rs",
+        "symbol": "MAX_LSP_MESSAGE_BYTES"
+      },
+      "expr": "32 * 1024 * 1024",
+      "value": 33554432,
+      "applied": [
+        "crates/unica-coder/src/interfaces/lsp/codec.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "поток считается испорченным: `unica lsp` пишет причину в stderr и завершается с кодом 1",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.frontend-header-line-bytes",
+      "class": "format",
+      "resource": "Длина одной строки заголовка сообщения LSP stdio.",
+      "unit": "bytes",
+      "scope": "line",
+      "source": {
+        "file": "crates/unica-coder/src/interfaces/lsp/codec.rs",
+        "symbol": "MAX_LSP_HEADER_LINE_BYTES"
+      },
+      "expr": "1024",
+      "value": 1024,
+      "applied": [
+        "crates/unica-coder/src/interfaces/lsp/codec.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "поток считается испорченным: `unica lsp` завершается с кодом 1",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.call-budget",
+      "class": "deadline",
+      "resource": "Бюджет одного запроса редактора на полосе LSP демона.",
+      "unit": "ms",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/interfaces/lsp.rs",
+        "symbol": "LSP_CALL_BUDGET"
+      },
+      "expr": "Duration::from_secs(5)",
+      "value": 5000,
+      "applied": [
+        "crates/unica-coder/src/interfaces/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "редактор получает ошибку RequestFailed с кодом unica: lsp_deadline_exceeded, работа запроса отменяется",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.session-exchange-timeout",
+      "class": "deadline",
+      "resource": "Срок обмена сессии LSP с демоном: открытие, уведомление о документе, закрытие.",
+      "unit": "ms",
+      "scope": "session",
+      "source": {
+        "file": "crates/unica-coder/src/interfaces/lsp.rs",
+        "symbol": "LSP_SESSION_EXCHANGE_TIMEOUT"
+      },
+      "expr": "Duration::from_secs(8)",
+      "value": 8000,
+      "applied": [
+        "crates/unica-coder/src/interfaces/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "initialize отвечает RequestFailed; сбой уведомления завершает `unica lsp` с кодом 1",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.poll-wait",
+      "class": "deadline",
+      "resource": "Ожидание уведомлений демона одним опросом frontend LSP.",
+      "unit": "ms",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/interfaces/lsp.rs",
+        "symbol": "LSP_POLL_WAIT_MS"
+      },
+      "expr": "2_000",
+      "value": 2000,
+      "applied": [
+        "crates/unica-coder/src/interfaces/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "опрос возвращает пустой список и повторяется",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.frontend-requests-in-flight",
+      "class": "concurrency",
+      "resource": "Запросов редактора, одновременно ждущих ответа демона в одном соединении LSP.",
+      "unit": "count",
+      "scope": "session",
+      "source": {
+        "file": "crates/unica-coder/src/interfaces/lsp.rs",
+        "symbol": "MAX_LSP_REQUESTS_IN_FLIGHT"
+      },
+      "expr": "32",
+      "value": 32,
+      "applied": [
+        "crates/unica-coder/src/interfaces/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "новый запрос сразу получает RequestFailed с кодом unica: lsp_busy",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.cancel-timeout",
+      "class": "deadline",
+      "resource": "Срок отдельного обмена отмены запроса LSP.",
+      "unit": "ms",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-daemon/src/client_v5/lsp.rs",
+        "symbol": "LSP_CANCEL_TIMEOUT"
+      },
+      "expr": "Duration::from_secs(2)",
+      "value": 2000,
+      "applied": [
+        "crates/unica-daemon/src/client_v5/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "отмена в демоне не доставлена; редактор уже получил RequestCancelled, запрос остановит его собственный срок",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.lane-workers",
+      "class": "concurrency",
+      "resource": "Исполнителей полосы LSP в демоне.",
+      "unit": "count",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-daemon/src/lsp_lane.rs",
+        "symbol": "MAX_LSP_LANE_WORKERS"
+      },
+      "expr": "2",
+      "value": 2,
+      "applied": [
+        "crates/unica-daemon/src/lsp_lane.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "следующие запросы ждут в очереди полосы; вызовы MCP эту очередь не проходят",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.lane-queue",
+      "class": "concurrency",
+      "resource": "Запросов LSP, ждущих исполнителя, на весь демон.",
+      "unit": "count",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-daemon/src/lsp_lane.rs",
+        "symbol": "LSP_LANE_QUEUE_CAPACITY"
+      },
+      "expr": "64",
+      "value": 64,
+      "applied": [
+        "crates/unica-daemon/src/lsp_lane.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "новый запрос получает отказ busy (RequestFailed unica: lsp_busy)",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.session-outbox",
+      "class": "concurrency",
+      "resource": "Уведомлений демона, ждущих редактора, на одну сессию LSP.",
+      "unit": "count",
+      "scope": "session",
+      "source": {
+        "file": "crates/unica-daemon/src/lsp_lane.rs",
+        "symbol": "LSP_OUTBOX_CAPACITY"
+      },
+      "expr": "256",
+      "value": 256,
+      "applied": [
+        "crates/unica-daemon/src/lsp_lane.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "служба получает false и уведомление не ставится в очередь",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.early-cancellations",
+      "class": "retention",
+      "resource": "Отмен, пришедших раньше своего запроса, которые помнит сессия LSP.",
+      "unit": "count",
+      "scope": "session",
+      "source": {
+        "file": "crates/unica-daemon/src/lsp_lane.rs",
+        "symbol": "MAX_EARLY_CANCELLATIONS"
+      },
+      "expr": "256",
+      "value": 256,
+      "applied": [
+        "crates/unica-daemon/src/lsp_lane.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "память ранних отмен очищается; запрос, отменённый раньше, исполняется, но редактор уже получил RequestCancelled",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.wire-uri-bytes",
+      "class": "format",
+      "resource": "Длина адреса документа или рабочей папки в протоколе LSP демона.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "symbol": "MAX_LSP_URI_BYTES"
+      },
+      "expr": "4 * 1024",
+      "value": 4096,
+      "applied": [
+        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "кадр отвергается ответом invalid_request",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.wire-workspace-folders",
+      "class": "corpus",
+      "resource": "Рабочих папок одной сессии LSP.",
+      "unit": "count",
+      "scope": "session",
+      "source": {
+        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "symbol": "MAX_LSP_WORKSPACE_FOLDERS"
+      },
+      "expr": "64",
+      "value": 64,
+      "applied": [
+        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "открытие сессии отвергается ответом invalid_request",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.wire-folder-name-bytes",
+      "class": "format",
+      "resource": "Длина имени рабочей папки в протоколе LSP демона.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "symbol": "MAX_LSP_FOLDER_NAME_BYTES"
+      },
+      "expr": "1024",
+      "value": 1024,
+      "applied": [
+        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "кадр отвергается ответом invalid_request",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.wire-language-id-bytes",
+      "class": "format",
+      "resource": "Длина идентификатора языка документа в протоколе LSP демона.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "symbol": "MAX_LSP_LANGUAGE_ID_BYTES"
+      },
+      "expr": "64",
+      "value": 64,
+      "applied": [
+        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "кадр отвергается ответом invalid_request",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.wire-log-message-bytes",
+      "class": "format",
+      "resource": "Длина текста уведомления демона редактору.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "symbol": "MAX_LSP_LOG_MESSAGE_BYTES"
+      },
+      "expr": "4 * 1024",
+      "value": 4096,
+      "applied": [
+        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "ответ демона отвергается frontend как нестрогий, опрос уведомлений прекращается",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.poll-failures",
+      "class": "retry",
+      "resource": "Подряд потерянных обменов опроса уведомлений, после которых frontend LSP считает сессию потерянной.",
+      "unit": "count",
+      "scope": "session",
+      "source": {
+        "file": "crates/unica-coder/src/interfaces/lsp.rs",
+        "symbol": "MAX_LSP_POLL_FAILURES"
+      },
+      "expr": "3",
+      "value": 3,
+      "applied": [
+        "crates/unica-coder/src/interfaces/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "`unica lsp` пишет причину в stderr и завершается с кодом 1; редактор перезапускает сервер",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.wire-space-bytes",
+      "class": "format",
+      "resource": "Длина пространства — сегмента адреса unica:// — в ответе на открытие сессии LSP.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "symbol": "MAX_LSP_SPACE_BYTES"
+      },
+      "expr": "64",
+      "value": 64,
+      "applied": [
+        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "ответ демона отвергается как нестрогий, initialize получает RequestFailed",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.session-step-budget",
+      "class": "deadline",
+      "resource": "Срок, который служба LSP в демоне тратит на открытие сессии или приём уведомления о документе.",
+      "unit": "ms",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-daemon/src/transport.rs",
+        "symbol": "LSP_SESSION_STEP_BUDGET"
+      },
+      "expr": "Duration::from_millis(unica_execution::receipt_ledger::MAX_ORIGINAL_RESPONSE_BUDGET_MS)",
+      "value": null,
+      "applied": [
+        "crates/unica-daemon/src/transport.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2173",
+      "problem": null,
+      "onReach": "ответ не успевает к сроку, соединение сессии закрывается вместе с сессией",
+      "issue": "#2173",
+      "evidence": [],
+      "decision": null,
+      "review": null,
+      "derived": true
     }
   ],
   "excluded": [

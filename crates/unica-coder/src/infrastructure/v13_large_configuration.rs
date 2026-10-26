@@ -238,10 +238,12 @@ pub(crate) struct RegistrationIndex {
 /// блокировка сбрасывает запись, а не отказывает дальше. Каталог имён набора
 /// живёт здесь же и устроен так же (см. [`NameCatalog`]).
 pub(crate) struct RegistrationCache {
+    /// Which modules of the set spell a name, built in the background.
+    names: Arc<crate::infrastructure::name_index::SourceNameIndex>,
     registrations: Mutex<Option<(FileStamp, Arc<RegistrationIndex>)>>,
     configuration: Mutex<Option<(ConfigurationStamps, Arc<Value>)>>,
     support: Mutex<Option<RetainedSupportState>>,
-    names: NameCatalog,
+    name_catalog: NameCatalog,
     settle_window: std::time::Duration,
     #[cfg(test)]
     registration_builds: std::sync::atomic::AtomicUsize,
@@ -255,10 +257,11 @@ pub(crate) const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_
 impl Default for RegistrationCache {
     fn default() -> Self {
         Self {
+            names: Arc::default(),
             registrations: Mutex::new(None),
             configuration: Mutex::new(None),
             support: Mutex::new(None),
-            names: NameCatalog::default(),
+            name_catalog: NameCatalog::default(),
             settle_window: SETTLE_WINDOW,
             #[cfg(test)]
             registration_builds: std::sync::atomic::AtomicUsize::new(0),
@@ -304,7 +307,7 @@ impl RegistrationCache {
     #[cfg(test)]
     pub(crate) fn with_settle_window_for_test(window: std::time::Duration) -> Self {
         Self {
-            names: NameCatalog::with_settle_window_for_test(window),
+            name_catalog: NameCatalog::with_settle_window_for_test(window),
             settle_window: window,
             ..Self::default()
         }
@@ -323,8 +326,13 @@ impl RegistrationCache {
         }
     }
 
-    /// The names catalog of this source set.
-    pub(crate) const fn names(&self) -> &NameCatalog {
+    /// The metadata names catalog of this source set.
+    pub(crate) const fn name_catalog(&self) -> &NameCatalog {
+        &self.name_catalog
+    }
+
+    /// The set's name index, kept with its other retained artifacts.
+    pub(crate) fn names(&self) -> &Arc<crate::infrastructure::name_index::SourceNameIndex> {
         &self.names
     }
 

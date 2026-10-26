@@ -1,5 +1,6 @@
 ---
 id: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
+gap: https://github.com/IngvarConsulting/unica/issues/2259
 check:
   - crates/unica-workspace/src/actor_local_tests.rs::duplicate_physical_root_names_are_rejected_as_ambiguous
   - crates/unica-workspace/src/actor_local_tests.rs::duplicate_source_set_names_with_distinct_roots_are_rejected

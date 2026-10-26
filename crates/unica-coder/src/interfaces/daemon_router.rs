@@ -651,7 +651,12 @@ fn settle(
         | V5ServerResponse::Pong
         | V5ServerResponse::Released
         | V5ServerResponse::Task { .. }
-        | V5ServerResponse::InvocationAcknowledged { .. } => Err(protocol_refusal(
+        | V5ServerResponse::InvocationAcknowledged { .. }
+        | V5ServerResponse::LspOpened { .. }
+        | V5ServerResponse::LspAnswer { .. }
+        | V5ServerResponse::LspAccepted {}
+        | V5ServerResponse::LspNotifications { .. }
+        | V5ServerResponse::LspRefused { .. } => Err(protocol_refusal(
             "daemon returned an unexpected response to an invocation",
         )),
     }

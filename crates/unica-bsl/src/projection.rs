@@ -215,6 +215,37 @@ pub struct MethodProjection {
     pub text_from_line: usize,
     pub body_from_line: usize,
     pub body_to_line: usize,
+    /// Ближайшая нормативная область, охватывающая метод
+    /// (INV.SOURCE.MODULE-REGION-INTERFACE); `None` вне таких областей.
+    pub area: Option<MethodArea>,
+}
+
+/// Нормативная область модуля, в которой лежит метод. Экспорт на неё не
+/// влияет: экспортный метод служебной области остаётся `Private`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MethodArea {
+    Public,
+    Internal,
+    CrossSubsystem,
+    Override,
+    Private,
+    Deprecated,
+}
+
+impl MethodArea {
+    /// Область по имени `#Область`; прочие имена нормативной области не задают.
+    pub fn from_region_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "ПрограммныйИнтерфейс" => Self::Public,
+            "СлужебныйПрограммныйИнтерфейс" => Self::Internal,
+            "ДляВызоваИзДругихПодсистем" => Self::CrossSubsystem,
+            "ПереопределяемыеПроцедурыИФункции" => Self::Override,
+            "СлужебныеПроцедурыИФункции" => Self::Private,
+            "УстаревшиеПроцедурыИФункции" => Self::Deprecated,
+            _ => return None,
+        })
+    }
 }
 
 impl MethodProjection {
@@ -243,6 +274,8 @@ impl Serialize for MethodProjection {
             handles: &'a Vec<HandleProjection>,
             #[serde(skip_serializing_if = "Option::is_none")]
             extension: &'a Option<ExtensionProjection>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            area: Option<MethodArea>,
         }
 
         let mut state = serializer.serialize_struct("MethodProjection", 4)?;
@@ -258,6 +291,7 @@ impl Serialize for MethodProjection {
                 compile: &self.compile,
                 handles: &self.handles,
                 extension: &self.extension,
+                area: self.area,
             },
         )?;
         state.serialize_field(
@@ -798,6 +832,7 @@ mod tests {
             text_from_line: 4,
             body_from_line: 7,
             body_to_line: 8,
+            area: None,
         };
         let region = RegionProjection {
             at: Some(format!("{base}.Region.ПрограммныйИнтерфейс")),
@@ -1062,6 +1097,7 @@ mod tests {
             text_from_line: 1,
             body_from_line: 1,
             body_to_line: 0,
+            area: None,
         };
         let value = serde_json::to_value(method).unwrap();
         // Текст `Body` метода включает объявление и строку окончания, поэтому

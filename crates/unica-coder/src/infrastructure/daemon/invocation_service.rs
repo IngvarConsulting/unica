@@ -328,8 +328,8 @@ impl ActorLayoutSource {
     }
 
     /// The names catalog the actor retains for this source set.
-    pub(in crate::infrastructure::daemon) fn names(&self) -> &NameCatalog {
-        self.artifacts.names()
+    pub(in crate::infrastructure::daemon) fn name_catalog(&self) -> &NameCatalog {
+        self.artifacts.name_catalog()
     }
 }
 
@@ -542,6 +542,7 @@ impl ActorBoundInvocation {
         Ok(ActorBoundExecution {
             invocation: self,
             revision,
+            _foreground: crate::infrastructure::name_index::ForegroundCall::begin(),
         })
     }
 }
@@ -586,6 +587,8 @@ fn invalid_view_address_result(at: &str, detail: impl std::fmt::Display) -> Doma
 pub(crate) struct ActorBoundExecution {
     invocation: ActorBoundInvocation,
     revision: ActorExecutionRevision,
+    /// Background builds of derived indexes wait while a call executes.
+    _foreground: crate::infrastructure::name_index::ForegroundCall,
 }
 
 enum ActorExecutionRevision {
@@ -867,7 +870,7 @@ impl ActorBoundExecution {
                 continue;
             }
             if let Ok(artifacts) = self.invocation.actor.source_artifacts(binding) {
-                artifacts.names().forget_published(
+                artifacts.name_catalog().forget_published(
                     binding.source_set_name(),
                     own_source_set,
                     events,

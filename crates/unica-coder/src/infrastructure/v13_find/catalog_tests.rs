@@ -486,7 +486,8 @@ fn a_root_descriptor_replaced_during_the_walk_refuses_its_answer() {
         .err()
         .expect("replacing a root descriptor must refuse the walk");
     assert!(!replace.load(Ordering::SeqCst));
-    assert_eq!(refusal.code(), RefusalCode::InvalidSource);
+    // The root itself is unchanged in identity, only its contents moved.
+    assert_eq!(refusal.code(), RefusalCode::ConcurrentChange);
 }
 
 fn copy_tree(from: &Path, to: &Path) {

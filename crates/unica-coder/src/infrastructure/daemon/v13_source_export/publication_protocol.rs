@@ -3,7 +3,7 @@ use super::*;
 use serde::Deserialize;
 use std::time::Duration;
 use unica_process::runner::ProcessStreamFailure;
-use unica_process::ProcessLineReply;
+use unica_process::{ProcessLineReply, STREAM_LINE_TOO_LONG_ERROR};
 use unica_workspace::full_dump::{
     FullDumpCleanupReason, FullDumpFailure, FullDumpPhase, PublishedFullDump,
     RunnerProjectLockFailure,
@@ -355,10 +355,26 @@ pub(super) fn execute(
     if matches!(&output, Err(ProcessStreamFailure::Spawn(_))) {
         guard.confirm_execution_finished();
     }
+    let oversized = output.as_ref().is_ok_and(|out| {
+        out.line_error
+            .as_ref()
+            .is_some_and(|(_, reason)| reason == STREAM_LINE_TOO_LONG_ERROR)
+    });
+    // A preview never dispatches the platform: the runner contacts it only
+    // after `continue` of an apply, and Unica prepares no dispatch parent for a
+    // preview. A preview that returned its output leaves no writer to protect.
+    if prepared.dry_run && output.is_ok() {
+        guard.confirm_execution_finished();
+    }
 
     if let Some(proof) = published {
         if clean_exit && phase == Phase::Done && terminal.is_some() && problem.is_none() {
             guard.confirm_execution_finished();
+        }
+        if oversized {
+            // The unread frame may name the files the publication replaced, so
+            // the replaced tree stays in recovery as their only copy.
+            problem.get_or_insert_with(|| oversized_frame_refusal(true));
         }
         // The local publication is the receipt's authority even if ACK, terminal
         // output, cancellation or the runner's memory finish subsequently failed.
@@ -434,6 +450,7 @@ pub(super) fn execute(
                 RefusalCode::DeadlineExceeded,
                 "pull timed out before publication",
             ),
+            Ok(_) if oversized => oversized_frame_refusal(false),
             Ok(out) if out.line_error.is_some() || out.stopped_by_consumer => {
                 invalid("v8-runner returned an unreadable publication stream")
             }
@@ -501,6 +518,28 @@ fn reply_bytes(nonce: &str, phase: &str, decision: &str) -> Vec<u8> {
     .expect("closed string publication reply is serializable");
     bytes.push(b'\n');
     bytes
+}
+/// A publication frame above the line limit is not read: output that grows with
+/// the export is never held whole in the daemon.
+fn oversized_frame_refusal(published: bool) -> DomainResult {
+    let limit = format!(
+        "v8-runner sent a publication frame longer than the {RUNNER_OUTPUT_LIMIT}-byte line limit"
+    );
+    let message = if published {
+        format!(
+            "{limit}; the sources were published, but the v8-runner final result was not read. \
+             The replaced sources were kept in the recovery directory of this result: the unread \
+             frame may list files that existed nowhere else. Repeat a full pull to refresh \
+             synchronization memory"
+        )
+    } else {
+        format!(
+            "{limit}; nothing was published. The frame usually grows when the target holds many \
+             files that exist nowhere else: add the target directory to git and commit it, or move \
+             it away, then repeat the pull"
+        )
+    };
+    reject(RefusalCode::InvalidResult, message)
 }
 fn invalid(message: &str) -> DomainResult {
     reject(RefusalCode::InvalidResult, message)
