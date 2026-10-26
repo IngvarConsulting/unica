@@ -1,8 +1,9 @@
 //! `unica://<space>/<source set>/<address>` document identities.
 //!
 //! The server names each workspace folder of one LSP connection a space: the
-//! folder name, or the name with a short hash of its path when two folders
-//! share it. A URI of a space this connection was not given is refused, so
+//! folder name in lower case, or that with a short hash of its path when two
+//! folders share it. Editors lower-case a URI authority (VS Code does), so a
+//! space is named and matched in lower case. A URI of a space this connection was not given is refused, so
 //! two workspaces that both have a source set `main` never mix. The address
 //! follows the Unica logical address grammar (`CommonModule.X`,
 //! `Catalog.X.Module.Object`, ...).
@@ -166,6 +167,7 @@ impl SpaceRegistry {
                 "expected unica://<space>/<source set>/<address>",
             ));
         }
+        let space = space.to_lowercase();
         if !self.spaces.contains_key(&space) {
             return Err(UriError::ForeignSpace(space));
         }
@@ -187,9 +189,9 @@ fn space_name(folder: &WorkspaceFolder) -> String {
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
             .unwrap_or("workspace")
-            .to_owned()
+            .to_lowercase()
     } else {
-        name.to_owned()
+        name.to_lowercase()
     }
 }
 
@@ -217,36 +219,43 @@ mod tests {
         let registry =
             SpaceRegistry::from_folders(&[folder("УТ", "/work/ut"), folder("БП", "/work/bp")]);
         let ut = DocumentUri {
-            space: "УТ".to_owned(),
+            space: "ут".to_owned(),
             address: "main:CommonModule.ОбщегоНазначения".to_owned(),
         };
         let bp = DocumentUri {
-            space: "БП".to_owned(),
+            space: "бп".to_owned(),
             ..ut.clone()
         };
         let ut_uri = registry.format(&ut).unwrap();
         let bp_uri = registry.format(&bp).unwrap();
         assert_ne!(ut_uri, bp_uri);
-        assert!(ut_uri.starts_with("unica://%D0%A3%D0%A2/main/CommonModule."));
+        assert!(ut_uri.starts_with("unica://%D1%83%D1%82/main/CommonModule."));
         assert_eq!(registry.parse(&ut_uri).unwrap(), ut);
+        // An editor that upper-cases the authority still names the space.
+        assert_eq!(
+            registry
+                .parse(&ut_uri.replace("%D1%83%D1%82", "%D0%A3%D0%A2"))
+                .unwrap(),
+            ut
+        );
         assert_eq!(registry.parse(&bp_uri).unwrap(), bp);
 
         // A space of another connection is refused, never resolved here.
         let other = SpaceRegistry::from_folders(&[folder("УТ", "/work/ut")]);
         assert_eq!(
             other.parse(&bp_uri),
-            Err(UriError::ForeignSpace("БП".to_owned()))
+            Err(UriError::ForeignSpace("бп".to_owned()))
         );
         assert_eq!(
             other.format(&bp),
-            Err(UriError::ForeignSpace("БП".to_owned()))
+            Err(UriError::ForeignSpace("бп".to_owned()))
         );
     }
 
     #[test]
     fn a_shared_folder_name_gets_a_short_hash_of_its_path() {
         let registry =
-            SpaceRegistry::from_folders(&[folder("src", "/a/src"), folder("src", "/b/src")]);
+            SpaceRegistry::from_folders(&[folder("src", "/a/src"), folder("SRC", "/b/src")]);
         let spaces = registry
             .spaces()
             .map(|(space, _)| space.to_owned())

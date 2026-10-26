@@ -78,7 +78,14 @@ pub(crate) struct DocumentLocation {
 }
 
 impl LspDocuments {
-    pub(crate) fn new(session: impl Into<String>, layouts: Vec<SpaceLayout>) -> Self {
+    pub(crate) fn new(session: impl Into<String>, mut layouts: Vec<SpaceLayout>) -> Self {
+        // Roots are compared with paths an editor sends, which may come
+        // through a symlink (`/tmp` and `/private/tmp` on macOS).
+        for layout in &mut layouts {
+            for set in &mut layout.source_sets {
+                set.root = canonical(&set.root);
+            }
+        }
         let spaces = SpaceRegistry::from_folders(
             &layouts
                 .iter()
@@ -129,6 +136,7 @@ impl LspDocuments {
             .ok()
             .filter(|url| url.scheme() == "file")
             .and_then(|url| url.to_file_path().ok())
+            .map(|path| canonical(&path))
             .ok_or(LspDocumentError::NotAFile)?;
         // The innermost source set wins when roots nest.
         let (space, layout, relative) = self
@@ -243,12 +251,13 @@ impl LspDocuments {
         if let Some(buffer) = self.open.get(&location.document) {
             return Ok(Some(buffer.document.text().to_owned()));
         }
-        if read.source_set() != location.source_set {
+        let layout = self.source_set(&location.document.space, &location.source_set)?;
+        // Two spaces may both have a `main`: the read must be of this one.
+        if read.source_set() != location.source_set || canonical(read.root_path()) != layout.root {
             return Err(LspDocumentError::UnknownSourceSet(location.source_set));
         }
         let at = QualifiedAddress::parse(&location.document.address)
             .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))?;
-        let layout = self.source_set(&location.document.space, &location.source_set)?;
         let target = module_target(&at, layout).ok_or(LspDocumentError::NotAModule)?;
         read.module_source(&target).map_err(LspDocumentError::Read)
     }
@@ -300,6 +309,11 @@ impl LspDocuments {
             )
             .map_err(LspDocumentError::Overlay)
     }
+}
+
+/// The path with symlinks resolved, or as given when it does not exist.
+fn canonical(path: &std::path::Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_owned())
 }
 
 fn module_target(

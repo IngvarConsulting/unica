@@ -7770,7 +7770,7 @@ fn an_open_buffer_is_read_in_place_of_its_module_file_and_the_file_is_untouched(
                 relative,
                 DocumentText {
                     version: 3,
-                    text: Arc::from("\u{feff}// буфер\n"),
+                    text: Arc::from("\u{feff}// буфер\n// вторая\n"),
                 },
             )
             .unwrap();
@@ -7789,12 +7789,22 @@ fn an_open_buffer_is_read_in_place_of_its_module_file_and_the_file_is_untouched(
     let editor = reader(Some(overlay.session_documents("editor", "main").unwrap()));
     assert_eq!(
         editor.module_source(&target).unwrap().as_deref(),
-        Some("// буфер\n")
+        Some("// буфер\n// вторая\n")
     );
     assert!(editor.module_source_exists(&absent).unwrap());
     assert_eq!(
         editor.module_source(&absent).unwrap().as_deref(),
-        Some("// буфер\n")
+        Some("// буфер\n// вторая\n")
+    );
+
+    // Every read of the module in this session sees the same buffer.
+    let lines = editor.module_line_count(&target, || Ok(())).unwrap();
+    assert_eq!(
+        lines,
+        reader(None)
+            .module_line_count(&target, || Ok(()))
+            .unwrap()
+            .map(|n| n + 1)
     );
 
     // Another session and an agent call read the disk.

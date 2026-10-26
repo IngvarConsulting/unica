@@ -62,7 +62,7 @@ fn files_and_unica_uris_map_both_ways_and_two_mains_do_not_mix() {
     assert_eq!(
         documents.locate(&ut_uri).unwrap().document,
         DocumentUri {
-            space: "УТ".to_owned(),
+            space: "ут".to_owned(),
             address: "main:CommonModule.ОбщегоНазначения".to_owned(),
         }
     );
@@ -78,6 +78,12 @@ fn files_and_unica_uris_map_both_ways_and_two_mains_do_not_mix() {
         documents.content(&bp_uri, &reader(&bp.root)).unwrap(),
         Some("// БП\n".to_owned())
     );
+
+    // A read of the other space's `main` does not answer for this one.
+    assert!(matches!(
+        documents.content(&ut_uri, &reader(&bp.root)),
+        Err(LspDocumentError::UnknownSourceSet(_))
+    ));
 
     // A file outside the module layout, outside every source set, or of
     // another scheme has no document.
@@ -100,7 +106,7 @@ fn files_and_unica_uris_map_both_ways_and_two_mains_do_not_mix() {
     let other = LspDocuments::new("other", vec![layout("УТ", &ut.root)]);
     assert!(matches!(
         other.locate(&bp_uri),
-        Err(LspDocumentError::Uri(UriError::ForeignSpace(space))) if space == "БП"
+        Err(LspDocumentError::Uri(UriError::ForeignSpace(space))) if space == "бп"
     ));
 }
 
@@ -193,14 +199,14 @@ fn an_open_buffer_is_what_its_connection_reads_and_the_disk_is_untouched() {
     // `apply` that touched the module, another file, an epoch change.
     let touched = [PathBuf::from(MODULE)];
     assert_eq!(
-        editor.changed_documents("УТ", "main", Some(&touched)),
+        editor.changed_documents("ут", "main", Some(&touched)),
         vec![uri.clone()]
     );
     assert!(editor
-        .changed_documents("УТ", "main", Some(&[PathBuf::from("Other.bsl")]))
+        .changed_documents("ут", "main", Some(&[PathBuf::from("Other.bsl")]))
         .is_empty());
     assert_eq!(
-        editor.changed_documents("УТ", "main", None),
+        editor.changed_documents("ут", "main", None),
         vec![uri.clone()]
     );
 

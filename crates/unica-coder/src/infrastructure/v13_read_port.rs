@@ -189,6 +189,8 @@ impl ProviderReadAuthority {
     }
 
     /// Reads modules of `documents` from their open buffers.
+    // The LSP route (#2173) builds its reads with this.
+    #[allow(dead_code)]
     pub(crate) fn with_documents(mut self, documents: SessionDocuments) -> Self {
         self.documents = (!documents.is_empty()).then_some(documents);
         self
@@ -267,6 +269,10 @@ impl ProviderReadAuthority {
         relative: &Path,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Option<Vec<u8>>, ViewError> {
+        if let Some(buffer) = self.open_buffer(relative) {
+            checkpoint()?;
+            return Ok(Some(buffer.text.as_bytes().to_vec()));
+        }
         let mut bytes = Vec::new();
         let mut interrupted = None;
         let visited = self.root.visit_relative_regular_chunks(
@@ -1559,9 +1565,6 @@ impl ProviderReadAuthority {
                 .or_default() += 1;
         }
         let relative = self.module_relative(target)?;
-        if let Some(buffer) = self.open_buffer(&relative) {
-            return Ok(Some(buffer.text.trim_start_matches('\u{feff}').to_string()));
-        }
         self.read_optional_relative_whole(&relative)?
             .map(|bytes| {
                 String::from_utf8(bytes)
@@ -1579,12 +1582,12 @@ impl ProviderReadAuthority {
     /// Only proves that the BSL file is present; the text is not read.
     pub(crate) fn module_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
         let relative = self.module_relative(target)?;
-        if self.open_buffer(&relative).is_some() {
-            return Ok(true);
-        }
         self.relative_source_exists(&relative)
     }
 
+    /// The open buffer that stands for `relative` in this read. Every read
+    /// of a source file goes through here, so one session never sees the
+    /// buffer in one answer and the file in another.
     fn open_buffer(&self, relative: &Path) -> Option<&DocumentText> {
         self.documents.as_ref()?.get(relative)
     }
@@ -1604,6 +1607,9 @@ impl ProviderReadAuthority {
     }
 
     fn relative_source_exists(&self, relative: &Path) -> Result<bool, ViewError> {
+        if self.open_buffer(relative).is_some() {
+            return Ok(true);
+        }
         match self.root.open_relative_regular_nofollow(relative) {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -1710,6 +1716,11 @@ impl ProviderReadAuthority {
         mut visit: impl FnMut(&[u8]) -> Result<(), ViewError>,
     ) -> Result<Option<u64>, ViewError> {
         let relative = self.module_relative(target)?;
+        if let Some(buffer) = self.open_buffer(&relative) {
+            checkpoint()?;
+            visit(buffer.text.as_bytes())?;
+            return Ok(Some(buffer.text.len() as u64));
+        }
         let mut carry = Vec::<u8>::new();
         let interrupted = std::cell::RefCell::new(None);
         let result = self.root.visit_relative_regular_chunks(
