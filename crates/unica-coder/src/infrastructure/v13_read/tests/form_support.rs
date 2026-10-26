@@ -34,16 +34,16 @@ fn canonical_form_support_keeps_own_rule_and_owner_prohibition() {
             );
             assert_eq!(props["directEditSafe"], safe);
             assert!(props.get("ownerSupport").is_none(), "{props}");
-            // The owner's own state is read from the owner, in its summary
-            // vocabulary; `directEditSafe` above already carries its deny.
+            // The owner's own state is read from the owner in the same exact
+            // vocabulary as the form (#2158).
             let owner = service.view(ViewRequest::new("main:Report.ParityReport").unwrap());
             assert!(owner.ok);
             assert_eq!(
                 owner.data.as_ref().unwrap()["props"]["support"],
                 if editing == 1 {
-                    "locked"
+                    "configurationReadOnly"
                 } else {
-                    ["locked", "supported"][owner_rule]
+                    ["locked", "editableWithSupport"][owner_rule]
                 }
             );
         }
@@ -184,11 +184,11 @@ fn canonical_form_support_unknown_owner_does_not_turn_editable_child_into_safe()
         .view_service()
         .view(ViewRequest::new("main:Report.ParityReport").unwrap());
     assert!(owner.ok);
-    // The owner summary does not tell an absent rule from an editable one;
+    // The owner has no rule of its own: its exact state is `notSupported`;
     // the unknown owner is the form's `directEditSafe: null` above.
     assert_eq!(
         owner.data.as_ref().unwrap()["props"]["support"],
-        "supported"
+        "notSupported"
     );
 }
 

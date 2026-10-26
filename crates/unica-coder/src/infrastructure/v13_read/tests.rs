@@ -1847,11 +1847,8 @@ fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_marke
                     result.ok,
                     "{at}: view must succeed without a support marker"
                 );
-                let expected = if at == "main:Catalog.Items" {
-                    json!("supported")
-                } else {
-                    json!("notSupported")
-                };
+                // Без маркера поддержки у любого объекта одно состояние (#2158).
+                let expected = json!("notSupported");
                 assert_eq!(
                     result.data.as_ref().unwrap()["props"]["support"],
                     expected,
