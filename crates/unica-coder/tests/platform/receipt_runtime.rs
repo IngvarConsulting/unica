@@ -7929,7 +7929,7 @@ impl CanonicalInvocationService for HeldPrepareService {
     ) -> Result<DomainResult, InvocationFailure> {
         self.executions.fetch_add(1, Ordering::SeqCst);
         let _ = self.executing.send(());
-        let watchdog = Instant::now() + Duration::from_secs(5);
+        let watchdog = Instant::now() + TEST_STEP;
         while !cancellation.is_cancelled() && Instant::now() < watchdog {
             thread::sleep(Duration::from_millis(5));
         }
@@ -7992,7 +7992,7 @@ fn fail_stop_by_another_call_during_prepare_never_enters_the_provider() {
         })
         .unwrap(),
     );
-    preparing.recv_timeout(Duration::from_secs(3)).unwrap();
+    preparing.recv_timeout(TEST_STEP).unwrap();
     hooks.latch_fail_stop();
     IdleInvocationRelease(Arc::clone(&service.prepare)).release();
 
@@ -8025,8 +8025,8 @@ fn fail_stop_signals_cancellation_to_running_subject_work() {
         })
         .unwrap(),
     );
-    preparing.recv_timeout(Duration::from_secs(3)).unwrap();
-    executing.recv_timeout(Duration::from_secs(3)).unwrap();
+    preparing.recv_timeout(TEST_STEP).unwrap();
+    executing.recv_timeout(TEST_STEP).unwrap();
     hooks.latch_fail_stop();
 
     drop(owner);
