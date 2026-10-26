@@ -37,7 +37,7 @@
       "assertions": [
         {
           "pointer": "/data/props/implemented",
-          "eq": true
+          "absent": true
         },
         {
           "pointer": "/data/props/contract/argsSchema/properties/values/required",

@@ -26,7 +26,7 @@
       "assertions": [
         {
           "pointer": "/data/props/implemented",
-          "eq": true
+          "absent": true
         },
         {
           "pointer": "/data/props/contract/argsSchema/properties/values/properties/CompatibilityMode/enum",
@@ -57,7 +57,7 @@
       "assertions": [
         {
           "pointer": "/data/props/implemented",
-          "eq": true
+          "absent": true
         },
         {
           "pointer": "/data/props/contract/argsSchema/properties/values/properties/ConfigurationExtensionCompatibilityMode/enum",

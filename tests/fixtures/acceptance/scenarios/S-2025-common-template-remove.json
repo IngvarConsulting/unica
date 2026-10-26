@@ -25,7 +25,7 @@
         },
         {
           "pointer": "/data/props/implemented",
-          "eq": true
+          "absent": true
         }
       ]
     },
