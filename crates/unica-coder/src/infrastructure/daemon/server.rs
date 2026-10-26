@@ -6359,12 +6359,20 @@ fn main() {
                 serde_json::json!({"at": at}),
             )
         };
-        let packages = view("main:Configuration").data.unwrap()["branches"][0]["at"]
-            .as_str()
+        // Ветвь и пакет выбираются по виду и имени: корень перечисляет и
+        // пустые виды (#2153), а коллекция идёт в порядке `ChildObjects`.
+        let packages = "main:XDTOPackage".to_owned();
+        assert!(view("main:Configuration").data.unwrap()["branches"]
+            .as_array()
             .unwrap()
-            .to_owned();
-        let node = view(&packages).data.unwrap()["items"][3]["at"]
-            .as_str()
+            .iter()
+            .any(|branch| branch["at"] == packages.as_str()));
+        let node = view(&packages).data.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["title"] == "Unsupported")
+            .and_then(|item| item["at"].as_str())
             .unwrap()
             .to_owned();
         let node_page = call(serde_json::json!({"at": node, "limit": 1}));
