@@ -70,15 +70,15 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
     assert_eq!(error_code(&early), SERVER_NOT_INITIALIZED);
     let initialized = editor.initialize();
     let capabilities = &initialized["result"]["capabilities"];
+    assert_eq!(capabilities["positionEncoding"], "utf-16");
+    assert!(
+        capabilities.get("hoverProvider").is_none(),
+        "hover is not served yet, so it is not declared"
+    );
     assert_eq!(
-        capabilities,
-        &json!({
-            "positionEncoding": "utf-16",
-            "experimental": {"unica": {"workspaces": [
-                {"folder": "file:///work", "failure": "lsp_not_supported"},
-            ]}},
-        }),
-        "the daemon has no LSP service yet: no capability, and no folder became a space"
+        capabilities["experimental"]["unica"]["workspaces"],
+        json!([{"folder": "file:///work", "failure": "lsp_workspace_unavailable"}]),
+        "a folder that is no workspace gets no space"
     );
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     assert_eq!(
@@ -230,6 +230,15 @@ fn a_document_notification_the_daemon_would_refuse_keeps_the_session() {
         "the daemon drops the document instead of keeping a text the editor no longer has"
     );
     host.release();
+    // The document is out of sync until the editor opens it again.
+    let held = editor.request("textDocument/hover", hover_params("file:///work/a.bsl"));
+    assert_eq!(error_code(&held), CONTENT_MODIFIED);
+    editor.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": "file:///work/a.bsl", "languageId": "bsl", "version": 4, "text": "",
+        }}),
+    );
     let hover = editor.request("textDocument/hover", hover_params("file:///work/a.bsl"));
     assert!(hover["result"]["contents"].is_object(), "{hover}");
     assert!(!editor.lost.load(Ordering::Acquire));
@@ -250,6 +259,160 @@ fn a_session_the_daemon_no_longer_serves_ends_the_frontend() {
     daemon.stop(daemon.owner());
 
     wait_until(|| editor.lost.load(Ordering::Acquire));
+}
+
+/// Служба продукта: папка редактора и вызов MCP той же рабочей области
+/// приходят к одному актору; буфер редактора виден в его ответах и не
+/// попадает на диск.
+#[test]
+fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
+    let daemon = LiveV5Daemon::start_with_product_lsp(canonical_v13_service());
+    let owner = daemon.owner();
+    let workspace = catalog_workspace();
+    // No platform installation: completion stays without the global context.
+    std::fs::write(
+        workspace.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ntools:\n  platform:\n    path: absent/8.3.27.1\n",
+    )
+    .unwrap();
+    let module = workspace
+        .path()
+        .join("src/CommonModules/Main/Ext/Module.bsl");
+    std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+    std::fs::write(&module, "Procedure Disk() EndProcedure\n").unwrap();
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let folder: String = url::Url::from_file_path(&root).unwrap().into();
+    // The document is the module body, as MCP `view` and `resolve` name it.
+    let module_uri = "unica://work/main/CommonModule.Main.Body".to_owned();
+    let mut editor = Editor::start(&daemon);
+
+    let initialized = editor.request(
+        "initialize",
+        json!({"workspaceFolders": [{"uri": folder, "name": "Work"}]}),
+    );
+    let capabilities = &initialized["result"]["capabilities"];
+    assert_eq!(
+        capabilities["experimental"]["unica"]["workspaces"],
+        json!([{"folder": folder, "space": "work"}])
+    );
+    assert_eq!(
+        capabilities["workspace"]["textDocumentContent"],
+        json!({"schemes": ["unica"]})
+    );
+    assert_eq!(capabilities["textDocumentSync"]["change"], 2);
+    mcp_view(&daemon, &owner, &view_request(workspace.path()));
+    assert_eq!(
+        daemon.live_workspace_actors(),
+        1,
+        "MCP and LSP share the actor"
+    );
+
+    let content = |editor: &mut Editor| {
+        editor.request(
+            "workspace/textDocumentContent",
+            json!({"uri": "unica://work/main/CommonModule.Main.Body"}),
+        )["result"]["text"]
+            .clone()
+    };
+    assert_eq!(
+        content(&mut editor),
+        json!("Procedure Disk() EndProcedure\n")
+    );
+    editor.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": module_uri, "languageId": "bsl", "version": 1,
+            "text": "Procedure Buffer() EndProcedure\n",
+        }}),
+    );
+    assert_eq!(
+        content(&mut editor),
+        json!("Procedure Buffer() EndProcedure\n")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&module).unwrap(),
+        "Procedure Disk() EndProcedure\n"
+    );
+    let foreign = editor.request(
+        "workspace/textDocumentContent",
+        json!({"uri": "unica://other/main/CommonModule.Main.Body"}),
+    );
+    assert_eq!(foreign["error"]["message"], "unica: lsp_document_unknown");
+
+    // Editor facts come from the buffer the session sees.
+    let document = json!({"textDocument": {"uri": "unica://work/main/CommonModule.Main.Body"}});
+    let symbols = editor.request("textDocument/documentSymbol", document.clone());
+    assert_eq!(symbols["result"][0]["name"], "Buffer", "{symbols}");
+    assert!(editor.request("textDocument/foldingRange", document.clone())["result"].is_array());
+    let tokens = editor.request("textDocument/semanticTokens/full", document.clone());
+    assert!(tokens["result"]["data"].is_array(), "{tokens}");
+    let help = editor.request(
+        "textDocument/signatureHelp",
+        json!({
+            "textDocument": {"uri": "unica://work/main/CommonModule.Main.Body"},
+            "position": {"line": 0, "character": 0},
+        }),
+    );
+    assert!(help.get("result").is_some(), "{help}");
+    for method in ["documentSymbolProvider", "foldingRangeProvider"] {
+        assert_eq!(capabilities[method], true, "{method}");
+    }
+    assert_eq!(capabilities["semanticTokensProvider"]["full"], true);
+    assert!(capabilities["semanticTokensProvider"]["legend"]["tokenTypes"].is_array());
+    assert_eq!(
+        capabilities["signatureHelpProvider"],
+        json!({"triggerCharacters": ["(", ","]})
+    );
+    assert_eq!(
+        capabilities["completionProvider"],
+        json!({"triggerCharacters": ["."], "resolveProvider": true})
+    );
+    let completion = editor.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "unica://work/main/CommonModule.Main.Body"},
+            "position": {"line": 0, "character": 0},
+        }),
+    );
+    assert_eq!(completion["result"]["isIncomplete"], true, "{completion}");
+    let item = completion["result"]["items"]
+        .as_array()
+        .and_then(|items| items.first())
+        .unwrap_or_else(|| panic!("completion offers the module's names: {completion}"))
+        .clone();
+    let resolved = editor.request("completionItem/resolve", item.clone());
+    assert_eq!(resolved["result"]["label"], item["label"], "{resolved}");
+
+    // A change the buffer cannot take puts the document out of sync: no
+    // answer about it until the editor sends its whole text again.
+    editor.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": module_uri, "version": 2},
+            "contentChanges": [{
+                "range": {"start": {"line": 99, "character": 0}, "end": {"line": 99, "character": 0}},
+                "text": "x",
+            }],
+        }),
+    );
+    let stale = editor.request(
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": module_uri}}),
+    );
+    assert_eq!(error_code(&stale), CONTENT_MODIFIED, "{stale}");
+    editor.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": module_uri, "languageId": "bsl", "version": 3,
+            "text": "Procedure Reopened() EndProcedure\n",
+        }}),
+    );
+    let symbols = editor.request(
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": module_uri}}),
+    );
+    assert_eq!(symbols["result"][0]["name"], "Reopened", "{symbols}");
+    assert!(!editor.lost.load(Ordering::Acquire));
 }
 
 /// Приёмка #2173: поток hover не задерживает параллельный вызов MCP.
@@ -477,6 +640,7 @@ impl LspHost for HeldHost {
                 text_document_sync: V5LspTextSync::Incremental,
                 hover: true,
                 text_document_content: true,
+                ..V5LspCapabilities::NONE
             },
             workspaces: folders
                 .iter()

@@ -6679,6 +6679,54 @@
       "decision": null,
       "review": null,
       "derived": true
+    },
+    {
+      "id": "lsp.platform-context-retry-delay",
+      "class": "retry",
+      "resource": "Задержка перед повторной загрузкой глобального контекста платформы для completion после неудачной загрузки.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs",
+        "symbol": "PLATFORM_CONTEXT_RETRY_DELAY"
+      },
+      "expr": "Duration::from_secs(60)",
+      "value": 60000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2178",
+      "problem": null,
+      "onReach": "следующий запрос completion снова запускает загрузку; до неё список помечен isIncomplete",
+      "issue": "#2178",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.completion-inference-depth",
+      "class": "format",
+      "resource": "Глубина вывода типа переменной для completion после точки: цепочка циклов и присваиваний, по которой ищется объект и его табличная часть.",
+      "unit": "depth",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_features.rs",
+        "symbol": "INFERENCE_DEPTH"
+      },
+      "expr": "4",
+      "value": 4,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_features.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2178",
+      "problem": "цепочка глубже предела не выводится",
+      "onReach": "неполный ответ, а не отказ: completion отдаёт найденные имена без членов объекта, тип которого не выведен (политика #1312)",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [

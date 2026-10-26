@@ -57,6 +57,7 @@ use unica_source_designer::probe::{
 use unica_templates_designer::mxl_codec::parse_mxl_info_xml;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::documents::{DocumentText, SessionDocuments};
 use unica_xdto_designer::info::{parse_xdto_info_bytes, XdtoInfoError};
 
 #[cfg(test)]
@@ -124,6 +125,9 @@ pub(crate) struct ProviderReadAuthority {
     /// one admitted operation, so the marker is read and parsed once instead
     /// of once per owner descriptor that asks for its support state.
     support_state: std::sync::Mutex<Option<RetainedSupportState>>,
+    /// Open editor buffers of the session this read serves; a module with a
+    /// buffer is read from it, never from its file.
+    documents: Option<SessionDocuments>,
     #[cfg(test)]
     module_source_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
     #[cfg(test)]
@@ -166,6 +170,7 @@ impl ProviderReadAuthority {
             snapshot_identity,
             artifacts: Arc::new(RegistrationCache::default()),
             support_state: std::sync::Mutex::new(None),
+            documents: None,
             #[cfg(test)]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             #[cfg(test)]
@@ -180,6 +185,12 @@ impl ProviderReadAuthority {
     /// Shares the actor-retained root artifacts of this source set.
     pub(crate) fn with_artifacts(mut self, artifacts: Arc<RegistrationCache>) -> Self {
         self.artifacts = artifacts;
+        self
+    }
+
+    /// Reads modules of `documents` from their open buffers.
+    pub(crate) fn with_documents(mut self, documents: SessionDocuments) -> Self {
+        self.documents = (!documents.is_empty()).then_some(documents);
         self
     }
 
@@ -256,6 +267,10 @@ impl ProviderReadAuthority {
         relative: &Path,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Option<Vec<u8>>, ViewError> {
+        if let Some(buffer) = self.open_buffer(relative) {
+            checkpoint()?;
+            return Ok(Some(buffer.text.as_bytes().to_vec()));
+        }
         let mut bytes = Vec::new();
         let mut interrupted = None;
         let visited = self.root.visit_relative_regular_chunks(
@@ -442,6 +457,31 @@ impl ProviderReadAuthority {
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
     ) -> Result<Arc<RegistrationIndex>, ViewError> {
         self.artifacts.registrations(&self.root, checkpoint)
+    }
+
+    /// The names of every registered object of `kind` (`Catalog`), sorted.
+    /// A large root descriptor is read through the streamed index.
+    pub(crate) fn registered_names(
+        &self,
+        kind: &str,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<Vec<String>, ViewError> {
+        if self.configuration_xml_requires_streaming() {
+            return self
+                .streamed_configuration_registration_index(checkpoint)?
+                .names_for_kind(kind, checkpoint);
+        }
+        let payload = self.configuration_payload_with_checkpoint(&mut || checkpoint())?;
+        let mut names = payload["registeredObjects"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|object| object["kind"] == kind)
+            .filter_map(|object| object["name"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     /// Preserve the established parser and its full compatibility behavior
@@ -1568,6 +1608,13 @@ impl ProviderReadAuthority {
         self.relative_source_exists(&relative)
     }
 
+    /// The open buffer that stands for `relative` in this read. Every read
+    /// of a source file goes through here, so one session never sees the
+    /// buffer in one answer and the file in another.
+    fn open_buffer(&self, relative: &Path) -> Option<&DocumentText> {
+        self.documents.as_ref()?.get(relative)
+    }
+
     pub(crate) fn form_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
         self.attached_resource_exists(target, "Form.xml")
     }
@@ -1583,6 +1630,9 @@ impl ProviderReadAuthority {
     }
 
     fn relative_source_exists(&self, relative: &Path) -> Result<bool, ViewError> {
+        if self.open_buffer(relative).is_some() {
+            return Ok(true);
+        }
         match self.root.open_relative_regular_nofollow(relative) {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -1689,6 +1739,11 @@ impl ProviderReadAuthority {
         mut visit: impl FnMut(&[u8]) -> Result<(), ViewError>,
     ) -> Result<Option<u64>, ViewError> {
         let relative = self.module_relative(target)?;
+        if let Some(buffer) = self.open_buffer(&relative) {
+            checkpoint()?;
+            visit(buffer.text.as_bytes())?;
+            return Ok(Some(buffer.text.len() as u64));
+        }
         let mut carry = Vec::<u8>::new();
         let interrupted = std::cell::RefCell::new(None);
         let result = self.root.visit_relative_regular_chunks(

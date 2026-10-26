@@ -32,6 +32,7 @@ impl LspHost for HeldHost {
                 text_document_sync: crate::protocol_v5::lsp::V5LspTextSync::Full,
                 hover: true,
                 text_document_content: false,
+                ..V5LspCapabilities::NONE
             },
             workspaces: folders
                 .iter()
