@@ -1122,12 +1122,27 @@ class CorpusAdapterTests(unittest.TestCase):
             ), self.assertRaisesRegex(
                 verifier.CorpusError,
                 r"case contract fields do not match the pinned public-writer inventory",
-            ):
+            ) as foreign_pin:
                 verifier.load_corpus(
                     manifest,
                     repo_root=ROOT,
                     home_root=Path.home(),
                 )
+
+            # Control: pinning this manifest's own digest removes exactly that
+            # refusal, so the pin, not some other defect, caused it above.
+            digest = re.search(r"got ([0-9a-f]{64})", str(foreign_pin.exception)).group(1)
+            with mock.patch.object(verifier, "EXPECTED_CASE_CONTRACT_SHA256", digest):
+                try:
+                    verifier.load_corpus(
+                        manifest,
+                        repo_root=ROOT,
+                        home_root=Path.home(),
+                    )
+                except verifier.CorpusError as error:
+                    self.assertNotIn(
+                        "do not match the pinned public-writer inventory", str(error)
+                    )
 
     def load_single(self, root: Path, case: dict | None = None, **kwargs):
         verifier = load_verifier()
