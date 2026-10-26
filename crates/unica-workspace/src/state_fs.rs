@@ -218,6 +218,39 @@ pub fn create_state_stage(path: &Path) -> io::Result<StateHandle> {
 pub fn state_file_identity(handle: &StateHandle) -> io::Result<FileIdentity> {
     filesystem::file_identity(&handle.file)
 }
+/// The state root with the links among its ancestors resolved. A system link
+/// above the root (macOS `/var` → `/private/var`, a linked home) must not stop
+/// the state from opening, while the root and everything beneath it are still
+/// opened component by component without following links: a root replaced by
+/// a link is refused. Missing trailing components stay as given. On Windows
+/// the path is returned as is.
+pub fn state_root_with_resolved_ancestors(root: &Path) -> io::Result<std::path::PathBuf> {
+    if cfg!(windows) {
+        return Ok(root.to_path_buf());
+    }
+    let Some(name) = root.file_name() else {
+        return Ok(root.to_path_buf());
+    };
+    let mut pending = vec![name.to_os_string()];
+    let mut ancestor = root.parent();
+    while let Some(directory) = ancestor {
+        match std::fs::canonicalize(directory) {
+            Ok(mut resolved) => {
+                resolved.extend(pending.iter().rev());
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if let Some(name) = directory.file_name() {
+                    pending.push(name.to_os_string());
+                }
+                ancestor = directory.parent();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(root.to_path_buf())
+}
+
 /// Open a caller-selected namespace root without following its final component.
 /// Ancestor aliases retain the original namespace-root opening policy.
 pub fn open_state_namespace_root_nofollow(path: &Path) -> io::Result<StateHandle> {
