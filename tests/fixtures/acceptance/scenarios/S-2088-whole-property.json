@@ -3,7 +3,7 @@
   "issue": 2088,
   "area": "Свойства метаданных",
   "workspace": "tests/fixtures/acceptance/workspace-type-size",
-  "task": "Дочитать составной тип реквизита, который не поместился в props: предел в limits называет адрес <узел>.Props.type, view по нему отдаёт тип целиком той же формой, а у малого реквизита то же свойство читается и по адресу. Неизвестное свойство, пагинация одного значения и проверка по адресу свойства отклоняются.",
+  "task": "Дочитать составной тип реквизита, который не поместился в props: предел в limits называет адрес <узел>.Props.type, view по нему отдаёт тип целиком той же формой, а у малого реквизита то же свойство читается и по адресу. Размер страницы на адресе свойства ничего не меняет. Неизвестное свойство, продолжение по курсору и проверка по адресу свойства отклоняются.",
   "wire": [
     {
       "tool": "unica.view",
@@ -61,7 +61,12 @@
           "pointer": "/data/limits",
           "absent": true
         }
-      ]
+      ],
+      "captures": {
+        "longType": {
+          "pointer": "/data"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -101,9 +106,33 @@
         "limit": 5
       },
       "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "eq": "$capture.longType"
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/page",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Attribute.Long.Props.type",
+        "cursor": "opaque"
+      },
+      "expect": [
         "refused"
       ],
-      "refusal": "bad_value: a node property is one value and has no pages; omit limit",
+      "refusal": "bad_value: a node property is one value and has no pages; omit cursor",
       "assertions": [
         {
           "pointer": "/data",

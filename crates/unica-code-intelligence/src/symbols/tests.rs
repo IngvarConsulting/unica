@@ -20,6 +20,7 @@ impl SymbolEnvironment for Environment {
             "CommonModules/Внешний/Ext/Module.bsl" => {
                 Some("main:CommonModule.Внешний".to_string())
             }
+            CALLER_PATH => Some(CALLER_AT.to_string()),
             _ => None,
         }
     }
@@ -34,6 +35,52 @@ impl SymbolEnvironment for Environment {
 
     fn module_text(&self, at: &str) -> Option<String> {
         (at == COMMON_AT).then(|| COMMON_TEXT.to_string())
+    }
+
+    fn module_owner(&self, at: &str) -> ModuleOwner {
+        match at {
+            COMMON_AT => ModuleOwner::Common {
+                name: "Общий".to_string(),
+                global: false,
+            },
+            MODULE_AT => ModuleOwner::Manager {
+                kind: "Catalog".to_string(),
+                object: "Валюты".to_string(),
+            },
+            _ => ModuleOwner::Other,
+        }
+    }
+
+    fn module_source(&self, path: &str) -> Option<String> {
+        match path {
+            COMMON_PATH => Some(COMMON_TEXT.to_string()),
+            MODULE_PATH => Some(TEXT.to_string()),
+            CALLER_PATH => Some(CALLER_TEXT.to_string()),
+            _ => None,
+        }
+    }
+}
+
+const CALLER_AT: &str = "main:Document.Заказ.Module.Object";
+const CALLER_PATH: &str = "Documents/Заказ/Ext/ObjectModule.bsl";
+/// Another module naming the common module's export, the catalog and the
+/// manager's export, each in another letter case; plus an unrelated name.
+const CALLER_TEXT: &str = "Процедура П() Экспорт\n\tОБЩИЙ.сделать(1);\n\tВ = справочники.ВАЛЮТЫ.вызов(2);\n\tСделать = 3;\nКонецПроцедуры\n";
+
+/// The name index, ready or still being built.
+struct Names(Option<Vec<(&'static str, &'static [&'static str])>>);
+
+impl NameLookup for Names {
+    fn modules_naming(&self, name: &str) -> Option<NamedModules> {
+        let entries = self.0.as_ref()?;
+        Some(NamedModules {
+            paths: entries
+                .iter()
+                .filter(|(_, names)| names.iter().any(|known| same_name(known, name)))
+                .map(|(path, _)| path.to_string())
+                .collect(),
+            complete: true,
+        })
     }
 }
 
@@ -184,10 +231,18 @@ fn module_names_are_answered_from_its_own_text_without_a_provider() {
         let hover = service.hover(&document(TEXT, TEXT), parameter, context);
         assert_eq!(hover.value.as_ref().unwrap().kind, SymbolKind::Parameter);
 
-        // A method visible elsewhere is answered here only.
+        // A method no other module sees is answered by the module alone.
         let method = service.references(&document(TEXT, TEXT), call, context);
         assert_eq!(method.value.len(), 2);
-        assert_eq!(method.reasons, [Incompleteness::OtherModules]);
+        assert!(method.complete);
+
+        // An exported one is visible elsewhere, and there is no name index.
+        let exported = service.references(
+            &document(TEXT, TEXT),
+            position_of(TEXT, "Вызов(", 0),
+            context,
+        );
+        assert_eq!(exported.reasons, [Incompleteness::OtherModules]);
     });
 }
 
@@ -349,7 +404,7 @@ fn references_stay_in_the_module_and_calls_join_the_provider() {
 
         let own = service.references(&document(TEXT, TEXT), position_of(TEXT, "Ф(А)", 0), context);
         assert_eq!(addresses(&own), [MODULE_AT, MODULE_AT]);
-        assert_eq!(own.reasons, [Incompleteness::OtherModules]);
+        assert!(own.complete, "a method no other module sees");
 
         let common = service.references(
             &document(TEXT, TEXT),
@@ -472,4 +527,85 @@ fn an_answer_names_no_provider_and_a_failed_provider_is_a_unica_reason() {
         serde_json::to_value(Incompleteness::Unaddressable(2)).unwrap(),
         serde_json::json!({"kind": "unaddressable", "count": 2})
     );
+}
+
+fn caller_document() -> SymbolDocument<'static> {
+    SymbolDocument {
+        at: CALLER_AT,
+        path: CALLER_PATH,
+        text: CALLER_TEXT,
+        saved: CALLER_TEXT,
+    }
+}
+
+/// #2190: other modules' uses come from the modules the name index lists,
+/// each parsed and its paths resolved, in any letter case; until the index is
+/// built the answer is the module's own places, marked not indexed.
+#[test]
+fn references_in_other_modules_come_from_the_name_index() {
+    let environment = Environment;
+    let names = Names(Some(vec![
+        (
+            CALLER_PATH,
+            &["Общий", "Сделать", "Справочники", "Валюты", "Вызов", "П"],
+        ),
+        (
+            MODULE_PATH,
+            &["Общий", "Сделать", "Справочники", "Валюты", "Вызов", "Ф"],
+        ),
+        (COMMON_PATH, &["Сделать", "Служебная"]),
+    ]));
+    let service = SymbolService::new(None, &environment).with_names(&names);
+    let common = SymbolDocument {
+        at: COMMON_AT,
+        path: COMMON_PATH,
+        text: COMMON_TEXT,
+        saved: COMMON_TEXT,
+    };
+    with_context(|context| {
+        let export = service.references(&common, position_of(COMMON_TEXT, "Сделать", 0), context);
+        assert!(export.complete, "{export:?}");
+        let mut found = addresses(&export);
+        found.sort_unstable();
+        let mut expected = [MODULE_AT, CALLER_AT, COMMON_AT];
+        expected.sort_unstable();
+        // The declaration, `ОБЩИЙ.сделать` and `Общий.Сделать`; the
+        // caller's own variable `Сделать` is not the export.
+        assert_eq!(found, expected);
+        assert_eq!(export.value.len(), 3);
+
+        let catalog = service.references(
+            &document(TEXT, TEXT),
+            position_of(TEXT, "Валюты.ПустаяСсылка", 1),
+            context,
+        );
+        assert!(catalog.complete);
+        assert_eq!(addresses(&catalog), [MODULE_AT, CALLER_AT]);
+
+        // The manager's export is also reached through a variable holding
+        // the manager: those uses are not found.
+        let manager = service.references(
+            &document(TEXT, TEXT),
+            position_of(TEXT, "Вызов(", 0),
+            context,
+        );
+        assert_eq!(addresses(&manager), [MODULE_AT, CALLER_AT]);
+        assert_eq!(manager.reasons, [Incompleteness::UntypedReferences]);
+
+        // An object module's export is reached through objects only.
+        let object = service.references(
+            &caller_document(),
+            position_of(CALLER_TEXT, "П(", 0),
+            context,
+        );
+        assert_eq!(object.reasons, [Incompleteness::UntypedReferences]);
+    });
+
+    let building = Names(None);
+    let service = SymbolService::new(None, &environment).with_names(&building);
+    let answer = with_context(|context| {
+        service.references(&common, position_of(COMMON_TEXT, "Сделать", 0), context)
+    });
+    assert_eq!(addresses(&answer), [COMMON_AT]);
+    assert_eq!(answer.reasons, [Incompleteness::NamesNotIndexed]);
 }

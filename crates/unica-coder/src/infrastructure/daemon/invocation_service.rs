@@ -535,6 +535,7 @@ impl ActorBoundInvocation {
         Ok(ActorBoundExecution {
             invocation: self,
             revision,
+            _foreground: crate::infrastructure::name_index::ForegroundCall::begin(),
         })
     }
 }
@@ -579,6 +580,8 @@ fn invalid_view_address_result(at: &str, detail: impl std::fmt::Display) -> Doma
 pub(crate) struct ActorBoundExecution {
     invocation: ActorBoundInvocation,
     revision: ActorExecutionRevision,
+    /// Background builds of derived indexes wait while a call executes.
+    _foreground: crate::infrastructure::name_index::ForegroundCall,
 }
 
 enum ActorExecutionRevision {

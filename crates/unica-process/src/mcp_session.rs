@@ -21,6 +21,8 @@ use unica_work_control::elapsed_budget::ElapsedBudgetDeadline;
 const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const SERVICE_RESPONSE_LINE_LIMIT: usize = 8 * 1024 * 1024;
 const BSL_STDERR_TAIL_LIMIT: usize = 64 * 1024;
+/// How long the cancellation notice of an abandoned call may take to write.
+const CANCEL_NOTICE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub struct PersistentMcpSession {
     child: ManagedChild,
@@ -179,44 +181,33 @@ impl PersistentMcpSession {
             &deadline,
             cancellation,
         )?;
-        let response = match self.read_response(id, &deadline, cancellation) {
+        let response = match read_json_response_typed(&self.rx, id, &deadline, cancellation) {
             Ok(response) => response,
-            Err(error) => {
-                return Err(error);
+            Err(error)
+                if matches!(
+                    error.cause,
+                    FailureCause::Cancelled | FailureCause::DeadlineElapsed
+                ) =>
+            {
+                return self.abandon(id, error);
             }
+            Err(error) => return self.fail(FailurePhase::WaitResponse, error),
         };
+        // The exchange is whole from here: a cancellation only drops its answer.
         if cancellation.is_cancelled() {
-            return self.fail(
-                FailurePhase::DecodeToolResult,
-                TransportFailure::new(
-                    FailureCause::Cancelled,
-                    cancelled_error("persistent MCP request stopped"),
-                ),
-            );
+            return Err(cancelled_error("persistent MCP request stopped"));
         }
         let result_text = match mcp_tool_text_typed(&response) {
             Ok(text) => text,
             Err(error) => {
                 if cancellation.is_cancelled() {
-                    return self.fail(
-                        FailurePhase::DecodeToolResult,
-                        TransportFailure::new(
-                            FailureCause::Cancelled,
-                            cancelled_error("persistent MCP request stopped"),
-                        ),
-                    );
+                    return Err(cancelled_error("persistent MCP request stopped"));
                 }
                 return self.fail(FailurePhase::DecodeToolResult, error);
             }
         };
         if cancellation.is_cancelled() {
-            return self.fail(
-                FailurePhase::DecodeToolResult,
-                TransportFailure::new(
-                    FailureCause::Cancelled,
-                    cancelled_error("persistent MCP request stopped"),
-                ),
-            );
+            return Err(cancelled_error("persistent MCP request stopped"));
         }
         let stderr = self
             .stderr_tail
@@ -227,6 +218,22 @@ impl PersistentMcpSession {
             result_text,
             stderr,
         })
+    }
+
+    /// Gives up waiting for call `id` without giving up the session: the
+    /// server is told to stop the call, and its late answer, if any, is
+    /// skipped by the next call's read. Only a failed notice retires it.
+    fn abandon<T>(&mut self, id: i64, error: TransportFailure) -> Result<T, String> {
+        self.send_json_cancellable(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": {"requestId": id, "reason": error.message}
+            }),
+            &ElapsedBudgetDeadline::new(CANCEL_NOTICE_TIMEOUT),
+            &CancellationToken::new(),
+        )?;
+        Err(error.message)
     }
 
     pub fn is_reusable(&mut self) -> bool {

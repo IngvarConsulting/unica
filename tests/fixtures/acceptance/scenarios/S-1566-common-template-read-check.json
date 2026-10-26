@@ -15,9 +15,15 @@
       ],
       "captures": {
         "commonTemplates": {
-          "pointer": "/data/branches/0/at"
+          "pointer": "/data/branches/17/at"
         }
-      }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/17/at",
+          "eq": "main:CommonTemplate"
+        }
+      ]
     },
     {
       "tool": "unica.view",
@@ -572,9 +578,15 @@
       ],
       "captures": {
         "borrowedTemplates": {
-          "pointer": "/data/branches/0/at"
+          "pointer": "/data/branches/17/at"
         }
-      }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/17/at",
+          "eq": "ext:CommonTemplate"
+        }
+      ]
     },
     {
       "tool": "unica.view",
