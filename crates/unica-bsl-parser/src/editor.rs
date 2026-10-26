@@ -35,6 +35,9 @@ pub struct EditorSymbol {
     pub parameters: Vec<EditorParameter>,
     /// The `//` comment lines right above a method, without the slashes.
     pub description: Option<String>,
+    /// The method is declared with English keywords (`Function`, not
+    /// `Функция`); a signature is printed in the same language.
+    pub english: bool,
     pub children: Vec<EditorSymbol>,
 }
 
@@ -170,7 +173,9 @@ impl ParsedModule<'_> {
                 let header = direct_token(&node, SyntaxKind::KW_PROCEDURE)
                     .or_else(|| direct_token(&node, SyntaxKind::KW_FUNCTION));
                 let range = byte_range(node.text_range());
+                let english = header.as_ref().is_some_and(|token| token.text().is_ascii());
                 EditorSymbol {
+                    english,
                     name: name
                         .as_ref()
                         .map(|token| token.text().to_owned())
@@ -617,6 +622,7 @@ fn region(
         is_export: false,
         parameters: Vec::new(),
         description: None,
+        english: false,
         children: Vec::new(),
     }
 }

@@ -1,0 +1,39 @@
+{
+  "id": "S-2180-lsp-document-symbols",
+  "area": "Дверь LSP",
+  "task": "Области и методы модуля деревом",
+  "profile": "lsp",
+  "driver": "lsp-stdio",
+  "workspace": "tests/fixtures/acceptance/workspace-lsp",
+  "wire": [
+    {
+      "tool": "lsp:textDocument/documentSymbol",
+      "args": {
+        "textDocument": {
+          "uri": "$document/main:CommonModule.Tools.Body"
+        }
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/result/0/name",
+          "eq": "Public"
+        },
+        {
+          "pointer": "/result/0/children/0/name",
+          "eq": "Add"
+        },
+        {
+          "pointer": "/result/0/children/0/detail",
+          "eq": "(Val First, Second = 1) Export"
+        },
+        {
+          "pointer": "/result/0/children/1/name",
+          "eq": "Hidden"
+        }
+      ]
+    }
+  ]
+}

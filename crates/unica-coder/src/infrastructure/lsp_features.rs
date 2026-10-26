@@ -276,7 +276,8 @@ fn find_method(symbols: &[EditorSymbol], name: &str, exported: bool) -> Option<E
     })
 }
 
-/// `Имя(Знач А, Б = 1) Экспорт` and the UTF-16 ranges of each parameter in
+/// `Имя(Знач А, Б = 1) Экспорт` (`Val`, `Export` in an English module) and
+/// the UTF-16 ranges of each parameter in
 /// it, as `ParameterInformation.label` offsets.
 fn signature_label(method: &EditorSymbol) -> (String, Vec<Range<u32>>) {
     let mut label = format!("{}(", method.name);
@@ -287,7 +288,7 @@ fn signature_label(method: &EditorSymbol) -> (String, Vec<Range<u32>>) {
         }
         let start = label.encode_utf16().count() as u32;
         if parameter.by_value {
-            label.push_str("Знач ");
+            label.push_str(if method.english { "Val " } else { "Знач " });
         }
         label.push_str(&parameter.name);
         if let Some(default) = &parameter.default_value {
@@ -298,7 +299,11 @@ fn signature_label(method: &EditorSymbol) -> (String, Vec<Range<u32>>) {
     }
     label.push(')');
     if method.is_export {
-        label.push_str(" Экспорт");
+        label.push_str(if method.english {
+            " Export"
+        } else {
+            " Экспорт"
+        });
     }
     (label, ranges)
 }

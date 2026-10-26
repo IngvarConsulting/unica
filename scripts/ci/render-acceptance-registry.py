@@ -239,6 +239,8 @@ def load_check_validators() -> list[str]:
 
 
 def step_wire(step: dict) -> str:
+    if step["tool"].startswith("lsp:"):
+        return f"LSP `{step['tool'][len('lsp:'):]}`"
     tool = step["tool"].replace("unica.", "")
     args = step["args"]
     parts = [f"`{tool}`"]

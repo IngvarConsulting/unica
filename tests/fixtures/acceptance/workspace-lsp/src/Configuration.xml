@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="5b0f8f0e-3c1d-4d7a-9a51-2f6c0b7e1a42">
+    <Properties><Name>LspDoor</Name></Properties>
+    <ChildObjects><CommonModule>Tools</CommonModule><Catalog>Items</Catalog></ChildObjects>
+  </Configuration>
+</MetaDataObject>

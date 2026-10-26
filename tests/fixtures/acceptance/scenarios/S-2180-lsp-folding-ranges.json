@@ -1,0 +1,46 @@
+{
+  "id": "S-2180-lsp-folding-ranges",
+  "area": "Дверь LSP",
+  "task": "Свёртки области, метода, условия и комментария",
+  "profile": "lsp",
+  "driver": "lsp-stdio",
+  "workspace": "tests/fixtures/acceptance/workspace-lsp",
+  "wire": [
+    {
+      "tool": "lsp:textDocument/foldingRange",
+      "args": {
+        "textDocument": {
+          "uri": "$document/main:CommonModule.Tools.Body"
+        }
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/result",
+          "sameItems": [
+            {
+              "startLine": 0,
+              "endLine": 14,
+              "kind": "region"
+            },
+            {
+              "startLine": 2,
+              "endLine": 3,
+              "kind": "comment"
+            },
+            {
+              "startLine": 4,
+              "endLine": 9
+            },
+            {
+              "startLine": 6,
+              "endLine": 7
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

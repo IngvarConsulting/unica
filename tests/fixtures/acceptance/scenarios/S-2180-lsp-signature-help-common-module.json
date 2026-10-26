@@ -1,0 +1,39 @@
+{
+  "id": "S-2180-lsp-signature-help-common-module",
+  "area": "Дверь LSP",
+  "task": "Подсказка параметров экспортного метода общего модуля",
+  "profile": "lsp",
+  "driver": "lsp-stdio",
+  "workspace": "tests/fixtures/acceptance/workspace-lsp",
+  "wire": [
+    {
+      "tool": "lsp:textDocument/signatureHelp",
+      "args": {
+        "textDocument": {
+          "uri": "$document/main:Catalog.Items.Module.Object.Body"
+        },
+        "position": {
+          "line": 3,
+          "character": 35
+        }
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/result/signatures/0/label",
+          "eq": "Add(Val First, Second = 1) Export"
+        },
+        {
+          "pointer": "/result/activeParameter",
+          "eq": 1
+        },
+        {
+          "pointer": "/result/signatures/0/documentation/value",
+          "eq": "Adds two numbers.\nThe second one is optional."
+        }
+      ]
+    }
+  ]
+}

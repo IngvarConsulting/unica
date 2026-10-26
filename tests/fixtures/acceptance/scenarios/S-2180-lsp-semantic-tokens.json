@@ -1,0 +1,35 @@
+{
+  "id": "S-2180-lsp-semantic-tokens",
+  "area": "Дверь LSP",
+  "task": "Классы токенов модуля в кодировке LSP",
+  "profile": "lsp",
+  "driver": "lsp-stdio",
+  "workspace": "tests/fixtures/acceptance/workspace-lsp",
+  "wire": [
+    {
+      "tool": "lsp:textDocument/semanticTokens/full",
+      "args": {
+        "textDocument": {
+          "uri": "$document/main:CommonModule.Tools.Body"
+        }
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/result/data/0",
+          "eq": 0
+        },
+        {
+          "pointer": "/result/data/2",
+          "eq": 7
+        },
+        {
+          "pointer": "/result/data/3",
+          "eq": 6
+        }
+      ]
+    }
+  ]
+}

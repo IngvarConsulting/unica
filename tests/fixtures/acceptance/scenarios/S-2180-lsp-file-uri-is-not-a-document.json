@@ -1,0 +1,20 @@
+{
+  "id": "S-2180-lsp-file-uri-is-not-a-document",
+  "area": "Дверь LSP",
+  "task": "Путь файла не называет документ LSP",
+  "profile": "lsp",
+  "driver": "lsp-stdio",
+  "workspace": "tests/fixtures/acceptance/workspace-lsp",
+  "wire": [
+    {
+      "tool": "lsp:workspace/textDocumentContent",
+      "args": {
+        "uri": "file:///workspace/src/CommonModules/Tools/Ext/Module.bsl"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "lsp_document_unknown"
+    }
+  ]
+}
