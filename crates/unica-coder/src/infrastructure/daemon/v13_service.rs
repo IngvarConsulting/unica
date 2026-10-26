@@ -681,16 +681,13 @@ impl CanonicalV13ReadService {
             }
             Ok(address) => match address.operation_query() {
                 Some((owner, Some(op))) => {
-                    if let Some(paging) = ["cursor", "limit"]
-                        .into_iter()
-                        .find(|name| arguments.contains_key(*name))
-                    {
+                    // A contract is one node: like any single node it accepts
+                    // a page size it does not need, but it has no continuation.
+                    if arguments.contains_key("cursor") {
                         return error_result(
                             Some(at.to_string()),
                             RefusalCode::BadValue,
-                            format!(
-                                "an operation contract is one node and has no pages; omit {paging}"
-                            ),
+                            "an operation contract is one node and has no pages; omit cursor",
                         );
                     }
                     operation = Some(op.to_string());

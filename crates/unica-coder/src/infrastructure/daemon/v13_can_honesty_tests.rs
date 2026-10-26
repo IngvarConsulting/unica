@@ -2863,6 +2863,29 @@ fn subsystem_interface_contracts_preview_all_operations_without_source_writes() 
     }
 }
 
+/// #2164: a client that always passes `limit` reads an operation contract
+/// like any other single node: a page size changes nothing, and only a
+/// continuation stays refused, since one node has no pages.
+#[test]
+fn a_contract_node_takes_a_page_size_like_any_single_node() {
+    let fixture = fixture("workspace-code");
+    let contract = "main:Catalog.Пример.Can.props.set";
+    let view = |args| invoke(&fixture.workspace, ToolIdentity::View, args);
+
+    let plain = view(json!({"at": contract}));
+    assert!(plain.ok, "{plain:?}");
+    let limited = view(json!({"at": contract, "limit": 50}));
+    assert!(limited.ok, "{limited:?}");
+    assert_eq!(limited.data, plain.data);
+
+    let continued = view(json!({"at": contract, "cursor": "opaque"}));
+    assert!(!continued.ok, "{continued:?}");
+    assert_eq!(
+        continued.diagnostics[0]["code"], "bad_value",
+        "{continued:?}"
+    );
+}
+
 #[test]
 fn object_remove_skeleton_previews_with_only_the_outer_target() {
     let fixture = fixture("workspace-code");

@@ -1,0 +1,56 @@
+{
+  "id": "S-2164-contract-page-size",
+  "issue": 2164,
+  "area": "Словарь операций",
+  "workspace": "tests/fixtures/acceptance/workspace-code",
+  "task": "Прочитать подробный контракт операции клиентом, который всегда передаёт limit: узел Can.<op> принимает размер страницы, как любой одиночный узел, и отдаёт тот же контракт; продолжения у одного узла нет, курсор отклоняется.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        }
+      ],
+      "captures": {
+        "contract": {
+          "pointer": "/data"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Can.props.set",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "eq": "$capture.contract"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Can.props.set",
+        "cursor": "opaque"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: an operation contract is one node and has no pages; omit cursor"
+    }
+  ]
+}
