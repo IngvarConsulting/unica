@@ -61,7 +61,7 @@ impl LineIndex {
     }
 
     /// The byte range of `line` without its terminator.
-    fn line_bytes(&self, text: &str, line: usize) -> Option<(usize, usize)> {
+    pub(crate) fn line_bytes(&self, text: &str, line: usize) -> Option<(usize, usize)> {
         let start = *self.starts.get(line)?;
         let mut end = self.starts.get(line + 1).copied().unwrap_or(text.len());
         let bytes = text.as_bytes();

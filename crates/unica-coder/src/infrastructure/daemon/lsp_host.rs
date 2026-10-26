@@ -13,6 +13,7 @@ use super::server::closed_daemon_source_relative_path;
 use crate::application::lsp::document::ContentChange;
 use crate::application::lsp::position::Utf16Position;
 use crate::application::lsp::uri::WorkspaceFolder;
+use crate::infrastructure::lsp_diagnostics;
 use crate::infrastructure::lsp_documents::{
     LspDocumentError, LspDocuments, SourceSetLayout, SpaceLayout,
 };
@@ -28,9 +29,9 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Instant;
 use unica_daemon::lsp_lane::{LspCallContext, LspClientChannel, LspHost};
 use unica_daemon::protocol_v5::lsp::{
-    V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspNotification,
-    V5LspOpening, V5LspOutcome, V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
-    V5LspWorkspaceSpace,
+    V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspDiagnosticsDelivery, V5LspFailure,
+    V5LspNotification, V5LspOpening, V5LspOutcome, V5LspServerNotification, V5LspSessionId,
+    V5LspTextSync, V5LspWorkspaceFolder, V5LspWorkspaceSpace,
 };
 use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_source_contract::{SourceFormat, SourceProfile};
@@ -44,11 +45,275 @@ const ACTOR_SCOPE: &str = "canonical-v0.13";
 pub(crate) struct UnicaLspHost {
     actors: Arc<WorkspaceActorRegistry>,
     sessions: Mutex<HashMap<V5LspSessionId, Arc<RwLock<Session>>>>,
+    diagnostics: EditorDiagnostics,
 }
 
 struct Session {
     documents: LspDocuments,
     spaces: BTreeMap<String, AdmittedSpace>,
+    /// Where the service tells the editor of finished diagnostics.
+    client: LspClientChannel,
+    /// Held while diagnostics are built and sent, so that an older state
+    /// never reaches the editor after a newer one.
+    publishing: Arc<Mutex<()>>,
+}
+
+/// The diagnostic providers of the editor's code analysis.
+type DiagnosticRegistry =
+    dyn Fn() -> Result<unica_diagnostics::model::DiagnosticProviderRegistry, String> + Send + Sync;
+
+/// Diagnostics of documents (#2176): Unica's own checks over the buffer, the
+/// provider's analysis of the saved file in the background, in Unica's words.
+#[derive(Clone)]
+struct EditorDiagnostics {
+    analysis: Arc<lsp_diagnostics::EditorAnalysis>,
+    registry: Arc<DiagnosticRegistry>,
+}
+
+impl EditorDiagnostics {
+    fn production() -> Self {
+        Self {
+            analysis: Arc::default(),
+            registry: Arc::new(|| {
+                unica_diagnostics::model::DiagnosticProviderRegistry::new(vec![Arc::new(
+                    crate::infrastructure::analysis_composition::diagnostic_provider(),
+                )])
+                .map_err(|error| error.to_string())
+            }),
+        }
+    }
+
+    /// The document's text, version and diagnostics as this session sees
+    /// them. A provider analysis not yet finished is started once; when it
+    /// finishes, the editor gets `publishDiagnostics` for `client_uri`.
+    fn report(
+        &self,
+        session: &Arc<RwLock<Session>>,
+        client_uri: &str,
+    ) -> Result<DocumentReport, V5LspFailure> {
+        let guard = read(session);
+        let uri = document_uri(&guard.documents, client_uri)
+            .map_err(|_| V5LspFailure::DocumentUnknown)?;
+        let location = guard
+            .documents
+            .locate(&uri)
+            .map_err(|_| V5LspFailure::DocumentUnknown)?;
+        let space = guard
+            .spaces
+            .get(&location.document.space)
+            .ok_or(V5LspFailure::DocumentUnknown)?;
+        let buffer_read = space.read(guard.documents.session(), &location.source_set)?;
+        let text = document_text(&guard, &uri, &buffer_read)?;
+        let version = guard
+            .documents
+            .open_document(&location.document)
+            .map(|document| document.version());
+        let (_, saved_read) = space.saved_read(&location.source_set)?;
+        let saved = guard
+            .documents
+            .saved_content(&uri, &saved_read)
+            .map_err(document_failure)?;
+        let own = lsp_diagnostics::own_findings(&text);
+        let Some(saved) = saved else {
+            // A module not yet on disk has nothing the provider could read.
+            let provider = lsp_diagnostics::DocumentDiagnostics {
+                findings: Vec::new(),
+                gaps: vec![lsp_diagnostics::DiagnosticGap::UnsavedBuffer],
+            };
+            return Ok(DocumentReport {
+                diagnostics: lsp_diagnostics::merge(own, provider),
+                text,
+                version,
+            });
+        };
+        let key = lsp_diagnostics::AnalysisKey::new(
+            space.identity.as_str(),
+            location.document.address.clone(),
+            saved.as_bytes(),
+        );
+        let profile = space.profile(&location.source_set);
+        let folder = space.folder.clone();
+        let address = location.document.address.clone();
+        let registry = Arc::clone(&self.registry);
+        // One waiter per document of a session, however often it is asked.
+        let waiter = format!("{}\n{client_uri}", guard.documents.session());
+        let ready: lsp_diagnostics::AnalysisWaiter = {
+            let service = self.clone();
+            let session = Arc::downgrade(session);
+            let client_uri = client_uri.to_owned();
+            Arc::new(move || {
+                if let Some(session) = session.upgrade() {
+                    service.publish(&session, &client_uri, Published::Analysed);
+                }
+            })
+        };
+        drop(guard);
+        let analysed = self.analysis.findings(
+            key,
+            &waiter,
+            move |cancellation| {
+                analyse(
+                    registry.as_ref(),
+                    saved_read,
+                    profile,
+                    &folder,
+                    &address,
+                    cancellation,
+                )
+            },
+            ready,
+        );
+        let mut provider = analysed.unwrap_or_else(|| lsp_diagnostics::DocumentDiagnostics {
+            findings: Vec::new(),
+            gaps: vec![lsp_diagnostics::DiagnosticGap::AnalysisNotReady],
+        });
+        if text != saved {
+            // The analysis read the saved file: its findings may stand on
+            // lines the buffer moved. Unica's own checks follow the buffer.
+            provider.findings.clear();
+            provider
+                .gaps
+                .push(lsp_diagnostics::DiagnosticGap::UnsavedBuffer);
+        }
+        Ok(DocumentReport {
+            diagnostics: lsp_diagnostics::merge(own, provider),
+            text,
+            version,
+        })
+    }
+
+    /// Tell the editor the current diagnostics of `client_uri`. A closed
+    /// document is told it has none; a finished analysis of a document
+    /// closed since is not told at all. An editor that asks for diagnostics
+    /// itself is told only of finished analyses, so that it asks again.
+    fn publish(&self, session: &Arc<RwLock<Session>>, client_uri: &str, cause: Published) {
+        let (client, publishing) = {
+            let guard = read(session);
+            (guard.client.clone(), Arc::clone(&guard.publishing))
+        };
+        if cause != Published::Analysed
+            && client.diagnostics_delivery() == V5LspDiagnosticsDelivery::Pull
+        {
+            return;
+        }
+        let _publishing = lock(&publishing);
+        // Read under the publishing lock: a close published meanwhile is not
+        // followed by the closed document's findings.
+        let open = {
+            let guard = read(session);
+            document_uri(&guard.documents, client_uri)
+                .ok()
+                .and_then(|uri| guard.documents.locate(&uri).ok())
+                .map(|location| guard.documents.open_document(&location.document).is_some())
+        };
+        let params = match (cause, open) {
+            (Published::Closed, Some(false)) => lsp_diagnostics::closed_json(client_uri),
+            (_, Some(true)) if cause != Published::Closed => {
+                let Ok(report) = self.report(session, client_uri) else {
+                    return;
+                };
+                lsp_diagnostics::publish_json(
+                    client_uri,
+                    report.version,
+                    &report.text,
+                    &report.diagnostics,
+                )
+            }
+            // Not a module, closed before its analysis ended, or opened
+            // again since it closed: that opening publishes for itself.
+            _ => return,
+        };
+        let _ = client.push(V5LspServerNotification::PublishDiagnostics {
+            uri: client_uri.to_owned(),
+            params,
+            analysed: cause == Published::Analysed,
+        });
+    }
+}
+
+/// What the editor is told diagnostics about.
+struct DocumentReport {
+    text: String,
+    version: Option<i32>,
+    diagnostics: lsp_diagnostics::DocumentDiagnostics,
+}
+
+/// Why diagnostics of a document are published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Published {
+    /// The editor opened, changed or saved it.
+    Edited,
+    /// The background analysis of its saved text finished.
+    Analysed,
+    /// The editor closed it.
+    Closed,
+}
+
+/// The provider's analysis of one saved module, as `check` runs it: the same
+/// mapping and coordinator, `Analyze` on the module alone and no deadline
+/// (#2189). A failure to prove the module is a gap, not an answer.
+fn analyse(
+    registry: &DiagnosticRegistry,
+    saved_read: ProviderReadAuthority,
+    profile: Option<unica_bsl::profile::PlatformProfile>,
+    folder: &std::path::Path,
+    address: &str,
+    cancellation: &unica_work_control::cancellation::CancellationToken,
+) -> lsp_diagnostics::DocumentDiagnostics {
+    use unica_diagnostics::coordinator::DiagnosticCoordinator;
+    use unica_diagnostics::model::{DiagnosticAction, DiagnosticFilter, DiagnosticRequest};
+    use unica_work_control::provider_deadline::ProviderDeadline;
+    let unavailable = || lsp_diagnostics::DocumentDiagnostics {
+        findings: Vec::new(),
+        gaps: vec![lsp_diagnostics::DiagnosticGap::AnalysisUnavailable],
+    };
+    let (Some(profile), Ok(context), Ok(at)) = (
+        profile,
+        discover_workspace(Some(folder.to_path_buf())),
+        unica_address::address::QualifiedAddress::parse(address),
+    ) else {
+        return unavailable();
+    };
+    let logical = crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority(
+        cancellation,
+        saved_read,
+        profile,
+        ProviderDeadline::no_deadline(),
+    );
+    let Ok(mapping) = logical.diagnostic_mapping(&at, &context) else {
+        return unavailable();
+    };
+    // The provider is given this module alone; without its scope it would
+    // analyse the whole workspace.
+    let Some(scope) = mapping.module_scope() else {
+        return unavailable();
+    };
+    let (Ok(coordinated), Ok(translated)) = (registry(), registry()) else {
+        return unavailable();
+    };
+    let request = DiagnosticRequest {
+        action: DiagnosticAction::Analyze,
+        source_set: at.source_set().to_string(),
+        metadata_path: mapping.target().metadata_path.clone(),
+        // The editor shows every level and lets its user filter them; `check`
+        // keeps its default of warnings and above.
+        filter: DiagnosticFilter {
+            min_severity: None,
+            ..DiagnosticFilter::default()
+        },
+        range: None,
+        limit: usize::MAX,
+        timeout: None,
+    };
+    match DiagnosticCoordinator::new(coordinated, &mapping).execute_scoped(
+        &request,
+        &context,
+        cancellation,
+        Some((scope, ProviderDeadline::no_deadline())),
+    ) {
+        Ok(result) => lsp_diagnostics::provider_diagnostics(&result, &translated),
+        Err(_) => unavailable(),
+    }
 }
 
 /// A workspace folder admitted as a workspace: its actor and the bindings
@@ -65,7 +330,25 @@ impl UnicaLspHost {
         Self {
             actors,
             sessions: Mutex::new(HashMap::new()),
+            diagnostics: EditorDiagnostics::production(),
         }
+    }
+
+    /// The service with these diagnostic providers in place of the bundled
+    /// analyzer.
+    #[cfg(test)]
+    pub(crate) fn with_diagnostic_providers_for_test(
+        mut self,
+        providers: impl Fn() -> Vec<Arc<dyn unica_diagnostics::model::DiagnosticProvider>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.diagnostics.registry = Arc::new(move || {
+            unica_diagnostics::model::DiagnosticProviderRegistry::new(providers())
+                .map_err(|error| error.to_string())
+        });
+        self
     }
 
     fn session(&self, session: &V5LspSessionId) -> Result<Arc<RwLock<Session>>, V5LspFailure> {
@@ -81,7 +364,7 @@ impl LspHost for UnicaLspHost {
         &self,
         session: &V5LspSessionId,
         folders: &[V5LspWorkspaceFolder],
-        _: LspClientChannel,
+        client: LspClientChannel,
         deadline: Instant,
     ) -> Result<V5LspOpening, V5LspFailure> {
         // A folder without admitted sources takes no space name.
@@ -127,7 +410,12 @@ impl LspHost for UnicaLspHost {
         }
         lock(&self.sessions).insert(
             session.clone(),
-            Arc::new(RwLock::new(Session { documents, spaces })),
+            Arc::new(RwLock::new(Session {
+                documents,
+                spaces,
+                client,
+                publishing: Arc::default(),
+            })),
         );
         Ok(V5LspOpening {
             capabilities: V5LspCapabilities {
@@ -137,6 +425,7 @@ impl LspHost for UnicaLspHost {
                 document_symbols: true,
                 folding_ranges: true,
                 signature_help: true,
+                diagnostics: true,
                 semantic_tokens_legend: Some(lsp_features::semantic_tokens_legend()),
             },
             workspaces,
@@ -149,8 +438,44 @@ impl LspHost for UnicaLspHost {
         notification: V5LspNotification,
         deadline: Instant,
     ) -> Result<(), V5LspFailure> {
-        let session = self.session(session)?;
-        let mut session = write(&session);
+        let session_arc = self.session(session)?;
+        let client_uri = notification.document_uri().to_owned();
+        let cause = match notification {
+            V5LspNotification::DidClose { .. } => Published::Closed,
+            _ => Published::Edited,
+        };
+        let changed = self.apply_notification(&session_arc, notification, deadline);
+        // A new version or a new saved text is told its diagnostics: Unica's
+        // own at once, the provider's when its analysis of the saved file is
+        // ready (#2176).
+        if changed.is_ok() {
+            self.diagnostics.publish(&session_arc, &client_uri, cause);
+        }
+        changed
+    }
+
+    fn call(
+        &self,
+        session: &V5LspSessionId,
+        call: V5LspCall,
+        context: &LspCallContext,
+    ) -> V5LspOutcome {
+        self.answer_call(session, call, context)
+    }
+
+    fn close(&self, session: &V5LspSessionId) {
+        self.close_session(session);
+    }
+}
+
+impl UnicaLspHost {
+    fn apply_notification(
+        &self,
+        session: &Arc<RwLock<Session>>,
+        notification: V5LspNotification,
+        deadline: Instant,
+    ) -> Result<(), V5LspFailure> {
+        let mut session = write(session);
         let Ok(uri) = document_uri(&session.documents, notification.document_uri()) else {
             // A file that is no module of this connection: the editor may
             // open anything, the service keeps only modules.
@@ -184,6 +509,8 @@ impl LspHost for UnicaLspHost {
                 let changes = changes.into_iter().map(content_change).collect::<Vec<_>>();
                 documents.change(overlay, &uri, version, &changes).map(drop)
             }
+            // The saved text is read from disk when diagnostics are asked.
+            V5LspNotification::DidSave { .. } => Ok(()),
             V5LspNotification::DidClose { .. } => {
                 let _ = documents.close(overlay, &uri);
                 return Ok(());
@@ -201,7 +528,7 @@ impl LspHost for UnicaLspHost {
         })
     }
 
-    fn call(
+    fn answer_call(
         &self,
         session: &V5LspSessionId,
         call: V5LspCall,
@@ -232,11 +559,27 @@ impl LspHost for UnicaLspHost {
         if context.is_cancelled() {
             return V5LspOutcome::Cancelled {};
         }
+        if let V5LspCall::Diagnostic {
+            uri,
+            previous_result_id,
+        } = &call
+        {
+            return match self.diagnostics.report(&session, uri) {
+                Ok(report) => V5LspOutcome::Json {
+                    value: lsp_diagnostics::document_report_json(
+                        &report.text,
+                        &report.diagnostics,
+                        previous_result_id.as_deref(),
+                    ),
+                },
+                Err(failure) => failed(failure),
+            };
+        }
         let session = read(&session);
         answer(&session, call).unwrap_or_else(failed)
     }
 
-    fn close(&self, session: &V5LspSessionId) {
+    fn close_session(&self, session: &V5LspSessionId) {
         let Some(session) = lock(&self.sessions).remove(session) else {
             return;
         };
@@ -340,6 +683,20 @@ impl AdmittedSpace {
 
     /// A read of `set` that sees this session's buffers in place of files.
     fn read(&self, session: &str, set: &str) -> Result<ProviderReadAuthority, V5LspFailure> {
+        let (actor, read) = self.saved_read(set)?;
+        let documents = actor
+            .documents()
+            .session_documents(session, set)
+            .map_err(|_| V5LspFailure::Unavailable)?;
+        Ok(read.with_documents(documents))
+    }
+
+    /// A read of `set` as saved on disk, without any editor's buffers, and
+    /// its actor.
+    fn saved_read(
+        &self,
+        set: &str,
+    ) -> Result<(Arc<WorkspaceActor>, ProviderReadAuthority), V5LspFailure> {
         let binding = self
             .bindings
             .iter()
@@ -355,19 +712,24 @@ impl AdmittedSpace {
         let artifacts = actor
             .source_artifacts(binding)
             .map_err(|_| V5LspFailure::WorkspaceUnavailable)?;
-        let documents = actor
-            .documents()
-            .session_documents(session, set)
-            .map_err(|_| V5LspFailure::Unavailable)?;
-        Ok(ProviderReadAuthority::new_local_snapshot(
+        let read = ProviderReadAuthority::new_local_snapshot(
             binding.source_set_name(),
             format!("{}:{}", self.identity.as_str(), binding.source_set_name()),
             binding.source_kind(),
             binding.retained_root(),
             uuid::Uuid::new_v4().to_string(),
         )
-        .with_artifacts(artifacts)
-        .with_documents(documents))
+        .with_artifacts(artifacts);
+        Ok((actor, read))
+    }
+
+    /// The platform profile of `set`, which its logical reader serves.
+    fn profile(&self, set: &str) -> Option<unica_bsl::profile::PlatformProfile> {
+        let binding = self
+            .bindings
+            .iter()
+            .find(|binding| binding.source_set_name() == set)?;
+        crate::domain::source_capabilities::bsl_profile_for_source(binding.source_profile())
     }
 }
 
@@ -402,6 +764,8 @@ fn answer(session: &Session, call: V5LspCall) -> Result<V5LspOutcome, V5LspFailu
             Ok(json(help.unwrap_or(serde_json::Value::Null)))
         }
         V5LspCall::Hover { .. } => Err(V5LspFailure::NotSupported),
+        // Answered with the session's diagnostics service before this point.
+        V5LspCall::Diagnostic { .. } => Err(V5LspFailure::NotSupported),
     }
 }
 
@@ -578,3 +942,7 @@ fn write<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
 #[cfg(test)]
 #[path = "../../../tests/platform/lsp_host.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/platform/lsp_host_diagnostics.rs"]
+mod diagnostics_tests;

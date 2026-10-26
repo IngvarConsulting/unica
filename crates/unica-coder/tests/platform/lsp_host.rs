@@ -44,7 +44,9 @@ fn soon() -> Instant {
 }
 
 fn client() -> LspClientChannel {
-    unica_daemon::lsp_lane::LspClientChannel::detached_for_test()
+    unica_daemon::lsp_lane::LspClientChannel::detached_for_test(
+        unica_daemon::protocol_v5::lsp::V5LspDiagnosticsDelivery::Push,
+    )
 }
 
 fn content(host: &UnicaLspHost, session: &V5LspSessionId, uri: &str) -> V5LspOutcome {

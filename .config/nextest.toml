@@ -285,6 +285,7 @@ default-filter = '''(
     | (binary(unica_artifact_delivery) & test(/^platform::/))
     | (binary(unica_bootstrap) & test(/^platform::/))
     | (binary(unica_coder) & test(/^infrastructure::code_intelligence::/))
+    | (binary(unica_coder) & test(/^infrastructure::daemon::lsp_host::diagnostics_tests::/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::lsp_host::tests::/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::receipt_join_freshness_tests::/))
     | (binary(unica_coder) & test(/^infrastructure::daemon::receipt_runtime_tests::/))

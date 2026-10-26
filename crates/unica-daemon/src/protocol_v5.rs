@@ -395,6 +395,7 @@ pub enum V5ClientRequest {
     LspOpen {
         #[serde(rename = "workspaceFolders")]
         workspace_folders: Vec<V5LspWorkspaceFolder>,
+        diagnostics: lsp::V5LspDiagnosticsDelivery,
     },
     LspNotify {
         session: V5LspSessionId,
@@ -481,7 +482,9 @@ impl V5ClientRequest {
             Self::WaitTask { wait_ms, .. } if *wait_ms > MAX_V5_WAIT_MS => {
                 Err("v5 task wait exceeds 7000 ms".to_string())
             }
-            Self::LspOpen { workspace_folders } => lsp::validate_open(workspace_folders),
+            Self::LspOpen {
+                workspace_folders, ..
+            } => lsp::validate_open(workspace_folders),
             Self::LspNotify {
                 session,
                 notification,
@@ -556,9 +559,13 @@ impl fmt::Debug for V5ClientRequest {
             }
             Self::CancelInvocation { .. } => formatter.write_str("V5CancelInvocation"),
             Self::FenceInvocationReceipt { .. } => formatter.write_str("V5FenceInvocationReceipt"),
-            Self::LspOpen { workspace_folders } => formatter
+            Self::LspOpen {
+                workspace_folders,
+                diagnostics,
+            } => formatter
                 .debug_struct("V5LspOpen")
                 .field("workspace_folders", &workspace_folders.len())
+                .field("diagnostics", diagnostics)
                 .finish(),
             Self::LspNotify { notification, .. } => formatter
                 .debug_struct("V5LspNotify")
@@ -1582,12 +1589,29 @@ mod tests {
             ),
             (
                 V5ClientRequestKind::LspOpen,
-                "{\"kind\":\"lsp_open\",\"workspaceFolders\":[{\"uri\":\"file:///work\",\"name\":\"work\"}]}".into(),
+                "{\"kind\":\"lsp_open\",\"workspaceFolders\":[{\"uri\":\"file:///work\",\"name\":\"work\"}],\"diagnostics\":\"push\"}".into(),
+            ),
+            (
+                V5ClientRequestKind::LspOpen,
+                "{\"kind\":\"lsp_open\",\"workspaceFolders\":[],\"diagnostics\":\"pull\"}".into(),
+            ),
+            (
+                V5ClientRequestKind::LspNotify,
+                format!(
+                    "{{\"kind\":\"lsp_notify\",\"session\":\"{LSP_SESSION}\",\"notification\":{{\"method\":\"textDocument/didSave\",\"uri\":\"file:///work/a.bsl\"}}}}"
+                ),
             ),
             (
                 V5ClientRequestKind::LspNotify,
                 format!(
                     "{{\"kind\":\"lsp_notify\",\"session\":\"{LSP_SESSION}\",\"notification\":{{\"method\":\"textDocument/didChange\",\"uri\":\"file:///work/a.bsl\",\"version\":2,\"changes\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":1}},\"end\":{{\"line\":0,\"character\":2}}}},\"text\":\"x\"}},{{\"text\":\"full\"}}]}}}}"
+                ),
+            ),
+            (
+                V5ClientRequestKind::LspCall,
+                format!(
+                    "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":8,\"budgetMs\":7000,\"call\":{{\"method\":\"textDocument/diagnostic\",\"uri\":\"file:///work/a.bsl\",\"previousResultId\":\"{}\"}}}}",
+                    "r".repeat(128)
                 ),
             ),
             (
@@ -2042,6 +2066,11 @@ mod tests {
             ),
             format!(
                 "{{\"kind\":\"lsp_notify\",\"session\":\"{LSP_SESSION}\",\"notification\":{{\"method\":\"textDocument/didClose\",\"uri\":\"file:///a\\u0000\"}}}}"
+            ),
+            "{\"kind\":\"lsp_open\",\"workspaceFolders\":[],\"diagnostics\":\"both\"}".to_string(),
+            format!(
+                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/diagnostic\",\"uri\":\"file:///a\",\"previousResultId\":\"{}\"}}}}",
+                "r".repeat(129)
             ),
             format!(
                 "{{\"kind\":\"lsp_notify\",\"session\":\"{LSP_SESSION}\",\"notification\":{{\"method\":\"textDocument/didOpen\",\"uri\":\"file:///a\",\"version\":1,\"text\":\"\"}}}}"

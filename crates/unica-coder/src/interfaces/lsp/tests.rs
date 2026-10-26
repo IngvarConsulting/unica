@@ -154,6 +154,85 @@ fn capabilities_follow_what_the_lsp_service_declares() {
     );
 }
 
+/// #2176: a service with diagnostics offers them by request and asks to
+/// hear of saves; the editor's requests and saves reach it in its terms.
+#[test]
+fn diagnostics_are_offered_and_their_requests_reach_the_service() {
+    let capabilities = capabilities_json(V5LspOpening {
+        capabilities: V5LspCapabilities {
+            text_document_sync: V5LspTextSync::Incremental,
+            diagnostics: true,
+            ..V5LspCapabilities::NONE
+        },
+        workspaces: Vec::new(),
+    });
+    assert_eq!(
+        capabilities["diagnosticProvider"],
+        json!({"interFileDependencies": false, "workspaceDiagnostics": false})
+    );
+    assert_eq!(capabilities["textDocumentSync"]["save"], true);
+    let uri = "file:///work/src/CommonModules/Main/Ext/Module.bsl";
+    assert_eq!(
+        document_call(
+            "textDocument/diagnostic",
+            &json!({"textDocument": {"uri": uri}, "previousResultId": "r1"}),
+        ),
+        Some(Some(V5LspCall::Diagnostic {
+            uri: uri.into(),
+            previous_result_id: Some("r1".into()),
+        }))
+    );
+    assert_eq!(
+        document_notification(
+            "textDocument/didSave",
+            &json!({"textDocument": {"uri": uri}})
+        ),
+        Some(V5LspNotification::DidSave { uri: uri.into() })
+    );
+}
+
+/// #2176: an editor that asks for diagnostics itself is not sent them as
+/// well; it is asked once to ask again when analyses finish, and only if it
+/// can be. An editor that does not ask gets every publication.
+#[test]
+fn diagnostics_reach_an_editor_the_way_it_takes_them() {
+    let publish = |analysed| V5LspServerNotification::PublishDiagnostics {
+        uri: "file:///work/Module.bsl".into(),
+        params: json!({"uri": "file:///work/Module.bsl", "diagnostics": []}),
+        analysed,
+    };
+    let batch = || vec![publish(false), publish(true), publish(true)];
+    let methods = |messages: Vec<Value>| {
+        messages
+            .iter()
+            .map(|message| message["method"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let pull = DiagnosticDelivery::of_client(&json!({"capabilities": {
+        "textDocument": {"diagnostic": {}},
+        "workspace": {"diagnostics": {"refreshSupport": true}},
+    }}));
+    assert_eq!(pull, DiagnosticDelivery::Pull { refresh: true });
+    let mut refreshes = 0;
+    let refreshed = server_messages(batch(), pull, &mut refreshes);
+    assert_eq!(methods(refreshed.clone()), ["workspace/diagnostic/refresh"]);
+    assert!(refreshed[0]["id"].is_string(), "a refresh is a request");
+    assert!(server_messages(vec![publish(false)], pull, &mut refreshes).is_empty());
+
+    let silent = DiagnosticDelivery::of_client(&json!({"capabilities": {
+        "textDocument": {"diagnostic": {}},
+    }}));
+    assert_eq!(silent, DiagnosticDelivery::Pull { refresh: false });
+    assert!(server_messages(batch(), silent, &mut refreshes).is_empty());
+
+    let push = DiagnosticDelivery::of_client(&json!({"capabilities": {}}));
+    assert_eq!(push, DiagnosticDelivery::Push);
+    assert_eq!(
+        methods(server_messages(batch(), push, &mut refreshes)),
+        ["textDocument/publishDiagnostics"; 3]
+    );
+}
+
 #[test]
 fn every_workspace_folder_is_answered_with_its_space_or_a_failure_in_order() {
     let host = Arc::new(HeldHost::default());
@@ -523,7 +602,7 @@ fn a_vanished_lsp_client_leaves_the_daemon_and_mcp_serving() {
     let deadline = || Instant::now() + WAIT;
     let mut anchor = owner.connect_peer_before(deadline()).unwrap();
     let (session, _) = anchor
-        .lsp_open_before(vec![], deadline())
+        .lsp_open_before(vec![], V5LspDiagnosticsDelivery::Push, deadline())
         .expect("open an LSP session");
     let in_flight = {
         let mut peer = owner.connect_peer_before(deadline()).unwrap();

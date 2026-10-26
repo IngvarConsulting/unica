@@ -6,8 +6,9 @@
 //! не выдаёт. Паника службы остаётся внутри полосы: демон и MCP её не видят.
 
 use crate::protocol_v5::lsp::{
-    V5LspCall, V5LspCapabilities, V5LspFailure, V5LspNotification, V5LspOpening, V5LspOutcome,
-    V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder, V5LspWorkspaceSpace,
+    V5LspCall, V5LspCapabilities, V5LspDiagnosticsDelivery, V5LspFailure, V5LspNotification,
+    V5LspOpening, V5LspOutcome, V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder,
+    V5LspWorkspaceSpace,
 };
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -129,6 +130,7 @@ pub struct LspClientChannel(Arc<Outbox>);
 struct Outbox {
     state: Mutex<OutboxState>,
     arrived: Condvar,
+    diagnostics: V5LspDiagnosticsDelivery,
 }
 
 struct OutboxState {
@@ -139,18 +141,31 @@ struct OutboxState {
 impl LspClientChannel {
     /// A channel no editor reads, for driving a service without the lane.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn detached_for_test() -> Self {
-        Self::new()
+    pub fn detached_for_test(diagnostics: V5LspDiagnosticsDelivery) -> Self {
+        Self::new(diagnostics)
     }
 
-    fn new() -> Self {
+    fn new(diagnostics: V5LspDiagnosticsDelivery) -> Self {
         Self(Arc::new(Outbox {
             state: Mutex::new(OutboxState {
                 items: VecDeque::new(),
                 closed: false,
             }),
             arrived: Condvar::new(),
+            diagnostics,
         }))
+    }
+
+    /// Как редактор этой сессии получает диагностики.
+    pub fn diagnostics_delivery(&self) -> V5LspDiagnosticsDelivery {
+        self.0.diagnostics
+    }
+
+    /// Что служба отправила к этому моменту; ждёт до `deadline` хотя бы
+    /// одного уведомления.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_for_test(&self, deadline: Instant) -> Vec<V5LspServerNotification> {
+        self.take_before(deadline).unwrap_or_default()
     }
 
     /// Поставить уведомление в очередь. `false` — сессия закрыта или
@@ -259,10 +274,11 @@ impl LspLane {
     pub fn open(
         &self,
         folders: &[V5LspWorkspaceFolder],
+        diagnostics: V5LspDiagnosticsDelivery,
         deadline: Instant,
     ) -> Result<(V5LspSessionId, V5LspOpening), V5LspFailure> {
         let session = V5LspSessionId::new();
-        let client = LspClientChannel::new();
+        let client = LspClientChannel::new(diagnostics);
         let opening = guarded(|| {
             self.shared
                 .host

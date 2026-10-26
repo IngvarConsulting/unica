@@ -19,6 +19,8 @@ const MAX_LSP_FOLDER_NAME_BYTES: usize = 1024;
 const MAX_LSP_LANGUAGE_ID_BYTES: usize = 64;
 /// Сообщение уведомления редактору.
 const MAX_LSP_LOG_MESSAGE_BYTES: usize = 4 * 1024;
+/// Идентификатор отчёта диагностик, который редактор возвращает серверу.
+const MAX_LSP_RESULT_ID_BYTES: usize = 128;
 
 /// Сессия LSP: выдаётся демоном на `lsp_open` и живёт, пока открыто
 /// соединение, на котором она открыта.
@@ -102,6 +104,14 @@ pub enum V5LspCall {
         uri: String,
         position: V5LspPosition,
     },
+    /// Диагностики документа (#2176); `previous_result_id` — отчёт, который
+    /// у редактора уже есть.
+    #[serde(rename = "textDocument/diagnostic")]
+    Diagnostic {
+        uri: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous_result_id: Option<String>,
+    },
 }
 
 impl V5LspCall {
@@ -113,11 +123,21 @@ impl V5LspCall {
             | Self::DocumentSymbol { uri }
             | Self::FoldingRange { uri }
             | Self::SemanticTokensFull { uri }
-            | Self::SignatureHelp { uri, .. } => Some(uri),
+            | Self::SignatureHelp { uri, .. }
+            | Self::Diagnostic { uri, .. } => Some(uri),
         }
     }
 
     fn validate(&self) -> Result<(), String> {
+        if let Self::Diagnostic {
+            previous_result_id: Some(id),
+            ..
+        } = self
+        {
+            if id.len() > MAX_LSP_RESULT_ID_BYTES {
+                return Err("v5 lsp diagnostic result id exceeds its limit".to_string());
+            }
+        }
         validate_uri(self.document_uri().unwrap_or_default())
     }
 }
@@ -149,6 +169,8 @@ pub enum V5LspNotification {
         version: i32,
         changes: Vec<V5LspContentChange>,
     },
+    #[serde(rename = "textDocument/didSave")]
+    DidSave { uri: String },
     #[serde(rename = "textDocument/didClose")]
     DidClose { uri: String },
 }
@@ -156,7 +178,10 @@ pub enum V5LspNotification {
 impl V5LspNotification {
     pub fn document_uri(&self) -> &str {
         match self {
-            Self::DidOpen { uri, .. } | Self::DidChange { uri, .. } | Self::DidClose { uri } => uri,
+            Self::DidOpen { uri, .. }
+            | Self::DidChange { uri, .. }
+            | Self::DidSave { uri }
+            | Self::DidClose { uri } => uri,
         }
     }
 
@@ -168,7 +193,7 @@ impl V5LspNotification {
             Self::DidOpen { language_id, .. } => {
                 validate_short_text(language_id, MAX_LSP_LANGUAGE_ID_BYTES, "v5 lsp language id")
             }
-            Self::DidChange { .. } | Self::DidClose { .. } => Ok(()),
+            Self::DidChange { .. } | Self::DidSave { .. } | Self::DidClose { .. } => Ok(()),
         }
     }
 }
@@ -188,6 +213,7 @@ impl fmt::Debug for V5LspNotification {
                 .field("version", version)
                 .field("changes", &changes.len())
                 .finish_non_exhaustive(),
+            Self::DidSave { .. } => formatter.write_str("V5LspDidSave"),
             Self::DidClose { .. } => formatter.write_str("V5LspDidClose"),
         }
     }
@@ -202,6 +228,15 @@ pub enum V5LspTextSync {
     Incremental,
 }
 
+/// Как редактор получает диагностики документов. Редактору, который сам
+/// запрашивает их, служба не рассылает их при правке.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum V5LspDiagnosticsDelivery {
+    Push,
+    Pull,
+}
+
 /// Возможности, которые служба готова обслужить сейчас.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -213,6 +248,9 @@ pub struct V5LspCapabilities {
     pub document_symbols: bool,
     pub folding_ranges: bool,
     pub signature_help: bool,
+    /// `textDocument/diagnostic` и `publishDiagnostics` (#2176).
+    #[serde(default)]
+    pub diagnostics: bool,
     /// Легенда `semanticTokens/full`, если служба их выдаёт.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_tokens_legend: Option<Value>,
@@ -226,6 +264,7 @@ impl V5LspCapabilities {
         document_symbols: false,
         folding_ranges: false,
         signature_help: false,
+        diagnostics: false,
         semantic_tokens_legend: None,
     };
 }
@@ -349,6 +388,16 @@ pub enum V5LspServerNotification {
         level: V5LspMessageLevel,
         message: String,
     },
+    /// Параметры `textDocument/publishDiagnostics`, собранные кодом Unica.
+    /// `analysed` — закончился фоновый анализ, а не правка документа:
+    /// редактору, который сам запрашивает диагностики, это повод запросить
+    /// их заново.
+    PublishDiagnostics {
+        uri: String,
+        params: Value,
+        #[serde(default)]
+        analysed: bool,
+    },
 }
 
 impl V5LspServerNotification {
@@ -358,6 +407,7 @@ impl V5LspServerNotification {
                 Err("v5 lsp log message exceeds its limit".to_string())
             }
             Self::LogMessage { .. } => Ok(()),
+            Self::PublishDiagnostics { uri, .. } => validate_uri(uri),
         }
     }
 }
