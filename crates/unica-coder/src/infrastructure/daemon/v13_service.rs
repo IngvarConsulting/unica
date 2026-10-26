@@ -187,6 +187,7 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
         // checks it in `ifRev` (#2225).
         let body_text_revision = matches!(invocation.tool(), ToolIdentity::View)
             && result.ok
+            && result.source_text.is_some()
             && result
                 .data
                 .as_ref()
