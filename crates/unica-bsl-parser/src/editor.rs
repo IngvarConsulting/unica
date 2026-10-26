@@ -376,6 +376,198 @@ impl ParsedModule<'_> {
     }
 }
 
+/// Where a completion is asked: the word being typed and what it follows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionSite {
+    /// The part of a name already typed before the cursor; completion
+    /// replaces it.
+    pub prefix_range: Range<usize>,
+    /// The names before the dot of a member access (`Справочники.Валюты.`),
+    /// `None` for a plain name. An access whose receiver is not a chain of
+    /// names (`Ф().`, `М[0].`) has an empty path.
+    pub receiver: Option<Vec<String>>,
+}
+
+/// Names the code at a point can use, as declared.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VisibleNames {
+    pub parameters: Vec<String>,
+    pub locals: Vec<String>,
+    pub module_variables: Vec<String>,
+}
+
+fn is_name_char(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
+impl ParsedModule<'_> {
+    /// The completion site at `offset`; `None` inside a comment or a
+    /// string, where code is not completed.
+    pub fn completion_site(&self, offset: usize) -> Option<CompletionSite> {
+        let offset = offset.min(self.source.len());
+        if !self.source.is_char_boundary(offset) || self.in_text_token(offset) {
+            return None;
+        }
+        let before = &self.source[..offset];
+        let start = before
+            .char_indices()
+            .rev()
+            .take_while(|(_, character)| is_name_char(*character))
+            .last()
+            .map_or(offset, |(at, _)| at);
+        let receiver = before[..start]
+            .strip_suffix('.')
+            .map(|chain| receiver_path(chain).unwrap_or_default());
+        Some(CompletionSite {
+            prefix_range: start..offset,
+            receiver,
+        })
+    }
+
+    fn in_text_token(&self, offset: usize) -> bool {
+        let root = self.parsed.syntax_node();
+        let Ok(at) = u32::try_from(offset) else {
+            return false;
+        };
+        root.token_at_offset(at.into()).any(|token| {
+            let range = byte_range(token.text_range());
+            let inside = range.start < offset && offset < range.end
+                // A line comment and an unterminated string run to the
+                // end of their line, cursor included.
+                || (offset == range.end
+                    && matches!(
+                        token.kind(),
+                        SyntaxKind::COMMENT | SyntaxKind::STRING_START | SyntaxKind::STRING_PART
+                    ));
+            inside && (token.kind() == SyntaxKind::COMMENT || token.kind().is_string_literal())
+        })
+    }
+
+    /// Parameters, local and module variables visible at `offset`, in
+    /// declaration order and spelled as declared.
+    pub fn visible_names(&self, offset: usize) -> VisibleNames {
+        let root = self.parsed.syntax_node();
+        let mut names = VisibleNames {
+            module_variables: declared_variable_spellings(&root, false),
+            ..VisibleNames::default()
+        };
+        if let Some(method) = self.method_nodes().find(|method| {
+            let range = byte_range(method.text_range());
+            range.start <= offset && offset <= range.end
+        }) {
+            names.parameters = self
+                .parameters(&method)
+                .into_iter()
+                .map(|parameter| parameter.name)
+                .collect();
+            names.locals = declared_variable_spellings(&method, true);
+        }
+        names
+    }
+
+    /// The collection a `Для Каждого <variable> Из <collection>` loop of the
+    /// method at `offset` walks, when it is a chain of names.
+    pub fn loop_collection(&self, offset: usize, variable: &str) -> Option<Vec<String>> {
+        let variable = variable.to_lowercase();
+        let method = self.method_nodes().find(|method| {
+            let range = byte_range(method.text_range());
+            range.start <= offset && offset <= range.end
+        })?;
+        method
+            .descendants()
+            .filter(|node| node.kind() == SyntaxKind::FOR_EACH_STMT)
+            .filter(|node| usize::from(node.text_range().start()) <= offset)
+            .filter(|node| {
+                direct_token(node, SyntaxKind::IDENT)
+                    .is_some_and(|name| name.text().to_lowercase() == variable)
+            })
+            .last()
+            .and_then(|node| {
+                let collection = node
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::EXPR)?;
+                receiver_path(self.source[byte_range(collection.text_range())].trim())
+            })
+    }
+
+    /// The call a variable was last assigned from before `offset` in its
+    /// method, as a chain of names: `Объект = Справочники.Валюты.СоздатьЭлемент();`
+    /// gives `[Справочники, Валюты, СоздатьЭлемент]`.
+    pub fn assigned_call(&self, offset: usize, variable: &str) -> Option<Vec<String>> {
+        let variable = variable.to_lowercase();
+        let method = self.method_nodes().find(|method| {
+            let range = byte_range(method.text_range());
+            range.start <= offset && offset <= range.end
+        })?;
+        method
+            .descendants()
+            .filter(|node| node.kind() == SyntaxKind::ASSIGN_STMT)
+            .filter(|node| usize::from(node.text_range().end()) <= offset)
+            .filter(|node| {
+                node.first_child().is_some_and(|target| {
+                    target.kind() == SyntaxKind::IDENT
+                        && target.text().to_string().trim().to_lowercase() == variable
+                })
+            })
+            .last()
+            .and_then(|node| {
+                let call = node
+                    .descendants()
+                    .find(|child| child.kind() == SyntaxKind::CALL_EXPR)?;
+                let callee = call.first_child()?;
+                receiver_path(self.source[byte_range(callee.text_range())].trim())
+            })
+    }
+}
+
+/// `А.Б.В` as `[А, Б, В]`, read backwards from the end of `chain`; `None`
+/// when the last segment is not a name (`Ф()`, `М[0]`, nothing).
+fn receiver_path(chain: &str) -> Option<Vec<String>> {
+    let mut segments = Vec::new();
+    let mut rest = chain;
+    loop {
+        let start = rest
+            .char_indices()
+            .rev()
+            .take_while(|(_, character)| is_name_char(*character))
+            .last()
+            .map(|(at, _)| at)?;
+        let name = &rest[start..];
+        if name
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_digit())
+        {
+            return None;
+        }
+        segments.push(name.to_owned());
+        match rest[..start].strip_suffix('.') {
+            Some(before) => rest = before,
+            None => break,
+        }
+    }
+    segments.reverse();
+    Some(segments)
+}
+
+/// [`declared_variables`] spelled as declared, first declaration wins.
+fn declared_variable_spellings(scope: &SyntaxNode, in_method: bool) -> Vec<String> {
+    let wanted = declared_variables(scope, in_method);
+    let mut seen = BTreeSet::new();
+    let mut names = Vec::new();
+    for token in scope
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .filter(|token| token.kind() == SyntaxKind::IDENT)
+    {
+        let lower = token.text().to_lowercase();
+        if wanted.contains(&lower) && seen.insert(lower) {
+            names.push(token.text().to_owned());
+        }
+    }
+    names
+}
+
 fn unclosed_end(list: &SyntaxNode) -> usize {
     let end = list.text_range().end();
     // The list may end in an empty error node, which has no last token.
@@ -792,5 +984,47 @@ mod tests {
         let parsed = parse(text);
         let call = parsed.call_at(text.find(", ").unwrap() + 2).unwrap();
         assert_eq!((call.name.as_str(), call.active_parameter), ("Сложить", 1));
+    }
+
+    #[test]
+    fn a_completion_site_knows_the_typed_prefix_and_the_receiver() {
+        let text = "Процедура П(Парам)\n\tПерем Лок;\n\tОбъект = Справочники.Валюты.СоздатьЭлемент();\n\tДля Каждого Стр Из Объект.Товары Цикл\n\t\tСтр.Ко\n\tКонецЦикла;\n\tСправочники.Ва\n\tФ().\n\tСо // Сооб\n\tА = \"Спр\n\tПа\nКонецПроцедуры\n";
+        let parsed = parse(text);
+        let end_of = |needle: &str| text.find(needle).unwrap() + needle.len();
+
+        let member = parsed.completion_site(end_of("Стр.Ко")).unwrap();
+        assert_eq!(&text[member.prefix_range.clone()], "Ко");
+        assert_eq!(member.receiver, Some(vec!["Стр".to_owned()]));
+        let manager = parsed.completion_site(end_of("Справочники.Ва")).unwrap();
+        assert_eq!(&text[manager.prefix_range], "Ва");
+        assert_eq!(manager.receiver, Some(vec!["Справочники".to_owned()]));
+        assert_eq!(
+            parsed.completion_site(end_of("Ф().")).unwrap().receiver,
+            Some(Vec::new())
+        );
+        let name = parsed.completion_site(end_of("\tПа")).unwrap();
+        assert_eq!((&text[name.prefix_range], name.receiver), ("Па", None));
+        // No completion in a comment or a string.
+        assert_eq!(parsed.completion_site(end_of("// Сооб")), None);
+        assert_eq!(parsed.completion_site(end_of("\"Спр")), None);
+        assert!(parsed.completion_site(end_of("\tСо")).is_some());
+
+        let at = end_of("Стр.Ко");
+        let visible = parsed.visible_names(at);
+        assert_eq!(visible.parameters, ["Парам"]);
+        assert_eq!(visible.locals, ["Лок", "Объект", "Стр", "А"]);
+        assert_eq!(
+            parsed.loop_collection(at, "стр"),
+            Some(vec!["Объект".to_owned(), "Товары".to_owned()])
+        );
+        assert_eq!(
+            parsed.assigned_call(at, "Объект"),
+            Some(vec![
+                "Справочники".to_owned(),
+                "Валюты".to_owned(),
+                "СоздатьЭлемент".to_owned()
+            ])
+        );
+        assert_eq!(parsed.assigned_call(at, "Лок"), None);
     }
 }
