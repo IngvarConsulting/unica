@@ -2,7 +2,7 @@ use unica_bsl::event_text::RequiredEventDirective;
 use unica_bsl::projection::{
     BodyLine, CommonModuleProperties, CompilationFacts, CompilationProjection, EventProjection,
     EventState, ExtensionKind, ExtensionProjection, HandleProjection, InterfaceKind,
-    InterfaceProjection, MethodKind, MethodParameter, MethodProjection, ModuleIdentity,
+    InterfaceProjection, MethodArea, MethodKind, MethodParameter, MethodProjection, ModuleIdentity,
     ModuleProjectionSet, ModuleProperties, RegionProjection,
 };
 use unica_metadata::event::BindingFact;
@@ -364,6 +364,7 @@ fn project_module_with_specs(
         request.extension_targets,
     )?;
     let regions = region_projections(&root, &lines, request.at, &methods);
+    assign_method_areas(&mut methods, &regions);
     let interfaces = interface_projections(&methods, &regions);
     let events = project_module_events(
         request.at,
@@ -617,6 +618,7 @@ fn method_projections(
                 text_from_line,
                 body_from_line,
                 body_to_line,
+                area: None,
             },
         ));
     }
@@ -806,6 +808,30 @@ fn region_projections(
             }
         })
         .collect()
+}
+
+/// Ближайшая нормативная область метода (INV.SOURCE.MODULE-REGION-INTERFACE):
+/// от области, прямо содержащей метод, вверх по родителям до первой области
+/// с нормативным именем.
+fn assign_method_areas(methods: &mut [MethodProjection], regions: &[RegionProjection]) {
+    for method in methods {
+        let mut current = regions
+            .iter()
+            .position(|region| region.methods.contains(&method.at));
+        method.area = None;
+        while let Some(index) = current {
+            let region = &regions[index];
+            if let Some(area) = region
+                .name
+                .as_deref()
+                .and_then(MethodArea::from_region_name)
+            {
+                method.area = Some(area);
+                break;
+            }
+            current = region.parent;
+        }
+    }
 }
 
 fn interface_projections(

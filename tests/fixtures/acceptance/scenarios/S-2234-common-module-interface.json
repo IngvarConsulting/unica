@@ -1,0 +1,136 @@
+{
+  "id": "S-2234-common-module-interface",
+  "name": "common-module-interface-and-method-area",
+  "issue": 2234,
+  "area": "Навигация по исходникам",
+  "task": "Найти, что можно вызывать из общего модуля ОбщегоНазначения: прочитать его программный интерфейс по ветви Interface и увидеть у каждого метода нормативную область",
+  "workspace": "tests/fixtures/acceptance/workspace-common-module-interface",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.ОбщегоНазначения.Interface"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/interface",
+          "eq": "Public"
+        },
+        {
+          "pointer": "/data/items/0/methods",
+          "contains": "main:CommonModule.ОбщегоНазначения.Method.ЗначениеРеквизитаОбъекта"
+        },
+        {
+          "pointer": "/data/items/1/interface",
+          "eq": "Library"
+        },
+        {
+          "pointer": "/data/items/1/methods",
+          "contains": "main:CommonModule.ОбщегоНазначения.Method.ЭтоСлужебныйОбъект"
+        },
+        {
+          "pointer": "/data/items/2/interface",
+          "eq": "Override"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.ОбщегоНазначения.Method.ЗначениеРеквизитаОбъекта"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        },
+        {
+          "pointer": "/data/props/area",
+          "eq": "public"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.ОбщегоНазначения.Method.ПолучитьЗначениеРеквизита"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        },
+        {
+          "pointer": "/data/props/area",
+          "eq": "deprecated"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.ОбщегоНазначения.Method.ПриНачалеРаботыСистемы"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        },
+        {
+          "pointer": "/data/props/area",
+          "eq": "internal"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.ОбщегоНазначения.Method.ЭтоСлужебныйОбъект"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        },
+        {
+          "pointer": "/data/props/area",
+          "eq": "crossSubsystem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.ОбщегоНазначения.Method.ТекстОшибки"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        },
+        {
+          "pointer": "/data/props/area",
+          "eq": "private"
+        }
+      ]
+    }
+  ]
+}

@@ -3314,6 +3314,10 @@ fn method_node(method: &MethodProjection) -> NodeView {
     if let Some(extension) = &method.extension {
         props.insert("extension".to_string(), json!(extension));
     }
+    // Нормативная область метода (INV.SOURCE.MODULE-REGION-INTERFACE).
+    if let Some(area) = method.area {
+        props.insert("area".to_string(), json!(area));
+    }
     NodeView::new(&method.at, NodeKind::Method.as_str(), &method.name, props).with_branches(vec![
         BranchRef::new(
             format!("{}.Compilation", method.at),

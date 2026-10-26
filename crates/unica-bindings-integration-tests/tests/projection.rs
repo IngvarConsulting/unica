@@ -10,7 +10,7 @@ mod tests {
         DeclarativeBinding, FormBindingOwner, FormEventBindingInput, FormEventOwnerInput,
         FormMethodFact, ModuleProjectionRequest, PlatformEventWriteCapability,
     };
-    use unica_bsl::projection::{EventState, ExtensionKind, InterfaceKind};
+    use unica_bsl::projection::{EventState, ExtensionKind, InterfaceKind, MethodArea};
     use unica_metadata::event::BindingFact;
 
     use serde::Deserialize;
@@ -1703,6 +1703,54 @@ mod tests {
             .iter()
             .all(|region| !region.addressable && region.at.is_none()));
         assert!(projection.region("Повтор").unwrap_err().is_ambiguous());
+    }
+
+    #[test]
+    fn method_area_is_the_nearest_normative_region_whatever_the_export() {
+        let source = "#Область ПрограммныйИнтерфейс\n\
+            #Область ДанныеВБазе\n\
+            Функция Открытая() Экспорт\nКонецФункции\n\
+            #КонецОбласти\n\
+            #Область УстаревшиеПроцедурыИФункции\n\
+            Процедура Старая() Экспорт\nКонецПроцедуры\n\
+            #КонецОбласти\n\
+            #КонецОбласти\n\
+            #Область СлужебныйПрограммныйИнтерфейс\n\
+            Процедура Служебная() Экспорт\nКонецПроцедуры\n\
+            #Область ДляВызоваИзДругихПодсистем\n\
+            Процедура Соседям() Экспорт\nКонецПроцедуры\n\
+            #КонецОбласти\n\
+            #КонецОбласти\n\
+            #Область ПереопределяемыеПроцедурыИФункции\n\
+            Процедура Переопределить()\nКонецПроцедуры\n\
+            #КонецОбласти\n\
+            #Область СлужебныеПроцедурыИФункции\n\
+            Процедура Внутренняя() Экспорт\nКонецПроцедуры\n\
+            #КонецОбласти\n\
+            Процедура ВнеОбластей() Экспорт\nКонецПроцедуры\n";
+        let projection = project("main:CommonModule.ОбщегоНазначения", Some(source));
+        let area = |name: &str| {
+            projection
+                .methods()
+                .iter()
+                .find(|method| method.name == name)
+                .unwrap_or_else(|| panic!("{name} is projected"))
+                .area
+        };
+        // A non-normative region in between does not hide the normative one.
+        assert_eq!(area("Открытая"), Some(MethodArea::Public));
+        // The nearest normative region wins over the enclosing one.
+        assert_eq!(area("Старая"), Some(MethodArea::Deprecated));
+        assert_eq!(area("Служебная"), Some(MethodArea::Internal));
+        assert_eq!(area("Соседям"), Some(MethodArea::CrossSubsystem));
+        // Export does not change the area, in either direction.
+        assert_eq!(area("Переопределить"), Some(MethodArea::Override));
+        assert_eq!(area("Внутренняя"), Some(MethodArea::Private));
+        assert_eq!(area("ВнеОбластей"), None);
+        let serialized = serde_json::to_value(projection.methods()).unwrap();
+        assert_eq!(serialized[0]["props"]["area"], json!("public"));
+        assert_eq!(serialized[3]["props"]["area"], json!("crossSubsystem"));
+        assert!(serialized[6]["props"].get("area").is_none());
     }
 
     #[test]
