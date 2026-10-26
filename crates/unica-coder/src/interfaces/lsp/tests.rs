@@ -376,13 +376,13 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
         }),
     );
     assert_eq!(completion["result"]["isIncomplete"], true, "{completion}");
-    if let Some(item) = completion["result"]["items"]
+    let item = completion["result"]["items"]
         .as_array()
         .and_then(|items| items.first())
-    {
-        let resolved = editor.request("completionItem/resolve", item.clone());
-        assert_eq!(resolved["result"]["label"], item["label"], "{resolved}");
-    }
+        .unwrap_or_else(|| panic!("completion offers the module's names: {completion}"))
+        .clone();
+    let resolved = editor.request("completionItem/resolve", item.clone());
+    assert_eq!(resolved["result"]["label"], item["label"], "{resolved}");
 
     // A change the buffer cannot take puts the document out of sync: no
     // answer about it until the editor sends its whole text again.

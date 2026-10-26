@@ -46,6 +46,7 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const SERVER_NOT_INITIALIZED: i64 = -32002;
 const REQUEST_FAILED: i64 = -32803;
+const SERVER_CANCELLED: i64 = -32802;
 const CONTENT_MODIFIED: i64 = -32801;
 const REQUEST_CANCELLED: i64 = -32800;
 
@@ -531,6 +532,14 @@ fn call_daemon(
         Ok(V5LspOutcome::Failed {
             failure: V5LspFailure::NotSupported,
         }) => error_response(id, METHOD_NOT_FOUND, "method is not supported"),
+        // The server gave up, the editor did not cancel.
+        Ok(V5LspOutcome::Failed {
+            failure: V5LspFailure::DeadlineExceeded,
+        }) => error_response(
+            id,
+            SERVER_CANCELLED,
+            &failure_message(V5LspFailure::DeadlineExceeded),
+        ),
         Ok(V5LspOutcome::Failed { failure }) => {
             error_response(id, REQUEST_FAILED, &failure_message(failure))
         }
