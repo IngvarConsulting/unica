@@ -10,7 +10,7 @@
 use crate::application::lsp::document::{ContentChange, DocumentChangeError, OpenDocument};
 use crate::application::lsp::uri::{DocumentUri, SpaceRegistry, UriError, WorkspaceFolder};
 use crate::infrastructure::event_sources::module_address_for_relative;
-use crate::infrastructure::lsp_features::{CompletionSources, ObjectMembers};
+use crate::infrastructure::lsp_features::{CompletionSources, ModuleOwner, ObjectMembers};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -266,12 +266,14 @@ impl LspDocuments {
 
     /// `textDocument/signatureHelp` at `position` of `uri`. A qualified
     /// call names a common module of the same source set, read through
-    /// `read` (with this connection's buffers).
+    /// `read` (with this connection's buffers); a plain call not declared
+    /// by the module is looked up in `global_context`.
     pub(crate) fn signature_help(
         &self,
         uri: &str,
         position: crate::application::lsp::position::Utf16Position,
         read: &ProviderReadAuthority,
+        global_context: &[GlobalContextMember],
     ) -> Result<Option<serde_json::Value>, LspDocumentError> {
         let Some(text) = self.content(uri, read)? else {
             return Ok(None);
@@ -282,6 +284,7 @@ impl LspDocuments {
             &text,
             position,
             &common_module,
+            global_context,
         ))
     }
 
@@ -329,13 +332,15 @@ impl LspDocuments {
             global_context,
             stale: &|| {
                 cancelled()
-                    || version.is_some()
-                        && overlay
+                    || version.is_some_and(|version| {
+                        // A newer `didChange` reached the overlay; a failed
+                        // read of it says nothing about the edit.
+                        overlay
                             .get(&self.session, &location.source_set, &location.relative)
                             .ok()
                             .flatten()
-                            .map(|buffer| buffer.version)
-                            != version
+                            .is_some_and(|buffer| buffer.version != version)
+                    })
             },
         };
         Ok(crate::infrastructure::lsp_features::completion(
@@ -494,15 +499,20 @@ impl CompletionSources for CompletionSourcesOver<'_> {
         })
     }
 
-    fn module_owner(&self) -> Option<(String, String)> {
+    fn module_owner(&self) -> Option<ModuleOwner> {
         // The object module and the forms of an object reach its members.
         let address = &self.location.document.address;
-        if !(address.ends_with(".Module.Object") || address.contains(".Form.")) {
+        let form = address.ends_with(".Module.Form") && address.contains(".Form.");
+        if !(address.ends_with(".Module.Object") || form) {
             return None;
         }
         let at = QualifiedAddress::parse(address).ok()?;
         let owner = at.segments().first()?;
-        Some((owner.kind().as_str().to_owned(), owner.name()?.to_owned()))
+        Some(ModuleOwner {
+            kind: owner.kind().as_str().to_owned(),
+            name: owner.name()?.to_owned(),
+            form,
+        })
     }
 
     fn cancelled(&self) -> bool {
