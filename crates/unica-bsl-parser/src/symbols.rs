@@ -561,7 +561,7 @@ mod tests {
             .unwrap();
         assert_eq!(variable.kind, LocalSymbolKind::Variable);
         assert_eq!(variable.range.start, at(text, "Строка Из"));
-        assert!(module.local_methods()[0].is_export == false);
+        assert!(!module.local_methods()[0].is_export);
     }
 
     /// A real module keeps its methods and variables inside regions.
