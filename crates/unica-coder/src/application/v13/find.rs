@@ -593,7 +593,8 @@ pub(crate) fn public_name_match(candidate: &FindCandidate) -> serde_json::Value 
     serde_json::json!({
         "at": candidate.at,
         "kind": candidate.kind,
-        "title": candidate.title,
+        // Заголовок кандидата — тот же синоним, что у узла: тот же предел.
+        "title": crate::domain::node_view::compact_title(candidate.title.clone()),
         "reason": candidate.reason,
     })
 }

@@ -2698,3 +2698,119 @@ fn oversized_role_synonym_is_named_by_its_platform_name() {
         "a short synonym leaves no limit"
     );
 }
+
+/// #2246: a synonym longer than the property limit does not inflate the
+/// title of the node or of its collection row: the title is cut and marked,
+/// and the synonym reads whole at `<node>.Props.Synonym`.
+#[test]
+fn an_oversized_synonym_leaves_a_bounded_marked_title() {
+    for (at, collection, descriptor, short) in [
+        (
+            "main:Role.SalesReader",
+            "main:Role",
+            "Roles/SalesReader.xml",
+            "Читатель продаж",
+        ),
+        (
+            "main:Catalog.Валюты",
+            "main:Catalog",
+            "Catalogs/Валюты.xml",
+            "<v8:content>Валюты</v8:content>",
+        ),
+    ] {
+        let fixture = Fixture::new("workspace");
+        let runtime = runtime();
+        let synonym = "р".repeat(4096);
+        let path = fixture.source.join(descriptor);
+        let xml = std::fs::read_to_string(&path).unwrap();
+        let replacement = if short.starts_with("<v8:content>") {
+            format!("<v8:content>{synonym}</v8:content>")
+        } else {
+            synonym.clone()
+        };
+        std::fs::write(&path, xml.replacen(short, &replacement, 1)).unwrap();
+
+        let bounded = |title: &Value| {
+            title.as_str().is_some_and(|title| {
+                title.len() <= crate::domain::node_view::MAX_TITLE_BYTES
+                    && title.strip_suffix('…').is_some_and(|kept| {
+                        kept.len() + 4 > crate::domain::node_view::MAX_TITLE_BYTES - '…'.len_utf8()
+                            && synonym.starts_with(kept)
+                    })
+            })
+        };
+        let data = view(&runtime, &fixture, at);
+        assert!(bounded(&data["title"]), "{at}: the title is cut and marked");
+        assert!(
+            data["limits"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .any(|limit| limit.ends_with(&format!("{at}.Props.Synonym"))),
+            "{at}: a limit names the synonym address"
+        );
+        let whole = view(&runtime, &fixture, &format!("{at}.Props.Synonym"));
+        assert!(
+            whole["props"]["Synonym"] == synonym,
+            "{at}: the synonym reads whole at its address"
+        );
+        let rows = view(&runtime, &fixture, collection);
+        let row = rows["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["at"] == at)
+            .unwrap_or_else(|| panic!("{at}: the collection lists the node"));
+        assert!(
+            row["title"]
+                .as_str()
+                .is_some_and(|title| title.len() <= crate::domain::node_view::MAX_TITLE_BYTES),
+            "{at}: the collection row title stays bounded"
+        );
+    }
+}
+
+/// #2246: a form item title longer than the property limit leaves a bounded
+/// marked title and a limit naming the address it reads whole at.
+#[test]
+fn an_oversized_form_item_title_is_named_by_a_limit() {
+    let fixture = Fixture::new("workspace");
+    let runtime = runtime();
+    let at = "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование";
+    let path = fixture
+        .source
+        .join("Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml");
+    let title = "з".repeat(4096);
+    let xml = std::fs::read_to_string(&path).unwrap().replacen(
+        "<v8:content>Наименование</v8:content>",
+        &format!("<v8:content>{title}</v8:content>"),
+        1,
+    );
+    std::fs::write(&path, xml).unwrap();
+    let data = view(&runtime, &fixture, at);
+    assert!(
+        data["title"].as_str().is_some_and(|shown| shown.len()
+            <= crate::domain::node_view::MAX_TITLE_BYTES
+            && shown.ends_with('…')),
+        "the item title is cut and marked"
+    );
+    assert!(
+        data["props"].get("title").is_none(),
+        "an oversized title stays out of props"
+    );
+    assert!(
+        data["limits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .any(|limit| limit.ends_with(&format!("{at}.Props.title"))),
+        "a limit names the title address"
+    );
+    let whole = view(&runtime, &fixture, &format!("{at}.Props.title"));
+    assert!(
+        whole["props"]["title"] == title,
+        "the title reads whole at its address"
+    );
+}
