@@ -175,9 +175,7 @@ fn types_named_in_text_are_language_types_or_stay_unknown() {
         vec![TypeName::Unresolved("Ссылка".into())]
     );
     assert_eq!(
-        types(&format!(
-            "Тип: <A HREF=\"v8help://SyntaxHelperContext/objects/c/X.html\">X</A>."
-        )),
+        types("Тип: <A HREF=\"v8help://SyntaxHelperContext/objects/c/X.html\">X</A>."),
         vec![TypeName::Context("objects/c/X".into())]
     );
 }
