@@ -4,6 +4,10 @@
 //! MCP, и получает того же актора из общего реестра: буферы редактора
 //! лежат в его overlay и видны только чтениям этой сессии. Чтение строится
 //! из привязки, которую выдал актор, а не из путей редактора.
+//!
+//! Сессия не держит актора: его держит реестр, пока в overlay есть буферы.
+//! Актор, чей корень подменили, сессия при следующем обращении заменяет
+//! тем, которого реестр выдаёт и MCP, и переносит в него свои буферы.
 
 use super::server::closed_daemon_source_relative_path;
 use crate::application::lsp::document::ContentChange;
@@ -12,6 +16,7 @@ use crate::application::lsp::uri::WorkspaceFolder;
 use crate::infrastructure::lsp_documents::{
     LspDocumentError, LspDocuments, SourceSetLayout, SpaceLayout,
 };
+use crate::infrastructure::lsp_features;
 use crate::infrastructure::source_workspace::{
     discover_project_source_admission, WorkspaceActor, WorkspaceActorRegistry,
 };
@@ -19,7 +24,7 @@ use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use crate::infrastructure::workspace::discover_workspace;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Instant;
 use unica_daemon::lsp_lane::{LspCallContext, LspClientChannel, LspHost};
 use unica_daemon::protocol_v5::lsp::{
@@ -30,6 +35,7 @@ use unica_daemon::protocol_v5::lsp::{
 use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_source_contract::{SourceFormat, SourceProfile};
 use unica_workspace::actor::{ProviderRootBinding, WorkspaceSourceSetInput};
+use unica_workspace::documents::DocumentText;
 
 /// The scope string under which MCP admits a workspace. The actor of a
 /// workspace is the same only for the same inputs (`actor-identity`).
@@ -37,7 +43,7 @@ const ACTOR_SCOPE: &str = "canonical-v0.13";
 
 pub(crate) struct UnicaLspHost {
     actors: Arc<WorkspaceActorRegistry>,
-    sessions: Mutex<HashMap<V5LspSessionId, Arc<Mutex<Session>>>>,
+    sessions: Mutex<HashMap<V5LspSessionId, Arc<RwLock<Session>>>>,
 }
 
 struct Session {
@@ -48,7 +54,8 @@ struct Session {
 /// A workspace folder admitted as a workspace: its actor and the bindings
 /// of its source sets.
 struct AdmittedSpace {
-    actor: Arc<WorkspaceActor>,
+    folder: PathBuf,
+    actor: Weak<WorkspaceActor>,
     bindings: Vec<ProviderRootBinding>,
     identity: SafeIdentityHash,
 }
@@ -61,7 +68,7 @@ impl UnicaLspHost {
         }
     }
 
-    fn session(&self, session: &V5LspSessionId) -> Result<Arc<Mutex<Session>>, V5LspFailure> {
+    fn session(&self, session: &V5LspSessionId) -> Result<Arc<RwLock<Session>>, V5LspFailure> {
         lock(&self.sessions)
             .get(session)
             .cloned()
@@ -75,14 +82,14 @@ impl LspHost for UnicaLspHost {
         session: &V5LspSessionId,
         folders: &[V5LspWorkspaceFolder],
         _: LspClientChannel,
-        _: Instant,
+        deadline: Instant,
     ) -> Result<V5LspOpening, V5LspFailure> {
         // A folder without admitted sources takes no space name.
         let admitted = folders
             .iter()
             .map(|folder| {
                 let root = folder_path(&folder.uri)?;
-                let space = admit(&self.actors, &root)?;
+                let space = admit(&self.actors, &root, deadline)?;
                 Some((root, space))
             })
             .collect::<Vec<_>>();
@@ -120,13 +127,17 @@ impl LspHost for UnicaLspHost {
         }
         lock(&self.sessions).insert(
             session.clone(),
-            Arc::new(Mutex::new(Session { documents, spaces })),
+            Arc::new(RwLock::new(Session { documents, spaces })),
         );
         Ok(V5LspOpening {
             capabilities: V5LspCapabilities {
                 text_document_sync: V5LspTextSync::Incremental,
                 hover: false,
                 text_document_content: true,
+                document_symbols: true,
+                folding_ranges: true,
+                signature_help: true,
+                semantic_tokens_legend: Some(lsp_features::semantic_tokens_legend()),
             },
             workspaces,
         })
@@ -136,11 +147,10 @@ impl LspHost for UnicaLspHost {
         &self,
         session: &V5LspSessionId,
         notification: V5LspNotification,
-        _: Instant,
+        deadline: Instant,
     ) -> Result<(), V5LspFailure> {
         let session = self.session(session)?;
-        let mut session = lock(&session);
-        let session = &mut *session;
+        let mut session = write(&session);
         let Ok(uri) = document_uri(&session.documents, notification.document_uri()) else {
             // A file that is no module of this connection: the editor may
             // open anything, the service keeps only modules.
@@ -149,64 +159,148 @@ impl LspHost for UnicaLspHost {
         let Ok(location) = session.documents.locate(&uri) else {
             return Ok(());
         };
-        let Some(space) = session.spaces.get(&location.document.space) else {
+        let Ok(actor) = session.current_actor(&self.actors, &location.document.space, deadline)
+        else {
             return Ok(());
         };
-        let overlay = space.actor.documents();
-        let applied = match notification {
-            V5LspNotification::DidOpen { version, text, .. } => session
-                .documents
-                .open(overlay, &uri, version, text)
-                .map(drop),
+        let overlay = actor.documents();
+        let documents = &mut session.documents;
+        match notification {
+            V5LspNotification::DidOpen { version, text, .. } => {
+                match documents.open(overlay, &uri, version, text) {
+                    Err(LspDocumentError::Overlay(_)) => Err(V5LspFailure::Unavailable),
+                    _ => Ok(()),
+                }
+            }
+            // A change the buffer cannot take would leave it apart from the
+            // editor's text: the refusal makes the frontend drop the document.
             V5LspNotification::DidChange {
                 version, changes, ..
             } => {
                 let changes = changes.into_iter().map(content_change).collect::<Vec<_>>();
-                session
-                    .documents
+                documents
                     .change(overlay, &uri, version, &changes)
                     .map(drop)
+                    .map_err(|error| match error {
+                        LspDocumentError::Overlay(_) => V5LspFailure::Unavailable,
+                        _ => V5LspFailure::DocumentUnknown,
+                    })
             }
-            V5LspNotification::DidClose { .. } => session.documents.close(overlay, &uri).map(drop),
-        };
-        match applied {
-            Err(LspDocumentError::Overlay(_)) => Err(V5LspFailure::Unavailable),
-            // A change the buffer cannot take leaves the last good version;
-            // the editor's next full sync replaces it.
-            _ => Ok(()),
+            V5LspNotification::DidClose { .. } => {
+                let _ = documents.close(overlay, &uri);
+                Ok(())
+            }
         }
     }
 
-    fn call(&self, session: &V5LspSessionId, call: V5LspCall, _: &LspCallContext) -> V5LspOutcome {
+    fn call(
+        &self,
+        session: &V5LspSessionId,
+        call: V5LspCall,
+        context: &LspCallContext,
+    ) -> V5LspOutcome {
         let failed = |failure| V5LspOutcome::Failed { failure };
-        let V5LspCall::TextDocumentContent { uri } = call else {
-            return failed(V5LspFailure::NotSupported);
-        };
         let session = match self.session(session) {
             Ok(session) => session,
             Err(failure) => return failed(failure),
         };
-        let session = lock(&session);
-        match content(&session, &uri) {
-            Ok(Some(text)) => V5LspOutcome::Text { text },
-            Ok(None) => failed(V5LspFailure::DocumentUnknown),
-            Err(failure) => failed(failure),
+        // A replaced actor is swapped under the write lock; the answer itself
+        // reads under the read lock, beside other requests of the session.
+        let space = call
+            .document_uri()
+            .and_then(|uri| read(&session).space_of(uri));
+        if let Some(space) = space {
+            if !read(&session).is_current(&space) {
+                if let Err(failure) =
+                    write(&session).current_actor(&self.actors, &space, context.deadline())
+                {
+                    return failed(failure);
+                }
+            }
         }
+        if context.is_cancelled() {
+            return V5LspOutcome::Cancelled {};
+        }
+        let session = read(&session);
+        answer(&session, call).unwrap_or_else(failed)
     }
 
     fn close(&self, session: &V5LspSessionId) {
         let Some(session) = lock(&self.sessions).remove(session) else {
             return;
         };
-        let session = lock(&session);
+        let session = read(&session);
         // An open buffer keeps its actor from eviction: every actor of the
         // session lets go of this session's buffers.
-        for space in session.spaces.values() {
-            let _ = space
-                .actor
-                .documents()
-                .close_session(session.documents.session());
+        for actor in session
+            .spaces
+            .values()
+            .filter_map(|space| space.actor.upgrade())
+        {
+            let _ = actor.documents().close_session(session.documents.session());
         }
+    }
+}
+
+impl Session {
+    /// The space of the document `uri` names, if this session has it.
+    fn space_of(&self, uri: &str) -> Option<String> {
+        let uri = document_uri(&self.documents, uri).ok()?;
+        Some(self.documents.locate(&uri).ok()?.document.space)
+    }
+
+    fn is_current(&self, space: &str) -> bool {
+        self.spaces
+            .get(space)
+            .and_then(|admitted| admitted.actor.upgrade())
+            .is_some_and(|actor| matches!(actor.retains_named_roots(), Ok(true)))
+    }
+
+    /// The actor of `space`, the one the registry gives MCP. An actor gone or
+    /// with a replaced root is admitted again, and the session's buffers of
+    /// the space move into the new one.
+    fn current_actor(
+        &mut self,
+        actors: &WorkspaceActorRegistry,
+        space: &str,
+        deadline: Instant,
+    ) -> Result<Arc<WorkspaceActor>, V5LspFailure> {
+        let admitted = self
+            .spaces
+            .get_mut(space)
+            .ok_or(V5LspFailure::DocumentUnknown)?;
+        if let Some(actor) = admitted.actor.upgrade() {
+            if matches!(actor.retains_named_roots(), Ok(true)) {
+                return Ok(actor);
+            }
+        }
+        let (renewed, actor) = admit_actor(actors, &admitted.folder, deadline)
+            .ok_or(V5LspFailure::WorkspaceUnavailable)?;
+        *admitted = renewed;
+        for binding in &admitted.bindings {
+            let set = binding.source_set_name();
+            for uri in self.documents.changed_documents(space, set, None) {
+                let Ok(location) = self.documents.locate(&uri) else {
+                    continue;
+                };
+                let Some(document) = self.documents.open_document(&location.document) else {
+                    continue;
+                };
+                actor
+                    .documents()
+                    .put(
+                        self.documents.session(),
+                        set,
+                        &location.relative,
+                        DocumentText {
+                            version: document.version(),
+                            text: Arc::from(document.text()),
+                        },
+                    )
+                    .map_err(|_| V5LspFailure::Unavailable)?;
+            }
+        }
+        Ok(actor)
     }
 }
 
@@ -234,15 +328,17 @@ impl AdmittedSpace {
             .iter()
             .find(|binding| binding.source_set_name() == set)
             .ok_or(V5LspFailure::DocumentUnknown)?;
-        self.actor
+        let actor = self
+            .actor
+            .upgrade()
+            .ok_or(V5LspFailure::WorkspaceUnavailable)?;
+        actor
             .validate_binding(binding)
             .map_err(|_| V5LspFailure::WorkspaceUnavailable)?;
-        let artifacts = self
-            .actor
+        let artifacts = actor
             .source_artifacts(binding)
             .map_err(|_| V5LspFailure::WorkspaceUnavailable)?;
-        let documents = self
-            .actor
+        let documents = actor
             .documents()
             .session_documents(session, set)
             .map_err(|_| V5LspFailure::Unavailable)?;
@@ -258,7 +354,46 @@ impl AdmittedSpace {
     }
 }
 
-fn content(session: &Session, uri: &str) -> Result<Option<String>, V5LspFailure> {
+/// The answer to one editor request, from the document as this session
+/// sees it: its open buffer, otherwise the file.
+fn answer(session: &Session, call: V5LspCall) -> Result<V5LspOutcome, V5LspFailure> {
+    let json = |value| V5LspOutcome::Json { value };
+    let text_with = |uri: &str, build: fn(&str) -> serde_json::Value| {
+        let (uri, read) = document_read(session, uri)?;
+        Ok(json(build(&document_text(session, &uri, &read)?)))
+    };
+    match call {
+        V5LspCall::TextDocumentContent { uri } => {
+            let (uri, read) = document_read(session, &uri)?;
+            Ok(V5LspOutcome::Text {
+                text: document_text(session, &uri, &read)?,
+            })
+        }
+        V5LspCall::DocumentSymbol { uri } => text_with(&uri, lsp_features::document_symbols),
+        V5LspCall::FoldingRange { uri } => text_with(&uri, lsp_features::folding_ranges),
+        V5LspCall::SemanticTokensFull { uri } => text_with(&uri, lsp_features::semantic_tokens),
+        V5LspCall::SignatureHelp { uri, position } => {
+            let (uri, read) = document_read(session, &uri)?;
+            let position = Utf16Position {
+                line: position.line,
+                character: position.character,
+            };
+            let help = session
+                .documents
+                .signature_help(&uri, position, &read)
+                .map_err(document_failure)?;
+            Ok(json(help.unwrap_or(serde_json::Value::Null)))
+        }
+        V5LspCall::Hover { .. } => Err(V5LspFailure::NotSupported),
+    }
+}
+
+/// The `unica://` URI of a document and a read of its source set that sees
+/// this session's buffers.
+fn document_read(
+    session: &Session,
+    uri: &str,
+) -> Result<(String, ProviderReadAuthority), V5LspFailure> {
     let uri = document_uri(&session.documents, uri).map_err(|_| V5LspFailure::DocumentUnknown)?;
     let location = session
         .documents
@@ -269,22 +404,56 @@ fn content(session: &Session, uri: &str) -> Result<Option<String>, V5LspFailure>
         .get(&location.document.space)
         .ok_or(V5LspFailure::DocumentUnknown)?;
     let read = space.read(session.documents.session(), &location.source_set)?;
+    Ok((uri, read))
+}
+
+fn document_text(
+    session: &Session,
+    uri: &str,
+    read: &ProviderReadAuthority,
+) -> Result<String, V5LspFailure> {
     session
         .documents
-        .content(&uri, &read)
-        .map_err(|error| match error {
-            LspDocumentError::Read(_) | LspDocumentError::Overlay(_) => V5LspFailure::Unavailable,
-            _ => V5LspFailure::DocumentUnknown,
-        })
+        .content(uri, read)
+        .map_err(document_failure)?
+        .ok_or(V5LspFailure::DocumentUnknown)
+}
+
+fn document_failure(error: LspDocumentError) -> V5LspFailure {
+    match error {
+        LspDocumentError::Read(_) | LspDocumentError::Overlay(_) => V5LspFailure::Unavailable,
+        _ => V5LspFailure::DocumentUnknown,
+    }
 }
 
 /// Admit a workspace folder the way MCP admits its `workspace_hint`: the
 /// same discovery, the same platform-XML source sets in name order and the
 /// same actor scope, so both reach one actor.
-fn admit(actors: &WorkspaceActorRegistry, folder: &std::path::Path) -> Option<AdmittedSpace> {
+fn admit(
+    actors: &WorkspaceActorRegistry,
+    folder: &std::path::Path,
+    deadline: Instant,
+) -> Option<AdmittedSpace> {
+    admit_actor(actors, folder, deadline).map(|(space, _)| space)
+}
+
+/// The admitted space and its actor, held only while the caller needs it.
+fn admit_actor(
+    actors: &WorkspaceActorRegistry,
+    folder: &std::path::Path,
+    deadline: Instant,
+) -> Option<(AdmittedSpace, Arc<WorkspaceActor>)> {
     let context = discover_workspace(Some(folder.to_path_buf())).ok()?;
+    // The walk stops at the editor's deadline instead of outliving it.
+    let mut checkpoint = || {
+        if Instant::now() < deadline {
+            Ok(())
+        } else {
+            Err("LSP workspace admission passed its deadline".to_string())
+        }
+    };
     let admission =
-        discover_project_source_admission(&context.workspace_root, &mut || Ok(())).ok()?;
+        discover_project_source_admission(&context.workspace_root, &mut checkpoint).ok()?;
     let mut sources = admission
         .map()
         .source_sets
@@ -328,11 +497,15 @@ fn admit(actors: &WorkspaceActorRegistry, folder: &std::path::Path) -> Option<Ad
         })
         .collect::<Option<Vec<_>>>()?;
     let identity = actor.safe_identity_hash().ok()?;
-    Some(AdmittedSpace {
+    Some((
+        AdmittedSpace {
+            folder: folder.to_path_buf(),
+            actor: Arc::downgrade(&actor),
+            bindings,
+            identity,
+        },
         actor,
-        bindings,
-        identity,
-    })
+    ))
 }
 
 /// The `unica://` URI of a document the editor may name by its file.
@@ -372,6 +545,16 @@ fn content_change(change: V5LspContentChange) -> ContentChange {
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn read<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn write<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 

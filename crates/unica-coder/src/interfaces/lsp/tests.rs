@@ -70,17 +70,15 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
     assert_eq!(error_code(&early), SERVER_NOT_INITIALIZED);
     let initialized = editor.initialize();
     let capabilities = &initialized["result"]["capabilities"];
+    assert_eq!(capabilities["positionEncoding"], "utf-16");
+    assert!(
+        capabilities.get("hoverProvider").is_none(),
+        "hover is not served yet, so it is not declared"
+    );
     assert_eq!(
-        capabilities,
-        &json!({
-            "positionEncoding": "utf-16",
-            "textDocumentSync": {"openClose": true, "change": 2},
-            "workspace": {"textDocumentContent": {"schemes": ["unica"]}},
-            "experimental": {"unica": {"workspaces": [
-                {"folder": "file:///work", "failure": "lsp_workspace_unavailable"},
-            ]}},
-        }),
-        "the product service declares what it serves; a folder that is no workspace gets no space"
+        capabilities["experimental"]["unica"]["workspaces"],
+        json!([{"folder": "file:///work", "failure": "lsp_workspace_unavailable"}]),
+        "a folder that is no workspace gets no space"
     );
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     assert_eq!(
@@ -326,6 +324,49 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
         json!({"uri": "unica://other/main/CommonModule.Main"}),
     );
     assert_eq!(foreign["error"]["message"], "unica: lsp_document_unknown");
+
+    // Editor facts come from the buffer the session sees.
+    let document = json!({"textDocument": {"uri": "unica://work/main/CommonModule.Main"}});
+    let symbols = editor.request("textDocument/documentSymbol", document.clone());
+    assert_eq!(symbols["result"][0]["name"], "Buffer", "{symbols}");
+    assert!(editor.request("textDocument/foldingRange", document.clone())["result"].is_array());
+    let tokens = editor.request("textDocument/semanticTokens/full", document.clone());
+    assert!(tokens["result"]["data"].is_array(), "{tokens}");
+    let help = editor.request(
+        "textDocument/signatureHelp",
+        json!({
+            "textDocument": {"uri": "unica://work/main/CommonModule.Main"},
+            "position": {"line": 0, "character": 0},
+        }),
+    );
+    assert!(help.get("result").is_some(), "{help}");
+    for method in ["documentSymbolProvider", "foldingRangeProvider"] {
+        assert_eq!(capabilities[method], true, "{method}");
+    }
+    assert_eq!(capabilities["semanticTokensProvider"]["full"], true);
+    assert!(capabilities["semanticTokensProvider"]["legend"]["tokenTypes"].is_array());
+    assert_eq!(
+        capabilities["signatureHelpProvider"],
+        json!({"triggerCharacters": ["(", ","]})
+    );
+
+    // A change the buffer cannot take drops the document: answers come from
+    // the file again, never from a text apart from the editor's.
+    editor.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": module_uri, "version": 2},
+            "contentChanges": [{
+                "range": {"start": {"line": 99, "character": 0}, "end": {"line": 99, "character": 0}},
+                "text": "x",
+            }],
+        }),
+    );
+    assert_eq!(
+        content(&mut editor),
+        json!("Procedure Disk() EndProcedure\n")
+    );
+    assert!(!editor.lost.load(Ordering::Acquire));
 }
 
 /// Приёмка #2173: поток hover не задерживает параллельный вызов MCP.
@@ -553,6 +594,7 @@ impl LspHost for HeldHost {
                 text_document_sync: V5LspTextSync::Incremental,
                 hover: true,
                 text_document_content: true,
+                ..V5LspCapabilities::NONE
             },
             workspaces: folders
                 .iter()

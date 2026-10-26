@@ -48,13 +48,17 @@ fn client() -> LspClientChannel {
 }
 
 fn content(host: &UnicaLspHost, session: &V5LspSessionId, uri: &str) -> V5LspOutcome {
-    host.call(
+    ask(
+        host,
         session,
         V5LspCall::TextDocumentContent {
             uri: uri.to_owned(),
         },
-        &LspCallContext::for_test(soon()),
     )
+}
+
+fn ask(host: &UnicaLspHost, session: &V5LspSessionId, call: V5LspCall) -> V5LspOutcome {
+    host.call(session, call, &LspCallContext::for_test(soon()))
 }
 
 fn text(text: &str) -> V5LspOutcome {
@@ -82,7 +86,7 @@ fn an_editor_folder_reaches_the_mcp_actor_and_its_buffer_stays_in_its_session() 
     let module = file_uri(&workspace.path().join(MODULE));
     let uri = {
         let session = host.session(&editor).unwrap();
-        let session = lock(&session);
+        let session = read(&session);
         session.documents.uri_of_file(&module).unwrap()
     };
     assert!(uri.starts_with("unica://work/"), "{uri}");
@@ -129,10 +133,10 @@ fn an_editor_folder_reaches_the_mcp_actor_and_its_buffer_stays_in_its_session() 
         DISK
     );
     // MCP admission of the same workspace reaches the actor holding the buffer.
-    let mcp = admit(&actors, workspace.path()).unwrap();
+    let (_, mcp) = admit_actor(&actors, workspace.path(), soon()).unwrap();
     let session = host.session(&editor).unwrap();
-    let editor_actor = Arc::clone(&lock(&session).spaces["work"].actor);
-    assert!(Arc::ptr_eq(&mcp.actor, &editor_actor));
+    let editor_actor = read(&session).spaces["work"].actor.upgrade().unwrap();
+    assert!(Arc::ptr_eq(&mcp, &editor_actor));
     assert!(!editor_actor
         .documents()
         .session_documents(editor.as_str(), "main")
@@ -188,4 +192,125 @@ fn a_folder_without_sources_or_off_disk_gets_a_failure_and_no_space() {
             failure: V5LspFailure::DocumentUnknown
         }
     );
+}
+
+fn session_uri(host: &UnicaLspHost, session: &V5LspSessionId, file: &str) -> String {
+    let session = host.session(session).unwrap();
+    let session = read(&session);
+    session.documents.uri_of_file(file).unwrap()
+}
+
+fn open_buffer(host: &UnicaLspHost, session: &V5LspSessionId, uri: &str, text: &str) {
+    host.notify(
+        session,
+        V5LspNotification::DidOpen {
+            uri: uri.to_owned(),
+            language_id: "bsl".into(),
+            version: 1,
+            text: text.to_owned(),
+        },
+        soon(),
+    )
+    .unwrap();
+}
+
+/// A replaced source root makes the registry give MCP a new actor. The
+/// session follows it there with its buffers instead of holding MCP on the
+/// old one.
+#[test]
+fn after_the_source_root_is_replaced_the_session_moves_its_buffers_to_the_mcp_actor() {
+    let workspace = workspace();
+    let actors = Arc::new(crate::infrastructure::source_workspace::actor_registry());
+    let host = UnicaLspHost::new(Arc::clone(&actors));
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+    let uri = session_uri(&host, &editor, &file_uri(&workspace.path().join(MODULE)));
+    open_buffer(&host, &editor, &uri, "Procedure Buffer() EndProcedure\n");
+    let before = {
+        let session = host.session(&editor).unwrap();
+        let actor = read(&session).spaces["work"].actor.clone();
+        actor
+    };
+
+    // A fresh export replaces the source directory with an equal one.
+    let source = workspace.path().join("src");
+    fs::rename(&source, workspace.path().join("src.old")).unwrap();
+    fs::create_dir_all(source.join("CommonModules/Main/Ext")).unwrap();
+    fs::copy(
+        workspace.path().join("src.old/Configuration.xml"),
+        source.join("Configuration.xml"),
+    )
+    .unwrap();
+    fs::write(workspace.path().join(MODULE), DISK).unwrap();
+    let (_, mcp) = admit_actor(&actors, workspace.path(), soon()).expect("MCP admits the new root");
+
+    assert!(
+        before.upgrade().is_none_or(|old| !Arc::ptr_eq(&old, &mcp)),
+        "MCP is not held on the actor of the replaced root"
+    );
+    assert_eq!(
+        content(&host, &editor, &uri),
+        text("Procedure Buffer() EndProcedure\n")
+    );
+    let session = host.session(&editor).unwrap();
+    let current = read(&session).spaces["work"].actor.upgrade().unwrap();
+    assert!(
+        Arc::ptr_eq(&current, &mcp),
+        "the session follows MCP's actor"
+    );
+    assert!(
+        !mcp.documents()
+            .session_documents(editor.as_str(), "main")
+            .unwrap()
+            .is_empty(),
+        "the buffer moved into the new actor's overlay"
+    );
+}
+
+#[test]
+fn a_change_the_buffer_cannot_take_is_refused_so_the_editor_drops_it() {
+    let workspace = workspace();
+    let host = UnicaLspHost::new(Arc::new(
+        crate::infrastructure::source_workspace::actor_registry(),
+    ));
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+    let uri = session_uri(&host, &editor, &file_uri(&workspace.path().join(MODULE)));
+    let change = |version, line| V5LspNotification::DidChange {
+        uri: uri.clone(),
+        version,
+        changes: vec![V5LspContentChange {
+            range: Some(unica_daemon::protocol_v5::lsp::V5LspRange {
+                start: unica_daemon::protocol_v5::lsp::V5LspPosition { line, character: 0 },
+                end: unica_daemon::protocol_v5::lsp::V5LspPosition { line, character: 0 },
+            }),
+            text: "x".into(),
+        }],
+    };
+
+    assert_eq!(
+        host.notify(&editor, change(2, 0), soon()),
+        Err(V5LspFailure::DocumentUnknown),
+        "a change of a document that is not open"
+    );
+    open_buffer(&host, &editor, &uri, DISK);
+    assert_eq!(
+        host.notify(&editor, change(2, 99), soon()),
+        Err(V5LspFailure::DocumentUnknown),
+        "a range outside the buffer"
+    );
+    assert_eq!(host.notify(&editor, change(3, 0), soon()), Ok(()));
+    assert_eq!(content(&host, &editor, &uri), text(&format!("x{DISK}")));
 }
