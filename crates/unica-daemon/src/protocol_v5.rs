@@ -1341,7 +1341,7 @@ mod tests {
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"cancelled\"}}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"failed\",\"failure\":\"deadline_exceeded\"}}".to_string(),
             "{\"kind\":\"lsp_accepted\"}".to_string(),
-            "{\"kind\":\"lsp_notifications\",\"items\":[{\"kind\":\"log_message\",\"level\":\"info\",\"message\":\"ready\"}]}".to_string(),
+            "{\"kind\":\"lsp_notifications\",\"items\":[{\"kind\":\"log_message\",\"level\":\"info\",\"message\":\"ready\"},{\"kind\":\"content_changed\",\"uri\":\"unica://w/main/CommonModule.A.Body\"}]}".to_string(),
             "{\"kind\":\"lsp_refused\",\"failure\":\"session_unknown\"}".to_string(),
         ];
 

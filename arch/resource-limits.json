@@ -6751,6 +6751,30 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "lsp.content-watch-interval",
+      "class": "step",
+      "resource": "Как часто служба LSP сверяет файлы документов, которые показывает редактор, с тем, что он получил.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs",
+        "symbol": "LSP_CONTENT_WATCH_INTERVAL"
+      },
+      "expr": "Duration::from_secs(1)",
+      "value": 1000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2253",
+      "problem": null,
+      "onReach": "изменённый на диске модуль редактор получает предложением перечитать (workspace/textDocumentContent/refresh) не позже чем через этот интервал",
+      "issue": "#2253",
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [

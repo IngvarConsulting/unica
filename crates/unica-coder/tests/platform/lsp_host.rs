@@ -756,3 +756,74 @@ fn signature_help_names_a_platform_function_from_the_loaded_context() {
         "{help}"
     );
 }
+
+fn content_changes(channel: &LspClientChannel, within: Duration) -> Vec<String> {
+    let deadline = Instant::now() + within;
+    let mut uris = Vec::new();
+    while Instant::now() < deadline {
+        for item in channel.take_for_test(deadline).unwrap() {
+            if let V5LspServerNotification::ContentChanged { uri } = item {
+                uris.push(uri);
+            }
+        }
+        if !uris.is_empty() {
+            break;
+        }
+    }
+    uris
+}
+
+/// A document the editor shows is offered again once its file changes on
+/// disk; a closed one, or one the editor never asked for, is not.
+#[test]
+fn a_shown_document_is_offered_again_when_its_file_changes() {
+    let workspace = workspace();
+    let other = workspace
+        .path()
+        .join("src/CommonModules/Other/Ext/Module.bsl");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    fs::write(&other, "// other\n").unwrap();
+    let host = UnicaLspHost::new(Arc::new(
+        crate::infrastructure::source_workspace::actor_registry(),
+    ));
+    let editor = V5LspSessionId::new();
+    let channel = client();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        channel.clone(),
+        soon(),
+    )
+    .unwrap();
+    let uri = session_uri(&host, &editor, &file_uri(&workspace.path().join(MODULE)));
+    assert_eq!(content(&host, &editor, &uri), text(DISK));
+    assert!(content_changes(&channel, Duration::from_millis(1500)).is_empty());
+
+    fs::write(
+        workspace.path().join(MODULE),
+        "Procedure Changed() EndProcedure\n",
+    )
+    .unwrap();
+    fs::write(&other, "// changed too, never shown\n").unwrap();
+
+    assert_eq!(
+        content_changes(&channel, Duration::from_secs(5)),
+        vec![uri.clone()]
+    );
+    assert_eq!(
+        content(&host, &editor, &uri),
+        text("Procedure Changed() EndProcedure\n")
+    );
+
+    host.notify(
+        &editor,
+        V5LspNotification::DidClose { uri: uri.clone() },
+        soon(),
+    )
+    .unwrap();
+    fs::write(workspace.path().join(MODULE), "// after close\n").unwrap();
+    assert!(
+        content_changes(&channel, Duration::from_millis(2500)).is_empty(),
+        "a closed document is not offered"
+    );
+}

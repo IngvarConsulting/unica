@@ -54,14 +54,30 @@ pub(crate) struct UnicaLspHost {
     platform: Arc<PlatformContexts>,
     /// The read service MCP calls use: the symbol port answers through it.
     read_service: Arc<CanonicalV13ReadService>,
-    sessions: Mutex<HashMap<V5LspSessionId, Arc<RwLock<Session>>>>,
+    sessions: Arc<Sessions>,
 }
+
+type Sessions = Mutex<HashMap<V5LspSessionId, Arc<RwLock<Session>>>>;
+
+/// How often the files of the documents an editor has open are compared
+/// with what it was given: a changed file is offered to it again.
+const LSP_CONTENT_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 
 struct Session {
     documents: LspDocuments,
     /// Where an answer the editor cannot mark incomplete says so.
     client: LspClientChannel,
     spaces: BTreeMap<String, AdmittedSpace>,
+    /// The documents the editor shows, by URI, with the file stamp of what
+    /// it was given; a different stamp on disk asks it to read them again.
+    watched: Mutex<HashMap<String, WatchedDocument>>,
+}
+
+struct WatchedDocument {
+    space: String,
+    source_set: String,
+    relative: PathBuf,
+    stamp: Option<unica_source_contract::read::FileStamp>,
 }
 
 /// A workspace folder admitted as a workspace: its actor and the bindings
@@ -87,11 +103,13 @@ impl UnicaLspHost {
         actors: Arc<WorkspaceActorRegistry>,
         read_service: Arc<CanonicalV13ReadService>,
     ) -> Self {
+        let sessions = Arc::new(Sessions::default());
+        spawn_content_watch(Arc::downgrade(&sessions));
         Self {
             actors,
             platform: Arc::new(PlatformContexts::default()),
             read_service,
-            sessions: Mutex::new(HashMap::new()),
+            sessions,
         }
     }
 
@@ -165,6 +183,7 @@ impl LspHost for UnicaLspHost {
                 documents,
                 client,
                 spaces,
+                watched: Mutex::new(HashMap::new()),
             })),
         );
         Ok(V5LspOpening {
@@ -201,6 +220,11 @@ impl LspHost for UnicaLspHost {
         let Ok(location) = session.documents.locate(&uri) else {
             return Ok(());
         };
+        match &notification {
+            V5LspNotification::DidOpen { .. } => session.watch(&uri, &location),
+            V5LspNotification::DidClose { .. } => session.unwatch(&uri),
+            V5LspNotification::DidChange { .. } => {}
+        }
         let actor = match session.current_actor(&self.actors, &location.document.space, deadline) {
             Ok(actor) => actor,
             Err(failure) => {
@@ -373,6 +397,63 @@ impl PlatformContexts {
 }
 
 impl Session {
+    /// Follow the file of a document the editor shows.
+    fn watch(&self, uri: &str, location: &crate::infrastructure::lsp_documents::DocumentLocation) {
+        let stamp = self.stamp(
+            &location.document.space,
+            &location.source_set,
+            &location.relative,
+        );
+        lock(&self.watched)
+            .entry(uri.to_owned())
+            .or_insert_with(|| WatchedDocument {
+                space: location.document.space.clone(),
+                source_set: location.source_set.clone(),
+                relative: location.relative.clone(),
+                stamp,
+            });
+    }
+
+    fn unwatch(&self, uri: &str) {
+        lock(&self.watched).remove(uri);
+    }
+
+    /// The stamp of a module file as the space's retained root sees it.
+    /// A replaced root has none: its documents are offered again.
+    fn stamp(
+        &self,
+        space: &str,
+        source_set: &str,
+        relative: &std::path::Path,
+    ) -> Option<unica_source_contract::read::FileStamp> {
+        if !self.is_current(space) {
+            return None;
+        }
+        self.spaces
+            .get(space)?
+            .bindings
+            .iter()
+            .find(|binding| binding.source_set_name() == source_set)?
+            .retained_root()
+            .relative_file_stamp(relative)
+            .ok()
+            .flatten()
+    }
+
+    /// Ask the editor to read again every shown document whose file changed.
+    fn offer_changed_documents(&self) {
+        let mut watched = lock(&self.watched);
+        for (uri, document) in watched.iter_mut() {
+            let stamp = self.stamp(&document.space, &document.source_set, &document.relative);
+            if stamp != document.stamp {
+                document.stamp = stamp;
+                let _ = self
+                    .client
+                    .push(V5LspServerNotification::ContentChanged { uri: uri.clone() });
+            }
+        }
+    }
+
     /// The space of the document `uri` names, if this session has it.
     fn space_of(&self, uri: &str) -> Option<String> {
         let uri = document_uri(&self.documents, uri).ok()?;
@@ -560,9 +641,13 @@ fn answer(
     match call {
         V5LspCall::TextDocumentContent { uri } => {
             let (uri, read) = document_read(session, &uri)?;
-            Ok(V5LspOutcome::Text {
-                text: document_text(session, &uri, &read)?,
-            })
+            let text = document_text(session, &uri, &read)?;
+            // The editor now shows this document: a change of its file on
+            // disk asks the editor to read it again.
+            if let Ok(location) = session.documents.locate(&uri) {
+                session.watch(&uri, &location);
+            }
+            Ok(V5LspOutcome::Text { text })
         }
         V5LspCall::DocumentSymbol { uri } => text_with(&uri, lsp_features::document_symbols),
         V5LspCall::FoldingRange { uri } => text_with(&uri, lsp_features::folding_ranges),
@@ -1178,6 +1263,23 @@ fn content_change(change: V5LspContentChange) -> ContentChange {
             text: change.text,
         },
     }
+}
+
+/// One watcher for every session of the service; it ends with the service.
+fn spawn_content_watch(sessions: std::sync::Weak<Sessions>) {
+    let _ = std::thread::Builder::new()
+        .name("unica-lsp-content-watch".into())
+        .spawn(move || loop {
+            std::thread::sleep(LSP_CONTENT_WATCH_INTERVAL);
+            let Some(sessions) = sessions.upgrade() else {
+                return;
+            };
+            let open = lock(&sessions).values().cloned().collect::<Vec<_>>();
+            drop(sessions);
+            for session in open {
+                read(&session).offer_changed_documents();
+            }
+        });
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

@@ -427,6 +427,61 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     assert!(!editor.lost.load(Ordering::Acquire));
 }
 
+/// An editor that declared `workspace/textDocumentContent` is asked to read
+/// a shown document again when its file changes; one that did not is not.
+#[test]
+fn a_changed_module_file_asks_only_a_declaring_editor_to_read_it_again() {
+    let daemon = LiveV5Daemon::start_with_product_lsp(canonical_v13_service());
+    let workspace = catalog_workspace();
+    let module = workspace
+        .path()
+        .join("src/CommonModules/Main/Ext/Module.bsl");
+    std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+    std::fs::write(&module, "Procedure Disk() EndProcedure\n").unwrap();
+    let folder: String = url::Url::from_file_path(std::fs::canonicalize(workspace.path()).unwrap())
+        .unwrap()
+        .into();
+    let uri = "unica://work/main/CommonModule.Main.Body";
+    let start = |declares: bool| {
+        let mut editor = Editor::start(&daemon);
+        let capabilities = if declares {
+            json!({"workspace": {"textDocumentContent": {}}})
+        } else {
+            json!({})
+        };
+        editor.request(
+            "initialize",
+            json!({
+                "capabilities": capabilities,
+                "workspaceFolders": [{"uri": folder, "name": "Work"}],
+            }),
+        );
+        let text = editor.request("workspace/textDocumentContent", json!({"uri": uri}));
+        assert_eq!(text["result"]["text"], "Procedure Disk() EndProcedure\n");
+        editor
+    };
+    let mut declaring = start(true);
+    let mut silent = start(false);
+
+    std::fs::write(&module, "Procedure Changed() EndProcedure\n").unwrap();
+
+    let refresh = declaring.next_notification_or_request("workspace/textDocumentContent/refresh");
+    assert_eq!(refresh["params"], json!({"uri": uri}));
+    assert!(refresh["id"].is_string(), "a request: {refresh}");
+    declaring.send(json!({"jsonrpc": "2.0", "id": refresh["id"], "result": null}));
+    let text = declaring.request("workspace/textDocumentContent", json!({"uri": uri}));
+    assert_eq!(text["result"]["text"], "Procedure Changed() EndProcedure\n");
+    std::thread::sleep(Duration::from_secs(2));
+    silent.receive(Instant::now() + Duration::from_millis(100));
+    assert!(
+        !silent
+            .received
+            .iter()
+            .any(|message| message["method"] == "workspace/textDocumentContent/refresh"),
+        "an editor that did not declare the request gets none"
+    );
+}
+
 /// Приёмка #2173: поток hover не задерживает параллельный вызов MCP.
 ///
 /// Сначала полоса LSP занята целиком и стоит: вызов MCP той же рабочей
@@ -810,6 +865,20 @@ impl Editor {
     fn try_response(&mut self, id: &Value) -> Option<Value> {
         self.receive(Instant::now() + Duration::from_millis(50));
         self.take(|message| message.get("id") == Some(id))
+    }
+
+    /// The next message of `method` from the server, request or notification.
+    fn next_notification_or_request(&mut self, method: &str) -> Value {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            if let Some(message) =
+                self.take(|message| message.get("method") == Some(&json!(method)))
+            {
+                return message;
+            }
+            assert!(Instant::now() < deadline, "no {method} from the server");
+            self.receive(deadline);
+        }
     }
 
     fn next_notification(&mut self, method: &str) -> Value {

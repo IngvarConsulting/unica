@@ -318,6 +318,11 @@ impl Frontend {
             Arc::clone(&self.output),
             Arc::clone(&poll_stop),
             Arc::clone(&self.session_lost),
+            // LSP 3.18: an editor that reads `unica://` documents through
+            // `workspace/textDocumentContent` can be asked to read them again.
+            params
+                .pointer("/capabilities/workspace/textDocumentContent")
+                .is_some_and(Value::is_object),
         );
         self.phase = Phase::Running(Box::new(Session {
             id: session,
@@ -553,12 +558,14 @@ fn spawn_poller(
     output: Output,
     stop: Arc<AtomicBool>,
     session_lost: SessionLost,
+    content_refresh: bool,
 ) {
     let _ = thread::Builder::new()
         .name("unica-lsp-notifications".into())
         .spawn(move || {
             let mut peer: Option<V5DaemonProcessOwner> = None;
             let mut failures = 0;
+            let mut refreshes = 0_u64;
             while !stop.load(Ordering::Acquire) {
                 let deadline =
                     Instant::now() + Duration::from_millis(LSP_POLL_WAIT_MS) + LSP_EXCHANGE_MARGIN;
@@ -579,7 +586,11 @@ fn spawn_poller(
                     Ok(items) => {
                         failures = 0;
                         for item in items {
-                            write(&output, &server_notification_json(item));
+                            if let Some(message) =
+                                server_message_json(item, content_refresh, &mut refreshes)
+                            {
+                                write(&output, &message);
+                            }
                         }
                     }
                     // The daemon answered: this session is gone there.
@@ -724,19 +735,35 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
     Value::Object(result)
 }
 
-fn server_notification_json(notification: V5LspServerNotification) -> Value {
+/// What the daemon queued for the editor, as the editor's protocol says
+/// it: `None` for what this editor did not declare it can take.
+fn server_message_json(
+    notification: V5LspServerNotification,
+    content_refresh: bool,
+    next_request: &mut u64,
+) -> Option<Value> {
     match notification {
+        // A request to the editor; its answer carries nothing to act on.
+        V5LspServerNotification::ContentChanged { uri } => content_refresh.then(|| {
+            *next_request += 1;
+            json!({
+                "jsonrpc": "2.0",
+                "id": format!("unica-refresh-{next_request}"),
+                "method": "workspace/textDocumentContent/refresh",
+                "params": {"uri": uri},
+            })
+        }),
         V5LspServerNotification::LogMessage { level, message } => {
             let kind = match level {
                 V5LspMessageLevel::Error => 1,
                 V5LspMessageLevel::Warning => 2,
                 V5LspMessageLevel::Info => 3,
             };
-            json!({
+            Some(json!({
                 "jsonrpc": "2.0",
                 "method": "window/logMessage",
                 "params": {"type": kind, "message": message},
-            })
+            }))
         }
     }
 }

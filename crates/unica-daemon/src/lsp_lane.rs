@@ -143,6 +143,15 @@ impl LspClientChannel {
         Self::new()
     }
 
+    /// What the service queued for the editor, waiting until `deadline`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_for_test(
+        &self,
+        deadline: Instant,
+    ) -> Result<Vec<V5LspServerNotification>, V5LspFailure> {
+        self.take_before(deadline)
+    }
+
     fn new() -> Self {
         Self(Arc::new(Outbox {
             state: Mutex::new(OutboxState {

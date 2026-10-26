@@ -408,6 +408,9 @@ pub enum V5LspServerNotification {
         level: V5LspMessageLevel,
         message: String,
     },
+    /// Файл документа изменился на диске: редактор перечитает его текст
+    /// (`workspace/textDocumentContent/refresh`).
+    ContentChanged { uri: String },
 }
 
 impl V5LspServerNotification {
@@ -417,6 +420,7 @@ impl V5LspServerNotification {
                 Err("v5 lsp log message exceeds its limit".to_string())
             }
             Self::LogMessage { .. } => Ok(()),
+            Self::ContentChanged { uri } => validate_uri(uri),
         }
     }
 }

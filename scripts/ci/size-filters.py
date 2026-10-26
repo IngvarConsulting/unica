@@ -91,6 +91,9 @@ MEASURED_MEDIUM_CASES = (
     # Замер задержки MCP под потоком hover (#2173). Локально, macOS arm64,
     # 26.10.2026: 4,5–7 с, под фоновой нагрузкой до 16 с.
     ("unica-coder", "unica_coder", "interfaces::lsp::tests::an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call"),
+    # Ожидание изменения файла по интервалу наблюдения LSP (#2253): 3–5 с.
+    ("unica-coder", "unica_coder", "interfaces::lsp::tests::a_changed_module_file_asks_only_a_declaring_editor_to_read_it_again"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::lsp_host::tests::a_shown_document_is_offered_again_when_its_file_changes"),
 )
 
 
