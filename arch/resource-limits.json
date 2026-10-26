@@ -6727,6 +6727,30 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "bsl-types.array-element-window",
+      "class": "format",
+      "resource": "Сколько символов после «Массив из» на странице справки просматривается в поисках ссылки на тип элемента массива.",
+      "unit": "count",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-bsl-types/src/page.rs",
+        "symbol": "ARRAY_ELEMENT_WINDOW"
+      },
+      "expr": "200",
+      "value": 200,
+      "applied": [
+        "crates/unica-bsl-types/src/page.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2238",
+      "problem": "тип элемента, названный дальше окна, не попадает в каталог",
+      "onReach": "тихо: массив остаётся без типа элемента, то есть с неизвестным, а не с угаданным элементом",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [
