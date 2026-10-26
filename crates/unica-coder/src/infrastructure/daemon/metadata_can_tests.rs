@@ -1093,7 +1093,7 @@ fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unav
     assert!(viewed.ok, "{viewed:?}");
     let data = viewed.data.as_ref().unwrap();
     assert_eq!(data["title"], "Products");
-    assert_eq!(data["props"]["synonym"], "Products");
+    assert_eq!(data["props"]["Synonym"], "Products");
     assert!(
         data["branches"]
             .as_array()
@@ -1674,9 +1674,9 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
         "{attribute}"
     );
     let constant = view(&runtime, &fixture, "main:Constant.Rate");
-    assert_eq!(constant["props"]["synonym"], "Rate");
+    assert_eq!(constant["props"]["Synonym"], "Rate");
     // Тип не прочитан: значения нет, причина — в пределах узла.
-    assert!(constant["props"]["type"].is_null(), "{constant}");
+    assert!(constant["props"]["Type"].is_null(), "{constant}");
     assert!(
         limits(&constant).iter().any(
             |limit| limit.starts_with("details.type") && limit.contains("validation_warning: ")
@@ -1717,7 +1717,7 @@ fn canonical_broken_qualifier_stays_an_error_in_check_and_view() {
         );
     }
     let constant = view(&runtime, &fixture, "main:Constant.Rate");
-    assert!(constant["props"]["type"].is_null(), "{constant}");
+    assert!(constant["props"]["Type"].is_null(), "{constant}");
     assert!(
         limits(&constant)
             .iter()
@@ -2408,4 +2408,251 @@ fn canonical_check_accepts_a_common_binary_template_without_data() {
     );
     let viewed = view(&runtime, &fixture, "main:CommonTemplate.Empty");
     assert_eq!(viewed["kind"], "CommonTemplate", "{viewed}");
+}
+
+/// Собственные факты Unica в `props` корня и плоские поля составных
+/// фактов: они не свойства 1С и потому публикуются в camelCase.
+const UNICA_ROOT_FACTS: &[&str] = &[
+    "kind",
+    "support",
+    "directEditSafe",
+    "format",
+    "content",
+    "extends",
+    "handlerModule",
+    "handlerMethod",
+    "scheduleRegister",
+    "scheduleValueField",
+    "scheduleDateField",
+    "fontKind",
+    "fontRef",
+    "fontFaceName",
+    "fontHeight",
+    "fontScale",
+    "fontBold",
+    "fontItalic",
+    "fontUnderline",
+    "fontStrikeout",
+    "borderStyle",
+    "borderWidth",
+    "belonging",
+    "parentId",
+    "parentStatus",
+    "overridesCount",
+    "overridesComplete",
+    "overrides",
+    "totalallowed",
+    "totaldenied",
+];
+
+/// Виды, свойства которых не записывает ни одна операция.
+const WITHOUT_PROPS_SET: &[&str] = &["Language", "CommonTemplate", "StyleItem"];
+
+/// Адреса корней набора: объекты верхнего уровня и вложенные подсистемы.
+fn metadata_roots(set: &str, root: &Path) -> Vec<(&'static str, String)> {
+    fn sorted(directory: &Path, keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+        let mut paths = std::fs::read_dir(directory)
+            .map(|entries| entries.map(|entry| entry.unwrap().path()).collect())
+            .unwrap_or_else(|_| Vec::new());
+        paths.retain(|path: &PathBuf| keep(path));
+        paths.sort();
+        paths
+    }
+    fn descriptors(directory: &Path) -> Vec<PathBuf> {
+        sorted(directory, |path| {
+            path.extension().is_some_and(|ext| ext == "xml")
+        })
+    }
+    let mut roots = Vec::new();
+    for directory in sorted(root, Path::is_dir) {
+        let Some(layout) = unica_source_designer::layout::metadata_kind_by_directory(
+            directory.file_name().unwrap().to_str().unwrap(),
+        ) else {
+            continue;
+        };
+        // Общий модуль, форма и XDTO переходят на имена платформы
+        // своими срезами.
+        if matches!(layout.tag, "CommonModule" | "CommonForm" | "XDTOPackage") {
+            continue;
+        }
+        let mut pending = descriptors(&directory)
+            .into_iter()
+            .map(|descriptor| (descriptor, format!("{set}:{}", layout.tag)))
+            .collect::<Vec<_>>();
+        while let Some((descriptor, prefix)) = pending.pop() {
+            let name = descriptor.file_stem().unwrap().to_str().unwrap();
+            let at = format!("{prefix}.{name}");
+            if layout.tag == "Subsystem" {
+                let nested = descriptor.with_extension("").join("Subsystems");
+                pending.extend(
+                    descriptors(&nested)
+                        .into_iter()
+                        .map(|child| (child, format!("{at}.Subsystem"))),
+                );
+            }
+            roots.push((layout.tag, at));
+        }
+    }
+    roots
+}
+
+/// Имя в `props` корня или в адресе `<узел>.Props.<имя>` его предела:
+/// свойство платформы — ровно под именем `props.set`, если запись его
+/// принимает, иначе под именем XML; camelCase — только факт Unica.
+fn assert_platform_name(at: &str, key: &str, accepted: &BTreeSet<String>) {
+    if key.starts_with(|first: char| first.is_ascii_uppercase()) {
+        assert!(
+            accepted.contains(key) || !accepted.iter().any(|name| name.eq_ignore_ascii_case(key)),
+            "{at}: props.{key} differs from its props.set name"
+        );
+    } else {
+        assert!(
+            UNICA_ROOT_FACTS.contains(&key),
+            "{at}: props.{key} names a platform property in camelCase"
+        );
+    }
+}
+
+/// Корень объекта метаданных называет свойство 1С так же, как его
+/// принимает `props.set` того же адреса (#2160).
+#[test]
+fn metadata_root_props_use_the_names_props_set_accepts() {
+    let runtime = runtime();
+    let mut seen = BTreeSet::new();
+    let mut published = BTreeSet::new();
+    for (image, sets) in [
+        ("workspace", &[("main", "src")][..]),
+        ("workspace-common-template", &[("main", "src")]),
+        ("workspace-styleitem-values", &[("main", "src")]),
+        ("workspace-metadata-values", &[("main", "src")]),
+        ("workspace-subsystem-presence", &[("main", "src")]),
+        (
+            "workspace-borrowed",
+            &[("main", "src/cf"), ("ext", "src/ext")],
+        ),
+    ] {
+        let fixture = Fixture::new(image);
+        for (set, path) in sets {
+            for (kind, at) in metadata_roots(set, &fixture.workspace.join(path)) {
+                let data = view(&runtime, &fixture, &at);
+                let accepted: BTreeSet<String> = if WITHOUT_PROPS_SET.contains(&kind) {
+                    BTreeSet::new()
+                } else {
+                    let can = contract(&runtime, &fixture, &at, "props.set");
+                    can["argsSchema"]["properties"]["values"]["properties"]
+                        .as_object()
+                        .unwrap_or_else(|| panic!("{at}: props.set lists no values: {can}"))
+                        .keys()
+                        .cloned()
+                        .collect()
+                };
+                for key in data["props"].as_object().unwrap().keys() {
+                    assert_platform_name(&at, key, &accepted);
+                    published.insert(key.clone());
+                }
+                let whole = format!("{at}.Props.");
+                for limit in data["limits"].as_array().into_iter().flatten() {
+                    let limit = limit.as_str().unwrap();
+                    if let Some((_, key)) = limit.split_once(&whole) {
+                        assert_platform_name(&at, key, &accepted);
+                    }
+                }
+                seen.insert(kind);
+                if kind == "Subsystem" && at.matches(".Subsystem.").count() > 0 {
+                    seen.insert("nested Subsystem");
+                }
+            }
+        }
+    }
+    for kind in [
+        "Catalog",
+        "Document",
+        "Enum",
+        "Role",
+        "Subsystem",
+        "nested Subsystem",
+        "CommonTemplate",
+        "StyleItem",
+    ] {
+        assert!(seen.contains(kind), "the guard saw no {kind}: {seen:?}");
+    }
+    for property in ["Synonym", "Comment", "Explanation", "CodeLength", "Type"] {
+        assert!(
+            published.contains(property),
+            "the guard saw no {property}: {published:?}"
+        );
+    }
+}
+
+/// Слишком длинное свойство подсистемы не пропадает молча: предел
+/// называет его адрес под именем платформы, и по адресу оно читается
+/// целиком.
+#[test]
+fn oversized_subsystem_property_is_named_by_its_platform_name() {
+    let fixture = Fixture::new("workspace-subsystem-presence");
+    let runtime = runtime();
+    let at = "main:Subsystem.Parent";
+    let descriptor = fixture.source.join("Subsystems/Parent.xml");
+    let comment = "к".repeat(4096);
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let start = xml.find("<Comment").unwrap();
+    let end = xml[start..]
+        .find("</Comment>")
+        .map(|end| start + end + "</Comment>".len())
+        .unwrap_or_else(|| start + xml[start..].find("/>").unwrap() + 2);
+    let mut rewritten = xml.clone();
+    rewritten.replace_range(start..end, &format!("<Comment>{comment}</Comment>"));
+    std::fs::write(&descriptor, rewritten).unwrap();
+    let data = view(&runtime, &fixture, at);
+    assert!(data["props"].get("Comment").is_none(), "{data}");
+    let limits = data["limits"].to_string();
+    assert!(limits.contains(&format!("{at}.Props.Comment")), "{limits}");
+    let whole = view(&runtime, &fixture, &format!("{at}.Props.Comment"));
+    assert_eq!(whole["props"]["Comment"], comment, "{whole}");
+}
+
+/// #2217: a nested subsystem is written at the address `view` reads it by,
+/// in its own descriptor; its owners stay byte-identical.
+#[test]
+fn props_set_writes_a_nested_subsystem_at_its_own_address() {
+    let fixture = Fixture::new("workspace-subsystem-presence");
+    let runtime = runtime();
+    let at = "main:Subsystem.Parent.Subsystem.Child.Subsystem.Leaf";
+    let can = contract(&runtime, &fixture, at, "props.set");
+    assert!(
+        can["argsSchema"]["properties"]["values"]["properties"]
+            .get("IncludeInCommandInterface")
+            .is_some(),
+        "{can}"
+    );
+    let owners = [
+        "Subsystems/Parent.xml",
+        "Subsystems/Parent/Subsystems/Child.xml",
+    ]
+    .map(|relative| std::fs::read(fixture.source.join(relative)).unwrap());
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at": at, "ops": [{"op": "props.set", "args": {"values": {
+            "Comment": "Nested 2217",
+            "IncludeInCommandInterface": false,
+        }}}]}),
+    );
+    let leaf = std::fs::read_to_string(
+        fixture
+            .source
+            .join("Subsystems/Parent/Subsystems/Child/Subsystems/Leaf.xml"),
+    )
+    .unwrap();
+    assert!(leaf.contains("<Comment>Nested 2217</Comment>"), "{leaf}");
+    assert_eq!(
+        [
+            "Subsystems/Parent.xml",
+            "Subsystems/Parent/Subsystems/Child.xml"
+        ]
+        .map(|relative| std::fs::read(fixture.source.join(relative)).unwrap()),
+        owners
+    );
+    let viewed = view(&runtime, &fixture, at);
+    assert_eq!(viewed["props"]["Comment"], "Nested 2217", "{viewed}");
 }

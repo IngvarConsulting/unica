@@ -1,4 +1,4 @@
-use super::selected_scalar_props;
+use super::{platform_scalar_props, selected_scalar_props};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_execution_contract::view_error::ViewError;
 
@@ -23,7 +23,7 @@ pub(super) fn project_role(
 ) -> Result<NodeViewData, ViewError> {
     let objects = role_objects(payload)?;
     if suffix.is_empty() {
-        let mut props = selected_scalar_props(payload, &["synonym"]);
+        let mut props = platform_scalar_props(payload, &[("synonym", "Synonym")]);
         if let Some(totals) = payload.get("totals") {
             props.extend(
                 selected_scalar_props(totals, &["allowed", "denied"])
