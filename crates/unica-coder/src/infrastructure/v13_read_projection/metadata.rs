@@ -290,12 +290,22 @@ fn project_metadata(
             ));
         }
     }
-    let collection = metadata_collection(payload, first.kind()).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("metadata has no {} collection", first.kind().as_str()),
-        )
-    })?;
+    // Вид, который профиль выдаёт пустой ветвью, читается пустой коллекцией,
+    // даже если читатель не прислал для него массива (#2153).
+    let empty = Value::Array(Vec::new());
+    let declared = matches!(address.segments(), [owner] if
+        unica_source_designer::registration::platform_child_object_order(owner.kind().as_str())
+            .is_some_and(|kinds| kinds.contains(&first.kind().as_str())));
+    let collection = match metadata_collection(payload, first.kind()) {
+        Some(collection) => collection,
+        None if declared => &empty,
+        None => {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                format!("metadata has no {} collection", first.kind().as_str()),
+            ))
+        }
+    };
     if first.kind() == NodeKind::Characteristic {
         // Прикладного имени у характеристики нет: она названа парой источников,
         // а не словом. Адресовать в ней нечего, поэтому элементы остаются
