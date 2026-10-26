@@ -1,6 +1,8 @@
 ---
 id: INV.LSP.MCP-PRIORITY
-check: []
+check:
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::an_mcp_call_cancels_a_yielding_call_that_holds_the_analyzer
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::an_expired_analyzer_call_keeps_the_warm_process_for_the_next_one
 gap: https://github.com/IngvarConsulting/unica/issues/2173
 ---
 

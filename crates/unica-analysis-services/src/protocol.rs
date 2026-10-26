@@ -20,7 +20,7 @@ pub enum ServiceRequestKind {
         timeout_nanos: u32,
         /// The call gives way to one that does not: an editor's call is
         /// cancelled at the analyzer when an MCP call needs it.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         yields: bool,
     },
     RlmReady {
@@ -193,6 +193,7 @@ mod tests {
         for encoded in [
             r#"{"token":"secret","kind":{"type":"ping"}}"#,
             r#"{"token":"secret","kind":{"type":"bsl-mcp","operation_id":"bsl-op","tool_name":"search","tool_args":{"action":"search_code"},"timeout_seconds":18446744073709551615,"timeout_nanos":999999999}}"#,
+            r#"{"token":"secret","kind":{"type":"bsl-mcp","operation_id":"lsp-op","tool_name":"symbol_info","tool_args":{},"timeout_seconds":5,"timeout_nanos":0,"yields":true}}"#,
             r#"{"token":"secret","kind":{"type":"rlm-ready","operation_id":"ready-op","args":{},"timeout_seconds":120,"timeout_nanos":5}}"#,
             r#"{"token":"secret","kind":{"type":"rlm-mcp","operation_id":"read-op","operation":{"operation":"definition","name":"Symbol","module_hint":"CommonModules/Shared/Ext/Module.bsl","limit":9},"timeout_seconds":3600,"timeout_nanos":7}}"#,
             r#"{"token":"secret","kind":{"type":"cancel","operation_id":"read-op"}}"#,
