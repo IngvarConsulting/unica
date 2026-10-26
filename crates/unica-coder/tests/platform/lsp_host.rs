@@ -311,6 +311,16 @@ fn a_change_the_buffer_cannot_take_is_refused_so_the_editor_drops_it() {
         Err(V5LspFailure::DocumentUnknown),
         "a range outside the buffer"
     );
-    assert_eq!(host.notify(&editor, change(3, 0), soon()), Ok(()));
-    assert_eq!(content(&host, &editor, &uri), text(&format!("x{DISK}")));
+    // The refused document is closed: a later change does not land on a
+    // buffer that missed one, and answers come from the file.
+    assert_eq!(
+        host.notify(&editor, change(3, 0), soon()),
+        Err(V5LspFailure::DocumentUnknown)
+    );
+    assert_eq!(content(&host, &editor, &uri), text(DISK));
+    open_buffer(&host, &editor, &uri, "Procedure Again() EndProcedure\n");
+    assert_eq!(
+        content(&host, &editor, &uri),
+        text("Procedure Again() EndProcedure\n")
+    );
 }

@@ -35,7 +35,7 @@ use unica_daemon::protocol_v5::lsp::{
 use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_source_contract::{SourceFormat, SourceProfile};
 use unica_workspace::actor::{ProviderRootBinding, WorkspaceSourceSetInput};
-use unica_workspace::documents::DocumentText;
+use unica_workspace::documents::{DocumentOverlay, DocumentOverlayError, DocumentText};
 
 /// The scope string under which MCP admits a workspace. The actor of a
 /// workspace is the same only for the same inputs (`actor-identity`).
@@ -159,38 +159,46 @@ impl LspHost for UnicaLspHost {
         let Ok(location) = session.documents.locate(&uri) else {
             return Ok(());
         };
-        let Ok(actor) = session.current_actor(&self.actors, &location.document.space, deadline)
-        else {
-            return Ok(());
+        let actor = match session.current_actor(&self.actors, &location.document.space, deadline) {
+            Ok(actor) => actor,
+            Err(failure) => {
+                // Without its actor the session cannot keep the editor's
+                // text: the document is dropped here and refused, so no
+                // answer is given from a buffer that missed this change.
+                let _ = session.documents.close(&DocumentOverlay::default(), &uri);
+                return match notification {
+                    V5LspNotification::DidClose { .. } => Ok(()),
+                    _ => Err(failure),
+                };
+            }
         };
         let overlay = actor.documents();
         let documents = &mut session.documents;
-        match notification {
+        let applied = match notification {
             V5LspNotification::DidOpen { version, text, .. } => {
-                match documents.open(overlay, &uri, version, text) {
-                    Err(LspDocumentError::Overlay(_)) => Err(V5LspFailure::Unavailable),
-                    _ => Ok(()),
-                }
+                documents.open(overlay, &uri, version, text).map(drop)
             }
-            // A change the buffer cannot take would leave it apart from the
-            // editor's text: the refusal makes the frontend drop the document.
             V5LspNotification::DidChange {
                 version, changes, ..
             } => {
                 let changes = changes.into_iter().map(content_change).collect::<Vec<_>>();
-                documents
-                    .change(overlay, &uri, version, &changes)
-                    .map(drop)
-                    .map_err(|error| match error {
-                        LspDocumentError::Overlay(_) => V5LspFailure::Unavailable,
-                        _ => V5LspFailure::DocumentUnknown,
-                    })
+                documents.change(overlay, &uri, version, &changes).map(drop)
             }
             V5LspNotification::DidClose { .. } => {
                 let _ = documents.close(overlay, &uri);
-                Ok(())
+                return Ok(());
             }
-        }
+        };
+        // A text the buffer cannot take would leave it apart from the
+        // editor's: the document is closed here and the refusal makes the
+        // frontend hold its requests until the editor opens it again.
+        applied.map_err(|error| {
+            let _ = documents.close(overlay, &uri);
+            match error {
+                LspDocumentError::Overlay(_) => V5LspFailure::Unavailable,
+                _ => V5LspFailure::DocumentUnknown,
+            }
+        })
     }
 
     fn call(
@@ -204,6 +212,9 @@ impl LspHost for UnicaLspHost {
             Ok(session) => session,
             Err(failure) => return failed(failure),
         };
+        if context.is_cancelled() {
+            return V5LspOutcome::Cancelled {};
+        }
         // A replaced actor is swapped under the write lock; the answer itself
         // reads under the read lock, beside other requests of the session.
         let space = call
@@ -276,8 +287,9 @@ impl Session {
         }
         let (renewed, actor) = admit_actor(actors, &admitted.folder, deadline)
             .ok_or(V5LspFailure::WorkspaceUnavailable)?;
-        *admitted = renewed;
-        for binding in &admitted.bindings {
+        // Every buffer reaches the new actor before the session switches to
+        // it; a failure keeps the old one and the next request tries again.
+        for binding in &renewed.bindings {
             let set = binding.source_set_name();
             for uri in self.documents.changed_documents(space, set, None) {
                 let Ok(location) = self.documents.locate(&uri) else {
@@ -286,19 +298,24 @@ impl Session {
                 let Some(document) = self.documents.open_document(&location.document) else {
                     continue;
                 };
-                actor
-                    .documents()
-                    .put(
-                        self.documents.session(),
-                        set,
-                        &location.relative,
-                        DocumentText {
-                            version: document.version(),
-                            text: Arc::from(document.text()),
-                        },
-                    )
-                    .map_err(|_| V5LspFailure::Unavailable)?;
+                match actor.documents().put(
+                    self.documents.session(),
+                    set,
+                    &location.relative,
+                    DocumentText {
+                        version: document.version(),
+                        text: Arc::from(document.text()),
+                    },
+                ) {
+                    // The registry gave back an actor still held by a call:
+                    // it already has this buffer.
+                    Ok(()) | Err(DocumentOverlayError::StaleVersion { .. }) => {}
+                    Err(_) => return Err(V5LspFailure::Unavailable),
+                }
             }
+        }
+        if let Some(admitted) = self.spaces.get_mut(space) {
+            *admitted = renewed;
         }
         Ok(actor)
     }

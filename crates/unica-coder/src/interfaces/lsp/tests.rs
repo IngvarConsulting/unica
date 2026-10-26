@@ -230,6 +230,15 @@ fn a_document_notification_the_daemon_would_refuse_keeps_the_session() {
         "the daemon drops the document instead of keeping a text the editor no longer has"
     );
     host.release();
+    // The document is out of sync until the editor opens it again.
+    let held = editor.request("textDocument/hover", hover_params("file:///work/a.bsl"));
+    assert_eq!(error_code(&held), CONTENT_MODIFIED);
+    editor.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": "file:///work/a.bsl", "languageId": "bsl", "version": 4, "text": "",
+        }}),
+    );
     let hover = editor.request("textDocument/hover", hover_params("file:///work/a.bsl"));
     assert!(hover["result"]["contents"].is_object(), "{hover}");
     assert!(!editor.lost.load(Ordering::Acquire));
@@ -350,8 +359,8 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
         json!({"triggerCharacters": ["(", ","]})
     );
 
-    // A change the buffer cannot take drops the document: answers come from
-    // the file again, never from a text apart from the editor's.
+    // A change the buffer cannot take puts the document out of sync: no
+    // answer about it until the editor sends its whole text again.
     editor.notify(
         "textDocument/didChange",
         json!({
@@ -362,10 +371,23 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
             }],
         }),
     );
-    assert_eq!(
-        content(&mut editor),
-        json!("Procedure Disk() EndProcedure\n")
+    let stale = editor.request(
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": module_uri}}),
     );
+    assert_eq!(error_code(&stale), CONTENT_MODIFIED, "{stale}");
+    editor.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": module_uri, "languageId": "bsl", "version": 3,
+            "text": "Procedure Reopened() EndProcedure\n",
+        }}),
+    );
+    let symbols = editor.request(
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": module_uri}}),
+    );
+    assert_eq!(symbols["result"][0]["name"], "Reopened", "{symbols}");
     assert!(!editor.lost.load(Ordering::Acquire));
 }
 

@@ -93,6 +93,7 @@ pub(crate) fn serve(
         phase: Phase::Uninitialized,
         in_flight: Arc::new(Mutex::new(HashMap::new())),
         next_request: 0,
+        unsynced: std::collections::HashSet::new(),
     };
     let code = loop {
         let body = match codec::read_message(&mut input) {
@@ -126,6 +127,9 @@ struct Frontend {
     phase: Phase,
     in_flight: InFlight,
     next_request: u64,
+    /// Documents whose text the daemon lost track of. Requests about them
+    /// are refused until the editor opens them again.
+    unsynced: std::collections::HashSet<String>,
 }
 
 enum Phase {
@@ -274,6 +278,10 @@ impl Frontend {
                     // state the editor no longer has.
                     self.withdraw_document(notification.document_uri());
                 }
+                if !matches!(notification, V5LspNotification::DidChange { .. }) {
+                    // Opening sends the whole text again; closing ends it.
+                    self.unsynced.remove(notification.document_uri());
+                }
                 self.forward(notification)
             }
             _ => Flow::Continue,
@@ -328,6 +336,17 @@ impl Frontend {
     }
 
     fn dispatch(&mut self, id: Value, call: V5LspCall) {
+        if call
+            .document_uri()
+            .is_some_and(|uri| self.unsynced.contains(uri))
+        {
+            self.send(error_response(
+                id,
+                CONTENT_MODIFIED,
+                "document is out of sync",
+            ));
+            return;
+        }
         let Phase::Running(session) = &self.phase else {
             return;
         };
@@ -409,6 +428,7 @@ impl Frontend {
         };
         eprintln!("unica lsp ignored a document notification it cannot pass on");
         self.withdraw_document(&uri);
+        self.unsynced.insert(uri.clone());
         let close = V5LspNotification::DidClose { uri };
         if close.validate().is_err() {
             return Flow::Continue;
@@ -422,8 +442,10 @@ impl Frontend {
         };
         let deadline = Instant::now() + LSP_SESSION_EXCHANGE_TIMEOUT;
         let changed = match &notification {
-            V5LspNotification::DidChange { uri, .. } => Some(uri.clone()),
-            _ => None,
+            V5LspNotification::DidOpen { uri, .. } | V5LspNotification::DidChange { uri, .. } => {
+                Some(uri.clone())
+            }
+            V5LspNotification::DidClose { .. } => None,
         };
         match session
             .anchor
@@ -436,10 +458,12 @@ impl Frontend {
             Err(V5LspExchangeError::Refused(failure))
                 if failure != V5LspFailure::SessionUnknown =>
             {
-                match changed {
-                    Some(uri) => self.forget_document(&json!({"textDocument": {"uri": uri}})),
-                    None => Flow::Continue,
+                // The daemon closed the document on its side.
+                if let Some(uri) = changed {
+                    self.withdraw_document(&uri);
+                    self.unsynced.insert(uri);
                 }
+                Flow::Continue
             }
             Err(error) => Flow::Fail(exchange_message(&error)),
         }
