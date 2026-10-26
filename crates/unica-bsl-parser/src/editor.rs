@@ -217,7 +217,11 @@ impl ParsedModule<'_> {
                 let default_value = param
                     .children()
                     .find(|child| child.kind() == SyntaxKind::EXPR)
-                    .map(|value| self.source[byte_range(value.text_range())].trim().to_owned());
+                    .map(|value| {
+                        self.source[byte_range(value.text_range())]
+                            .trim()
+                            .to_owned()
+                    });
                 Some(EditorParameter {
                     name: name.text().to_owned(),
                     range: byte_range(name.text_range()),
@@ -452,13 +456,19 @@ fn comment_runs(source: &str, root: &SyntaxNode) -> Vec<FoldBlock> {
         }
         if let Some((run, lines)) = current.replace((range, 1)) {
             if lines >= 2 {
-                runs.push(FoldBlock { range: run, kind: FoldKind::Comment });
+                runs.push(FoldBlock {
+                    range: run,
+                    kind: FoldKind::Comment,
+                });
             }
         }
     }
     if let Some((run, lines)) = current {
         if lines >= 2 {
-            runs.push(FoldBlock { range: run, kind: FoldKind::Comment });
+            runs.push(FoldBlock {
+                range: run,
+                kind: FoldKind::Comment,
+            });
         }
     }
     runs
@@ -532,7 +542,9 @@ fn classify_name(
             let called = parent
                 .parent()
                 .is_some_and(|call| call.kind() == SyntaxKind::CALL_EXPR)
-                && parent.next_sibling().is_some_and(|next| next.kind() == SyntaxKind::ARG_LIST);
+                && parent
+                    .next_sibling()
+                    .is_some_and(|next| next.kind() == SyntaxKind::ARG_LIST);
             Some((
                 if called {
                     TokenClass::Method
@@ -544,8 +556,7 @@ fn classify_name(
         }
         SyntaxKind::IDENT => {
             let callee = parent.parent().is_some_and(|call| {
-                call.kind() == SyntaxKind::CALL_EXPR
-                    && call.first_child().as_ref() == Some(&parent)
+                call.kind() == SyntaxKind::CALL_EXPR && call.first_child().as_ref() == Some(&parent)
             });
             if callee {
                 return Some((TokenClass::Method, false));
@@ -580,7 +591,9 @@ fn callee(node: &SyntaxNode) -> Option<(Option<String>, SyntaxToken)> {
     match node.kind() {
         SyntaxKind::IDENT => Some((None, direct_token(node, SyntaxKind::IDENT)?)),
         SyntaxKind::FIELD_EXPR => {
-            let qualifier = node.first_child().filter(|q| q.kind() == SyntaxKind::IDENT)?;
+            let qualifier = node
+                .first_child()
+                .filter(|q| q.kind() == SyntaxKind::IDENT)?;
             let name = direct_token(node, SyntaxKind::IDENT)?;
             Some((Some(qualifier.text().to_string()), name))
         }
@@ -631,9 +644,8 @@ mod tests {
     fn symbols_nest_methods_in_their_regions() {
         let parsed = parse(MODULE);
         let symbols = parsed.editor_symbols();
-        let names = |symbols: &[EditorSymbol]| {
-            symbols.iter().map(|s| s.name.clone()).collect::<Vec<_>>()
-        };
+        let names =
+            |symbols: &[EditorSymbol]| symbols.iter().map(|s| s.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(&symbols), ["ПрограммныйИнтерфейс", "ВнеОбластей"]);
         let interface = &symbols[0];
         assert_eq!(interface.kind, EditorSymbolKind::Region);
@@ -671,7 +683,12 @@ mod tests {
         let blocks = parse(MODULE).fold_blocks();
         let starts = blocks
             .iter()
-            .map(|block| (MODULE[block.range.clone()].lines().next().unwrap(), block.kind))
+            .map(|block| {
+                (
+                    MODULE[block.range.clone()].lines().next().unwrap(),
+                    block.kind,
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(
             starts,
@@ -703,9 +720,18 @@ mod tests {
             class_at(at("МодульнаяПеременная")),
             Some((TokenClass::Variable, true))
         );
-        assert_eq!(class_at(at("#Область")), Some((TokenClass::Directive, false)));
-        assert_eq!(class_at(at("// Складывает")), Some((TokenClass::Comment, false)));
-        assert_eq!(class_at(at("&НаСервере")), Some((TokenClass::Annotation, false)));
+        assert_eq!(
+            class_at(at("#Область")),
+            Some((TokenClass::Directive, false))
+        );
+        assert_eq!(
+            class_at(at("// Складывает")),
+            Some((TokenClass::Comment, false))
+        );
+        assert_eq!(
+            class_at(at("&НаСервере")),
+            Some((TokenClass::Annotation, false))
+        );
         assert_eq!(class_at(at("Сложить")), Some((TokenClass::Method, true)));
         assert_eq!(class_at(at("А,")), Some((TokenClass::Parameter, true)));
         assert_eq!(class_at(at("Итог;")), Some((TokenClass::Variable, true)));
@@ -724,7 +750,9 @@ mod tests {
         assert_eq!(class_at(at("1), )")), Some((TokenClass::Number, false)));
         // A global context name no declaration covers stays uncoloured.
         assert_eq!(class_at(at("ОбщМод")), None);
-        assert!(tokens.windows(2).all(|pair| pair[0].range.end <= pair[1].range.start));
+        assert!(tokens
+            .windows(2)
+            .all(|pair| pair[0].range.end <= pair[1].range.start));
     }
 
     #[test]
@@ -737,12 +765,17 @@ mod tests {
         assert_eq!(call.active_parameter, 0);
         // Inside the nested call the inner one wins.
         let inner = parsed.call_at(at("1), )") + 1).unwrap();
-        assert_eq!((inner.qualifier.as_deref(), inner.name.as_str()), (Some("Б"), "Поле"));
+        assert_eq!(
+            (inner.qualifier.as_deref(), inner.name.as_str()),
+            (Some("Б"), "Поле")
+        );
         // After the second comma: the third, empty argument.
         let third = parsed.call_at(at(", );") + 2).unwrap();
         assert_eq!((third.name.as_str(), third.active_parameter), ("Метод", 2));
         assert_eq!(
-            parsed.call_at(at("Сообщить(") + "Сообщить(".len()).map(|call| call.qualifier),
+            parsed
+                .call_at(at("Сообщить(") + "Сообщить(".len())
+                .map(|call| call.qualifier),
             Some(None)
         );
         // Not inside any argument list.
