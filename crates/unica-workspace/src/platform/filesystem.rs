@@ -2360,6 +2360,41 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
     Ok(current)
 }
 
+/// `root` with its existing ancestors canonicalized and the rest kept as
+/// given; the final component is never resolved here.
+#[cfg(unix)]
+pub(crate) fn resolve_ancestor_links(root: &Path) -> io::Result<PathBuf> {
+    let Some(name) = root.file_name() else {
+        return Ok(root.to_path_buf());
+    };
+    let mut pending = vec![name.to_os_string()];
+    let mut ancestor = root.parent();
+    while let Some(directory) = ancestor {
+        match fs::canonicalize(directory) {
+            Ok(mut resolved) => {
+                resolved.extend(pending.iter().rev());
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // A missing `..` cannot be carried over without changing
+                // which directory the path names.
+                let Some(name) = directory.file_name() else {
+                    return Ok(root.to_path_buf());
+                };
+                pending.push(name.to_os_string());
+                ancestor = directory.parent();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(root.to_path_buf())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn resolve_ancestor_links(root: &Path) -> io::Result<PathBuf> {
+    Ok(root.to_path_buf())
+}
+
 /// Opens an absolute directory path component-by-component and creates only absent directory
 /// components relative to an already-retained parent. Existing links are never followed and no
 /// ambient write occurs before the parent descriptor is verified.

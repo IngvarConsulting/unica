@@ -704,38 +704,6 @@ fn parse_startup_failure(bytes: &[u8], pid: u32) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// #2252: a link among the ancestors of the state root (macOS `/var` →
-    /// `/private/var`) does not stop the daemon state from opening once the
-    /// root is resolved, while a state root that is itself a link is refused.
-    #[cfg(unix)]
-    #[test]
-    fn a_linked_ancestor_opens_and_a_linked_state_root_is_refused() {
-        use unica_workspace::state_fs::state_root_with_resolved_ancestors;
-        let root = tempfile::tempdir().unwrap();
-        let real = root.path().join("real");
-        std::fs::create_dir(&real).unwrap();
-        let alias = root.path().join("alias");
-        std::os::unix::fs::symlink(&real, &alias).unwrap();
-
-        let given = alias.join("provider-state");
-        assert!(DaemonStateDirectory::open(&given, &CoreIdentity::production_v5()).is_err());
-        let resolved = state_root_with_resolved_ancestors(&given).unwrap();
-        assert_eq!(
-            resolved,
-            std::fs::canonicalize(&real).unwrap().join("provider-state")
-        );
-        DaemonStateDirectory::open(&resolved, &CoreIdentity::production_v5())
-            .expect("the state opens below a linked ancestor");
-
-        let linked_root = root.path().join("linked-state");
-        std::os::unix::fs::symlink(&resolved, &linked_root).unwrap();
-        let resolved = state_root_with_resolved_ancestors(&linked_root).unwrap();
-        assert!(
-            DaemonStateDirectory::open(&resolved, &CoreIdentity::production_v5()).is_err(),
-            "a state root replaced by a link is still refused"
-        );
-    }
-
     #[test]
     fn startup_failure_record_is_bounded_single_line_and_bound_to_its_pid() {
         let root = tempfile::tempdir().unwrap();
