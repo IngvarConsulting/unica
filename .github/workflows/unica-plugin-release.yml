@@ -675,8 +675,17 @@ jobs:
           shared-key: ci-rust-ordinary
           save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
           cache-on-failure: true
+      # Полный контур линтует и эту ОС: ветки `cfg` по ОС. Clippy идёт первым:
+      # его отказ виден в логе через минуты, а не после всех тестов. Сборка
+      # и тесты идут и после красного Clippy (`!cancelled()`), так что оба
+      # сигнала приходят в одном прогоне. Очередь с одними платформенными
+      # каталогами линтует macOS ночью и на теге, Windows — отдельной джобой.
+      - name: Clippy
+        id: clippy
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && env.GATE_PROFILE != 'queue' }}
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - id: rust-build
-        if: steps.classify.outputs.rust_required == 'true'
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
         env:
           RUN_LINE: ${{ steps.line.outputs.line }}
         run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase build --prepared "$LANES" --results "$REPORT" --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
@@ -693,10 +702,6 @@ jobs:
         env:
           RUN_LINE: ${{ steps.line.outputs.line }}
         run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase run --prepared "$LANES" --results "$REPORT" --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
-      # Полный контур линтует и эту ОС: ветки `cfg` по ОС. Очередь с одними
-      # платформенными каталогами линтует macOS ночью и на теге.
-      - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && env.GATE_PROFILE != 'queue' }}
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

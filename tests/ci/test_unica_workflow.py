@@ -631,12 +631,28 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertLess(steps(checks).index(step_by_id(checks, "python")), steps(checks).index(step_by_id(checks, "clippy")))
         self.assertIs(steps_using(checks, "Swatinem/rust-cache")[0]["with"]["save-if"], False)
         self.assertIn("--all-targets --all-features --message-format=json -- -D warnings", CLIPPY_SCRIPT.read_text(encoding="utf-8"))
-        # Clippy следует тестам: очередь с одними платформенными каталогами
-        # линтует macOS ночью и на теге, остальные контуры — сразу.
-        os_clippy = next(step for step in steps(other) if "cargo clippy" in step.get("run", ""))
+        # Очередь с одними платформенными каталогами линтует macOS ночью и на
+        # теге, остальные контуры — сразу.
+        os_clippy = step_by_id(other, "clippy")
+        self.assertEqual([os_clippy], [step for step in steps(other) if "cargo clippy" in step.get("run", "")])
         self.assertIn("env.GATE_PROFILE != 'queue'", condition(os_clippy))
-        self.assertIn("!cancelled()", condition(os_clippy))
+        self.assertIn("rust_required == 'true'", condition(os_clippy))
         self.assertIn("--workspace --all-targets --all-features --locked -- -D warnings", os_clippy["run"])
+        self.assertNotIn("continue-on-error", os_clippy)
+
+    def test_os_job_lints_first_and_a_red_clippy_still_runs_the_tests(self) -> None:
+        """Clippy джобы ОС — до сборки тестов; его отказ не отменяет сборку и прогон (#2152)."""
+        other = job(self.release, "rust-os")
+        order = steps(other)
+        clippy, build, run = (step_by_id(other, step_id) for step_id in ("clippy", "rust-build", "rust-run"))
+        cache = steps_using(other, "Swatinem/rust-cache")[0]
+        plan_upload = next(step for step in steps_using(other, "actions/upload-artifact") if step["with"]["name"].startswith("plan-"))
+        self.assertLess(order.index(cache), order.index(clippy))
+        self.assertLess(order.index(clippy), order.index(build))
+        # Всё после Clippy идёт и после его отказа: оба сигнала — в одном прогоне.
+        for step in (build, plan_upload, run):
+            with self.subTest(step=step.get("id") or step["with"]["name"]):
+                self.assertIn("!cancelled()", condition(step))
 
     def test_windows_clippy_runs_beside_the_queue_and_gates_it(self) -> None:
         """Ошибка Clippy, видимая только на Windows, не проходит очередь (#2152)."""
