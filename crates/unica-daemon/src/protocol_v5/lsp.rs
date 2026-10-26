@@ -258,6 +258,8 @@ pub enum V5LspFailure {
     Unavailable,
     /// Рабочая папка не открылась как рабочая область Unica.
     WorkspaceUnavailable,
+    /// Адрес не называет модуль, доступный этому соединению.
+    DocumentUnknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

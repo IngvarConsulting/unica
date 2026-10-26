@@ -189,8 +189,6 @@ impl ProviderReadAuthority {
     }
 
     /// Reads modules of `documents` from their open buffers.
-    // The LSP route (#2173) builds its reads with this.
-    #[allow(dead_code)]
     pub(crate) fn with_documents(mut self, documents: SessionDocuments) -> Self {
         self.documents = (!documents.is_empty()).then_some(documents);
         self

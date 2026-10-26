@@ -74,11 +74,13 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
         capabilities,
         &json!({
             "positionEncoding": "utf-16",
+            "textDocumentSync": {"openClose": true, "change": 2},
+            "workspace": {"textDocumentContent": {"schemes": ["unica"]}},
             "experimental": {"unica": {"workspaces": [
-                {"folder": "file:///work", "failure": "lsp_not_supported"},
+                {"folder": "file:///work", "failure": "lsp_workspace_unavailable"},
             ]}},
         }),
-        "the daemon has no LSP service yet: no capability, and no folder became a space"
+        "the product service declares what it serves; a folder that is no workspace gets no space"
     );
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     assert_eq!(
@@ -250,6 +252,80 @@ fn a_session_the_daemon_no_longer_serves_ends_the_frontend() {
     daemon.stop(daemon.owner());
 
     wait_until(|| editor.lost.load(Ordering::Acquire));
+}
+
+/// Служба продукта: папка редактора и вызов MCP той же рабочей области
+/// приходят к одному актору; буфер редактора виден в его ответах и не
+/// попадает на диск.
+#[test]
+fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
+    let daemon = LiveV5Daemon::start_with_product_lsp(canonical_v13_service());
+    let owner = daemon.owner();
+    let workspace = catalog_workspace();
+    let module = workspace
+        .path()
+        .join("src/CommonModules/Main/Ext/Module.bsl");
+    std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+    std::fs::write(&module, "Procedure Disk() EndProcedure\n").unwrap();
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let folder: String = url::Url::from_file_path(&root).unwrap().into();
+    let module_uri: String = url::Url::from_file_path(std::fs::canonicalize(&module).unwrap())
+        .unwrap()
+        .into();
+    let mut editor = Editor::start(&daemon);
+
+    let initialized = editor.request(
+        "initialize",
+        json!({"workspaceFolders": [{"uri": folder, "name": "Work"}]}),
+    );
+    let capabilities = &initialized["result"]["capabilities"];
+    assert_eq!(
+        capabilities["experimental"]["unica"]["workspaces"],
+        json!([{"folder": folder, "space": "work"}])
+    );
+    assert_eq!(
+        capabilities["workspace"]["textDocumentContent"],
+        json!({"schemes": ["unica"]})
+    );
+    assert_eq!(capabilities["textDocumentSync"]["change"], 2);
+    mcp_view(&daemon, &owner, &view_request(workspace.path()));
+    assert_eq!(
+        daemon.live_workspace_actors(),
+        1,
+        "MCP and LSP share the actor"
+    );
+
+    let content = |editor: &mut Editor| {
+        editor.request(
+            "workspace/textDocumentContent",
+            json!({"uri": "unica://work/main/CommonModule.Main"}),
+        )["result"]["text"]
+            .clone()
+    };
+    assert_eq!(
+        content(&mut editor),
+        json!("Procedure Disk() EndProcedure\n")
+    );
+    editor.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": module_uri, "languageId": "bsl", "version": 1,
+            "text": "Procedure Buffer() EndProcedure\n",
+        }}),
+    );
+    assert_eq!(
+        content(&mut editor),
+        json!("Procedure Buffer() EndProcedure\n")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&module).unwrap(),
+        "Procedure Disk() EndProcedure\n"
+    );
+    let foreign = editor.request(
+        "workspace/textDocumentContent",
+        json!({"uri": "unica://other/main/CommonModule.Main"}),
+    );
+    assert_eq!(foreign["error"]["message"], "unica: lsp_document_unknown");
 }
 
 /// Приёмка #2173: поток hover не задерживает параллельный вызов MCP.
