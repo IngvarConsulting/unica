@@ -649,6 +649,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         plan_upload = next(step for step in steps_using(other, "actions/upload-artifact") if step["with"]["name"].startswith("plan-"))
         self.assertLess(order.index(cache), order.index(clippy))
         self.assertLess(order.index(clippy), order.index(build))
+        self.assertIn("!cancelled()", condition(clippy))
+        self.assertIn("env.GATE_PROFILE != 'queue'", condition(clippy))
         # Всё после Clippy идёт и после его отказа: оба сигнала — в одном прогоне.
         for step in (build, plan_upload, run):
             with self.subTest(step=step.get("id") or step["with"]["name"]):
@@ -668,8 +670,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("continue-on-error", lint)
         self.assertEqual(lint["permissions"], {"contents": "read", "actions": "write"})
         self.assertEqual(lint["defaults"]["run"]["shell"], "bash")
-        # Ключ rust-cache включает переменные `CARGO*`: они те же, что у джобы ОС.
-        self.assertEqual(lint["env"]["CARGO_PROFILE_DEV_DEBUG"], job(self.release, "rust-os")["env"]["CARGO_PROFILE_DEV_DEBUG"])
+        # Ключ rust-cache включает переменные `CARGO*` и `RUST*`: они те же, что у джобы ОС.
+        def cache_env(found: dict) -> dict:
+            return {name: value for name, value in found.get("env", {}).items() if name.startswith(("CARGO", "RUST"))}
+        self.assertEqual(cache_env(lint), cache_env(job(self.release, "rust-os")))
+        self.assertTrue(cache_env(lint))
         classify = step_by_id(lint, "classify")
         self.assertIn("--runner-matrix '[\"windows-latest\"]'", classify["run"])
         toolchain = steps_using(lint, "dtolnay/rust-toolchain")
@@ -686,6 +691,15 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("continue-on-error", clippy)
         for step in (*toolchain, cache[0], clippy):
             self.assertIn("steps.classify.outputs.rust_required == 'true'", condition(step))
+        # Гейт ждёт исход джобы целиком: без Rust вне одной прозы она краснеет.
+        required = step_named(lint, "Rust required")
+        self.assertEqual(
+            condition(required),
+            "steps.classify.outputs.rust_required != 'true' && steps.classify.outputs.docs_only != 'true'",
+        )
+        self.assertIn("exit 1", required["run"])
+        self.assertLess(steps(lint).index(classify), steps(lint).index(required))
+        self.assertLess(steps(lint).index(required), steps(lint).index(toolchain[0]))
         order = steps(lint)
         self.assertLess(order.index(classify), order.index(toolchain[0]))
         self.assertLess(order.index(toolchain[0]), order.index(cache[0]))

@@ -474,7 +474,7 @@ jobs:
   # которая ждёт исход её шагов по jobs API (`lint-job`, `pr-python`). Python
   # small продукту не нужен, поэтому он идёт здесь, параллельно сборке и
   # medium. Только pull request: очередь и ветки исполняют всё внутри
-  # `Unica CI` и держат два раннера на запись.
+  # `Unica CI` и держат три раннера на запись: Linux, macOS и Clippy Windows.
   pr-checks:
     name: Lint and Python
     if: ${{ github.event_name == 'pull_request' }}
@@ -772,6 +772,13 @@ jobs:
         env:
           RUN_LINE: ${{ steps.line.outputs.line }}
         run: python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix '["windows-latest"]' --line "$RUN_LINE" --results .build/ci-routing-windows >> "$GITHUB_OUTPUT"
+      # Гейт ждёт исход всей джобы: без Rust она была бы зелёной, не линтуя.
+      # Пропуск законен только у записи из одной прозы.
+      - name: Rust required
+        if: steps.classify.outputs.rust_required != 'true' && steps.classify.outputs.docs_only != 'true'
+        run: |
+          echo "::error::классификатор Windows не требует Rust для записи не из одной прозы"
+          exit 1
       - if: steps.classify.outputs.rust_required == 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
