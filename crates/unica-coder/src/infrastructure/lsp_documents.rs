@@ -46,6 +46,9 @@ pub(crate) enum LspDocumentError {
     /// layout.
     NotAModule,
     UnknownSourceSet(String),
+    /// The answer needs a source that is not ready yet (the platform
+    /// help); answering without it would pass a partial answer as whole.
+    SourceNotReady,
     NotOpen,
     Change(DocumentChangeError),
     Overlay(DocumentOverlayError),
@@ -250,25 +253,27 @@ impl LspDocuments {
     /// `textDocument/signatureHelp` at `position` of `uri`. A qualified
     /// call names a common module of the same source set, read through
     /// `read` (with this connection's buffers); a plain call not declared
-    /// by the module is looked up in `global_context`.
+    /// by the module is looked up in `global_context`, which is `None`
+    /// while the platform help is still being indexed.
     pub(crate) fn signature_help(
         &self,
         uri: &str,
         position: crate::application::lsp::position::Utf16Position,
         read: &ProviderReadAuthority,
-        global_context: &[GlobalContextMember],
+        global_context: Option<&[GlobalContextMember]>,
     ) -> Result<Option<serde_json::Value>, LspDocumentError> {
         let Some(text) = self.content(uri, read)? else {
             return Ok(None);
         };
         let location = self.locate(uri)?;
         let common_module = |name: &str| self.common_module_content(&location, name, read);
-        Ok(crate::infrastructure::lsp_features::signature_help(
+        crate::infrastructure::lsp_features::signature_help(
             &text,
             position,
             &common_module,
             global_context,
-        ))
+        )
+        .map_err(|_| LspDocumentError::SourceNotReady)
     }
 
     /// The text of the common module `typed` names in the source set of
