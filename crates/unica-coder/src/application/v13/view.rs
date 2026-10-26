@@ -1530,13 +1530,13 @@ mod tests {
         let request = ViewRequest::new("main:Catalog.Валюты").expect("адрес разбирается");
         let result = service.view(request);
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.ok, "the call was expected to be refused");
         let diagnostic = &result.diagnostics[0];
         assert_eq!(diagnostic["code"], "provider_unavailable");
         assert_eq!(diagnostic["detailCode"], "source_unreadable");
         assert_eq!(
             diagnostic["outcome"], "fixSource",
-            "уточнение перекрывает умолчание кода: {result:?}"
+            "уточнение перекрывает умолчание кода"
         );
         assert_ne!(
             RefusalCode::ProviderUnavailable.outcome(),
