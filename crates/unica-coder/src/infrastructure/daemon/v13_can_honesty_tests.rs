@@ -436,12 +436,22 @@ fn walk(workspace: &Path, root: &str) -> Walk {
         }
         *count += 1;
         nodes.push(at);
+        // Коллекция вида в корне идёт в порядке `ChildObjects` (#2156). Обход
+        // берёт её членов по имени: выбор представителей формы адреса не
+        // должен зависеть от авторского порядка фикстуры.
+        let root_collection = matches!(address.segments(), [only] if only.name().is_none());
         for slot in ["branches", "items"] {
-            for child in data[slot].as_array().into_iter().flatten() {
-                if let Some(child) = child.get("at").and_then(Value::as_str) {
-                    queue.push_back(child.to_string());
-                }
+            let mut children = data[slot]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|child| child.get("at").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if root_collection && slot == "items" {
+                children.sort();
             }
+            queue.extend(children);
         }
     }
     Walk { nodes, unroutable }
