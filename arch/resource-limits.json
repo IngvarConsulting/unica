@@ -6222,6 +6222,54 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "pull.platform-digest-cache-entries",
+      "class": "retention",
+      "resource": "Число запомненных дайджестов файлов установки платформы в процессе демона.",
+      "unit": "count",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-workspace/src/platform/full_dump.rs",
+        "symbol": "PLATFORM_DIGEST_CACHE_CAPACITY"
+      },
+      "expr": "65_536",
+      "value": 65536,
+      "applied": [
+        "crates/unica-workspace/src/platform/full_dump.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2193",
+      "problem": "Аттестация платформы перечитывала всю установку (1,8 ГБ у 8.3.27) при каждом снимке и сверке полной выгрузки.",
+      "onReach": "память дайджестов очищается, и следующий снимок читает установку целиком",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "pull.platform-digest-settle-window-ms",
+      "class": "step",
+      "resource": "Возраст времени изменения файла установки платформы, после которого его дайджест запоминается.",
+      "unit": "ms",
+      "scope": "cache",
+      "source": {
+        "file": "crates/unica-workspace/src/platform/full_dump.rs",
+        "symbol": "PLATFORM_DIGEST_SETTLE_WINDOW"
+      },
+      "expr": "std::time::Duration::from_secs(2)",
+      "value": 2000,
+      "applied": [
+        "crates/unica-workspace/src/platform/full_dump.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2193",
+      "problem": "Запись в тот же тик времени, что и запомненный штамп, не меняет ctime на грубых часах файловой системы.",
+      "onReach": "файл моложе окна читается заново при каждом снимке",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [
