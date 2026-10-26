@@ -2269,7 +2269,10 @@ impl CanonicalV13ReadService {
         let deadline = first.deadline();
         let layout = selected
             .iter()
-            .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
+            .map(|source| {
+                LayoutFindSource::new(source.name(), source.kind(), source.root())
+                    .with_names(source.name_catalog())
+            })
             .collect::<Vec<_>>();
         let scope_binding = scope.as_ref().map(ToString::to_string);
         let binding_for = |result_fingerprint: Option<String>| SearchCursorBinding {
@@ -2394,8 +2397,9 @@ impl CanonicalV13ReadService {
             );
         }
         // Names do not have a source revision lease. Every page walks the
-        // layout again and binds the cursor to the ranked answer — its count
-        // and order-free digest — and coverage instead of a source revision.
+        // layout again through the names catalog and binds the cursor to the
+        // ranked answer — its count and order-free digest — and coverage
+        // instead of a source revision.
         let mut hasher = Sha256::new();
         hasher.update(b"unica-v13-names-result-v2\0");
         hasher.update(found.fingerprint);

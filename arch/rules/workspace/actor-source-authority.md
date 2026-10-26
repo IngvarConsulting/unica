@@ -1,5 +1,6 @@
 ---
 id: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
+gap: https://github.com/IngvarConsulting/unica/issues/2259
 check:
   - crates/unica-workspace/src/actor_local_tests.rs::duplicate_physical_root_names_are_rejected_as_ambiguous
   - crates/unica-workspace/src/actor_local_tests.rs::duplicate_source_set_names_with_distinct_roots_are_rejected
@@ -23,6 +24,8 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::actor_owned_typed_form_reader_never_follows_a_source_set_remap
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::actor_owned_module_reader_never_follows_a_source_set_remap
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::every_typed_reader_remains_on_the_admitted_root_after_source_set_remap
+  - crates/unica-coder/src/infrastructure/v13_find/catalog_tests.rs::a_walk_checks_each_directory_once_however_many_files_it_reads
+  - crates/unica-coder/src/infrastructure/v13_find/catalog_tests.rs::a_root_or_directory_replaced_during_the_walk_refuses_its_answer
 ---
 
 # Право чтения и публикации принадлежит выдавшему его актору
@@ -39,8 +42,11 @@ check:
 
 Одно имя набора нельзя связать с разными корнями; один физический корень
 нельзя объявить под разными именами. Чтение относительно удерживаемого
-каталога не следует вложенным ссылкам. Подмена именованного корня
-другим каталогом отклоняет результат.
+каталога не следует вложенным ссылкам. Идентичность корня и каталогов,
+через которые идёт чтение, проверяется один раз за запрос или план: файлы
+читаются относительно уже проверенного каталога и не проверяют его заново.
+Подмена корня или такого каталога посреди запроса обнаруживается не позже
+проверки перед выдачей ответа или публикацией и отклоняет результат.
 
 Перед выдачей ответа чтения актор проверяет экземпляр и удержанный физический
 корень, сохраняя исходный срок и отмену. Общая ревизия исходников не

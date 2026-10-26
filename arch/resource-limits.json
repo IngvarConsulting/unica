@@ -2313,7 +2313,7 @@
     {
       "id": "view.registration-settle-window-ms",
       "class": "retention",
-      "resource": "Окно гранулярности отметки времени: файл моложе окна не кешируется в индексе регистраций и перечитывается индексом имён при следующем обходе.",
+      "resource": "Окно гранулярности отметки времени: файл или каталог моложе окна не кешируется в индексе регистраций и каталоге имён метаданных и перечитывается индексом имён модулей при следующем обходе.",
       "unit": "ms",
       "scope": "cache",
       "source": {
@@ -2323,13 +2323,14 @@
       "expr": "std::time::Duration::from_secs(2)",
       "value": 2000,
       "applied": [
+        "crates/unica-coder/src/infrastructure/v13_find/catalog.rs",
         "crates/unica-coder/src/infrastructure/v13_large_configuration.rs",
         "crates/unica-coder/src/infrastructure/name_index.rs"
       ],
       "status": "unproven",
       "origin": "b054c6196 (#1457, #1481)",
       "problem": "Отметка времени моложе окна не доказывает неизменность файла (комментарий в v13_large_configuration.rs).",
-      "onReach": "Запись не кешируется, корень разбирается заново при следующем вызове.",
+      "onReach": "Запись не кешируется: корень разбирается, а дескриптор или каталог читается заново при следующем вызове.",
       "issue": null,
       "evidence": [],
       "decision": null,

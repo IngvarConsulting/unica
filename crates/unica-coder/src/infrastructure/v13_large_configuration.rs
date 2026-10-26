@@ -3,6 +3,7 @@
 //! Each registration carries its position in `ChildObjects`, so a branch is
 //! listed in the Designer's order although the index is sorted by key.
 
+use crate::infrastructure::v13_find::NameCatalog;
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -236,13 +237,15 @@ pub(crate) struct RegistrationIndex {
 /// со штампом записи и будет разобран заново. Запись сохраняется, только
 /// если штамп устоялся (обе метки времени известны и старше окна); иначе
 /// файл разбирается при каждом обращении. Обхода дерева нет. Отравленная
-/// блокировка сбрасывает запись, а не отказывает дальше.
+/// блокировка сбрасывает запись, а не отказывает дальше. Каталог имён набора
+/// живёт здесь же и устроен так же (см. [`NameCatalog`]).
 pub(crate) struct RegistrationCache {
     /// Which modules of the set spell a name, built in the background.
     names: Arc<crate::infrastructure::name_index::SourceNameIndex>,
     registrations: Mutex<Option<(FileStamp, Arc<RegistrationIndex>)>>,
     configuration: Mutex<Option<(ConfigurationStamps, Arc<Value>)>>,
     support: Mutex<Option<RetainedSupportState>>,
+    name_catalog: NameCatalog,
     subsystems: Mutex<Option<RetainedSubsystemTopology>>,
     settle_window: std::time::Duration,
     #[cfg(test)]
@@ -261,6 +264,7 @@ impl Default for RegistrationCache {
             registrations: Mutex::new(None),
             configuration: Mutex::new(None),
             support: Mutex::new(None),
+            name_catalog: NameCatalog::default(),
             subsystems: Mutex::new(None),
             settle_window: SETTLE_WINDOW,
             #[cfg(test)]
@@ -344,6 +348,7 @@ impl RegistrationCache {
     #[cfg(test)]
     pub(crate) fn with_settle_window_for_test(window: std::time::Duration) -> Self {
         Self {
+            name_catalog: NameCatalog::with_settle_window_for_test(window),
             settle_window: window,
             ..Self::default()
         }
@@ -360,6 +365,11 @@ impl RegistrationCache {
         if let Some(hook) = slot(&self.after_parse).take() {
             hook();
         }
+    }
+
+    /// The metadata names catalog of this source set.
+    pub(crate) const fn name_catalog(&self) -> &NameCatalog {
+        &self.name_catalog
     }
 
     /// The set's name index, kept with its other retained artifacts.

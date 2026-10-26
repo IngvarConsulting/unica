@@ -15,6 +15,7 @@ type RuntimeJobService = unica_execution::runtime_jobs::RuntimeJobService<
 >;
 use crate::infrastructure::source_workspace::discover_project_source_admission;
 use crate::infrastructure::source_workspace::{WorkspaceActor, WorkspaceActorRegistry};
+use crate::infrastructure::v13_find::NameCatalog;
 use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::workspace::discover_workspace;
 use std::io::BufRead;
@@ -306,6 +307,7 @@ pub(in crate::infrastructure::daemon) struct ActorLayoutSource {
     kind: SourceSetKind,
     root: Arc<SourceDirectory>,
     deadline: ProviderDeadline,
+    artifacts: Arc<RegistrationCache>,
 }
 
 impl ActorLayoutSource {
@@ -323,6 +325,11 @@ impl ActorLayoutSource {
 
     pub(in crate::infrastructure::daemon) const fn deadline(&self) -> ProviderDeadline {
         self.deadline
+    }
+
+    /// The names catalog the actor retains for this source set.
+    pub(in crate::infrastructure::daemon) fn name_catalog(&self) -> &NameCatalog {
+        self.artifacts.name_catalog()
     }
 }
 
@@ -828,12 +835,48 @@ impl ActorBoundExecution {
         };
         #[cfg(test)]
         test_control::record_apply_deadline(deadline);
-        let result =
-            self.invocation
-                .actor
-                .execute_saved_apply(token, deadline, cancellation, finish)?;
+        let result = self.invocation.actor.execute_saved_apply(
+            token,
+            deadline,
+            cancellation,
+            |preview, publication| {
+                if let Ok(published) = &publication {
+                    if published.effects().disposition()
+                        == unica_workspace::actor::ApplyEffectDisposition::Committed
+                    {
+                        self.forget_published_names(published.effects().events());
+                    }
+                }
+                finish(preview, publication)
+            },
+        )?;
         confirmed.store(true, std::sync::atomic::Ordering::Release);
         Ok(result)
+    }
+
+    /// A committed publication drops what it changed from the names catalog
+    /// of every source set its events name.
+    fn forget_published_names(&self, events: &[unica_source_contract::events::DomainEvent]) {
+        let own_source_set = self.invocation.provider_root.source_set_name();
+        let bindings = std::iter::once(&self.invocation.provider_root).chain(
+            self.invocation
+                .read_sources
+                .iter()
+                .map(|source| &source.binding),
+        );
+        let mut forgotten = std::collections::HashSet::new();
+        for binding in bindings {
+            if !forgotten.insert(binding.source_set_name()) {
+                continue;
+            }
+            if let Ok(artifacts) = self.invocation.actor.source_artifacts(binding) {
+                artifacts.name_catalog().forget_published(
+                    binding.source_set_name(),
+                    own_source_set,
+                    events,
+                );
+            }
+        }
     }
 
     #[cfg(test)]
@@ -941,6 +984,7 @@ impl ActorBoundExecution {
                     kind: binding.source_kind(),
                     root: binding.retained_root(),
                     deadline: lease.deadline,
+                    artifacts: self.invocation.actor.source_artifacts(binding)?,
                 })
             })
             .collect()

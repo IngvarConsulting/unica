@@ -74,6 +74,7 @@ pub(crate) mod retained_read_probe {
         id: usize,
         root: PathBuf,
         events: Vec<RetainedRead>,
+        validations: Vec<PathBuf>,
     }
 
     static ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -102,6 +103,7 @@ pub(crate) mod retained_read_probe {
                 id,
                 root: root.clone(),
                 events: Vec::new(),
+                validations: Vec::new(),
             });
             ACTIVE.fetch_add(1, Ordering::AcqRel);
             Self { id, root }
@@ -123,10 +125,44 @@ pub(crate) mod retained_read_probe {
         }
     }
 
+    impl RetainedReadProbe {
+        /// Drains the paths whose named identity was checked since the
+        /// previous call, sorted and relative to the watched root; a path
+        /// appears once per check.
+        pub fn take_validations(&self) -> Vec<PathBuf> {
+            let mut validations = watches()
+                .iter_mut()
+                .find(|watch| watch.id == self.id)
+                .map(|watch| std::mem::take(&mut watch.validations))
+                .unwrap_or_default()
+                .iter()
+                .map(|path| path.strip_prefix(&self.root).unwrap_or(path).to_path_buf())
+                .collect::<Vec<_>>();
+            validations.sort();
+            validations
+        }
+    }
+
     impl Drop for RetainedReadProbe {
         fn drop(&mut self) {
             watches().retain(|watch| watch.id != self.id);
             ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    pub(super) fn record_validation(path: impl FnOnce() -> PathBuf) {
+        if ACTIVE.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        let path = path();
+        let path = match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => canonical(parent).join(name),
+            _ => canonical(&path),
+        };
+        for watch in watches().iter_mut() {
+            if path.starts_with(&watch.root) {
+                watch.validations.push(path.clone());
+            }
         }
     }
 
@@ -751,6 +787,8 @@ impl RetainedDirectoryCapability {
     /// идентичностей. Ошибка открытия или чтения метаданных остаётся `Err`,
     /// потому что по ней нельзя заключать, что имя было подменено.
     pub(crate) fn named_identity_matches(&self) -> io::Result<bool> {
+        #[cfg(any(test, feature = "test-support"))]
+        retained_read_probe::record_validation(|| self.path.clone());
         let rebound = if let Some(parent) = &self.parent {
             if !parent.directory.named_identity_matches()? {
                 return Ok(false);
@@ -1532,6 +1570,42 @@ impl RetainedDirectoryCapability {
         }
     }
 
+    /// The stamp of the entry `relative` names below this directory, taken
+    /// without following a link at its last component and, on Unix, without
+    /// opening it. An empty path names this directory. `None` when the entry
+    /// is absent.
+    pub(crate) fn relative_entry_stamp_nofollow(
+        &self,
+        relative: &Path,
+    ) -> io::Result<Option<FileStamp>> {
+        if relative.as_os_str().is_empty() {
+            return file_stamp(&self.retained.directory).map(Some);
+        }
+        match relative_entry_stamp(&self.retained.directory, relative) {
+            Ok(stamp) => Ok(Some(stamp)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Proves that `relative` still names the entry observed as `expected`:
+    /// the same physical object with the same length and times.
+    pub(crate) fn validate_relative_entry(
+        &self,
+        relative: &Path,
+        expected: &FileStamp,
+    ) -> io::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        retained_read_probe::record_validation(|| self.path.join(relative));
+        if self.relative_entry_stamp_nofollow(relative)?.as_ref() != Some(expected) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "named entry changed after it was observed",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
         use std::path::Component;
 
@@ -1895,6 +1969,8 @@ impl RetainedRegularFileCapability {
     /// streaming readers.
     pub(crate) fn open_named_identity_for_read(&self) -> io::Result<fs::File> {
         self.parent.validate_named_identity()?;
+        #[cfg(any(test, feature = "test-support"))]
+        retained_read_probe::record_validation(|| self.parent.path.join(&self.name));
         let reopened = open_regular_child_nofollow(&self.parent.retained.directory, &self.name)?;
         if file_identity(&reopened)? != self.identity {
             return Err(io::Error::new(
@@ -1906,6 +1982,8 @@ impl RetainedRegularFileCapability {
     }
 
     pub(crate) fn validate_named_identity_relative(&self) -> io::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        retained_read_probe::record_validation(|| self.parent.path.join(&self.name));
         let rebound = open_regular_child_nofollow(&self.parent.retained.directory, &self.name)?;
         if file_identity(&rebound)? != self.identity {
             return Err(io::Error::new(
@@ -2234,6 +2312,60 @@ fn unix_child_name(name: &std::ffi::OsStr) -> io::Result<std::ffi::CString> {
         ));
     }
     CString::new(name.as_bytes()).map_err(Into::into)
+}
+
+/// `fstatat` of a descriptor-relative path whose last component is not
+/// followed. Earlier components resolve like any lookup; callers that need
+/// them unlinked observe each of them the same way.
+#[cfg(unix)]
+fn relative_entry_stamp(directory: &fs::File, relative: &Path) -> io::Result<FileStamp> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+
+    if !relative
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "relative entry path must hold only normal components",
+        ));
+    }
+    let encoded = std::ffi::CString::new(relative.as_os_str().as_bytes())?;
+    let mut status = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: the directory descriptor stays open for the call, the path is
+    // NUL-terminated, and `status` is writable storage of the `stat` layout.
+    let result = unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            encoded.as_ptr(),
+            status.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a successful fstatat filled `status`.
+    let status = unsafe { status.assume_init() };
+    #[allow(clippy::unnecessary_cast, reason = "stat field widths differ by host")]
+    let (volume, file, length) = (
+        status.st_dev as u64,
+        status.st_ino as u64,
+        status.st_size as u64,
+    );
+    #[allow(clippy::unnecessary_cast, reason = "stat field widths differ by host")]
+    let (modified, changed) = (
+        change_time_as_system_time((status.st_mtime as i64, status.st_mtime_nsec as i64)),
+        change_time_as_system_time((status.st_ctime as i64, status.st_ctime_nsec as i64)),
+    );
+    Ok(FileStamp::from_observation(
+        FileIdentity::from_observation(volume, file),
+        length,
+        modified,
+        changed,
+    ))
 }
 
 #[cfg(unix)]
@@ -3969,6 +4101,36 @@ fn open_or_create_regular_child_read_write_nofollow(
         ));
     }
     Ok(file)
+}
+
+/// Windows has no descriptor-relative stat: each component is opened without
+/// following a reparse point and the last one is stamped through its handle.
+#[cfg(windows)]
+fn relative_entry_stamp(directory: &fs::File, relative: &Path) -> io::Result<FileStamp> {
+    use std::path::Component;
+
+    let mut names = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relative entry path must hold only normal components",
+            ));
+        };
+        names.push(name);
+    }
+    let Some((last, parents)) = names.split_last() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "relative entry path must not be empty",
+        ));
+    };
+    let mut current = directory.try_clone()?;
+    for name in parents {
+        current = open_directory_child_nofollow(&current, name)?;
+    }
+    let (entry, _kind) = open_any_child_nofollow(&current, last)?;
+    file_stamp(&entry)
 }
 
 #[cfg(windows)]

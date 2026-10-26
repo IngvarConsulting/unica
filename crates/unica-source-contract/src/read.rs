@@ -50,6 +50,10 @@ impl FileStamp {
         }
     }
 
+    pub const fn identity(&self) -> FileIdentity {
+        self.identity
+    }
+
     pub fn settled(&self, now: SystemTime, window: Duration) -> bool {
         [self.modified, self.changed].into_iter().all(|time| {
             time.is_some_and(|time| now.duration_since(time).is_ok_and(|age| age >= window))
@@ -242,6 +246,8 @@ pub trait SourceDirectoryReadPort: Debug + Send + Sync {
         maximum_bytes: usize,
     ) -> io::Result<Vec<u8>>;
     fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>>;
+    fn relative_entry_stamp_nofollow(&self, relative: &Path) -> io::Result<Option<FileStamp>>;
+    fn validate_relative_entry(&self, relative: &Path, expected: &FileStamp) -> io::Result<()>;
     fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadFile>;
     fn read_immediate_names_with_limit(
         &self,
@@ -311,6 +317,17 @@ impl SourceDirectory {
     }
     pub fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
         self.0.relative_file_stamp(relative)
+    }
+    /// The stamp of the entry `relative` names, without following a link at
+    /// its last component and, where the host allows, without opening it.
+    /// An empty path names this directory; `None` means the entry is absent.
+    pub fn relative_entry_stamp_nofollow(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
+        self.0.relative_entry_stamp_nofollow(relative)
+    }
+    /// Proves that `relative` still names the entry observed as `expected`:
+    /// the same physical object with unchanged length and times.
+    pub fn validate_relative_entry(&self, relative: &Path, expected: &FileStamp) -> io::Result<()> {
+        self.0.validate_relative_entry(relative, expected)
     }
     pub fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadFile> {
         self.0.open_relative_regular_nofollow(relative)
