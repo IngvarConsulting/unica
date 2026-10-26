@@ -219,6 +219,146 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_subsystem_in_the_content_is_typed_and_names_no_object() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Library"]);
+        write_subsystem(
+            root.path(),
+            &[],
+            "Library",
+            "false",
+            &["Subsystem.Library.Subsystem.Tasks"],
+            &["Tasks"],
+        );
+        write_subsystem(root.path(), &["Library"], "Tasks", "false", &[], &[]);
+        let source_root = root.path().canonicalize().unwrap();
+
+        let topology = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
+
+        assert_eq!(
+            topology.roots[0].content,
+            vec![ContentReference::Subsystem(
+                SubsystemAddress::parse("Library.Tasks").unwrap()
+            )]
+        );
+    }
+
+    #[test]
+    fn memberships_name_the_listing_subsystem_its_ancestors_and_bsp_library_roots() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Standard", "Exchange", "Sales", "Group"]);
+        write_subsystem(
+            root.path(),
+            &[],
+            "Standard",
+            "false",
+            &["CommonModule.ОбновлениеИнформационнойБазыБСП"],
+            &["Base"],
+        );
+        write_subsystem(
+            root.path(),
+            &["Standard"],
+            "Base",
+            "false",
+            &["CommonModule.Common"],
+            &[],
+        );
+        write_subsystem(
+            root.path(),
+            &[],
+            "Exchange",
+            "false",
+            &[
+                "CommonModule.Common",
+                "CommonModule.ОбновлениеИнформационнойБазыБЭД",
+            ],
+            &[],
+        );
+        // A command interface section is top-level but no library root even
+        // with the module; a functional group without it is no root either.
+        write_subsystem(
+            root.path(),
+            &[],
+            "Sales",
+            "true",
+            &[
+                "CommonModule.Common",
+                "CommonModule.ОбновлениеИнформационнойБазыПродаж",
+            ],
+            &[],
+        );
+        write_subsystem(
+            root.path(),
+            &[],
+            "Group",
+            "false",
+            &["CommonModule.Common"],
+            &[],
+        );
+        let source_root = root.path().canonicalize().unwrap();
+        let topology = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
+        let common =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Common").unwrap();
+
+        let memberships = topology
+            .memberships_of(&common, None)
+            .into_iter()
+            .map(|membership| (membership.address.as_str().to_string(), membership.direct))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            memberships,
+            [
+                ("Standard".to_string(), false),
+                ("Standard.Base".to_string(), true),
+                ("Exchange".to_string(), true),
+                ("Sales".to_string(), true),
+                ("Group".to_string(), true),
+            ]
+        );
+        let roots = topology
+            .library_roots()
+            .into_iter()
+            .map(|root| {
+                (
+                    root.address.as_str().to_string(),
+                    root.module.as_str().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roots,
+            [
+                (
+                    "Standard".to_string(),
+                    "CommonModule.ОбновлениеИнформационнойБазыБСП".to_string()
+                ),
+                (
+                    "Exchange".to_string(),
+                    "CommonModule.ОбновлениеИнформационнойБазыБЭД".to_string()
+                ),
+            ]
+        );
+        // Without a library module anywhere there are no roots, not a guess.
+        let bare = tempfile::tempdir().unwrap();
+        write_configuration(bare.path(), &["Group"]);
+        write_subsystem(
+            bare.path(),
+            &[],
+            "Group",
+            "false",
+            &["CommonModule.Common"],
+            &[],
+        );
+        let bare_root = bare.path().canonicalize().unwrap();
+        assert!(
+            capture_registered_subsystem_topology(&bare_root, checkpoint)
+                .unwrap()
+                .library_roots()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn arbitrary_nonempty_content_reference_rejects_the_topology() {
         let root = tempfile::tempdir().unwrap();
         write_configuration(root.path(), &["Sales"]);

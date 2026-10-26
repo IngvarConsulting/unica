@@ -1108,16 +1108,35 @@ impl<'a> LogicalViewReadAuthority<'a> {
             route.reader(),
             LogicalReader::Subsystem | LogicalReader::Interface
         ) {
-            return self.read.subsystem_payload(
-                route.reader_metadata_path().ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
-                        "subsystem route has no typed target",
-                    )
-                })?,
-                route.nested_subsystems(),
-                &mut || self.read_checkpoint(),
-            );
+            let target = route.reader_metadata_path().ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::ProviderUnavailable,
+                    "subsystem route has no typed target",
+                )
+            })?;
+            let mut payload =
+                self.read
+                    .subsystem_payload(target, route.nested_subsystems(), &mut || {
+                        self.read_checkpoint()
+                    })?;
+            // Корень библиотеки — подсистема верхнего уровня; признак держится
+            // на соглашении БСП и называет свой источник.
+            if route.reader() == LogicalReader::Subsystem && route.nested_subsystems().is_empty() {
+                let name = target.as_str().split_once('.').map_or("", |(_, name)| name);
+                if let Ok(topology) = self.read.subsystem_topology(&mut || self.read_checkpoint()) {
+                    if let Some(root) = topology
+                        .library_roots()
+                        .into_iter()
+                        .find(|root| root.address.as_str() == name)
+                    {
+                        payload["libraryRoot"] = json!({
+                            "source": "bspLibraryModule",
+                            "module": format!("{}:{}", self.read.source_set(), root.module.as_str()),
+                        });
+                    }
+                }
+            }
+            return Ok(payload);
         }
         if route.reader() == LogicalReader::Mxl {
             return self.read.mxl_payload(
@@ -1177,6 +1196,35 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .configuration_payload_with_checkpoint(&mut checkpoint)?;
         cache.insert(key, Arc::clone(&payload));
         Ok(payload)
+    }
+
+    /// Подсистемы, в состав которых входит `target` (`direct` у той, что
+    /// его перечисляет), и корни его библиотек по соглашению БСП.
+    fn subsystem_relations(
+        &self,
+        target: &MetadataAddress,
+    ) -> Result<(Vec<Value>, Vec<Value>), ViewError> {
+        let topology = self
+            .read
+            .subsystem_topology(&mut || self.read_checkpoint())?;
+        let memberships = topology.memberships_of(target, None);
+        let libraries = topology
+            .library_roots()
+            .into_iter()
+            .filter(|root| {
+                memberships
+                    .iter()
+                    .any(|membership| membership.address == root.address)
+            })
+            .map(|root| json!({"subsystem": root.address.as_str(), "module": root.module.as_str()}))
+            .collect();
+        let memberships = memberships
+            .iter()
+            .map(|membership| {
+                json!({"subsystem": membership.address.as_str(), "direct": membership.direct})
+            })
+            .collect();
+        Ok((memberships, libraries))
     }
 
     fn metadata_payload(
@@ -1375,6 +1423,24 @@ impl<'a> LogicalViewReadAuthority<'a> {
             }
             Err(error) => return Err(error),
         }
+        // Подсистемы, в состав которых входит объект, и корни его библиотек
+        // по соглашению БСП (INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH). Одна
+        // топология отвечает всем объектам состояния исходников; непрочитанный
+        // состав подсистем — предел ветви, а не пустой ответ.
+        match self.subsystem_relations(target) {
+            Ok((memberships, libraries)) => {
+                payload.insert(
+                    "subsystemMemberships".to_string(),
+                    Value::Array(memberships),
+                );
+                payload.insert("libraryRoots".to_string(), Value::Array(libraries));
+            }
+            Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => {
+                unreadable
+                    .push(json!({"field": "relations.subsystems", "message": error.to_string()}));
+            }
+            Err(error) => return Err(error),
+        }
         if !unreadable.is_empty() {
             payload.insert("unreadable".to_string(), Value::Array(unreadable));
         }
@@ -1521,7 +1587,33 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(NodeViewData::Node(event_node(&event)));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
-        module_projection_view(route.at(), prefix_len, projections.as_ref())
+        let view = module_projection_view(route.at(), prefix_len, projections.as_ref())?;
+        // Узел общего модуля — и узел объекта метаданных: его ветвь `Relation`
+        // (подсистемы и библиотеки) читается по адресу, поэтому узел её
+        // называет. Непрочитанный состав подсистем называет сама ветвь.
+        if capability.role() == ModuleRole::Common && route.at().segments().len() == 1 {
+            let target = route.at().segments()[0].name().and_then(|name| {
+                MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("{}.{name}", NodeKind::CommonModule.as_str()),
+                )
+                .ok()
+            });
+            if let (NodeViewData::Node(node), Some(target)) = (&view, target.as_ref()) {
+                if let Ok((memberships, libraries)) = self.subsystem_relations(target) {
+                    let count = memberships.len() + libraries.len();
+                    if count > 0 {
+                        return Ok(NodeViewData::Node(node.clone().with_branch(
+                            BranchRef::new(
+                                format!("{}.{}", route.at(), NodeKind::Relation.as_str()),
+                                count,
+                            ),
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(view)
     }
 
     fn module_projection(

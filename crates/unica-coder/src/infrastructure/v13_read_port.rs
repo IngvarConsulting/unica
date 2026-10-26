@@ -1850,6 +1850,15 @@ impl ProviderReadAuthority {
         })
     }
 
+    /// The registered subsystem topology of this source set, retained by the
+    /// workspace across calls while its files keep their stamps.
+    pub(crate) fn subsystem_topology(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Arc<unica_metadata::subsystem_topology::SubsystemTopology>, ViewError> {
+        self.artifacts.subsystem_topology(&self.root, checkpoint)
+    }
+
     fn support_state(
         &self,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,

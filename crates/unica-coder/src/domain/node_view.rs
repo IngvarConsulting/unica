@@ -44,6 +44,12 @@ impl NodeView {
         self
     }
 
+    /// Adds one branch after those the node already names.
+    pub(crate) fn with_branch(mut self, branch: BranchRef) -> Self {
+        self.branches.push(branch);
+        self
+    }
+
     /// Чего в ответе нет и почему. Слот существует, чтобы пропуск был назван:
     /// молчаливое выбрасывание элементов делает счёт ветви и страницу
     /// несогласуемыми, а читателя — уверенным, что он видел всё.

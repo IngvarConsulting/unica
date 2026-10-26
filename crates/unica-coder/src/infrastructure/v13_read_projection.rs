@@ -836,6 +836,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "children",
             "tree",
             "commandInterface",
+            "libraryRoot",
         ],
         LogicalReader::Dcs => &[
             "support",
@@ -2016,6 +2017,9 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
     };
     let mut props = selected_scalar_props(value, keys);
     if reader == LogicalReader::Subsystem && kind == NodeKind::Subsystem {
+        if let Some(root) = value.get("libraryRoot").filter(|root| root.is_object()) {
+            props.insert("libraryRoot".to_string(), root.clone());
+        }
         if let Some(support) = value.get("support") {
             for (source, key) in [("state", "support"), ("directEditSafe", "directEditSafe")] {
                 if let Some(value) = support.get(source).filter(|value| safe_prop(key, value)) {

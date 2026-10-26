@@ -27,6 +27,9 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "overridesCount",
     "overridesComplete",
     "overrides",
+    // Подсистемы объекта и корни его библиотек (ветвь `Relation`).
+    "subsystemMemberships",
+    "libraryRoots",
     // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
     "unreadable",
 ];
@@ -675,6 +678,52 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
             "kind": "typeId",
             "typeId": type_id,
             "readOnly": true,
+        }));
+    }
+    // Подсистемы, в состав которых входит объект: `direct` у той, что
+    // перечисляет его, и не у её родителей. Корень библиотеки — признак
+    // соглашения БСП, а не платформы, поэтому элемент называет его источник
+    // и модуль, на котором он держится.
+    let subsystem_at = |name: &str| {
+        format!(
+            "{}:Subsystem.{}",
+            address.source_set(),
+            name.split('.').collect::<Vec<_>>().join(".Subsystem.")
+        )
+    };
+    for membership in payload
+        .get("subsystemMemberships")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(name) = membership.get("subsystem").and_then(Value::as_str) {
+            items.push(json!({
+                "relation": "subsystem",
+                "at": subsystem_at(name),
+                "kind": "Subsystem",
+                "direct": membership.get("direct"),
+            }));
+        }
+    }
+    for root in payload
+        .get("libraryRoots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (Some(name), Some(module)) = (
+            root.get("subsystem").and_then(Value::as_str),
+            root.get("module").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        items.push(json!({
+            "relation": "library",
+            "at": subsystem_at(name),
+            "kind": "Subsystem",
+            "source": "bspLibraryModule",
+            "module": format!("{}:{module}", address.source_set()),
         }));
     }
     items

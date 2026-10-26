@@ -29,6 +29,9 @@ pub struct SubsystemTopologyNode {
 pub enum ContentReference {
     MetadataAddress(MetadataAddress),
     Uuid(Uuid),
+    /// A nested subsystem in the content (`Subsystem.A.Subsystem.B`): the
+    /// platform allows it, and it names no object outside the subsystem tree.
+    Subsystem(SubsystemAddress),
 }
 
 impl ContentReference {
@@ -36,6 +39,7 @@ impl ContentReference {
         match self {
             Self::MetadataAddress(address) => address == &identity.address,
             Self::Uuid(uuid) => uuid == &identity.uuid,
+            Self::Subsystem(_) => false,
         }
     }
 }
@@ -107,6 +111,107 @@ impl SubsystemTopology {
             role,
             Some(MembershipSelector::MetadataAddress(&address)),
         )
+    }
+}
+
+/// Prefix of the BSP library description module (`ОбновлениеИнформационнойБазыБСП`
+/// and its siblings). A root that holds such a module is a library root by
+/// the BSP convention, not by a platform property.
+pub const BSP_LIBRARY_MODULE_PREFIX: &str = "CommonModule.ОбновлениеИнформационнойБазы";
+
+/// One subsystem that has an object in its content: `direct` for the
+/// subsystem that lists the object, not for its ancestors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubsystemMembership {
+    pub address: SubsystemAddress,
+    pub direct: bool,
+}
+
+/// A library root by the BSP convention and the module that marks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryRoot {
+    pub address: SubsystemAddress,
+    pub module: MetadataAddress,
+}
+
+impl SubsystemTopology {
+    /// Every subsystem that holds `address` (or `uuid`) in its content, and
+    /// the ancestors of each, in topology order. A subsystem that lists the
+    /// object itself is direct even when it is also an ancestor of another.
+    pub fn memberships_of(
+        &self,
+        address: &MetadataAddress,
+        uuid: Option<Uuid>,
+    ) -> Vec<SubsystemMembership> {
+        fn visit(
+            nodes: &[SubsystemTopologyNode],
+            holds: &dyn Fn(&ContentReference) -> bool,
+            ancestors: &mut Vec<SubsystemAddress>,
+            output: &mut Vec<SubsystemMembership>,
+        ) {
+            for node in nodes {
+                if node.content.iter().any(holds) {
+                    for ancestor in ancestors.iter() {
+                        if !output.iter().any(|known| &known.address == ancestor) {
+                            output.push(SubsystemMembership {
+                                address: ancestor.clone(),
+                                direct: false,
+                            });
+                        }
+                    }
+                    match output
+                        .iter_mut()
+                        .find(|known| known.address == node.address)
+                    {
+                        Some(known) => known.direct = true,
+                        None => output.push(SubsystemMembership {
+                            address: node.address.clone(),
+                            direct: true,
+                        }),
+                    }
+                }
+                ancestors.push(node.address.clone());
+                visit(&node.children, holds, ancestors, output);
+                ancestors.pop();
+            }
+        }
+        let holds = |reference: &ContentReference| match reference {
+            ContentReference::MetadataAddress(actual) => actual == address,
+            ContentReference::Uuid(actual) => Some(*actual) == uuid,
+            ContentReference::Subsystem(_) => false,
+        };
+        let mut output = Vec::new();
+        visit(&self.roots, &holds, &mut Vec::new(), &mut output);
+        output
+    }
+
+    /// Library roots by the BSP convention: top-level subsystems outside the
+    /// command interface whose tree holds a `ОбновлениеИнформационнойБазы…`
+    /// common module. Without such a module there are no roots.
+    pub fn library_roots(&self) -> Vec<LibraryRoot> {
+        fn module_in(node: &SubsystemTopologyNode) -> Option<MetadataAddress> {
+            node.content
+                .iter()
+                .find_map(|reference| match reference {
+                    ContentReference::MetadataAddress(address)
+                        if address.as_str().starts_with(BSP_LIBRARY_MODULE_PREFIX) =>
+                    {
+                        Some(address.clone())
+                    }
+                    _ => None,
+                })
+                .or_else(|| node.children.iter().find_map(module_in))
+        }
+        self.roots
+            .iter()
+            .filter(|root| root.role == EffectiveSubsystemRole::Functional)
+            .filter_map(|root| {
+                module_in(root).map(|module| LibraryRoot {
+                    address: root.address.clone(),
+                    module,
+                })
+            })
+            .collect()
     }
 }
 
