@@ -7787,3 +7787,87 @@ fn xdto_restricted_value_view_reports_oversized_facets() {
     }
     assert_eq!(fs::read(&package).unwrap(), source.as_bytes());
 }
+
+#[test]
+fn an_open_buffer_is_read_in_place_of_its_module_file_and_the_file_is_untouched() {
+    use unica_workspace::documents::{DocumentOverlay, DocumentText};
+
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().canonicalize().unwrap();
+    let module = Path::new("CommonModules/Общий/Ext/Module.bsl");
+    fs::create_dir_all(workspace.as_path().join(module).parent().unwrap()).unwrap();
+    fs::write(workspace.as_path().join(module), "\u{feff}// диск\n").unwrap();
+    let target =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Общий.Module")
+            .unwrap();
+    let absent =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Новый.Module")
+            .unwrap();
+    let overlay = DocumentOverlay::default();
+    for relative in [module, Path::new("CommonModules/Новый/Ext/Module.bsl")] {
+        overlay
+            .put(
+                "editor",
+                "main",
+                relative,
+                DocumentText {
+                    version: 3,
+                    text: Arc::from("\u{feff}// буфер\n// вторая\n"),
+                },
+            )
+            .unwrap();
+    }
+    let reader = |documents| {
+        let root =
+            Arc::new(unica_workspace::read::open_source_directory(workspace.as_path()).unwrap());
+        let reader =
+            ProviderReadAuthority::new("main", "actor-main", SourceSetKind::Configuration, root);
+        match documents {
+            Some(documents) => reader.with_documents(documents),
+            None => reader,
+        }
+    };
+
+    let editor = reader(Some(overlay.session_documents("editor", "main").unwrap()));
+    assert_eq!(
+        editor.module_source(&target).unwrap().as_deref(),
+        Some("// буфер\n// вторая\n")
+    );
+    assert!(editor.module_source_exists(&absent).unwrap());
+    assert_eq!(
+        editor.module_source(&absent).unwrap().as_deref(),
+        Some("// буфер\n// вторая\n")
+    );
+
+    // Every read of the module in this session sees the same buffer.
+    let lines = editor.module_line_count(&target, || Ok(())).unwrap();
+    assert_eq!(
+        lines,
+        reader(None)
+            .module_line_count(&target, || Ok(()))
+            .unwrap()
+            .map(|n| n + 1)
+    );
+
+    // Another session and an agent call read the disk.
+    for other in [
+        Some(overlay.session_documents("agent", "main").unwrap()),
+        None,
+    ] {
+        let other = reader(other);
+        assert_eq!(
+            other.module_source(&target).unwrap().as_deref(),
+            Some("// диск\n")
+        );
+        assert!(!other.module_source_exists(&absent).unwrap());
+    }
+    assert_eq!(
+        fs::read_to_string(workspace.as_path().join(module)).unwrap(),
+        "\u{feff}// диск\n"
+    );
+    assert!(!workspace
+        .as_path()
+        .join("CommonModules/Новый")
+        .join("Ext/Module.bsl")
+        .exists());
+}
