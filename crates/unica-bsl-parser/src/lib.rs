@@ -1,5 +1,6 @@
 //! Owned syntax facts for the existing BSL readers and planners.
 
+mod editor;
 mod outline;
 pub mod symbols;
 
@@ -8,6 +9,10 @@ use bsl_syntax::{SyntaxKind, SyntaxNode};
 use serde::Serialize;
 use std::ops::Range;
 
+pub use editor::{
+    CallSite, ClassifiedToken, EditorParameter, EditorSymbol, EditorSymbolKind, FoldBlock,
+    FoldKind, TokenClass,
+};
 pub use outline::{
     bsl_method_parameters, exact_bsl_method_facts, exported_bsl_procedure_matches,
     first_exported_bsl_procedure, misplaced_variable_declarations, outline_regions,

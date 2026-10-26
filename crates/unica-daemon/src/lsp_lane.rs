@@ -104,6 +104,15 @@ pub struct LspCallContext {
 }
 
 impl LspCallContext {
+    /// A context no one cancels, for driving a service without the lane.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(deadline: Instant) -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            deadline,
+        }
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline
     }
@@ -128,6 +137,12 @@ struct OutboxState {
 }
 
 impl LspClientChannel {
+    /// A channel no editor reads, for driving a service without the lane.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn detached_for_test() -> Self {
+        Self::new()
+    }
+
     fn new() -> Self {
         Self(Arc::new(Outbox {
             state: Mutex::new(OutboxState {

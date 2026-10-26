@@ -93,6 +93,7 @@ pub(crate) fn serve(
         phase: Phase::Uninitialized,
         in_flight: Arc::new(Mutex::new(HashMap::new())),
         next_request: 0,
+        unsynced: std::collections::HashSet::new(),
     };
     let code = loop {
         let body = match codec::read_message(&mut input) {
@@ -126,6 +127,9 @@ struct Frontend {
     phase: Phase,
     in_flight: InFlight,
     next_request: u64,
+    /// Documents whose text the daemon lost track of. Requests about them
+    /// are refused until the editor opens them again.
+    unsynced: std::collections::HashSet<String>,
 }
 
 enum Phase {
@@ -227,6 +231,12 @@ impl Frontend {
                     None => self.send(error_response(id, INVALID_PARAMS, "invalid content params")),
                 }
             }
+            (Phase::Running(_), method) if document_call(method, &Value::Null).is_some() => {
+                match document_call(method, &params).flatten() {
+                    Some(call) => self.dispatch(id, call),
+                    None => self.send(error_response(id, INVALID_PARAMS, "invalid params")),
+                }
+            }
             (Phase::Running(_), _) => {
                 self.send(error_response(
                     id,
@@ -267,6 +277,10 @@ impl Frontend {
                     // A request about an older version would answer about a
                     // state the editor no longer has.
                     self.withdraw_document(notification.document_uri());
+                }
+                if !matches!(notification, V5LspNotification::DidChange { .. }) {
+                    // Opening sends the whole text again; closing ends it.
+                    self.unsynced.remove(notification.document_uri());
                 }
                 self.forward(notification)
             }
@@ -322,6 +336,17 @@ impl Frontend {
     }
 
     fn dispatch(&mut self, id: Value, call: V5LspCall) {
+        if call
+            .document_uri()
+            .is_some_and(|uri| self.unsynced.contains(uri))
+        {
+            self.send(error_response(
+                id,
+                CONTENT_MODIFIED,
+                "document is out of sync",
+            ));
+            return;
+        }
         let Phase::Running(session) = &self.phase else {
             return;
         };
@@ -403,6 +428,7 @@ impl Frontend {
         };
         eprintln!("unica lsp ignored a document notification it cannot pass on");
         self.withdraw_document(&uri);
+        self.unsynced.insert(uri.clone());
         let close = V5LspNotification::DidClose { uri };
         if close.validate().is_err() {
             return Flow::Continue;
@@ -415,15 +441,28 @@ impl Frontend {
             return Flow::Continue;
         };
         let deadline = Instant::now() + LSP_SESSION_EXCHANGE_TIMEOUT;
+        let changed = match &notification {
+            V5LspNotification::DidOpen { uri, .. } | V5LspNotification::DidChange { uri, .. } => {
+                Some(uri.clone())
+            }
+            V5LspNotification::DidClose { .. } => None,
+        };
         match session
             .anchor
             .lsp_notify_before(&session.id, notification, deadline)
         {
             Ok(()) => Flow::Continue,
-            // The daemon refused this document; the session stays.
+            // The daemon refused this document; the session stays. A refused
+            // change leaves the daemon's buffer behind the editor's text, so
+            // the document is dropped there rather than answered from it.
             Err(V5LspExchangeError::Refused(failure))
                 if failure != V5LspFailure::SessionUnknown =>
             {
+                // The daemon closed the document on its side.
+                if let Some(uri) = changed {
+                    self.withdraw_document(&uri);
+                    self.unsynced.insert(uri);
+                }
                 Flow::Continue
             }
             Err(error) => Flow::Fail(exchange_message(&error)),
@@ -485,6 +524,7 @@ fn call_daemon(
         Ok(V5LspOutcome::Text { text }) => {
             json!({"jsonrpc": "2.0", "id": id, "result": {"text": text}})
         }
+        Ok(V5LspOutcome::Json { value }) => json!({"jsonrpc": "2.0", "id": id, "result": value}),
         Ok(V5LspOutcome::Cancelled {}) => {
             error_response(id, REQUEST_CANCELLED, "request cancelled")
         }
@@ -584,6 +624,7 @@ fn failure_code(failure: V5LspFailure) -> &'static str {
         V5LspFailure::DeadlineExceeded => "lsp_deadline_exceeded",
         V5LspFailure::Unavailable => "lsp_unavailable",
         V5LspFailure::WorkspaceUnavailable => "lsp_workspace_unavailable",
+        V5LspFailure::DocumentUnknown => "lsp_document_unknown",
     }
 }
 
@@ -620,6 +661,24 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
         result.insert(
             "workspace".into(),
             json!({"textDocumentContent": {"schemes": ["unica"]}}),
+        );
+    }
+    if capabilities.document_symbols {
+        result.insert("documentSymbolProvider".into(), json!(true));
+    }
+    if capabilities.folding_ranges {
+        result.insert("foldingRangeProvider".into(), json!(true));
+    }
+    if let Some(legend) = capabilities.semantic_tokens_legend {
+        result.insert(
+            "semanticTokensProvider".into(),
+            json!({"legend": legend, "full": true}),
+        );
+    }
+    if capabilities.signature_help {
+        result.insert(
+            "signatureHelpProvider".into(),
+            json!({"triggerCharacters": ["(", ","]}),
         );
     }
     let workspaces = opening
@@ -694,6 +753,26 @@ fn position(value: &Value) -> Option<V5LspPosition> {
     Some(V5LspPosition {
         line: u32::try_from(value.get("line")?.as_u64()?).ok()?,
         character: u32::try_from(value.get("character")?.as_u64()?).ok()?,
+    })
+}
+
+/// A request about one document. `None` — not such a method; `Some(None)`
+/// — the method, with params it cannot be built from.
+fn document_call(method: &str, params: &Value) -> Option<Option<V5LspCall>> {
+    let uri = || document_uri(params);
+    Some(match method {
+        "textDocument/documentSymbol" => uri().map(|uri| V5LspCall::DocumentSymbol { uri }),
+        "textDocument/foldingRange" => uri().map(|uri| V5LspCall::FoldingRange { uri }),
+        "textDocument/semanticTokens/full" => {
+            uri().map(|uri| V5LspCall::SemanticTokensFull { uri })
+        }
+        "textDocument/signatureHelp" => uri().and_then(|uri| {
+            Some(V5LspCall::SignatureHelp {
+                uri,
+                position: position(params.get("position")?)?,
+            })
+        }),
+        _ => return None,
     })
 }
 
