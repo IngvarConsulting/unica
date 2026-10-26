@@ -5585,6 +5585,29 @@ fn main() {
     }
 
     #[test]
+    fn canonical_view_bootstrap_does_not_claim_source_sets_in_an_empty_configuration() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\n",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime();
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.summary,
+            "workspace configuration discovered; no source sets are attached and no infobase target is configured"
+        );
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["config"]["state"], "configured");
+        assert_eq!(data["sourceSets"], serde_json::json!([]));
+        assert_eq!(data["infobase"]["configured"], false);
+    }
+
+    #[test]
     fn canonical_view_bootstrap_recognizes_an_infobase_only_workspace() {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(
