@@ -11,7 +11,6 @@ pub(crate) mod dcs;
 // The pure B1b planner is intentionally not actor-routed until B2.
 #[allow(dead_code)]
 pub(crate) mod event_implementation;
-pub(crate) mod external;
 pub(crate) mod logical_selector;
 pub(crate) mod meta;
 pub(crate) mod mxl_composition;
@@ -57,9 +56,6 @@ impl NativeOperationAdapter {
             ));
         }
         if dry_run {
-            if let Some(outcome) = external::preview(operation, tool_name, args, context) {
-                return Ok(outcome);
-            }
             if operation == "form-edit" && unica_forms_designer::codec::has_edit_payload(args) {
                 return Ok(crate::infrastructure::form_composition::preview_form_edit(
                     args, context,

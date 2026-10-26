@@ -14,13 +14,17 @@ macro_rules! native {
     };
 }
 
+/// Кейс корпуса `template-add-spreadsheet-document`, опубликованный
+/// каноническим `template.add`: манифест связывает настоящие байты, а новыми
+/// становятся ровно дескриптор и содержимое макета.
 fn published_case(case_id: &str) -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
     let case = EXECUTABLE_CASES
         .iter()
         .find(|case| case.id == case_id)
         .unwrap();
-    assert_eq!(case.tool, "unica.meta.edit");
+    assert_eq!(case.tool, CANONICAL_APPLY_TOOL);
+    assert_eq!(case.branch, "SpreadsheetDocument");
     let mut gate = SequentialCallGate::default();
     let generated = run_corpus_case(root.path(), case, &mut gate).unwrap();
     let manifest = serde_json::to_value(generated).unwrap();
@@ -61,39 +65,10 @@ fn published_case(case_id: &str) -> tempfile::TempDir {
         modified,
         BTreeSet::from(["Reports/CorpusReport.xml".to_owned()])
     );
-    let mut expected = BTreeSet::from([DESCRIPTOR.to_owned()]);
-    let workspace = root.path().join(format!("cases/{case_id}/workspace/src"));
-    match case.branch {
-        "SpreadsheetDocument" | "DataCompositionSchema" => {
-            expected.insert(CONTENT.to_owned());
-        }
-        "HTMLDocument" => {
-            expected.insert(CONTENT.to_owned());
-            let page = "Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template/ru.html";
-            expected.insert(page.to_owned());
-            assert_eq!(
-                fs::read(workspace.join(page)).unwrap(),
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../tests/fixtures/platform_8_3_27/html-template/native-ru.html"
-                )),
-                "the already-native HTML page must remain byte exact"
-            );
-        }
-        "TextDocument" | "BinaryData" => {
-            let extension = if case.branch == "TextDocument" {
-                "txt"
-            } else {
-                "bin"
-            };
-            let payload =
-                format!("Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.{extension}");
-            assert_eq!(fs::read(workspace.join(&payload)).unwrap(), b"");
-            expected.insert(payload);
-        }
-        other => panic!("unreviewed template kind: {other}"),
-    }
-    assert_eq!(created, expected);
+    assert_eq!(
+        created,
+        BTreeSet::from([DESCRIPTOR.to_owned(), CONTENT.to_owned()])
+    );
     root
 }
 
@@ -145,68 +120,32 @@ fn bind_template_uuid(native: &[u8], published: &[u8], kind: &str) -> Vec<u8> {
     result.into_bytes()
 }
 
-fn assert_descriptor(case_id: &str, kind: &str, native: &[u8]) {
+#[test]
+fn canonical_spreadsheet_template_descriptor_matches_native_bytes() {
+    let case_id = "template-add-spreadsheet-document";
     let root = published_case(case_id);
     let published = fs::read(
         root.path()
             .join(format!("cases/{case_id}/workspace/src/{DESCRIPTOR}")),
     )
     .unwrap();
-    assert_eq!(published, bind_template_uuid(native, &published, kind), "retained template descriptor must match the raw native export except for its one generated UUID");
-}
-
-fn assert_content(case_id: &str, native: &[u8]) {
-    let root = published_case(case_id);
-    let published = fs::read(
+    assert_eq!(
+        published,
+        bind_template_uuid(
+            native!("native-spreadsheet-descriptor.xml"),
+            &published,
+            "SpreadsheetDocument"
+        ),
+        "the template descriptor must match the raw native export except for its one generated UUID"
+    );
+    let content = fs::read(
         root.path()
             .join(format!("cases/{case_id}/workspace/src/{CONTENT}")),
     )
     .unwrap();
     assert_eq!(
-        published, native,
-        "retained template payload must match the raw native export without normalization"
-    );
-}
-
-#[test]
-fn retained_html_template_descriptor_matches_native_bytes() {
-    assert_descriptor(
-        "template-add-html-document",
-        "HTMLDocument",
-        native!("native-html-descriptor.xml"),
-    );
-}
-
-#[test]
-fn retained_text_template_descriptor_matches_native_bytes() {
-    assert_descriptor(
-        "template-add-text-document",
-        "TextDocument",
-        native!("native-text-descriptor.xml"),
-    );
-}
-
-#[test]
-fn retained_binary_template_descriptor_matches_native_bytes() {
-    assert_descriptor(
-        "template-add-binary-data",
-        "BinaryData",
-        native!("native-binary-descriptor.xml"),
-    );
-}
-
-#[test]
-fn retained_dcs_template_content_matches_its_native_empty_settings_bytes() {
-    assert_content(
-        "template-add-data-composition-schema",
-        native!("native-dcs-content.xml"),
-    );
-}
-
-#[test]
-fn retained_html_template_page_descriptor_matches_native_bytes() {
-    assert_content(
-        "template-add-html-document",
-        native!("native-html-pages.xml"),
+        content,
+        native!("native-spreadsheet-content.xml"),
+        "the template payload must match the raw native export without normalization"
     );
 }

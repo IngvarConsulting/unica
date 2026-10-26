@@ -376,11 +376,9 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         self.assertGreaterEqual(coverage, MIN_NATIVE_PARITY_COVERAGE)
         self.assertEqual(NATIVE_PARITY_TOOLS - covered, set())
 
-    # The v1 interception contract (Before/After only, never a function) is
-    # asserted directly against the tool by the Rust test
-    # `cfe_patch_method_rejects_unsupported_v1_interception_shapes_atomically`.
-    # This guard checked the retired parity scenarios' arguments instead, so it
-    # left the stand with unica.cfe.patch_method.
+    # The v1 interception guard checked the retired parity scenarios'
+    # arguments; it left the stand with unica.cfe.patch_method, and the tool
+    # itself is gone with the rest of the v0.12 initializers (#1813).
 
     def test_rust_registry_parity_list_matches_python_parity_harness(self) -> None:
         app_mod = (REPO_ROOT / "crates" / "unica-coder" / "src" / "application" / "mod.rs").read_text(

@@ -4,8 +4,6 @@ use unica_metadata_designer::resource_plan::{TypedChildResourcePlan, TypedOperat
 
 use crate::application::ports::{MetaPublishReport, PreparedMetadataMutation};
 use crate::application::SupportGuardRequirement;
-#[cfg(test)]
-use serde_json::Map;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1144,8 +1142,6 @@ fn registered_language_images(
 pub(crate) mod typed_add_publication_tests {
     use super::*;
 
-    use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
-    use serde_json::json;
     use std::collections::BTreeMap;
     use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use unica_metadata::{
@@ -1198,12 +1194,7 @@ pub(crate) mod typed_add_publication_tests {
                 cache_root: root.join(".build/unica"),
                 workspace_epoch: 0,
             };
-            let args = Map::from_iter([
-                ("Name".to_string(), json!("MetaPublisher")),
-                ("OutputDir".to_string(), json!("src")),
-            ]);
-            let outcome = create_configuration_scaffold(&args, &context);
-            assert!(outcome.ok, "{:?}", outcome.errors);
+            crate::infrastructure::test_fixtures::copy_empty_configuration(&root);
             fs::write(
                 root.join("v8project.yaml"),
                 concat!(

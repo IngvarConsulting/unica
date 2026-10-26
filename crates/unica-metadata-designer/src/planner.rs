@@ -2151,6 +2151,30 @@ fn template_removal_registration_span(
     }
 }
 
+/// Удаление последней регистрации оставляет коллекцию в родном пустом
+/// написании платформы, `<ChildObjects/>`, как форма и выгрузка 8.3.27.
+/// Правка заменяет только эту коллекцию; соседние байты владельца прежние.
+fn emptied_child_objects_edit(
+    source: &str,
+    registration: std::ops::Range<usize>,
+) -> Option<(std::ops::Range<usize>, String)> {
+    let collapsed = unica_source_designer::registration::empty_child_objects_after_removal(
+        source,
+        registration.clone(),
+    )?;
+    let document = roxmltree::Document::parse(source).ok()?;
+    let parent = document
+        .descendants()
+        .find(|node| node.is_element() && node.range() == registration)?
+        .parent_element()?
+        .range();
+    let tail = source.len() - parent.end;
+    let replacement = collapsed
+        .get(parent.start..collapsed.len() - tail)?
+        .to_string();
+    Some((parent, replacement))
+}
+
 fn stage_template_remove(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
@@ -2252,9 +2276,15 @@ fn stage_template_remove(
         }
     }
     let reference = format!("{}.Template.{name}", owner.as_str());
-    let registration = template_removal_registration_span(&owner_source, identity.registration);
+    let registration = emptied_child_objects_edit(&owner_source, identity.registration.clone())
+        .unwrap_or_else(|| {
+            (
+                template_removal_registration_span(&owner_source, identity.registration),
+                String::new(),
+            )
+        });
     let mut owner_edits = identity.reference_edits;
-    owner_edits.push((registration, String::new()));
+    owner_edits.push(registration);
     owner_edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
     let mut owner_text = owner_source.clone();
     for (range, replacement) in owner_edits {

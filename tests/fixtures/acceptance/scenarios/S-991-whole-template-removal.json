@@ -483,25 +483,25 @@
               "side": "before",
               "present": true,
               "totalBytes": 1605,
-              "rangeStart": 1459,
+              "rangeStart": 1429,
               "rangeEnd": 1605,
-              "startByte": 1459,
+              "startByte": 1429,
               "endByte": 1605,
               "encoding": "utf8",
-              "content": "      <Explanation/>\n    </Properties>\n    <ChildObjects>\n      <Template>OwnDiagram</Template>\n    </ChildObjects>\n  </Report>\n</MetaDataObject>\n"
+              "content": "      <ExtendedPresentation/>\n      <Explanation/>\n    </Properties>\n    <ChildObjects>\n      <Template>OwnDiagram</Template>\n    </ChildObjects>\n  </Report>\n</MetaDataObject>\n"
             },
             {
               "pathEncoding": "utf8",
               "path": "Reports/OwnRemovalReport.xml",
               "side": "after",
               "present": true,
-              "totalBytes": 1567,
-              "rangeStart": 1459,
-              "rangeEnd": 1567,
-              "startByte": 1459,
-              "endByte": 1567,
+              "totalBytes": 1548,
+              "rangeStart": 1429,
+              "rangeEnd": 1548,
+              "startByte": 1429,
+              "endByte": 1548,
               "encoding": "utf8",
-              "content": "      <Explanation/>\n    </Properties>\n    <ChildObjects>\n    </ChildObjects>\n  </Report>\n</MetaDataObject>\n"
+              "content": "      <ExtendedPresentation/>\n      <Explanation/>\n    </Properties>\n    <ChildObjects/>\n  </Report>\n</MetaDataObject>\n"
             },
             {
               "pathEncoding": "utf8",
@@ -724,7 +724,7 @@
         {
           "path": "src/Reports/OwnRemovalReport.xml",
           "kind": "sha256",
-          "eq": "95cbd575152b9cf37f6a6f966d284b5bd2893a005ae9da70db50f650a8436ac6"
+          "eq": "808fcd6e84cbbd688f5119190597ae4faa88ad5807f45e5bc774d3496aedd855"
         },
         {
           "path": "v8project.yaml",
@@ -810,7 +810,7 @@
         {
           "path": "src/Reports/OwnRemovalReport.xml",
           "kind": "sha256",
-          "eq": "95cbd575152b9cf37f6a6f966d284b5bd2893a005ae9da70db50f650a8436ac6"
+          "eq": "808fcd6e84cbbd688f5119190597ae4faa88ad5807f45e5bc774d3496aedd855"
         },
         {
           "path": "v8project.yaml",

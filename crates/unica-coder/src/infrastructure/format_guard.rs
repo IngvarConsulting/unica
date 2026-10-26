@@ -1,14 +1,12 @@
-use crate::application::operation_descriptors::{
-    native_operation_descriptor, FormatGuardPolicy, FormatPathPolicy,
-};
+use crate::application::operation_descriptors::{native_operation_descriptor, FormatPathPolicy};
 use crate::application::ports::{FormatGuardCheck, FormatGuardError};
 use crate::application::{ToolHandler, ToolSpec};
 use crate::infrastructure::form_composition::resolve_form_read_path;
 use crate::infrastructure::native_operations::cf::{
-    cf_edit_format_dependency_paths, cf_init_planned_xml, cf_read_format_dependency_paths,
+    cf_edit_format_dependency_paths, cf_read_format_dependency_paths,
 };
 use crate::infrastructure::native_operations::cfe::{
-    cfe_borrow_format_dependency_inspection, cfe_borrow_resolve_path, cfe_init_planned_xml,
+    cfe_borrow_format_dependency_inspection, cfe_borrow_resolve_path,
     cfe_registered_xml_dependency_paths,
 };
 use crate::infrastructure::native_operations::common::{
@@ -16,14 +14,12 @@ use crate::infrastructure::native_operations::common::{
     resolve_cfe_validate_config_path, resolve_code_patch_guard_path, resolve_role_read_rights_path,
     support_uuid_dependency_paths,
 };
-use unica_metadata_designer::configuration::cf_init_post_validation_dependency_paths;
 use unica_source_contract::portable_path::PortablePathExt;
 
 use crate::infrastructure::interface_composition::resolve_interface_validate_path;
 use crate::infrastructure::native_operations::dcs::{
     dcs_info_format_dependency_paths, resolve_dcs_validate_path,
 };
-use crate::infrastructure::native_operations::external::external_init_planned_xml_paths;
 use crate::infrastructure::native_operations::mxl_composition::{
     resolve_mxl_info_path, resolve_mxl_validate_path,
 };
@@ -31,8 +27,7 @@ use crate::infrastructure::native_operations::role::resolve_role_edit_guard_path
 use crate::infrastructure::native_operations::role::role_read_format_dependency_paths;
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
 use crate::infrastructure::platform_xml_owner::{
-    resolve_existing_platform_xml_owners_for_new_output, resolve_platform_xml_owners,
-    resolve_platform_xml_owners_for_exact_root,
+    resolve_platform_xml_owners, resolve_platform_xml_owners_for_exact_root,
 };
 use crate::infrastructure::subsystem_composition::subsystem_read_format_dependency_paths;
 use roxmltree::Document;
@@ -166,25 +161,11 @@ fn evaluate_operation_format_guard(
     let Some(descriptor) = native_operation_descriptor(operation) else {
         return Ok(FormatGuardCheck::Allow);
     };
-    let planned_new_outputs = create_only_planned_xml_paths(descriptor.operation, args, context);
-    let mut targets = effective_format_paths_with_planned_outputs(
-        descriptor,
-        args,
-        context,
-        &planned_new_outputs,
-    )?
-    .into_iter()
-    .map(|path| {
-        let new_output = matches!(descriptor.format_guard, FormatGuardPolicy::NewDump)
-            || planned_new_outputs.contains(&path);
-        (path, new_output)
-    })
-    .collect::<Vec<_>>();
-    deduplicate_targets(&mut targets);
+    let targets = effective_format_paths(descriptor, args, context)?;
     let mut owners = Vec::new();
     let mut owner_paths = HashSet::new();
     let mut invalid_expected_root = None;
-    for (target, new_output) in targets {
+    for target in targets {
         let expected_root =
             declared_output_root_expectation(descriptor.operation, args, context, &target);
         let resolved = if let Some(expected_root) = expected_root {
@@ -192,10 +173,6 @@ fn evaluate_operation_format_guard(
                 resolve_platform_xml_owners(&target, context),
                 resolve_platform_xml_owners_for_exact_root(&target, context, expected_root),
             ]
-        } else if new_output {
-            vec![resolve_existing_platform_xml_owners_for_new_output(
-                &target, context,
-            )]
         } else {
             vec![resolve_platform_xml_owners(&target, context)]
         };
@@ -517,27 +494,12 @@ pub(crate) fn classify_staged_platform_xml_root(
     })
 }
 
-#[cfg(test)]
 fn effective_format_paths(
     descriptor: &crate::application::operation_descriptors::OperationDescriptor,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<Vec<PathBuf>, String> {
-    let planned_new_outputs = create_only_planned_xml_paths(descriptor.operation, args, context);
-    effective_format_paths_with_planned_outputs(descriptor, args, context, &planned_new_outputs)
-        .map_err(FormatGuardError::into_internal_cause)
-}
-
-fn effective_format_paths_with_planned_outputs(
-    descriptor: &crate::application::operation_descriptors::OperationDescriptor,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    planned_new_outputs: &[PathBuf],
 ) -> Result<Vec<PathBuf>, FormatGuardError> {
-    let mut paths = if matches!(
-        descriptor.operation,
-        "cf-init" | "epf-init" | "erf-init" | "support-edit"
-    ) {
+    let mut paths = if descriptor.operation == "support-edit" {
         Vec::new()
     } else {
         match descriptor.format_path_policy {
@@ -572,60 +534,8 @@ fn effective_format_paths_with_planned_outputs(
     };
     add_operation_format_dependencies(descriptor.operation, args, context, &mut paths)
         .map_err(FormatGuardError::internal)?;
-    if matches!(descriptor.operation, "epf-init" | "erf-init") {
-        if let Some(output_dir) = planned_new_outputs
-            .first()
-            .and_then(|path| path.parent())
-            .map(Path::to_path_buf)
-        {
-            paths.push(output_dir);
-        }
-    }
-    paths.extend(planned_new_outputs.iter().cloned());
     deduplicate_paths(&mut paths);
     Ok(paths)
-}
-
-fn create_only_planned_xml_paths(
-    operation: &str,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Vec<PathBuf> {
-    match operation {
-        "cf-init" => {
-            let planned = cf_init_planned_xml(args, context);
-            vec![
-                planned.configuration,
-                planned.language,
-                planned.client_application_interface,
-            ]
-        }
-        "cfe-init" => {
-            let planned = cfe_init_planned_xml(args, context);
-            let mut paths = vec![planned.configuration, planned.language];
-            paths.extend(planned.role);
-            paths
-        }
-        "epf-init" | "erf-init" => {
-            external_init_planned_xml_paths(operation, args, context).unwrap_or_default()
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn deduplicate_targets(targets: &mut Vec<(PathBuf, bool)>) {
-    let mut deduplicated: Vec<(PathBuf, bool)> = Vec::with_capacity(targets.len());
-    for (path, new_output) in targets.drain(..) {
-        if let Some((_, existing_new_output)) = deduplicated
-            .iter_mut()
-            .find(|(existing, _)| *existing == path)
-        {
-            *existing_new_output |= new_output;
-        } else {
-            deduplicated.push((path, new_output));
-        }
-    }
-    *targets = deduplicated;
 }
 
 fn add_operation_format_dependencies(
@@ -639,10 +549,6 @@ fn add_operation_format_dependencies(
             if let Ok(dependencies) = cf_edit_format_dependency_paths(args, context) {
                 paths.extend(dependencies);
             }
-        }
-        "cf-init" => {
-            let planned = cf_init_planned_xml(args, context);
-            paths.extend(cf_init_post_validation_dependency_paths(&planned));
         }
         "cf-info" | "cf-validate" => {
             if let Ok(dependencies) = cf_read_format_dependency_paths(args, context, operation) {
@@ -665,7 +571,6 @@ fn add_operation_format_dependencies(
         "cfe-validate" | "cfe-diff" => {
             add_cfe_read_format_dependencies(operation, args, context, paths)
         }
-        "cfe-init" => add_cfe_init_format_dependencies(args, context, paths),
         "form-add" => add_form_add_format_dependencies(args, paths)?,
         "form-remove" => {
             add_named_child_tree_format_dependencies(args, paths, "Forms", "FormName")?
@@ -736,22 +641,6 @@ fn add_support_edit_format_dependencies(
     }
     if support_edit_reads_uuid_dependency(args) {
         paths.extend(support_uuid_dependency_paths(&target));
-    }
-}
-
-fn add_cfe_init_format_dependencies(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    paths: &mut Vec<PathBuf>,
-) {
-    let Some(base_config) =
-        cfe_borrow_resolve_path(args, context, &["configPath", "ConfigPath"], "config").ok()
-    else {
-        return;
-    };
-    paths.push(base_config.clone());
-    if let Some(base_dir) = base_config.parent() {
-        paths.push(base_dir.join("Languages").join("Русский.xml"));
     }
 }
 
@@ -1394,35 +1283,6 @@ mod tests {
     }
 
     #[test]
-    fn cf_init_public_guard_blocks_newer_existing_post_validation_dependency() {
-        let root = test_root("cf-init-home-page");
-        let home_page = root.join("src/Ext/HomePageWorkArea.xml");
-        std::fs::create_dir_all(home_page.parent().unwrap()).unwrap();
-        let original =
-            r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#;
-        std::fs::write(&home_page, original).unwrap();
-        let args = Map::from_iter([
-            ("Name".to_string(), Value::String("Demo".to_string())),
-            ("OutputDir".to_string(), Value::String("src".to_string())),
-        ]);
-
-        let check = evaluate_format_guard(spec("unica.cf.init"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("cf.init must authorize XML read by its post-validator before writing");
-        };
-
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&home_page).display().to_string()
-        );
-        assert!(!root.join("src/Configuration.xml").exists());
-        assert_eq!(std::fs::read_to_string(&home_page).unwrap(), original);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn support_edit_public_guard_blocks_newer_uuid_probe_without_uuid() {
         let root = test_root("support-probe");
         config(&root, Some("2.20"));
@@ -1557,36 +1417,6 @@ mod tests {
 
         assert!(matches!(check, FormatGuardCheck::Allow));
         assert_eq!(std::fs::read(&bin).unwrap(), bin_before);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn external_init_format_preflight_defers_missing_and_semantic_arguments_to_handler() {
-        let root = test_root("external-invalid-args");
-        std::fs::create_dir_all(&root).unwrap();
-
-        for tool in ["unica.epf.init", "unica.erf.init"] {
-            for args in [
-                Map::from_iter([(
-                    "OutputDir".to_string(),
-                    Value::String("external".to_string()),
-                )]),
-                Map::from_iter([
-                    ("Name".to_string(), Value::String("../Escape".to_string())),
-                    (
-                        "OutputDir".to_string(),
-                        Value::String("external".to_string()),
-                    ),
-                ]),
-            ] {
-                let check = evaluate_format_guard(spec(tool), &args, &context(&root))
-                    .expect("format preflight must not own ordinary argument errors");
-                assert!(
-                    matches!(check, FormatGuardCheck::Allow),
-                    "{tool} format preflight must allow the handler to report the argument error"
-                );
-            }
-        }
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1738,83 +1568,6 @@ mod tests {
     }
 
     #[test]
-    fn new_dump_inside_older_source_set_requires_user_driven_reexport() {
-        let root = test_root("new-dump-nested");
-        let owner = config(&root, Some("2.19"));
-        let before = std::fs::read(&owner).unwrap();
-        let output = root.join("src/Nested");
-        let mut args = Map::new();
-        args.insert(
-            "OutputDir".into(),
-            Value::String(output.display().to_string()),
-        );
-
-        let check = evaluate_format_guard(spec("unica.cf.init"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block {
-            outcome,
-            diagnostic,
-        } = check
-        else {
-            panic!("a new dump nested in an older source set must block mutation");
-        };
-
-        assert!(!outcome.ok);
-        assert_eq!(diagnostic["code"], "formatMigrationAvailable");
-        assert_eq!(diagnostic["actualFormat"], "2.19");
-        assert_eq!(
-            diagnostic["root"],
-            normalized_path(&owner).display().to_string()
-        );
-        assert_eq!(std::fs::read(&owner).unwrap(), before);
-        assert!(!output.exists());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn new_dump_allows_an_exact_empty_configured_source_set_root() {
-        let root = test_root("new-empty-root");
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "OutputDir".into(),
-            Value::String(root.join("src").display().to_string()),
-        );
-
-        let check = evaluate_format_guard(spec("unica.cf.init"), &args, &context(&root)).unwrap();
-
-        assert!(matches!(check, FormatGuardCheck::Allow));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn cfe_init_output_inside_older_source_set_is_not_hidden_by_missing_base() {
-        let root = test_root("cfe-output-owner");
-        let owner = config(&root, Some("2.19"));
-        let output = root.join("src/NestedExtension");
-        let mut args = Map::new();
-        args.insert(
-            "OutputDir".into(),
-            Value::String(output.display().to_string()),
-        );
-
-        let check = evaluate_format_guard(spec("unica.cfe.init"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("cfe.init output inside an older source set must block");
-        };
-
-        assert_eq!(diagnostic["code"], "formatMigrationAvailable");
-        assert_eq!(diagnostic["actualFormat"], "2.19");
-        assert!(std::fs::read_to_string(owner).unwrap().contains("2.19"));
-        assert!(!output.exists());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn code_patch_inside_older_source_set_uses_the_same_format_boundary() {
         let root = test_root("code-patch");
         config(&root, Some("2.19"));
@@ -1873,38 +1626,10 @@ mod tests {
         );
 
         let check =
-            evaluate_format_guard(spec("unica.cfe.patch_method"), &args, &context(&root)).unwrap();
+            evaluate_format_guard(spec("unica.cfe.borrow"), &args, &context(&root)).unwrap();
         let FormatGuardCheck::Block { outcome, .. } = check else {
             panic!("older extension mutation must be blocked");
         };
-        let warning = outcome.warnings.join("\n");
-        assert_platform_reexport_warning(&warning);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn cfe_init_preflights_its_optional_cf_base_with_platform_reexport() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-cfe-init-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let path = config(&root, Some("2.19"));
-        let mut args = Map::new();
-        args.insert(
-            "ConfigPath".into(),
-            Value::String(path.display().to_string()),
-        );
-
-        let check = evaluate_format_guard(spec("unica.cfe.init"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block {
-            outcome,
-            diagnostic,
-        } = check
-        else {
-            panic!("older optional CF base must block CFE init");
-        };
-        assert_eq!(diagnostic["code"], "formatMigrationAvailable");
         let warning = outcome.warnings.join("\n");
         assert_platform_reexport_warning(&warning);
         let _ = std::fs::remove_dir_all(root);
@@ -2780,7 +2505,7 @@ mod tests {
         crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
         public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
         staged_dcs_owner_is_outside_the_old_external_source_set_profile();
-        cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
+        older_extension_dump_recommends_platform_reexport();
     }
 
     #[test]
@@ -2800,13 +2525,8 @@ mod tests {
     fn public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal() {
         let expected = std::collections::BTreeSet::from([
             "unica.cf.edit",
-            "unica.cf.init",
             "unica.cfe.borrow",
-            "unica.cfe.init",
-            "unica.cfe.patch_method",
             "unica.code.patch",
-            "unica.epf.init",
-            "unica.erf.init",
             "unica.form.compile",
             "unica.form.edit",
             "unica.interface.edit",

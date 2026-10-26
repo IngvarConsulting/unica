@@ -277,6 +277,7 @@ fn resolve_platform_xml_owners_with_optional_exact_root(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_existing_platform_xml_owners_for_new_output(
     target: &Path,
     context: &WorkspaceContext,

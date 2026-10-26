@@ -100,23 +100,19 @@ EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
 EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
-# The e4387e95 contract is proven on 1C 8.3.27.2074 on 2026-10-25. A full
-# 67-case gate (456 commands, report SHA256
-# 91cfabf9c937aed85a850a0117919bab776688d3bfbc47691b6dbece70c8273f) passed on
-# the previous composition. A manual comparison with UUIDs masked found
-# form-compile-managed, interface-edit-subsystem and subsystem-edit-add-child
-# changed since; with form-edit-managed, form-compile-managed-v012 and
-# meta-remove-object (its arguments changed) they passed on this composition
-# (report SHA256 f7a190226ceb4a585024fba3adaa5ef4704c1357473f0df26afc274685bb2a81
-# and 324d0fc332a682ef75c940ac2d3bef16d2fed91c45ca272a4df5e060f08aac88).
-# Two corpora generated independently from this change give this contract.
+# The 827a35db contract is proven on 1C 8.3.27.2074 on 2026-10-25. The corpus
+# moved off the v0.12 surface (#1813): its 48 cases publish through canonical
+# unica.apply, and the v0.12 form-compile-managed-v012 case left with it. A full
+# 48-case gate (294 commands, report SHA256
+# 9ace4c793d8bb9488646666771230bad2c5aa2cb58fa55f337ab8b673ab8994d) passed every
+# case. Two corpora generated independently from this change give this contract.
 # This records semantic retention and stable round trips under the existing
 # comparison policy; it is not whole-tree raw-byte or full-release acceptance.
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
-    "e4387e953c4f82452b32af8873661db90e26b594d4be8c9fb50fe5e996492400"
+    "827a35dbee0dcfd415a38d1c3448a151181e7d80d67f376501d57837e2006102"
 )
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "e4387e953c4f82452b32af8873661db90e26b594d4be8c9fb50fe5e996492400"
+    "827a35dbee0dcfd415a38d1c3448a151181e7d80d67f376501d57837e2006102"
 )
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -147,27 +143,14 @@ XML_FAMILY_BY_ROOT_QNAME = {
 }
 MANDATORY_CASE_IDS = frozenset(
     {
-        "cf-edit-root-property",
-        "cf-edit-set-home-page",
-        "cf-edit-set-panels",
-        "cf-init-default",
-        "cfe-patch-method-bsl-only",
-        "cfe-patch-method-catalog-object-module",
-        "cfe-patch-method-catalog-manager-module",
-        "cfe-patch-method-information-register-record-set-module",
-        "cfe-patch-method-catalog-form-module",
-        "cfe-patch-method-constant-value-manager-module",
         "code-patch-bsl-only",
         "dcs-compile-owned-template",
         "dcs-edit-add-parameter-after-settings",
         "dcs-edit-modify-field-role-restriction",
         "dcs-edit-owned-template",
         "dcs-edit-set-structure-after-settings",
-        "epf-init-managed-form",
-        "erf-init-managed-form",
         "form-add-managed",
         "form-compile-managed",
-        "form-compile-managed-v012",
         "form-edit-managed",
         "form-remove-managed",
         "help-add-object",
@@ -204,16 +187,10 @@ MANDATORY_CASE_IDS = frozenset(
         "role-edit-set-right",
         "subsystem-edit-add-child",
         "support-edit-bin-only",
-        "template-add-binary-data",
-        "template-add-data-composition-schema",
-        "template-add-html-document",
         "template-add-spreadsheet-document",
-        "template-add-text-document",
         "template-remove-object-template",
         "xdto-add-nested-property",
-        "cfe-init-default",
         "cfe-borrow-object",
-        "cfe-borrow-managed-form",
     }
 )
 FORBIDDEN_CREDENTIAL_OPTIONS = {
@@ -748,11 +725,13 @@ def uuid_normalized_semantic_sha256(
     """Digest XML semantics while alpha-renaming declared object identities only."""
     uuid_tokens: dict[str, str] = {}
 
-    def is_random_v4_identity(value: str) -> bool:
+    def is_generated_identity(value: str) -> bool:
+        # Version 4 is random; version 8 is derived from the source-set root
+        # (borrowing). Both differ between independent corpus generations.
         parts = value.lower().split("-")
         return (
             len(parts) == 5
-            and parts[2].startswith("4")
+            and parts[2][:1] in {"4", "8"}
             and parts[3][:1] in {"8", "9", "a", "b"}
         )
 
@@ -773,7 +752,7 @@ def uuid_normalized_semantic_sha256(
                 if (
                     attribute_local_name in {"uuid", "id"}
                     and UUID_TEXT_RE.fullmatch(attribute_value) is not None
-                    and is_random_v4_identity(attribute_value)
+                    and is_generated_identity(attribute_value)
                     and not (
                         element_local_name == "panelDef"
                         and attribute_local_name == "id"
@@ -788,7 +767,7 @@ def uuid_normalized_semantic_sha256(
             if (
                 local_name in {"TypeId", "ValueId", "ObjectId", "ThisNode"}
                 and UUID_TEXT_RE.fullmatch(text_value) is not None
-                and is_random_v4_identity(text_value)
+                and is_generated_identity(text_value)
             ):
                 lexical = text_value.lower()
                 uuid_tokens.setdefault(

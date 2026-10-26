@@ -1566,13 +1566,8 @@ mod tests {
     fn public_preview_strategies_are_real_and_recursively_write_free() {
         let expected_post_image = [
             "unica.cf.edit",
-            "unica.cf.init",
             "unica.cfe.borrow",
-            "unica.cfe.init",
-            "unica.cfe.patch_method",
             "unica.code.patch",
-            "unica.epf.init",
-            "unica.erf.init",
             "unica.form.compile",
             "unica.form.edit",
             "unica.interface.edit",
@@ -1609,15 +1604,9 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");
         let cache = workspace.join(".build/unica");
-        std::fs::create_dir_all(workspace.join("src/Ext")).unwrap();
+        crate::infrastructure::test_fixtures::copy_empty_configuration(&workspace);
         std::fs::create_dir_all(cache.join("indexes/main")).unwrap();
         std::fs::create_dir_all(cache.join("services/main")).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(workspace.join("src/Configuration.xml"), b"source-sentinel").unwrap();
         std::fs::write(cache.join("state.json"), b"state-sentinel").unwrap();
         std::fs::write(cache.join("indexes/main/index.json"), b"index-sentinel").unwrap();
         std::fs::write(
@@ -1626,7 +1615,7 @@ mod tests {
         )
         .unwrap();
         let absent = [
-            workspace.join("preview-src"),
+            workspace.join("src/Catalogs"),
             cache.join("jobs"),
             cache.join("caches"),
             cache.join("services/preview-created"),
@@ -1636,11 +1625,12 @@ mod tests {
 
         let post_image_result = UnicaApplication::new()
             .call_tool(
-                "unica.cf.init",
+                "unica.meta.add",
                 json!({
                     "cwd": workspace,
-                    "Name": "PreviewConfiguration",
-                    "OutputDir": "preview-src"
+                    "sourceSet": "main",
+                    "kind": "Catalog",
+                    "name": "PreviewCatalog"
                 })
                 .as_object()
                 .unwrap(),

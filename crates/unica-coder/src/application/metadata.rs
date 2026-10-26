@@ -659,24 +659,24 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(&workspace).unwrap();
-        let initialized = crate::application::UnicaApplication::new()
-            .call_tool(
-                "unica.cf.init",
-                &object(json!({
-                    "cwd": workspace.display().to_string(),
-                    "Name": "EffectOrder",
-                    "OutputDir": "src",
-                    "dryRun": false
-                })),
-            )
-            .unwrap();
-        assert!(initialized.ok, "{:?}", initialized.errors);
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
+        // Файловая фикстура пустой конфигурации 8.3.27 вместо снятого cf.init.
+        fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_tree(&entry.path(), &target);
+                } else {
+                    std::fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        copy_tree(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/platform_8_3_27/empty_configuration"),
+            &workspace,
+        );
         let cwd = unica_workspace::test_support::ProcessCwdGuard::enter(&workspace).unwrap();
         let application = crate::application::UnicaApplication::new();
         for name in ["Owner", "Subject"] {

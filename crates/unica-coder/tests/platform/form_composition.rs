@@ -479,24 +479,47 @@ fn create_external_owner(
     root_type: &str,
     object_name: &str,
 ) -> PathBuf {
-    let (operation, tool_name) = match root_type {
-        "ExternalDataProcessor" => ("epf-init", "unica.epf.init"),
-        "ExternalReport" => ("erf-init", "unica.erf.init"),
+    // Корень внешнего объекта пишет тот же эмиттер дескриптора, которым
+    // пользовался снятый `epf.init`/`erf.init`: тестам нужен владелец формы.
+    let kind = match root_type {
+        "ExternalDataProcessor" => {
+            unica_metadata_designer::external::ExternalArtifactKind::from_operation("epf-init")
+        }
+        "ExternalReport" => {
+            unica_metadata_designer::external::ExternalArtifactKind::from_operation("erf-init")
+        }
         other => panic!("unsupported external fixture root: {other}"),
-    };
+    }
+    .expect("external artifact kind");
     let args = Map::from_iter([
         ("Name".to_string(), json!(object_name)),
         ("OutputDir".to_string(), json!("external")),
     ]);
-    let outcome = crate::infrastructure::native_operations::external::apply(
-        operation, tool_name, &args, context,
+    let plan = unica_metadata_designer::external::plan_scaffold(
+        kind,
+        &args,
+        &context.cwd,
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.workspace_root),
     )
-    .expect("external init operation must be registered");
-    assert!(outcome.ok, "{outcome:?}");
-    context
-        .cwd
-        .join("external")
-        .join(format!("{object_name}.xml"))
+    .expect("external scaffold plan");
+    let descriptor = unica_metadata_designer::external::descriptor_xml(
+        &plan,
+        crate::infrastructure::source_ids::fresh_uuid,
+    );
+    std::fs::create_dir_all(plan.object_dir.join("Ext")).unwrap();
+    std::fs::write(
+        &plan.descriptor,
+        unica_xml_format::text::utf8_bom_bytes(&descriptor),
+    )
+    .unwrap();
+    std::fs::write(
+        plan.object_dir.join("Ext/ObjectModule.bsl"),
+        unica_xml_format::text::utf8_bom_bytes(
+            "#Область ПрограммныйИнтерфейс\r\n\r\n#КонецОбласти\r\n",
+        ),
+    )
+    .unwrap();
+    plan.descriptor
 }
 
 fn external_attribute_xml(password_mode: &str, indexing: &str) -> String {

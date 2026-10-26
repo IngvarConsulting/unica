@@ -30,11 +30,6 @@ name = "research_xml_corpus"
 path = "tests/research/xml_corpus.rs"
 required-features = ["research"]
 
-[[test]]
-name = "research_cf_init_checkpoint"
-path = "tests/research/cf_init_checkpoint.rs"
-required-features = ["research"]
-
 [dependencies]
 unica-daemon = { path = "../unica-daemon" }
 unica-bindings = { path = "../unica-bindings" }
