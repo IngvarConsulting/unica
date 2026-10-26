@@ -1,0 +1,68 @@
+{
+  "id": "S-2155-legacy-top-level-connection",
+  "issue": 2155,
+  "area": "Рабочее пространство",
+  "task": "Открыть рабочее пространство, где база названа подключением верхнего уровня, и узнать, куда перенести ключ",
+  "workspace": "tests/fixtures/acceptance/workspace-legacy-connection",
+  "profile": "source",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/infobase/configured",
+          "eq": false
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "config.legacy_top_level_connection"
+        },
+        {
+          "pointer": "/warnings/0/key",
+          "eq": "connection"
+        },
+        {
+          "pointer": "/warnings/0/paths/0",
+          "eq": "v8project.yaml"
+        },
+        {
+          "pointer": "/warnings/0/moveTo/key",
+          "eq": "infobases.origin.connection"
+        },
+        {
+          "pointer": "/warnings/0/moveTo/file",
+          "eq": "v8project.local.yaml"
+        },
+        {
+          "pointer": "/data/setup",
+          "eq": null
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/ready",
+          "eq": false
+        },
+        {
+          "pointer": "/data/diagnostics/0/code",
+          "eq": "config.legacy_top_level_connection"
+        },
+        {
+          "pointer": "/data/diagnostics/0/moveTo/key",
+          "eq": "infobases.origin.connection"
+        }
+      ]
+    }
+  ]
+}

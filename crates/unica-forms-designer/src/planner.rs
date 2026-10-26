@@ -1688,21 +1688,28 @@ mod dump_parity_tests;
 mod form_slot_kind_tests {
     #[test]
     fn form_slots_of_each_kind_match_an_8_3_27_export() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for (kind, fixture) in [
-            ("Catalog", "crates/unica-forms-designer/tests/platform/dump_parity/Catalog.before.xml"),
-            ("Document", "crates/unica-metadata-designer/tests/platform/dump_parity/Document.before.xml"),
-            ("ChartOfAccounts", "crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfAccounts.before.xml"),
-            ("ChartOfCalculationTypes", "crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfCalculationTypes.before.xml"),
-            ("ChartOfCharacteristicTypes", "crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfCharacteristicTypes.before.xml"),
-            ("Constant", "tests/fixtures/platform_8_3_27/meta_info_surface/constant/Constants/MainCurrency.xml"),
-            ("Enum", "tests/fixtures/platform_8_3_27/meta_info_surface/enum/Enums/PresentationEnum.xml"),
-            ("InformationRegister", "tests/fixtures/platform_8_3_27/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml"),
-            ("Report", "tests/fixtures/platform_8_3_27/template-new-xml/seed/Reports/CorpusReport.xml"),
-            ("ExternalDataProcessor", "tests/fixtures/platform_8_3_27/external_artifacts/epf/SyntheticProcessor.xml"),
-            ("ExternalReport", "tests/fixtures/platform_8_3_27/external_artifacts/erf/SyntheticReport.xml"),
+        // The exports are compiled in: this component reads no files itself.
+        macro_rules! export {
+            ($path:literal) => {
+                (
+                    $path,
+                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../", $path)),
+                )
+            };
+        }
+        for (kind, (fixture, text)) in [
+            ("Catalog", export!("crates/unica-forms-designer/tests/platform/dump_parity/Catalog.before.xml")),
+            ("Document", export!("crates/unica-metadata-designer/tests/platform/dump_parity/Document.before.xml")),
+            ("ChartOfAccounts", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfAccounts.before.xml")),
+            ("ChartOfCalculationTypes", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfCalculationTypes.before.xml")),
+            ("ChartOfCharacteristicTypes", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfCharacteristicTypes.before.xml")),
+            ("Constant", export!("tests/fixtures/platform_8_3_27/meta_info_surface/constant/Constants/MainCurrency.xml")),
+            ("Enum", export!("tests/fixtures/platform_8_3_27/meta_info_surface/enum/Enums/PresentationEnum.xml")),
+            ("InformationRegister", export!("tests/fixtures/platform_8_3_27/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
+            ("Report", export!("tests/fixtures/platform_8_3_27/template-new-xml/seed/Reports/CorpusReport.xml")),
+            ("ExternalDataProcessor", export!("tests/fixtures/platform_8_3_27/external_artifacts/epf/SyntheticProcessor.xml")),
+            ("ExternalReport", export!("tests/fixtures/platform_8_3_27/external_artifacts/erf/SyntheticReport.xml")),
         ] {
-            let text = std::fs::read_to_string(root.join(fixture)).unwrap();
             let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
             let owner = document.root_element().first_element_child().unwrap();
             assert_eq!(owner.tag_name().name(), kind, "{fixture}");
