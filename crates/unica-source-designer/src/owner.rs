@@ -442,6 +442,10 @@ mod tests {
             ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExtPicture"),
             ("http://v8.1c.ru/8.3/xcf/extrnprops", "JobSchedule"),
             ("http://v8.1c.ru/8.3/xcf/extrnprops", "AdditionalIndexes"),
+            (
+                "http://v8.1c.ru/8.3/xcf/extrnprops",
+                "AccumulationRegisterAggregates",
+            ),
             ("http://v8.1c.ru/8.3/xcf/dumpinfo", "ConfigDumpInfo"),
             (
                 "http://v8.1c.ru/8.2/managed-application/core",
