@@ -395,6 +395,7 @@ pub enum V5ClientRequest {
     LspOpen {
         #[serde(rename = "workspaceFolders")]
         workspace_folders: Vec<V5LspWorkspaceFolder>,
+        diagnostics: lsp::V5LspDiagnosticsDelivery,
     },
     LspNotify {
         session: V5LspSessionId,
@@ -481,7 +482,9 @@ impl V5ClientRequest {
             Self::WaitTask { wait_ms, .. } if *wait_ms > MAX_V5_WAIT_MS => {
                 Err("v5 task wait exceeds 7000 ms".to_string())
             }
-            Self::LspOpen { workspace_folders } => lsp::validate_open(workspace_folders),
+            Self::LspOpen {
+                workspace_folders, ..
+            } => lsp::validate_open(workspace_folders),
             Self::LspNotify {
                 session,
                 notification,
@@ -556,9 +559,13 @@ impl fmt::Debug for V5ClientRequest {
             }
             Self::CancelInvocation { .. } => formatter.write_str("V5CancelInvocation"),
             Self::FenceInvocationReceipt { .. } => formatter.write_str("V5FenceInvocationReceipt"),
-            Self::LspOpen { workspace_folders } => formatter
+            Self::LspOpen {
+                workspace_folders,
+                diagnostics,
+            } => formatter
                 .debug_struct("V5LspOpen")
                 .field("workspace_folders", &workspace_folders.len())
+                .field("diagnostics", diagnostics)
                 .finish(),
             Self::LspNotify { notification, .. } => formatter
                 .debug_struct("V5LspNotify")
@@ -1332,8 +1339,10 @@ mod tests {
                 receipt_key_json()
             ),
             "{\"kind\":\"error\",\"code\":\"receipt_not_found\"}".to_string(),
-            "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"incremental\",\"hover\":true,\"textDocumentContent\":true},\"workspaces\":[{\"folder\":\"file:///work\",\"space\":\"w1\"},{\"folder\":\"file:///other\",\"failure\":\"workspace_unavailable\"}]}".to_string(),
+            "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"incremental\",\"hover\":true,\"textDocumentContent\":true,\"documentSymbols\":true,\"foldingRanges\":true,\"signatureHelp\":true,\"completion\":true,\"definition\":true,\"references\":true,\"callHierarchy\":true,\"semanticTokensLegend\":{\"tokenTypes\":[\"keyword\"],\"tokenModifiers\":[]}},\"workspaces\":[{\"folder\":\"file:///work\",\"space\":\"w1\"},{\"folder\":\"file:///other\",\"failure\":\"workspace_unavailable\"}]}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"text\",\"text\":\"Процедура А()\"}}".to_string(),
+            "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"json\",\"value\":{\"data\":[0,0,9,1,0]}}}".to_string(),
+            "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"json\",\"value\":null}}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"hover\",\"contents\":\"**x**\"}}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"hover\"}}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"cancelled\"}}".to_string(),
@@ -1368,17 +1377,17 @@ mod tests {
             ),
             (
                 "non-canonical lsp session",
-                "{\"kind\":\"lsp_opened\",\"session\":\"x\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false},\"workspaces\":[]}"
+                "{\"kind\":\"lsp_opened\",\"session\":\"x\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false,\"documentSymbols\":false,\"foldingRanges\":false,\"signatureHelp\":false,\"completion\":false,\"definition\":false,\"references\":false,\"callHierarchy\":false},\"workspaces\":[]}"
                     .to_string(),
             ),
             (
                 "workspace with both space and failure",
-                "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false},\"workspaces\":[{\"folder\":\"file:///w\",\"space\":\"w1\",\"failure\":\"workspace_unavailable\"}]}"
+                "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false,\"documentSymbols\":false,\"foldingRanges\":false,\"signatureHelp\":false,\"completion\":false,\"definition\":false,\"references\":false,\"callHierarchy\":false},\"workspaces\":[{\"folder\":\"file:///w\",\"space\":\"w1\",\"failure\":\"workspace_unavailable\"}]}"
                     .to_string(),
             ),
             (
                 "space that is not an address segment",
-                "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false},\"workspaces\":[{\"folder\":\"file:///w\",\"space\":\"a/b\"}]}"
+                "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false,\"documentSymbols\":false,\"foldingRanges\":false,\"signatureHelp\":false,\"completion\":false,\"definition\":false,\"references\":false,\"callHierarchy\":false},\"workspaces\":[{\"folder\":\"file:///w\",\"space\":\"a/b\"}]}"
                     .to_string(),
             ),
             (
@@ -1580,7 +1589,17 @@ mod tests {
             ),
             (
                 V5ClientRequestKind::LspOpen,
-                "{\"kind\":\"lsp_open\",\"workspaceFolders\":[{\"uri\":\"file:///work\",\"name\":\"work\"}]}".into(),
+                "{\"kind\":\"lsp_open\",\"workspaceFolders\":[{\"uri\":\"file:///work\",\"name\":\"work\"}],\"diagnostics\":\"push\"}".into(),
+            ),
+            (
+                V5ClientRequestKind::LspOpen,
+                "{\"kind\":\"lsp_open\",\"workspaceFolders\":[],\"diagnostics\":\"pull\"}".into(),
+            ),
+            (
+                V5ClientRequestKind::LspNotify,
+                format!(
+                    "{{\"kind\":\"lsp_notify\",\"session\":\"{LSP_SESSION}\",\"notification\":{{\"method\":\"textDocument/didSave\",\"uri\":\"file:///work/a.bsl\"}}}}"
+                ),
             ),
             (
                 V5ClientRequestKind::LspNotify,
@@ -1591,7 +1610,26 @@ mod tests {
             (
                 V5ClientRequestKind::LspCall,
                 format!(
+                    "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":8,\"budgetMs\":7000,\"call\":{{\"method\":\"textDocument/diagnostic\",\"uri\":\"file:///work/a.bsl\",\"previousResultId\":\"{}\"}}}}",
+                    "r".repeat(128)
+                ),
+            ),
+            (
+                V5ClientRequestKind::LspCall,
+                format!(
                     "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":7,\"budgetMs\":7000,\"call\":{{\"method\":\"textDocument/hover\",\"uri\":\"file:///work/a.bsl\",\"position\":{{\"line\":1,\"character\":2}}}}}}"
+                ),
+            ),
+            (
+                V5ClientRequestKind::LspCall,
+                format!(
+                    "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":8,\"budgetMs\":7000,\"call\":{{\"method\":\"textDocument/signatureHelp\",\"uri\":\"unica://w/main/CommonModule.A\",\"position\":{{\"line\":3,\"character\":4}}}}}}"
+                ),
+            ),
+            (
+                V5ClientRequestKind::LspCall,
+                format!(
+                    "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":9,\"budgetMs\":7000,\"call\":{{\"method\":\"textDocument/semanticTokens/full\",\"uri\":\"unica://w/main/CommonModule.A\"}}}}"
                 ),
             ),
             (
@@ -2021,13 +2059,18 @@ mod tests {
                 "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":7001,\"call\":{{\"method\":\"textDocument/hover\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
             ),
             format!(
-                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/definition\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
+                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/rename\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
             ),
             format!(
                 "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":-1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/hover\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
             ),
             format!(
                 "{{\"kind\":\"lsp_notify\",\"session\":\"{LSP_SESSION}\",\"notification\":{{\"method\":\"textDocument/didClose\",\"uri\":\"file:///a\\u0000\"}}}}"
+            ),
+            "{\"kind\":\"lsp_open\",\"workspaceFolders\":[],\"diagnostics\":\"both\"}".to_string(),
+            format!(
+                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/diagnostic\",\"uri\":\"file:///a\",\"previousResultId\":\"{}\"}}}}",
+                "r".repeat(129)
             ),
             format!(
                 "{{\"kind\":\"lsp_notify\",\"session\":\"{LSP_SESSION}\",\"notification\":{{\"method\":\"textDocument/didOpen\",\"uri\":\"file:///a\",\"version\":1,\"text\":\"\"}}}}"

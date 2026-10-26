@@ -2,8 +2,8 @@
 //! соединение; запросы идут по своим соединениям, отмена — по отдельному.
 use super::*;
 use crate::protocol_v5::lsp::{
-    V5LspCall, V5LspFailure, V5LspNotification, V5LspOpening, V5LspOutcome,
-    V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder,
+    V5LspCall, V5LspDiagnosticsDelivery, V5LspFailure, V5LspNotification, V5LspOpening,
+    V5LspOutcome, V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder,
 };
 
 /// Срок короткого обмена отмены: она не ждёт ничего, кроме записи флага.
@@ -35,10 +35,14 @@ impl V5DaemonProcessOwner {
     pub fn lsp_open_before(
         &mut self,
         workspace_folders: Vec<V5LspWorkspaceFolder>,
+        diagnostics: V5LspDiagnosticsDelivery,
         deadline: Instant,
     ) -> Result<(V5LspSessionId, V5LspOpening), V5LspExchangeError> {
         match self.lsp_exchange(
-            V5ClientRequest::LspOpen { workspace_folders },
+            V5ClientRequest::LspOpen {
+                workspace_folders,
+                diagnostics,
+            },
             "lsp open",
             deadline,
         )? {
