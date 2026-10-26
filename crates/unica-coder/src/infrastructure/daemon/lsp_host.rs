@@ -10,6 +10,7 @@
 //! тем, которого реестр выдаёт и MCP, и переносит в него свои буферы.
 
 use super::server::closed_daemon_source_relative_path;
+use super::v13_service::{CanonicalV13ReadService, SymbolOperation, SymbolRequest};
 use crate::application::lsp::document::ContentChange;
 use crate::application::lsp::position::Utf16Position;
 use crate::application::lsp::uri::WorkspaceFolder;
@@ -28,9 +29,9 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::{Duration, Instant};
 use unica_daemon::lsp_lane::{LspCallContext, LspClientChannel, LspHost};
 use unica_daemon::protocol_v5::lsp::{
-    V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspNotification,
-    V5LspOpening, V5LspOutcome, V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
-    V5LspWorkspaceSpace,
+    V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspMessageLevel,
+    V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition, V5LspServerNotification,
+    V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder, V5LspWorkspaceSpace,
 };
 use unica_documentation_sources::platform_help::provider::GlobalContextMember;
 use unica_execution_contract::invocation::SafeIdentityHash;
@@ -46,11 +47,15 @@ const ACTOR_SCOPE: &str = "canonical-v0.13";
 pub(crate) struct UnicaLspHost {
     actors: Arc<WorkspaceActorRegistry>,
     platform: Arc<PlatformContexts>,
+    /// The read service MCP calls use: the symbol port answers through it.
+    read_service: Arc<CanonicalV13ReadService>,
     sessions: Mutex<HashMap<V5LspSessionId, Arc<RwLock<Session>>>>,
 }
 
 struct Session {
     documents: LspDocuments,
+    /// Where an answer the editor cannot mark incomplete says so.
+    client: LspClientChannel,
     spaces: BTreeMap<String, AdmittedSpace>,
 }
 
@@ -58,6 +63,8 @@ struct Session {
 /// of its source sets.
 struct AdmittedSpace {
     folder: PathBuf,
+    /// The workspace as MCP sees it: the symbol provider is chosen by it.
+    context: WorkspaceContext,
     /// The platform installation whose global context completion offers.
     platform_root: Option<PathBuf>,
     actor: Weak<WorkspaceActor>,
@@ -66,10 +73,19 @@ struct AdmittedSpace {
 }
 
 impl UnicaLspHost {
+    #[cfg(test)]
     pub(crate) fn new(actors: Arc<WorkspaceActorRegistry>) -> Self {
+        Self::with_read_service(actors, Arc::new(CanonicalV13ReadService::default()))
+    }
+
+    pub(crate) fn with_read_service(
+        actors: Arc<WorkspaceActorRegistry>,
+        read_service: Arc<CanonicalV13ReadService>,
+    ) -> Self {
         Self {
             actors,
             platform: Arc::new(PlatformContexts::default()),
+            read_service,
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -87,7 +103,7 @@ impl LspHost for UnicaLspHost {
         &self,
         session: &V5LspSessionId,
         folders: &[V5LspWorkspaceFolder],
-        _: LspClientChannel,
+        client: LspClientChannel,
         deadline: Instant,
     ) -> Result<V5LspOpening, V5LspFailure> {
         // A folder without admitted sources takes no space name.
@@ -140,17 +156,24 @@ impl LspHost for UnicaLspHost {
         }
         lock(&self.sessions).insert(
             session.clone(),
-            Arc::new(RwLock::new(Session { documents, spaces })),
+            Arc::new(RwLock::new(Session {
+                documents,
+                client,
+                spaces,
+            })),
         );
         Ok(V5LspOpening {
             capabilities: V5LspCapabilities {
                 text_document_sync: V5LspTextSync::Incremental,
-                hover: false,
+                hover: true,
                 text_document_content: true,
                 document_symbols: true,
                 folding_ranges: true,
                 signature_help: true,
                 completion: true,
+                definition: true,
+                references: true,
+                call_hierarchy: true,
                 semantic_tokens_legend: Some(lsp_features::semantic_tokens_legend()),
             },
             workspaces,
@@ -232,7 +255,9 @@ impl LspHost for UnicaLspHost {
         // A replaced actor is swapped under the write lock; the answer itself
         // reads under the read lock, beside other requests of the session.
         let document = match &call {
-            V5LspCall::CompletionResolve { item } => item["data"][COMPLETION_DOCUMENT]
+            V5LspCall::CompletionResolve { item }
+            | V5LspCall::IncomingCalls { item }
+            | V5LspCall::OutgoingCalls { item } => item["data"][COMPLETION_DOCUMENT]
                 .as_str()
                 .map(str::to_owned),
             call => call.document_uri().map(str::to_owned),
@@ -251,7 +276,7 @@ impl LspHost for UnicaLspHost {
             return V5LspOutcome::Cancelled {};
         }
         let session = read(&session);
-        answer(&session, call, context, &self.platform).unwrap_or_else(failed)
+        answer(self, &session, call, context).unwrap_or_else(failed)
     }
 
     fn close(&self, session: &V5LspSessionId) {
@@ -409,6 +434,46 @@ impl Session {
 }
 
 impl AdmittedSpace {
+    /// A read of `set` as it is saved: no buffers of any session.
+    fn saved_read(
+        &self,
+        set: &str,
+    ) -> Result<
+        (
+            ProviderReadAuthority,
+            Arc<crate::infrastructure::v13_large_configuration::RegistrationCache>,
+            unica_bsl::profile::PlatformProfile,
+        ),
+        V5LspFailure,
+    > {
+        let binding = self
+            .bindings
+            .iter()
+            .find(|binding| binding.source_set_name() == set)
+            .ok_or(V5LspFailure::DocumentUnknown)?;
+        let actor = self
+            .actor
+            .upgrade()
+            .ok_or(V5LspFailure::WorkspaceUnavailable)?;
+        actor
+            .validate_binding(binding)
+            .map_err(|_| V5LspFailure::WorkspaceUnavailable)?;
+        let artifacts = actor
+            .source_artifacts(binding)
+            .map_err(|_| V5LspFailure::WorkspaceUnavailable)?;
+        let profile =
+            crate::domain::source_capabilities::bsl_profile_for_source(binding.source_profile())
+                .ok_or(V5LspFailure::WorkspaceUnavailable)?;
+        let read = ProviderReadAuthority::new_local_snapshot(
+            binding.source_set_name(),
+            format!("{}:{}", self.identity.as_str(), binding.source_set_name()),
+            binding.source_kind(),
+            binding.retained_root(),
+            uuid::Uuid::new_v4().to_string(),
+        );
+        Ok((read, artifacts, profile))
+    }
+
     fn layouts(&self) -> Vec<SourceSetLayout> {
         self.bindings
             .iter()
@@ -461,11 +526,12 @@ impl AdmittedSpace {
 /// The answer to one editor request, from the document as this session
 /// sees it: its open buffer, otherwise the file.
 fn answer(
+    host: &UnicaLspHost,
     session: &Session,
     call: V5LspCall,
     context: &LspCallContext,
-    platform: &Arc<PlatformContexts>,
 ) -> Result<V5LspOutcome, V5LspFailure> {
+    let platform = &host.platform;
     let json = |value| V5LspOutcome::Json { value };
     let text_with = |uri: &str, build: fn(&str) -> serde_json::Value| {
         let (uri, read) = document_read(session, uri)?;
@@ -543,8 +609,259 @@ fn answer(
                 .map(json)
                 .map_err(document_failure)
         }
-        V5LspCall::Hover { .. } => Err(V5LspFailure::NotSupported),
+        V5LspCall::Hover { uri, position } => {
+            let answer = symbols(host, session, &uri, position, SymbolOperation::Hover)?;
+            Ok(json(hover_json(&answer)))
+        }
+        V5LspCall::Definition { uri, position } => {
+            let answer = symbols(host, session, &uri, position, SymbolOperation::Definition)?;
+            Ok(json(locations_json(session, &answer)))
+        }
+        V5LspCall::References { uri, position } => {
+            let answer = symbols(host, session, &uri, position, SymbolOperation::References)?;
+            Ok(json(locations_json(session, &answer)))
+        }
+        V5LspCall::PrepareCallHierarchy { uri, position } => {
+            let answer = symbols(host, session, &uri, position, SymbolOperation::Hover)?;
+            Ok(json(call_hierarchy_item(&uri, position, &answer)))
+        }
+        V5LspCall::IncomingCalls { item } => {
+            calls_json(host, session, &item, SymbolOperation::IncomingCalls, "from").map(json)
+        }
+        V5LspCall::OutgoingCalls { item } => {
+            calls_json(host, session, &item, SymbolOperation::OutgoingCalls, "to").map(json)
+        }
     }
+}
+
+/// One answer of the symbol port: `value`, `complete` and `reasons` in
+/// Unica's places, before they become LSP's.
+struct SymbolData {
+    space: String,
+    value: serde_json::Value,
+    complete: bool,
+    reasons: Vec<String>,
+}
+
+/// Ask the symbol port about `position` in a document, as MCP would: the
+/// saved module is read from disk and the session's buffer is given beside
+/// it, so a provider's answer about the saved text is marked stale.
+fn symbols(
+    host: &UnicaLspHost,
+    session: &Session,
+    uri: &str,
+    position: V5LspPosition,
+    operation: SymbolOperation,
+) -> Result<SymbolData, V5LspFailure> {
+    let uri = document_uri(&session.documents, uri).map_err(|_| V5LspFailure::DocumentUnknown)?;
+    let location = session
+        .documents
+        .locate(&uri)
+        .map_err(|_| V5LspFailure::DocumentUnknown)?;
+    let space = session
+        .spaces
+        .get(&location.document.space)
+        .ok_or(V5LspFailure::DocumentUnknown)?;
+    let module = unica_address::address::QualifiedAddress::parse(&location.document.address)
+        .map_err(|_| V5LspFailure::DocumentUnknown)?;
+    let buffer = session
+        .documents
+        .open_document(&location.document)
+        .map(|document| document.text().to_owned());
+    let (read, registration_cache, profile) = space.saved_read(&location.source_set)?;
+    // The provider runs to its own end, as for MCP: cancelling it would
+    // retire the analyzer session MCP shares (#2189). The lane gives the
+    // editor its answer or a server cancellation by the editor's budget.
+    let cancellation = unica_work_control::cancellation::CancellationToken::new();
+    let deadline = unica_work_control::provider_deadline::ProviderDeadline::no_deadline();
+    let authority =
+        crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority_and_registration_cache(
+            &cancellation,
+            read,
+            profile,
+            deadline,
+            registration_cache,
+        );
+    let result = host.read_service.symbols_with(
+        &authority,
+        &space.context,
+        deadline,
+        SymbolRequest {
+            module,
+            buffer: buffer.as_deref(),
+            position: unica_code_intelligence::symbols::SymbolPosition {
+                line: position.line as usize,
+                column: position.character as usize,
+            },
+            operation,
+        },
+        &cancellation,
+    );
+    if !result.ok {
+        let not_found = result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "not_found");
+        return Err(if not_found {
+            V5LspFailure::DocumentUnknown
+        } else {
+            V5LspFailure::Unavailable
+        });
+    }
+    let data = result.data.unwrap_or_default();
+    let complete = data["complete"].as_bool().unwrap_or(false);
+    if !complete {
+        let reasons = data["reasons"].to_string();
+        let _ = session.client.push(V5LspServerNotification::LogMessage {
+            level: V5LspMessageLevel::Info,
+            message: format!("unica: the answer is incomplete: {reasons}"),
+        });
+    }
+    Ok(SymbolData {
+        space: location.document.space,
+        value: data["value"].clone(),
+        complete,
+        reasons: data["reasons"]
+            .as_array()
+            .map(|reasons| {
+                reasons
+                    .iter()
+                    .filter_map(|reason| reason.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+/// A place of the symbol port as an LSP location in this session's spaces.
+/// A metadata node has no range: it is the start of its document.
+fn lsp_location(
+    session: &Session,
+    space: &str,
+    place: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let uri = session
+        .documents
+        .spaces()
+        .format(&crate::application::lsp::uri::DocumentUri {
+            space: space.to_owned(),
+            address: place["at"].as_str()?.to_owned(),
+        })
+        .ok()?;
+    Some(serde_json::json!({"uri": uri, "range": lsp_range(&place["range"])}))
+}
+
+fn lsp_range(range: &serde_json::Value) -> serde_json::Value {
+    let point = |point: &serde_json::Value| {
+        serde_json::json!({
+            "line": point["line"].as_u64().unwrap_or(0),
+            "character": point["column"].as_u64().unwrap_or(0),
+        })
+    };
+    serde_json::json!({"start": point(&range["start"]), "end": point(&range["end"])})
+}
+
+fn locations_json(session: &Session, answer: &SymbolData) -> serde_json::Value {
+    serde_json::Value::Array(
+        answer
+            .value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|place| lsp_location(session, &answer.space, place))
+            .collect(),
+    )
+}
+
+/// Hover in markdown. An incomplete answer says so in its own text: LSP has
+/// no field for it.
+fn hover_json(answer: &SymbolData) -> serde_json::Value {
+    let info = &answer.value;
+    if info.is_null() {
+        return serde_json::Value::Null;
+    }
+    let head = info["signature"]
+        .as_str()
+        .or(info["name"].as_str())
+        .unwrap_or_default();
+    let mut text = format!("```bsl\n{head}\n```");
+    if let Some(returns) = info["returnType"].as_str() {
+        text.push_str(&format!("\n\n→ {returns}"));
+    }
+    if !answer.complete {
+        text.push_str(&format!(
+            "\n\n_unica: the answer is incomplete ({})_",
+            answer.reasons.join(", ")
+        ));
+    }
+    serde_json::json!({"contents": {"kind": "markdown", "value": text}})
+}
+
+/// The item `prepareCallHierarchy` gives: the symbol at the position, with
+/// the document and position the calls are asked about later.
+fn call_hierarchy_item(
+    uri: &str,
+    position: V5LspPosition,
+    answer: &SymbolData,
+) -> serde_json::Value {
+    let Some(name) = answer.value["name"].as_str() else {
+        return serde_json::Value::Null;
+    };
+    let point = serde_json::json!({"line": position.line, "character": position.character});
+    let range = serde_json::json!({"start": point, "end": point});
+    serde_json::json!([{
+        "name": name,
+        "kind": 12,
+        "uri": uri,
+        "range": range,
+        "selectionRange": range,
+        "data": {COMPLETION_DOCUMENT: uri, "position": point},
+    }])
+}
+
+fn calls_json(
+    host: &UnicaLspHost,
+    session: &Session,
+    item: &serde_json::Value,
+    operation: SymbolOperation,
+    end: &str,
+) -> Result<serde_json::Value, V5LspFailure> {
+    let uri = item["data"][COMPLETION_DOCUMENT]
+        .as_str()
+        .ok_or(V5LspFailure::DocumentUnknown)?;
+    let point = &item["data"]["position"];
+    let position = V5LspPosition {
+        line: point["line"]
+            .as_u64()
+            .ok_or(V5LspFailure::DocumentUnknown)? as u32,
+        character: point["character"]
+            .as_u64()
+            .ok_or(V5LspFailure::DocumentUnknown)? as u32,
+    };
+    let answer = symbols(host, session, uri, position, operation)?;
+    Ok(serde_json::Value::Array(
+        answer
+            .value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|place| {
+                let location = lsp_location(session, &answer.space, place)?;
+                let at = place["at"].as_str()?;
+                let name = at.rsplit(['.', ':']).next().unwrap_or(at);
+                Some(serde_json::json!({
+                    end: {
+                        "name": name,
+                        "kind": 12,
+                        "uri": location["uri"],
+                        "range": location["range"],
+                        "selectionRange": location["range"],
+                    },
+                    "fromRanges": [location["range"]],
+                }))
+            })
+            .collect(),
+    ))
 }
 
 /// Where a completion item keeps its document for `completionItem/resolve`:
@@ -688,6 +1005,7 @@ fn admit_actor(
     Some((
         AdmittedSpace {
             folder: folder.to_path_buf(),
+            context: context.clone(),
             platform_root: None,
             actor: Arc::downgrade(&actor),
             bindings,

@@ -1332,7 +1332,7 @@ mod tests {
                 receipt_key_json()
             ),
             "{\"kind\":\"error\",\"code\":\"receipt_not_found\"}".to_string(),
-            "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"incremental\",\"hover\":true,\"textDocumentContent\":true,\"documentSymbols\":true,\"foldingRanges\":true,\"signatureHelp\":true,\"completion\":true,\"semanticTokensLegend\":{\"tokenTypes\":[\"keyword\"],\"tokenModifiers\":[]}},\"workspaces\":[{\"folder\":\"file:///work\",\"space\":\"w1\"},{\"folder\":\"file:///other\",\"failure\":\"workspace_unavailable\"}]}".to_string(),
+            "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"incremental\",\"hover\":true,\"textDocumentContent\":true,\"documentSymbols\":true,\"foldingRanges\":true,\"signatureHelp\":true,\"completion\":true,\"definition\":true,\"references\":true,\"callHierarchy\":true,\"semanticTokensLegend\":{\"tokenTypes\":[\"keyword\"],\"tokenModifiers\":[]}},\"workspaces\":[{\"folder\":\"file:///work\",\"space\":\"w1\"},{\"folder\":\"file:///other\",\"failure\":\"workspace_unavailable\"}]}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"text\",\"text\":\"Процедура А()\"}}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"json\",\"value\":{\"data\":[0,0,9,1,0]}}}".to_string(),
             "{\"kind\":\"lsp_answer\",\"outcome\":{\"result\":\"json\",\"value\":null}}".to_string(),
@@ -1370,17 +1370,17 @@ mod tests {
             ),
             (
                 "non-canonical lsp session",
-                "{\"kind\":\"lsp_opened\",\"session\":\"x\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false,\"documentSymbols\":false,\"foldingRanges\":false,\"signatureHelp\":false,\"completion\":false},\"workspaces\":[]}"
+                "{\"kind\":\"lsp_opened\",\"session\":\"x\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false,\"documentSymbols\":false,\"foldingRanges\":false,\"signatureHelp\":false,\"completion\":false,\"definition\":false,\"references\":false,\"callHierarchy\":false},\"workspaces\":[]}"
                     .to_string(),
             ),
             (
                 "workspace with both space and failure",
-                "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false,\"documentSymbols\":false,\"foldingRanges\":false,\"signatureHelp\":false,\"completion\":false},\"workspaces\":[{\"folder\":\"file:///w\",\"space\":\"w1\",\"failure\":\"workspace_unavailable\"}]}"
+                "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false,\"documentSymbols\":false,\"foldingRanges\":false,\"signatureHelp\":false,\"completion\":false,\"definition\":false,\"references\":false,\"callHierarchy\":false},\"workspaces\":[{\"folder\":\"file:///w\",\"space\":\"w1\",\"failure\":\"workspace_unavailable\"}]}"
                     .to_string(),
             ),
             (
                 "space that is not an address segment",
-                "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false,\"documentSymbols\":false,\"foldingRanges\":false,\"signatureHelp\":false,\"completion\":false},\"workspaces\":[{\"folder\":\"file:///w\",\"space\":\"a/b\"}]}"
+                "{\"kind\":\"lsp_opened\",\"session\":\"55555555-5555-4555-8555-555555555555\",\"capabilities\":{\"textDocumentSync\":\"none\",\"hover\":false,\"textDocumentContent\":false,\"documentSymbols\":false,\"foldingRanges\":false,\"signatureHelp\":false,\"completion\":false,\"definition\":false,\"references\":false,\"callHierarchy\":false},\"workspaces\":[{\"folder\":\"file:///w\",\"space\":\"a/b\"}]}"
                     .to_string(),
             ),
             (
@@ -2035,7 +2035,7 @@ mod tests {
                 "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":7001,\"call\":{{\"method\":\"textDocument/hover\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
             ),
             format!(
-                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/definition\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
+                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/rename\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
             ),
             format!(
                 "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":-1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/hover\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"

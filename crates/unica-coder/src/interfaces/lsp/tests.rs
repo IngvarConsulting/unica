@@ -71,10 +71,14 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
     let initialized = editor.initialize();
     let capabilities = &initialized["result"]["capabilities"];
     assert_eq!(capabilities["positionEncoding"], "utf-16");
-    assert!(
-        capabilities.get("hoverProvider").is_none(),
-        "hover is not served yet, so it is not declared"
-    );
+    for provider in [
+        "hoverProvider",
+        "definitionProvider",
+        "referencesProvider",
+        "callHierarchyProvider",
+    ] {
+        assert_eq!(capabilities[provider], true, "{provider}");
+    }
     assert_eq!(
         capabilities["experimental"]["unica"]["workspaces"],
         json!([{"folder": "file:///work", "failure": "lsp_workspace_unavailable"}]),
@@ -85,10 +89,18 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
         error_code(&editor.request("initialize", json!({}))),
         INVALID_REQUEST
     );
+    // A file outside every space names no document of this session.
     let hover = editor.request("textDocument/hover", hover_params("file:///a.bsl"));
-    assert_eq!(error_code(&hover), METHOD_NOT_FOUND);
+    assert_eq!(
+        hover["error"]["message"], "unica: lsp_document_unknown",
+        "{hover}"
+    );
     assert_eq!(
         error_code(&editor.request("textDocument/definition", json!({}))),
+        INVALID_PARAMS
+    );
+    assert_eq!(
+        error_code(&editor.request("textDocument/rename", json!({}))),
         METHOD_NOT_FOUND
     );
 

@@ -684,6 +684,15 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
             json!({"legend": legend, "full": true}),
         );
     }
+    if capabilities.definition {
+        result.insert("definitionProvider".into(), json!(true));
+    }
+    if capabilities.references {
+        result.insert("referencesProvider".into(), json!(true));
+    }
+    if capabilities.call_hierarchy {
+        result.insert("callHierarchyProvider".into(), json!(true));
+    }
     if capabilities.completion {
         result.insert(
             "completionProvider".into(),
@@ -793,6 +802,32 @@ fn document_call(method: &str, params: &Value) -> Option<Option<V5LspCall>> {
                 position: position(params.get("position")?)?,
             })
         }),
+        "textDocument/definition" => uri().and_then(|uri| {
+            Some(V5LspCall::Definition {
+                uri,
+                position: position(params.get("position")?)?,
+            })
+        }),
+        "textDocument/references" => uri().and_then(|uri| {
+            Some(V5LspCall::References {
+                uri,
+                position: position(params.get("position")?)?,
+            })
+        }),
+        "textDocument/prepareCallHierarchy" => uri().and_then(|uri| {
+            Some(V5LspCall::PrepareCallHierarchy {
+                uri,
+                position: position(params.get("position")?)?,
+            })
+        }),
+        "callHierarchy/incomingCalls" => params
+            .get("item")
+            .filter(|item| item.is_object())
+            .map(|item| V5LspCall::IncomingCalls { item: item.clone() }),
+        "callHierarchy/outgoingCalls" => params
+            .get("item")
+            .filter(|item| item.is_object())
+            .map(|item| V5LspCall::OutgoingCalls { item: item.clone() }),
         // The params are the item the service gave, as the editor returns it.
         "completionItem/resolve" => params.is_object().then(|| V5LspCall::CompletionResolve {
             item: params.clone(),

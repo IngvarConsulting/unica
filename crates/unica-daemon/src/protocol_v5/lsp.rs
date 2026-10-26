@@ -100,6 +100,26 @@ pub enum V5LspCall {
     /// редактор: документ служба записала в его `data`.
     #[serde(rename = "completionItem/resolve")]
     CompletionResolve { item: Value },
+    #[serde(rename = "textDocument/definition")]
+    Definition {
+        uri: String,
+        position: V5LspPosition,
+    },
+    #[serde(rename = "textDocument/references")]
+    References {
+        uri: String,
+        position: V5LspPosition,
+    },
+    #[serde(rename = "textDocument/prepareCallHierarchy")]
+    PrepareCallHierarchy {
+        uri: String,
+        position: V5LspPosition,
+    },
+    /// Элемент иерархии, который служба выдала в `prepareCallHierarchy`.
+    #[serde(rename = "callHierarchy/incomingCalls")]
+    IncomingCalls { item: Value },
+    #[serde(rename = "callHierarchy/outgoingCalls")]
+    OutgoingCalls { item: Value },
 }
 
 impl V5LspCall {
@@ -112,17 +132,28 @@ impl V5LspCall {
             | Self::FoldingRange { uri }
             | Self::SemanticTokensFull { uri }
             | Self::SignatureHelp { uri, .. }
-            | Self::Completion { uri, .. } => Some(uri),
-            Self::CompletionResolve { .. } => None,
+            | Self::Completion { uri, .. }
+            | Self::Definition { uri, .. }
+            | Self::References { uri, .. }
+            | Self::PrepareCallHierarchy { uri, .. } => Some(uri),
+            Self::CompletionResolve { .. }
+            | Self::IncomingCalls { .. }
+            | Self::OutgoingCalls { .. } => None,
         }
     }
 
     fn validate(&self) -> Result<(), String> {
         match self {
-            Self::CompletionResolve { item } if item.is_object() => Ok(()),
-            Self::CompletionResolve { .. } => {
-                Err("v5 lsp completion item must be an object".to_string())
+            Self::CompletionResolve { item }
+            | Self::IncomingCalls { item }
+            | Self::OutgoingCalls { item }
+                if item.is_object() =>
+            {
+                Ok(())
             }
+            Self::CompletionResolve { .. }
+            | Self::IncomingCalls { .. }
+            | Self::OutgoingCalls { .. } => Err("v5 lsp item must be an object".to_string()),
             _ => validate_uri(self.document_uri().unwrap_or_default()),
         }
     }
@@ -221,6 +252,9 @@ pub struct V5LspCapabilities {
     pub signature_help: bool,
     /// `completion` с `completionItem/resolve`.
     pub completion: bool,
+    pub definition: bool,
+    pub references: bool,
+    pub call_hierarchy: bool,
     /// Легенда `semanticTokens/full`, если служба их выдаёт.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_tokens_legend: Option<Value>,
@@ -235,6 +269,9 @@ impl V5LspCapabilities {
         folding_ranges: false,
         signature_help: false,
         completion: false,
+        definition: false,
+        references: false,
+        call_hierarchy: false,
         semantic_tokens_legend: None,
     };
 }

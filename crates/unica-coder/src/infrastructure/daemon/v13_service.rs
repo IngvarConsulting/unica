@@ -4400,9 +4400,6 @@ impl CanonicalV13ReadService {
         request: SymbolRequest<'_>,
         cancellation: &CancellationToken,
     ) -> DomainResult {
-        use unica_code_intelligence::symbols::{
-            CallDirection, SymbolDocument, SymbolRequestContext, SymbolService,
-        };
         let at = request.module.to_string();
         let source_set = request.module.source_set().to_string();
         let sources = match invocation.read_sources() {
@@ -4427,6 +4424,34 @@ impl CanonicalV13ReadService {
                 return error_result_detailed(Some(at), RefusalDetail::SourceUnreadable, error)
             }
         };
+        // The provider gets the invocation's deadline, as MCP calls do: a
+        // shorter editor budget would retire the shared analyzer session on
+        // every slow answer until #2189 lets a deadline cancel without that.
+        self.symbols_with(
+            &authority,
+            invocation.workspace_context(),
+            source.deadline(),
+            request,
+            cancellation,
+        )
+    }
+
+    /// The symbol port over a read the caller already holds: MCP's actor
+    /// capability or the LSP route's read with the session's buffers.
+    /// `deadline` bounds the provider, never an editor's shorter budget.
+    pub(crate) fn symbols_with(
+        &self,
+        authority: &crate::infrastructure::v13_read::LogicalViewReadAuthority<'_>,
+        workspace: &unica_source_contract::workspace::WorkspaceContext,
+        deadline: unica_work_control::provider_deadline::ProviderDeadline,
+        request: SymbolRequest<'_>,
+        cancellation: &CancellationToken,
+    ) -> DomainResult {
+        use unica_code_intelligence::symbols::{
+            CallDirection, SymbolDocument, SymbolRequestContext, SymbolService,
+        };
+        let at = request.module.to_string();
+        let source_set = request.module.source_set().to_string();
         // The module's canonical address and path, so the places the
         // provider names in this module compare equal to the document.
         let (at, path, saved) =
@@ -4450,13 +4475,10 @@ impl CanonicalV13ReadService {
             text: request.buffer.unwrap_or(&saved),
             saved: &saved,
         };
-        let provider = self.symbol_provider(invocation, &source_set);
+        let provider = self.symbol_provider(workspace, &source_set);
         let service = SymbolService::new(provider.as_deref(), &environment);
-        // The provider gets the invocation's deadline, as MCP calls do: a
-        // shorter editor budget would retire the shared analyzer session on
-        // every slow answer until #2189 lets a deadline cancel without that.
         let context = SymbolRequestContext {
-            deadline: source.deadline(),
+            deadline,
             cancellation,
         };
         let position = request.position;
@@ -4494,7 +4516,7 @@ impl CanonicalV13ReadService {
     /// собирается из текста модуля и называет причину неполноты.
     fn symbol_provider(
         &self,
-        invocation: &ActorBoundExecution,
+        workspace: &unica_source_contract::workspace::WorkspaceContext,
         source_set: &str,
     ) -> Option<Box<dyn unica_code_intelligence::symbols::SymbolProvider>> {
         use crate::application::ports::ApplicationPorts;
@@ -4508,7 +4530,7 @@ impl CanonicalV13ReadService {
         args.insert("sourceSet".to_string(), json!(source_set));
         let (context, _) = self
             .ports
-            .resolve_code_search_context(invocation.workspace_context(), &args)
+            .resolve_code_search_context(workspace, &args)
             .ok()?;
         Some(Box::new(
             crate::infrastructure::analysis_composition::bsl_symbols(context),

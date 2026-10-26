@@ -1455,15 +1455,17 @@ impl DaemonServerConfig {
     ) -> Self {
         let capacity_observer =
             Arc::new(crate::infrastructure::capacity_observation::CapacityObserver::default());
-        let invocation_service: Arc<dyn CanonicalInvocationService> = Arc::new(
+        let read_service = Arc::new(
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::with_capacity_observer(
                 Arc::clone(&capacity_observer),
             ),
         );
+        let invocation_service: Arc<dyn CanonicalInvocationService> = read_service.clone();
         let workspace_actors = Arc::new(crate::infrastructure::source_workspace::actor_registry());
-        let lsp_host = Arc::new(super::lsp_host::UnicaLspHost::new(Arc::clone(
-            &workspace_actors,
-        )));
+        let lsp_host = Arc::new(super::lsp_host::UnicaLspHost::with_read_service(
+            Arc::clone(&workspace_actors),
+            read_service,
+        ));
         Self {
             state_root,
             core_identity,

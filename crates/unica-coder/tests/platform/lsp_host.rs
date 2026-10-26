@@ -22,6 +22,11 @@ fn workspace() -> tempfile::TempDir {
         r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>Main</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
     )
     .unwrap();
+    fs::write(
+        root.join("src/CommonModules/Main.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Main</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+    )
+    .unwrap();
     fs::write(root.join(MODULE), DISK).unwrap();
     workspace
 }
@@ -482,4 +487,189 @@ fn a_completion_item_resolves_from_the_document_it_names() {
         V5LspOutcome::Json { value: foreign },
         "an item the service did not give comes back as it was"
     );
+}
+
+const SYMBOLS_TEXT: &str = "Процедура Выполнить()\n    Помощник();\n    ЗначениеЗаполнено(1);\nКонецПроцедуры\n\nПроцедура Помощник() Экспорт\nКонецПроцедуры\n";
+
+fn at(line: u32, character: u32) -> unica_daemon::protocol_v5::lsp::V5LspPosition {
+    unica_daemon::protocol_v5::lsp::V5LspPosition { line, character }
+}
+
+fn json_of(outcome: V5LspOutcome) -> serde_json::Value {
+    match outcome {
+        V5LspOutcome::Json { value } => value,
+        other => panic!("not a JSON answer: {other:?}"),
+    }
+}
+
+fn symbols_session() -> (tempfile::TempDir, UnicaLspHost, V5LspSessionId, String) {
+    let workspace = workspace();
+    let host = UnicaLspHost::new(Arc::new(
+        crate::infrastructure::source_workspace::actor_registry(),
+    ));
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+    let uri = session_uri(&host, &editor, &file_uri(&workspace.path().join(MODULE)));
+    open_buffer(&host, &editor, &uri, SYMBOLS_TEXT);
+    (workspace, host, editor, uri)
+}
+
+/// The symbol port answers in this session's places: the buffer's own
+/// methods by its text, as `unica://` locations of the session's space.
+#[test]
+fn symbols_answer_from_the_buffer_in_the_sessions_places() {
+    let (_workspace, host, editor, uri) = symbols_session();
+
+    let definition = json_of(ask(
+        &host,
+        &editor,
+        V5LspCall::Definition {
+            uri: uri.clone(),
+            position: at(1, 6),
+        },
+    ));
+    assert_eq!(definition[0]["uri"], uri.as_str(), "{definition}");
+    assert_eq!(definition[0]["range"]["start"]["line"], 5, "{definition}");
+
+    let hover = json_of(ask(
+        &host,
+        &editor,
+        V5LspCall::Hover {
+            uri: uri.clone(),
+            position: at(1, 6),
+        },
+    ));
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("Помощник"),
+        "{hover}"
+    );
+
+    let references = json_of(ask(
+        &host,
+        &editor,
+        V5LspCall::References {
+            uri: uri.clone(),
+            position: at(5, 12),
+        },
+    ));
+    let lines = references
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|place| place["range"]["start"]["line"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    assert!(lines.contains(&1), "{references}");
+
+    let items = json_of(ask(
+        &host,
+        &editor,
+        V5LspCall::PrepareCallHierarchy {
+            uri: uri.clone(),
+            position: at(5, 12),
+        },
+    ));
+    assert_eq!(items[0]["name"], "Помощник", "{items}");
+    let incoming = json_of(ask(
+        &host,
+        &editor,
+        V5LspCall::IncomingCalls {
+            item: items[0].clone(),
+        },
+    ));
+    assert!(incoming.is_array(), "{incoming}");
+}
+
+/// A provider that is slower than the editor's budget and records the
+/// deadline and cancellation it was given.
+#[derive(Default)]
+struct SlowProvider {
+    seen: Mutex<Vec<(Option<Duration>, bool)>>,
+}
+
+impl unica_code_intelligence::symbols::SymbolProvider for SlowProvider {
+    fn symbol(
+        &self,
+        _: &unica_code_intelligence::symbols::SymbolQuery,
+        context: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
+    ) -> Result<
+        Option<unica_code_intelligence::symbols::ProviderSymbol>,
+        unica_code_intelligence::symbols::ProviderFailure,
+    > {
+        std::thread::sleep(Duration::from_millis(200));
+        self.seen.lock().unwrap().push((
+            context.deadline.remaining(),
+            context.cancellation.is_cancelled(),
+        ));
+        Ok(None)
+    }
+
+    fn references(
+        &self,
+        _: &unica_code_intelligence::symbols::SymbolQuery,
+        _: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
+    ) -> Result<
+        unica_code_intelligence::symbols::ProviderPlaces,
+        unica_code_intelligence::symbols::ProviderFailure,
+    > {
+        unreachable!("the editor's references do not call the provider")
+    }
+
+    fn calls(
+        &self,
+        _: &unica_code_intelligence::symbols::SymbolQuery,
+        _: unica_code_intelligence::symbols::CallDirection,
+        _: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
+    ) -> Result<
+        unica_code_intelligence::symbols::ProviderPlaces,
+        unica_code_intelligence::symbols::ProviderFailure,
+    > {
+        Ok(unica_code_intelligence::symbols::ProviderPlaces {
+            places: Vec::new(),
+            complete: true,
+        })
+    }
+}
+
+/// The provider gets the call's full deadline, as MCP does, never the
+/// editor's budget: cancelling it would retire the analyzer session MCP
+/// shares (#2189). An editor that waits less gets the lane's server
+/// cancellation while the provider runs to its own end.
+#[test]
+fn the_provider_runs_to_its_own_end_past_the_editors_budget() {
+    let (_workspace, host, editor, uri) = symbols_session();
+    let provider = Arc::new(SlowProvider::default());
+    crate::infrastructure::application_ports::SYMBOL_PROVIDER_OVERRIDE
+        .with(|slot| *slot.borrow_mut() = Some(provider.clone()));
+
+    let budget = Instant::now() + Duration::from_millis(20);
+    let _ = host.call(
+        &editor,
+        V5LspCall::Hover {
+            uri,
+            position: at(2, 6),
+        },
+        &LspCallContext::for_test(budget),
+    );
+    crate::infrastructure::application_ports::SYMBOL_PROVIDER_OVERRIDE
+        .with(|slot| *slot.borrow_mut() = None);
+
+    let seen = provider.seen.lock().unwrap();
+    assert!(!seen.is_empty(), "the platform name reaches the provider");
+    assert!(
+        Instant::now() > budget,
+        "the provider outlived the editor's budget"
+    );
+    for (remaining, cancelled) in seen.iter() {
+        assert_eq!(*remaining, None, "the provider has no editor deadline");
+        assert!(!cancelled, "nothing cancelled the provider");
+    }
 }
