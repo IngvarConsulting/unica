@@ -4372,6 +4372,179 @@ fn run_bsl_diagnostics(
     }
 }
 
+/// Что спрашивают у порта символов (#2177).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SymbolOperation {
+    Definition,
+    Hover,
+    References,
+    IncomingCalls,
+    OutgoingCalls,
+}
+
+/// Вопрос порта символов: модуль, его буфер в редакторе, если он открыт,
+/// и позиция в нём.
+pub(crate) struct SymbolRequest<'a> {
+    pub(crate) module: QualifiedAddress,
+    pub(crate) buffer: Option<&'a str>,
+    pub(crate) position: unica_code_intelligence::symbols::SymbolPosition,
+    pub(crate) operation: SymbolOperation,
+}
+
+impl CanonicalV13ReadService {
+    /// Ответ порта символов в модели Unica: адреса и диапазоны, без имён
+    /// поставщика. Буфер, отличный от сохранённого модуля, отвечает своим
+    /// текстом, а то, что за его пределами знает только поставщик, помечено
+    /// `stale`. Маршрут LSP (#2173) зовёт это в акторе пространства.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn symbols(
+        &self,
+        invocation: &ActorBoundExecution,
+        request: SymbolRequest<'_>,
+        cancellation: &CancellationToken,
+    ) -> DomainResult {
+        use unica_code_intelligence::symbols::{
+            CallDirection, SymbolDocument, SymbolRequestContext, SymbolService,
+        };
+        let at = request.module.to_string();
+        let source_set = request.module.source_set().to_string();
+        let sources = match invocation.read_sources() {
+            Ok(sources) => sources,
+            Err(error) => {
+                return error_result_detailed(Some(at), RefusalDetail::SourceUnreadable, error)
+            }
+        };
+        let Some(source) = sources
+            .into_iter()
+            .find(|source| source.source_set_name() == source_set)
+        else {
+            return error_result(
+                Some(at),
+                RefusalCode::NotFound,
+                "the module belongs to no admitted source set",
+            );
+        };
+        let authority = match source.logical_view_read_authority(cancellation) {
+            Ok(authority) => authority,
+            Err(error) => {
+                return error_result_detailed(Some(at), RefusalDetail::SourceUnreadable, error)
+            }
+        };
+        let (path, saved) = match Self::resolve_with_authority(&authority, &request.module, None)
+            .and_then(|resolved| {
+                authority
+                    .module_text(&request.module)
+                    .map(|text| (resolved.path().to_string(), text))
+            }) {
+            Ok(module) => module,
+            Err(error) => return view_error_result(Some(at), error),
+        };
+        let environment = crate::infrastructure::symbol_environment::ReaderSymbolEnvironment {
+            authority: &authority,
+            source_set: &source_set,
+        };
+        let text = request.buffer.unwrap_or(&saved);
+        let document = SymbolDocument {
+            at: &at,
+            path: &path,
+            text,
+            saved: text == saved,
+        };
+        let provider = self.symbol_provider(invocation, &source_set);
+        let service = SymbolService::new(provider.as_deref(), &environment);
+        let context = SymbolRequestContext {
+            deadline: source.deadline(),
+            cancellation,
+        };
+        let position = request.position;
+        let data = match request.operation {
+            SymbolOperation::Definition => {
+                serde_json::to_value(service.definition(&document, position, &context))
+            }
+            SymbolOperation::Hover => {
+                serde_json::to_value(service.hover(&document, position, &context))
+            }
+            SymbolOperation::References => {
+                serde_json::to_value(service.references(&document, position, &context))
+            }
+            SymbolOperation::IncomingCalls => serde_json::to_value(service.calls(
+                &document,
+                position,
+                CallDirection::Incoming,
+                &context,
+            )),
+            SymbolOperation::OutgoingCalls => serde_json::to_value(service.calls(
+                &document,
+                position,
+                CallDirection::Outgoing,
+                &context,
+            )),
+        }
+        .expect("symbol answers serialize");
+        let mut result = DomainResult::success("symbols answered");
+        result.at = Some(at);
+        result.data = Some(data);
+        result
+    }
+
+    /// Поставщик символов набора исходников, если он есть. Его нет — ответ
+    /// собирается из текста модуля и называет причину неполноты.
+    fn symbol_provider(
+        &self,
+        invocation: &ActorBoundExecution,
+        source_set: &str,
+    ) -> Option<Box<dyn unica_code_intelligence::symbols::SymbolProvider>> {
+        use crate::application::ports::ApplicationPorts;
+        #[cfg(test)]
+        if let Some(provider) = crate::infrastructure::application_ports::SYMBOL_PROVIDER_OVERRIDE
+            .with(|slot| slot.borrow().clone())
+        {
+            return Some(Box::new(SharedSymbolProvider(provider)));
+        }
+        let mut args = serde_json::Map::new();
+        args.insert("sourceSet".to_string(), json!(source_set));
+        let (context, _) = self
+            .ports
+            .resolve_code_search_context(invocation.workspace_context(), &args)
+            .ok()?;
+        Some(Box::new(
+            crate::infrastructure::analysis_composition::bsl_symbols(context),
+        ))
+    }
+}
+
+/// A test's shared provider behind the boxed port.
+#[cfg(test)]
+struct SharedSymbolProvider(Arc<dyn unica_code_intelligence::symbols::SymbolProvider>);
+
+#[cfg(test)]
+impl unica_code_intelligence::symbols::SymbolProvider for SharedSymbolProvider {
+    fn symbol(
+        &self,
+        query: &unica_code_intelligence::symbols::SymbolQuery,
+        context: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
+    ) -> Result<Option<unica_code_intelligence::symbols::ProviderSymbol>, String> {
+        self.0.symbol(query, context)
+    }
+
+    fn references(
+        &self,
+        query: &unica_code_intelligence::symbols::SymbolQuery,
+        context: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
+    ) -> Result<unica_code_intelligence::symbols::ProviderPlaces, String> {
+        self.0.references(query, context)
+    }
+
+    fn calls(
+        &self,
+        query: &unica_code_intelligence::symbols::SymbolQuery,
+        direction: unica_code_intelligence::symbols::CallDirection,
+        context: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
+    ) -> Result<unica_code_intelligence::symbols::ProviderPlaces, String> {
+        self.0.calls(query, direction, context)
+    }
+}
+
 /// Поставщик находок, которые проверяет сам Unica, а не анализатор.
 const UNICA_BSL_STRUCTURE_PROVIDER: &str = "unica";
 

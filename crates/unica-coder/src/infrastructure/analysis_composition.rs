@@ -138,6 +138,12 @@ static BSL_DIAGNOSTIC_BACKEND:
 pub(crate) fn bsl_provider() -> unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider<'static> {
     unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider::new(&BSL_CLIENT, source_bindings())
 }
+/// The analyzer behind the symbol port for one source set.
+pub(crate) fn bsl_symbols(
+    context: unica_code_intelligence::model::CodeIntelligenceContext,
+) -> unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols<'static> {
+    unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols::new(&BSL_CLIENT, context)
+}
 pub(crate) fn rlm_provider() -> unica_adapter_rlm::provider::RlmProvider<'static> {
     unica_adapter_rlm::provider::RlmProvider::new(
         &RLM_SEARCH_CLIENT,
