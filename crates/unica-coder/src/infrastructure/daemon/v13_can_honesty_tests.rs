@@ -589,6 +589,15 @@ fn node_args(descriptor: OperationDescriptor, at: &QualifiedAddress) -> Value {
         .last()
         .is_some_and(|segment| segment.kind() == NodeKind::Method);
     match descriptor.name() {
+        "props.set" if descriptor.family() == OperationFamily::Properties => {
+            unica_metadata::descriptor_operations::PropertiesSite::from_address(at)
+                .map(|site| {
+                    unica_metadata::descriptor_operations::PropertiesOperation::Set
+                        .contract(site)
+                        .example_args
+                })
+                .unwrap_or_else(|| sample_args(descriptor))
+        }
         "item.remove" => json!({"at": ""}),
         // Место вставки у метода — до или после него (#1354).
         "code.insert" if method_address => {
