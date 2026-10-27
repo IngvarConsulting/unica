@@ -158,3 +158,58 @@ fn common_module_synonym_of_a_borrowed_module_is_local_and_keeps_unknown_flags()
             .any(|b| b["at"] == "main:CommonModule.CorpusModule.Method"));
     }
 }
+
+#[test]
+fn common_module_collection_keeps_identity_when_the_added_synonym_read_fails() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fixture.source.join("Configuration.xml");
+    write(
+        &configuration,
+        &fs::read_to_string(&configuration).unwrap().replace(
+            "</ChildObjects>",
+            "<CommonModule>Healthy</CommonModule></ChildObjects>",
+        ),
+    );
+    let descriptor = fixture.source.join("CommonModules/РеактивныйСервер.xml");
+    let text = fs::read_to_string(&descriptor).unwrap();
+    write(
+        &fixture.source.join("CommonModules/Healthy.xml"),
+        &text.replace("<Name>РеактивныйСервер</Name>", "<Name>Healthy</Name>"),
+    );
+    // Registration still proves one artifact and its name from the first
+    // Properties, as before this feature; the added synonym read is stricter.
+    write(
+        &descriptor,
+        &text.replace("</CommonModule>", "<Properties/></CommonModule>"),
+    );
+    let service = fixture.view_service();
+    let collection = service.view(ViewRequest::new("main:CommonModule").unwrap());
+    assert!(
+        collection.ok,
+        "the new property must not hide the known identities"
+    );
+    let rows = collection.data.as_ref().unwrap()["items"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    let damaged = rows.iter().find(|row| row["at"] == MODULE).unwrap();
+    assert!(damaged
+        .get("props")
+        .and_then(|props| props.get("synonym"))
+        .is_none());
+    assert!(damaged["limits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v.as_str().is_some_and(|s| s.contains("unreadable"))));
+    let healthy = rows
+        .iter()
+        .find(|row| row["at"] == "main:CommonModule.Healthy")
+        .unwrap();
+    assert_eq!(healthy["props"]["synonym"], "Реактивный сервер");
+    let detail = service.view(ViewRequest::new(MODULE).unwrap());
+    assert!(
+        !detail.ok,
+        "the pre-existing strict module detail must still reject duplicate Properties"
+    );
+}

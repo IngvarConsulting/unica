@@ -2498,7 +2498,14 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     let owner = QualifiedAddress::parse(owner).map_err(|error| {
                         ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                     })?;
-                    let (synonym, limits) = self.common_module_synonym(&owner)?;
+                    let (synonym, limits) = match self.common_module_synonym(&owner) {
+                        Ok(fact) => fact,
+                        Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => (
+                            None,
+                            vec![format!("common module Synonym is unreadable: {error}")],
+                        ),
+                        Err(error) => return Err(error),
+                    };
                     if let Some(synonym) = synonym {
                         row["props"] = json!({"synonym": synonym});
                     }
