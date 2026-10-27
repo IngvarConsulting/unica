@@ -579,6 +579,16 @@ fn resolve_external_form_resources_require_registered_matching_owner_and_form() 
                     "unica.resolve",
                     json!({"path":path}),
                 ));
+                if fault == "wrong-owner-name" {
+                    // The descriptor's declared identity is independent of its
+                    // export filename; children stay under the physical stem.
+                    assert_eq!(resolved["ok"], true, "{set}/{fault}: {resolved:#}");
+                    assert!(resolved["data"]["at"]
+                        .as_str()
+                        .unwrap()
+                        .contains(".Other.Form.Main"));
+                    continue;
+                }
                 assert_eq!(resolved["ok"], false, "{set}/{fault}: {resolved:#}");
                 assert!(
                     ["not_found", "invalid_source"]

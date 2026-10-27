@@ -3045,6 +3045,52 @@ impl CanonicalV13ReadService {
                         error,
                     ))
                 })?;
+            let authority = if let Some(descriptor) = entry.owner_descriptor() {
+                let source = invocation
+                    .layout_read_source(address.source_set())
+                    .map_err(|message| {
+                        Box::new(error_result_detailed(
+                            Some(entry.at().to_owned()),
+                            RefusalDetail::SourceUnreadable,
+                            message,
+                        ))
+                    })?;
+                if matches!(
+                    source.source_kind(),
+                    unica_source_contract::SourceSetKind::ExternalProcessor
+                        | unica_source_contract::SourceSetKind::ExternalReport
+                ) {
+                    let name = address
+                        .segments()
+                        .first()
+                        .and_then(|owner| owner.name())
+                        .ok_or_else(|| {
+                            Box::new(error_result(
+                                Some(entry.at().to_owned()),
+                                RefusalCode::InvalidSource,
+                                "external target has no owner name",
+                            ))
+                        })?;
+                    let binding =
+                        unica_source_designer::external_artifact::ExternalArtifactBinding::new(
+                            source.source_kind(),
+                            name,
+                            std::path::Path::new(descriptor),
+                        )
+                        .map_err(|message| {
+                            Box::new(error_result(
+                                Some(entry.at().to_owned()),
+                                RefusalCode::InvalidSource,
+                                message,
+                            ))
+                        })?;
+                    authority.with_external_point_binding(binding)
+                } else {
+                    authority
+                }
+            } else {
+                authority
+            };
             return match Self::resolve_with_authority(&authority, &address, entry.placed_path()) {
                 Ok(source) if Some(source.path()) == entry.placed_path() => Ok(source),
                 Ok(_) => Err(Box::new(error_result(
@@ -3171,6 +3217,23 @@ impl CanonicalV13ReadService {
                 Ok(entry) => entry,
                 Err(error) => return Some(find_build_error_result(Some(at), error)),
             };
+        let external = matches!(
+            source.source_kind(),
+            unica_source_contract::SourceSetKind::ExternalProcessor
+                | unica_source_contract::SourceSetKind::ExternalReport
+        );
+        if external
+            && entry.as_ref().is_none_or(|entry| {
+                entry.at() != at
+                    && QualifiedAddress::parse(entry.at())
+                        .ok()
+                        .and_then(|located| located.form_metadata_owner())
+                        .as_ref()
+                        != Some(address)
+            })
+        {
+            return None;
+        }
         let Some((kind, placed)) = entry.as_ref().and_then(|entry| {
             (entry.at() == at
                 || QualifiedAddress::parse(entry.at())

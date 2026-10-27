@@ -25,3 +25,5 @@ pub mod event_owner;
 pub mod module_layout;
 
 pub mod configuration_layout;
+
+pub mod external_artifact;
