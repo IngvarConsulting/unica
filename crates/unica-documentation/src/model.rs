@@ -20,6 +20,7 @@ impl std::fmt::Display for DocumentationProviderId {
 pub enum SourceKind {
     PlatformHelp,
     DevelopmentStandard,
+    DiagnosticRule,
     ConfigurationDocumentation,
 }
 
@@ -28,6 +29,7 @@ impl SourceKind {
         match self {
             SourceKind::PlatformHelp => "platform-help",
             SourceKind::DevelopmentStandard => "development-standard",
+            SourceKind::DiagnosticRule => "diagnostic-rule",
             SourceKind::ConfigurationDocumentation => "configuration-documentation",
         }
     }
@@ -40,6 +42,7 @@ impl SourceKind {
         match value {
             "platform-help" => Some(SourceKind::PlatformHelp),
             "development-standard" => Some(SourceKind::DevelopmentStandard),
+            "diagnostic-rule" => Some(SourceKind::DiagnosticRule),
             "configuration-documentation" => Some(SourceKind::ConfigurationDocumentation),
             _ => None,
         }

@@ -2733,6 +2733,7 @@ dependencies = [
  "flate2",
  "percent-encoding",
  "rust-stemmers",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
