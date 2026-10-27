@@ -123,6 +123,14 @@ impl CollectionView {
     pub(crate) fn new(node: NodeView, items: Vec<Value>) -> Self {
         Self { node, items }
     }
+
+    pub(crate) fn try_map_items<E>(
+        mut self,
+        map: impl FnMut(Value) -> Result<Value, E>,
+    ) -> Result<Self, E> {
+        self.items = self.items.into_iter().map(map).collect::<Result<_, _>>()?;
+        Ok(self)
+    }
 }
 
 /// Исходный текст узла или признак, что он не помещается в предел ответа.
