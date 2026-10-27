@@ -1422,6 +1422,17 @@ pub fn apply_typed_properties(
                     value,
                 )
             }
+            (MetaPropertyKey::MainDataCompositionSchema, MetaPropertyValue::String(value)) => {
+                if unica_xml_format::read::direct_text(property).trim() == value.trim() {
+                    continue;
+                }
+                // A prefixed owner may have no default namespace. This new
+                // reference property owns its namespace in the emitted image.
+                format!(
+                    "{indent}<{tag} xmlns=\"http://v8.1c.ru/8.3/MDClasses\">{}</{tag}>",
+                    unica_xml_format::text::escape_xml(value)
+                )
+            }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}<{tag}/>")
             }

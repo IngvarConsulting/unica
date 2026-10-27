@@ -49,6 +49,7 @@ pub fn validate_final_object_integrity(
     source_set_name: &str,
     source_kind: SourceSetKind,
 ) -> Result<(), ApplyPlanError> {
+    crate::main_dcs::validate_final(staged, source_set_name)?;
     for change in staged.planned_changes() {
         let StagedFileState::Bytes(bytes) = &change.current else {
             continue;
@@ -421,6 +422,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
             )
             .at_path(format!("ops[{op_index}].args.at")));
         }
+        crate::main_dcs::validate_changes(staged, &relative, target, &preimage, edit, op_index)?;
         let uuid_seed = format!(
             "{}\0{}\0{}\0{:?}\0{:x}",
             authority.source_set_name(),

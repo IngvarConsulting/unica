@@ -33,6 +33,7 @@ pub enum MetaPropertyKey {
     LevelCount,
     LimitLevelCount,
     MainFilterOnPeriod,
+    MainDataCompositionSchema,
     MaxExtDimensionCount,
     Namespace,
     NumberAllowedLength,
@@ -340,6 +341,12 @@ const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "T
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
+    property(
+        "MainDataCompositionSchema",
+        MetaPropertyKey::MainDataCompositionSchema,
+        MetaPropertyValueKind::String,
+        &[MetadataKind::Report],
+    ),
     property(
         "Type",
         MetaPropertyKey::Type,

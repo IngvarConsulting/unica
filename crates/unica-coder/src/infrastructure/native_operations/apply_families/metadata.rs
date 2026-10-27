@@ -64,6 +64,10 @@ pub(crate) fn plan_metadata_batch_owned_for_test(
 
 #[cfg(test)]
 mod tests {
+    mod main_dcs_tests {
+        include!("metadata/main_dcs_tests.rs");
+    }
+
     mod contract_shape_tests {
         include!("metadata/contract_shape_tests.rs");
     }

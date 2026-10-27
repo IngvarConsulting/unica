@@ -307,6 +307,7 @@ fn mutation_compatible_read_key(xml_name: &str) -> Option<(&'static str, MetaPro
         "LevelCount" => ("LevelCount", LevelCount),
         "LimitLevelCount" => ("LimitLevelCount", LimitLevelCount),
         "MainFilterOnPeriod" => ("MainFilterOnPeriod", MainFilterOnPeriod),
+        "MainDataCompositionSchema" => ("MainDataCompositionSchema", MainDataCompositionSchema),
         "MaxExtDimensionCount" => ("MaxExtDimensionCount", MaxExtDimensionCount),
         "Namespace" => ("Namespace", Namespace),
         "NumberAllowedLength" => ("NumberAllowedLength", NumberAllowedLength),
@@ -428,6 +429,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
             kind == ScheduledJob
         }
         Event | Handler => kind == EventSubscription,
+        MainDataCompositionSchema => kind == Report,
         DistributedInfoBase => kind == ExchangePlan,
         EnableTotalsSplitting | RegisterType => kind == AccumulationRegister,
         MainFilterOnPeriod | WriteMode => kind == InformationRegister,
