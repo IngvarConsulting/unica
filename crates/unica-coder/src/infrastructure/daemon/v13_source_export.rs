@@ -531,6 +531,7 @@ mod tests {
         replies: Mutex<Vec<Value>>,
         stage_writes: Mutex<Vec<PathBuf>>,
         terminals: Mutex<Vec<Value>>,
+        selections: Mutex<Vec<Value>>,
     }
 
     enum PublicationFault {
@@ -563,6 +564,7 @@ mod tests {
                 replies: Mutex::new(Vec::new()),
                 stage_writes: Mutex::new(Vec::new()),
                 terminals: Mutex::new(Vec::new()),
+                selections: Mutex::new(Vec::new()),
             }
         }
 
@@ -669,8 +671,13 @@ mod tests {
             if let Some(PublicationFault::SelectedExecutor(value)) = &self.fault {
                 executor = value.clone();
             }
+            let provider = local["providers"]["pull"]
+                .as_str()
+                .or_else(|| yaml["providers"]["pull"].as_str())
+                .unwrap_or("designer");
             let selected = json!({"version":1,"nonce":nonce,"phase":"selected",
-                "provider":{"selected":"designer"},"executor":executor});
+                "provider":{"selected":provider},"executor":executor});
+            self.selections.lock().unwrap().push(selected.clone());
             let response = on_line(1, &serde_json::to_vec(&selected).unwrap());
             let authorized =
                 self.decision(&response, &nonce, "selected").as_deref() == Some("continue");
@@ -1603,6 +1610,70 @@ mod tests {
                 "{defect}"
             );
             assert!(result.changed.is_empty(), "{defect}");
+        }
+    }
+
+    /// The protocol admits the selected ibcmd without asking for a Designer executable.
+    /// This fixture checks Unica's projection and publication, not the platform's export.
+    #[test]
+    fn ibcmd_pull_preserves_local_selection_for_configuration_and_extension() {
+        for (set, extension) in [("main", None), ("Sales", Some("Sales"))] {
+            let root = workspace();
+            let config_path = root.path().join(CONFIG_NAME);
+            let config = fs::read_to_string(&config_path).unwrap();
+            fs::write(
+                &config_path,
+                format!("{config}providers: {{pull: designer}}\n"),
+            )
+            .unwrap();
+            fs::write(
+                root.path().join(LOCAL_CONFIG_NAME),
+                "providers: {pull: ibcmd}\n",
+            )
+            .unwrap();
+            let target = root.path().join(set);
+            write_valid_dump(&target, extension.is_some());
+            fs::write(target.join("local-only.bsl"), "replace only after preview").unwrap();
+            let platform = root.path().join("platform/8.3.27.2074/ibcmd");
+            fs::create_dir_all(platform.parent().unwrap()).unwrap();
+            fs::write(&platform, b"controlled ibcmd identity").unwrap();
+            assert!(!platform.with_file_name("1cv8").exists());
+            let mut runner = SequenceRunner::exporting(
+                vec![
+                    process(envelope(root.path(), set, "FULL", extension, false), true),
+                    process(envelope(root.path(), set, "FULL", extension, true), true),
+                ],
+                target.clone(),
+            );
+            runner.fault = Some(PublicationFault::SelectedExecutor(json!({
+                "kind":"local", "executable":platform, "endpoint":null
+            })));
+            let result = with_test_platform(&platform, "8.3.27.2074", || {
+                execute_with_resolved_runner(
+                    &prepared(root.path(), ExportMode::Full, Some(set), extension, false),
+                    &runner,
+                    CancellationToken::new(),
+                    &tool(root.path()),
+                    super::super::runner_015::VERSION,
+                )
+            });
+            assert!(result.ok, "{set}: {result:?}");
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["sourceSet"], set);
+            assert_eq!(data["extension"], json!(extension));
+            assert_eq!(data["state"], "replaced");
+            assert_eq!(data["performedMode"], "full");
+            assert_eq!(data["providerDispatched"], true);
+            assert!(target.join("Configuration.xml").is_file());
+            assert!(!target.join("local-only.bsl").exists());
+            assert_eq!(runner.call_count(), 2);
+            let selections = runner.selections.lock().unwrap();
+            assert_eq!(selections.len(), 2);
+            for selected in selections.iter() {
+                assert_eq!(selected["provider"]["selected"], "ibcmd");
+                assert_eq!(selected["executor"]["executable"], json!(platform));
+            }
+            assert!(!platform.with_file_name("1cv8").exists());
         }
     }
 
