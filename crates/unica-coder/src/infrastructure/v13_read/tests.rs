@@ -9,6 +9,7 @@ mod form_support;
 mod job_schedule;
 mod metadata;
 mod metadata_declaration_diagnostics;
+mod numerator_read_profile;
 mod support;
 mod xdto_missing_target;
 
