@@ -88,6 +88,7 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    LanguageCode(String),
     Role(unica_metadata::property_input::RolePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
@@ -1069,10 +1070,19 @@ pub fn parse_properties(
     .ok_or_else(|| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            "properties require the configuration root, a named top-level metadata object, role or subsystem",
+            "properties require the configuration root, a named top-level metadata object, role, subsystem or additional language",
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
+    if site == PropertiesSite::Language
+        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "LanguageCode changes require an ordinary configuration",
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
     // ApplyRequest has already resolved the operation address. It is an
     // internal carrier key, not part of the published property arguments.
     let mut payload = args.clone();
@@ -1102,6 +1112,9 @@ pub fn parse_properties(
                 operation: MetaEditOperation::SetProperties { values },
                 addressed: None,
             });
+        }
+        unica_metadata::property_input::PropertiesIntent::LanguageCode(value) => {
+            ("Languages", DescriptorPropertyChanges::LanguageCode(value))
         }
         unica_metadata::property_input::PropertiesIntent::Role(values) => {
             ("Roles", DescriptorPropertyChanges::Role(values))

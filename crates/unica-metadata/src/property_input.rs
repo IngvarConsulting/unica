@@ -41,6 +41,7 @@ pub struct ConfigurationPropertyChanges {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
+    LanguageCode(String),
     Role(RolePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
@@ -304,6 +305,21 @@ fn decode_with_contract(
                     }
                     PropertiesIntent::Metadata(changes)
                 }
+                PropertiesSite::Language => {
+                    let value = values_reader
+                        .field("LanguageCode", false)?
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            invalid(
+                                format!("{values_path}.LanguageCode"),
+                                "LanguageCode must be a string",
+                            )
+                        })?;
+                    crate::language_code::validate_language_code(value).map_err(|message| {
+                        invalid(format!("{values_path}.LanguageCode"), message)
+                    })?;
+                    PropertiesIntent::LanguageCode(value.to_string())
+                }
                 PropertiesSite::Role => PropertiesIntent::Role(RolePropertyChanges {
                     synonym: values_reader.string(DescriptorProperty::Synonym)?,
                     comment: values_reader.string(DescriptorProperty::Comment)?,
@@ -355,6 +371,34 @@ mod tests {
 
     fn decode(site: PropertiesSite, args: Value) -> DecodeResult<PropertiesIntent> {
         decode_properties(PropertiesOperation::Set, site, &args, "ops[7].args")
+    }
+
+    #[test]
+    fn language_code_has_a_closed_descriptor_profile() {
+        let at = unica_address::address::QualifiedAddress::parse("main:Language.English").unwrap();
+        let site =
+            PropertiesSite::from_address(&at).expect("Language must have a property profile");
+        let schema = PropertiesOperation::Set.contract(site).schema;
+        let properties = schema["properties"]["values"]["properties"]
+            .as_object()
+            .unwrap();
+        assert_eq!(properties.keys().collect::<Vec<_>>(), vec!["LanguageCode"]);
+        assert_eq!(properties["LanguageCode"]["type"], "string");
+        for code in ["de", "zz", "en-US"] {
+            assert!(decode(site, serde_json::json!({"values":{"LanguageCode":code}})).is_ok());
+        }
+        for value in [
+            serde_json::json!(""),
+            serde_json::json!("bad?code"),
+            serde_json::json!(true),
+        ] {
+            assert!(decode(site, serde_json::json!({"values":{"LanguageCode":value}})).is_err());
+        }
+        assert!(decode(
+            site,
+            serde_json::json!({"values":{"Comment":"not this profile"}})
+        )
+        .is_err());
     }
 
     #[test]

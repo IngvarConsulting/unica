@@ -49,6 +49,7 @@ pub fn validate_final_object_integrity(
     source_set_name: &str,
     source_kind: SourceSetKind,
 ) -> Result<(), ApplyPlanError> {
+    crate::language_code::validate_final(staged, source_kind)?;
     for change in staged.planned_changes() {
         let StagedFileState::Bytes(bytes) = &change.current else {
             continue;
@@ -1389,6 +1390,13 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::LanguageCode(code) => {
+            let text = crate::language_code::replace(&source, name, code).map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?;
+            (NodeKind::Language, text)
+        }
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
             synonym,
             comment,

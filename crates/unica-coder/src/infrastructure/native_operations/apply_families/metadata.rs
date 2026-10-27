@@ -64,6 +64,9 @@ pub(crate) fn plan_metadata_batch_owned_for_test(
 
 #[cfg(test)]
 mod tests {
+    mod language_code_tests {
+        include!("metadata/language_code_tests.rs");
+    }
     mod contract_shape_tests {
         include!("metadata/contract_shape_tests.rs");
     }

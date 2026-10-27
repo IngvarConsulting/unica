@@ -1147,6 +1147,22 @@ impl ProviderReadAuthority {
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
+        if evidence.artifact_kind() == "Language" {
+            match unica_metadata_designer::language_code::read_code(&descriptor) {
+                Ok(code) => {
+                    payload["properties"] = json!([{
+                        "key": "LanguageCode",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value: code },
+                    }]);
+                }
+                Err(message) => {
+                    payload["unreadable"] = json!([{
+                        "field": "properties.LanguageCode",
+                        "message": message,
+                    }]);
+                }
+            }
+        }
         if evidence.artifact_kind() == "StyleItem" {
             unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;

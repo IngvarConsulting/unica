@@ -47,6 +47,7 @@ pub enum PropertiesSite {
     Metadata(MetadataKind),
     Role,
     Subsystem,
+    Language,
     /// The root of a source set: the configuration's own `Configuration.xml`,
     /// or an extension's, which may change only its identity properties.
     Configuration {
@@ -85,6 +86,7 @@ macro_rules! descriptor_properties {
                 match site {
                     PropertiesSite::Subsystem => match self { $(Self::$field => $subsystem),+ },
                     PropertiesSite::Role => match self { $(Self::$field => $role),+ },
+                    PropertiesSite::Language => false,
                     PropertiesSite::Configuration { extension: false } => {
                         match self { $(Self::$field => $configuration),+ }
                     }
@@ -169,6 +171,11 @@ impl PropertiesSite {
         if site.route() == unica_source_contract::route::RouteClass::Configuration {
             return Self::root_of(site.source().kind());
         }
+        if matches!(site.segments(), [owner] if owner.kind() == NodeKind::Language)
+            && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
+        {
+            return None;
+        }
         Self::from_address(site.at())
     }
 
@@ -196,6 +203,7 @@ impl PropertiesSite {
         owner.name()?;
         match owner.kind() {
             NodeKind::Role => Some(Self::Role),
+            NodeKind::Language => Some(Self::Language),
             NodeKind::Subsystem => Some(Self::Subsystem),
             kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
         }
@@ -213,6 +221,16 @@ impl PropertiesSite {
         let mut groups = Vec::new();
         match self {
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
+            Self::Language => {
+                properties.insert(
+                    "LanguageCode".to_string(),
+                    json!({
+                        "type":"string", "minLength":1,
+                        "pattern":crate::language_code::LANGUAGE_CODE_PATTERN
+                    }),
+                );
+            }
+
             Self::Role | Self::Subsystem | Self::Configuration { .. } => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
@@ -249,18 +267,22 @@ impl PropertiesOperation {
             Self::Set => OperationContract {
                 schema: object(&[("values", site.values_schema())], &["values"]),
                 target: match site {
+                    PropertiesSite::Language => "An existing registered additional Language of an ordinary configuration.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
                     _ => "The existing named top-level metadata object, role or subsystem at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
-                notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
+                notes: if site == PropertiesSite::Language {
+                    "Only LanguageCode changes. The code is a nonempty string without the platform's reserved characters; custom codes are allowed. A change requires an unused additional language, no code collision, and no texts or embedded help bound to either the old or new code. XML and literal NStr/НСтр dependencies are checked in original and final sources; an unprovable dependency refuses the change. No translation migration is performed. An equivalent value preserves bytes. Preview writes nothing; execute only the saved execution token."
+                } else { "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token." },
                 example_args: match site {
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
+                    PropertiesSite::Language => json!({"values":{"LanguageCode":"de"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
