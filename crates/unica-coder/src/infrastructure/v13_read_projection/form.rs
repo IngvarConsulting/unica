@@ -1,4 +1,4 @@
-use super::{item_identity, select_named, selected_scalar_props};
+use super::{item_identity, place_prop, select_named, selected_scalar_props};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_bsl::projection::EventProjection;
 use unica_execution_contract::view_error::ViewError;
@@ -313,6 +313,43 @@ fn form_node(
     item: &Value,
     semantic_events: Option<&[EventProjection]>,
 ) -> NodeView {
+    let mut props = node_props(kind, item);
+    let mut limits = Vec::new();
+    if kind == NodeKind::Attribute
+        && item.get("type").and_then(Value::as_str) == Some("DynamicList")
+    {
+        if let Some(settings) = item.get("dynamicList").and_then(Value::as_object) {
+            for (key, value) in settings {
+                let typed = match key.as_str() {
+                    "manualQuery" | "dynamicDataRead" | "keyFieldsApplicable" => {
+                        value.is_null() || value.is_boolean()
+                    }
+                    "queryText" | "keyType" => value.is_null() || value.is_string(),
+                    "keyFields" => {
+                        value.is_null()
+                            || value
+                                .as_array()
+                                .is_some_and(|fields| fields.iter().all(Value::is_string))
+                    }
+                    _ => false,
+                };
+                if typed {
+                    place_prop(
+                        &mut props,
+                        &mut limits,
+                        address,
+                        key,
+                        value,
+                        false,
+                        &format!("DynamicList {key}"),
+                    );
+                }
+            }
+            if let Some(issues) = settings.get("limits").and_then(Value::as_array) {
+                limits.extend(issues.iter().filter_map(Value::as_str).map(str::to_string));
+            }
+        }
+    }
     let mut node = NodeView::new(
         address.to_string(),
         kind.as_str(),
@@ -320,7 +357,7 @@ fn form_node(
             .and_then(Value::as_str)
             .or_else(|| item_identity(item))
             .unwrap_or(kind.as_str()),
-        node_props(kind, item),
+        props,
     );
     let branch_kinds: &[NodeKind] = match kind {
         NodeKind::Item => &[NodeKind::Item, NodeKind::Event],
@@ -328,7 +365,7 @@ fn form_node(
         NodeKind::Command => &[NodeKind::Event],
         _ => &[],
     };
-    node = node.with_branches(
+    node = node.with_limits(limits).with_branches(
         branch_kinds
             .iter()
             .filter_map(|child_kind| {

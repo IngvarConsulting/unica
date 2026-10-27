@@ -21,6 +21,7 @@ use unica_xml_format::text::*;
 use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 
 mod conditional_appearance;
+mod dynamic_list;
 
 pub const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
 
@@ -1358,9 +1359,16 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
             let type_name = form_child(attr, "Type")
                 .map(form_format_type)
                 .and_then(form_info_optional);
-            let main_table = (type_name.as_deref() == Some("DynamicList"))
-                .then(|| form_child(attr, "Settings").and_then(|s| form_child_text(s, "MainTable")))
-                .flatten();
+            let dynamic_list =
+                dynamic_list::is_dynamic_list(attr).then(|| dynamic_list::read(attr));
+            let type_name = if dynamic_list.is_some() {
+                Some("DynamicList".to_string())
+            } else {
+                type_name
+            };
+            let main_table = dynamic_list
+                .as_ref()
+                .and_then(|list| list.main_table.clone());
             let columns = if matches!(type_name.as_deref(), Some("ValueTable") | Some("ValueTree"))
             {
                 form_child(attr, "Columns")
@@ -1384,6 +1392,7 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
                 type_name,
                 is_main: form_child_text(attr, "MainAttribute").as_deref() == Some("true"),
                 main_table,
+                dynamic_list,
                 columns,
             }
         })
