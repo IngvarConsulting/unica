@@ -1,0 +1,1836 @@
+{
+  "id": "S-1652-language-code",
+  "issue": 1652,
+  "area": "Свойства метаданных",
+  "task": "Сменить код неиспользуемого дополнительного языка без пересоздания; сохранить остальные языки и DefaultLanguage, отказать на XML/NStr/help/конфликтах, проверить весь batch и удержанные зависимости до записи",
+  "workspace": "tests/fixtures/acceptance/workspace-language-code",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "f0": {
+          "file": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "f1": {
+          "file": "src/CommonModules/EventHandlers.xml",
+          "kind": "sha256"
+        },
+        "f2": {
+          "file": "src/ConfigDumpInfo.xml",
+          "kind": "sha256"
+        },
+        "f3": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "f4": {
+          "file": "src/Ext/Help/ja.html",
+          "kind": "sha256"
+        },
+        "f5": {
+          "file": "src/Ext/Help.xml",
+          "kind": "sha256"
+        },
+        "f6": {
+          "file": "src/Languages/English.xml",
+          "kind": "sha256"
+        },
+        "f7": {
+          "file": "src/Languages/French.xml",
+          "kind": "sha256"
+        },
+        "f8": {
+          "file": "src/Languages/Japanese.xml",
+          "kind": "sha256"
+        },
+        "f9": {
+          "file": "src/Languages/Spanish.xml",
+          "kind": "sha256"
+        },
+        "f10": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "f11": {
+          "file": "src/ScheduledJobs/KeyProbe.xml",
+          "kind": "sha256"
+        },
+        "f12": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "english": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Language.English"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.english"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/LanguageCode",
+          "eq": "en"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.English.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/LanguageCode/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.English",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "de"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.f6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}LanguageCode",
+          "eq": [
+            "de"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Language[@uuid='16520000-0000-4000-8000-000000000002']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "English"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Language[@uuid='16520000-0000-4000-8000-000000000002']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym",
+          "eq": [
+            "\n\t\t\t\t\n\t\t\t\t\tru\n\t\t\t\t\tEnglish\n\t\t\t\t\n\t\t\t"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Language[@uuid='16520000-0000-4000-8000-000000000002']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.English"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/LanguageCode",
+          "eq": "de"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.English",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "zz"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}LanguageCode",
+          "eq": [
+            "zz"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Language[@uuid='16520000-0000-4000-8000-000000000002']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "English"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Language[@uuid='16520000-0000-4000-8000-000000000002']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym",
+          "eq": [
+            "\n\t\t\t\t\n\t\t\t\t\tru\n\t\t\t\t\tEnglish\n\t\t\t\t\n\t\t\t"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Language[@uuid='16520000-0000-4000-8000-000000000002']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.English"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/LanguageCode",
+          "eq": "zz"
+        }
+      ],
+      "captures": {
+        "englishAfter": {
+          "file": "src/Languages/English.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.English",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "zz"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.Spanish",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "it"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ],
+      "refusal": "bad_value: XML translations or embedded help use the old or new language code"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.French",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "it"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ],
+      "refusal": "bad_value: NStr/НСтр contains a translation for the old or new language code"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.Japanese",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "it"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ],
+      "refusal": "bad_value: embedded help page uses the old or new language code"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.Русский",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "it"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ],
+      "refusal": "bad_value: LanguageCode can change only for an additional language, not DefaultLanguage"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.English",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "RU"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ],
+      "refusal": "bad_value: LanguageCode conflicts with another registered language"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.English",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "bad?code"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ],
+      "refusal": "bad_value: text does not match the supported argument grammar"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.English",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ],
+      "refusal": "bad_value: text does not match the supported argument grammar"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.English",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ],
+      "refusal": "bad_value: expected \"string\""
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.English",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "it"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "savedLanguagePlan": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.EventHandlers",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "at": "main:CommonModule.EventHandlers.Method.Run",
+              "position": "after",
+              "text": "\nProcedure Late() Export\n    Text = NStr(\"zz='late'\");\nEndProcedure\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "moduleAfter": {
+          "file": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}LanguageCode",
+          "eq": [
+            "zz"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Language[@uuid='16520000-0000-4000-8000-000000000002']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "English"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Language[@uuid='16520000-0000-4000-8000-000000000002']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym",
+          "eq": [
+            "\n\t\t\t\t\n\t\t\t\t\tru\n\t\t\t\t\tEnglish\n\t\t\t\t\n\t\t\t"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Languages/English.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Language[@uuid='16520000-0000-4000-8000-000000000002']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.savedLanguagePlan"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: reference input identity changed: CommonModules/EventHandlers/Ext/Module.bsl; input `CommonModules/EventHandlers/Ext/Module.bsl`: read-only input; the plan was ",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.moduleAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Language.English",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LanguageCode": "it"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Languages/English.xml",
+          "eq": "$capture.englishAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.moduleAfter"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help/ja.html",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/Help.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/French.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Japanese.xml",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Spanish.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f12"
+        }
+      ],
+      "refusal": "bad_value: NStr/НСтр contains a translation for the old or new language code"
+    }
+  ]
+}
