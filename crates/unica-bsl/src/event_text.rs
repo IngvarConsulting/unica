@@ -2,6 +2,7 @@
 use crate::projection::MethodKind;
 use unica_bsl_parser::parse as parse_bsl_syntax;
 use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
+use unica_source_contract::ScriptVariant;
 use unica_xml_format::text::{
     event_line_start, event_local_line_ending, reject_event_lone_cr, resolve_observed_line_ending,
     SourceTextSnapshot, Utf8Bom,
@@ -47,6 +48,44 @@ pub fn emit_event_module(
     directive: RequiredEventDirective,
     region: &str,
 ) -> Result<Vec<u8>, ApplyPlanError> {
+    emit_event_module_with_variant(
+        current,
+        handler,
+        signature,
+        method_kind,
+        directive,
+        region,
+        ScriptVariant::Russian,
+    )
+}
+
+/// The region is supplied by the event catalog; only its generated name and
+/// markers follow the source-set script profile. Existing text stays intact.
+pub fn emit_event_module_with_variant(
+    current: Option<&[u8]>,
+    handler: &str,
+    signature: &str,
+    method_kind: MethodKind,
+    directive: RequiredEventDirective,
+    region: &str,
+    script_variant: ScriptVariant,
+) -> Result<Vec<u8>, ApplyPlanError> {
+    let (region, region_start, region_end) = match script_variant {
+        ScriptVariant::Russian => (region, "#Область", "#КонецОбласти"),
+        ScriptVariant::English => (
+            match region {
+                "ОбработчикиСобытий" => "EventHandlers",
+                "ОбработчикиСобытийФормы" => "FormEventHandlers",
+                "ОбработчикиСобытийЭлементовФормы" => {
+                    "FormHeaderItemsEventHandlers"
+                }
+                "ОбработчикиКомандФормы" => "FormCommandsEventHandlers",
+                other => other,
+            },
+            "#Region",
+            "#EndRegion",
+        ),
+    };
     let owned_default;
     let bytes = match current {
         Some(bytes) => bytes,
@@ -137,8 +176,7 @@ pub fn emit_event_module(
                 body.push_str(eol);
             }
             body.push_str(&format!(
-                "#Область {}{eol}{eol}{method}{eol}#КонецОбласти{eol}",
-                region
+                "{region_start} {region}{eol}{eol}{method}{eol}{region_end}{eol}"
             ));
         }
     }
@@ -175,4 +213,48 @@ fn render_method(
 
 fn invalid_source(message: impl Into<String>) -> ApplyPlanError {
     ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+}
+
+#[cfg(test)]
+mod script_variant_tests {
+    use super::*;
+
+    #[test]
+    fn english_form_handler_uses_the_existing_english_region() {
+        let text = b"#Region FormEventHandlers\r\n\r\n#EndRegion\r\n";
+        let output = emit_event_module_with_variant(
+            Some(text),
+            "Opened",
+            "Procedure Opened()",
+            MethodKind::Procedure,
+            RequiredEventDirective::Client,
+            "ОбработчикиСобытийФормы",
+            ScriptVariant::English,
+        )
+        .unwrap();
+        let output = std::str::from_utf8(&output).unwrap();
+        assert_eq!(output.matches("#Region FormEventHandlers").count(), 1);
+        assert!(output.find("Opened()").unwrap() < output.find("#EndRegion").unwrap());
+        assert!(!output.contains("#Область"));
+        assert!(!output.replace("\r\n", "").contains('\n'));
+    }
+
+    #[test]
+    fn english_form_handler_creates_an_english_region_without_rewriting_existing_text() {
+        let text = "// comment\n";
+        let output = emit_event_module_with_variant(
+            Some(text.as_bytes()),
+            "Clicked",
+            "Procedure Clicked()",
+            MethodKind::Procedure,
+            RequiredEventDirective::Client,
+            "ОбработчикиКомандФормы",
+            ScriptVariant::English,
+        )
+        .unwrap();
+        let output = std::str::from_utf8(&output).unwrap();
+        assert!(output.starts_with(text));
+        assert!(output.contains("#Region FormCommandsEventHandlers\n"));
+        assert!(output.contains("#EndRegion\n"));
+    }
 }

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+	<Language uuid="8c2d6e1a-4b7f-4e3a-a5d9-0f1e2b3c4d5e">
+		<Properties>
+			<Name>English</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>en</v8:lang>
+					<v8:content>English</v8:content>
+				</v8:item>
+			</Synonym>
+			<Comment/>
+			<LanguageCode>en</LanguageCode>
+		</Properties>
+	</Language>
+</MetaDataObject>

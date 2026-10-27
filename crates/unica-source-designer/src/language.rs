@@ -126,3 +126,123 @@ pub fn staged_text_language(
     }
     language.map_err(unavailable)
 }
+
+/// Script naming profile of a configuration or extension. Missing properties
+/// retain Unica's Russian compatibility fallback; invalid values do not.
+pub fn script_variant(
+    configuration: &[u8],
+) -> Result<unica_source_contract::ScriptVariant, String> {
+    use unica_source_contract::ScriptVariant;
+    let (_, document) = parse_metadata_image(configuration)?;
+    let roots = document
+        .root_element()
+        .children()
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "Configuration"
+        })
+        .collect::<Vec<_>>();
+    let [root] = roots.as_slice() else {
+        return Err("the source set root must contain one Configuration".to_string());
+    };
+    let properties = root
+        .children()
+        .filter(|node| node.has_tag_name((MD_CLASSES_NS, "Properties")))
+        .collect::<Vec<_>>();
+    let [properties] = properties.as_slice() else {
+        return Err("Configuration must contain one Properties".to_string());
+    };
+    let variants = properties
+        .children()
+        .filter(|node| node.has_tag_name((MD_CLASSES_NS, "ScriptVariant")))
+        .collect::<Vec<_>>();
+    match variants.as_slice() {
+        [] => Ok(ScriptVariant::Russian),
+        [variant] if variant.children().all(|child| child.is_text()) => {
+            match direct_text(*variant).trim() {
+                "Russian" => Ok(ScriptVariant::Russian),
+                "English" => Ok(ScriptVariant::English),
+                _ => Err("ScriptVariant must be Russian or English".to_string()),
+            }
+        }
+        _ => Err("Configuration has an invalid or duplicate ScriptVariant".to_string()),
+    }
+}
+
+/// Read through the proposal so both earlier operations and publication guards
+/// include the script profile used to generate names. External artifacts have
+/// no configuration profile and retain the existing Russian fallback.
+pub fn staged_script_variant(
+    staged: &mut ApplyProposal<'_>,
+    source_kind: SourceSetKind,
+    at_path: &str,
+) -> Result<unica_source_contract::ScriptVariant, ApplyPlanError> {
+    if matches!(
+        source_kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return Ok(unica_source_contract::ScriptVariant::Russian);
+    }
+    let path = at_path.to_string();
+    let bytes = staged
+        .read(Path::new("Configuration.xml"))
+        .map_err(|error| ApplyPlanError::staging(error, path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "the source set has no Configuration.xml",
+            )
+            .at_path(path.clone())
+        })?;
+    script_variant(&bytes).map_err(|error| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            format!("the configuration script variant is unavailable: {error}"),
+        )
+        .at_path(path)
+    })
+}
+
+#[cfg(test)]
+mod script_variant_tests {
+    use super::script_variant;
+    use unica_source_contract::ScriptVariant;
+
+    fn image(properties: &str) -> String {
+        format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties>{properties}</Properties></Configuration></MetaDataObject>"#
+        )
+    }
+
+    #[test]
+    fn script_variant_is_independent_of_the_default_text_language() {
+        for (variant, language, expected) in [
+            ("English", "Russian", ScriptVariant::English),
+            ("Russian", "English", ScriptVariant::Russian),
+        ] {
+            assert_eq!(script_variant(image(&format!("<DefaultLanguage>Language.{language}</DefaultLanguage><ScriptVariant>{variant}</ScriptVariant>")).as_bytes()).unwrap(), expected);
+        }
+        assert_eq!(
+            script_variant(image("").as_bytes()).unwrap(),
+            ScriptVariant::Russian
+        );
+    }
+
+    #[test]
+    fn invalid_script_profiles_do_not_fall_back_to_russian() {
+        for properties in [
+            "<ScriptVariant/>",
+            "<ScriptVariant>Unknown</ScriptVariant>",
+            "<ScriptVariant>English</ScriptVariant><ScriptVariant>Russian</ScriptVariant>",
+            "<ScriptVariant><Value>English</Value></ScriptVariant>",
+        ] {
+            assert!(
+                script_variant(image(properties).as_bytes()).is_err(),
+                "{properties}"
+            );
+        }
+        assert!(script_variant(b"<Configuration/>").is_err());
+        assert!(script_variant(b"not xml").is_err());
+    }
+}

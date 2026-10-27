@@ -1216,7 +1216,8 @@ pub fn stage_form_add(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     use crate::codec::{
-        form_add_content_xml, form_add_metadata_xml, form_add_module_bsl, form_default_property,
+        form_add_content_xml_with_variant, form_add_metadata_xml, form_add_module_bsl_with_variant,
+        form_default_property,
     };
     let at_path = format!("ops[{op_index}].args.at");
     let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
@@ -1231,6 +1232,11 @@ pub fn stage_form_add(
         crate::codec::detect_form_add_object(&owner_source).map_err(|message| {
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
         })?;
+    let script_variant = unica_source_designer::language::staged_script_variant(
+        staged,
+        authority.source_kind(),
+        &at_path,
+    )?;
     let mut owner_text = owner_source.clone();
     let format_version = authority.expected_format();
     let forms_dir = owner_relative.with_extension("").join("Forms");
@@ -1273,8 +1279,14 @@ pub fn stage_form_add(
             &uuid,
             &lang,
         );
-        let content = form_add_content_xml(&object_type, &object_name, purpose, format_version)
-            .map_err(|message| bad(op_index, &format!("items[{index}].type"), message))?;
+        let content = form_add_content_xml_with_variant(
+            &object_type,
+            &object_name,
+            purpose,
+            format_version,
+            script_variant,
+        )
+        .map_err(|message| bad(op_index, &format!("items[{index}].type"), message))?;
         let descriptor_relative = forms_dir.join(format!("{form_name}.xml"));
         let content_relative = forms_dir.join(form_name).join("Ext/Form.xml");
         let module_relative = forms_dir.join(form_name).join("Ext/Form/Module.bsl");
@@ -1293,7 +1305,7 @@ pub fn stage_form_add(
         unica_source_designer::registration::stage_new_file(
             staged,
             &module_relative,
-            form_add_module_bsl().as_bytes(),
+            form_add_module_bsl_with_variant(script_variant).as_bytes(),
             &name_path,
         )?;
         touched.push(descriptor_relative);
@@ -1518,6 +1530,17 @@ pub fn stage_form_edit(
     // default language of the source set (#1257). It is read only when a
     // definition writes such text: the definition is first applied without a
     // language and, if it needs one, applied again from the same image.
+    let script_variant = if definitions.iter().any(
+        |step| matches!(step, FormEditStep::Definition(value) if value.get("elements").is_some()),
+    ) {
+        unica_source_designer::language::staged_script_variant(
+            staged,
+            authority.source_kind(),
+            &at_path,
+        )?
+    } else {
+        unica_source_contract::ScriptVariant::Russian
+    };
     let mut lang: Option<String> = None;
     for step in definitions {
         let definition = match step {
@@ -1536,8 +1559,13 @@ pub fn stage_form_edit(
             }
         };
         let apply = |xml_text: &mut String, lang: Option<&str>| {
-            crate::codec::form_edit_apply_definition(
-                xml_text, definition, &absolute, root_start, lang,
+            crate::codec::form_edit_apply_definition_with_variant(
+                xml_text,
+                definition,
+                &absolute,
+                root_start,
+                lang,
+                script_variant,
             )
         };
         let before = xml_text.clone();
