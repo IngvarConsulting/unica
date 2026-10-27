@@ -467,6 +467,10 @@
       },
       "expect": [
         "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "form"
       ]
     }
   ]
