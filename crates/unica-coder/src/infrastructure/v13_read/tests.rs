@@ -5,6 +5,7 @@ mod dcs_parameter_expression;
 mod defined_type_reference;
 mod form;
 mod form_conditional_appearance;
+mod form_item_bindings;
 mod form_support;
 mod job_schedule;
 mod metadata;

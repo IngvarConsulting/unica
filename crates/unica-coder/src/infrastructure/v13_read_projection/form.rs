@@ -313,6 +313,31 @@ fn form_node(
     item: &Value,
     semantic_events: Option<&[EventProjection]>,
 ) -> NodeView {
+    let mut props = node_props(kind, item);
+    let mut limits = Vec::new();
+    if kind == NodeKind::Item {
+        for (source, property) in [("dataPath", "DataPath"), ("commandName", "CommandName")] {
+            if let Some(value) = item.get(source).filter(|value| value.is_string()) {
+                super::place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    property,
+                    value,
+                    false,
+                    property,
+                );
+            }
+        }
+        limits.extend(
+            item.get("bindingLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
+    }
     let mut node = NodeView::new(
         address.to_string(),
         kind.as_str(),
@@ -320,8 +345,9 @@ fn form_node(
             .and_then(Value::as_str)
             .or_else(|| item_identity(item))
             .unwrap_or(kind.as_str()),
-        node_props(kind, item),
-    );
+        props,
+    )
+    .with_limits(limits);
     let branch_kinds: &[NodeKind] = match kind {
         NodeKind::Item => &[NodeKind::Item, NodeKind::Event],
         NodeKind::Attribute => &[NodeKind::Column],
