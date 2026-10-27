@@ -1441,10 +1441,19 @@ pub fn apply_typed_properties(
                 // Literal CR is normalized by XML readers; character references
                 // preserve the requested value independently of file line endings.
                 let escaped = unica_xml_format::text::escape_xml(value).replace('\r', "&#13;");
-                if value.is_empty() {
-                    format!("{indent}<Key/>")
+                // A declaration local to the old leaf disappears on replacement.
+                // Bind the emitted leaf against its parent's inherited default.
+                let namespace = if properties.lookup_namespace_uri(None)
+                    == Some("http://v8.1c.ru/8.3/MDClasses")
+                {
+                    ""
                 } else {
-                    format!("{indent}<Key>{escaped}</Key>")
+                    " xmlns=\"http://v8.1c.ru/8.3/MDClasses\""
+                };
+                if value.is_empty() {
+                    format!("{indent}<Key{namespace}/>")
+                } else {
+                    format!("{indent}<Key{namespace}>{escaped}</Key>")
                 }
             }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {

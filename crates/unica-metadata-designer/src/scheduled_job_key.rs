@@ -126,3 +126,48 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod namespace_tests {
+    use super::MD;
+    use crate::edit::apply_typed_properties;
+    use unica_metadata::{MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetadataKind};
+
+    #[test]
+    fn scheduled_job_key_edit_keeps_namespace_for_set_and_clear() {
+        for (default, key) in [
+            ("", "<m:Key>old</m:Key>"),
+            (" xmlns=\"urn:other\"", "<m:Key>old</m:Key>"),
+            ("", "<Key xmlns=\"http://v8.1c.ru/8.3/MDClasses\">old</Key>"),
+        ] {
+            for value in ["new", ""] {
+                let mut source = format!("<m:MetaDataObject xmlns:m=\"{MD}\"{default}><m:ScheduledJob uuid=\"16670000-0000-4000-8000-000000000001\"><m:Properties><m:Name>Probe</m:Name>{key}</m:Properties></m:ScheduledJob></m:MetaDataObject>");
+                let original = source.clone();
+                let changes = MetaPropertyChanges::convert(
+                    MetadataKind::ScheduledJob,
+                    vec![MetaPropertyInput::new(
+                        "Key",
+                        MetaPropertyValue::String(value.to_string()),
+                    )],
+                )
+                .unwrap();
+                apply_typed_properties(&mut source, &changes, "ru").unwrap();
+                let doc = roxmltree::Document::parse(&source).unwrap();
+                let key = doc
+                    .descendants()
+                    .find(|node| node.has_tag_name((MD, "Key")))
+                    .expect("edited Key must remain in the metadata namespace");
+                assert_eq!(crate::info_projection::direct_text_content(key), value);
+                let before = roxmltree::Document::parse(&original).unwrap();
+                let old = before
+                    .descendants()
+                    .find(|node| node.has_tag_name((MD, "Key")))
+                    .unwrap();
+                assert_eq!(
+                    source.replace(&source[key.range()], "<Key/>"),
+                    original.replace(&original[old.range()], "<Key/>")
+                );
+            }
+        }
+    }
+}
