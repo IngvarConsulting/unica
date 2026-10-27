@@ -17,6 +17,9 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 #[derive(Debug, Clone)]
 pub enum FormEditStep {
     Definition(Value),
+    RemoveAttribute {
+        name: String,
+    },
     Move {
         request: crate::form_move::FormItemMove,
         location: String,
@@ -537,7 +540,33 @@ pub fn parse_form_operation(
     let operation_name = operation.name();
     let address =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
-    let target = form_target(&address, op_index)?;
+    let attribute = if operation == FormOperation::AttributeRemove {
+        match address.segments() {
+            [_, form, attribute]
+                if form.kind() == NodeKind::Form
+                    && form.name().is_some()
+                    && attribute.kind() == NodeKind::Attribute
+                    && attribute.name().is_some() =>
+            {
+                attribute.name().map(str::to_string)
+            }
+            _ => {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    "attribute.remove addresses `Owner.Name.Form.F.Attribute.A`",
+                ))
+            }
+        }
+    } else {
+        None
+    };
+    let target_address = if attribute.is_some() {
+        address.prefix(2)
+    } else {
+        address.clone()
+    };
+    let target = form_target(&target_address, op_index)?;
     // Узел, на котором исполняется операция, — ровно её `at`: элемент и
     // событие задаются адресом, а операция другого узла отказывает, а не
     // пишет молча в форму, элемент или владельца (#1351, #1355).
@@ -548,6 +577,7 @@ pub fn parse_form_operation(
             !target.items.is_empty() && target.event.is_none()
         }
         FormOperation::EventBind => target.event.is_some(),
+        FormOperation::AttributeRemove => attribute.is_some(),
         FormOperation::Remove
         | FormOperation::AttributeAdd
         | FormOperation::CommandAdd
@@ -564,6 +594,7 @@ pub fn parse_form_operation(
             FormOperation::ItemRemove | FormOperation::ItemMove => {
                 "the existing item `Owner.Name.Form.F.Item.A[.Item.B…]`"
             }
+            FormOperation::AttributeRemove => "the existing attribute `Owner.Name.Form.F.Attribute.A`",
             FormOperation::EventBind => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
             FormOperation::Remove
             | FormOperation::AttributeAdd
@@ -873,6 +904,14 @@ pub fn parse_form_operation(
                 }],
             })
         }
+        FormOperation::AttributeRemove => Ok(FormPlan::FormEdit {
+            owner: target.owner,
+            form: target.form.expect("attribute.remove has a form"),
+            subject: FormEditSubject::Node(Vec::new()),
+            definitions: vec![FormEditStep::RemoveAttribute {
+                name: attribute.expect("attribute.remove has an attribute"),
+            }],
+        }),
         FormOperation::ItemRemove => {
             let form = form_of(&target)?;
             // Элемент назван адресом: список в аргументах называл бы другие
@@ -1522,6 +1561,13 @@ pub fn stage_form_edit(
     for step in definitions {
         let definition = match step {
             FormEditStep::Definition(definition) => definition,
+            FormEditStep::RemoveAttribute { name } => {
+                xml_text =
+                    crate::codec::attribute_remove::remove(&xml_text, name).map_err(|error| {
+                        ApplyPlanError::new(error.kind, error.message).at_path(at_path.clone())
+                    })?;
+                continue;
+            }
             FormEditStep::Move { request, location } => {
                 xml_text = crate::form_move::move_item(&xml_text, request).map_err(|error| {
                     ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(
@@ -1559,17 +1605,19 @@ pub fn stage_form_edit(
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(args_path.clone())
         })?;
     }
-    // Перенос сохраняет исходное состояние BOM. Остальные определения
-    // используют прежнюю нормализацию писателя формы.
-    let is_move = definitions
-        .iter()
-        .any(|step| matches!(step, FormEditStep::Move { .. }));
-    let postimage = if is_move && !preimage.starts_with(UTF8_BOM) {
+    // Structural edits preserve the original BOM and line endings.
+    let preserve_serialization = definitions.iter().any(|step| {
+        matches!(
+            step,
+            FormEditStep::Move { .. } | FormEditStep::RemoveAttribute { .. }
+        )
+    });
+    let postimage = if preserve_serialization && !preimage.starts_with(UTF8_BOM) {
         xml_text.as_bytes().to_vec()
     } else {
         with_bom(&xml_text)
     };
-    if !is_move && postimage == preimage {
+    if !preserve_serialization && postimage == preimage {
         return Ok(());
     }
     let validation = crate::codec::validate_form_image(
