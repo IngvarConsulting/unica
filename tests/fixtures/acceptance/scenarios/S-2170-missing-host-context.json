@@ -1,0 +1,44 @@
+{
+  "id": "S-2170-missing-host-context",
+  "name": "missing-host-context-names-channels-and-recovery",
+  "issue": 2170,
+  "area": "Рабочее пространство",
+  "workspace": "tests/fixtures/acceptance/workspace-host-context-missing",
+  "task": "Frontend без startup project env, request metadata и client roots возвращает invalid_state/needsHuman с каналами и способом восстановления, не создаёт Task и не выбирает технический cwd даже при корректном v8project.yaml.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: No host workspace context for this call: no startup project was captured. This connection requires host context (UNICA_HOST_CONTEXT_REQUIRED=1 or packaged runti",
+      "assertions": [
+        {
+          "pointer": "/summary",
+          "eq": "No host workspace context for this call: no startup project was captured. This connection requires host context (UNICA_HOST_CONTEXT_REQUIRED=1 or packaged runtime); launch cwd is not an allowed fallback. No recognized request metadata (codex/sandbox-state-meta (sandboxCwd)); client roots: not supplied for this call. Project variables (CLAUDE_PROJECT_DIR, ZCODE_PROJECT_DIR) are captured once: set one to an existing absolute project directory and reconnect the MCP server from that project. The host can restore a later call without reconnecting by supplying valid recognized metadata or client roots when this session supports roots/list. Startup capture stays unchanged until reconnect."
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "needsHuman"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": ".build/unica",
+          "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "f4a2e802412626925d8b1f5fbbd4856308fd4ca48d3d1b05f1e3c24156a503ff"
+        }
+      ]
+    }
+  ]
+}
