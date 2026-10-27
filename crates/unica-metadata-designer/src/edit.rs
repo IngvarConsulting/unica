@@ -1338,14 +1338,21 @@ pub fn apply_typed_properties(
             None,
         )
     })?;
-    let properties =
+    let changes_key = changes
+        .entries()
+        .iter()
+        .any(|(key, _)| *key == MetaPropertyKey::Key);
+    let properties = if changes_key {
+        super::scheduled_job_key::properties(object)?
+    } else {
         unica_xml_format::read::child_element(object, "Properties").ok_or_else(|| {
             typed_diagnostic(
                 MetaDiagnosticCode::ProviderUnavailable,
                 "metadata descriptor has no Properties",
                 None,
             )
-        })?;
+        })?
+    };
     let kind = MetadataKind::parse(object.tag_name().name()).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -1380,13 +1387,21 @@ pub fn apply_typed_properties(
                     Some("values"),
                 )
             })?;
-        let property = unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
-            typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                format!("property `{tag}` is not present on this metadata object"),
-                Some("values"),
-            )
-        })?;
+        let property = if *key == MetaPropertyKey::Key {
+            let (node, previous) = super::scheduled_job_key::leaf(properties)?;
+            if matches!(value, MetaPropertyValue::String(next) if next == &previous) {
+                continue;
+            }
+            node
+        } else {
+            unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    format!("property `{tag}` is not present on this metadata object"),
+                    Some("values"),
+                )
+            })?
+        };
         let replacement = match (key, value) {
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
                 if previous_type
@@ -1421,6 +1436,16 @@ pub fn apply_typed_properties(
                     lang,
                     value,
                 )
+            }
+            (MetaPropertyKey::Key, MetaPropertyValue::String(value)) => {
+                // Literal CR is normalized by XML readers; character references
+                // preserve the requested value independently of file line endings.
+                let escaped = unica_xml_format::text::escape_xml(value).replace('\r', "&#13;");
+                if value.is_empty() {
+                    format!("{indent}<Key/>")
+                } else {
+                    format!("{indent}<Key>{escaped}</Key>")
+                }
             }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}<{tag}/>")

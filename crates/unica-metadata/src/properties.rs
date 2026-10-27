@@ -29,6 +29,7 @@ pub enum MetaPropertyKey {
     FoldersOnTop,
     Global,
     Handler,
+    Key,
     HierarchyType,
     LevelCount,
     LimitLevelCount,
@@ -125,6 +126,7 @@ pub struct MetadataPropertySpec {
     pub allowed_kinds: &'static [MetadataKind],
     pub enum_values: &'static [&'static str],
     pub string_pattern: Option<&'static str>,
+    pub string_max_length: Option<usize>,
 }
 
 const fn property(
@@ -141,6 +143,7 @@ const fn property(
         allowed_kinds,
         enum_values: &[],
         string_pattern: None,
+        string_max_length: None,
     }
 }
 
@@ -185,6 +188,7 @@ const fn enum_property(
         allowed_kinds,
         enum_values,
         string_pattern: None,
+        string_max_length: None,
     }
 }
 
@@ -202,6 +206,7 @@ const fn patterned_string_property(
         allowed_kinds,
         enum_values: &[],
         string_pattern: Some(string_pattern),
+        string_max_length: None,
     }
 }
 
@@ -496,6 +501,16 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         CATALOG_KINDS,
         HIERARCHY_TYPE_VALUES,
     ),
+    MetadataPropertySpec {
+        string_max_length: Some(128),
+        string_pattern: Some(r"^[^\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]*$"),
+        ..property(
+            "Key",
+            MetaPropertyKey::Key,
+            MetaPropertyValueKind::String,
+            SCHEDULED_JOB_KINDS,
+        )
+    },
     property(
         "LevelCount",
         MetaPropertyKey::LevelCount,
@@ -812,6 +827,28 @@ impl MetaPropertyChanges {
                 .with_field(&field));
             }
             if let MetaPropertyValue::String(value) = &input.value {
+                if spec
+                    .string_max_length
+                    .is_some_and(|max| value.chars().count() > max)
+                {
+                    return Err(MetaDiagnostic::error(
+                        MetaDiagnosticCode::InvalidArguments,
+                        format!(
+                            "property `{}` exceeds its maximum length of {} characters",
+                            input.name,
+                            spec.string_max_length.unwrap()
+                        ),
+                    )
+                    .with_field(&field));
+                }
+                if spec.key == MetaPropertyKey::Key && !value.chars().all(|character| {
+                    matches!(character, '\u{9}' | '\u{A}' | '\u{D}' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
+                }) {
+                    return Err(MetaDiagnostic::error(
+                        MetaDiagnosticCode::InvalidArguments,
+                        "Key must contain only XML 1.0 characters",
+                    ).with_field(&field));
+                }
                 match spec.key {
                     MetaPropertyKey::Event
                         if value.is_empty()
@@ -875,6 +912,65 @@ impl MetaPropertyChanges {
 mod tests {
     use super::*;
     use crate::{MetaDiagnosticCode, MetadataKind};
+
+    #[test]
+    fn scheduled_job_key_validation_matches_the_published_bounded_string() {
+        let schema = crate::metadata_property_schemas(Some(MetadataKind::ScheduledJob));
+        assert_eq!(schema["Key"]["maxLength"], 128);
+        let validator = jsonschema::validator_for(&schema["Key"]).unwrap();
+        for value in [
+            "".to_string(),
+            "я".repeat(128),
+            "😀".repeat(128),
+            " a\r\nb\t<&> ".to_string(),
+        ] {
+            assert!(validator.is_valid(&serde_json::json!(value)));
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::ScheduledJob,
+                vec![MetaPropertyInput::new(
+                    "Key",
+                    MetaPropertyValue::String(value)
+                ),]
+            )
+            .is_ok());
+        }
+        for value in [
+            "я".repeat(129),
+            "😀".repeat(129),
+            "bad\0key".to_string(),
+            "bad\u{b}key".to_string(),
+            "bad\u{fffe}key".to_string(),
+        ] {
+            assert!(!validator.is_valid(&serde_json::json!(value)));
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::ScheduledJob,
+                vec![MetaPropertyInput::new(
+                    "Key",
+                    MetaPropertyValue::String(value)
+                ),]
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn scheduled_job_key_is_a_closed_string_property() {
+        assert_property_kind_matrix(
+            "Key",
+            MetaPropertyValue::String("Обмен & очереди".into()),
+            &[MetadataKind::ScheduledJob],
+        );
+        for value in [
+            MetaPropertyValue::Boolean(true),
+            MetaPropertyValue::UnsignedInteger(1),
+        ] {
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::ScheduledJob,
+                vec![MetaPropertyInput::new("Key", value)],
+            )
+            .is_err());
+        }
+    }
 
     fn assert_property_kind_matrix(
         property_name: &str,
