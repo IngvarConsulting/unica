@@ -1,0 +1,257 @@
+{
+  "platformVersion": "8.3.27.2214",
+  "platformBinarySha256": "1a35bba7883a7fdf9a8678392e4b1520df452995ce005ff225f94594e70cfe25",
+  "formatVersion": "2.20",
+  "cases": [
+    {
+      "id": "catalog-0",
+      "name": "ControlProbe",
+      "owner": "Catalog",
+      "scope": "tabularSection",
+      "returncode": 0,
+      "inputs": {
+        "Catalogs/Валюты.xml": "3184c87deb27381fed99af855cffe0e77e193fbb0ba19ada75aa4229a5708e88",
+        "Configuration.xml": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813",
+        "Enums/СпособыУстановкиКурсаВалюты.xml": "749c7f4e0863c3d08eed919cd0cafd4583cfd3c89cf192a67d59a685600a52ce",
+        "Languages/English.xml": "9cbd6735655f3cf0d003a960978f3103be90d8034d04f0117f6e13125407598b",
+        "Languages/Русский.xml": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+      },
+      "source": "cases/catalog-0/source",
+      "stdout": "cases/catalog-0/stdout.txt",
+      "stderr": "cases/catalog-0/stderr.txt",
+      "command": [
+        "ibcmd",
+        "infobase",
+        "create",
+        "--db-path=<round>/db",
+        "--data=<round>/data",
+        "--temp=<round>/temp",
+        "--users-data=<round>/users",
+        "--session-data=<round>/session",
+        "--log-data=<round>/log",
+        "--import=cases/catalog-0/source",
+        "--apply",
+        "--force"
+      ]
+    },
+    {
+      "id": "catalog-1",
+      "name": "НомерСтроки",
+      "owner": "Catalog",
+      "scope": "tabularSection",
+      "returncode": 255,
+      "inputs": {
+        "Catalogs/Валюты.xml": "28f9dbd1cecac4d72df1be55bee5d2b43a779303a4a9e69fc6da74cdd5d9afbc",
+        "Configuration.xml": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813",
+        "Enums/СпособыУстановкиКурсаВалюты.xml": "749c7f4e0863c3d08eed919cd0cafd4583cfd3c89cf192a67d59a685600a52ce",
+        "Languages/English.xml": "9cbd6735655f3cf0d003a960978f3103be90d8034d04f0117f6e13125407598b",
+        "Languages/Русский.xml": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+      },
+      "source": "cases/catalog-1/source",
+      "stdout": "cases/catalog-1/stdout.txt",
+      "stderr": "cases/catalog-1/stderr.txt",
+      "command": [
+        "ibcmd",
+        "infobase",
+        "create",
+        "--db-path=<round>/db",
+        "--data=<round>/data",
+        "--temp=<round>/temp",
+        "--users-data=<round>/users",
+        "--session-data=<round>/session",
+        "--log-data=<round>/log",
+        "--import=cases/catalog-1/source",
+        "--apply",
+        "--force"
+      ]
+    },
+    {
+      "id": "catalog-2",
+      "name": "LineNumber",
+      "owner": "Catalog",
+      "scope": "tabularSection",
+      "returncode": 255,
+      "inputs": {
+        "Catalogs/Валюты.xml": "d36e12da129799b0c74a400bfe4103091570ce752bd3ffc0cede7f0e86091a2a",
+        "Configuration.xml": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813",
+        "Enums/СпособыУстановкиКурсаВалюты.xml": "749c7f4e0863c3d08eed919cd0cafd4583cfd3c89cf192a67d59a685600a52ce",
+        "Languages/English.xml": "9cbd6735655f3cf0d003a960978f3103be90d8034d04f0117f6e13125407598b",
+        "Languages/Русский.xml": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+      },
+      "source": "cases/catalog-2/source",
+      "stdout": "cases/catalog-2/stdout.txt",
+      "stderr": "cases/catalog-2/stderr.txt",
+      "command": [
+        "ibcmd",
+        "infobase",
+        "create",
+        "--db-path=<round>/db",
+        "--data=<round>/data",
+        "--temp=<round>/temp",
+        "--users-data=<round>/users",
+        "--session-data=<round>/session",
+        "--log-data=<round>/log",
+        "--import=cases/catalog-2/source",
+        "--apply",
+        "--force"
+      ]
+    },
+    {
+      "id": "catalog-3",
+      "name": "нОмЕрСтРоКи",
+      "owner": "Catalog",
+      "scope": "tabularSection",
+      "returncode": 255,
+      "inputs": {
+        "Catalogs/Валюты.xml": "d15d11e3079aad0f0e3d1d3b894f410f3a64b6b5cb020454b7ef68d931ac93ac",
+        "Configuration.xml": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813",
+        "Enums/СпособыУстановкиКурсаВалюты.xml": "749c7f4e0863c3d08eed919cd0cafd4583cfd3c89cf192a67d59a685600a52ce",
+        "Languages/English.xml": "9cbd6735655f3cf0d003a960978f3103be90d8034d04f0117f6e13125407598b",
+        "Languages/Русский.xml": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+      },
+      "source": "cases/catalog-3/source",
+      "stdout": "cases/catalog-3/stdout.txt",
+      "stderr": "cases/catalog-3/stderr.txt",
+      "command": [
+        "ibcmd",
+        "infobase",
+        "create",
+        "--db-path=<round>/db",
+        "--data=<round>/data",
+        "--temp=<round>/temp",
+        "--users-data=<round>/users",
+        "--session-data=<round>/session",
+        "--log-data=<round>/log",
+        "--import=cases/catalog-3/source",
+        "--apply",
+        "--force"
+      ]
+    },
+    {
+      "id": "catalog-4",
+      "name": "linenumber",
+      "owner": "Catalog",
+      "scope": "tabularSection",
+      "returncode": 255,
+      "inputs": {
+        "Catalogs/Валюты.xml": "9820291ca849fdc23d887debc9aa7c6d7ddfa59ccdc189d0ef82b0ad94261e44",
+        "Configuration.xml": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813",
+        "Enums/СпособыУстановкиКурсаВалюты.xml": "749c7f4e0863c3d08eed919cd0cafd4583cfd3c89cf192a67d59a685600a52ce",
+        "Languages/English.xml": "9cbd6735655f3cf0d003a960978f3103be90d8034d04f0117f6e13125407598b",
+        "Languages/Русский.xml": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+      },
+      "source": "cases/catalog-4/source",
+      "stdout": "cases/catalog-4/stdout.txt",
+      "stderr": "cases/catalog-4/stderr.txt",
+      "command": [
+        "ibcmd",
+        "infobase",
+        "create",
+        "--db-path=<round>/db",
+        "--data=<round>/data",
+        "--temp=<round>/temp",
+        "--users-data=<round>/users",
+        "--session-data=<round>/session",
+        "--log-data=<round>/log",
+        "--import=cases/catalog-4/source",
+        "--apply",
+        "--force"
+      ]
+    },
+    {
+      "id": "catalog-header",
+      "name": "LineNumber",
+      "owner": "Catalog",
+      "scope": "header",
+      "returncode": 0,
+      "inputs": {
+        "Catalogs/Валюты.xml": "017c340c5ca15e107dedde2ce0f6e2b3ffcc015bab5353efc0c58e693a8faa58",
+        "Configuration.xml": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813",
+        "Enums/СпособыУстановкиКурсаВалюты.xml": "749c7f4e0863c3d08eed919cd0cafd4583cfd3c89cf192a67d59a685600a52ce",
+        "Languages/English.xml": "9cbd6735655f3cf0d003a960978f3103be90d8034d04f0117f6e13125407598b",
+        "Languages/Русский.xml": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+      },
+      "source": "cases/catalog-header/source",
+      "stdout": "cases/catalog-header/stdout.txt",
+      "stderr": "cases/catalog-header/stderr.txt",
+      "command": [
+        "ibcmd",
+        "infobase",
+        "create",
+        "--db-path=<round>/db",
+        "--data=<round>/data",
+        "--temp=<round>/temp",
+        "--users-data=<round>/users",
+        "--session-data=<round>/session",
+        "--log-data=<round>/log",
+        "--import=cases/catalog-header/source",
+        "--apply",
+        "--force"
+      ]
+    },
+    {
+      "id": "document-0",
+      "name": "ControlProbe",
+      "owner": "Document",
+      "scope": "tabularSection",
+      "returncode": 0,
+      "inputs": {
+        "Catalogs/Валюты.xml": "09753c0af77cecb764d37c3e9c82cbfd9c1da5c083e10f66b068e0b7026b6fe0",
+        "Configuration.xml": "7f916953db210e7d5dd254fce5e38ca5f79218eb6fe943fd012e7b8cd70a58d5",
+        "Documents/CorpusDocument.xml": "7e2a47a0b2c8f963f7dd4bf7d527a8a7902010c37250288f3d6ea1659aced7c2",
+        "Enums/СпособыУстановкиКурсаВалюты.xml": "749c7f4e0863c3d08eed919cd0cafd4583cfd3c89cf192a67d59a685600a52ce",
+        "Languages/English.xml": "9cbd6735655f3cf0d003a960978f3103be90d8034d04f0117f6e13125407598b",
+        "Languages/Русский.xml": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+      },
+      "source": "cases/document-0/source",
+      "stdout": "cases/document-0/stdout.txt",
+      "stderr": "cases/document-0/stderr.txt",
+      "command": [
+        "ibcmd",
+        "infobase",
+        "create",
+        "--db-path=<round>/db",
+        "--data=<round>/data",
+        "--temp=<round>/temp",
+        "--users-data=<round>/users",
+        "--session-data=<round>/session",
+        "--log-data=<round>/log",
+        "--import=cases/document-0/source",
+        "--apply",
+        "--force"
+      ]
+    },
+    {
+      "id": "document-1",
+      "name": "LineNumber",
+      "owner": "Document",
+      "scope": "tabularSection",
+      "returncode": 255,
+      "inputs": {
+        "Catalogs/Валюты.xml": "09753c0af77cecb764d37c3e9c82cbfd9c1da5c083e10f66b068e0b7026b6fe0",
+        "Configuration.xml": "7f916953db210e7d5dd254fce5e38ca5f79218eb6fe943fd012e7b8cd70a58d5",
+        "Documents/CorpusDocument.xml": "79ba333b7dbbc6c68f56c8da034a49a937e67c5033fb91acf81c7501b09ae6ad",
+        "Enums/СпособыУстановкиКурсаВалюты.xml": "749c7f4e0863c3d08eed919cd0cafd4583cfd3c89cf192a67d59a685600a52ce",
+        "Languages/English.xml": "9cbd6735655f3cf0d003a960978f3103be90d8034d04f0117f6e13125407598b",
+        "Languages/Русский.xml": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+      },
+      "source": "cases/document-1/source",
+      "stdout": "cases/document-1/stdout.txt",
+      "stderr": "cases/document-1/stderr.txt",
+      "command": [
+        "ibcmd",
+        "infobase",
+        "create",
+        "--db-path=<round>/db",
+        "--data=<round>/data",
+        "--temp=<round>/temp",
+        "--users-data=<round>/users",
+        "--session-data=<round>/session",
+        "--log-data=<round>/log",
+        "--import=cases/document-1/source",
+        "--apply",
+        "--force"
+      ]
+    }
+  ]
+}

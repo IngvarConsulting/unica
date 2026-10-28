@@ -2409,3 +2409,90 @@ fn canonical_check_accepts_a_common_binary_template_without_data() {
     let viewed = view(&runtime, &fixture, "main:CommonTemplate.Empty");
     assert_eq!(viewed["kind"], "CommonTemplate", "{viewed}");
 }
+
+/// #2057: the same bilingual standard row name is rejected before a batch
+/// can publish earlier changes; headers retain their independent namespace.
+#[test]
+fn tabular_standard_names_refuse_add_copy_and_rename_without_source_writes() {
+    let fixture = Fixture::new("workspace-tabular-attribute-copy");
+    let runtime = runtime();
+    let catalog = "main:Catalog.Валюты";
+    let section = format!("{catalog}.TabularSection.Представления");
+    let attribute = format!("{section}.Attribute.КодЯзыка");
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    for name in ["НомерСтроки", "LineNumber", "нОмЕрСтРоКи", "linenumber"] {
+        for (op, args, path) in [
+            (
+                "attribute.add",
+                json!({"at":section,"items":[{"name":"SafeBeforeFailure","type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}},{"name":name,"type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}}]}),
+                "ops[1].args.items[1].name",
+            ),
+            (
+                "attribute.copy",
+                json!({"at":attribute,"values":{"name":name}}),
+                "ops[1].args.values.name",
+            ),
+            (
+                "attribute.set",
+                json!({"at":attribute,"values":{"newName":name}}),
+                "ops[1].args.values.newName",
+            ),
+        ] {
+            let refused = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::Apply,
+                json!({"at":catalog,"ops":[{"op":"props.set","args":{"values":{"Comment":"must not publish"}}},{"op":op,"args":args}]}),
+            );
+            assert!(!refused.ok, "{name} {op}: {refused:?}");
+            assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+            assert_eq!(refused.at.as_deref(), Some(path), "{refused:?}");
+            assert!(
+                refused.diagnostics[0]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("standard LineNumber"),
+                "{refused:?}"
+            );
+            assert!(refused
+                .data
+                .as_ref()
+                .and_then(|data| data.get("executionToken"))
+                .is_none());
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+                before
+            );
+        }
+    }
+    let new_scope = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":catalog,"ops":[{"op":"tabularSection.add","args":{"items":[{"name":"FreshLines"}]}},
+            {"op":"attribute.add","args":{"at":format!("{catalog}.TabularSection.FreshLines"),"items":[{"name":"LineNumber","type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}}]}}]}),
+    );
+    assert!(!new_scope.ok, "{new_scope:?}");
+    assert_eq!(new_scope.at.as_deref(), Some("ops[1].args.items[0].name"));
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
+    for (at, name) in [
+        (catalog.to_string(), "LineNumber"),
+        (section, "LineNumberText"),
+    ] {
+        let preview = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":"attribute.add","args":{"items":[{"name":name,"type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}}]}}]}),
+        );
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(preview.data.unwrap()["mode"], "preview");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+            before
+        );
+    }
+}

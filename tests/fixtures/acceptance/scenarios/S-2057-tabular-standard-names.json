@@ -1,0 +1,917 @@
+{
+  "id": "S-2057-tabular-standard-names",
+  "issue": 2057,
+  "area": "Реквизиты табличных частей",
+  "task": "Add, Copy и переименование отказывают стандартному имени строки до записи, включая смешанный batch и новый scope; пространство имён шапки сохраняется.",
+  "workspace": "tests/fixtures/acceptance/workspace-tabular-attribute-copy",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.add",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления",
+              "items": [
+                {
+                  "name": "SafeBeforeFailure",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "НомерСтроки",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `НомерСтроки` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.items[1].name"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.copy",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+              "values": {
+                "name": "НомерСтроки"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `НомерСтроки` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.name"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+              "values": {
+                "newName": "НомерСтроки"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `НомерСтроки` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.newName"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.add",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления",
+              "items": [
+                {
+                  "name": "SafeBeforeFailure",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "LineNumber",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `LineNumber` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.items[1].name"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.copy",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+              "values": {
+                "name": "LineNumber"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `LineNumber` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.name"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+              "values": {
+                "newName": "LineNumber"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `LineNumber` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.newName"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.add",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления",
+              "items": [
+                {
+                  "name": "SafeBeforeFailure",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "нОмЕрСтРоКи",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `нОмЕрСтРоКи` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.items[1].name"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.copy",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+              "values": {
+                "name": "нОмЕрСтРоКи"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `нОмЕрСтРоКи` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.name"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+              "values": {
+                "newName": "нОмЕрСтРоКи"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `нОмЕрСтРоКи` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.newName"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.add",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления",
+              "items": [
+                {
+                  "name": "SafeBeforeFailure",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "linenumber",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `linenumber` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.items[1].name"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.copy",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+              "values": {
+                "name": "linenumber"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `linenumber` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.name"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          },
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+              "values": {
+                "newName": "linenumber"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `linenumber` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.newName"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standard LineNumber"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "tabularSection.add",
+            "args": {
+              "items": [
+                {
+                  "name": "FreshLines"
+                }
+              ]
+            }
+          },
+          {
+            "op": "attribute.add",
+            "args": {
+              "at": "main:Catalog.Валюты.TabularSection.FreshLines",
+              "items": [
+                {
+                  "name": "LineNumber",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `LineNumber` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.items[0].name"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "LineNumber",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "LineNumberText",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+        }
+      ]
+    }
+  ]
+}
