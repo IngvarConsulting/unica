@@ -1,0 +1,213 @@
+{
+  "id": "S-2183-structured-property-names",
+  "issue": 2183,
+  "area": "Навигация и изменение исходников",
+  "task": "Прочитать свойства DCS/XDTO, сверить имена с Can, изменить их через preview и публикацию и прочитать результат под теми же именами",
+  "workspace": "tests/fixtures/acceptance/workspace-structured-property-names",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Parameter.Period"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/useRestriction",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/field",
+          "eq": "Amount"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:XDTOPackage.Contracts.Type.Envelope.Can.property.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/$defs/xdtoProperty/properties/lowerBound/type",
+          "eq": "integer"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/$defs/xdtoProperty/properties/upperBound/type",
+          "eq": "integer"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema",
+        "ops": [
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.F05Schema.Parameter.Period",
+              "values": {
+                "useRestriction": false
+              }
+            }
+          },
+          {
+            "op": "field.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount",
+              "values": {
+                "field": "Added"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Parameter.Period"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/useRestriction",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/field",
+          "eq": "Added"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:XDTOPackage.Contracts.Type.Envelope",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "at": "cf:XDTOPackage.Contracts.Type.Envelope",
+              "values": {
+                "property": {
+                  "name": "Added",
+                  "type": "xs:string",
+                  "lowerBound": 0,
+                  "upperBound": -1
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:XDTOPackage.Contracts.Type.Envelope.Property.Added"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/lowerBound",
+          "eq": "0"
+        },
+        {
+          "pointer": "/data/props/upperBound",
+          "eq": "-1"
+        },
+        {
+          "pointer": "/data/props/bounds",
+          "eq": {
+            "lower": "0",
+            "upper": "-1",
+            "lowerExplicit": true,
+            "upperExplicit": true,
+            "unbounded": true
+          }
+        }
+      ]
+    }
+  ]
+}

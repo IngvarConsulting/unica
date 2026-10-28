@@ -12,6 +12,7 @@ mod form_appearance;
 mod member_properties;
 mod metadata;
 mod role;
+pub(crate) mod structured_properties;
 pub(crate) use metadata::borrowing_props;
 use role::project_role;
 
@@ -1551,7 +1552,11 @@ fn project_xdto(
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
     if suffix.is_empty() {
-        let mut props = selected_scalar_props(payload, &["targetNamespace"]);
+        let mut props = structured_properties::direct_props(
+            LogicalReader::Xdto,
+            NodeKind::XdtoPackage,
+            payload,
+        );
         if let Some(counts) = payload.get("counts") {
             props.extend(selected_scalar_props(
                 counts,
@@ -1746,11 +1751,21 @@ fn xdto_property_branch(
 
 fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
     let mut props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
-    let mut limits: Vec<String> = ["type", "reference", "bounds"]
+    let mut limits: Vec<String> = [("type", "type"), ("reference", "ref"), ("bounds", "bounds")]
         .into_iter()
-        .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
-        .map(|key| compact_limit(&format!("XDTO property {key}"), address, key))
+        .filter(|(input, output)| property.get(*input).is_some() && !props.contains_key(*output))
+        .map(|(_, key)| compact_limit(&format!("XDTO property {key}"), address, key))
         .collect();
+    if let Some(bounds) = property.get("bounds") {
+        for (explicit, key) in [
+            ("lowerExplicit", "lowerBound"),
+            ("upperExplicit", "upperBound"),
+        ] {
+            if bounds[explicit] == true && !props.contains_key(key) {
+                limits.push(compact_limit(&format!("XDTO property {key}"), address, key));
+            }
+        }
+    }
     if let Some([definition]) = property
         .get("typeDefs")
         .and_then(Value::as_array)
@@ -2080,19 +2095,13 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
         return form::node_props(kind, value);
     }
     let keys: &[&str] = match (reader, kind) {
-        (LogicalReader::Dcs, NodeKind::DataSet) => &["kind", "objectName", "dataSource"],
-        (LogicalReader::Dcs, NodeKind::Field) => &["field", "title"],
-        (LogicalReader::Dcs, NodeKind::Parameter) => &[
-            "type",
-            "value",
-            "expression",
-            "restricted",
-            "availableAsField",
-        ],
-        (LogicalReader::Dcs, NodeKind::Setting) => &["presentation", "filters"],
-        (LogicalReader::Dcs, NodeKind::DataSource) => &["kind"],
-        (LogicalReader::Dcs, NodeKind::CalculatedField) => &["expression", "title"],
-        (LogicalReader::Dcs, NodeKind::Total) => &["expression", "group"],
+        (LogicalReader::Dcs, _) => {
+            let mut props = structured_properties::direct_props(reader, kind, value);
+            if kind == NodeKind::Template {
+                props.insert("format".into(), json!("DataCompositionSchema"));
+            }
+            return props;
+        }
         (LogicalReader::Mxl, NodeKind::Area) => &[
             "kind",
             "beginRow",
@@ -2114,17 +2123,28 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
         (LogicalReader::Interface, NodeKind::Command) => {
             &["visible", "roleOverrides", "group", "placement"]
         }
-        (LogicalReader::Xdto, NodeKind::Type) => &["kind", "abstract", "mixed"],
+        (LogicalReader::Xdto, NodeKind::Type) => {
+            return structured_properties::direct_props(reader, kind, value)
+        }
         (LogicalReader::Xdto, NodeKind::Property) => {
-            return ["type", "reference", "bounds"]
-                .into_iter()
-                .filter_map(|key| {
-                    value
-                        .get(key)
-                        .and_then(|value| bounded_prop(key, value))
-                        .map(|value| (key.to_string(), value))
-                })
-                .collect();
+            let mut props = structured_properties::direct_props(reader, kind, value);
+            // Publish the actual XML attribute names only when explicit. The
+            // existing bounds fact preserves lexical/default/explicit semantics.
+            if let Some(bounds) = value.get("bounds") {
+                for (raw, explicit, name) in [
+                    ("lower", "lowerExplicit", "lowerBound"),
+                    ("upper", "upperExplicit", "upperBound"),
+                ] {
+                    if bounds[explicit] == true {
+                        if let Some(value) =
+                            bounds.get(raw).and_then(|value| bounded_prop(name, value))
+                        {
+                            props.insert(name.into(), value);
+                        }
+                    }
+                }
+            }
+            return props;
         }
         _ => &[],
     };

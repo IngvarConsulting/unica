@@ -9,6 +9,7 @@ mod form_support;
 mod job_schedule;
 mod metadata;
 mod metadata_declaration_diagnostics;
+mod structured_property_names;
 mod support;
 mod xdto_missing_target;
 

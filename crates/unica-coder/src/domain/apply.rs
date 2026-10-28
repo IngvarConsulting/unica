@@ -2234,7 +2234,7 @@ mod tests {
 
         let data_set = address("main:Report.Sales.Template.Schema.DataSet.Main");
         let data_site = operation_site(&data_set, traits).unwrap();
-        let args = json!({"values": {"field": "Amount", "title": "x"}});
+        let args = json!({"values": {"dataPath": "Amount", "title": "x"}});
         let redirect = registry
             .retired_argument_redirect("field.set", &data_site, args.as_object().unwrap())
             .unwrap();
@@ -2727,8 +2727,8 @@ mod tests {
             (
                 "field.set",
                 format!("{schema}.DataSet.Main"),
-                json!({"values": {"field": "Amount", "title": "x"}}),
-                "values.field",
+                json!({"values": {"dataPath": "Amount", "title": "x"}}),
+                "values.dataPath",
                 format!("{schema}.DataSet.Main.Field.Amount"),
             ),
             (
@@ -2796,7 +2796,7 @@ mod tests {
             .retired_argument_redirect(
                 "field.set",
                 &site,
-                json!({"values": {"field": "Owner.Code", "title": "x"}})
+                json!({"values": {"dataPath": "Owner.Code", "title": "x"}})
                     .as_object()
                     .unwrap(),
             )

@@ -49,21 +49,21 @@
               "values": {
                 "property": {
                   "name": "Строки",
-                  "minOccurs": 0,
-                  "maxOccurs": -1,
+                  "lowerBound": 0,
+                  "upperBound": -1,
                   "objectType": {
                     "properties": [
                       {
                         "name": "Основание",
                         "type": "tns:ТипОснования",
-                        "minOccurs": 0,
-                        "maxOccurs": 1
+                        "lowerBound": 0,
+                        "upperBound": 1
                       },
                       {
                         "name": "Получатель",
                         "type": "tns:ТипПолучателя",
-                        "minOccurs": 0,
-                        "maxOccurs": 1
+                        "lowerBound": 0,
+                        "upperBound": 1
                       }
                     ]
                   }
@@ -221,21 +221,21 @@
               "values": {
                 "property": {
                   "name": "Строки",
-                  "minOccurs": 0,
-                  "maxOccurs": -1,
+                  "lowerBound": 0,
+                  "upperBound": -1,
                   "objectType": {
                     "properties": [
                       {
                         "name": "Основание",
                         "type": "tns:ТипОснования",
-                        "minOccurs": 0,
-                        "maxOccurs": 1
+                        "lowerBound": 0,
+                        "upperBound": 1
                       },
                       {
                         "name": "Получатель",
                         "type": "tns:ТипПолучателя",
-                        "minOccurs": 0,
-                        "maxOccurs": 1
+                        "lowerBound": 0,
+                        "upperBound": 1
                       }
                     ]
                   }
@@ -295,21 +295,21 @@
               "values": {
                 "property": {
                   "name": "НеверныеСтроки",
-                  "minOccurs": 0,
-                  "maxOccurs": -1,
+                  "lowerBound": 0,
+                  "upperBound": -1,
                   "objectType": {
                     "properties": [
                       {
                         "name": "Основание",
                         "type": "tns:ТипОснования",
-                        "minOccurs": 0,
-                        "maxOccurs": 1
+                        "lowerBound": 0,
+                        "upperBound": 1
                       },
                       {
                         "name": "Получатель",
                         "type": "tns:Несуществующий",
-                        "minOccurs": 0,
-                        "maxOccurs": 1
+                        "lowerBound": 0,
+                        "upperBound": 1
                       }
                     ]
                   }
@@ -342,21 +342,21 @@
               "values": {
                 "property": {
                   "name": "Строки",
-                  "minOccurs": 0,
-                  "maxOccurs": -1,
+                  "lowerBound": 0,
+                  "upperBound": -1,
                   "objectType": {
                     "properties": [
                       {
                         "name": "Получатель",
                         "type": "tns:ТипПолучателя",
-                        "minOccurs": 0,
-                        "maxOccurs": 1
+                        "lowerBound": 0,
+                        "upperBound": 1
                       },
                       {
                         "name": "Основание",
                         "type": "tns:ТипОснования",
-                        "minOccurs": 0,
-                        "maxOccurs": 1
+                        "lowerBound": 0,
+                        "upperBound": 1
                       }
                     ]
                   }

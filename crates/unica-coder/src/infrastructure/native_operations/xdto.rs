@@ -1994,10 +1994,10 @@ pub(crate) mod tests {
         use unica_xdto_designer::parse;
         let fixture = staged_xdto_fixture("anonymous-tree", PACKAGE.as_bytes());
         let request = json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "values": {
-            "property": {"name":"Строки", "minOccurs":0, "maxOccurs":-1,
+            "property": {"name":"Строки", "lowerBound":0, "upperBound":-1,
                 "objectType":{"properties":[
-                    {"name":"Основание", "type":"tns:ЛюбаяСсылка", "minOccurs":0, "maxOccurs":1},
-                    {"name":"Получатель", "type":"tns:СоставнойЛюбойОбъект", "minOccurs":0, "maxOccurs":1}
+                    {"name":"Основание", "type":"tns:ЛюбаяСсылка", "lowerBound":0, "upperBound":1},
+                    {"name":"Получатель", "type":"tns:СоставнойЛюбойОбъект", "lowerBound":0, "upperBound":1}
                 ]}}
         }});
         let operation =
@@ -2055,7 +2055,7 @@ pub(crate) mod tests {
         use super::model;
         use unica_xdto_designer::parse;
         let before = "<d:package xmlns:d=\"http://v8.1c.ru/8.1/xdto\" xmlns=\"urn:other\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"urn:occupied\" targetNamespace=\"urn:test\">\r\n\t<d:objectType name=\"T\"/>\r\n</d:package>";
-        let property = json!({"name":"Rows", "minOccurs":0, "maxOccurs":-1, "objectType":{"properties":[
+        let property = json!({"name":"Rows", "lowerBound":0, "upperBound":-1, "objectType":{"properties":[
             {"name":"Nested", "objectType":{"properties":[{"name":"Code","type":"xs:string"}]}},
             {"name":"Other","type":"xs:decimal"}
         ]}});
@@ -2090,7 +2090,7 @@ pub(crate) mod tests {
             match change {
                 "type" => children[1]["type"] = json!("xs:string"),
                 "order" => children.reverse(),
-                "bounds" => children[1]["maxOccurs"] = json!(2),
+                "bounds" => children[1]["upperBound"] = json!(2),
                 "extra" => children.push(json!({"name":"Extra","type":"xs:string"})),
                 _ => unreachable!(),
             }
@@ -2596,7 +2596,7 @@ pub(crate) mod tests {
             ),
             (
                 "property.add",
-                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект", "values":{"property":{"name":"Added", "type":"xs:string", "minOccurs":0}}}),
+                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект", "values":{"property":{"name":"Added", "type":"xs:string", "lowerBound":0}}}),
             ),
             (
                 "type.remove",
@@ -2625,19 +2625,19 @@ pub(crate) mod tests {
                 "values":{"property":{"name":"Added", "type":"xs:string"}}
             });
             if let Some(literal) = literal {
-                value["values"]["property"]["minOccurs"] = serde_json::from_str(literal).unwrap();
+                value["values"]["property"]["lowerBound"] = serde_json::from_str(literal).unwrap();
             }
             match parse_xdto_plan_operation("property.add", &value, 2, &fixture.binding) {
                 Ok(XdtoPlanOperation::AddProperty(args)) => {
                     if args.property.min_occurs != expected {
                         failures.push(format!(
-                            "minOccurs {literal:?}: expected {expected:?}, got {:?}",
+                            "lowerBound {literal:?}: expected {expected:?}, got {:?}",
                             args.property.min_occurs
                         ));
                     }
                 }
                 result => failures.push(format!(
-                    "mathematical integer minOccurs {literal:?} rejected: {result:?}"
+                    "mathematical integer lowerBound {literal:?} rejected: {result:?}"
                 )),
             }
         }
@@ -2688,8 +2688,8 @@ pub(crate) mod tests {
             ),
             (
                 "property.add",
-                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "values":{"property":{"name":"A", "type":"xs:string", "minOccurs":2}}}),
-                "ops[2].args.values.property.minOccurs",
+                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "values":{"property":{"name":"A", "type":"xs:string", "lowerBound":2}}}),
+                "ops[2].args.values.property.lowerBound",
             ),
             (
                 "property.add",
@@ -2755,13 +2755,13 @@ pub(crate) mod tests {
                 "at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка",
                 "values":{"property":{"name":"Added", "type":"xs:string"}}
             });
-            value["values"]["property"]["minOccurs"] = serde_json::from_str(literal).unwrap();
+            value["values"]["property"]["lowerBound"] = serde_json::from_str(literal).unwrap();
             match parse_xdto_plan_operation("property.add", &value, 2, &fixture.binding) {
                 Err(error)
                     if error.kind() == ApplyPlanErrorKind::BadValue
-                        && error.path() == Some("ops[2].args.values.property.minOccurs") => {}
+                        && error.path() == Some("ops[2].args.values.property.lowerBound") => {}
                 result => failures.push(format!(
-                    "minOccurs {literal} must refuse without rounding at its caller path: {result:?}"
+                    "lowerBound {literal} must refuse without rounding at its caller path: {result:?}"
                 )),
             }
         }
@@ -3529,9 +3529,9 @@ pub(crate) mod tests {
     fn anonymous_object_and_value_types_compose_without_shadowing_base_prefixes() {
         for nested in [false, true] {
             let before = "<d:package xmlns:d=\"http://v8.1c.ru/8.1/xdto\" xmlns=\"urn:other\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema\" targetNamespace=\"urn:test\">\r\n\t<d:objectType name=\"T\"/>\r\n</d:package>";
-            let value = json!({"name":"Code","maxOccurs":2,"valueType":{"base":"xsi:string","facets":{"maxLength":10}}});
+            let value = json!({"name":"Code","upperBound":2,"valueType":{"base":"xsi:string","facets":{"maxLength":10}}});
             let property = if nested {
-                json!({"name":"Rows","maxOccurs":-1,"objectType":{"properties":[value]}})
+                json!({"name":"Rows","upperBound":-1,"objectType":{"properties":[value]}})
             } else {
                 value
             };

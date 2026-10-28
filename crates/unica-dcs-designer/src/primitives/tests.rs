@@ -128,9 +128,17 @@ fn take_containers(operation: Primitive, args: &mut Value) -> (Option<Value>, Ve
 
 fn take_subnode(operation: Primitive, args: &mut Value) -> Option<(&'static str, Value)> {
     let values = args.get_mut("values")?.as_object_mut()?;
-    subnode_keys(operation)
+    let selected = subnode_keys(operation)
         .iter()
-        .find_map(|key| values.remove(*key).map(|value| (*key, value)))
+        .find_map(|key| values.remove(*key).map(|value| (*key, value)));
+    // Legacy fixture selectors use field for the target. Canonical field.set
+    // takes the target from the address and field is the XML mapping to write.
+    if operation == Primitive::FieldSet {
+        if let Some(mapping) = values.remove("sourceField") {
+            values.insert("field".into(), mapping);
+        }
+    }
+    selected
 }
 
 /// Runs `operation` on a source set whose default language is `lang`.
