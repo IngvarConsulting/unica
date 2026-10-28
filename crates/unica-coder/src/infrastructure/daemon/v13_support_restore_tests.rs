@@ -365,6 +365,8 @@ fn mismatch_preview_writes_nothing_while_ordinary_set_keeps_its_capability() {
 enum ProcessMode {
     Success,
     Failure,
+    Unreadable,
+    LaunchFailure,
     Cancel,
 }
 
@@ -408,6 +410,9 @@ impl ProcessRunner for PackageProcess {
         assert_eq!(local.as_mapping().unwrap().len(), 1);
         assert!(local.get("infobases").is_none());
         assert!(Path::new(local["tools"]["platform"]["path"].as_str().unwrap()).is_absolute());
+        if matches!(self.mode, ProcessMode::LaunchFailure) {
+            return Err("opaque supplier launch error".into());
+        }
         let success = matches!(self.mode, ProcessMode::Success);
         if success {
             copy_tree(&fixture_root(), &output);
@@ -416,11 +421,20 @@ impl ProcessRunner for PackageProcess {
             command.cancellation.cancel();
         }
         Ok(unica_process::runner::ProcessOutput {
-            status_success: success, status: if success { "0" } else { "4" }.into(),
-            stdout: serde_json::json!({"ok":success,"command":"convert","data":{"ok":success,"direction":"PACKAGE_TO_DESIGNER","provider_dispatched":true,"provider":{"selected":"ibcmd"},"outputs":[{"source_path":input,"target_path":output}]}}).to_string(),
+            status_success: success,
+            status: if success { "0" } else { "4" }.into(),
+            stdout: if matches!(self.mode, ProcessMode::Unreadable) {
+                "opaque supplier invalid envelope".into()
+            } else {
+                serde_json::json!({"ok":success,"command":"convert","data":{"ok":success,"direction":"PACKAGE_TO_DESIGNER","provider_dispatched":true,"provider":{"selected":"ibcmd"},"outputs":[{"source_path":input,"target_path":output}]}}).to_string()
+            },
             stderr: "opaque supplier text must never be exposed".into(),
-            timed_out: false, cancelled: matches!(self.mode, ProcessMode::Cancel),
-            stdout_truncated: false, stderr_truncated: false, stdout_had_invalid_utf8: false, stderr_had_invalid_utf8: false,
+            timed_out: false,
+            cancelled: matches!(self.mode, ProcessMode::Cancel),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_had_invalid_utf8: false,
+            stderr_had_invalid_utf8: false,
         })
     }
 }
@@ -430,6 +444,8 @@ fn extraction_uses_only_private_project_and_cleans_up_on_success_failure_and_can
     for mode in [
         ProcessMode::Success,
         ProcessMode::Failure,
+        ProcessMode::Unreadable,
+        ProcessMode::LaunchFailure,
         ProcessMode::Cancel,
     ] {
         let fixture = Fixture::new();
@@ -468,11 +484,10 @@ fn extraction_uses_only_private_project_and_cleans_up_on_success_failure_and_can
             ProcessMode::Success => {
                 assert!(result.is_ok());
             }
-            ProcessMode::Failure => {
-                assert!(!result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("opaque supplier text"));
+            ProcessMode::Failure | ProcessMode::Unreadable | ProcessMode::LaunchFailure => {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), ApplyPlanErrorKind::ProviderUnavailable);
+                assert!(!error.to_string().contains("opaque supplier"));
             }
             ProcessMode::Cancel => assert_eq!(
                 result.unwrap_err().kind(),

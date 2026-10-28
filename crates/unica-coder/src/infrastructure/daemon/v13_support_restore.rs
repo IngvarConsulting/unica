@@ -130,9 +130,9 @@ impl<'a> SupplierReader<'a> {
         });
         checkpoint(self.cancellation).map_err(stage_error)?;
         let result = result
-            .map_err(|_| source_error("the supplier conversion process could not complete"))?;
+            .map_err(|_| provider_error("the supplier conversion process could not complete"))?;
         let envelope: serde_json::Value = serde_json::from_str(&result.stdout).map_err(|_| {
-            source_error("supplier conversion did not return a complete runner result")
+            provider_error("supplier conversion did not return a complete runner result")
         })?;
         if !result.status_success
             || result.cancelled
@@ -176,7 +176,7 @@ impl<'a> SupplierReader<'a> {
         {
             // Do not forward opaque platform output or source text from an
             // untrusted CF as a recovery message.
-            return Err(source_error("the platform could not extract the supplier configuration; support was not changed"));
+            return Err(provider_error("the platform could not extract the supplier configuration; support was not changed"));
         }
         let root = unica_workspace::read::open_source_directory(&output).map_err(io_error)?;
         let mut read = PrivateObjectRead {
@@ -226,6 +226,11 @@ fn isolated_temporary_root(
         }
     }
     Ok(temporary_root)
+}
+
+fn provider_error(message: &str) -> ApplyPlanError {
+    // A converter failure does not establish that the supplier CF is damaged.
+    ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, message)
 }
 
 fn source_error(message: &str) -> ApplyPlanError {
