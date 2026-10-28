@@ -365,7 +365,8 @@ pub(super) fn node_props(kind: NodeKind, value: &Value) -> Map<String, Value> {
     let keys: &[&str] = match kind {
         NodeKind::Item => &["tag", "title", "visible", "enabled", "readOnly"],
         NodeKind::Event => &["handler", "callType"],
-        NodeKind::Attribute | NodeKind::Column => &["type", "isMain", "mainTable"],
+        NodeKind::Attribute => &["type", "isMain", "mainTable"],
+        NodeKind::Column => &["type", "parentType"],
         NodeKind::Parameter => &["type", "isKey"],
         NodeKind::Command => &["title", "tooltip", "shortcut", "picture", "representation"],
         _ => &[],

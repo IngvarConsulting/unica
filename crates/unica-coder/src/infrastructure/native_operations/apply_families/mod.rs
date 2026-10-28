@@ -943,6 +943,42 @@ pub(crate) fn staged_form_item_role(
         .map(|element| unica_forms::FormItemRole::from_tag(&element.tag))
 }
 
+/// Form facts for the same admission predicate used by the published dictionary.
+pub(crate) fn staged_form_observation(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    at: &unica_address::address::QualifiedAddress,
+) -> Option<unica_forms::FormObservation> {
+    if let Some(role) = staged_form_item_role(admission, binding, at) {
+        return Some(unica_forms::FormObservation::Item(role));
+    }
+    if !unica_forms::applicability::is_form_column(at.segments()) {
+        return None;
+    }
+    let form = unica_address::address::QualifiedAddress {
+        line_range: None,
+        source_set: at.source_set().to_string(),
+        segments: at.segments()[..2].to_vec(),
+    };
+    let xml = staged_form_xml(admission, binding, &form)?;
+    let attributes = unica_forms_designer::codec::parse_form_attributes_xml(&xml).ok()?;
+    let name = at.segments()[2].name()?;
+    let mut found = attributes.iter().filter(|attribute| attribute.name == name);
+    let attribute = found.next()?;
+    if found.next().is_some() {
+        return None;
+    }
+    let mut columns = attribute
+        .columns
+        .iter()
+        .filter(|column| Some(column.name.as_str()) == at.segments()[3].name());
+    let column = columns.next()?;
+    if columns.next().is_some() {
+        return None;
+    }
+    unica_forms::FormObservation::from_column_parent_type(column.parent_type.as_deref()?)
+}
+
 /// Дерево элементов стадированной формы `Owner.X.Form.F`, как его читает
 /// `view`. `None` — формы или её `Form.xml` нет.
 fn staged_form_items(
@@ -950,6 +986,15 @@ fn staged_form_items(
     binding: &ProviderRootBinding,
     form: &unica_address::address::QualifiedAddress,
 ) -> Option<Vec<unica_forms::facts::FormInfoElement>> {
+    let xml = staged_form_xml(admission, binding, form)?;
+    unica_forms_designer::planner::form_items_of(&xml).ok()
+}
+
+fn staged_form_xml(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    form: &unica_address::address::QualifiedAddress,
+) -> Option<String> {
     let (address, covered) = descriptor_node(form)?;
     if covered != 2 {
         return None;
@@ -961,7 +1006,7 @@ fn staged_form_items(
     )
     .ok()?;
     let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
-    unica_forms_designer::planner::form_items_of(std::str::from_utf8(&bytes).ok()?).ok()
+    std::str::from_utf8(&bytes).ok().map(str::to_owned)
 }
 
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным

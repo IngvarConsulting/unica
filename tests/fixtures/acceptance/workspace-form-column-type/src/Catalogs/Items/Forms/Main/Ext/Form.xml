@@ -56,5 +56,6 @@
 			</Columns>
 		</Attribute>
 		<Attribute name="Other" id="2"><Type><v8:Type>xs:boolean</v8:Type></Type></Attribute>
+		<Attribute name="Tree" id="3"><Type><v8:Type>v8:ValueTree</v8:Type></Type><Columns><Column name="Value" id="1"><Type><v8:TypeSet>cfg:DefinedType.Existing</v8:TypeSet></Type></Column></Columns></Attribute>
 	</Attributes>
 </Form>

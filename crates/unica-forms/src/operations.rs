@@ -136,7 +136,7 @@ impl unica_operations::FamilyOperation for FormOperation {
     ) -> Option<unica_operations::recovery::PreparedRedirect> {
         crate::recovery::prepare(template, at, args, value, members)
     }
-    type Observation = crate::FormItemRole;
+    type Observation = crate::FormObservation;
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Form
     }
@@ -176,10 +176,21 @@ impl unica_operations::FamilyOperation for FormOperation {
         self,
         site: Option<&unica_source_contract::context::OperationSite<'_>>,
     ) -> bool {
-        site.is_none_or(|site| site.terminal().kind() == unica_address::address::NodeKind::Item)
+        site.is_none_or(|site| {
+            site.terminal().kind() == unica_address::address::NodeKind::Item
+                || (self == Self::PropsSet && crate::applicability::is_form_column(site.segments()))
+        })
     }
     fn admits_observation(self, observation: Option<&Self::Observation>) -> bool {
-        self.admits_form_item(observation.copied())
+        if self == Self::PropsSet {
+            observation == Some(&crate::FormObservation::ValueTableColumn)
+        } else {
+            self.admits_form_item(
+                observation
+                    .copied()
+                    .and_then(crate::FormObservation::item_role),
+            )
+        }
     }
 }
 

@@ -8,6 +8,68 @@
     {
       "tool": "unica.view",
       "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Tree.Column.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/parentType",
+          "eq": "ValueTree"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ],
+      "captures": {
+        "beforeNegative": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Tree.Column.Value.Can.props.set"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation `props.set` does not apply to Column"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Tree.Column.Value",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "type": "DefinedType.Existing | CatalogRef.Additional"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `props.set` does not apply to Column `main:Catalog.Items.Form.Main.Attribute.Tree.Column.Value`; it applies at `main:Catalog.Items.Form.Main`",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeNegative"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
         "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value"
       },
       "expect": [

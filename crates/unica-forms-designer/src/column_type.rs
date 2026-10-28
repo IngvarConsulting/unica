@@ -199,6 +199,27 @@ fn supported_shape(node: Node<'_, '_>) -> Result<Vec<String>, ColumnTypeError> {
     Ok(shape)
 }
 
+/// Share the strict parent-type evidence with read and staged operation admission.
+pub(crate) fn observed_parent_type(column: Node<'_, '_>) -> Option<String> {
+    let columns = column.parent_element()?;
+    let attribute = columns.parent_element()?;
+    let attributes = attribute.parent_element()?;
+    let root = attributes.parent_element()?;
+    if !root.has_tag_name((FORM, "Form"))
+        || child(root, "Attributes").ok()? != attributes
+        || named(attributes, "Attribute", attribute.attribute("name")?).ok()? != attribute
+        || child(attribute, "Columns").ok()? != columns
+        || named(columns, "Column", column.attribute("name")?).ok()? != column
+    {
+        return None;
+    }
+    let type_node = child(attribute, "Type").ok()?;
+    supported_shape(type_node).ok()?;
+    let (normalized, _) = canonical_type(type_node).ok()?;
+    let document = Document::parse(&normalized).ok()?;
+    Some(crate::codec::form_format_type(document.root_element()))
+}
+
 pub(crate) fn apply(
     xml: &mut String,
     attribute: &str,
@@ -251,6 +272,43 @@ mod tests {
 
     fn form(value_type: &str) -> String {
         format!("\u{feff}<Form xmlns=\"{FORM}\" xmlns:v8=\"{CORE}\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"><ChildItems><InputField name=\"Bound\" id=\"7\"><DataPath>Rows.Value</DataPath></InputField></ChildItems>\r\n<Attributes><Attribute name=\"Rows\" id=\"1\"><Type><v8:Type>v8:ValueTable</v8:Type></Type><Columns><Column name=\"Value\" id=\"2\">{value_type}<Title>untouched</Title></Column><Column name=\"Other\" id=\"3\">{OLD}</Column></Columns></Attribute></Attributes></Form>")
+    }
+
+    #[test]
+    fn read_column_parent_evidence_uses_strict_type_namespace_and_shape() {
+        for (replacement, expected) in [
+            ("v8:ValueTable", Some("ValueTable")),
+            ("v8:ValueTree", Some("ValueTree")),
+            ("xs:boolean", None),
+        ] {
+            let xml = form(OLD).replace("v8:ValueTable", replacement).replace(
+                "<Form ",
+                "<Form xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" ",
+            );
+            let attributes = crate::codec::parse_form_attributes_xml(&xml).unwrap();
+            if let Some(expected) = expected {
+                assert_eq!(
+                    attributes[0].columns[0].parent_type.as_deref(),
+                    Some(expected)
+                );
+            } else {
+                assert!(attributes[0].columns.is_empty());
+            }
+        }
+        for xml in [
+            form(OLD).replace(CORE, "urn:foreign"),
+            form(OLD).replace("<Columns>", "<Columns xmlns=\"urn:foreign\">"),
+            form(OLD).replace("</Columns>", "</Columns><Columns/>"),
+            form(OLD).replace("</Attributes>", "</Attributes><Attributes/>"),
+            form(OLD).replacen(
+                "<v8:Type>v8:ValueTable</v8:Type>",
+                "<v8:Type>v8:ValueTable</v8:Type><v8:Unknown/>",
+                1,
+            ),
+        ] {
+            let attributes = crate::codec::parse_form_attributes_xml(&xml).unwrap();
+            assert_eq!(attributes[0].columns[0].parent_type, None);
+        }
     }
 
     #[test]
