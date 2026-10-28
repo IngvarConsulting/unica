@@ -236,6 +236,47 @@ class PropertiesEvidenceTests(unittest.TestCase):
         self.assertIn("unica.view", allowed)
         self.assertTrue(calls)
 
+    def test_audit_rejects_pattern_expansion_even_when_rename_is_not_a_string(self):
+        from jsonschema import Draft202012Validator
+        for property_name, value, property_schema in [
+            ("Name", "ForbiddenRootRename", {"type": "string"}),
+            ("name", "ForbiddenRootRename", {"type": "string"}),
+            ("Name", 17, {"const": 17}),
+            ("name", {"rename": True}, {"type": "object"}),
+        ]:
+            with self.subTest(property_name=property_name, value=value):
+                records, _, response = self.configuration_records()
+                answer = response["payload"]["result"]["structuredContent"]
+                schema = answer["data"]["props"]["contract"]["argsSchema"]
+                values = schema["properties"]["values"]
+                values["required"] = ["Comment"]
+                values["patternProperties"] = {"^(Name|name)$": property_schema}
+                # An independent validator proves the supposedly closed profile admits a rename.
+                Draft202012Validator(schema).validate({"values": {"Comment": "observed", property_name: value}})
+                with self.assertRaisesRegex(ValueError, "Configuration inspection"):
+                    props_driver.audit(records)
+
+    def test_audit_rejects_indirect_or_alternative_dictionary_grammars(self):
+        for location in ["outer", "values"]:
+            for keyword, expansion in [
+                ("patternProperties", {"^unexpected$": {"type": "number"}}),
+                ("$ref", "#/$defs/alternate"),
+                ("$dynamicRef", "#/$defs/alternate"),
+                ("allOf", [{}]),
+                ("anyOf", [{}]),
+                ("unevaluatedProperties", True),
+                ("$schema", "http://json-schema.org/draft-07/schema#"),
+            ]:
+                with self.subTest(location=location, keyword=keyword):
+                    records, _, response = self.configuration_records()
+                    answer = response["payload"]["result"]["structuredContent"]
+                    schema = answer["data"]["props"]["contract"]["argsSchema"]
+                    schema["$defs"] = {"alternate": {"type": "object"}}
+                    node = schema if location == "outer" else schema["properties"]["values"]
+                    node[keyword] = expansion
+                    with self.assertRaisesRegex(ValueError, "Configuration inspection"):
+                        props_driver.audit(records)
+
     def test_audit_rejects_unresolved_comment_references_without_retrieval(self):
         for reference in ["#/$defs/missing", "https://example.invalid/comment-schema"]:
             with self.subTest(reference=reference):

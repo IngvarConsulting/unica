@@ -69,6 +69,23 @@ RUBRIC = (
 )
 
 
+def explicit_dictionary_schema(schema):
+    """Recognize the producer's finite dictionary grammar, not arbitrary JSON Schema.
+
+    Literal properties plus additionalProperties:false prove closure. References,
+    patterns, alternative applicators and dialect changes at dictionary boundaries
+    require a different proof; a successful Comment witness alone cannot prove it.
+    Property schemas may still use local definitions, checked by the validator.
+    """
+    keys = {"type", "properties", "required", "additionalProperties", "minProperties",
+            "maxProperties", "title", "description", "$defs", "$schema"}
+    return (isinstance(schema, dict) and schema.keys() <= keys
+            and schema.get("$schema", "https://json-schema.org/draft/2020-12/schema")
+            == "https://json-schema.org/draft/2020-12/schema"
+            and schema.get("type") == "object"
+            and schema.get("additionalProperties") is False)
+
+
 def configuration_comment_contract(result):
     """A catalog name alone cannot prove which root properties are supported."""
     at = "main:Configuration.Can.props.set"
@@ -82,14 +99,12 @@ def configuration_comment_contract(result):
         return False
     contract = props.get("contract")
     schema = contract.get("argsSchema") if isinstance(contract, dict) else None
-    if not (isinstance(schema, dict) and schema.get("type") == "object"
-            and schema.get("additionalProperties") is False
+    if not (explicit_dictionary_schema(schema)
             and isinstance(schema.get("required"), list) and "values" in schema["required"]):
         return False
     arguments = schema.get("properties")
     values = arguments.get("values") if isinstance(arguments, dict) else None
-    if not (isinstance(values, dict) and values.get("type") == "object"
-            and values.get("additionalProperties") is False
+    if not (explicit_dictionary_schema(values)
             and type(values.get("minProperties")) is int and values["minProperties"] >= 1):
         return False
     fields = values.get("properties")
