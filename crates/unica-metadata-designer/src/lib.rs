@@ -20,6 +20,7 @@ pub mod format_contract;
 pub mod edit;
 
 pub mod info;
+pub mod session_parameter_comment;
 
 pub mod job_schedule;
 
