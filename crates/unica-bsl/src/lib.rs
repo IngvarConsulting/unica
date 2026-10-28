@@ -16,3 +16,5 @@ pub mod text;
 pub mod event_text;
 
 mod contracts;
+
+pub mod syntax;
