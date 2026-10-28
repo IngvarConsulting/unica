@@ -60,7 +60,7 @@ fn catalog_standard_attribute_properties_reach_collection_and_detail() {
     let service = fixture.view_service();
     let collection =
         service.view(ViewRequest::new("main:Catalog.Items.StandardAttribute").unwrap());
-    assert!(collection.ok, "{collection:?}");
+    assert!(collection.ok, "the call failed");
     let data = collection.data.unwrap();
     let items = data["items"].as_array().unwrap();
     assert_eq!(items.len(), 3);
@@ -69,7 +69,7 @@ fn catalog_standard_attribute_properties_reach_collection_and_detail() {
         let at = items[index]["at"].as_str().unwrap();
         assert_eq!(at, format!("main:Catalog.Items.StandardAttribute.{name}"));
         let detail = service.view(ViewRequest::new(at).unwrap());
-        assert!(detail.ok, "{detail:?}");
+        assert!(detail.ok, "the call failed");
         let detail = detail.data.unwrap();
         assert_eq!(detail["title"], name);
         assert_eq!(items[index]["props"], detail["props"]);
@@ -149,29 +149,29 @@ fn catalog_standard_attribute_empty_translations_read_as_absence_while_empty_tex
             let collection =
                 service.view(ViewRequest::new("main:Catalog.Items.StandardAttribute").unwrap());
             if matches!(state, "damaged" | "bare-text") {
-                assert!(!collection.ok, "{key}: {collection:?}");
+                assert!(!collection.ok, "the call was expected to be refused");
                 assert_eq!(collection.diagnostics[0]["detailCode"], "source_unreadable");
                 for name in ["Code", "Description"] {
                     let detail = service.view(
                         ViewRequest::new(&format!("main:Catalog.Items.StandardAttribute.{name}"))
                             .unwrap(),
                     );
-                    assert!(!detail.ok, "{detail:?}");
+                    assert!(!detail.ok, "the call was expected to be refused");
                     assert_eq!(detail.diagnostics[0]["detailCode"], "source_unreadable");
                 }
                 let root = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-                assert!(root.ok, "{root:?}");
+                assert!(root.ok, "the call failed");
                 assert!(root.data.unwrap()["limits"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .any(|limit| limit.as_str().unwrap().contains("standardAttributes")));
             } else {
-                assert!(collection.ok, "{collection:?}");
+                assert!(collection.ok, "the call failed");
                 for item in &collection.data.unwrap()["items"].as_array().unwrap()[..2] {
                     let detail =
                         service.view(ViewRequest::new(item["at"].as_str().unwrap()).unwrap());
-                    assert!(detail.ok, "{detail:?}");
+                    assert!(detail.ok, "the call failed");
                     let detail = detail.data.unwrap();
                     assert_eq!(item.get("props"), detail.get("props"));
                     if state == "absent" || key != "FillChecking" {
@@ -329,10 +329,10 @@ fn metadata_long_type_read_preserves_other_facts_and_names_the_size_limit() {
     let service = fixture.view_service();
     let collection =
         service.view(ViewRequest::new("main:AccumulationRegister.Movements.Attribute").unwrap());
-    assert!(collection.ok, "{collection:?}");
+    assert!(collection.ok, "the call failed");
     let item = &collection.data.as_ref().unwrap()["items"][0];
     let detail = service.view(ViewRequest::new(item["at"].as_str().unwrap()).unwrap());
-    assert!(detail.ok, "{detail:?}");
+    assert!(detail.ok, "the call failed");
     let data = detail.data.unwrap();
     assert_eq!(item["limits"], data["limits"]);
     assert!(data["limits"].as_array().unwrap().iter().any(|limit| limit
@@ -345,7 +345,7 @@ fn metadata_long_type_read_preserves_other_facts_and_names_the_size_limit() {
     assert_eq!(data["props"]["synonym"], "Long");
     let control = service
         .view(ViewRequest::new("main:AccumulationRegister.Movements.Dimension.Small").unwrap());
-    assert!(control.ok, "{control:?}");
+    assert!(control.ok, "the call failed");
     let control = control.data.unwrap();
     assert!(control.get("limits").is_none());
     let ty = &control["props"]["type"];
@@ -383,9 +383,9 @@ fn metadata_missing_empty_and_malformed_types_do_not_claim_a_size_limit() {
         write(&path, &xml);
         let service = fixture.view_service();
         let detail = service.view(ViewRequest::new("main:Catalog.Items.Attribute.Code").unwrap());
-        assert!(detail.ok, "{detail:?}");
+        assert!(detail.ok, "the call failed");
         let data = detail.data.unwrap();
-        assert!(data["props"].get("type").is_none(), "{data}");
+        assert!(data["props"].get("type").is_none(), "unexpected answer");
         // Отсутствующий, пустой и повреждённый тип не заявляют предел размера;
         // причина повреждения названа у самого реквизита (#1933).
         let item_limits = data["limits"].as_array().cloned().unwrap_or_default();
@@ -405,7 +405,7 @@ fn metadata_missing_empty_and_malformed_types_do_not_claim_a_size_limit() {
         );
         assert_eq!(data["props"].get("incomplete").and_then(serde_json::Value::as_bool).unwrap_or(false), damaged);
         let root = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-        assert!(root.ok, "{root:?}");
+        assert!(root.ok, "the call failed");
         let limits = root.data.unwrap()["limits"].as_array().cloned().unwrap_or_default();
         assert_eq!(limits.iter().any(|limit| limit.as_str().unwrap().contains(".type не прочитано")), damaged, "{limits:?}");
     }
@@ -488,7 +488,7 @@ fn predefined_long_type_read_preserves_other_facts_and_names_the_size_limit() {
     let collection = service.view(
         ViewRequest::new("main:ChartOfCharacteristicTypes.Characteristics.PredefinedItem").unwrap(),
     );
-    assert!(collection.ok, "{collection:?}");
+    assert!(collection.ok, "the call failed");
     let items = collection.data.as_ref().unwrap()["items"]
         .as_array()
         .unwrap()
@@ -508,12 +508,12 @@ fn predefined_long_type_read_preserves_other_facts_and_names_the_size_limit() {
     };
     let item = find("Длинный");
     let detail = service.view(ViewRequest::new(item["at"].as_str().unwrap()).unwrap());
-    assert!(detail.ok, "{detail:?}");
+    assert!(detail.ok, "the call failed");
     let data = detail.data.unwrap();
     assert_eq!(item["limits"], data["limits"]);
-    assert!(size_limit(&data["limits"]), "{data}");
-    assert!(data["props"].get("type").is_none(), "{data}");
-    assert!(data.get("branches").is_none(), "{data}");
+    assert!(size_limit(&data["limits"]), "unexpected answer");
+    assert!(data["props"].get("type").is_none(), "unexpected answer");
+    assert!(data.get("branches").is_none(), "unexpected answer");
     assert_eq!(data["props"]["id"], LONG);
     assert_eq!(data["props"]["parentId"], FOLDER);
     assert_eq!(data["props"]["code"], "000000002");
@@ -523,9 +523,9 @@ fn predefined_long_type_read_preserves_other_facts_and_names_the_size_limit() {
     let item = find("Малый");
     assert!(item.get("limits").is_none(), "{item}");
     let control = service.view(ViewRequest::new(item["at"].as_str().unwrap()).unwrap());
-    assert!(control.ok, "{control:?}");
+    assert!(control.ok, "the call failed");
     let control = control.data.unwrap();
-    assert!(control.get("limits").is_none(), "{control}");
+    assert!(control.get("limits").is_none(), "unexpected answer");
     assert_eq!(control["props"]["id"], SMALL);
     assert_eq!(control["props"]["parentId"], FOLDER);
     assert_eq!(control["props"]["code"], "000000003");
@@ -629,7 +629,7 @@ fn metadata_member_comments_preserve_presence_and_damage_in_collection_and_detai
             let service = fixture.view_service();
             let at = format!("main:{owner}.{kind}");
             let collection = service.view(ViewRequest::new(&at).unwrap());
-            assert!(collection.ok, "{at}, {comment}: {collection:?}");
+            assert!(collection.ok, "{at}, {comment}: the call failed");
             let items = collection.data.unwrap()["items"]
                 .as_array()
                 .unwrap()
@@ -637,7 +637,7 @@ fn metadata_member_comments_preserve_presence_and_damage_in_collection_and_detai
             assert_eq!(items.len(), 2);
             assert!(items[1]["props"].get("comment").is_none());
             let detail = service.view(ViewRequest::new(items[0]["at"].as_str().unwrap()).unwrap());
-            assert!(detail.ok, "{detail:?}");
+            assert!(detail.ok, "the call failed");
             let data = detail.data.unwrap();
             assert_eq!(items[0]["props"], data["props"]);
             assert_eq!(data["title"], format!("{kind} Empty"));
@@ -663,7 +663,7 @@ fn metadata_member_comments_preserve_presence_and_damage_in_collection_and_detai
                 }
             }
             let root = service.view(ViewRequest::new(&format!("main:{owner}")).unwrap());
-            assert!(root.ok, "{root:?}");
+            assert!(root.ok, "the call failed");
             let limits = root.data.unwrap()["limits"]
                 .as_array()
                 .cloned()
@@ -799,9 +799,9 @@ fn metadata_attribute_fill_value_is_a_bounded_observed_fact() {
     ] {
         let result = service
             .view(ViewRequest::new(&format!("main:Catalog.Items.Attribute.{name}")).unwrap());
-        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        assert!(result.ok, "the call failed");
         let props = &result.data.as_ref().unwrap()["props"];
-        assert!(props.get("incomplete").is_none(), "{props}");
+        assert!(props.get("incomplete").is_none(), "unexpected answer");
         let observed = props["fillValue"].clone();
         assert_eq!(
             observed,
@@ -975,7 +975,7 @@ fn an_unreadable_http_template_is_named_rather_than_reported_absent() {
 
     let templates =
         service.view(ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate").unwrap());
-    assert!(!templates.ok, "{:#?}", templates.data);
+    assert!(!templates.ok, "the call was expected to be refused");
     assert_eq!(refusal_codes(&templates), ["provider_unavailable"]);
     let message = templates.diagnostics[0]["message"].as_str().unwrap();
     assert!(
@@ -1211,7 +1211,7 @@ fn predefined_items_beyond_first_page_answer_by_address() {
     let fixture = predefined_page_fixture();
     let service = fixture.view_service();
     let owner = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-    assert!(owner.ok, "{owner:?}");
+    assert!(owner.ok, "the call failed");
     assert!(owner.data.as_ref().unwrap()["branches"]
         .as_array()
         .unwrap()
@@ -1220,7 +1220,7 @@ fn predefined_items_beyond_first_page_answer_by_address() {
         let result = service.view(
             ViewRequest::new(&format!("main:Catalog.Items.PredefinedItem.Item{index:03}")).unwrap(),
         );
-        assert!(result.ok, "item {index}: {result:?}");
+        assert!(result.ok, "item {index}");
         let data = result.data.unwrap();
         assert_eq!(data["title"], format!("Item{index:03}"));
         assert_eq!(
@@ -1258,7 +1258,7 @@ fn predefined_items_pages_preserve_complete_document_order() {
                 request = request.with_cursor(previous);
             }
             let page = service.view(request);
-            assert!(page.ok, "{page:?}");
+            assert!(page.ok, "the call failed");
             let data = page.data.unwrap();
             let items = data["items"].as_array().unwrap();
             assert!(!items.is_empty() && items.len() <= limit);
@@ -1338,7 +1338,7 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
     fs::remove_file(&path).unwrap();
     let service = fixture.view_service();
     let owner = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-    assert!(owner.ok, "{owner:?}");
+    assert!(owner.ok, "the call failed");
     let authority = fixture.read_authority();
     let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
     let empty_data = authority
@@ -1354,7 +1354,7 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
     assert_eq!(empty_data.total, 0);
     assert!(!empty_data.truncated);
     let empty = service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
-    assert!(empty.ok, "{empty:?}");
+    assert!(empty.ok, "the call failed");
     assert_eq!(empty.data.unwrap()["items"], json!([]));
     assert!(empty.cursor.is_none());
     let absent =
@@ -1364,7 +1364,7 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
         service.view(ViewRequest::new("main:Document.Order.PredefinedItem").unwrap());
     // Неприменимому виду отказано в самой коллекции, а не в элементе:
     // пустой список он не получает.
-    assert!(!inapplicable.ok, "{inapplicable:?}");
+    assert!(!inapplicable.ok, "the call was expected to be refused");
     assert_eq!(refusal_codes(&inapplicable), ["not_found"]);
     assert_eq!(
         inapplicable.diagnostics[0]["message"],
@@ -1376,7 +1376,7 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
     let unreadable = fixture
         .view_service()
         .view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
-    assert!(!unreadable.ok, "{unreadable:?}");
+    assert!(!unreadable.ok, "the call was expected to be refused");
     assert_eq!(refusal_codes(&unreadable), ["provider_unavailable"]);
     assert_eq!(unreadable.diagnostics[0]["detailCode"], "source_unreadable");
     assert!(unreadable.cursor.is_none());
@@ -1393,13 +1393,13 @@ fn predefined_items_cursor_replays_after_source_removal() {
             .unwrap()
     };
     let first = service.view(request());
-    assert!(first.ok, "{first:?}");
+    assert!(first.ok, "the call failed");
     let cursor = first.cursor.expect("72 elements need a continuation");
     let before = service.view(request().with_cursor(cursor.clone()));
-    assert!(before.ok, "{before:?}");
+    assert!(before.ok, "the call failed");
     fs::remove_file(fixture.source.join("Catalogs/Items/Ext/Predefined.xml")).unwrap();
     let after = service.view(request().with_cursor(cursor.clone()));
-    assert!(after.ok, "{after:?}");
+    assert!(after.ok, "the call failed");
     assert_eq!(before.data, after.data);
     assert_eq!(before.cursor, after.cursor);
     let items = after.data.unwrap()["items"].as_array().unwrap().clone();
@@ -1409,7 +1409,7 @@ fn predefined_items_cursor_replays_after_source_removal() {
     let tampered = service.view(request().with_cursor(format!("{cursor}x")));
     assert_eq!(refusal_codes(&tampered), ["invalid_cursor"]);
     let fresh = fixture.view_service().view(request());
-    assert!(fresh.ok, "{fresh:?}");
+    assert!(fresh.ok, "the call failed");
     assert_eq!(fresh.data.unwrap()["items"], json!([]));
 }
 
@@ -1529,7 +1529,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
     let account = service.view(
         ViewRequest::new("main:ChartOfAccounts.Accounts.PredefinedItem.ОСвОрганизации").unwrap(),
     );
-    assert!(account.ok, "{account:?}");
+    assert!(account.ok, "the call failed");
     let props = &account.data.as_ref().unwrap()["props"];
     assert_eq!(props["accountType"], "Active");
     assert_eq!(props["offBalance"], false);
@@ -1556,7 +1556,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
         }])
     );
     let characteristic = service.view(ViewRequest::new("main:ChartOfCharacteristicTypes.Characteristics.PredefinedItem.УдалитьБухгалтерскийУчет").unwrap());
-    assert!(characteristic.ok, "{characteristic:?}");
+    assert!(characteristic.ok, "the call failed");
     assert_eq!(
         characteristic.data.as_ref().unwrap()["props"]["isFolder"],
         false
@@ -1576,7 +1576,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
         ViewRequest::new("main:ChartOfCalculationTypes.Calculations.PredefinedItem.ОкладПоДням")
             .unwrap(),
     );
-    assert!(calculation.ok, "{calculation:?}");
+    assert!(calculation.ok, "the call failed");
     assert_eq!(
         calculation.data.as_ref().unwrap()["props"]["actionPeriodIsBase"],
         false
@@ -1640,7 +1640,7 @@ fn metadata_tabular_section_attribute_consumes_the_complete_suffix() {
         ViewRequest::new("main:Catalog.Items.TabularSection.Lines.Attribute.Quantity").unwrap(),
     );
 
-    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+    assert!(result.ok, "the call failed");
     let data = result.data.as_ref().unwrap();
     assert_eq!(
         data["at"],
@@ -1689,7 +1689,7 @@ fn exchange_content_relations_preserve_modes_treat_missing_as_empty_and_mark_dam
             let result = service.view(
                 ViewRequest::new(&format!("main:ExchangePlan.ExchangeNodes{suffix}")).unwrap(),
             );
-            assert!(result.ok, "{variant}: {result:?}");
+            assert!(result.ok, "{variant}: the call failed");
             let data = result.data.unwrap();
             let limits = data["limits"]
                 .as_array()
@@ -1701,7 +1701,7 @@ fn exchange_content_relations_preserve_modes_treat_missing_as_empty_and_mark_dam
             assert_eq!(
                 !limits.is_empty(),
                 matches!(variant, "damaged" | "directory"),
-                "{variant}: {data}"
+                "{variant}: unexpected answer"
             );
             if suffix == ".Relation" {
                 let entries = data["items"].as_array().unwrap();
@@ -1716,7 +1716,7 @@ fn exchange_content_relations_preserve_modes_treat_missing_as_empty_and_mark_dam
                         "damaged" => 1,
                         _ => 0,
                     },
-                    "{data}"
+                    "unexpected answer"
                 );
                 if !content.is_empty() {
                     assert_eq!(content[0]["at"], "main:Catalog.Items");
