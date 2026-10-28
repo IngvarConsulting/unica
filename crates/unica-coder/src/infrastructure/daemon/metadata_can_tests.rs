@@ -240,7 +240,12 @@ fn assert_parity(
     }
 }
 
-fn assert_props_can_and_preview(at: &str, preview_args: Value, samples: &[(Value, bool)]) {
+fn assert_props_can_and_preview(
+    at: &str,
+    preview_args: Value,
+    compatibility_preview: Option<Value>,
+    samples: &[(Value, bool, bool)],
+) {
     let fixture = Fixture::new("workspace");
     let runtime = runtime();
     let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
@@ -269,8 +274,17 @@ fn assert_props_can_and_preview(at: &str, preview_args: Value, samples: &[(Value
     assert!(contract["exampleArgs"].get("at").is_none());
     let oracle = jsonschema::validator_for(schema).expect("Props Can publishes valid JSON Schema");
     assert!(oracle.is_valid(&preview_args), "{at}: {preview_args}");
-    for (args, expected) in samples {
-        assert_eq!(oracle.is_valid(args), *expected, "{at}: {args}");
+    let binding = fixture.binding(false);
+    for (args, published, accepted) in samples {
+        assert_eq!(oracle.is_valid(args), *published, "published {at}: {args}");
+        let parsed = parse(&binding, at, "props.set", args);
+        assert_eq!(parsed.is_ok(), *accepted, "parser {at}: {args}: {parsed:?}");
+    }
+    if let Some(alias_args) = &compatibility_preview {
+        assert!(
+            !oracle.is_valid(alias_args),
+            "compatibility spellings stay unpublished: {at}: {alias_args}"
+        );
     }
     for args in [
         json!({}),
@@ -294,29 +308,31 @@ fn assert_props_can_and_preview(at: &str, preview_args: Value, samples: &[(Value
         project_before
     );
 
-    let preview = call(
-        &runtime,
-        &fixture,
-        ToolIdentity::Apply,
-        json!({"at":at,"ops":[{"op":"props.set","args":preview_args}]}),
-    );
-    assert!(preview.ok, "real props.set preview at {at}: {preview:?}");
-    let planned = preview.data.unwrap();
-    assert_eq!(planned["mode"], "preview");
-    assert!(planned["executionToken"]
-        .as_str()
-        .is_some_and(|token| !token.is_empty()));
-    assert!(planned["effects"]
-        .as_u64()
-        .is_some_and(|effects| effects > 0));
-    assert_eq!(
-        unica_workspace::test_support::tree_snapshot(&fixture.source),
-        before
-    );
-    assert_eq!(
-        std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap(),
-        project_before
-    );
+    for preview_args in std::iter::once(preview_args).chain(compatibility_preview) {
+        let preview = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":"props.set","args":preview_args}]}),
+        );
+        assert!(preview.ok, "real props.set preview at {at}: {preview:?}");
+        let planned = preview.data.unwrap();
+        assert_eq!(planned["mode"], "preview");
+        assert!(planned["executionToken"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty()));
+        assert!(planned["effects"]
+            .as_u64()
+            .is_some_and(|effects| effects > 0));
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+        assert_eq!(
+            std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap(),
+            project_before
+        );
+    }
 }
 
 #[test]
@@ -332,26 +348,47 @@ fn props_set_common_module_can_is_contextual_and_previews_without_writes() {
     assert_props_can_and_preview(
         at,
         json!({"values":{"Comment":"Properties CommonModule preview","ClientOrdinaryApplication":false}}),
+        None,
         &[
-            (json!({"values":{"Comment":"","Synonym":""}}), true),
-            (json!({"values":{"ClientOrdinaryApplication":true}}), true),
-            (json!({"values":{"ClientOrdinaryApplication":false}}), true),
+            (json!({"values":{"Comment":"","Synonym":""}}), true, true),
+            (
+                json!({"values":{"ClientOrdinaryApplication":true}}),
+                true,
+                true,
+            ),
+            (
+                json!({"values":{"ClientOrdinaryApplication":false}}),
+                true,
+                true,
+            ),
             (
                 json!({"values":{"ReturnValuesReuse":"DuringRequest"}}),
+                true,
                 true,
             ),
             (
                 json!({"values":{"ClientOrdinaryApplication":"false"}}),
                 false,
+                false,
             ),
-            (json!({"values":{"ReturnValuesReuse":"Unknown"}}), false),
+            (
+                json!({"values":{"ReturnValuesReuse":"Unknown"}}),
+                false,
+                false,
+            ),
             (
                 json!({"values":{"comment":"lowercase is not a Metadata alias"}}),
                 false,
+                false,
             ),
-            (json!({"values":{"IncludeInCommandInterface":false}}), false),
+            (
+                json!({"values":{"IncludeInCommandInterface":false}}),
+                false,
+                false,
+            ),
             (
                 json!({"values":{"Type":{"variants":[{"kind":"boolean"}]}}}),
+                false,
                 false,
             ),
         ],
@@ -362,15 +399,39 @@ fn props_set_common_module_can_is_contextual_and_previews_without_writes() {
 fn props_set_role_can_is_contextual_and_previews_without_writes() {
     assert_props_can_and_preview(
         "main:Role.SalesReader",
-        json!({"values":{"synonym":"Properties role preview","Comment":"Independent alias groups"}}),
+        json!({"values":{"Synonym":"Properties role preview","Comment":"Independent alias groups"}}),
+        Some(
+            json!({"values":{"synonym":"Properties role preview","Comment":"Independent alias groups"}}),
+        ),
         &[
-            (json!({"values":{"Synonym":"","comment":""}}), true),
-            (json!({"values":{"synonym":"","Comment":""}}), true),
-            (json!({"values":{"Synonym":"a","synonym":"a"}}), false),
-            (json!({"values":{"Comment":"a","comment":"b"}}), false),
-            (json!({"values":{"ClientOrdinaryApplication":false}}), false),
-            (json!({"values":{"IncludeInCommandInterface":false}}), false),
-            (json!({"values":{"Explanation":"Subsystem only"}}), false),
+            (json!({"values":{"Synonym":"","Comment":""}}), true, true),
+            (json!({"values":{"Synonym":"","comment":""}}), false, true),
+            (json!({"values":{"synonym":"","Comment":""}}), false, true),
+            (
+                json!({"values":{"Synonym":"a","synonym":"a"}}),
+                false,
+                false,
+            ),
+            (
+                json!({"values":{"Comment":"a","comment":"b"}}),
+                false,
+                false,
+            ),
+            (
+                json!({"values":{"ClientOrdinaryApplication":false}}),
+                false,
+                false,
+            ),
+            (
+                json!({"values":{"IncludeInCommandInterface":false}}),
+                false,
+                false,
+            ),
+            (
+                json!({"values":{"Explanation":"Subsystem only"}}),
+                false,
+                false,
+            ),
         ],
     );
 }
@@ -379,37 +440,73 @@ fn props_set_role_can_is_contextual_and_previews_without_writes() {
 fn props_set_subsystem_can_is_contextual_and_previews_without_writes() {
     assert_props_can_and_preview(
         "main:Subsystem.Администрирование",
-        json!({"values":{"Comment":"Properties subsystem preview","explanation":"","IncludeInCommandInterface":false}}),
+        json!({"values":{"Comment":"Properties subsystem preview","Explanation":"","IncludeInCommandInterface":false}}),
+        Some(
+            json!({"values":{"Comment":"Properties subsystem preview","explanation":"","IncludeInCommandInterface":false}}),
+        ),
         &[
             (
+                json!({"values":{"Synonym":"","Comment":"","Explanation":""}}),
+                true,
+                true,
+            ),
+            (
+                json!({"values":{"IncludeHelpInContents":true,"IncludeInCommandInterface":false,"UseOneCommand":true}}),
+                true,
+                true,
+            ),
+            (
+                json!({"values":{"IncludeHelpInContents":false,"IncludeInCommandInterface":true,"UseOneCommand":false}}),
+                true,
+                true,
+            ),
+            (
                 json!({"values":{"synonym":"","Comment":"","explanation":""}}),
+                false,
                 true,
             ),
             (
                 json!({"values":{"Synonym":"","comment":"","Explanation":""}}),
+                false,
                 true,
             ),
             (
                 json!({"values":{"IncludeHelpInContents":true,"includeInCommandInterface":false,"UseOneCommand":true}}),
+                false,
                 true,
             ),
             (
                 json!({"values":{"includeHelpInContents":false,"IncludeInCommandInterface":true,"useOneCommand":false}}),
+                false,
                 true,
             ),
-            (json!({"values":{"IncludeHelpInContents":"true"}}), false),
+            (
+                json!({"values":{"IncludeHelpInContents":"true"}}),
+                false,
+                false,
+            ),
             (
                 json!({"values":{"includeInCommandInterface":"false"}}),
                 false,
+                false,
             ),
-            (json!({"values":{"UseOneCommand":0}}), false),
-            (json!({"values":{"Comment":"a","comment":"a"}}), false),
+            (json!({"values":{"UseOneCommand":0}}), false, false),
+            (
+                json!({"values":{"Comment":"a","comment":"a"}}),
+                false,
+                false,
+            ),
             (
                 json!({"values":{"IncludeInCommandInterface":true,"includeInCommandInterface":false}}),
                 false,
+                false,
             ),
-            (json!({"values":{"ClientOrdinaryApplication":true}}), false),
-            (json!({"values":{"Content":[]}}), false),
+            (
+                json!({"values":{"ClientOrdinaryApplication":true}}),
+                false,
+                false,
+            ),
+            (json!({"values":{"Content":[]}}), false, false),
         ],
     );
 }
