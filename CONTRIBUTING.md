@@ -653,8 +653,18 @@ rust-analyzer --version
 сценарии:
 
 ```sh
+export UNICA_PROPERTIES_AGENT_BINARY=/absolute/path/to/immutable/unica
+export UNICA_XDTO_AGENT_BINARY="$UNICA_PROPERTIES_AGENT_BINARY"
+export UNICA_EVENT_DATA_AGENT_BINARY="$UNICA_PROPERTIES_AGENT_BINARY"
 python3.12 -m unittest discover -s tests/agent_evaluation -p 'test_*.py'
 ```
+
+Полный discovery требует явно выбранный неизменяемый бинарь текущей сборки.
+Перед командой задайте абсолютные пути: `UNICA_PROPERTIES_AGENT_BINARY`
+для `test_props`, `UNICA_XDTO_AGENT_BINARY` для `test_xdto` и
+`UNICA_EVENT_DATA_AGENT_BINARY` для `test_event_data`. Все три переменные
+могут указывать на одну неизменяемую копию проверяемого бинаря. Эти тесты
+не собирают его сами и не подставляют другую сборку при отсутствии переменной.
 
 Для прогона нужны установленный Codex CLI и действующая авторизация.
 Команда приёмки проверена с `0.163.0-alpha.10.2`: CLI должен поддерживать
