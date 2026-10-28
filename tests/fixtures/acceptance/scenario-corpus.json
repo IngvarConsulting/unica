@@ -34408,7 +34408,7 @@
    "name": "borrowed-common-module-without-properties",
    "issue": 1304,
    "area": "Расширения конфигурации",
-   "task": "Прочитать заимствованный общий модуль, который платформа выгрузила без свойств: незаписанные свойства и контексты — null, методы доступны с неизвестными контекстами, вставка кода не трогает описание",
+   "task": "Прочитать заимствованный общий модуль без свойств: незаписанные свойства равны null, методы и исходник доступны, вычисленные контексты не публикуются; вставка кода не трогает описание.",
    "workspace": "tests/fixtures/acceptance/workspace-borrowed",
    "wire": [
     {
@@ -34466,8 +34466,8 @@
        "eq": true
       },
       {
-       "pointer": "/data/props/compile/contexts",
-       "eq": null
+       "pointer": "/data/props/compile",
+       "absent": true
       }
      ]
     },
@@ -34481,8 +34481,8 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/items/0/props/compile/contexts",
-       "eq": null
+       "pointer": "/data/items/0/props/compile",
+       "absent": true
       }
      ]
     },
@@ -34496,13 +34496,8 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/props/compile/contexts",
-       "eq": [
-        "server",
-        "mobileAppServer",
-        "mobileStandaloneServer",
-        "externalConnection"
-       ]
+       "pointer": "/data/props/compile",
+       "absent": true
       }
      ]
     },
@@ -34593,8 +34588,8 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/props/compile/contexts",
-       "eq": null
+       "pointer": "/data/props/compile",
+       "absent": true
       }
      ]
     }
@@ -36284,7 +36279,7 @@
    "name": "incomplete-borrowed-metadata-without-parent",
    "issue": 1304,
    "area": "Навигация и чтение",
-   "task": "Прочитать неполные заимствованные метаданные без родителя: сохранить локальные факты и исходник BSL, неизвестность контекстов и отказ зависимого фильтра без записи файлов",
+   "task": "Прочитать неполные заимствованные метаданные без родителя: сохранить локальные факты и исходник BSL; вычисленные контексты не публикуются, зависимый фильтр отказывает без записи файлов.",
    "workspace": "tests/fixtures/acceptance/workspace-incomplete-borrowed",
    "wire": [
     {
@@ -36380,8 +36375,8 @@
        "eq": true
       },
       {
-       "pointer": "/data/items/0/props/compile/contexts",
-       "eq": null
+       "pointer": "/data/items/0/props/compile",
+       "absent": true
       },
       {
        "pointer": "/data/items/1",
@@ -36399,43 +36394,12 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/props/compile/contexts",
-       "eq": null
-      },
-      {
-       "pointer": "/data/props/compile/guard",
-       "eq": "Server"
+       "pointer": "/data/props/compile",
+       "absent": true
       },
       {
        "pointer": "/data/props/export",
        "eq": true
-      }
-     ]
-    },
-    {
-     "tool": "unica.view",
-     "args": {
-      "at": "ext:CommonModule.CorpusModule.Compilation"
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/items/0/contexts",
-       "eq": null
-      },
-      {
-       "pointer": "/data/items/0/guard",
-       "eq": "Server"
-      },
-      {
-       "pointer": "/data/items/0/fromLine",
-       "eq": 2
-      },
-      {
-       "pointer": "/data/items/0/toLine",
-       "eq": 3
       }
      ]
     },
