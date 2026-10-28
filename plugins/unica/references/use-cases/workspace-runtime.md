@@ -53,12 +53,13 @@ Tasks uses `tasks/get` and `tasks/cancel` instead. The terminal result never
 publishes raw stdout. The Task state is the authority for the outcome; a
 `working` state alone does not prove that the runner is making progress.
 
-If any call fails with `data.code: submit_response_lost`, the daemon may
-already run it: wait for the `taskId` the error names (its `next`, also
-repeated in the message) instead of calling again; a client with native
-Tasks receives that Task directly. `task_not_found` for that id means the
-daemon no longer knows the call, for example after a restart: inspect the
-actual state before repeating `apply` or `run`. `submit_not_delivered` means
+If a call's answer is lost, Unica answers with the ordinary Task receipt of
+the Task the call may continue as (`data.task.taskId`, status `queued`,
+`next` to `unica.task.result`); a client with native Tasks receives that
+Task directly. Wait for it instead of calling again. `task_not_found` for
+that id means the daemon never took the call or no longer knows it, for
+example after a restart: inspect the actual state before repeating `apply`
+or `run`. `submit_not_delivered` means
 the call never reached the daemon and will not run; repeat it as is.
 `provider_limit_exceeded` whose message names the daemon request limit means
 the call is larger than the daemon accepts: it was not sent and will not run,

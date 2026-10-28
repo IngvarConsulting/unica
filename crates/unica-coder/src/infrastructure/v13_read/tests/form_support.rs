@@ -33,7 +33,7 @@ fn canonical_form_support_keeps_own_rule_and_owner_prohibition() {
                 ["locked", "editableWithSupport", "removedFromSupport"][form_rule]
             );
             assert_eq!(props["directEditSafe"], safe);
-            assert!(props.get("ownerSupport").is_none(), "{props}");
+            assert!(props.get("ownerSupport").is_none(), "unexpected answer");
             // The owner's own state is read from the owner, in its summary
             // vocabulary; `directEditSafe` above already carries its deny.
             let owner = service.view(ViewRequest::new("main:Report.ParityReport").unwrap());

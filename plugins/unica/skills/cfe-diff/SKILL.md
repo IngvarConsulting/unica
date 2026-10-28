@@ -56,7 +56,7 @@ allowed-tools:
 | Префикс имён | `props.properties.namePrefix` |
 | Режим совместимости расширения | `props.properties.extensionCompatibilityMode` |
 | Сколько объектов в расширении | `props.totalObjects` |
-| Состав по видам | `branches` — по ветви на вид с числом объектов |
+| Состав по видам | `branches` — по ветви на каждый вид, в том числе пустой (`count: 0`) |
 
 `props.support.state` у расширения — `extension`: это его собственный статус
 поддержки, а не поддержка объекта конфигурации.

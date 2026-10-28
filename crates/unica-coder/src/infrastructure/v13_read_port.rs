@@ -108,6 +108,17 @@ pub(crate) struct MetadataLocalRead {
     pub(crate) info: unica_metadata::validation_subject::MetaLocalInfo,
     /// `None` — набор не вида `extension`: заимствования там не бывает.
     pub(crate) borrowing: Option<unica_metadata_designer::xml_model::MetaBorrowing>,
+    /// Идентификатор объекта из того же описания: состав подсистемы может
+    /// назвать объект им, а не именем.
+    pub(crate) uuid: Option<uuid::Uuid>,
+}
+
+/// Идентификатор объекта из его описания: первый `uuid` — у самого объекта,
+/// он идёт сразу за корнем `MetaDataObject`.
+pub(crate) fn descriptor_uuid(descriptor: &[u8]) -> Option<uuid::Uuid> {
+    let text = std::str::from_utf8(descriptor).ok()?;
+    let start = text.find("uuid=\"")? + "uuid=\"".len();
+    uuid::Uuid::parse_str(text.get(start..start + 36)?).ok()
 }
 
 /// One actor-issued read authority for one admitted source set. Reads are
@@ -1013,7 +1024,11 @@ impl ProviderReadAuthority {
                 );
             }
         }
-        Ok(MetadataLocalRead { info, borrowing })
+        Ok(MetadataLocalRead {
+            info,
+            borrowing,
+            uuid: descriptor_uuid(&descriptor),
+        })
     }
 
     /// Предопределённые элементы объекта.
@@ -1890,6 +1905,15 @@ impl ProviderReadAuthority {
                 removed: counts[2] as u64,
             }),
         })
+    }
+
+    /// The registered subsystem topology of this source set, retained by the
+    /// workspace across calls while its files keep their stamps.
+    pub(crate) fn subsystem_topology(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Arc<unica_metadata::subsystem_topology::SubsystemTopology>, ViewError> {
+        self.artifacts.subsystem_topology(&self.root, checkpoint)
     }
 
     fn support_state(

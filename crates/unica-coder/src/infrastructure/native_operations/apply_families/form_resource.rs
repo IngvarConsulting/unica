@@ -2347,7 +2347,11 @@ mod tests {
                     .unwrap(),
                 &[IndexedPlanOperation::new(0, operation.clone())],
             );
-            assert_eq!(result.is_ok(), succeeds, "{result:?}");
+            assert_eq!(
+                result.is_ok(),
+                succeeds,
+                "planning outcome differs from the expected success: {succeeds}"
+            );
             if let Ok((staged, _)) = result {
                 let expected = marker.replace("0,0,bbbbbbbb", "1,0,bbbbbbbb");
                 assert_eq!(

@@ -212,6 +212,11 @@ fn valid_bsl_calls_remain_reusable_without_failure_snapshot() {
 }
 
 #[test]
+fn an_abandoned_call_is_cancelled_at_the_server_and_keeps_the_session() {
+    unica_process::mcp_session::failure_contracts::an_abandoned_call_is_cancelled_at_the_server_and_keeps_the_session();
+}
+
+#[test]
 fn ordinary_shared_transport_call_does_not_arm_bsl_capture() {
     unica_process::mcp_session::failure_contracts::ordinary_shared_transport_call_does_not_arm_bsl_capture();
 }

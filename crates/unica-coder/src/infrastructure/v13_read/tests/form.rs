@@ -7,7 +7,7 @@ fn form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address(
     let event_at = "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange";
 
     let event = service.view(ViewRequest::new(event_at).unwrap());
-    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
+    assert!(event.ok, "the call failed");
     let event_data = event.data.as_ref().unwrap();
     assert_eq!(event_data["at"], event_at);
     assert_eq!(event_data["kind"], "Event");
@@ -18,7 +18,7 @@ fn form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address(
         )
         .unwrap(),
     );
-    assert!(method.ok, "{} {:?}", method.summary, method.diagnostics);
+    assert!(method.ok, "the call failed");
     let method_data = method.data.as_ref().unwrap();
     assert!(
         method_data["props"]["handles"]
@@ -290,11 +290,7 @@ fn form_evidence_resolver_returns_complete_typed_owner_chains_at_arbitrary_depth
         );
         let pure = project_property_event(&source, &form_xml, Some("")).unwrap();
         let physical = service.view(ViewRequest::new(raw).unwrap());
-        assert!(
-            physical.ok,
-            "{raw}: {} {:?}",
-            physical.summary, physical.diagnostics
-        );
+        assert!(physical.ok, "{raw}: the call failed");
         assert_eq!(physical.data.as_ref().unwrap()["props"]["state"], "missing");
         assert_eq!(physical.data.unwrap(), event_node_value(&pure));
     }
@@ -380,11 +376,7 @@ fn pure_event_projectors_match_physical_view_service_event_nodes() {
         let physical = fixture
             .view_service()
             .view(ViewRequest::new(&platform_at.to_string()).unwrap());
-        assert!(
-            physical.ok,
-            "{} {:?}",
-            physical.summary, physical.diagnostics
-        );
+        assert!(physical.ok, "the call failed");
         assert_eq!(physical.data.unwrap(), event_node_value(&pure));
     }
 
@@ -412,11 +404,7 @@ fn pure_event_projectors_match_physical_view_service_event_nodes() {
     let physical = fixture
         .view_service()
         .view(ViewRequest::new(&property_at.to_string()).unwrap());
-    assert!(
-        physical.ok,
-        "{} {:?}",
-        physical.summary, physical.diagnostics
-    );
+    assert!(physical.ok, "the call failed");
     assert_eq!(physical.data.unwrap(), event_node_value(&pure));
 }
 
@@ -490,11 +478,7 @@ fn pure_form_projector_matches_every_physical_owner_and_all_event_states() {
         .unwrap();
         let pure = project_property_event(&source, &form_xml, Some(&module_bsl)).unwrap();
         let physical = service.view(ViewRequest::new(event_at).unwrap());
-        assert!(
-            physical.ok,
-            "{} {:?}",
-            physical.summary, physical.diagnostics
-        );
+        assert!(physical.ok, "the call failed");
         assert_eq!(physical.data.as_ref().unwrap()["props"]["state"], state);
         assert_eq!(physical.data.unwrap(), event_node_value(&pure));
     }
@@ -538,11 +522,7 @@ fn production_form_command_execute_has_one_semantic_identity_across_view_and_fin
         let command_at = format!("{form_at}.Command.{command}");
         let event_at = format!("{command_at}.Event.Execute");
         let collection = service.view(ViewRequest::new(&format!("{command_at}.Event")).unwrap());
-        assert!(
-            collection.ok,
-            "{command}: {} {:?}",
-            collection.summary, collection.diagnostics
-        );
+        assert!(collection.ok, "{command}: the call failed");
         let items = collection.data.as_ref().unwrap()["items"]
             .as_array()
             .unwrap();
@@ -589,11 +569,7 @@ fn production_form_command_execute_has_one_semantic_identity_across_view_and_fin
         }
 
         let direct = service.view(ViewRequest::new(&event_at).unwrap());
-        assert!(
-            direct.ok,
-            "{command}: {} {:?}",
-            direct.summary, direct.diagnostics
-        );
+        assert!(direct.ok, "{command}: the call failed");
         assert_eq!(direct.data.as_ref().unwrap(), &items[0]);
     }
 
@@ -703,11 +679,7 @@ fn production_form_command_execute_requires_an_exact_client_directive() {
         let command_at = format!("{form_at}.Command.{command}");
         let event_at = format!("{command_at}.Event.Execute");
         let collection = service.view(ViewRequest::new(&format!("{command_at}.Event")).unwrap());
-        assert!(
-            collection.ok,
-            "{command}: {} {:?}",
-            collection.summary, collection.diagnostics
-        );
+        assert!(collection.ok, "{command}: the call failed");
         let items = collection.data.as_ref().unwrap()["items"]
             .as_array()
             .unwrap();
@@ -722,11 +694,7 @@ fn production_form_command_execute_requires_an_exact_client_directive() {
         assert!(items[0].get("can").is_none(), "{command}: {}", items[0]);
 
         let direct = service.view(ViewRequest::new(&event_at).unwrap());
-        assert!(
-            direct.ok,
-            "{command}: {} {:?}",
-            direct.summary, direct.diagnostics
-        );
+        assert!(direct.ok, "{command}: the call failed");
         assert_eq!(direct.data.as_ref().unwrap(), &items[0]);
     }
 
@@ -780,7 +748,7 @@ fn production_borrowed_command_defaults_after_and_base_form_only_has_no_can() {
     let event = borrowed
         .view_service()
         .view(ViewRequest::new(event_at).unwrap());
-    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
+    assert!(event.ok, "the call failed");
     let event = event.data.as_ref().unwrap();
     assert_eq!(event["props"]["state"], "available");
     assert_eq!(event["can"][0]["op"], "event.implement");
@@ -800,7 +768,7 @@ fn production_borrowed_command_defaults_after_and_base_form_only_has_no_can() {
     let event = base_only
         .view_service()
         .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Event.OnOpen").unwrap());
-    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
+    assert!(event.ok, "the call failed");
     let event = event.data.as_ref().unwrap();
     assert_eq!(event["props"]["state"], "available");
     assert!(event.get("can").is_none(), "{event}");
@@ -837,11 +805,7 @@ fn production_form_empty_handlers_are_invalid_for_every_property_owner() {
         "main:Report.ParityReport.Form.MainForm.Command.Regular.Event.Execute",
     ] {
         let event = service.view(ViewRequest::new(event_at).unwrap());
-        assert!(
-            event.ok,
-            "{event_at}: {} {:?}",
-            event.summary, event.diagnostics
-        );
+        assert!(event.ok, "{event_at}: the call failed");
         let event = event.data.as_ref().unwrap();
         assert_eq!(event["props"]["state"], "invalid", "{event_at}: {event}");
         assert!(event.get("can").is_none(), "{event_at}: {event}");
@@ -867,7 +831,7 @@ fn production_form_empty_handlers_are_invalid_for_every_property_owner() {
     let event = borrowed
         .view_service()
         .view(ViewRequest::new(event_at).unwrap());
-    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
+    assert!(event.ok, "the call failed");
     let event = event.data.as_ref().unwrap();
     assert_eq!(event["props"]["state"], "invalid", "{event}");
     assert!(event.get("can").is_none(), "{event}");
@@ -942,7 +906,7 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
         let service = fixture.view_service();
         let metadata_at = format!("{root}.Metadata");
         let view = service.view(ViewRequest::new(&metadata_at).unwrap());
-        assert!(view.ok, "{metadata_at}: {view:?}");
+        assert!(view.ok, "{metadata_at}: the call failed");
         let data = view.data.unwrap();
         assert_eq!(data["kind"], "Metadata");
         assert_eq!(data["props"]["uuid"], uuid);
@@ -1083,7 +1047,7 @@ fn inherited_form_metadata_is_local_without_claiming_a_local_form_payload() {
     ] {
         let metadata_at = format!("{root}.Metadata");
         let metadata = service.view(ViewRequest::new(&metadata_at).unwrap());
-        assert!(metadata.ok, "{metadata_at}: {metadata:?}");
+        assert!(metadata.ok, "{metadata_at}: the call failed");
         let data = metadata.data.unwrap();
         assert_eq!(data["kind"], "Metadata");
         assert!(data["props"]["uuid"].is_string());
@@ -1212,7 +1176,7 @@ fn external_form_metadata_uses_the_local_descriptor_without_a_companion() {
         );
         let metadata_at = format!("{source}:{root}.Metadata");
         let view = service.view(ViewRequest::new(&metadata_at).unwrap());
-        assert!(view.ok, "{metadata_at}: {view:?}");
+        assert!(view.ok, "{metadata_at}: the call failed");
         let data = view.data.unwrap();
         assert_eq!(data["kind"], "Metadata");
         assert_eq!(data["props"]["Name"], "Main");
@@ -1294,12 +1258,12 @@ fn dynamic_list_no_context_handlers_are_implemented_in_event_collection_and_deta
             .find(|event| event["title"] == "OnGetDataAtServer")
             .unwrap_or_else(|| panic!("dynamic list event absent from page: {items:?}"));
         let detail = service.view(ViewRequest::new(listed["at"].as_str().unwrap()).unwrap());
-        assert!(detail.ok, "{directive}: {detail:?}");
+        assert!(detail.ok, "{directive}: the call failed");
         let data = detail.data.unwrap();
         for value in [listed, &data] {
             assert_eq!(
                 value["props"]["state"], "implemented",
-                "{directive}: {value}"
+                "{directive}: unexpected answer"
             );
             assert_eq!(value["props"]["handler"], "ПолучитьДанные");
             assert_eq!(value["props"]["binding"], "property");
@@ -1373,7 +1337,7 @@ fn dynamic_list_no_context_rule_keeps_incompatible_bindings_invalid() {
             .find(|v| v["title"] == "OnGetDataAtServer")
             .unwrap();
         let detail = service.view(ViewRequest::new(listed["at"].as_str().unwrap()).unwrap());
-        assert!(detail.ok, "{variant}: {detail:?}");
+        assert!(detail.ok, "{variant}: the call failed");
         let expected = if variant == "shorter-compatible" {
             "implemented"
         } else {
@@ -1443,7 +1407,7 @@ fn contextual_form_event_does_not_accept_server_no_context() {
             .into_iter()
             .find(|v| v["at"] == event_at)
             .unwrap();
-        assert!(detail.ok, "{directive}: {detail:?}");
+        assert!(detail.ok, "{directive}: the call failed");
         for data in [&listed, detail.data.as_ref().unwrap()] {
             assert_eq!(data["props"]["state"], state, "{directive}: {data}");
             assert_eq!(data["props"]["handler"], "СоздатьФорму");

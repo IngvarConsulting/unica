@@ -33,6 +33,20 @@ pub trait BslToolClient: Send + Sync {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<McpToolOutput, String>;
+
+    /// A call that gives way to the agent's: while it holds the analyzer, an
+    /// arriving MCP call cancels it there, and it fails with a `cancelled:`
+    /// error. The editor's door calls this way (`mcp-priority`).
+    fn call_yielding(
+        &self,
+        tool: &'static str,
+        context: &CodeIntelligenceContext,
+        arguments: Value,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<McpToolOutput, String> {
+        self.call(tool, context, arguments, timeout, cancellation)
+    }
 }
 
 pub struct WorkspaceBslToolClient {
@@ -53,6 +67,22 @@ impl BslToolClient for WorkspaceBslToolClient {
             &context.workspace,
             &context.source_root.path,
             WorkspaceServiceBslCall::new(tool, arguments, timeout, timeout),
+            cancellation,
+        )
+    }
+
+    fn call_yielding(
+        &self,
+        tool: &'static str,
+        context: &CodeIntelligenceContext,
+        arguments: Value,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<McpToolOutput, String> {
+        WorkspaceServiceManager::new((self.environment)()).call_bsl_mcp_cancellable_with_budget(
+            &context.workspace,
+            &context.source_root.path,
+            WorkspaceServiceBslCall::new(tool, arguments, timeout, timeout).yielding(),
             cancellation,
         )
     }
