@@ -355,7 +355,10 @@ pub fn typed_element(
                 let typed = if unmodelled {
                     MetaDiagnostic::warning(
                         MetaDiagnosticCode::ValidationWarning,
-                        "metadata type is syntactically valid but not modelled by this format profile",
+                        format!(
+                            "metadata type composition is incomplete: {}",
+                            diagnostic.message
+                        ),
                     )
                 } else {
                     MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, diagnostic.message)

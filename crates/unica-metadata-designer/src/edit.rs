@@ -1358,9 +1358,15 @@ pub fn apply_typed_properties(
         .iter()
         .any(|(key, _)| *key == MetaPropertyKey::Type)
     {
-        Some(super::info_projection::parse_observed_metadata_type_node(
-            properties,
-        )?)
+        let observed = super::info_projection::parse_observed_metadata_type_node(properties)?;
+        if observed.mutation_capability == MetadataMutationCapability::ReadOnly {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "existing metadata type is outside the public mutation algebra",
+                Some("values.Type"),
+            ));
+        }
+        Some(observed)
     } else {
         None
     };
@@ -3670,3 +3676,69 @@ mod dimension_deny_tests;
 #[cfg(test)]
 #[path = "../tests/platform/edit_attribute_copy.rs"]
 mod attribute_copy_tests;
+
+#[cfg(test)]
+mod observed_type_property_tests {
+    use super::*;
+
+    fn descriptor(type_body: &str) -> String {
+        format!("\u{feff}<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" version=\"2.20\"><Constant uuid=\"22222222-2222-4222-8222-222222222222\"><Properties><Name>Objects</Name>\r\n<Comment>before</Comment><Type>{type_body}</Type></Properties></Constant></MetaDataObject>")
+    }
+
+    fn changes(include_type: bool) -> MetaPropertyChanges {
+        let mut values = vec![MetaPropertyInput::new(
+            "Comment",
+            MetaPropertyValue::String("after".into()),
+        )];
+        if include_type {
+            values.push(MetaPropertyInput::new(
+                "Type",
+                MetaPropertyValue::Type(
+                    MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap(),
+                ),
+            ));
+        }
+        MetaPropertyChanges::convert(MetadataKind::Constant, values).unwrap()
+    }
+
+    const READONLY_TYPES: &[&str] = &[
+        "<v8:TypeId>cc442f88-d708-4a83-af58-60c85a5d28a8</v8:TypeId>",
+        "<v8:TypeSet>cfg:Characteristic.Properties</v8:TypeSet>",
+        "<v8:Type>cfg:CatalogObject.Items</v8:Type>",
+        "<v8:Type>cfg:InformationRegisterRecordSet.Facts</v8:Type>",
+    ];
+
+    #[test]
+    fn readonly_type_replacement_refuses_before_any_property_is_written() {
+        for body in READONLY_TYPES {
+            let before = descriptor(body);
+            let mut after = before.clone();
+            let error = apply_typed_properties(&mut after, &changes(true), "ru").unwrap_err();
+            assert_eq!(error.field.as_deref(), Some("values.Type"));
+            assert_eq!(before, after);
+        }
+    }
+
+    #[test]
+    fn independent_property_keeps_readonly_type_bytes() {
+        for body in READONLY_TYPES {
+            let before = descriptor(body);
+            let mut after = before.clone();
+            apply_typed_properties(&mut after, &changes(false), "ru").unwrap();
+            assert_eq!(
+                after,
+                before.replace("<Comment>before</Comment>", "<Comment>after</Comment>")
+            );
+        }
+    }
+
+    #[test]
+    fn editable_reference_type_can_still_be_replaced() {
+        let before = descriptor("<v8:Type>cfg:CatalogRef.Items</v8:Type>");
+        let mut after = before;
+        apply_typed_properties(&mut after, &changes(true), "ru").unwrap();
+        assert!(after.contains("xs:boolean"));
+        assert!(after.contains("<Comment>after</Comment>"));
+        assert!(!after.contains("cfg:CatalogRef.Items"));
+    }
+}
