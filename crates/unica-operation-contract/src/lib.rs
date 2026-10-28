@@ -287,17 +287,7 @@ impl Validator<'_> {
         {
             return Err(error(path, "argument selects an excluded alternative"));
         }
-        let valid_type = match schema["type"].as_str() {
-            Some("object") => value.is_object(),
-            Some("array") => value.is_array(),
-            Some("string") => value.is_string(),
-            Some("boolean") => value.is_boolean(),
-            Some("number") => value.is_number(),
-            Some("integer") => value.as_i64().is_some(),
-            Some("null") => value.is_null(),
-            None => true,
-            other => unreachable!("unsupported internal schema type: {other:?}"),
-        };
+        let valid_type = schema_type_matches(schema, value);
         if !valid_type {
             return Err(error(path, format!("expected {}", schema["type"])));
         }
@@ -368,6 +358,9 @@ impl Validator<'_> {
                 .iter()
                 .any(|choice| self.validate(choice, value, path).is_ok())
             {
+                if let ClosedEnumDomain::Values(values) = closed_enum_domain(schema, value) {
+                    return Err(error(path, enum_refusal(&values)));
+                }
                 return Err(error(
                     path,
                     "one of the supported argument alternatives must match",
@@ -467,6 +460,104 @@ pub fn apply_defaults(schema: &Value, value: &mut Value) {
 }
 
 /// Keep whole JSON literals: a cut string would invent an accepted value.
+// Only closed scalar domains can explain an anyOf failure without hiding
+// another applicable grammar/format constraint. No diagnostic-text parsing.
+enum ClosedEnumDomain {
+    Inapplicable,
+    Values(Vec<Value>),
+    Unknown,
+}
+
+fn schema_type_matches(schema: &Value, value: &Value) -> bool {
+    match schema["type"].as_str() {
+        Some("object") => value.is_object(),
+        Some("array") => value.is_array(),
+        Some("string") => value.is_string(),
+        Some("boolean") => value.is_boolean(),
+        Some("number") => value.is_number(),
+        Some("integer") => value.as_i64().is_some(),
+        Some("null") => value.is_null(),
+        None => true,
+        other => unreachable!("unsupported internal schema type: {other:?}"),
+    }
+}
+
+fn closed_enum_domain(schema: &Value, value: &Value) -> ClosedEnumDomain {
+    if !schema_type_matches(schema, value) {
+        return ClosedEnumDomain::Inapplicable;
+    }
+    let Some(fields) = schema.as_object() else {
+        return ClosedEnumDomain::Unknown;
+    };
+    if fields.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "type"
+                | "enum"
+                | "anyOf"
+                | "not"
+                | "default"
+                | "description"
+                | "title"
+                | "$comment"
+                | "examples"
+        )
+    }) {
+        return ClosedEnumDomain::Unknown;
+    }
+    let excluded = schema.get("not");
+    if let Some(excluded) = excluded {
+        if !excluded
+            .as_object()
+            .is_some_and(|fields| fields.len() == 1 && fields.contains_key("type"))
+        {
+            return ClosedEnumDomain::Unknown;
+        }
+        if schema_type_matches(excluded, value) {
+            return ClosedEnumDomain::Inapplicable;
+        }
+    }
+    if let Some(values) = schema["enum"].as_array() {
+        if schema.get("anyOf").is_some() {
+            return ClosedEnumDomain::Unknown;
+        }
+        return ClosedEnumDomain::Values(
+            values
+                .iter()
+                .filter(|candidate| {
+                    schema_type_matches(schema, candidate)
+                        && !excluded.is_some_and(|schema| schema_type_matches(schema, candidate))
+                })
+                .cloned()
+                .collect(),
+        );
+    }
+    if let Some(choices) = schema["anyOf"].as_array() {
+        let mut values = Vec::new();
+        for choice in choices {
+            match closed_enum_domain(choice, value) {
+                ClosedEnumDomain::Inapplicable => {}
+                ClosedEnumDomain::Values(domain) => {
+                    for value in domain {
+                        if !values.contains(&value) {
+                            values.push(value);
+                        }
+                    }
+                }
+                ClosedEnumDomain::Unknown => return ClosedEnumDomain::Unknown,
+            }
+        }
+        values.retain(|candidate| {
+            schema_type_matches(schema, candidate)
+                && !excluded.is_some_and(|schema| schema_type_matches(schema, candidate))
+        });
+        if !values.is_empty() {
+            return ClosedEnumDomain::Values(values);
+        }
+    }
+    ClosedEnumDomain::Unknown
+}
+
 fn enum_refusal(values: &[Value]) -> String {
     const MAX_VALUES: usize = 8;
     const MAX_PREVIEW_BYTES: usize = 256;
@@ -570,6 +661,66 @@ mod tests {
             help: "help",
             format_validators,
         }
+    }
+
+    #[test]
+    fn nested_enum_domains_obey_outer_type_and_negation() {
+        for mut guarded in [json!({"type":"string"}), json!({"not":{"type":"null"}})] {
+            guarded["anyOf"] = json!([{"enum":[null,"a"]}]);
+            let schema = contract(json!({"anyOf":[guarded]}), &[]);
+            assert_eq!(
+                schema
+                    .normalize(&json!("x"), "args.value")
+                    .unwrap_err()
+                    .message,
+                enum_refusal(&[json!("a")])
+            );
+            assert!(schema.normalize(&Value::Null, "args.value").is_err());
+            assert!(schema.normalize(&json!("a"), "args.value").is_ok());
+        }
+    }
+
+    #[test]
+    fn enum_domains_survive_nested_any_of_without_hiding_other_failures() {
+        let schema = json!({"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{
+            "templateType":{"anyOf":[{"type":"string","enum":["HTMLDocument","TextDocument"]},{"not":{"type":"string"}}]}
+        }}}}});
+        let failure = contract(schema, &[])
+            .normalize(&json!({"items":[{"templateType":"Bogus"}]}), "ops[2].args")
+            .unwrap_err();
+        assert_eq!(failure.path, "ops[2].args.items[0].templateType");
+        assert!(
+            failure.message.contains("HTMLDocument") && failure.message.contains("TextDocument")
+        );
+        let union = contract(
+            json!({"anyOf":[{"type":"string","enum":["a","b"]},{"anyOf":[{"type":"string","enum":["b","c"]},{"type":"null"}]}]}),
+            &[],
+        );
+        let failure = union.normalize(&json!("x"), "args.value").unwrap_err();
+        assert_eq!(
+            failure.message,
+            enum_refusal(&[json!("a"), json!("b"), json!("c")])
+        );
+        for value in [json!("a"), json!("b"), json!("c"), Value::Null] {
+            assert!(union.normalize(&value, "args.value").is_ok());
+        }
+        let open = contract(
+            json!({"anyOf":[{"type":"string","enum":["a"]},{"type":"string","pattern":"^valid$"}]}),
+            &[],
+        );
+        assert_eq!(
+            open.normalize(&json!("x"), "args.value")
+                .unwrap_err()
+                .message,
+            "one of the supported argument alternatives must match"
+        );
+        assert_eq!(
+            union
+                .normalize(&json!({}), "args.value")
+                .unwrap_err()
+                .message,
+            "one of the supported argument alternatives must match"
+        );
     }
 
     #[test]

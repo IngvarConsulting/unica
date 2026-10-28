@@ -129,6 +129,47 @@
           "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
         }
       ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "BadEnum",
+                  "templateType": "Bogus"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives; allowed: [\"HTMLDocument\", \"TextDocument\", \"SpreadsheetDocument\", \"BinaryData\", \"DataCompositionSchema\"]",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].templateType"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "HTMLDocument"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Валюты.Can.template.add"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
     }
   ]
 }
