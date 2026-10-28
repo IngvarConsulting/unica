@@ -1359,7 +1359,16 @@ pub fn apply_typed_properties(
         .any(|(key, _)| *key == MetaPropertyKey::Type)
     {
         let observed = super::info_projection::parse_observed_metadata_type_node(properties)?;
-        if observed.mutation_capability == MetadataMutationCapability::ReadOnly {
+        // Recognition of object/record-set types must not introduce a new write
+        // capability. Legacy Characteristic/TypeId can still be explicitly
+        // replaced by a complete supported type without narrowing the old one.
+        if observed.variants.iter().any(|variant| {
+            matches!(
+                variant,
+                ObservedMetadataTypeVariant::Object { .. }
+                    | ObservedMetadataTypeVariant::RecordSet { .. }
+            )
+        }) {
             return Err(typed_diagnostic(
                 MetaDiagnosticCode::InvalidArguments,
                 "existing metadata type is outside the public mutation algebra",
@@ -3709,8 +3718,8 @@ mod observed_type_property_tests {
     ];
 
     #[test]
-    fn readonly_type_replacement_refuses_before_any_property_is_written() {
-        for body in READONLY_TYPES {
+    fn object_and_record_set_replacement_refuses_before_any_property_is_written() {
+        for body in &READONLY_TYPES[2..] {
             let before = descriptor(body);
             let mut after = before.clone();
             let error = apply_typed_properties(&mut after, &changes(true), "ru").unwrap_err();
@@ -3729,6 +3738,17 @@ mod observed_type_property_tests {
                 after,
                 before.replace("<Comment>before</Comment>", "<Comment>after</Comment>")
             );
+        }
+    }
+
+    #[test]
+    fn legacy_readonly_types_can_be_explicitly_replaced() {
+        for body in &READONLY_TYPES[..2] {
+            let mut after = descriptor(body);
+            apply_typed_properties(&mut after, &changes(true), "ru").unwrap();
+            assert!(after.contains("xs:boolean"));
+            assert!(after.contains("<Comment>after</Comment>"));
+            assert!(!after.contains(body));
         }
     }
 
