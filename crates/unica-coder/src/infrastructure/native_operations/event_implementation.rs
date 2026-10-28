@@ -40,9 +40,10 @@ pub(crate) fn plan_event_implement_batch(
     source_set_kind: SourceSetKind,
     profile: PlatformProfile,
     operations: &[EventImplementArgs],
+    first_index: usize,
 ) -> Result<PlannedApplyEffects, ApplyPlanError> {
     let mut effects = PlannedApplyEffects::default();
-    for operation in operations {
+    for (offset, operation) in operations.iter().enumerate() {
         plan_one_event(
             staged,
             &mut effects,
@@ -50,7 +51,14 @@ pub(crate) fn plan_event_implement_batch(
             source_set_kind,
             profile,
             operation,
-        )?;
+        )
+        .map_err(|error| {
+            if error.path().is_some() {
+                error
+            } else {
+                error.at_path(format!("ops[{}].args", first_index + offset))
+            }
+        })?;
     }
     Ok(effects)
 }
@@ -278,6 +286,7 @@ pub(crate) fn plan_event_implement_batch_owned_for_test(
         source_set_kind,
         profile,
         operations,
+        0,
     )?;
     Ok((staged, effects))
 }

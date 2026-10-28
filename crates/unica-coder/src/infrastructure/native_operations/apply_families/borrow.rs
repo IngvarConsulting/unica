@@ -1216,6 +1216,48 @@ mod tests {
     }
 
     #[test]
+    fn mixed_borrow_batch_refusal_names_the_original_operation() {
+        let fixture = Fixture::new();
+        let descriptor = fixture.dst.join("Configuration.xml");
+        let text = std::fs::read_to_string(&descriptor).unwrap();
+        std::fs::write(&descriptor, text.replace("</Name>", "</Name><Comment/>")).unwrap();
+        let overrides = Some(serde_json::json!(["DescriptionLength"]));
+        let preview = fixture.run(true, None, overrides.clone()).unwrap();
+        fixture.run(false, Some(preview.rev()), overrides).unwrap();
+        let before = std::fs::read(&descriptor).unwrap();
+        let borrowed = fixture.dst.join("Catalogs/Orders.xml");
+        let borrowed_before = std::fs::read(&borrowed).unwrap();
+        let input = serde_json::json!({
+            "at": "extension:Configuration",
+            "ops": [
+                {"op": "props.set", "args": {"values": {"Comment": "staged only"}}},
+                {"op": "object.borrow", "args": {"from": "main:Catalog.Orders"}},
+                {"op": "object.borrow", "args": {"from": "main:Catalog.Orders", "overrides": ["CodeLength"]}}
+            ],
+            "dryRun": true
+        });
+        let request =
+            ApplyRequest::parse(input.as_object().unwrap(), &["main", "extension"]).unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply_with_dependencies(
+                &fixture.destination,
+                std::slice::from_ref(&fixture.parent),
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let error = super::super::plan_hidden_v13_apply(&request, &fixture.destination, &admission)
+            .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{error}");
+        assert_eq!(error.path(), Some("ops[2].args"));
+        assert_eq!(std::fs::read(descriptor).unwrap(), before);
+        assert_eq!(std::fs::read(borrowed).unwrap(), borrowed_before);
+    }
+
+    #[test]
     fn canonical_borrow_bad_override_is_an_argument_error() {
         let fixture = Fixture::new();
         for overrides in [
