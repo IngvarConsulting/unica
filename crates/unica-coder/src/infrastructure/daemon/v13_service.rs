@@ -1531,7 +1531,7 @@ impl CanonicalV13ReadService {
         cancellation: &CancellationToken,
     ) -> Result<SearchScopeRoute, Box<DomainResult>> {
         let refuse = |result: DomainResult| Box::new(result);
-        let route = search_scope_route(scope).map_err(|error| {
+        let route = search_scope_route(scope, source.source_kind()).map_err(|error| {
             refuse(error_result(
                 Some(scope.to_string()),
                 error.code(),

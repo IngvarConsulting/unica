@@ -2500,3 +2500,200 @@ fn literal_search_pages_past_two_hundred_matches(git: bool) {
     assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
     mcp.finish();
 }
+
+fn external_search_workspace(workspace: &std::path::Path) {
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-external"),
+        workspace,
+    );
+    for (set, owner) in [("erf", "Sales"), ("epf", "Import"), ("epf", "Other")] {
+        for relative in ["Ext/ObjectModule.bsl", "Forms/Main/Ext/Form/Module.bsl"] {
+            std::fs::write(
+                workspace.join(set).join(owner).join(relative),
+                "// ExternalScopedNeedle\n",
+            )
+            .unwrap();
+        }
+    }
+    // A second report proves owner scoping within the same source set.
+    let descriptor = std::fs::read_to_string(workspace.join("erf/Sales.xml")).unwrap();
+    std::fs::write(
+        workspace.join("erf/Other.xml"),
+        descriptor.replace("Sales", "Other"),
+    )
+    .unwrap();
+    copy_tree(&workspace.join("erf/Sales"), &workspace.join("erf/Other"));
+}
+
+#[test]
+fn external_owner_and_module_search_keep_logical_locations_and_scope() {
+    for git in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        external_search_workspace(root.path());
+        if git {
+            for args in [["init", "-q"].as_slice(), ["add", "."].as_slice()] {
+                assert!(Command::new("git")
+                    .args(args)
+                    .current_dir(root.path())
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+        }
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let mut id = 2;
+        for owner in [
+            "erf:ExternalReport.Sales",
+            "epf:ExternalDataProcessor.Import",
+        ] {
+            let modules = [
+                format!("{owner}.Module.Object"),
+                format!("{owner}.Form.Main.Module.Form"),
+            ];
+            for (scope, expected) in [
+                (owner.to_owned(), modules.to_vec()),
+                (modules[0].clone(), vec![modules[0].clone()]),
+                (modules[1].clone(), vec![modules[1].clone()]),
+            ] {
+                let answer = mcp.completed_tool_call(call_tool(
+                    id,
+                    "unica.search",
+                    json!({"query":"ExternalScopedNeedle", "scope":scope}),
+                ));
+                id += 1;
+                assert_eq!(answer["ok"], true, "git={git} {scope}: {answer:#}");
+                assert_eq!(answer["page"]["stoppedBy"], "complete", "{answer:#}");
+                assert_eq!(
+                    answer["data"]["fileCoverage"]["complete"], true,
+                    "{answer:#}"
+                );
+                assert_eq!(
+                    answer["data"]["totals"]["matches"],
+                    expected.len(),
+                    "{answer:#}"
+                );
+                let hits = answer["data"]["matches"].as_array().unwrap();
+                let actual = hits
+                    .iter()
+                    .map(|hit| {
+                        assert_eq!(hit["scope"], scope);
+                        assert_eq!(hit["line"], 1);
+                        let at = hit["at"].as_str().unwrap();
+                        assert_eq!(
+                            view_body_lines(&mut mcp, &mut id, at).get(&1).unwrap(),
+                            "// ExternalScopedNeedle"
+                        );
+                        hit_module(at).to_owned()
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(actual, expected.into_iter().collect(), "{answer:#}");
+            }
+        }
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_search_refuses_wrong_kind_missing_and_damaged_owner() {
+    for damage in ["none", "missing", "damaged"] {
+        let root = tempfile::tempdir().unwrap();
+        external_search_workspace(root.path());
+        match damage {
+            "missing" => std::fs::remove_file(root.path().join("erf/Sales.xml")).unwrap(),
+            "damaged" => std::fs::write(root.path().join("erf/Sales.xml"), "<broken>").unwrap(),
+            _ => {}
+        }
+        let scopes = if damage == "none" {
+            vec![
+                "erf:ExternalDataProcessor.Sales",
+                "epf:ExternalReport.Import",
+                "erf:Catalog.Sales",
+                "erf:ExternalDataProcessor",
+            ]
+        } else {
+            vec![
+                "erf:ExternalReport.Sales",
+                "erf:ExternalReport.Sales.Module.Object",
+            ]
+        };
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        for (index, scope) in scopes.into_iter().enumerate() {
+            let answer = mcp.completed_tool_call(call_tool(
+                index as u64 + 2,
+                "unica.search",
+                json!({"query":"ExternalScopedNeedle", "scope":scope}),
+            ));
+            assert_eq!(answer["ok"], false, "{damage} {scope}: {answer:#}");
+            assert!(answer["data"].get("matches").is_none(), "{answer:#}");
+            assert!(
+                !answer["diagnostics"].as_array().unwrap().is_empty(),
+                "{answer:#}"
+            );
+        }
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_scoped_search_never_follows_linked_descriptors_modules_or_subtrees() {
+    use unica_workspace::test_support::{
+        create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
+        FileLinkFixtureOutcome,
+    };
+    for link in ["descriptor", "module", "subtree"] {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        external_search_workspace(root.path());
+        let original = root.path().join(match link {
+            "descriptor" => "erf/Sales.xml",
+            "module" => "erf/Sales/Ext/ObjectModule.bsl",
+            _ => "erf/Sales",
+        });
+        let target = outside.path().join("linked");
+        if original.is_dir() {
+            copy_tree(&original, &target);
+            std::fs::remove_dir_all(&original).unwrap();
+        } else {
+            std::fs::copy(&original, &target).unwrap();
+            std::fs::remove_file(&original).unwrap();
+        }
+        let outcome = if link == "subtree" {
+            create_directory_link_fixture_for_test(&target, &original)
+        } else {
+            create_file_link_fixture_for_test(&target, &original)
+        }
+        .expect("external search link fixture creation must report its real OS error");
+        match outcome {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "external search containment requires file and directory link fixtures",
+                );
+                return;
+            }
+        }
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let answer = mcp.completed_tool_call(call_tool(2, "unica.search", json!({"query":"ExternalScopedNeedle", "scope":"erf:ExternalReport.Sales.Module.Object"})));
+        if answer["ok"] == true {
+            assert_eq!(answer["data"]["matches"], json!([]), "{link}: {answer:#}");
+        } else {
+            assert!(
+                answer["data"].get("matches").is_none(),
+                "{link}: {answer:#}"
+            );
+        }
+        assert!(
+            !answer
+                .to_string()
+                .contains(outside.path().to_str().unwrap()),
+            "{link}: {answer:#}"
+        );
+        mcp.finish();
+    }
+}

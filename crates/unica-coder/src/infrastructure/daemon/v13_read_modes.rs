@@ -678,6 +678,7 @@ pub(super) struct SearchScopeRoute {
 
 pub(super) fn search_scope_route(
     scope: &QualifiedAddress,
+    source_kind: unica_source_contract::SourceSetKind,
 ) -> Result<SearchScopeRoute, ReadModeError> {
     let Some(owner) = scope.segments().first() else {
         return Err(ReadModeError::bad_value(
@@ -706,6 +707,26 @@ pub(super) fn search_scope_route(
             module,
         });
     }
+    // External artifacts are exported directly under their name, without
+    // the collection directory used by configuration metadata.
+    let external_source = match owner.kind() {
+        NodeKind::ExternalReport => Some(unica_source_contract::SourceSetKind::ExternalReport),
+        NodeKind::ExternalDataProcessor => {
+            Some(unica_source_contract::SourceSetKind::ExternalProcessor)
+        }
+        _ => None,
+    };
+    if let Some(expected) = external_source {
+        if source_kind != expected {
+            return Err(ReadModeError::unsupported_scope(
+                "external search scope does not match the admitted source-set kind",
+            ));
+        }
+        return Ok(SearchScopeRoute {
+            prefix: owner.name().map(str::to_owned),
+            module,
+        });
+    }
     let layout = metadata_kind(owner.kind().as_str()).ok_or_else(|| {
         ReadModeError::unsupported_scope(format!(
             "search scope kind `{}` has no Platform XML subtree",
@@ -729,8 +750,48 @@ mod tests {
     use unica_address::address::QualifiedAddress;
 
     #[test]
+    fn external_scopes_use_the_admitted_external_layout_only() {
+        use unica_source_contract::SourceSetKind;
+        for (kind, source_kind) in [
+            ("ExternalReport", SourceSetKind::ExternalReport),
+            ("ExternalDataProcessor", SourceSetKind::ExternalProcessor),
+        ] {
+            let branch = QualifiedAddress::parse(&format!("main:{kind}")).unwrap();
+            assert_eq!(
+                search_scope_route(&branch, source_kind).unwrap().prefix,
+                None
+            );
+            for suffix in ["", ".Module.Object", ".Form.Main.Module.Form"] {
+                let scope = QualifiedAddress::parse(&format!("main:{kind}.Item{suffix}")).unwrap();
+                let route = search_scope_route(&scope, source_kind).unwrap();
+                assert_eq!(route.prefix.as_deref(), Some("Item"));
+                assert_eq!(route.module, (!suffix.is_empty()).then_some(scope.clone()));
+                for other in [
+                    SourceSetKind::Configuration,
+                    SourceSetKind::Extension,
+                    SourceSetKind::ExternalProcessor,
+                    SourceSetKind::ExternalReport,
+                ] {
+                    if other != source_kind {
+                        assert!(search_scope_route(&scope, other).is_err());
+                    }
+                }
+            }
+            let method =
+                QualifiedAddress::parse(&format!("main:{kind}.Item.Module.Object.Method.Run"))
+                    .unwrap();
+            assert!(search_scope_route(&method, source_kind).is_err());
+        }
+    }
+
+    #[test]
     fn logical_scope_maps_to_a_retained_relative_prefix_without_accepting_paths() {
-        let route = |at: &str| search_scope_route(&QualifiedAddress::parse(at).unwrap());
+        let route = |at: &str| {
+            search_scope_route(
+                &QualifiedAddress::parse(at).unwrap(),
+                unica_source_contract::SourceSetKind::Configuration,
+            )
+        };
         let root = route("main:Configuration").unwrap();
         assert_eq!((root.prefix, root.module), (None, None));
         assert_eq!(
