@@ -65,6 +65,10 @@
           "noneMatches": {
             "at": "main:CommonModule.Probe.Method.Probe.Compilation"
           }
+        },
+        {
+          "pointer": "/data/props/line",
+          "eq": 2
         }
       ]
     },
@@ -212,6 +216,21 @@
           "path": "src/Configuration.xml",
           "kind": "sha256",
           "eq": "9a948d13dfc4a499a560325d2d2d66e3cd25db0207bb6241357fedd6f54947b9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Body#L1-L5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "#Если Сервер Тогда\nПроцедура Probe() Экспорт\n    Значение = 1;\nКонецПроцедуры\n#КонецЕсли\n"
         }
       ]
     }
