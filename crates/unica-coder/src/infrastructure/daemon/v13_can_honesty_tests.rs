@@ -16,14 +16,13 @@
 use super::server::V5CanonicalInvocationRuntime;
 use super::v13_service::{preflight_apply_operations, CanonicalV13ReadService};
 use crate::domain::apply::ApplyRequest;
-use crate::domain::apply::OperationDescriptorExt;
 use crate::domain::apply::SourceSetWriteSupport;
 
 use crate::domain::logical_route::classify_route;
 use unica_bsl::profile::PlatformProfile;
 use unica_execution::clock::TokioClock;
 use unica_execution::invocation_store::ToolIdentity;
-use unica_forms::FormItemRole;
+use unica_forms::{FormItemRole, FormObservation};
 use unica_operations::OperationDescriptor;
 use unica_operations::OperationFamily;
 use unica_source_contract::route::RouteClass;
@@ -1057,6 +1056,13 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
     let item_role = (terminal == NodeKind::Item.as_str())
         .then(|| data["props"]["tag"].as_str().map(FormItemRole::from_tag))
         .flatten();
+    let form_observation = if unica_forms::applicability::is_form_attribute(address.segments()) {
+        data["props"]["type"]
+            .as_str()
+            .and_then(FormObservation::from_attribute_type)
+    } else {
+        item_role.map(FormObservation::Item)
+    };
     NARROWINGS_SEEN.with(|narrowings_seen| {
     for descriptor in crate::domain::apply::operation_registry().descriptors().iter().copied() {
         let op = descriptor.name();
@@ -1069,7 +1075,11 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         }
         let listed = can.contains(op);
         let request = apply_request(at, op, node_args(descriptor, &address));
-        let preflight = preflight_apply_operations(&request, checked.traits, &|_| None);
+        let preflight = super::v13_service::preflight_apply_operations_observed(
+            &request, checked.traits, &|_| None,
+            &|at| (at == &address).then_some(form_observation).flatten(),
+            &unica_operations::recovery::no_member_lookup,
+        );
         if !checked.traits.writes(descriptor.family()) {
             // Набор без записи: словарь пуст, предварительная проверка
             // отвечает отказом набора, а не «не тот узел».
@@ -1084,7 +1094,8 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             }
             continue;
         }
-        let placed = preflight.is_ok();
+        let placed = crate::domain::apply::operation_site(&address, checked.traits)
+            .is_some_and(|site| descriptor.applies_at(&site));
         let family = family_verdict(&request, checked.binding);
         match (placed, &family) {
             (false, Ok(true)) => {
@@ -1124,10 +1135,14 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
                 .is_some_and(|message| message.contains("of format"));
         // Роль элемента проверяет планировщик на настоящей форме: операцию,
         // которую фильтр роли не выпускает, он отвергает.
-        let role_refused = placed && !descriptor.admits_form_item(item_role);
+        let role_refused = placed && descriptor.observation_type().is::<FormObservation>()
+            && !descriptor.admits_context(&|_| form_observation.map(|value| Box::new(value) as Box<dyn std::any::Any>));
+        if preflight.is_ok() != (placed && !role_refused) {
+            mismatches.push(format!("{at}: `{op}` preflight={} differs from structural placement={placed} and observed form refusal={role_refused}", preflight.is_ok()));
+        }
         if role_refused && plan(checked, &request).is_ok() {
             mismatches.push(format!(
-                "{at}: `{op}` is filtered by the item role {item_role:?}, but the planner accepts it"
+                "{at}: `{op}` is filtered by the form observation {form_observation:?}, but the planner accepts it"
             ));
         }
         let expected = placed && !format_refused && !role_refused;
@@ -2957,4 +2972,44 @@ fn object_remove_skeleton_previews_with_only_the_outer_target() {
     );
     assert!(preview.ok, "{preview:?}");
     assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+}
+
+#[test]
+fn column_add_uses_the_same_attribute_fact_for_dictionary_and_preflight() {
+    let at = "main:Catalog.Items.Form.Main.Attribute.Rows";
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
+    for (type_name, allowed) in [
+        ("ValueTable", true),
+        ("ValueTree", false),
+        ("boolean", false),
+        ("", false),
+    ] {
+        let mut data = json!({"at":at,"kind":"Attribute","props":{"type":type_name}});
+        super::v13_read_modes::attach_can(&mut data, traits);
+        let request = apply_request(
+            at,
+            "column.add",
+            json!({"items":[{"name":"New","type":"Boolean"}]}),
+        );
+        let observed = FormObservation::from_attribute_type(type_name);
+        let admitted = super::v13_service::preflight_apply_operations_observed(
+            &request,
+            traits,
+            &|_| None,
+            &|_| observed,
+            &unica_operations::recovery::no_member_lookup,
+        );
+        assert_eq!(admitted.is_ok(), allowed, "{type_name}: {admitted:?}");
+        assert_eq!(
+            data["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["op"] == "column.add"),
+            allowed
+        );
+    }
 }

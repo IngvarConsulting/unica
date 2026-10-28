@@ -1439,6 +1439,17 @@ fn form_event_evidence_from_root(root: roxmltree::Node<'_, '_>) -> FormEventEvid
     }
 }
 
+/// Attribute facts used by the reader and operation admission share one projection.
+pub fn parse_form_attributes_xml(text: &str) -> Result<Vec<FormInfoAttribute>, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("Form XML parse error: {error}"))?;
+    let root = doc.root_element();
+    require_form_root(root)?;
+    Ok(form_child(root, "Attributes")
+        .map(form_info_attributes)
+        .unwrap_or_default())
+}
+
 pub fn parse_form_event_evidence_xml(text: &str) -> Result<FormEventEvidence, String> {
     let doc = Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("Form XML parse error: {err}"))?;

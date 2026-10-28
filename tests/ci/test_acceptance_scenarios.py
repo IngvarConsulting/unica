@@ -325,6 +325,12 @@ def names_form(address: str) -> bool | None:
     return None if FORM_KINDS & set(segments[:-2]) else False
 
 
+def names_form_attribute(address: str) -> bool:
+    segments = re.split(r"(?<!\\)\.", address.partition(":")[2])
+    return (len(segments) == 6 and segments[2] == "Form"
+            and segments[4] == "Attribute" and all(segments[index] for index in (1, 3, 5)))
+
+
 def pins_published_file(assertion) -> bool:
     """True when a file assertion fixes what the publication wrote: exact
     bytes, XML content or a removed path.  `notEq`, a still-present path or
@@ -382,8 +388,12 @@ def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str
                     args = operation.get("args")
                     target = (args.get("at") if isinstance(args, dict) else None) or step["args"]["at"]
                     on_form = names_form(target)
-                    candidates = [row for row in candidates if (row[1] == "Form") == on_form]
-                    if on_form is None or len(candidates) != 1:
+                    candidates = [row for row in candidates if (
+                        row[1] == "Form" and on_form is True
+                        or row[1] == "FormAttribute" and names_form_attribute(target)
+                        or row[1] not in {"Form", "FormAttribute"} and on_form is False
+                    )]
+                    if len(candidates) != 1:
                         raise ValueError(f"{scenario['id']}: `{name}` at `{target}` matches no single family")
                 planned.extend((name, family) for family, _ in candidates)
             plans["$executionToken"] = planned
@@ -850,6 +860,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("ItemRemove", "item.remove", "FormItem", "Target"),
         ("ItemMove", "item.move", "FormItem", "Values"),
         ("AttributeAdd", "attribute.add", "Form", "Items"),
+        ("ColumnAdd", "column.add", "FormAttribute", "Items"),
         ("CommandAdd", "command.add", "Form", "Items"),
         ("EventBind", "event.bind", "FormEvent", "Values"),
         ("PropsSet", "props.set", "Form", "Values"),
@@ -1071,9 +1082,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         for family, rows in expected.items():
             with self.subTest(family=family):
                 self.assertEqual([row for row in registry if row[1] == family], rows)
-        self.assertEqual(registry[112:117], expected["Subsystem"])
-        self.assertEqual(registry[119:126], expected["Interface"])
-        self.assertEqual(registry[126:128], expected["Code"])
+        self.assertEqual(registry[113:118], expected["Subsystem"])
+        self.assertEqual(registry[120:127], expected["Interface"])
+        self.assertEqual(registry[127:129], expected["Code"])
 
     def test_every_registered_apply_operation_has_a_published_integration_case(self) -> None:
         # The inventory is the closed `apply` registry of all typed families
@@ -1091,6 +1102,20 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             "a registered apply operation is not published with checked files by the executed acceptance "
             "corpus; add a scenario under tests/fixtures/acceptance/scenarios/",
         )
+
+    def test_column_creation_inventory_distinguishes_form_data_from_visual_columns(self):
+        registry = [("column.add", "Metadata", "MetadataColumns", "Items"),
+                    ("column.add", "Form", "FormAttribute", "Items")]
+        def scenario(at):
+            return {"id":"add", "wire":[
+                {"tool":"unica.apply", "args":{"at":at,"ops":[{"op":"column.add"}]}, "expect":["ok"]},
+                {"tool":"unica.apply", "args":{"executionToken":"$executionToken"}, "expect":["ok"],
+                 "fileAssertions":[{"path":"Form.xml", "kind":"xml", "select":"./Column", "eq":["Added"]}]}]}
+        self.assertEqual(apply_operation_cases([scenario("main:Catalog.X.Form.F.Attribute.Rows")], registry), {("column.add", "Form"): ["add"]})
+        self.assertEqual(apply_operation_cases([scenario("main:DocumentJournal.Orders")], registry), {("column.add", "Metadata"): ["add"]})
+        for at in ["main:Catalog.X.Form.F", "main:Catalog.X.Form.F.Item.Rows", "main:Catalog.X.Form.F.Attribute.Rows.Column"]:
+            with self.assertRaises(ValueError):
+                apply_operation_cases([scenario(at)], registry)
 
     def test_operation_inventory_counts_only_published_apply_plans_of_their_family(self) -> None:
         def preview(expect, at, *operations):
@@ -1174,7 +1199,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 [row for row in registry if row[1] == "Metadata"],
                 [row for row in self.CONTEXT_ROWS if row[1] == "Metadata"],
             )
-            self.assertEqual(len(registry), 129)
+            self.assertEqual(len(registry), 130)
             self.assertEqual(len({row[0] for row in registry}), 126)
             registration = f"({operation}::ObjectBorrow),"
             self.assertEqual(original.count(registration), 1)
@@ -1236,7 +1261,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         table = roles + self.XDTO_REGISTRATIONS
         registry, implemented = self.renderer().load_apply_registry()
         self.assertEqual([entry for entry in registry if entry[1] == "Xdto"], self.XDTO_ROWS)
-        self.assertEqual(registry[105:112], self.XDTO_ROWS)
+        self.assertEqual(registry[106:113], self.XDTO_ROWS)
         self.assertLessEqual({entry[0] for entry in self.XDTO_ROWS}, implemented)
         row = 'AddValueType => ("valueType.add", XdtoPackage, Values)'
         self.assertIn(row, metadata)
@@ -1339,7 +1364,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             '(unica_metadata::apply_operations::MetadataOperation::ObjectCreate),\n'
             '("probe.add", Probe, Subsystem, Items),\n'
             '(FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),\n'
-            '(FormOperation::AttributeAdd),\n'
+            '(FormOperation::AttributeAdd), (FormOperation::ColumnAdd),\n'
             '(unica_metadata::apply_operations::MetadataOperation::AttributeRemove),\n'
             '(unica_metadata::apply_operations::MetadataOperation::CommandAdd),\n'
             '(unica_metadata::apply_operations::MetadataOperation::CommandSet), (unica_metadata::apply_operations::MetadataOperation::CommandRemove),\n'
@@ -1373,6 +1398,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("form.set", "Form", "MetadataForms", "Values"),
             ("form.remove", "Form", "Form", "Target"),
             ("attribute.add", "Form", "Form", "Items"),
+            ("column.add", "Form", "FormAttribute", "Items"),
             ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
             ("command.add", "Metadata", "MetadataCommands", "Items"),
             ("command.set", "Metadata", "MetadataCommand", "Values"),
@@ -1402,7 +1428,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertLessEqual(migrated_names, implemented)
         self.assertIn(("content.set", "Metadata", "ExchangePlan", "Items"), registry)
         self.assertIn("content.set", implemented)
-        self.assertEqual(len(registry), 129)
+        self.assertEqual(len(registry), 130)
         self.assertEqual(len({entry[0] for entry in registry}), 126)
 
     def test_dcs_rows_keep_all_53_metadata_and_original_registry_positions(self) -> None:
@@ -1466,10 +1492,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 ("dataSetLink.remove", "DcsSchema", "Values"),
             ]
         ]
-        self.assertEqual(registry[50:103], expected)
+        self.assertEqual(registry[51:104], expected)
         self.assertEqual([row for row in registry if row[1] == "Dcs"], expected)
-        self.assertEqual(registry[49][0], "right.set")
-        self.assertEqual(registry[103][0], "mxl.set")
+        self.assertEqual(registry[50][0], "right.set")
+        self.assertEqual(registry[104][0], "mxl.set")
         self.assertLessEqual({row[0] for row in expected}, implemented)
 
     def test_typed_dcs_rows_keep_payload_metadata_and_raw_registry_neighbors(self) -> None:
@@ -1658,11 +1684,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                     with self.subTest(family=family, variant=variant, case=case), self.assertRaises(RuntimeError):
                         self.registration_fixture(source, role_source, {filename: changed_metadata}, complete_mxl_event=False)
         registry, _ = self.renderer().load_apply_registry()
-        self.assertEqual(registry[103:105], self.MXL_EVENT_ROWS[:2])
-        self.assertEqual(registry[128], self.MXL_EVENT_ROWS[2])
-        self.assertEqual(registry[102][0], "dataSetLink.remove")
-        self.assertEqual(registry[105][0], "valueType.add")
-        self.assertEqual(registry[127][0], "code.replace")
+        self.assertEqual(registry[104:106], self.MXL_EVENT_ROWS[:2])
+        self.assertEqual(registry[129], self.MXL_EVENT_ROWS[2])
+        self.assertEqual(registry[103][0], "dataSetLink.remove")
+        self.assertEqual(registry[106][0], "valueType.add")
+        self.assertEqual(registry[128][0], "code.replace")
 
     def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
