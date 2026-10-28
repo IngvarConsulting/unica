@@ -777,17 +777,14 @@ mod tests {
                 assert!(names.contains(&name), "missing {name}: {names:?}");
             }
             let module = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form/Module.bsl");
-            assert!(module.contains("#Region FormEventHandlers"), "{module}");
-            assert!(
-                module.contains("#Region FormHeaderItemsEventHandlers"),
-                "{module}"
+            let expected = concat!(
+                "\u{feff}#Region FormEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region FormHeaderItemsEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region FormCommandsEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region NotificationHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region Private\r\n\r\n#EndRegion"
             );
-            assert!(
-                module.contains("#Region FormCommandsEventHandlers"),
-                "{module}"
-            );
-            assert!(module.contains("#Region Private"), "{module}");
-            assert!(!module.contains("#Область"), "{module}");
+            assert_eq!(module, expected);
             assert!(
                 !fixture
                     .source_dir()
