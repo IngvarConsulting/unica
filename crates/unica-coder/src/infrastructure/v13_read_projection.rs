@@ -1200,6 +1200,9 @@ fn project_subsystem(
 /// по идентификатору или строка, которой грамматика адресов не знает, адреса
 /// не имеет; её называет слот `limits`, а чтение подсистемы продолжается.
 fn subsystem_content(address: &QualifiedAddress, payload: &Value) -> (Vec<Value>, Vec<String>) {
+    if payload.get("recursiveContent").is_some_and(Value::is_null) {
+        return (Vec::new(), Vec::new());
+    }
     let mut content = Vec::new();
     let mut dangling = Vec::new();
     let mut positions = std::collections::HashMap::<String, usize>::new();

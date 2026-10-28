@@ -1181,11 +1181,38 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     segment.kind() == NodeKind::Relation || segment.name().is_some()
                 })
             {
-                payload["recursiveContent"] = self.read.subsystem_subtree_content(
+                let plain_node = route
+                    .at()
+                    .segments()
+                    .last()
+                    .is_some_and(|segment| segment.kind() == NodeKind::Subsystem);
+                match self.read.subsystem_subtree_content(
                     target,
                     route.nested_subsystems(),
                     &mut || self.read_checkpoint(),
-                )?;
+                ) {
+                    Ok(content) => payload["recursiveContent"] = content,
+                    Err(error)
+                        if plain_node
+                            && error.detail() == Some(RefusalDetail::SourceUnreadable) =>
+                    {
+                        // Unknown aggregate is distinct from the legacy absent
+                        // payload: never advertise the direct count as total.
+                        payload["recursiveContent"] = Value::Null;
+                        let limit = json!(format!(
+                            "Состав {}.Relation не прочитан: {error}",
+                            route.at()
+                        ));
+                        match payload
+                            .get_mut("propertyLimits")
+                            .and_then(Value::as_array_mut)
+                        {
+                            Some(limits) => limits.push(limit),
+                            None => payload["propertyLimits"] = json!([limit]),
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             // Корень библиотеки — подсистема верхнего уровня; признак держится
             // на соглашении стандартов разработки и называет свой источник.

@@ -144,3 +144,60 @@ fn uncached_subsystem_routes_keep_registered_owner_proof() {
         assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
     }
 }
+
+#[test]
+fn unreadable_descendants_keep_plain_properties_without_a_false_composition_count() {
+    for own_content in [&[][..], &["Catalog.Items"][..]] {
+        for (nested, broken) in [(false, ""), (false, "not XML"), (true, "not XML")] {
+            let fixture = RealReaderFixture::new();
+            write(
+                &fixture.source.join("Subsystems/Sales.xml"),
+                &subsystem_descriptor("Sales", own_content, &["Orders"]),
+            );
+            let (at, path) = if nested {
+                write(
+                    &fixture
+                        .source
+                        .join("Subsystems/Sales/Subsystems/Orders.xml"),
+                    &subsystem_descriptor("Orders", own_content, &["Returns"]),
+                );
+                (
+                    "main:Subsystem.Sales.Subsystem.Orders",
+                    "Subsystems/Sales/Subsystems/Orders/Subsystems/Returns.xml",
+                )
+            } else {
+                (
+                    "main:Subsystem.Sales",
+                    "Subsystems/Sales/Subsystems/Orders.xml",
+                )
+            };
+            if !broken.is_empty() {
+                write(&fixture.source.join(path), broken);
+            }
+            let service = fixture.view_service();
+            let node = service.view(ViewRequest::new(at).unwrap());
+            assert!(
+                node.ok,
+                "own descriptor remains readable: {:?}",
+                node.diagnostics
+            );
+            let data = node.data.unwrap();
+            assert_eq!(data["kind"], "Subsystem");
+            assert_eq!(data["title"], if nested { "Orders" } else { "Sales" });
+            let relation = format!("{at}.Relation");
+            assert!(!data["branches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|branch| branch["at"] == relation));
+            assert!(data["limits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|limit| limit.as_str().unwrap().contains(&relation)));
+            let result = service.view(ViewRequest::new(&relation).unwrap());
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
+        }
+    }
+}
