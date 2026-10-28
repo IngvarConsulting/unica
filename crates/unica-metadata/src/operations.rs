@@ -1633,6 +1633,53 @@ fn validate_relation_edit_shape(
 /// This is the shared bridge for the public parser, schema and provider: it
 /// rejects the complete operation before the provider mutates its private
 /// working image.
+/// The bilingual platform name belongs to every tabular section's standard
+/// row attribute. Header attributes have a different namespace (#2057).
+fn validate_tabular_attribute_name(
+    collection: MetaCollection,
+    tabular_section: bool,
+    name: &str,
+    field: &str,
+) -> Result<(), MetaDiagnostic> {
+    if collection == MetaCollection::Attributes
+        && tabular_section
+        && ["LineNumber", "НомерСтроки"]
+            .iter()
+            .any(|standard| metadata_name_eq(name, standard))
+    {
+        return Err(invalid_operation(field,
+            format!("`{name}` is the standard LineNumber attribute of a tabular section; choose another name")));
+    }
+    Ok(())
+}
+
+// A newly created tabular section owns its declared attributes immediately;
+// validate those names through the same namespace rule as attribute.add.
+fn validate_added_element_names(
+    collection: MetaCollection,
+    tabular_section: bool,
+    element: &MetaElementDefinition,
+    field: &str,
+) -> Result<(), MetaDiagnostic> {
+    validate_tabular_attribute_name(
+        collection,
+        tabular_section,
+        &element.name,
+        &format!("{field}.name"),
+    )?;
+    if collection == MetaCollection::TabularSections {
+        for (index, attribute) in element.attributes.iter().enumerate() {
+            validate_added_element_names(
+                MetaCollection::Attributes,
+                true,
+                attribute,
+                &format!("{field}.attributes[{index}]"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_metadata_operation_capabilities(
     owner_kind: MetadataKind,
     owner: &MetadataAddress,
@@ -1646,7 +1693,10 @@ pub fn validate_metadata_operation_capabilities(
         MetaEditOperation::AddHelp { .. } => Ok(()),
         // The first slice copies attributes of a catalog tabular section only.
         MetaEditOperation::Copy {
-            collection, scope, ..
+            collection,
+            scope,
+            new_name,
+            ..
         } => {
             if owner_kind != MetadataKind::Catalog
                 || *collection != MetaCollection::Attributes
@@ -1657,7 +1707,7 @@ pub fn validate_metadata_operation_capabilities(
                     "only an attribute of a catalog tabular section can be copied",
                 ));
             }
-            Ok(())
+            validate_tabular_attribute_name(*collection, scope.is_some(), new_name, "values.name")
         }
         MetaEditOperation::Add {
             collection,
@@ -1665,6 +1715,14 @@ pub fn validate_metadata_operation_capabilities(
             elements,
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
+            for (index, element) in elements.iter().enumerate() {
+                validate_added_element_names(
+                    *collection,
+                    scope.is_some(),
+                    element,
+                    &format!("elements[{index}]"),
+                )?;
+            }
             if *collection != MetaCollection::Templates {
                 for (index, element) in elements.iter().enumerate() {
                     if element.template_type.is_some() {
@@ -1698,6 +1756,14 @@ pub fn validate_metadata_operation_capabilities(
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
             for (index, element) in elements.iter().enumerate() {
+                if let Some(name) = &element.new_name {
+                    validate_tabular_attribute_name(
+                        *collection,
+                        scope.is_some(),
+                        name,
+                        &format!("elements[{index}].newName"),
+                    )?;
+                }
                 if element.deny_incomplete_values.is_some()
                     && !metadata_deny_incomplete_values_is_allowed(owner_kind)
                 {
@@ -2928,6 +2994,146 @@ mod tests {
             &object_target("Enum.Other"),
         )
         .is_err());
+    }
+
+    #[test]
+    fn platform_tabular_name_cases_match_validation() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/platform_8_3_27/tabular_standard_names/manifest.json"
+        ))
+        .unwrap();
+        for case in manifest["cases"].as_array().unwrap() {
+            let kind = MetadataKind::parse(case["owner"].as_str().unwrap()).unwrap();
+            let owner = MetadataAddress::parse(
+                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("{}.Items", kind.as_str()),
+            )
+            .unwrap();
+            let scope = (case["scope"] == "tabularSection").then(|| MetaScope {
+                tabular_section: "Lines".into(),
+            });
+            let op = MetaEditOperation::add(
+                MetaCollection::Attributes,
+                scope,
+                vec![MetaElementInput::named(case["name"].as_str().unwrap())],
+            )
+            .unwrap();
+            assert_eq!(
+                validate_metadata_operation_capabilities(kind, &owner, &op).is_ok(),
+                case["returncode"] == 0,
+                "{}",
+                case["id"]
+            );
+        }
+    }
+
+    #[test]
+    fn tabular_standard_attribute_names_are_rejected_by_all_name_constructors() {
+        let owner = MetadataAddress::parse(
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "Catalog.Items",
+        )
+        .unwrap();
+        for name in ["НомерСтроки", "LineNumber", "нОмЕрСтРоКи", "linenumber"]
+        {
+            let scope = Some(MetaScope {
+                tabular_section: "Lines".into(),
+            });
+            for (operation, path) in [
+                (
+                    MetaEditOperation::add(
+                        MetaCollection::Attributes,
+                        scope.clone(),
+                        vec![MetaElementInput::named(name)],
+                    )
+                    .unwrap(),
+                    "elements[0].name",
+                ),
+                (
+                    MetaEditOperation::Copy {
+                        collection: MetaCollection::Attributes,
+                        scope: scope.clone(),
+                        name: "Source".into(),
+                        new_name: name.into(),
+                    },
+                    "values.name",
+                ),
+                (
+                    MetaEditOperation::update(
+                        MetaCollection::Attributes,
+                        scope,
+                        vec![MetaElementUpdateInput {
+                            name: "Source".into(),
+                            new_name: Some(name.into()),
+                            ..Default::default()
+                        }],
+                    )
+                    .unwrap(),
+                    "elements[0].newName",
+                ),
+            ] {
+                let error = validate_metadata_operation_capabilities(
+                    MetadataKind::Catalog,
+                    &owner,
+                    &operation,
+                )
+                .unwrap_err();
+                assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+                assert_eq!(error.field.as_deref(), Some(path));
+                assert!(error.message.contains("LineNumber"), "{error:?}");
+            }
+            let nested = MetaEditOperation::add(
+                MetaCollection::TabularSections,
+                None,
+                vec![MetaElementInput {
+                    name: "NewLines".into(),
+                    attributes: Some(vec![MetaElementInput::named(name)]),
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+            for (kind, path) in [
+                (MetadataKind::Catalog, "Catalog.Items"),
+                (MetadataKind::Document, "Document.Order"),
+            ] {
+                let owner = MetadataAddress::parse(
+                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    path,
+                )
+                .unwrap();
+                let error =
+                    validate_metadata_operation_capabilities(kind, &owner, &nested).unwrap_err();
+                assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+                assert_eq!(
+                    error.field.as_deref(),
+                    Some("elements[0].attributes[0].name")
+                );
+            }
+            let header = MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementInput::named(name)],
+            )
+            .unwrap();
+            assert!(validate_metadata_operation_capabilities(
+                MetadataKind::Catalog,
+                &owner,
+                &header
+            )
+            .is_ok());
+        }
+        let ordinary = MetaEditOperation::add(
+            MetaCollection::Attributes,
+            Some(MetaScope {
+                tabular_section: "Lines".into(),
+            }),
+            vec![MetaElementInput::named("LineNumberText")],
+        )
+        .unwrap();
+        assert!(
+            validate_metadata_operation_capabilities(MetadataKind::Catalog, &owner, &ordinary)
+                .is_ok()
+        );
     }
 
     #[test]
