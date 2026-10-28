@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.MODULE-EVENT-STATE
 check:
+  - crates/unica-bindings-integration-tests/tests/projection.rs::duplicate_module_event_methods_keep_all_handlers_and_reverse_links
   - crates/unica-bindings-integration-tests/tests/projection.rs::form_binding_owners_and_all_four_event_states_are_projected
   - crates/unica-bindings-integration-tests/tests/projection.rs::platform_event_state_requires_exact_kind_parameter_shape_and_effective_contexts
   - crates/unica-bindings-integration-tests/tests/projection.rs::form_handler_parameters_are_compared_with_the_item_and_the_form_check_rule

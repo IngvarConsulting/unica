@@ -668,6 +668,54 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_module_event_methods_keep_all_handlers_and_reverse_links() {
+        for (second_name, unique_names) in [("BeforeWrite", true), ("передзаписью", false)]
+        {
+            let source = format!("Процедура ПередЗаписью(Отказ)\nКонецПроцедуры\n\nПроцедура {second_name}(Отказ)\nКонецПроцедуры\n");
+            let projection = project("main:Catalog.Products.Module.Object", Some(&source));
+            let event = projection
+                .events()
+                .iter()
+                .find(|event| event.event_id == "BeforeWrite")
+                .unwrap();
+            assert_eq!(event.state, EventState::Invalid);
+            assert!(event.implementation_at.is_none());
+            assert!(event.handler.is_empty());
+            assert!(event.handler_en.is_empty());
+            assert!(event.signature.is_empty());
+            assert_eq!(event.handlers.len(), 2);
+            assert_eq!(projection.methods().len(), 2);
+            for (binding, method) in event.handlers.iter().zip(projection.methods()) {
+                assert_eq!(binding.handler, method.name);
+                assert_eq!(
+                    binding.implementation_at.as_deref(),
+                    unique_names.then_some(method.at.as_str())
+                );
+                assert!(binding.call_type.is_none());
+                assert_eq!(method.handles.len(), 1);
+                assert_eq!(method.handles[0].at, event.at);
+                assert_eq!(method.handles[0].event, "BeforeWrite");
+            }
+        }
+        // A single compatible handler keeps its ordinary implementation link.
+        let projection = project(
+            "main:Catalog.Products.Module.Object",
+            Some("Процедура ПередЗаписью(Отказ)\nКонецПроцедуры\n"),
+        );
+        let event = projection
+            .events()
+            .iter()
+            .find(|event| event.event_id == "BeforeWrite")
+            .unwrap();
+        assert_eq!(event.state, EventState::Implemented);
+        assert_eq!(
+            event.implementation_at.as_deref(),
+            Some(projection.methods()[0].at.as_str())
+        );
+        assert!(event.handlers.is_empty());
+    }
+
+    #[test]
     fn duplicate_case_insensitive_event_methods_are_invalid_for_platform_and_property_sources() {
         let platform = project(
             "main:Catalog.Products.Module.Object",
