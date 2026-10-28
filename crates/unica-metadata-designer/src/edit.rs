@@ -1873,6 +1873,19 @@ pub fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinit
         );
         let _ = meta_edit_replace_or_insert_property(&mut text, "Indexing", &replacement, &indent);
     }
+    for (tag, value) in [
+        ("Master", element.master),
+        ("MainFilter", element.main_filter),
+        ("DenyIncompleteValues", element.deny_incomplete_values),
+    ] {
+        if let Some(value) = value {
+            // These defaults are emitted by the proven register template.
+            text = text.replace(
+                &format!("<{tag}>false</{tag}>"),
+                &format!("<{tag}>{value}</{tag}>"),
+            );
+        }
+    }
     xml.replace_range(range, &text);
 }
 pub fn typed_properties_text_range(text: &str) -> Option<std::ops::Range<usize>> {
@@ -1942,6 +1955,70 @@ pub fn find_typed_element_identity(
             )
         })
 }
+// Read the original document so inherited namespace bindings remain authoritative.
+// Return only the literal boolean token: no other bytes belong to this edit.
+fn dimension_boolean_edit(
+    xml: &str,
+    element_range: std::ops::Range<usize>,
+    tag: &str,
+    field: &str,
+    value: bool,
+) -> Result<Option<(std::ops::Range<usize>, &'static str)>, MetaDiagnostic> {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let refused =
+        || {
+            typed_diagnostic(
+        MetaDiagnosticCode::InvalidArguments,
+        format!("the dimension's {tag} must be one metadata element containing only true or false"),
+        Some(field),
+    )
+        };
+    let document = Document::parse(xml).map_err(|_| refused())?;
+    let element = document
+        .descendants()
+        .find(|node| node.is_element() && node.range() == element_range)
+        .ok_or_else(refused)?;
+    let properties = element
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+        .collect::<Vec<_>>();
+    let [properties] = properties.as_slice() else {
+        return Err(refused());
+    };
+    if properties.tag_name().namespace() != Some(MD) {
+        return Err(refused());
+    }
+    let flags = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == tag)
+        .collect::<Vec<_>>();
+    let [flag] = flags.as_slice() else {
+        return Err(refused());
+    };
+    if flag.tag_name().namespace() != Some(MD) || flag.attributes().len() != 0 {
+        return Err(refused());
+    }
+    let children = flag.children().collect::<Vec<_>>();
+    let [text] = children.as_slice() else {
+        return Err(refused());
+    };
+    if !text.is_text() {
+        return Err(refused());
+    }
+    let range = text.range();
+    let raw = &xml[range.clone()];
+    let current = raw.trim();
+    if !matches!(current, "true" | "false") {
+        return Err(refused());
+    }
+    let replacement = if value { "true" } else { "false" };
+    if current == replacement {
+        return Ok(None);
+    }
+    let start = range.start + raw.len() - raw.trim_start().len();
+    Ok(Some((start..start + current.len(), replacement)))
+}
+
 pub fn update_typed_element(
     xml_text: &mut String,
     collection: MetaCollection,
@@ -1967,6 +2044,32 @@ pub fn update_typed_element(
         )
     })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    let mut flag_edits = Vec::new();
+    for (tag, field, value) in [
+        ("Master", "master", update.master),
+        ("MainFilter", "mainFilter", update.main_filter),
+        (
+            "DenyIncompleteValues",
+            "denyIncompleteValues",
+            update.deny_incomplete_values,
+        ),
+    ] {
+        if let Some(value) = value {
+            if let Some(edit) = dimension_boolean_edit(xml_text, range.clone(), tag, field, value)?
+            {
+                flag_edits.push(edit);
+            }
+        }
+    }
+    flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let properties_start = range.start + properties_range.start;
+    for (range, value) in flag_edits {
+        properties_text.replace_range(
+            range.start - properties_start..range.end - properties_start,
+            value,
+        );
+    }
+
     if let Some(metadata_type) = &update.r#type {
         let fill_value = match &update.fill_value {
             Some(fill_value) => Some(fill_value.clone()),
@@ -2110,43 +2213,6 @@ pub fn update_typed_element(
                 Some("indexing"),
             )
         })?;
-    }
-    if let Some(deny) = update.deny_incomplete_values {
-        // 8.3.27 writes the flag on every dimension of these registers as
-        // `<DenyIncompleteValues>true|false</…>`; any other shape or value
-        // has no proven meaning to keep, so it is refused, not overwritten.
-        let refused = |message: &str| {
-            typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                message,
-                Some("denyIncompleteValues"),
-            )
-        };
-        let open = "<DenyIncompleteValues>";
-        let close = "</DenyIncompleteValues>";
-        let start = match properties_text.find(open) {
-            Some(start) => start + open.len(),
-            None if properties_text.contains("<DenyIncompleteValues") => {
-                return Err(refused(
-                    "the dimension's DenyIncompleteValues has a form other than an element with a boolean value",
-                ))
-            }
-            None => return Err(refused("the dimension has no DenyIncompleteValues to change")),
-        };
-        let end = start
-            + properties_text[start..]
-                .find(close)
-                .ok_or_else(|| refused("the dimension's DenyIncompleteValues is not closed"))?;
-        let current = properties_text[start..end].trim();
-        if !matches!(current, "true" | "false") {
-            return Err(refused(
-                "the dimension's DenyIncompleteValues holds a value other than true or false",
-            ));
-        }
-        let value = if deny { "true" } else { "false" };
-        if current != value {
-            properties_text.replace_range(start..end, value);
-        }
     }
     let mut updated_node = node_xml;
     updated_node.replace_range(properties_range, &properties_text);

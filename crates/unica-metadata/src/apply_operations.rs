@@ -613,6 +613,68 @@ mod tests {
     }
 
     #[test]
+    fn dimension_flag_contracts_match_owner_and_operation() {
+        for operation in [
+            MetadataOperation::DimensionAdd,
+            MetadataOperation::DimensionSet,
+        ] {
+            for site in [
+                None,
+                Some(MetadataSite {
+                    owner: MetadataKind::InformationRegister,
+                    in_section: true,
+                }),
+            ] {
+                let contract = operation.contract_at(site);
+                let fields = if operation == MetadataOperation::DimensionSet {
+                    &contract.schema["properties"]["values"]["properties"]
+                } else {
+                    &contract.schema["properties"]["items"]["items"]["properties"]
+                };
+                for key in ["master", "mainFilter", "denyIncompleteValues"] {
+                    assert!(fields.get(key).is_none());
+                }
+            }
+        }
+        for owner in [
+            MetadataKind::InformationRegister,
+            MetadataKind::AccumulationRegister,
+            MetadataKind::AccountingRegister,
+            MetadataKind::CalculationRegister,
+            MetadataKind::Catalog,
+        ] {
+            for (operation, update) in [
+                (MetadataOperation::DimensionAdd, false),
+                (MetadataOperation::DimensionSet, true),
+                (MetadataOperation::ResourceSet, true),
+            ] {
+                let contract = operation.contract_at(Some(MetadataSite {
+                    owner,
+                    in_section: false,
+                }));
+                let fields = if update {
+                    &contract.schema["properties"]["values"]["properties"]
+                } else {
+                    &contract.schema["properties"]["items"]["items"]["properties"]
+                };
+                for key in ["master", "mainFilter", "denyIncompleteValues"] {
+                    let allowed = operation != MetadataOperation::ResourceSet
+                        && (owner == MetadataKind::InformationRegister
+                            || (update
+                                && key == "denyIncompleteValues"
+                                && crate::metadata_deny_incomplete_values_is_allowed(owner)));
+                    assert_eq!(
+                        fields.get(key).is_some(),
+                        allowed,
+                        "{operation:?} {owner:?} {key}: {}",
+                        contract.schema
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn deny_incomplete_values_is_published_only_for_dimensions_of_its_register_kinds() {
         use crate::contracts::MetadataSite;
         let field = |operation: MetadataOperation, owner| {
@@ -626,6 +688,7 @@ mod tests {
                 .cloned()
         };
         for owner in [
+            MetadataKind::InformationRegister,
             MetadataKind::AccumulationRegister,
             MetadataKind::AccountingRegister,
             MetadataKind::CalculationRegister,
@@ -641,13 +704,6 @@ mod tests {
                 "{owner:?}"
             );
         }
-        assert_eq!(
-            field(
-                MetadataOperation::DimensionSet,
-                MetadataKind::InformationRegister
-            ),
-            None
-        );
         let update = |owner| {
             crate::validate_metadata_operation_capabilities(
                 owner,
@@ -670,15 +726,13 @@ mod tests {
                         position: None,
                         indexing: None,
                         deny_incomplete_values: Some(true),
+                        master: None,
+                        main_filter: None,
                     }],
                 },
             )
         };
-        let refused = update(MetadataKind::InformationRegister).unwrap_err();
-        assert_eq!(
-            refused.field.as_deref(),
-            Some("elements[0].denyIncompleteValues")
-        );
+        update(MetadataKind::InformationRegister).unwrap();
         update(MetadataKind::AccumulationRegister).unwrap();
     }
 }
