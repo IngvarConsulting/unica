@@ -41,6 +41,7 @@ pub enum OperationApplicability {
     NestedSubsystem,
     Subsystem,
     SupportRule,
+    SupportRestore,
 }
 impl OperationApplicability {
     pub const fn shape(self) -> &'static str {
@@ -52,6 +53,7 @@ impl OperationApplicability {
             Self::Metadata => "`Kind.Name`",
             Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
             Self::SupportRule => "`Kind.Name` or `Kind.Name.Form.F`",
+            Self::SupportRestore => "`Kind.Name` or `Kind.Name.Form.F` in a configuration",
             Self::MetadataOrRoleOrSubsystem => {
                 "`Configuration`, `Kind.Name`, `Role.Name` or `Subsystem.Name`"
             }
@@ -205,6 +207,10 @@ impl OperationApplicability {
                         && owners.iter().all(|segment| {
                             segment.kind() == NodeKind::Subsystem && segment.name().is_some()
                         }))
+            }
+            Self::SupportRestore => {
+                site.source().kind() == SourceSetKind::Configuration
+                    && Self::SupportRule.matches(site)
             }
             Self::SupportRule => match segments {
                 [owner] | [owner, _] => {

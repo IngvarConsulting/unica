@@ -26,6 +26,7 @@ pub(crate) use v13_service::provider_search_page;
 mod v13_source_export;
 mod v13_source_import;
 mod v13_source_set_name;
+mod v13_support_restore;
 mod v13_workspace_bootstrap;
 
 #[cfg(test)]

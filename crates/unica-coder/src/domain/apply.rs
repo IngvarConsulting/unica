@@ -625,6 +625,7 @@ operation_descriptors!(
     (SubsystemOperation::ChildRemove),
     (SupportOperation::CapabilitySet),
     (SupportOperation::RuleSet),
+    (SupportOperation::RuleRestore),
     (InterfaceOperation::VisibilitySet),
     (InterfaceOperation::PlacementSet),
     (InterfaceOperation::CommandOrderSet),
@@ -1503,6 +1504,7 @@ mod tests {
             "childSubsystem.remove",
             "supportCapability.set",
             "supportRule.set",
+            "supportRule.restore",
             "commandVisibility.set",
             "commandPlacement.set",
             "commandOrder.set",
@@ -1515,7 +1517,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 129);
+        assert_eq!(expected.len(), 130);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465), свойства формы — как свойства описания (#1984):
