@@ -102,6 +102,11 @@ pub fn restore_support_records(raw: &[u8]) -> Result<RestoreSupportRecords, Stri
                 rule_span,
             });
         }
+        // Native blocks retain two opaque numeric slots after their records.
+        // Their meaning is unknown; consuming them here preserves the next
+        // supplier boundary without rewriting these bytes.
+        number(&mut input)?;
+        number(&mut input)?;
         vendors.push(RestoreVendorRecord {
             version,
             vendor,
@@ -578,6 +583,66 @@ mod tests {
     }
 
     #[test]
+    fn native_three_supplier_marker_preserves_each_block_and_rule_span() {
+        let raw = include_bytes!(
+            "../../../tests/fixtures/support-restore-multi-vendor/ParentConfigurations.bin"
+        );
+        let parsed = restore_support_records(raw).unwrap();
+        assert_eq!(parsed.vendors.len(), 3);
+        for (vendor, name, count) in [
+            (&parsed.vendors[0], "Поставка1", 56),
+            (&parsed.vendors[1], "Поставка2", 8),
+            (&parsed.vendors[2], "Поставка3", 6),
+        ] {
+            assert_eq!(vendor.name, name);
+            assert_eq!(vendor.objects.len(), count);
+            for object in &vendor.objects {
+                assert_eq!(
+                    &raw[object.rule_span.clone()],
+                    object.rule.to_string().as_bytes()
+                );
+            }
+        }
+        assert_eq!(parsed.vendors[0].version, "1.0.0.1");
+        assert_eq!(parsed.vendors[1].version, "2.0.1");
+        assert_eq!(parsed.vendors[2].vendor, "\"Обычный Поставщик\"");
+        for vendor in &parsed.vendors[1..] {
+            assert_eq!(
+                vendor
+                    .objects
+                    .iter()
+                    .filter(|object| object.object_uuid != object.paired_uuid)
+                    .count(),
+                2
+            );
+        }
+        // Editing rules in later blocks must preserve all supplier metadata,
+        // opaque slots, and the complete numeric tail byte for byte.
+        let mut changed = raw.to_vec();
+        let spans = parsed
+            .vendors
+            .iter()
+            .flat_map(|vendor| &vendor.objects)
+            .map(|object| object.rule_span.clone())
+            .collect::<Vec<_>>();
+        for span in &spans {
+            assert_eq!(span.len(), 1);
+            changed[span.start] = b'0';
+        }
+        for (index, (&before, &after)) in raw.iter().zip(&changed).enumerate() {
+            if !spans.iter().any(|span| span.contains(&index)) {
+                assert_eq!(before, after);
+            }
+        }
+        let reparsed = restore_support_records(&changed).unwrap();
+        assert!(reparsed
+            .vendors
+            .iter()
+            .flat_map(|vendor| &vendor.objects)
+            .all(|object| object.rule == 0));
+    }
+
+    #[test]
     fn damaged_block_counts_and_unassociated_records_refuse() {
         let original = std::str::from_utf8(EDITABLE).unwrap();
         for text in [
@@ -610,7 +675,7 @@ mod tests {
         let id = "11111111-1111-1111-1111-111111111111";
         let paired = "22222222-2222-2222-2222-222222222222";
         let block = |name: &str, rule: u8, mark: i8| {
-            format!("{id},0,{id},\"1.0\",\"Vendor, \"\"quoted\"\"\",\"{name}\",1,{rule},{mark},{id},{paired}")
+            format!("{id},0,{id},\"1.0\",\"Vendor, \"\"quoted\"\"\",\"{name}\",1,{rule},{mark},{id},{paired},0,0")
         };
         let text = format!(
             "\u{feff}{{6,0,2,{},{},0,1}}\r\n",
@@ -632,6 +697,25 @@ mod tests {
             assert_eq!(object.recommendation, recommendation);
             assert_eq!(&text[object.rule_span.clone()], rule.to_string());
         }
+        // Both opaque slots belong to each block. Missing or nonnumeric
+        // slots must not shift the following supplier into the current one.
+        for replacement in ["", ",0", ",0,\"unknown\""] {
+            let broken = text.replacen(
+                &format!("{paired},0,0,"),
+                &format!("{paired}{replacement},"),
+                1,
+            );
+            assert!(restore_support_records(broken.as_bytes()).is_err());
+        }
+        let nonzero_opaque =
+            text.replacen(&format!("{paired},0,0,"), &format!("{paired},7,-3,"), 1);
+        assert_eq!(
+            restore_support_records(nonzero_opaque.as_bytes())
+                .unwrap()
+                .vendors
+                .len(),
+            2
+        );
         let duplicate = text.replace("Второй", "Первый");
         assert!(restore_support_records(duplicate.as_bytes()).is_err());
         let hidden = text.replace(",0,1}", &format!(",0,0,{id},{paired}}}"));
@@ -924,7 +1008,7 @@ mod tests {
         let rule = if already_locked { 0 } else { 1 };
         let (_, vendor, version) = image.configuration_identity();
         let block = |name: &str| {
-            format!("{id},0,{id},\"{version}\",\"{vendor}\",\"{name}\",1,{rule},0,{id},{id}")
+            format!("{id},0,{id},\"{version}\",\"{vendor}\",\"{name}\",1,{rule},0,{id},{id},0,0")
         };
         let marker = if two_suppliers {
             format!(
