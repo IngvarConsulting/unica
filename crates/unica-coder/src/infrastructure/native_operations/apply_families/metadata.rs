@@ -348,6 +348,99 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_member_additions_refuse_at_the_callers_name_field() {
+        for (operation, kind, directory, scope, tag) in [
+            ("attribute.add", "Document", "Documents", None, "Attribute"),
+            (
+                "attribute.add",
+                "Document",
+                "Documents",
+                Some("Lines"),
+                "Attribute",
+            ),
+            (
+                "tabularSection.add",
+                "Document",
+                "Documents",
+                None,
+                "TabularSection",
+            ),
+            (
+                "dimension.add",
+                "InformationRegister",
+                "InformationRegisters",
+                None,
+                "Dimension",
+            ),
+            (
+                "resource.add",
+                "InformationRegister",
+                "InformationRegisters",
+                None,
+                "Resource",
+            ),
+            ("enumValue.add", "Enum", "Enums", None, "EnumValue"),
+            (
+                "column.add",
+                "DocumentJournal",
+                "DocumentJournals",
+                None,
+                "Column",
+            ),
+            ("command.add", "Document", "Documents", None, "Command"),
+        ] {
+            let member = format!(
+                r#"<{tag} uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Existing</Name></Properties><ChildObjects/></{tag}>"#
+            );
+            let children = if let Some(section) = scope {
+                format!(
+                    r#"<TabularSection uuid="44444444-4444-4444-8444-444444444444"><Properties><Name>{section}</Name></Properties><ChildObjects>{member}</ChildObjects></TabularSection>"#
+                )
+            } else {
+                member
+            };
+            let descriptor = format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Order</Name></Properties><ChildObjects>{children}</ChildObjects></{kind}></MetaDataObject>"#
+            );
+            let relative = format!("{directory}/Order.xml");
+            let configuration = RU_CONFIGURATION_XML.replace(
+                "<Document>Order</Document>",
+                &format!("<{kind}>Order</{kind}>"),
+            );
+            let fixture = MetadataFixture::with_files(&[
+                ("Configuration.xml", &configuration),
+                ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+                (&relative, &descriptor),
+            ]);
+            let at = match scope {
+                Some(section) => format!("main:{kind}.Order.TabularSection.{section}"),
+                None => format!("main:{kind}.Order"),
+            };
+            let operation =
+                fixture.parse(operation, json!({"at":at,"items":[{"name":"Existing"}]}), 3);
+            let admission = fixture.admission();
+            let error = plan_metadata_batch_owned_for_test(
+                admission.staged_state().unwrap(),
+                admission
+                    .metadata_planning_authority(&fixture.binding)
+                    .unwrap(),
+                &[operation],
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{at}: {error}");
+            assert_eq!(error.path(), Some("ops[3].args.items[0].name"), "{at}");
+            assert!(
+                error.to_string().contains("already exists"),
+                "{at}: {error}"
+            );
+            assert_eq!(
+                std::fs::read(fixture._root.path().join("src").join(&relative)).unwrap(),
+                descriptor.as_bytes()
+            );
+        }
+    }
+
+    #[test]
     fn typed_member_additions_keep_the_owner_collection_and_section() {
         use super::{AddressedFields, MetadataPlanKind};
         use unica_metadata::{MetaCollection, MetaEditOperation};
@@ -432,7 +525,7 @@ mod tests {
             );
             assert_eq!(elements.len(), 1);
             assert_eq!(elements[0].name, "Added");
-            assert_eq!(addressed, section.map(|_| AddressedFields::Items));
+            assert_eq!(addressed, Some(AddressedFields::Items));
         }
     }
 
