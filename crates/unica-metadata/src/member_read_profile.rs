@@ -8,17 +8,20 @@ use unica_source_contract::SourceSetKind;
 #[serde(rename_all = "camelCase")]
 pub enum MetaMemberReadProfile {
     CatalogTabularSection220,
+    AccumulationRegisterDimension220,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaMemberReadContext {
     TabularSection,
     TabularAttribute,
+    AccumulationRegisterDimension,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum MetaMemberValueKind {
     UnsignedInteger,
+    Boolean,
     Text(&'static [&'static str]),
     LocalizedString,
 }
@@ -69,10 +72,21 @@ impl MetaMemberReadProfile {
         owner: MetadataKind,
         format: Option<&str>,
     ) -> Option<Self> {
-        (source_kind == SourceSetKind::Configuration
-            && owner == MetadataKind::Catalog
-            && format == Some("2.20"))
-        .then_some(Self::CatalogTabularSection220)
+        if source_kind != SourceSetKind::Configuration || format != Some("2.20") {
+            return None;
+        }
+        match owner {
+            MetadataKind::Catalog => Some(Self::CatalogTabularSection220),
+            MetadataKind::AccumulationRegister => Some(Self::AccumulationRegisterDimension220),
+            _ => None,
+        }
+    }
+
+    pub fn owner_kind(self) -> MetadataKind {
+        match self {
+            Self::CatalogTabularSection220 => MetadataKind::Catalog,
+            Self::AccumulationRegisterDimension220 => MetadataKind::AccumulationRegister,
+        }
     }
 
     pub fn properties(
@@ -81,6 +95,11 @@ impl MetaMemberReadProfile {
     ) -> impl Iterator<Item = &'static MetaMemberPropertySpec> {
         let properties = match self {
             Self::CatalogTabularSection220 => CATALOG_MEMBER_PROPERTIES,
+            Self::AccumulationRegisterDimension220 => &[MetaMemberPropertySpec {
+                name: "UseInTotals",
+                context: MetaMemberReadContext::AccumulationRegisterDimension,
+                kind: MetaMemberValueKind::Boolean,
+            }],
         };
         properties
             .iter()
@@ -88,6 +107,11 @@ impl MetaMemberReadProfile {
     }
 
     pub fn context_for_field(self, field: &str) -> Option<MetaMemberReadContext> {
+        if self == Self::AccumulationRegisterDimension220 {
+            return indexed_field_suffix(field, "collections.dimensions[")?
+                .is_empty()
+                .then_some(MetaMemberReadContext::AccumulationRegisterDimension);
+        }
         let rest = indexed_field_suffix(field, "collections.tabularSections[")?;
         if rest.is_empty() {
             return Some(MetaMemberReadContext::TabularSection);
@@ -102,6 +126,9 @@ impl MetaMemberReadProfile {
         address: &QualifiedAddress,
         kind: NodeKind,
     ) -> Option<MetaMemberReadContext> {
+        if self == Self::AccumulationRegisterDimension220 {
+            return matches!(address.segments(), [owner, member] if owner.kind() == NodeKind::AccumulationRegister && owner.name().is_some() && member.kind() == NodeKind::Dimension && member.name().is_some() && kind == NodeKind::Dimension).then_some(MetaMemberReadContext::AccumulationRegisterDimension);
+        }
         match address.segments() {
             [owner, section]
                 if owner.kind() == NodeKind::Catalog
@@ -146,6 +173,7 @@ impl MetaMemberReadContext {
         match self {
             Self::TabularSection => "TabularSection",
             Self::TabularAttribute => "Attribute",
+            Self::AccumulationRegisterDimension => "Dimension",
         }
     }
 }
@@ -157,6 +185,11 @@ impl MetaMemberPropertySpec {
 
     pub fn parse_text(self, value: &str) -> Option<MetaObservedPropertyValue> {
         match self.kind {
+            MetaMemberValueKind::Boolean => match value {
+                "true" => Some(MetaObservedPropertyValue::Boolean { value: true }),
+                "false" => Some(MetaObservedPropertyValue::Boolean { value: false }),
+                _ => None,
+            },
             MetaMemberValueKind::UnsignedInteger => value
                 .parse::<u32>()
                 .ok()
@@ -174,6 +207,7 @@ impl MetaMemberPropertySpec {
 
     pub fn accepts(self, value: &MetaObservedPropertyValue) -> bool {
         match (self.kind, value) {
+            (MetaMemberValueKind::Boolean, MetaObservedPropertyValue::Boolean { .. }) => true,
             (
                 MetaMemberValueKind::UnsignedInteger,
                 MetaObservedPropertyValue::UnsignedInteger { .. },

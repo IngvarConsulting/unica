@@ -731,6 +731,9 @@ where
             after,
         });
     }
+    if operations.iter().any(crate::dimension_totals::requested) {
+        crate::dimension_totals::validate(&working)?;
+    }
     validate_typed_event_source_final_state(&working, operations)?;
     *xml_text = working;
     Ok(counts)
@@ -969,20 +972,31 @@ pub fn typed_operation_effect_value(
             collection,
             scope,
             elements,
-        } => typed_collection_effect_value(
-            xml,
-            object,
-            *collection,
-            scope.as_ref(),
-            elements.iter().map(|element| {
-                if after {
-                    element.new_name.as_deref().unwrap_or(&element.name)
-                } else {
-                    &element.name
-                }
-            }),
-            &target,
-        )?,
+        } => {
+            let value = typed_collection_effect_value(
+                xml,
+                object,
+                *collection,
+                scope.as_ref(),
+                elements.iter().map(|element| {
+                    if after {
+                        element.new_name.as_deref().unwrap_or(&element.name)
+                    } else {
+                        &element.name
+                    }
+                }),
+                &target,
+            )?;
+            if elements
+                .iter()
+                .any(|element| element.use_in_totals.is_some())
+            {
+                crate::dimension_totals::effect(xml, object, value)?
+            } else {
+                value
+            }
+        }
+
         MetaEditOperation::Remove {
             collection,
             scope,
@@ -1967,6 +1981,14 @@ pub fn update_typed_element(
         )
     })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if let Some(value) = update.use_in_totals {
+        if let Some((edit, token)) = crate::dimension_totals::edit(xml_text, range.clone(), value)?
+        {
+            let start = range.start + properties_range.start;
+            properties_text.replace_range(edit.start - start..edit.end - start, token);
+        }
+    }
+
     if let Some(metadata_type) = &update.r#type {
         let fill_value = match &update.fill_value {
             Some(fill_value) => Some(fill_value.clone()),
@@ -2182,6 +2204,9 @@ pub fn update_typed_element(
                 Some("position"),
             )
         })?;
+    }
+    if update.use_in_totals.is_some() {
+        crate::dimension_totals::validate(xml_text)?;
     }
     Ok(())
 }

@@ -719,7 +719,8 @@ pub fn parse_typed_meta_local_info_inner(
             dimensions: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("Dimension", false, "collections.dimensions"),
+                collection_route("Dimension", false, "collections.dimensions")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),
