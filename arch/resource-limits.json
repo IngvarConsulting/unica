@@ -6852,6 +6852,70 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "operation-contract.enum-preview-values",
+      "class": "result",
+      "resource": "Число целых значений перечисления в сообщении отказа.",
+      "unit": "count",
+      "scope": "operation",
+      "source": {
+        "file": "crates/unica-operation-contract/src/lib.rs",
+        "symbol": "MAX_VALUES",
+        "within": "fn enum_refusal"
+      },
+      "expr": "8",
+      "value": 8,
+      "applied": [
+        "crates/unica-operation-contract/src/lib.rs"
+      ],
+      "status": "justified",
+      "origin": "#2015: ограниченный список в отказе аргумента",
+      "problem": "Большой домен увеличивает ответ агента; полный список остаётся в контекстном контракте Can.",
+      "onReach": "Список помечен как сокращённый, названо общее число альтернатив; next ведёт к полному контракту. Допустимые значения не удаляются из схемы.",
+      "issue": "#2015",
+      "evidence": [
+        "crates/unica-operation-contract/src/lib.rs::enum_preview_boundaries_keep_whole_escaped_json_literals",
+        "crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::dcs_and_metadata_member_enum_refusals_open_source_backed_contracts"
+      ],
+      "decision": {
+        "date": "2026-10-28",
+        "text": "Для компактного сообщения выбран предел восемь целых JSON-значений и 256 UTF-8 байт списка. При достижении предела полный домен доступен через next; это предел представления, а не допустимого ввода.",
+        "source": "https://github.com/IngvarConsulting/unica/issues/2015"
+      },
+      "review": "Проверены границы 8/9 значений, 256/257 байт, UTF-8 и открытие полного контракта через MCP."
+    },
+    {
+      "id": "operation-contract.enum-preview-bytes",
+      "class": "result",
+      "resource": "Размер JSON-списка допустимых значений в сообщении отказа перечисления.",
+      "unit": "bytes",
+      "scope": "operation",
+      "source": {
+        "file": "crates/unica-operation-contract/src/lib.rs",
+        "symbol": "MAX_PREVIEW_BYTES",
+        "within": "fn enum_refusal"
+      },
+      "expr": "256",
+      "value": 256,
+      "applied": [
+        "crates/unica-operation-contract/src/lib.rs"
+      ],
+      "status": "justified",
+      "origin": "#2015: ограниченный список в отказе аргумента",
+      "problem": "Большой домен увеличивает ответ агента; полный список остаётся в контекстном контракте Can.",
+      "onReach": "Список помечен как сокращённый, названо общее число альтернатив; next ведёт к полному контракту. Допустимые значения не удаляются из схемы.",
+      "issue": "#2015",
+      "evidence": [
+        "crates/unica-operation-contract/src/lib.rs::enum_preview_boundaries_keep_whole_escaped_json_literals",
+        "crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::dcs_and_metadata_member_enum_refusals_open_source_backed_contracts"
+      ],
+      "decision": {
+        "date": "2026-10-28",
+        "text": "Для компактного сообщения выбран предел восемь целых JSON-значений и 256 UTF-8 байт списка. При достижении предела полный домен доступен через next; это предел представления, а не допустимого ввода.",
+        "source": "https://github.com/IngvarConsulting/unica/issues/2015"
+      },
+      "review": "Проверены границы 8/9 значений, 256/257 байт, UTF-8 и открытие полного контракта через MCP."
     }
   ],
   "excluded": [

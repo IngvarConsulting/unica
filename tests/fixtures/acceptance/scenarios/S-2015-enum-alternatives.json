@@ -1,0 +1,134 @@
+{
+  "id": "S-2015-enum-alternatives",
+  "issue": 2015,
+  "area": "Ошибки аргументов",
+  "task": "Короткое перечисление в отказе props.set названо полностью; длинное сокращено и next открывает полный домен, исходники не меняются.",
+  "workspace": "tests/fixtures/acceptance/workspace",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DefaultRunMode": "wrong"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives; allowed: [\"ManagedApplication\", \"OrdinaryApplication\", \"Auto\"]",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.DefaultRunMode"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Configuration.Can.props.set"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "\"ManagedApplication\""
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "\"OrdinaryApplication\""
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "\"Auto\""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CompatibilityMode": "wrong"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives; allowed: [\"Version8_1\", \"Version8_2_13\", \"Version8_2_16\", \"Version8_3_1\", \"Version8_3_2\", \"Version8_3_3\", \"Versi",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.CompatibilityMode"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Configuration.Can.props.set"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "list shortened"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        }
+      ],
+      "captures": {
+        "enumContract": {
+          "pointer": "/next/0/args/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.enumContract"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CompatibilityMode/enum",
+          "contains": "Version8_3_27"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        }
+      ]
+    }
+  ]
+}

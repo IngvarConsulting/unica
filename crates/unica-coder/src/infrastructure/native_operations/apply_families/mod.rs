@@ -965,30 +965,34 @@ fn staged_form_items(
 }
 
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
-/// описанием есть, когда есть его файл; член объекта метаданных (реквизит,
-/// табличная часть) при существующем описании владельца считается
-/// отсутствующим — отказ «не найден» по адресу операции говорит о нём.
+/// описанием есть, когда есть его файл; член объекта метаданных и узел СКД
+/// проверяются штатным читателем представления и публичной проекцией.
 /// `None` — по описаниям этого не установить.
 pub(crate) fn staged_node_existence(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
     at: &unica_address::address::QualifiedAddress,
 ) -> Option<bool> {
+    if matches!(at.segments(), [root] if root.kind() == unica_address::address::NodeKind::Configuration)
+    {
+        return Some(
+            admission
+                .staged_state()
+                .ok()?
+                .read(std::path::Path::new("Configuration.xml"))
+                .ok()?
+                .is_some(),
+        );
+    }
     let (address, covered) = descriptor_node(at)?;
     let relative = unica_source_designer::layout::metadata_descriptor_relative(
         &address,
         binding.source_kind(),
     )
     .ok()?;
-    if admission
-        .staged_state()
-        .ok()?
-        .read(&relative)
-        .ok()?
-        .is_none()
-    {
+    let Some(descriptor) = admission.staged_state().ok()?.read(&relative).ok()? else {
         return Some(false);
-    }
+    };
     if covered == at.segments().len() {
         // Описание есть: «не найден» касается присоединённого ресурса
         // (`Rights.xml`, `Form.xml`), а не узла.
@@ -1014,7 +1018,60 @@ pub(crate) fn staged_node_existence(
         admission.staged_state().ok()?.read(&relative).ok()?
     };
     match (route, terminal.kind(), at.segments().len() - covered) {
-        (RouteClass::Metadata, _, _) => Some(false),
+        (RouteClass::Metadata, _, _) => {
+            let tail = &at.segments()[covered..];
+            let (member, scope) = match tail {
+                [member] => (member, None),
+                [section, member]
+                    if section.kind() == NodeKind::TabularSection
+                        && member.kind() == NodeKind::Attribute =>
+                {
+                    (member, section.name())
+                }
+                _ => return None,
+            };
+            let text = std::str::from_utf8(&descriptor).ok()?;
+            match unica_metadata_designer::edit::find_typed_element_identity(
+                text,
+                member.kind().as_str(),
+                scope,
+                member.name()?,
+            ) {
+                Ok(_) => Some(true),
+                Err(error) if error.code == unica_metadata::MetaDiagnosticCode::TargetNotFound => {
+                    Some(false)
+                }
+                Err(_) => None,
+            }
+        }
+        (RouteClass::Dcs, _, _) => {
+            let bytes = resource("Template.xml")?;
+            let text = std::str::from_utf8(&bytes).ok()?;
+            // Membership does not consume or expose support properties.
+            let facts = crate::infrastructure::family_codecs::dcs_codec()
+                .read(
+                    text,
+                    unica_metadata::support_state::ObjectSupportData {
+                        state: unica_metadata::support_state::ObjectSupportState::NotSupported,
+                        direct_edit_safe: None,
+                    },
+                )
+                .ok()?;
+            let profile = crate::domain::source_capabilities::bsl_profile_for_source(
+                binding.source_profile(),
+            )?;
+            let logical =
+                crate::infrastructure::logical_tree::route_logical_address(at, profile).ok()?;
+            match crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
+                &logical,
+                serde_json::to_value(facts).ok()?,
+                binding.source_kind(),
+            ) {
+                Ok(_) => Some(true),
+                Err(error) if error.code() == unica_refusal::RefusalCode::NotFound => Some(false),
+                Err(_) => None,
+            }
+        }
         (RouteClass::Role, NodeKind::Right, 1) => {
             let (kind, name) = terminal.name()?.split_once('_')?;
             unica_roles_designer::planner::staged_rights_entry_exists(

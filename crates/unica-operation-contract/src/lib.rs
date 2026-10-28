@@ -323,10 +323,7 @@ impl Validator<'_> {
         }
         if let Some(values) = schema["enum"].as_array() {
             if !values.contains(value) {
-                return Err(error(
-                    path,
-                    "value is not one of the supported alternatives",
-                ));
+                return Err(error(path, enum_refusal(values)));
             }
         }
         // Различитель выбирает вариант по значению ключа (вид элемента формы):
@@ -349,10 +346,21 @@ impl Validator<'_> {
             });
             return match variant {
                 Some(variant) => self.validate(variant, value, path),
-                None => Err(error(
-                    &format!("{path}.{key}"),
-                    "value is not one of the supported alternatives",
-                )),
+                None => {
+                    let mut values = Vec::new();
+                    for variant in alternatives {
+                        for value in variant["properties"][key]["enum"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                        {
+                            if !values.contains(value) {
+                                values.push(value.clone());
+                            }
+                        }
+                    }
+                    Err(error(&format!("{path}.{key}"), enum_refusal(&values)))
+                }
             };
         }
         if let Some(alternatives) = schema["anyOf"].as_array() {
@@ -458,6 +466,36 @@ pub fn apply_defaults(schema: &Value, value: &mut Value) {
     }
 }
 
+/// Keep whole JSON literals: a cut string would invent an accepted value.
+fn enum_refusal(values: &[Value]) -> String {
+    const MAX_VALUES: usize = 8;
+    const MAX_PREVIEW_BYTES: usize = 256;
+    if values.is_empty() {
+        return "this argument has no supported alternatives; read the operation contract".into();
+    }
+    let mut preview = String::from("[");
+    let mut displayed = 0;
+    for value in values.iter().take(MAX_VALUES) {
+        let literal = value.to_string();
+        let separator = if displayed == 0 { "" } else { ", " };
+        if preview.len() + separator.len() + literal.len() + 1 > MAX_PREVIEW_BYTES {
+            break;
+        }
+        preview.push_str(separator);
+        preview.push_str(&literal);
+        displayed += 1;
+    }
+    preview.push(']');
+    let mut message = format!("value is not one of the supported alternatives; allowed: {preview}");
+    if displayed != values.len() {
+        message.push_str(&format!(
+            " (list shortened; {} alternatives total; read the operation contract)",
+            values.len()
+        ));
+    }
+    message
+}
+
 fn normalize_aliases(schema: &Value, value: &mut Value) {
     if let Some(object) = value.as_object_mut() {
         if let Some(names) = schema["x-unica-aliases"].as_array() {
@@ -532,6 +570,78 @@ mod tests {
             help: "help",
             format_validators,
         }
+    }
+
+    #[test]
+    fn enum_refusals_name_small_domains_at_the_original_nested_path() {
+        let contract = contract(
+            json!({"type":"object","properties":{"items":{
+                "type":"array","items":{"type":"object","properties":{
+                    "mode":{"enum":["Auto","Manual",null,true,7]}
+                }}
+            }}}),
+            &[],
+        );
+        let refused = contract
+            .normalize(&json!({"items":[{"mode":"wrong"}]}), "ops[2].args")
+            .unwrap_err();
+        assert_eq!(refused.path, "ops[2].args.items[0].mode");
+        for value in ["\"Auto\"", "\"Manual\"", "null", "true", "7"] {
+            assert!(refused.message.contains(value), "{refused:?}");
+        }
+        assert!(!refused.message.contains("read the operation contract"));
+    }
+
+    #[test]
+    fn enum_refusal_previews_are_bounded_by_count_and_utf8_bytes() {
+        for values in [
+            (0..40)
+                .map(|i| json!(format!("Value{i}")))
+                .collect::<Vec<_>>(),
+            vec![json!("Я".repeat(1000))],
+        ] {
+            let refused = contract(json!({"enum": values}), &[])
+                .normalize(&json!("wrong"), "args.mode")
+                .unwrap_err();
+            assert!(
+                refused.message.contains("read the operation contract"),
+                "{refused:?}"
+            );
+            assert!(refused.message.len() < 400, "{}", refused.message.len());
+            assert!(!refused.message.contains("Value8"));
+        }
+    }
+
+    #[test]
+    fn enum_preview_boundaries_keep_whole_escaped_json_literals() {
+        for count in [8, 9] {
+            let values: Vec<_> = (0..count).map(|n| json!(n)).collect();
+            assert_eq!(enum_refusal(&values).contains("list shortened"), count == 9);
+        }
+        // [ + quotes + ASCII payload + ] is exactly 256 bytes.
+        assert!(!enum_refusal(&[json!("x".repeat(252))]).contains("list shortened"));
+        assert!(enum_refusal(&[json!("x".repeat(253))]).contains("list shortened"));
+        let escaped = json!("quoted\"\nline");
+        assert!(enum_refusal(std::slice::from_ref(&escaped)).contains(&escaped.to_string()));
+        assert!(enum_refusal(&[]).starts_with("this argument has no supported alternatives"));
+    }
+
+    #[test]
+    fn discriminator_refusal_names_the_union_without_duplicate_aliases() {
+        let contract = contract(
+            json!({"type":"object","x-unica-discriminator":"type","anyOf":[
+                {"properties":{"type":{"enum":["Field","Поле"]}}},
+                {"properties":{"type":{"enum":["Field","Group"]}}}
+            ]}),
+            &[],
+        );
+        let refused = contract
+            .normalize(&json!({"type":"wrong"}), "args.items[0]")
+            .unwrap_err();
+        assert_eq!(refused.path, "args.items[0].type");
+        assert!(refused.message.contains("\"Поле\""), "{refused:?}");
+        assert!(refused.message.contains("\"Group\""), "{refused:?}");
+        assert_eq!(refused.message.matches("\"Field\"").count(), 1);
     }
 
     fn lower_word(value: &Value) -> Result<(), String> {
