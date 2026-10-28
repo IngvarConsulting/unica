@@ -11,6 +11,168 @@
         "at": "main:Catalog.Валюты",
         "ops": [
           {
+            "op": "tabularSection.add",
+            "args": {
+              "items": [
+                {
+                  "name": "NewRows",
+                  "attributes": [
+                    {
+                      "name": "Safe",
+                      "type": {
+                        "variants": [
+                          {
+                            "kind": "boolean"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "linenumber",
+                      "type": {
+                        "variants": [
+                          {
+                            "kind": "boolean"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `linenumber` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].attributes[1].name"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "tabularSection.add",
+            "args": {
+              "items": [
+                {
+                  "name": "NewRows",
+                  "attributes": [
+                    {
+                      "name": "Safe",
+                      "type": {
+                        "variants": [
+                          {
+                            "kind": "boolean"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "НомерСтроки",
+                      "type": {
+                        "variants": [
+                          {
+                            "kind": "boolean"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `НомерСтроки` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].attributes[1].name"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "tabularSection.add",
+            "args": {
+              "items": [
+                {
+                  "name": "NewRows",
+                  "attributes": [
+                    {
+                      "name": "Safe",
+                      "type": {
+                        "variants": [
+                          {
+                            "kind": "boolean"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "LineNumber",
+                      "type": {
+                        "variants": [
+                          {
+                            "kind": "boolean"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `LineNumber` is the standard LineNumber attribute of a tabular section; choose another name",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].attributes[1].name"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
             "op": "props.set",
             "args": {
               "values": {

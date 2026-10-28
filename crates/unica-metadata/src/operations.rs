@@ -1637,18 +1637,45 @@ fn validate_relation_edit_shape(
 /// row attribute. Header attributes have a different namespace (#2057).
 fn validate_tabular_attribute_name(
     collection: MetaCollection,
-    scope: Option<&MetaScope>,
+    tabular_section: bool,
     name: &str,
     field: &str,
 ) -> Result<(), MetaDiagnostic> {
     if collection == MetaCollection::Attributes
-        && scope.is_some()
+        && tabular_section
         && ["LineNumber", "НомерСтроки"]
             .iter()
             .any(|standard| metadata_name_eq(name, standard))
     {
         return Err(invalid_operation(field,
             format!("`{name}` is the standard LineNumber attribute of a tabular section; choose another name")));
+    }
+    Ok(())
+}
+
+// A newly created tabular section owns its declared attributes immediately;
+// validate those names through the same namespace rule as attribute.add.
+fn validate_added_element_names(
+    collection: MetaCollection,
+    tabular_section: bool,
+    element: &MetaElementDefinition,
+    field: &str,
+) -> Result<(), MetaDiagnostic> {
+    validate_tabular_attribute_name(
+        collection,
+        tabular_section,
+        &element.name,
+        &format!("{field}.name"),
+    )?;
+    if collection == MetaCollection::TabularSections {
+        for (index, attribute) in element.attributes.iter().enumerate() {
+            validate_added_element_names(
+                MetaCollection::Attributes,
+                true,
+                attribute,
+                &format!("{field}.attributes[{index}]"),
+            )?;
+        }
     }
     Ok(())
 }
@@ -1680,7 +1707,7 @@ pub fn validate_metadata_operation_capabilities(
                     "only an attribute of a catalog tabular section can be copied",
                 ));
             }
-            validate_tabular_attribute_name(*collection, scope.as_ref(), new_name, "values.name")
+            validate_tabular_attribute_name(*collection, scope.is_some(), new_name, "values.name")
         }
         MetaEditOperation::Add {
             collection,
@@ -1689,11 +1716,11 @@ pub fn validate_metadata_operation_capabilities(
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
             for (index, element) in elements.iter().enumerate() {
-                validate_tabular_attribute_name(
+                validate_added_element_names(
                     *collection,
-                    scope.as_ref(),
-                    &element.name,
-                    &format!("elements[{index}].name"),
+                    scope.is_some(),
+                    element,
+                    &format!("elements[{index}]"),
                 )?;
             }
             if *collection != MetaCollection::Templates {
@@ -1732,7 +1759,7 @@ pub fn validate_metadata_operation_capabilities(
                 if let Some(name) = &element.new_name {
                     validate_tabular_attribute_name(
                         *collection,
-                        scope.as_ref(),
+                        scope.is_some(),
                         name,
                         &format!("elements[{index}].newName"),
                     )?;
@@ -3054,6 +3081,33 @@ mod tests {
                 assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
                 assert_eq!(error.field.as_deref(), Some(path));
                 assert!(error.message.contains("LineNumber"), "{error:?}");
+            }
+            let nested = MetaEditOperation::add(
+                MetaCollection::TabularSections,
+                None,
+                vec![MetaElementInput {
+                    name: "NewLines".into(),
+                    attributes: Some(vec![MetaElementInput::named(name)]),
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+            for (kind, path) in [
+                (MetadataKind::Catalog, "Catalog.Items"),
+                (MetadataKind::Document, "Document.Order"),
+            ] {
+                let owner = MetadataAddress::parse(
+                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    path,
+                )
+                .unwrap();
+                let error =
+                    validate_metadata_operation_capabilities(kind, &owner, &nested).unwrap_err();
+                assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+                assert_eq!(
+                    error.field.as_deref(),
+                    Some("elements[0].attributes[0].name")
+                );
             }
             let header = MetaEditOperation::add(
                 MetaCollection::Attributes,
