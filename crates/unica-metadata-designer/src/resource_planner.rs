@@ -777,6 +777,7 @@ pub fn parse_support_operation(
     args: &Map<String, Value>,
     op_index: usize,
     source_set_name: &str,
+    source_kind: SourceSetKind,
 ) -> Result<MetadataResourcePlan, ApplyPlanError> {
     let target =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
@@ -789,6 +790,14 @@ pub fn parse_support_operation(
         .map_err(|error| {
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
         })?;
+
+    if operation == SupportOperation::RuleRestore && source_kind != SourceSetKind::Configuration {
+        return Err(bad(
+            op_index,
+            "at",
+            "supportRule.restore requires a configuration source set",
+        ));
+    }
 
     match operation {
         SupportOperation::CapabilitySet => {
