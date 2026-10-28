@@ -45,6 +45,7 @@ properties_operations!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
     Metadata(MetadataKind),
+    CatalogOwner,
     Role,
     Subsystem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
@@ -91,7 +92,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
-                    PropertiesSite::Metadata(_) => false,
+                    PropertiesSite::Metadata(_) | PropertiesSite::CatalogOwner => false,
                 }
             }
         }
@@ -169,7 +170,7 @@ impl PropertiesSite {
         if site.route() == unica_source_contract::route::RouteClass::Configuration {
             return Self::root_of(site.source().kind());
         }
-        Self::from_address(site.at())
+        Self::for_source(site.at(), site.source().kind())
     }
 
     /// The root profile of a source set; external processors and reports
@@ -189,7 +190,26 @@ impl PropertiesSite {
     /// Read routing is deliberately irrelevant here: CommonModule is read as
     /// a module and still owns a metadata descriptor. Members and nested
     /// subsystems do not acquire the owner's write profile.
+    pub fn for_source(
+        at: &QualifiedAddress,
+        source: unica_source_contract::SourceSetKind,
+    ) -> Option<Self> {
+        let site = Self::from_address(at)?;
+        if site == Self::CatalogOwner
+            && source != unica_source_contract::SourceSetKind::Configuration
+        {
+            return None;
+        }
+        Some(site)
+    }
+
     pub fn from_address(at: &QualifiedAddress) -> Option<Self> {
+        if matches!(at.segments(), [owner, member]
+            if owner.kind() == NodeKind::Catalog && owner.name().is_some()
+            && member.kind() == NodeKind::StandardAttribute && member.name() == Some("Owner"))
+        {
+            return Some(Self::CatalogOwner);
+        }
         let [owner] = at.segments() else {
             return None;
         };
@@ -213,6 +233,9 @@ impl PropertiesSite {
         let mut groups = Vec::new();
         match self {
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
+            Self::CatalogOwner => {
+                properties.insert("FillFromFillingValue".into(), json!({"type":"boolean"}));
+            }
             Self::Role | Self::Subsystem | Self::Configuration { .. } => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
@@ -249,6 +272,7 @@ impl PropertiesOperation {
             Self::Set => OperationContract {
                 schema: object(&[("values", site.values_schema())], &["values"]),
                 target: match site {
+                    PropertiesSite::CatalogOwner => "The standard Owner attribute at `<set>:Catalog.Name.StandardAttribute.Owner` in a configuration source.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
                     _ => "The existing named top-level metadata object, role or subsystem at its full address. The address selects the property profile.",
@@ -256,11 +280,12 @@ impl PropertiesOperation {
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
                 notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 example_args: match site {
+                    PropertiesSite::CatalogOwner => json!({"values":{"FillFromFillingValue":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::CatalogOwner => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -308,6 +333,37 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn catalog_owner_exposes_only_the_filling_flag() {
+        use super::*;
+        let at = QualifiedAddress::parse("main:Catalog.Items.StandardAttribute.Owner").unwrap();
+        let site = PropertiesSite::from_address(&at).expect("Owner is writable");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        for enabled in [false, true] {
+            assert!(oracle.is_valid(&json!({"values":{"FillFromFillingValue":enabled}})));
+        }
+        for values in [
+            json!({}),
+            json!({"FillFromFillingValue":"true"}),
+            json!({"FillFromFillingValue":true,"FillChecking":"ShowError"}),
+        ] {
+            assert!(!oracle.is_valid(&json!({"values":values})));
+        }
+        for other in [
+            "main:Catalog.Items.StandardAttribute.Code",
+            "main:Catalog.Items.StandardAttribute",
+            "main:Document.Order.StandardAttribute.Owner",
+            "main:Catalog.Items.Attribute.Owner",
+            "main:Catalog.Items.TabularSection.Lines.StandardAttribute.Owner",
+        ] {
+            assert!(
+                PropertiesSite::from_address(&QualifiedAddress::parse(other).unwrap()).is_none(),
+                "{other}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
