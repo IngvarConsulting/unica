@@ -1423,15 +1423,27 @@ pub fn apply_typed_properties(
                 )
             }
             (MetaPropertyKey::MainDataCompositionSchema, MetaPropertyValue::String(value)) => {
-                if unica_xml_format::read::direct_text(property).trim() == value.trim() {
+                let value = value.trim();
+                if unica_xml_format::read::direct_text(property).trim() == value {
                     continue;
                 }
-                // A prefixed owner may have no default namespace. This new
-                // reference property owns its namespace in the emitted image.
-                format!(
-                    "{indent}<{tag} xmlns=\"http://v8.1c.ru/8.3/MDClasses\">{}</{tag}>",
-                    unica_xml_format::text::escape_xml(value)
-                )
+                // The unprefixed replacement needs its own namespace only
+                // when the parent does not supply the MDClasses default.
+                let namespace = if properties.lookup_namespace_uri(None)
+                    == Some("http://v8.1c.ru/8.3/MDClasses")
+                {
+                    ""
+                } else {
+                    " xmlns=\"http://v8.1c.ru/8.3/MDClasses\""
+                };
+                if value.is_empty() {
+                    format!("{indent}<{tag}{namespace}/>")
+                } else {
+                    format!(
+                        "{indent}<{tag}{namespace}>{}</{tag}>",
+                        unica_xml_format::text::escape_xml(value)
+                    )
+                }
             }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}<{tag}/>")

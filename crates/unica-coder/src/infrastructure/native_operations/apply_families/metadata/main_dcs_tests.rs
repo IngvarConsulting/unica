@@ -322,3 +322,123 @@ fn main_dcs_assignment_preserves_the_namespace_of_a_prefixed_report() {
         .unwrap()
         .contains("<md:Comment>keep</md:Comment>"));
 }
+
+fn main_dcs_namespace_cases() -> [(String, &'static str); 3] {
+    let prefixed = REGISTERED_REPORT
+        .replace("<", "<md:")
+        .replace("<md:/", "</md:")
+        .replace("xmlns=", "xmlns:md=");
+    let foreign_default =
+        prefixed.replace("xmlns:md=", "xmlns=\"urn:unrelated-default\" xmlns:md=");
+    [
+        (REGISTERED_REPORT.to_string(), ""),
+        (prefixed, " xmlns=\"http://v8.1c.ru/8.3/MDClasses\""),
+        (foreign_default, " xmlns=\"http://v8.1c.ru/8.3/MDClasses\""),
+    ]
+}
+
+#[test]
+fn main_dcs_assignment_writes_a_trimmed_reference_with_only_the_required_namespace() {
+    for (owner, namespace) in main_dcs_namespace_cases() {
+        let fixture = registered_fixture();
+        std::fs::write(
+            fixture.binding.source_root().join("Reports/Sales.xml"),
+            &owner,
+        )
+        .unwrap();
+        let staged = plan_final(&fixture, &[("props.set", json!({"at":"main:Report.Sales","values":{"MainDataCompositionSchema":" \tReport.Sales.Template.Other\r\n "}}))]).unwrap();
+        let changed = staged
+            .planned_changes()
+            .into_iter()
+            .find(|change| change.relative_path == Path::new("Reports/Sales.xml"))
+            .unwrap();
+        let StagedFileState::Bytes(bytes) = changed.current else {
+            panic!("report stays present")
+        };
+        let xml = std::str::from_utf8(&bytes).unwrap();
+        let document = roxmltree::Document::parse(xml).unwrap();
+        let reference = document
+            .descendants()
+            .find(|node| {
+                node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "MainDataCompositionSchema"))
+            })
+            .unwrap();
+        assert_eq!(
+            &xml[reference.range()],
+            format!("<MainDataCompositionSchema{namespace}>Report.Sales.Template.Other</MainDataCompositionSchema>")
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.binding.source_root().join("Reports/Sales.xml"))
+                .unwrap(),
+            owner,
+            "planning must not publish the canonicalized image"
+        );
+    }
+}
+
+#[test]
+fn main_dcs_clear_writes_a_self_closing_reference_in_its_original_namespace() {
+    for (owner, namespace) in main_dcs_namespace_cases() {
+        for value in ["", " \t\r\n "] {
+            let fixture = registered_fixture();
+            std::fs::write(
+                fixture.binding.source_root().join("Reports/Sales.xml"),
+                &owner,
+            )
+            .unwrap();
+            let staged = plan_final(
+                &fixture,
+                &[(
+                    "props.set",
+                    json!({"at":"main:Report.Sales","values":{"MainDataCompositionSchema":value}}),
+                )],
+            )
+            .unwrap();
+            let changed = staged
+                .planned_changes()
+                .into_iter()
+                .find(|change| change.relative_path == Path::new("Reports/Sales.xml"))
+                .unwrap();
+            let StagedFileState::Bytes(bytes) = changed.current else {
+                panic!("report stays present")
+            };
+            let xml = std::str::from_utf8(&bytes).unwrap();
+            let document = roxmltree::Document::parse(xml).unwrap();
+            let reference = document
+                .descendants()
+                .find(|node| {
+                    node.has_tag_name((
+                        "http://v8.1c.ru/8.3/MDClasses",
+                        "MainDataCompositionSchema",
+                    ))
+                })
+                .unwrap();
+            assert_eq!(
+                &xml[reference.range()],
+                format!("<MainDataCompositionSchema{namespace}/>")
+            );
+        }
+    }
+}
+
+#[test]
+fn main_dcs_whitespace_equivalent_assignment_keeps_the_existing_owner_bytes() {
+    for (owner, _) in main_dcs_namespace_cases() {
+        let fixture = registered_fixture();
+        std::fs::write(
+            fixture.binding.source_root().join("Reports/Sales.xml"),
+            &owner,
+        )
+        .unwrap();
+        let staged = plan_final(&fixture, &[("props.set", json!({"at":"main:Report.Sales","values":{"MainDataCompositionSchema":" \tReport.Sales.Template.MainSchema\r\n "}}))]).unwrap();
+        assert!(staged.planned_changes().is_empty());
+        assert!(staged
+            .original_image(Path::new("Reports/Sales/Templates/MainSchema.xml"))
+            .is_some());
+        assert_eq!(
+            std::fs::read_to_string(fixture.binding.source_root().join("Reports/Sales.xml"))
+                .unwrap(),
+            owner
+        );
+    }
+}
