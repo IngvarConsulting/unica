@@ -833,6 +833,7 @@ pub fn parse_element_update(
     Ok(MetaElementUpdateInput {
         indexing: reader.read("indexing", optional_string_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
+        base_dimension: reader.read("baseDimension", optional_bool_at)?,
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,
         synonym: reader.read("synonym", optional_string_at)?,
@@ -1839,5 +1840,19 @@ mod shared_primitive_contract_tests {
         let error = parse_predefined_fields(&reader).unwrap_err();
         assert_eq!(error.field.as_deref(), Some(field), "{pointer}: {error:?}");
     }
+    }
+}
+
+#[cfg(test)]
+mod base_dimension_tests {
+    #[test]
+    fn base_dimension_update_accepts_explicit_false_and_true() {
+        for value in [false, true] {
+            assert!(super::parse_element_update(
+                &serde_json::json!({"name":"Item", "baseDimension":value}),
+                "elements[0]"
+            )
+            .is_ok());
+        }
     }
 }

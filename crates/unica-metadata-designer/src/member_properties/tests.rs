@@ -177,3 +177,54 @@ fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attribu
         assert_no_section_properties(column);
     }
 }
+
+#[test]
+fn base_dimension_profile_reads_bools_and_keeps_missing_and_damaged_facts_local() {
+    let native = include_str!("../../../../tests/fixtures/acceptance/workspace-calculation-base-dimension/src/CalculationRegisters/Accruals.xml");
+    let original = "<BaseDimension>false</BaseDimension>";
+    for value in [false, true] {
+        let xml = native.replace(original, &format!("<BaseDimension>{value}</BaseDimension>"));
+        let info = read(
+            &xml,
+            "CalculationRegister.Accruals",
+            Some(SourceSetKind::Configuration),
+        );
+        let dimension = &info.collections.dimensions[0];
+        assert_eq!(dimension.properties.len(), 1);
+        assert_eq!(dimension.properties[0].name, "BaseDimension");
+        assert_eq!(
+            serde_json::to_value(&dimension.properties[0].value).unwrap(),
+            json!({"kind":"boolean", "value":value})
+        );
+        assert!(dimension.r#type.is_some());
+    }
+    for replacement in [
+        "",
+        "<BaseDimension/>",
+        "<BaseDimension>Future</BaseDimension>",
+        "<BaseDimension>true</BaseDimension><BaseDimension>true</BaseDimension>",
+        "<BaseDimension xmlns=\"urn:foreign\">true</BaseDimension>",
+    ] {
+        let info = read(
+            &native.replace(original, replacement),
+            "CalculationRegister.Accruals",
+            Some(SourceSetKind::Configuration),
+        );
+        assert!(info.collections.dimensions[0].properties.is_empty());
+        assert!(info.collections.dimensions[0].r#type.is_some());
+        let diagnostic = info.diagnostics.iter().any(|d| {
+            d.field.as_deref() == Some("collections.dimensions[0].properties.BaseDimension")
+        });
+        assert_eq!(diagnostic, !replacement.is_empty(), "{replacement}");
+    }
+    for kind in [
+        None,
+        Some(SourceSetKind::Extension),
+        Some(SourceSetKind::ExternalReport),
+        Some(SourceSetKind::ExternalProcessor),
+    ] {
+        let info = read(native, "CalculationRegister.Accruals", kind);
+        assert!(info.member_read_profile.is_none());
+        assert!(info.collections.dimensions[0].properties.is_empty());
+    }
+}

@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="CalculationRegister.Accruals" id="79a64afe-77f6-46d1-98f0-53cddcb5e0b2" configVersion="f410957fe5e41043a964204f4736093900000000">
+			<Metadata name="CalculationRegister.Accruals.Dimension.Department" id="20f8ece4-ef35-4a06-9fd7-7825afc24e52"/>
+			<Metadata name="CalculationRegister.Accruals.Dimension.Employee" id="aa05bd8e-6f10-42de-a85f-fb02c5c090bb"/>
+			<Metadata name="CalculationRegister.Accruals.Resource.Amount" id="d9c1170b-be15-41b7-a546-b43cf3cb05a0"/>
+		</Metadata>
+		<Metadata name="ChartOfCalculationTypes.Kinds" id="e40e2771-36f6-4d46-9541-582e6d3571fa" configVersion="00ba54833bd9904b9dcf83dcdf40d3be00000000"/>
+		<Metadata name="CommonModule.Probe" id="9d3af1f2-e36e-48f7-94bf-2861d90e1314" configVersion="a9a8b96cf684f64f889dff941a76442300000000"/>
+		<Metadata name="CommonModule.Probe.Module" id="9d3af1f2-e36e-48f7-94bf-2861d90e1314.0" configVersion="42b781bdc47f8748aa9ccba4e986f8e200000000"/>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="9c8a587855f02845bcd1948632acaabb00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="1ccb4066499678498f84d76071473f4200000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ManagedApplicationModule" id="00000000-0000-0000-0000-000000000002.6" configVersion="4f9e84364e26254698c12c3386f4228400000000"/>
+		<Metadata name="Document.Orders" id="20e039b4-e621-4f84-b35e-3a3685335a83" configVersion="28e0600fa0c9004e89b90741606296fa00000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="c39de5d95b2def48a56da861ca0c90f100000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>
