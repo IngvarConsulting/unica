@@ -1132,6 +1132,7 @@ pub(crate) fn plan_hidden_v13_apply(
                     &mut staged.proposal(),
                     &authority,
                     &operations,
+                    cursor,
                 )?;
                 provisional.extend(batch_effects_as_provisional(
                     &before, &staged, planned, cursor,
