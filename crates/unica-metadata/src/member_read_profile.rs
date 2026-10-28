@@ -8,17 +8,31 @@ use unica_source_contract::SourceSetKind;
 #[serde(rename_all = "camelCase")]
 pub enum MetaMemberReadProfile {
     CatalogTabularSection220,
+    DocumentFilling220,
+    ExchangePlanFilling220,
+    ChartOfAccountsFilling220,
+    ChartOfCharacteristicTypesFilling220,
+    ChartOfCalculationTypesFilling220,
+    BusinessProcessFilling220,
+    TaskFilling220,
+    ReportFilling220,
+    DataProcessorFilling220,
+    InformationRegisterFilling220,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaMemberReadContext {
     TabularSection,
+    HeaderAttribute,
+    InformationDimension,
+    InformationResource,
     TabularAttribute,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum MetaMemberValueKind {
     UnsignedInteger,
+    Boolean,
     Text(&'static [&'static str]),
     LocalizedString,
 }
@@ -63,68 +77,165 @@ const CATALOG_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
     },
 ];
 
+const FILLING_PROPERTIES: &[MetaMemberPropertySpec] = &[
+    MetaMemberPropertySpec {
+        name: "FillFromFillingValue",
+        context: MetaMemberReadContext::HeaderAttribute,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "FillFromFillingValue",
+        context: MetaMemberReadContext::TabularAttribute,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "FillFromFillingValue",
+        context: MetaMemberReadContext::InformationDimension,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "FillFromFillingValue",
+        context: MetaMemberReadContext::InformationResource,
+        kind: MetaMemberValueKind::Boolean,
+    },
+];
+
 impl MetaMemberReadProfile {
     pub fn for_source(
         source_kind: SourceSetKind,
         owner: MetadataKind,
         format: Option<&str>,
     ) -> Option<Self> {
-        (source_kind == SourceSetKind::Configuration
-            && owner == MetadataKind::Catalog
-            && format == Some("2.20"))
-        .then_some(Self::CatalogTabularSection220)
+        if source_kind != SourceSetKind::Configuration || format != Some("2.20") {
+            return None;
+        }
+        match owner {
+            MetadataKind::Catalog => Some(Self::CatalogTabularSection220),
+            MetadataKind::Document => Some(Self::DocumentFilling220),
+            MetadataKind::ExchangePlan => Some(Self::ExchangePlanFilling220),
+            MetadataKind::ChartOfAccounts => Some(Self::ChartOfAccountsFilling220),
+            MetadataKind::ChartOfCharacteristicTypes => {
+                Some(Self::ChartOfCharacteristicTypesFilling220)
+            }
+            MetadataKind::ChartOfCalculationTypes => Some(Self::ChartOfCalculationTypesFilling220),
+            MetadataKind::BusinessProcess => Some(Self::BusinessProcessFilling220),
+            MetadataKind::Task => Some(Self::TaskFilling220),
+            MetadataKind::Report => Some(Self::ReportFilling220),
+            MetadataKind::DataProcessor => Some(Self::DataProcessorFilling220),
+            MetadataKind::InformationRegister => Some(Self::InformationRegisterFilling220),
+            _ => None,
+        }
     }
-
+    pub fn owner_kind(self) -> MetadataKind {
+        match self {
+            Self::CatalogTabularSection220 => MetadataKind::Catalog,
+            Self::DocumentFilling220 => MetadataKind::Document,
+            Self::ExchangePlanFilling220 => MetadataKind::ExchangePlan,
+            Self::ChartOfAccountsFilling220 => MetadataKind::ChartOfAccounts,
+            Self::ChartOfCharacteristicTypesFilling220 => MetadataKind::ChartOfCharacteristicTypes,
+            Self::ChartOfCalculationTypesFilling220 => MetadataKind::ChartOfCalculationTypes,
+            Self::BusinessProcessFilling220 => MetadataKind::BusinessProcess,
+            Self::TaskFilling220 => MetadataKind::Task,
+            Self::ReportFilling220 => MetadataKind::Report,
+            Self::DataProcessorFilling220 => MetadataKind::DataProcessor,
+            Self::InformationRegisterFilling220 => MetadataKind::InformationRegister,
+        }
+    }
     pub fn properties(
         self,
         context: MetaMemberReadContext,
     ) -> impl Iterator<Item = &'static MetaMemberPropertySpec> {
-        let properties = match self {
-            Self::CatalogTabularSection220 => CATALOG_MEMBER_PROPERTIES,
+        let properties = match (self, context) {
+            (
+                Self::CatalogTabularSection220,
+                MetaMemberReadContext::TabularSection | MetaMemberReadContext::TabularAttribute,
+            ) => CATALOG_MEMBER_PROPERTIES,
+            (
+                Self::CatalogTabularSection220
+                | Self::DocumentFilling220
+                | Self::ExchangePlanFilling220
+                | Self::ChartOfAccountsFilling220
+                | Self::ChartOfCharacteristicTypesFilling220
+                | Self::ChartOfCalculationTypesFilling220
+                | Self::BusinessProcessFilling220
+                | Self::TaskFilling220
+                | Self::InformationRegisterFilling220,
+                MetaMemberReadContext::HeaderAttribute,
+            ) => FILLING_PROPERTIES,
+            (
+                Self::ReportFilling220 | Self::DataProcessorFilling220,
+                MetaMemberReadContext::TabularAttribute,
+            ) => FILLING_PROPERTIES,
+            (
+                Self::InformationRegisterFilling220,
+                MetaMemberReadContext::InformationDimension
+                | MetaMemberReadContext::InformationResource,
+            ) => FILLING_PROPERTIES,
+            _ => &[],
         };
         properties
             .iter()
             .filter(move |spec| spec.context == context)
     }
-
     pub fn context_for_field(self, field: &str) -> Option<MetaMemberReadContext> {
-        let rest = indexed_field_suffix(field, "collections.tabularSections[")?;
-        if rest.is_empty() {
-            return Some(MetaMemberReadContext::TabularSection);
+        let direct = [
+            (
+                "collections.attributes[",
+                MetaMemberReadContext::HeaderAttribute,
+            ),
+            (
+                "collections.dimensions[",
+                MetaMemberReadContext::InformationDimension,
+            ),
+            (
+                "collections.resources[",
+                MetaMemberReadContext::InformationResource,
+            ),
+        ];
+        for (prefix, context) in direct {
+            if indexed_field_suffix(field, prefix).is_some_and(str::is_empty) {
+                return self.properties(context).next().map(|_| context);
+            }
         }
-        indexed_field_suffix(rest, ".attributes[")?
-            .is_empty()
-            .then_some(MetaMemberReadContext::TabularAttribute)
+        let rest = indexed_field_suffix(field, "collections.tabularSections[")?;
+        let context = if rest.is_empty() {
+            MetaMemberReadContext::TabularSection
+        } else if indexed_field_suffix(rest, ".attributes[")?.is_empty() {
+            MetaMemberReadContext::TabularAttribute
+        } else {
+            return None;
+        };
+        self.properties(context).next().map(|_| context)
     }
-
     pub fn context_for_address(
         self,
         address: &QualifiedAddress,
         kind: NodeKind,
     ) -> Option<MetaMemberReadContext> {
-        match address.segments() {
-            [owner, section]
-                if owner.kind() == NodeKind::Catalog
-                    && owner.name().is_some()
-                    && section.kind() == NodeKind::TabularSection
+        let owner = address.segments().first()?;
+        if owner.kind().as_str() != self.owner_kind().as_str() || owner.name().is_none() {
+            return None;
+        }
+        let context = match address.segments() {
+            [_, member] if member.name().is_some() && member.kind() == kind => match kind {
+                NodeKind::Attribute => MetaMemberReadContext::HeaderAttribute,
+                NodeKind::Dimension => MetaMemberReadContext::InformationDimension,
+                NodeKind::Resource => MetaMemberReadContext::InformationResource,
+                NodeKind::TabularSection => MetaMemberReadContext::TabularSection,
+                _ => return None,
+            },
+            [_, section, member]
+                if section.kind() == NodeKind::TabularSection
                     && section.name().is_some()
-                    && kind == NodeKind::TabularSection =>
-            {
-                Some(MetaMemberReadContext::TabularSection)
-            }
-            [owner, section, attribute]
-                if owner.kind() == NodeKind::Catalog
-                    && owner.name().is_some()
-                    && section.kind() == NodeKind::TabularSection
-                    && section.name().is_some()
-                    && attribute.kind() == NodeKind::Attribute
-                    && attribute.name().is_some()
+                    && member.kind() == NodeKind::Attribute
+                    && member.name().is_some()
                     && kind == NodeKind::Attribute =>
             {
-                Some(MetaMemberReadContext::TabularAttribute)
+                MetaMemberReadContext::TabularAttribute
             }
-            _ => None,
-        }
+            _ => return None,
+        };
+        self.properties(context).next().map(|_| context)
     }
 
     pub fn owns_diagnostic(self, field: &str) -> bool {
@@ -144,6 +255,9 @@ fn indexed_field_suffix<'a>(field: &'a str, prefix: &str) -> Option<&'a str> {
 impl MetaMemberReadContext {
     pub fn xml_tag(self) -> &'static str {
         match self {
+            Self::HeaderAttribute => "Attribute",
+            Self::InformationDimension => "Dimension",
+            Self::InformationResource => "Resource",
             Self::TabularSection => "TabularSection",
             Self::TabularAttribute => "Attribute",
         }
@@ -157,6 +271,11 @@ impl MetaMemberPropertySpec {
 
     pub fn parse_text(self, value: &str) -> Option<MetaObservedPropertyValue> {
         match self.kind {
+            MetaMemberValueKind::Boolean => match value {
+                "true" => Some(MetaObservedPropertyValue::Boolean { value: true }),
+                "false" => Some(MetaObservedPropertyValue::Boolean { value: false }),
+                _ => None,
+            },
             MetaMemberValueKind::UnsignedInteger => value
                 .parse::<u32>()
                 .ok()
@@ -174,6 +293,7 @@ impl MetaMemberPropertySpec {
 
     pub fn accepts(self, value: &MetaObservedPropertyValue) -> bool {
         match (self.kind, value) {
+            (MetaMemberValueKind::Boolean, MetaObservedPropertyValue::Boolean { .. }) => true,
             (
                 MetaMemberValueKind::UnsignedInteger,
                 MetaObservedPropertyValue::UnsignedInteger { .. },

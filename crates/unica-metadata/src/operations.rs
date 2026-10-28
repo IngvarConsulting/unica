@@ -559,6 +559,7 @@ pub struct MetaElementUpdateInput {
     pub indexing: Option<String>,
     /// `DenyIncompleteValues` of a register dimension.
     pub deny_incomplete_values: Option<bool>,
+    pub fill_from_filling_value: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -573,6 +574,7 @@ pub struct MetaElementUpdate {
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
     pub deny_incomplete_values: Option<bool>,
+    pub fill_from_filling_value: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -858,6 +860,7 @@ impl MetaElementUpdate {
             && input.position.is_none()
             && input.indexing.is_none()
             && input.deny_incomplete_values.is_none()
+            && input.fill_from_filling_value.is_none()
         {
             return Err(invalid_operation(
                 field,
@@ -868,6 +871,17 @@ impl MetaElementUpdate {
             return Err(invalid_operation(
                 format!("{field}.denyIncompleteValues"),
                 "denyIncompleteValues is a property of register dimensions",
+            ));
+        }
+        if input.fill_from_filling_value.is_some()
+            && !matches!(
+                collection,
+                MetaCollection::Attributes | MetaCollection::Dimensions | MetaCollection::Resources
+            )
+        {
+            return Err(invalid_operation(
+                format!("{field}.fillFromFillingValue"),
+                "fillFromFillingValue requires an attribute, dimension or resource",
             ));
         }
         let spec = metadata_collection_spec(collection);
@@ -893,6 +907,7 @@ impl MetaElementUpdate {
             position: input.position,
             indexing: input.indexing,
             deny_incomplete_values: input.deny_incomplete_values,
+            fill_from_filling_value: input.fill_from_filling_value,
         })
     }
 }
@@ -1698,6 +1713,14 @@ pub fn validate_metadata_operation_capabilities(
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
             for (index, element) in elements.iter().enumerate() {
+                if element.fill_from_filling_value.is_some()
+                    && !metadata_filling_data_is_allowed(owner_kind, *collection, scope.is_some())
+                {
+                    return Err(invalid_operation(
+                        format!("elements[{index}].fillFromFillingValue"),
+                        "fillFromFillingValue is unavailable for this owner and member context",
+                    ));
+                }
                 if element.deny_incomplete_values.is_some()
                     && !metadata_deny_incomplete_values_is_allowed(owner_kind)
                 {
@@ -3404,5 +3427,147 @@ mod tests {
         .unwrap();
 
         assert!(update.validate_targets(&existing).is_ok());
+    }
+}
+
+/// Closed first slice of filling-data switches; independent of FillValue support.
+pub fn metadata_filling_data_is_allowed(
+    owner: MetadataKind,
+    collection: MetaCollection,
+    in_section: bool,
+) -> bool {
+    matches!(
+        (owner, collection, in_section),
+        (
+            MetadataKind::Catalog
+                | MetadataKind::Document
+                | MetadataKind::ExchangePlan
+                | MetadataKind::ChartOfAccounts
+                | MetadataKind::ChartOfCharacteristicTypes
+                | MetadataKind::ChartOfCalculationTypes
+                | MetadataKind::BusinessProcess
+                | MetadataKind::Task,
+            MetaCollection::Attributes,
+            false
+        ) | (
+            MetadataKind::Report | MetadataKind::DataProcessor,
+            MetaCollection::Attributes,
+            true
+        ) | (
+            MetadataKind::InformationRegister,
+            MetaCollection::Attributes | MetaCollection::Dimensions | MetaCollection::Resources,
+            false
+        )
+    )
+}
+
+#[cfg(test)]
+mod filling_tests {
+    use super::*;
+    #[test]
+    fn filling_contract_and_model_publish_exact_thirteen_contexts() {
+        let mut admitted = 0;
+        for owner in MetadataKind::ALL {
+            for section in [false, true] {
+                for collection in [
+                    MetaCollection::Attributes,
+                    MetaCollection::Dimensions,
+                    MetaCollection::Resources,
+                    MetaCollection::TabularSections,
+                ] {
+                    let expected = [
+                        ("Catalog", MetaCollection::Attributes, false),
+                        ("Document", MetaCollection::Attributes, false),
+                        ("ExchangePlan", MetaCollection::Attributes, false),
+                        ("ChartOfAccounts", MetaCollection::Attributes, false),
+                        (
+                            "ChartOfCharacteristicTypes",
+                            MetaCollection::Attributes,
+                            false,
+                        ),
+                        ("ChartOfCalculationTypes", MetaCollection::Attributes, false),
+                        ("BusinessProcess", MetaCollection::Attributes, false),
+                        ("Task", MetaCollection::Attributes, false),
+                        ("Report", MetaCollection::Attributes, true),
+                        ("DataProcessor", MetaCollection::Attributes, true),
+                        ("InformationRegister", MetaCollection::Attributes, false),
+                        ("InformationRegister", MetaCollection::Dimensions, false),
+                        ("InformationRegister", MetaCollection::Resources, false),
+                    ]
+                    .contains(&(owner.as_str(), collection, section));
+                    admitted += usize::from(expected);
+                    let site = Some(crate::contracts::MetadataSite {
+                        owner: *owner,
+                        in_section: section,
+                    });
+                    let schema = crate::contracts::metadata_member_set(collection, site).schema;
+                    assert_eq!(
+                        schema["properties"]["values"]["properties"]
+                            .get("fillFromFillingValue")
+                            .is_some(),
+                        expected,
+                        "{owner:?} {collection:?} {section}"
+                    );
+                    assert!(
+                        crate::contracts::metadata_member_add(collection, site).schema
+                            ["properties"]["items"]["items"]["properties"]
+                            .get("fillFromFillingValue")
+                            .is_none()
+                    );
+                    if let Ok(element) = MetaElementUpdate::convert_at(
+                        collection,
+                        MetaElementUpdateInput {
+                            name: "Field".into(),
+                            fill_from_filling_value: Some(false),
+                            ..Default::default()
+                        },
+                        "element",
+                    ) {
+                        assert_eq!(element.fill_from_filling_value, Some(false));
+                        let target = MetadataAddress::parse(
+                            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                            &format!("{}.Sample", owner.as_str()),
+                        )
+                        .unwrap();
+                        let op = MetaEditOperation::Update {
+                            collection,
+                            scope: section.then(|| MetaScope {
+                                tabular_section: "Rows".into(),
+                            }),
+                            elements: vec![element],
+                        };
+                        assert_eq!(
+                            validate_metadata_operation_capabilities(*owner, &target, &op).is_ok(),
+                            expected
+                        );
+                    } else {
+                        assert!(!expected);
+                    }
+                }
+            }
+        }
+        assert_eq!(admitted, 13);
+        for value in [
+            serde_json::json!("true"),
+            serde_json::json!("false"),
+            serde_json::json!(null),
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!({}),
+            serde_json::json!([]),
+        ] {
+            assert!(crate::request::parse_element_update(
+                &serde_json::json!({"name":"Field","fillFromFillingValue":value}),
+                "element"
+            )
+            .is_err());
+        }
+        for key in ["FillFromFillingValue", "unknown"] {
+            assert!(crate::request::parse_element_update(
+                &serde_json::json!({"name":"Field",key:true}),
+                "element"
+            )
+            .is_err());
+        }
     }
 }

@@ -64,6 +64,10 @@ fn assert_no_pilot_properties(element: &MetaElementData) {
 
 fn assert_profile_absent(info: &unica_metadata::validation_subject::MetaLocalInfo) {
     assert!(info.member_read_profile.is_none(), "{info:?}");
+    assert_catalog_profile_facts_absent(info);
+}
+
+fn assert_catalog_profile_facts_absent(info: &unica_metadata::validation_subject::MetaLocalInfo) {
     assert!(!info.collections.tabular_sections.is_empty(), "{info:?}");
     for section in &info.collections.tabular_sections {
         assert_no_pilot_properties(section);
@@ -150,7 +154,11 @@ fn catalog_tabular_native_context_does_not_admit_other_platform_owner_kinds() {
         "Document.АктОбУничтоженииПерсональныхДанных",
         Some(SourceSetKind::Configuration),
     );
-    assert_profile_absent(&info);
+    assert_eq!(
+        info.member_read_profile,
+        Some(unica_metadata::MetaMemberReadProfile::DocumentFilling220)
+    );
+    assert_catalog_profile_facts_absent(&info);
     assert_eq!(info.name, "АктОбУничтоженииПерсональныхДанных");
 }
 
@@ -175,5 +183,39 @@ fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attribu
     assert!(!columns.is_empty());
     for column in columns {
         assert_no_section_properties(column);
+    }
+}
+
+#[test]
+fn filling_info_three_members_preserve_false_absence_and_local_damage() {
+    let native=include_str!("../../../../tests/fixtures/acceptance/workspace-register-filling-values/src/InformationRegisters/Facts.xml");
+    for value in [false, true] {
+        let xml = native.replace(
+            "<FillFromFillingValue>true</FillFromFillingValue>",
+            &format!("<FillFromFillingValue>{value}</FillFromFillingValue>"),
+        );
+        let info = read(
+            &xml,
+            "InformationRegister.Facts",
+            Some(SourceSetKind::Configuration),
+        );
+        for element in [
+            &info.collections.attributes[0],
+            &info.collections.dimensions[0],
+            &info.collections.resources[0],
+        ] {
+            assert_eq!(element.properties.len(), 1);
+            assert_eq!(element.properties[0].name, "FillFromFillingValue");
+            assert_eq!(
+                serde_json::to_value(&element.properties[0].value).unwrap(),
+                json!({"kind":"boolean","value":value})
+            );
+            assert!(element.r#type.is_some());
+        }
+    }
+    for replacement in ["","<FillFromFillingValue/>","<FillFromFillingValue>bad</FillFromFillingValue>","<FillFromFillingValue>true</FillFromFillingValue><FillFromFillingValue>true</FillFromFillingValue>","<FillFromFillingValue xmlns=\"urn:foreign\">true</FillFromFillingValue>"] {
+        let info=read(&native.replace("<FillFromFillingValue>true</FillFromFillingValue>",replacement),"InformationRegister.Facts",Some(SourceSetKind::Configuration));
+        for element in [&info.collections.attributes[0],&info.collections.dimensions[0],&info.collections.resources[0]] { assert!(element.properties.is_empty());assert!(element.r#type.is_some()); }
+        assert_eq!(info.diagnostics.iter().any(|d|d.field.as_deref()==Some("collections.dimensions[0].properties.FillFromFillingValue")),!replacement.is_empty());
     }
 }

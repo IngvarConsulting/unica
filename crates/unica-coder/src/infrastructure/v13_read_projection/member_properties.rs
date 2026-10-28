@@ -39,6 +39,7 @@ pub(super) fn project(
             _ => None,
         };
         let value = match value {
+            Some(MetaObservedPropertyValue::Boolean { value }) => Some(Value::Bool(value)),
             Some(MetaObservedPropertyValue::UnsignedInteger { value }) => Some(Value::from(value)),
             Some(MetaObservedPropertyValue::Text { value }) => Some(Value::String(value)),
             // Пустой набор переводов — значения нет, свойство не публикуется.
