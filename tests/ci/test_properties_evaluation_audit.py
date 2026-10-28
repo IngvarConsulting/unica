@@ -236,6 +236,15 @@ class PropertiesEvidenceTests(unittest.TestCase):
         self.assertIn("unica.view", allowed)
         self.assertTrue(calls)
 
+    def test_audit_accepts_closed_dictionary_with_producer_alias_exclusions(self):
+        records, _, response = self.configuration_records()
+        schema = response["payload"]["result"]["structuredContent"]["data"]["props"]["contract"]["argsSchema"]
+        values = schema["properties"]["values"]
+        values["properties"]["comment"] = {"type": "string"}
+        values["not"] = {"anyOf": [{"required": ["Comment", "comment"]}]}
+        values["x-unica-alias-groups"] = [["Comment", "comment"]]
+        self.assertTrue(props_driver.audit(records)[1])
+
     def test_audit_rejects_pattern_expansion_even_when_rename_is_not_a_string(self):
         from jsonschema import Draft202012Validator
         for property_name, value, property_schema in [

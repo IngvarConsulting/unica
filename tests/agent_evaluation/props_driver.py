@@ -75,10 +75,12 @@ def explicit_dictionary_schema(schema):
     Literal properties plus additionalProperties:false prove closure. References,
     patterns, alternative applicators and dialect changes at dictionary boundaries
     require a different proof; a successful Comment witness alone cannot prove it.
-    Property schemas may still use local definitions, checked by the validator.
+    The producer's alias exclusion (not) only restricts this set. Property schemas
+    may still use local definitions, checked by the validator.
     """
     keys = {"type", "properties", "required", "additionalProperties", "minProperties",
-            "maxProperties", "title", "description", "$defs", "$schema"}
+            "maxProperties", "title", "description", "$defs", "$schema", "not",
+            "x-unica-alias-groups"}
     return (isinstance(schema, dict) and schema.keys() <= keys
             and schema.get("$schema", "https://json-schema.org/draft/2020-12/schema")
             == "https://json-schema.org/draft/2020-12/schema"
