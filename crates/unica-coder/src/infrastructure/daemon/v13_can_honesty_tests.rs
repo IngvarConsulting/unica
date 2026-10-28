@@ -1042,6 +1042,12 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         let schema = &detailed.data.as_ref().unwrap()["props"]["contract"]["argsSchema"];
         assert!(schema.is_object(), "{at}.{op}: {schema}");
         assert_eq!(schema["additionalProperties"], false, "{at}.{op}: {schema}");
+        let example = &detailed.data.as_ref().unwrap()["props"]["contract"]["exampleArgs"];
+        let validator = jsonschema::validator_for(schema).unwrap();
+        assert!(
+            validator.is_valid(example),
+            "{at}.{op} has no schema-valid argument witness: {example}; schema: {schema}"
+        );
     }
     let can = data["can"]
         .as_array()

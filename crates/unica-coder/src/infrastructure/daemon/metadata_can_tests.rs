@@ -654,7 +654,27 @@ fn relation_can_is_contextual_and_a_relationless_owner_has_no_accepted_sample() 
             (&event, &event_binding, event_at, &["source"][..]),
             (&fixture, &main, report, &[][..]),
         ] {
-            let detailed = contract(&runtime, workspace, at, op);
+            let detailed = if accepted.is_empty() {
+                // Keep the parser/schema negative matrix, without publishing
+                // this empty domain as a callable operation on the node.
+                let rejected = call(
+                    &runtime,
+                    workspace,
+                    ToolIdentity::View,
+                    json!({"at": format!("{at}.Can.{op}")}),
+                );
+                assert!(!rejected.ok, "{rejected:?}");
+                assert_eq!(rejected.diagnostics[0]["code"], "bad_value");
+                let raw = unica_metadata::apply_operations::MetadataOperation::named(op)
+                    .unwrap()
+                    .contract_at(Some(unica_metadata::contracts::MetadataSite {
+                        owner: unica_metadata::MetadataKind::Report,
+                        in_section: false,
+                    }));
+                json!({"argsSchema": raw.schema, "exampleArgs": raw.example_args, "notes": raw.notes})
+            } else {
+                contract(&runtime, workspace, at, op)
+            };
             let schema = &detailed["argsSchema"];
             let oracle = jsonschema::validator_for(schema).unwrap();
             if accepted.is_empty() {
@@ -2408,4 +2428,84 @@ fn canonical_check_accepts_a_common_binary_template_without_data() {
     );
     let viewed = view(&runtime, &fixture, "main:CommonTemplate.Empty");
     assert_eq!(viewed["kind"], "CommonTemplate", "{viewed}");
+}
+
+/// #2243: absence, detailed contracts and direct apply agree for an owner
+/// whose relation domain is empty; owners with relations remain usable.
+#[test]
+fn common_module_does_not_offer_uninhabited_relation_operations() {
+    let fixture = Fixture::new("workspace");
+    let runtime = runtime();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    for at in [
+        "main:CommonModule.GoogleПереводчик",
+        "main:Report.АнализВерсийОбъектов",
+    ] {
+        let node = view(&runtime, &fixture, at);
+        for op in ["relation.add", "relation.remove", "relation.replace"] {
+            assert!(
+                !node["can"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry["op"] == op),
+                "{op}: {node}"
+            );
+            let detailed = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::View,
+                json!({"at": format!("{at}.Can.{op}")}),
+            );
+            assert!(!detailed.ok, "{detailed:?}");
+            assert_eq!(detailed.diagnostics[0]["code"], "bad_value");
+            assert_eq!(detailed.next[0]["args"]["at"], at);
+            let refused = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::Apply,
+                json!({"at": at, "ops":[{"op": op, "args":{"values":{"relation":"owners","targets":[{"metadataPath":"Catalog.Валюты"}]}}}]}),
+            );
+            assert!(!refused.ok, "{refused:?}");
+            assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+            assert_eq!(refused.next[0]["tool"], "unica.view");
+            assert_eq!(refused.next[0]["args"]["at"], at);
+            let supported = contract(&runtime, &fixture, "main:Catalog.Валюты", op);
+            let validator = jsonschema::validator_for(&supported["argsSchema"]).unwrap();
+            assert!(validator.is_valid(&supported["exampleArgs"]));
+        }
+    }
+    let args = json!({"values":{"relation":"basedOn","targets":[{"metadataPath":"Document.АктОбУничтоженииПерсональныхДанных"}]}});
+    for op in ["relation.add", "relation.replace"] {
+        let preview = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:Catalog.Валюты","ops":[{"op":op,"args":args.clone()}]}),
+        );
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(preview.data.as_ref().unwrap()["mode"], "preview");
+    }
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Валюты","ops":[{"op":"relation.add","args":args.clone()}]}),
+    );
+    let populated = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    let removal = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":"main:Catalog.Валюты","ops":[{"op":"relation.remove","args":args}]}),
+    );
+    assert!(removal.ok, "{removal:?}");
+    assert_eq!(removal.data.as_ref().unwrap()["mode"], "preview");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        populated
+    );
 }

@@ -131,7 +131,7 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
             pub const fn bind<T: 'static>(_: &'static TypedOperationBundle<T>) -> Self {{ Self }}
         }}
         enum OperationApplicability {{
-            Configuration, ExtensionRoot, Metadata, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
+            Configuration, ExtensionRoot, Metadata, MetadataRelations, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
             CatalogTabularAttribute,
             MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms,
             Form, FormItemContainer, FormItem, FormEvent,
@@ -390,9 +390,19 @@ fn remaining_metadata_registrations_require_their_typed_variants() {
             "MetadataOrCommonTemplate",
             "Target",
         ),
-        ("RelationAdd", "relation.add", "Metadata", "Values"),
-        ("RelationRemove", "relation.remove", "Metadata", "Values"),
-        ("RelationReplace", "relation.replace", "Metadata", "Values"),
+        ("RelationAdd", "relation.add", "MetadataRelations", "Values"),
+        (
+            "RelationRemove",
+            "relation.remove",
+            "MetadataRelations",
+            "Values",
+        ),
+        (
+            "RelationReplace",
+            "relation.replace",
+            "MetadataRelations",
+            "Values",
+        ),
         ("HelpCreate", "help.create", "Metadata", "Values"),
         ("TemplateAdd", "template.add", "MetadataTemplates", "Items"),
         ("TemplateSet", "template.set", "MetadataTemplate", "Values"),
@@ -505,7 +515,12 @@ fn raw_metadata_guards_follow_literals_while_the_form_family_requires_typed_regi
             "ObjectRemove",
             "object.remove",
         ),
-        ("Metadata", "Metadata", "RelationAdd", "relation.add"),
+        (
+            "Metadata",
+            "MetadataRelations",
+            "RelationAdd",
+            "relation.add",
+        ),
         ("Metadata", "Metadata", "HelpCreate", "help.create"),
         (
             "Metadata",
