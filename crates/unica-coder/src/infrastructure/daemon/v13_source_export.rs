@@ -1613,6 +1613,89 @@ mod tests {
         }
     }
 
+    #[test]
+    fn adapter_preparation_projects_the_effective_local_provider_without_selecting_it() {
+        for local_provider in ["ibcmd", "designer"] {
+            let root = workspace();
+            let config_path = root.path().join(CONFIG_NAME);
+            let primary = format!(
+                "{}providers: {{pull: {}}}\n",
+                fs::read_to_string(&config_path).unwrap(),
+                if local_provider == "ibcmd" {
+                    "designer"
+                } else {
+                    "ibcmd"
+                }
+            );
+            fs::write(&config_path, &primary).unwrap();
+            let local = format!(
+                "providers: {{pull: {local_provider}}}\ntools:\n  platform:\n    path: local-platform\n    version: 8.3.27.2074\n    strict: true\n"
+            );
+            fs::write(root.path().join(LOCAL_CONFIG_NAME), &local).unwrap();
+            write_valid_dump(&root.path().join("main"), false);
+            let prepared = prepared(root.path(), ExportMode::Full, Some("main"), None, true);
+            let runner = SequenceRunner::new(Vec::new());
+            let cancellation = CancellationToken::new();
+            let store = lock_project(root.path(), &cancellation).unwrap();
+            let guard = unica_adapter_v8_runner::full_dump::prepare_publication(
+                &prepared.context,
+                FullDumpSelection {
+                    config_path: &config_path,
+                    source_set: Some("main"),
+                    extension: None,
+                    expected_target: None,
+                },
+                store,
+                &runner,
+                &cancellation,
+                normalize_full_export_config,
+                project_full_export_config,
+                crate::infrastructure::runtime_composition::full_dump_semantics(),
+            )
+            .unwrap();
+            let primary_projection: serde_yaml::Value =
+                serde_yaml::from_slice(&fs::read(guard.effective_config()).unwrap()).unwrap();
+            let local_projection: serde_yaml::Value = serde_yaml::from_slice(
+                &fs::read(
+                    guard
+                        .effective_config()
+                        .parent()
+                        .unwrap()
+                        .join(LOCAL_CONFIG_NAME),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(primary_projection.get("providers").is_none());
+            assert!(primary_projection.get("tools").is_none());
+            assert_eq!(
+                local_projection["providers"]["pull"].as_str(),
+                Some(local_provider)
+            );
+            assert_eq!(
+                local_projection["tools"]["platform"]["version"].as_str(),
+                Some("8.3.27.2074")
+            );
+            let expected_platform = root.path().join("local-platform");
+            assert_eq!(
+                local_projection["tools"]["platform"]["path"].as_str(),
+                expected_platform.to_str()
+            );
+            assert_eq!(local_projection["tools"]["platform"]["strict"], true);
+            assert_eq!(
+                runner.call_count(),
+                0,
+                "provider choice belongs to the runner"
+            );
+            assert_eq!(fs::read_to_string(&config_path).unwrap(), primary);
+            assert_eq!(
+                fs::read_to_string(root.path().join(LOCAL_CONFIG_NAME)).unwrap(),
+                local
+            );
+            drop(guard);
+        }
+    }
+
     /// The protocol admits the selected ibcmd without asking for a Designer executable.
     /// This fixture checks Unica's projection and publication, not the platform's export.
     #[test]
