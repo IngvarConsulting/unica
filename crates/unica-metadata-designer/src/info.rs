@@ -440,6 +440,11 @@ pub fn typed_element(
             .children()
             .filter(|child| child.is_element() && child.tag_name().name() == tag)
             .collect();
+        // Absence is an unobserved optional property, not an invented false
+        // value or evidence of a damaged descriptor. Present tags stay strict.
+        if candidates.is_empty() {
+            return None;
+        }
         let value = candidates
             .first()
             .filter(|child| {
@@ -460,7 +465,7 @@ pub fn typed_element(
             diagnostics.push(
                 MetaDiagnostic::error(
                     MetaDiagnosticCode::ValidationFailed,
-                    format!("dimension {tag} is missing or is not a unique boolean property"),
+                    format!("dimension {tag} is not a unique boolean property"),
                 )
                 .with_metadata_path(target.clone())
                 .with_field(format!("{field}.{key}")),
@@ -1137,9 +1142,32 @@ mod dimension_flag_tests {
     }
 
     #[test]
-    fn missing_or_damaged_dimension_flags_are_local_incompleteness_not_false() {
-        for damaged in [
+    fn absent_dimension_flags_remain_unobserved_without_incompleteness() {
+        for flags in [
             "",
+            "<Master>false</Master>",
+            "<MainFilter>true</MainFilter>",
+            "<DenyIncompleteValues>false</DenyIncompleteValues>",
+        ] {
+            let (element, diagnostics) = read_flags(flags);
+            assert!(diagnostics.is_empty(), "{flags}: {diagnostics:?}");
+            assert!(!element.incomplete, "{flags}");
+            assert!(element.property_limits.is_empty(), "{flags}");
+            assert_eq!(element.master, flags.contains("<Master>").then_some(false));
+            assert_eq!(
+                element.main_filter,
+                flags.contains("<MainFilter>").then_some(true)
+            );
+            assert_eq!(
+                element.deny_incomplete_values,
+                flags.contains("<DenyIncompleteValues>").then_some(false)
+            );
+        }
+    }
+
+    #[test]
+    fn damaged_dimension_flags_are_local_incompleteness_not_false() {
+        for damaged in [
             "<Master/>",
             "<Master>yes</Master>",
             "<Master>true</Master><Master>false</Master>",
