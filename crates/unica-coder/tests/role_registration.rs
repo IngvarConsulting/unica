@@ -134,7 +134,7 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
             Configuration, ExtensionRoot, Metadata, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
             CatalogTabularAttribute,
             MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms,
-            Form, FormItemContainer, FormItem, FormEvent,
+            Form, FormProperties, FormItemContainer, FormItem, FormEvent,
             MetadataTabularSections, MetadataTabularSection,
             MetadataDimensions, MetadataDimension, MetadataResources, MetadataResource,
             MetadataEnumValues, MetadataEnumValue, MetadataColumns, MetadataColumn,
