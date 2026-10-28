@@ -1,0 +1,91 @@
+{
+  "id": "S-2015-dcs-enum-alternatives",
+  "issue": 2015,
+  "area": "Ошибки аргументов СКД",
+  "task": "Большое перечисление сравнения СКД сокращается, next реального варианта открывает полный список; файлы не меняются.",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+        "ops": [
+          {
+            "op": "filter.add",
+            "args": {
+              "items": [
+                {
+                  "field": "Amount",
+                  "comparison": "wrong",
+                  "value": 0
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[0].args.items[0].comparison: value is not one of the supported alternatives; allowed: [\"Equal\", \"NotEqual\", \"Greater\", \"GreaterOrEqual\", \"Less\", \"LessOrEqua",
+      "captures": {
+        "dcsEnumContract": {
+          "pointer": "/next/0/args/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].comparison"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "list shortened"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Can.filter.add"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema.xml",
+          "kind": "sha256",
+          "eq": "57012d79cbf98c76e4263df1de3ccd4e412b09c4e5909cd7219cab48f94a8da5"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "31d24fb9fbd36efd445af0d1592df61883edfbadc19cdfd64b0a7b0e4f5b55bf"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dcsEnumContract"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/items/items/properties/comparison/enum",
+          "contains": "NotFilled"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema.xml",
+          "kind": "sha256",
+          "eq": "57012d79cbf98c76e4263df1de3ccd4e412b09c4e5909cd7219cab48f94a8da5"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "31d24fb9fbd36efd445af0d1592df61883edfbadc19cdfd64b0a7b0e4f5b55bf"
+        }
+      ]
+    }
+  ]
+}

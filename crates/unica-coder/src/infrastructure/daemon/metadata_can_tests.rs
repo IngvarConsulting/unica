@@ -2409,3 +2409,61 @@ fn canonical_check_accepts_a_common_binary_template_without_data() {
     let viewed = view(&runtime, &fixture, "main:CommonTemplate.Empty");
     assert_eq!(viewed["kind"], "CommonTemplate", "{viewed}");
 }
+
+/// #2015: a short enum can be corrected immediately; a long enum has a
+/// bounded preview and an actual readable continuation to the complete set.
+#[test]
+fn property_enum_refusals_show_bounded_domains_and_open_their_contract() {
+    let fixture = Fixture::new("workspace");
+    let runtime = runtime();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    for property in ["DefaultRunMode", "CompatibilityMode"] {
+        let refused = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:Configuration","ops":[{"op":"props.set","args":{"values":{property:"wrong"}}}]}),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+        assert_eq!(
+            refused.at.as_deref(),
+            Some(format!("ops[0].args.values.{property}").as_str())
+        );
+        let message = refused.diagnostics[0]["message"].as_str().unwrap();
+        if property == "DefaultRunMode" {
+            for value in ["ManagedApplication", "OrdinaryApplication", "Auto"] {
+                assert!(message.contains(&format!("\"{value}\"")), "{message}");
+            }
+            assert!(!message.contains("list shortened"));
+        } else {
+            assert!(message.contains("list shortened"), "{message}");
+            assert!(message.len() < 400, "{message}");
+            assert!(!message.contains("Version8_3_27"), "{message}");
+        }
+        assert_eq!(refused.next[0]["tool"], "unica.view");
+        assert_eq!(
+            refused.next[0]["args"]["at"],
+            "main:Configuration.Can.props.set"
+        );
+        let opened = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::View,
+            refused.next[0]["args"].clone(),
+        );
+        assert!(opened.ok, "{opened:?}");
+        let values = &opened.data.unwrap()["props"]["contract"]["argsSchema"]["properties"]
+            ["values"]["properties"][property]["enum"];
+        assert!(values.as_array().unwrap().iter().any(|v| v
+            == if property == "DefaultRunMode" {
+                "ManagedApplication"
+            } else {
+                "Version8_3_27"
+            }));
+    }
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
+}

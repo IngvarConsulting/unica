@@ -2958,3 +2958,124 @@ fn object_remove_skeleton_previews_with_only_the_outer_target() {
     assert!(preview.ok, "{preview:?}");
     assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
 }
+
+/// #2015: the argument continuation belongs to the failing operation, and
+/// cannot replace a narrower recovery or promise an unavailable contract.
+#[test]
+fn argument_refusals_route_to_the_contextual_contract_without_overriding_recovery() {
+    use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
+    let input = json!({"at":"cf:Document.Order","dryRun":true,"ops":[
+        {"op":"props.set","args":{"values":{"Comment":"x"}}},
+        {"op":"attribute.set","args":{"at":"cf:Document.Order.Attribute.Probe","values":{"indexing":"wrong"}}}
+    ]});
+    let request = ApplyRequest::parse(input.as_object().unwrap(), &["cf"]).unwrap();
+    let error = |path: &str| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "invalid argument").at_path(path)
+    };
+    let refusal = || {
+        DomainResult::canonical_rejection(
+            None,
+            unica_refusal::RefusalCode::BadValue,
+            "invalid argument",
+        )
+    };
+    let route = |path: &str, exists, mut next: Vec<Value>| {
+        let mut result = refusal();
+        result.next.append(&mut next);
+        super::v13_service::with_argument_dictionary(
+            result,
+            &request,
+            &error(path),
+            traits,
+            &|at| {
+                assert_eq!(at.to_string(), "cf:Document.Order.Attribute.Probe");
+                exists
+            },
+        )
+    };
+    assert_eq!(
+        route("ops[1].args.values.indexing", Some(true), vec![]).next[0]["args"]["at"],
+        "cf:Document.Order.Attribute.Probe.Can.attribute.set"
+    );
+    for exists in [None, Some(false)] {
+        assert!(route("ops[1].args.values.indexing", exists, vec![])
+            .next
+            .is_empty());
+    }
+    let specific =
+        vec![json!({"tool":"unica.view","args":{"at":"cf:ExchangePlan.Sync.Can.content.set"}})];
+    assert_eq!(
+        route("ops[1].args.values.indexing", Some(true), specific.clone()).next,
+        specific
+    );
+    for path in [
+        "ops[1].argsExtra",
+        "ops[1].at",
+        "ops[2].args.mode",
+        "ops[bad].args.mode",
+    ] {
+        assert!(route(path, Some(true), vec![]).next.is_empty(), "{path}");
+    }
+}
+
+/// #2015: real source-backed nodes, beyond the Configuration root, retain
+/// a reachable continuation when the enum preview omits values.
+#[test]
+fn dcs_and_metadata_member_enum_refusals_open_source_backed_contracts() {
+    for (workspace, at, op, args, path, suffix) in [
+        (
+            "workspace-dcs",
+            "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+            "filter.add",
+            json!({"items":[{"field":"Amount","comparison":"wrong","value":0}]}),
+            "ops[0].args.items[0].comparison",
+            "list shortened",
+        ),
+        (
+            "workspace",
+            "main:Catalog.Валюты.Attribute.Наценка",
+            "attribute.set",
+            json!({"values":{"indexing":"wrong"}}),
+            "ops[0].args.values.indexing",
+            "IndexWithAdditionalOrder",
+        ),
+    ] {
+        let fixture = fixture(workspace);
+        let before = tree_digest(&fixture.workspace.join("src"));
+        let refused = invoke(
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":op,"args":args}]}),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.at.as_deref(), Some(path));
+        assert!(
+            refused.diagnostics[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains(suffix),
+            "{refused:?}"
+        );
+        assert_eq!(refused.next[0]["args"]["at"], format!("{at}.Can.{op}"));
+        let opened = invoke(
+            &fixture.workspace,
+            ToolIdentity::View,
+            refused.next[0]["args"].clone(),
+        );
+        assert!(opened.ok, "{opened:?}");
+        if op == "filter.add" {
+            assert!(
+                opened.data.unwrap()["props"]["contract"]["argsSchema"]["properties"]["items"]
+                    ["items"]["properties"]["comparison"]["enum"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("NotFilled"))
+            );
+        }
+        assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+    }
+}

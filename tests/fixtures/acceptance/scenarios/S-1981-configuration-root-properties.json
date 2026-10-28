@@ -223,7 +223,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: value is not one of the supported alternatives",
+      "refusal": "bad_value: value is not one of the supported alternatives; allowed: [\"Version8_1\", \"Version8_2_13\", \"Version8_2_16\", \"Version8_3_1\", \"Version8_3_2\", \"Version8_3_3\", \"Versi",
       "assertions": [
         {
           "pointer": "/at",
