@@ -39,6 +39,7 @@ pub(super) fn project(
             _ => None,
         };
         let value = match value {
+            Some(MetaObservedPropertyValue::Boolean { value }) => Some(Value::Bool(value)),
             Some(MetaObservedPropertyValue::UnsignedInteger { value }) => Some(Value::from(value)),
             Some(MetaObservedPropertyValue::Text { value }) => Some(Value::String(value)),
             // Пустой набор переводов — значения нет, свойство не публикуется.
@@ -56,10 +57,10 @@ pub(super) fn project(
                 &mut props,
                 &mut limits,
                 address,
-                spec.name,
+                spec.public_name,
                 &value,
                 true,
-                spec.name,
+                spec.public_name,
             ),
             None => limits.push(format!(
                 "{} has an invalid or duplicated observed value",

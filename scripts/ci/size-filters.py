@@ -54,6 +54,8 @@ TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
 # 400 000 исходных наборов: 34.447 с отдельно, 41.729 с совместно, macOS.
 # Это размер конкретной проверки; соседние layout-проверки остаются small.
 MEASURED_MEDIUM_CASES = (
+    # 45 повреждений девяти фактов, чтение владельца/коллекции/детали: 3,449 с, macOS, 28.10.2026.
+    ("unica-coder", "unica_coder", "infrastructure::v13_read::tests::nested_member_properties::damaged_nested_facts_preserve_members_and_independent_facts"),
     (
         "unica-project-health",
         "unica_project_health",
