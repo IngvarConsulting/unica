@@ -122,6 +122,10 @@ impl Fixture {
             &admission,
             Some(supplier),
         )?;
+        assert!(
+            staged.original_image(Path::new(PAYLOAD)).is_none(),
+            "supplier CF bodies must not be retained in a prepared or saved apply plan"
+        );
         admission
             .prepare_with_effects(staged, effects)
             .map_err(|error| ApplyPlanError::staging(error, "ops"))
@@ -258,13 +262,17 @@ fn saved_restore_preview_preserves_sources_and_cache_then_token_publishes_only_m
 
 #[test]
 fn saved_restore_rejects_changed_files_cf_marker_and_companion_membership() {
-    for relative in [
-        MODULE,
-        "DataProcessors/ТестHTML.xml",
-        "DataProcessors/ТестHTML/Templates/МакетСобранныйHTML/Ext/Template.bin",
-        PAYLOAD,
-        MARKER,
-        "DataProcessors/ТестHTML/Ext/new-opaque-file.bin",
+    for (relative, remove) in [
+        (MODULE, false),
+        ("DataProcessors/ТестHTML.xml", false),
+        (
+            "DataProcessors/ТестHTML/Templates/МакетСобранныйHTML/Ext/Template.bin",
+            false,
+        ),
+        (PAYLOAD, false),
+        (PAYLOAD, true),
+        (MARKER, false),
+        ("DataProcessors/ТестHTML/Ext/new-opaque-file.bin", false),
     ] {
         let fixture = Fixture::new();
         let supplier = FixtureSupplier {
@@ -273,9 +281,18 @@ fn saved_restore_rejects_changed_files_cf_marker_and_companion_membership() {
         let token = fixture.save(&supplier);
         let path = fixture.source.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut bytes = std::fs::read(&path).unwrap_or_default();
-        bytes.push(b'\n');
-        std::fs::write(path, bytes).unwrap();
+        if remove {
+            std::fs::remove_file(path).unwrap();
+        } else {
+            let mut bytes = std::fs::read(&path).unwrap_or_default();
+            if relative == PAYLOAD {
+                // Equal-length damage must invalidate the content guard too.
+                bytes[0] ^= 1;
+            } else {
+                bytes.push(b'\n');
+            }
+            std::fs::write(path, bytes).unwrap();
+        }
         let changed = snapshot(&fixture.source);
         let cache = snapshot(&fixture.cache);
         let result = fixture.execute(&token);

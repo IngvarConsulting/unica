@@ -502,8 +502,10 @@ pub fn prove_support_restoration(
                 "support restoration needs exactly one supplier payload {filename}"
             )));
         }
+        // Retain the payload's byte/identity guard, not its complete CF body
+        // in the prepared plan; conversion only needs these temporary bytes.
         let payload = staged
-            .read(candidates[0])
+            .read_guarded_bounded(candidates[0], usize::MAX)
             .map_err(|error| ApplyPlanError::staging(error, "at"))?
             .ok_or_else(|| {
                 invalid_state("the supplier payload disappeared during comparison".to_string())
