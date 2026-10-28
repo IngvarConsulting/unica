@@ -83,6 +83,87 @@ pub fn read_registered_subsystem_topology(
     })
 }
 
+/// Direct content of one registered subsystem in a retained subtree capture.
+/// Unaddressable references remain strings so the view can report its limits.
+pub struct RegisteredSubsystemContent {
+    pub address: SubsystemAddress,
+    pub content: Vec<String>,
+}
+
+/// Capture only the registered ancestors and the selected subtree. Content
+/// references are values, never traversal edges; unrelated siblings are unread.
+pub fn read_registered_subsystem_content(
+    mut reader: Box<dyn unica_source_contract::read::RetainedSourceRead>,
+    selected: &SubsystemAddress,
+    mut checkpoint: impl FnMut() -> io::Result<()>,
+) -> Result<Vec<RegisteredSubsystemContent>, SubsystemTopologyError> {
+    let bytes = reader.read_regular_file(Path::new("Configuration.xml"), &mut checkpoint)?;
+    let mut registrations = parse_configuration_registrations(&bytes)?;
+    let names: Vec<String> = selected.as_str().split('.').map(str::to_string).collect();
+    let mut ancestors = Vec::new();
+    // Prove admission through the ancestors without reading their siblings.
+    for name in &names[..names.len() - 1] {
+        reject_duplicate_names(&registrations, &ancestors)?;
+        if !registrations.contains(name) {
+            return Err(SubsystemTopologyError::new(format!(
+                "subsystem `{selected}` is not registered"
+            )));
+        }
+        ancestors.push(name.clone());
+        let path = descriptor_logical_path(&ancestors);
+        let bytes = reader.read_regular_file(Path::new(&path), &mut checkpoint)?;
+        let (_, children) = read_content_descriptor(&bytes, name, &path)?;
+        registrations = children;
+    }
+    reject_duplicate_names(&registrations, &ancestors)?;
+    let leaf = names.last().expect("subsystem address has a name");
+    if !registrations.contains(leaf) {
+        return Err(SubsystemTopologyError::new(format!(
+            "subsystem `{selected}` is not registered"
+        )));
+    }
+    let mut pending = vec![names];
+    let mut items = Vec::new();
+    while let Some(names) = pending.pop() {
+        checkpoint()?;
+        let address = SubsystemAddress::from_names(names.iter().map(String::as_str))
+            .map_err(|error| SubsystemTopologyError::new(error.to_string()))?;
+        let path = descriptor_logical_path(&names);
+        let bytes = reader.read_regular_file(Path::new(&path), &mut checkpoint)?;
+        let (content, children) =
+            read_content_descriptor(&bytes, names.last().expect("subsystem name"), &path)?;
+        reject_duplicate_names(&children, &names)?;
+        for child in children.into_iter().rev() {
+            let mut next = names.clone();
+            next.push(child);
+            pending.push(next);
+        }
+        items.push(RegisteredSubsystemContent { address, content });
+    }
+    reader.complete(&mut checkpoint)?;
+    Ok(items)
+}
+
+fn read_content_descriptor(
+    bytes: &[u8],
+    expected: &str,
+    path: &str,
+) -> Result<(Vec<String>, Vec<String>), SubsystemTopologyError> {
+    let document = parse_document(bytes, path)?;
+    let subsystem = single_object(&document, "Subsystem", path)?;
+    let properties = single_child(subsystem, "Properties", path)?;
+    let name = single_text_child(properties, "Name", path)?;
+    if name != expected {
+        return Err(SubsystemTopologyError::new(format!(
+            "registered subsystem `{path}` declares Name `{name}` instead of `{expected}`"
+        )));
+    }
+    Ok((
+        content_strings(single_child(properties, "Content", path)?, path)?,
+        registered_children(single_child(subsystem, "ChildObjects", path)?, path)?,
+    ))
+}
+
 /// Разделы командного интерфейса: подсистемы верхнего уровня из
 /// `Configuration.xml`, включённые в интерфейс, в порядке регистрации.
 /// Ими ограничен порядок разделов, пока он ещё не задан.
@@ -181,6 +262,16 @@ fn content_items(
     content: Node<'_, '_>,
     logical_path: &str,
 ) -> Result<Vec<ContentReference>, SubsystemTopologyError> {
+    content_strings(content, logical_path)?
+        .iter()
+        .map(|raw| parse_content_reference(raw, logical_path))
+        .collect()
+}
+
+fn content_strings(
+    content: Node<'_, '_>,
+    logical_path: &str,
+) -> Result<Vec<String>, SubsystemTopologyError> {
     reject_non_whitespace_direct_text(content, logical_path, "Content")?;
     content
         .children()
@@ -214,7 +305,7 @@ fn content_items(
                     "registered subsystem `{logical_path}` has an empty Content item"
                 )));
             }
-            parse_content_reference(value, logical_path)
+            Ok(value.to_string())
         })
         .collect()
 }

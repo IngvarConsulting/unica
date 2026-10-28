@@ -1028,9 +1028,16 @@ impl<'a> LogicalViewReadAuthority<'a> {
         route: &LogicalTreeRoute,
         admitted: &ViewSourceSnapshot,
     ) -> Result<Value, ViewError> {
+        // Subsystem content is captured afresh, but every route still needs
+        // the same registered-owner proof as the cached payload readers.
+        if route.reader() == LogicalReader::Subsystem {
+            if let Some(target) = route.reader_metadata_path() {
+                self.verify_registered_owner(target, admitted)?;
+            }
+        }
         if !matches!(
             route.reader(),
-            LogicalReader::Configuration | LogicalReader::Module
+            LogicalReader::Configuration | LogicalReader::Module | LogicalReader::Subsystem
         ) {
             if let Some(target) = route.reader_metadata_path() {
                 self.verify_registered_owner(target, admitted)?;
@@ -1169,9 +1176,27 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     .subsystem_payload(target, route.nested_subsystems(), &mut || {
                         self.read_checkpoint()
                     })?;
+            if route.reader() == LogicalReader::Subsystem
+                && route.at().segments().last().is_some_and(|segment| {
+                    segment.kind() == NodeKind::Relation || segment.name().is_some()
+                })
+            {
+                payload["recursiveContent"] = self.read.subsystem_subtree_content(
+                    target,
+                    route.nested_subsystems(),
+                    &mut || self.read_checkpoint(),
+                )?;
+            }
             // Корень библиотеки — подсистема верхнего уровня; признак держится
             // на соглашении стандартов разработки и называет свой источник.
-            if route.reader() == LogicalReader::Subsystem && route.nested_subsystems().is_empty() {
+            if route.reader() == LogicalReader::Subsystem
+                && route.nested_subsystems().is_empty()
+                && route
+                    .at()
+                    .segments()
+                    .last()
+                    .is_some_and(|segment| segment.kind() == NodeKind::Subsystem)
+            {
                 let name = target.as_str().split_once('.').map_or("", |(_, name)| name);
                 match self.read.subsystem_topology(&mut || self.read_checkpoint()) {
                     Ok(topology) => {
