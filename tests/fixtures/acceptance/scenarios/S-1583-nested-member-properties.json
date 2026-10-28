@@ -1,0 +1,1879 @@
+{
+  "id": "S-1583-nested-member-properties",
+  "issue": 1583,
+  "area": "Метаданные",
+  "task": "Следовать выданным адресам владельцев, коллекций и элементов; прочитать девять настроек Command/Dimension/Column, парные boolean, типы, qualifiers, required=false, FillValue=seed и модуль команды. Все чтения сохраняют SHA четырёх XML и двух модулей; неприменимые свойства отсутствуют.",
+  "workspace": "tests/fixtures/acceptance/workspace-nested-member-properties",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Orders"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/3/at",
+          "eq": "main:Document.Orders.Command"
+        },
+        {
+          "pointer": "/data/branches/3/count",
+          "eq": 2
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ],
+      "captures": {
+        "collection0": {
+          "pointer": "/data/branches/3/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.collection0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Command"
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Document.Orders.Command.Probe"
+        },
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "Probe"
+        },
+        {
+          "pointer": "/data/items/0/props/Group",
+          "eq": "NavigationPanelImportant"
+        },
+        {
+          "pointer": "/data/items/0/props/ParameterUseMode",
+          "eq": "Single"
+        },
+        {
+          "pointer": "/data/items/0/props/ModifiesData",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/0/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/denyIncompleteValues",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/UseInTotals",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/Indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Document.Orders.Command.Other"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "Other"
+        },
+        {
+          "pointer": "/data/items/1/props/Group",
+          "eq": "NavigationPanelOrdinary"
+        },
+        {
+          "pointer": "/data/items/1/props/ParameterUseMode",
+          "eq": "Multiple"
+        },
+        {
+          "pointer": "/data/items/1/props/ModifiesData",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/1/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/denyIncompleteValues",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/UseInTotals",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/Indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ],
+      "captures": {
+        "item0_0": {
+          "pointer": "/data/items/0/at"
+        },
+        "item0_1": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.item0_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Orders.Command.Probe"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Probe"
+        },
+        {
+          "pointer": "/data/props/Group",
+          "eq": "NavigationPanelImportant"
+        },
+        {
+          "pointer": "/data/props/ParameterUseMode",
+          "eq": "Single"
+        },
+        {
+          "pointer": "/data/props/ModifiesData",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/UseInTotals",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:Document.Orders.Command.Probe.Module"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ],
+      "captures": {
+        "commandModules": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.item0_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Orders.Command.Other"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Other"
+        },
+        {
+          "pointer": "/data/props/Group",
+          "eq": "NavigationPanelOrdinary"
+        },
+        {
+          "pointer": "/data/props/ParameterUseMode",
+          "eq": "Multiple"
+        },
+        {
+          "pointer": "/data/props/ModifiesData",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/UseInTotals",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Indexing",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:InformationRegister.Facts.Dimension"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ],
+      "captures": {
+        "collection1": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.collection1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Dimension"
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:InformationRegister.Facts.Dimension.StringDimension"
+        },
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "StringDimension"
+        },
+        {
+          "pointer": "/data/items/0/props/master",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/0/props/mainFilter",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/0/props/denyIncompleteValues",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/0/props/TypeReductionMode",
+          "eq": "TransformValues"
+        },
+        {
+          "pointer": "/data/items/0/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/0/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 10,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/items/0/props/fillValue",
+          "eq": {
+            "kind": "string",
+            "value": "seed"
+          }
+        },
+        {
+          "pointer": "/data/items/0/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/UseInTotals",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:InformationRegister.Facts.Dimension.RefDimension"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "RefDimension"
+        },
+        {
+          "pointer": "/data/items/1/props/master",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/mainFilter",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/denyIncompleteValues",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/TypeReductionMode",
+          "eq": "Deny"
+        },
+        {
+          "pointer": "/data/items/1/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "Catalog.Items"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/items/1/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/UseInTotals",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ],
+      "captures": {
+        "item1_0": {
+          "pointer": "/data/items/0/at"
+        },
+        "item1_1": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.item1_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:InformationRegister.Facts.Dimension.StringDimension"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "StringDimension"
+        },
+        {
+          "pointer": "/data/props/master",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/TypeReductionMode",
+          "eq": "TransformValues"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 10,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/props/fillValue",
+          "eq": {
+            "kind": "string",
+            "value": "seed"
+          }
+        },
+        {
+          "pointer": "/data/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/UseInTotals",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.item1_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:InformationRegister.Facts.Dimension.RefDimension"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "RefDimension"
+        },
+        {
+          "pointer": "/data/props/master",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/TypeReductionMode",
+          "eq": "Deny"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "Catalog.Items"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/UseInTotals",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:AccumulationRegister.Movements.Dimension"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ],
+      "captures": {
+        "collection2": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.collection2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Dimension"
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:AccumulationRegister.Movements.Dimension.StatusIncluded"
+        },
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "StatusIncluded"
+        },
+        {
+          "pointer": "/data/items/0/props/UseInTotals",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/0/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/0/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 10,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/items/0/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:AccumulationRegister.Movements.Dimension.Status"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "Status"
+        },
+        {
+          "pointer": "/data/items/1/props/UseInTotals",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 10,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/items/1/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ],
+      "captures": {
+        "item2_0": {
+          "pointer": "/data/items/0/at"
+        },
+        "item2_1": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.item2_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:AccumulationRegister.Movements.Dimension.StatusIncluded"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "StatusIncluded"
+        },
+        {
+          "pointer": "/data/props/UseInTotals",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 10,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/TypeReductionMode",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.item2_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:AccumulationRegister.Movements.Dimension.Status"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Status"
+        },
+        {
+          "pointer": "/data/props/UseInTotals",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 10,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/TypeReductionMode",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.Entries"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:DocumentJournal.Entries.Column"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 3
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ],
+      "captures": {
+        "collection3": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.collection3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Column"
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:DocumentJournal.Entries.Column.Status"
+        },
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "Status"
+        },
+        {
+          "pointer": "/data/items/0/props/Indexing",
+          "eq": "DontIndex"
+        },
+        {
+          "pointer": "/data/items/0/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/denyIncompleteValues",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/UseInTotals",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:DocumentJournal.Entries.Column.Indexed"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "Indexed"
+        },
+        {
+          "pointer": "/data/items/1/props/Indexing",
+          "eq": "Index"
+        },
+        {
+          "pointer": "/data/items/1/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/denyIncompleteValues",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/UseInTotals",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:DocumentJournal.Entries.Column.Ordered"
+        },
+        {
+          "pointer": "/data/items/2/title",
+          "eq": "Ordered"
+        },
+        {
+          "pointer": "/data/items/2/props/Indexing",
+          "eq": "IndexWithAdditionalOrder"
+        },
+        {
+          "pointer": "/data/items/2/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/props/denyIncompleteValues",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/props/UseInTotals",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/3",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ],
+      "captures": {
+        "item3_0": {
+          "pointer": "/data/items/0/at"
+        },
+        "item3_1": {
+          "pointer": "/data/items/1/at"
+        },
+        "item3_2": {
+          "pointer": "/data/items/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.item3_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DocumentJournal.Entries.Column.Status"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Status"
+        },
+        {
+          "pointer": "/data/props/Indexing",
+          "eq": "DontIndex"
+        },
+        {
+          "pointer": "/data/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/UseInTotals",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.item3_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DocumentJournal.Entries.Column.Indexed"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Indexed"
+        },
+        {
+          "pointer": "/data/props/Indexing",
+          "eq": "Index"
+        },
+        {
+          "pointer": "/data/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/UseInTotals",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.item3_2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DocumentJournal.Entries.Column.Ordered"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Ordered"
+        },
+        {
+          "pointer": "/data/props/Indexing",
+          "eq": "IndexWithAdditionalOrder"
+        },
+        {
+          "pointer": "/data/props/Group",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ParameterUseMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/ModifiesData",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/master",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/mainFilter",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/TypeReductionMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/UseInTotals",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commandModules"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/kind",
+          "eq": "Module"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ],
+      "captures": {
+        "commandModule": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commandModule"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        },
+        {
+          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+        }
+      ]
+    }
+  ]
+}

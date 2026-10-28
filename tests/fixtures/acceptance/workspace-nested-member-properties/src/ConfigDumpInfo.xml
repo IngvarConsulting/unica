@@ -1,0 +1,32 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="AccumulationRegister.Movements" id="7dac27a0-5940-4f7a-9269-5f717083f468" configVersion="bcb99af611f5a544b5f508e2711b98d500000000">
+			<Metadata name="AccumulationRegister.Movements.Dimension.Status" id="10ce1fef-a0e1-4f3a-abf1-42ef1b0cc309"/>
+			<Metadata name="AccumulationRegister.Movements.Dimension.StatusIncluded" id="50d98938-072f-4c2a-a648-a73b0f4b60c6"/>
+			<Metadata name="AccumulationRegister.Movements.Resource.Amount" id="e352cf60-9fc1-486c-b890-6ff27d40f968"/>
+		</Metadata>
+		<Metadata name="Catalog.Items" id="164c3640-2956-48cf-944b-d3c458c1d72d" configVersion="dd9d2d4f83dad244ac9df8f605481abf00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="97d8345152f4c04aaafb465517e16ea500000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="7f4919aaf2c7bf4b99d7363bfdac172c00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ManagedApplicationModule" id="00000000-0000-0000-0000-000000000002.6" configVersion="c46bbc8dabcee14f88bee00c2c93f54900000000"/>
+		<Metadata name="Document.Orders" id="20e039b4-e621-4f84-b35e-3a3685335a83" configVersion="c8048fd6d67dff4b8165c4a685b00b1000000000">
+			<Metadata name="Document.Orders.Command.Other" id="00393202-5672-45c6-b02a-f3b09a7ba166"/>
+			<Metadata name="Document.Orders.Command.Probe" id="1b29a259-7daf-4aae-b8bf-d5fa4565e8c4"/>
+			<Metadata name="Document.Orders.Attribute.Status" id="bc7b6eaf-edeb-4a72-8e7b-4405c199fb38"/>
+		</Metadata>
+		<Metadata name="Document.Orders.Command.Other.CommandModule" id="00393202-5672-45c6-b02a-f3b09a7ba166.2" configVersion="e696ae643310cc49828cce5b792a9bfd00000000"/>
+		<Metadata name="Document.Orders.Command.Probe.CommandModule" id="1b29a259-7daf-4aae-b8bf-d5fa4565e8c4.2" configVersion="af1cba8f33ad9441babdf40e3b8848df00000000"/>
+		<Metadata name="DocumentJournal.Entries" id="0b21eb3f-35ec-436b-aaf0-08128052ad8b" configVersion="9c103e4b989b5a4db23957474410d5fc00000000">
+			<Metadata name="DocumentJournal.Entries.Column.Ordered" id="1e348dbe-48bb-4ccb-976d-bf33751f0106"/>
+			<Metadata name="DocumentJournal.Entries.Column.Status" id="8dec74ef-40b7-4bcc-9a20-ab8fbe586dd6"/>
+			<Metadata name="DocumentJournal.Entries.Column.Indexed" id="8ffc4ddc-c654-451a-9ca7-42d704e2315d"/>
+		</Metadata>
+		<Metadata name="InformationRegister.Facts" id="1c3ee8f4-98be-418f-ae73-f34488aae3cd" configVersion="f2c56feb90d0e4488237993cac3a52f900000000">
+			<Metadata name="InformationRegister.Facts.Resource.Value" id="42b2df5d-6f78-4e9d-bca6-91cfc4d22814"/>
+			<Metadata name="InformationRegister.Facts.Dimension.RefDimension" id="ad3e09e6-6ed5-4b5e-8ca7-747368773676"/>
+			<Metadata name="InformationRegister.Facts.Dimension.StringDimension" id="d6f7d6f2-3e10-48a4-92ac-fd8070466710"/>
+		</Metadata>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="c3de8a1afdcc524bbf6263f26b4a57cb00000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

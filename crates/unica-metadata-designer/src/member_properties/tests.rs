@@ -150,7 +150,16 @@ fn catalog_tabular_native_context_does_not_admit_other_platform_owner_kinds() {
         "Document.АктОбУничтоженииПерсональныхДанных",
         Some(SourceSetKind::Configuration),
     );
-    assert_profile_absent(&info);
+    assert_eq!(
+        info.member_read_profile,
+        Some(unica_metadata::MetaMemberReadProfile::DocumentCommand220)
+    );
+    for section in &info.collections.tabular_sections {
+        assert_no_pilot_properties(section);
+        for attribute in &section.attributes {
+            assert!(attribute.properties.is_empty());
+        }
+    }
     assert_eq!(info.name, "АктОбУничтоженииПерсональныхДанных");
 }
 
@@ -175,5 +184,124 @@ fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attribu
     assert!(!columns.is_empty());
     for column in columns {
         assert_no_section_properties(column);
+    }
+}
+
+#[test]
+fn nested_member_profiles_observe_nine_facts_without_losing_false() {
+    for (owner, member, fields, expected) in [
+        ("Document", "Command", "<Group>NavigationPanelImportant</Group><ParameterUseMode>Single</ParameterUseMode><ModifiesData>false</ModifiesData>", json!({"Group":{"kind":"text","value":"NavigationPanelImportant"},"ParameterUseMode":{"kind":"text","value":"Single"},"ModifiesData":{"kind":"boolean","value":false}})),
+        ("InformationRegister", "Dimension", "<Master>true</Master><MainFilter>true</MainFilter><DenyIncompleteValues>true</DenyIncompleteValues><TypeReductionMode>TransformValues</TypeReductionMode>", json!({"Master":{"kind":"boolean","value":true},"MainFilter":{"kind":"boolean","value":true},"DenyIncompleteValues":{"kind":"boolean","value":true},"TypeReductionMode":{"kind":"text","value":"TransformValues"}})),
+        ("AccumulationRegister", "Dimension", "<UseInTotals>false</UseInTotals>", json!({"UseInTotals":{"kind":"boolean","value":false}})),
+        ("DocumentJournal", "Column", "<Indexing>DontIndex</Indexing>", json!({"Indexing":{"kind":"text","value":"DontIndex"}})),
+    ] {
+        let xml = format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><{owner} uuid=\"a1583000-0000-4000-8000-000000000001\"><Properties><Name>Owner</Name></Properties><ChildObjects><{member} uuid=\"a1583000-0000-4000-8000-000000000002\"><Properties><Name>Member</Name><Synonym/><FillChecking>DontCheck</FillChecking>{fields}</Properties></{member}></ChildObjects></{owner}></MetaDataObject>");
+        let info = read(&xml, &format!("{owner}.Owner"), Some(SourceSetKind::Configuration));
+        let item = match member { "Command" => &info.collections.commands[0], "Dimension" => &info.collections.dimensions[0], _ => &info.collections.columns[0] };
+        let actual = item.properties.iter().map(|property| (property.name.clone(), serde_json::to_value(&property.value).unwrap())).collect::<serde_json::Map<_,_>>();
+        assert_eq!(serde_json::Value::Object(actual), expected, "{owner}.{member}");
+        assert_eq!(item.name, "Member");
+    }
+}
+
+#[test]
+fn nested_optional_fact_damage_is_local_and_missing_never_infers_defaults() {
+    for (owner, member, facts) in [
+        (
+            "Document",
+            "Command",
+            vec![
+                ("Group", "NavigationPanelImportant"),
+                ("ParameterUseMode", "Single"),
+                ("ModifiesData", "false"),
+            ],
+        ),
+        (
+            "InformationRegister",
+            "Dimension",
+            vec![
+                ("Master", "true"),
+                ("MainFilter", "true"),
+                ("DenyIncompleteValues", "true"),
+                ("TypeReductionMode", "TransformValues"),
+            ],
+        ),
+        (
+            "AccumulationRegister",
+            "Dimension",
+            vec![("UseInTotals", "false")],
+        ),
+        ("DocumentJournal", "Column", vec![("Indexing", "DontIndex")]),
+    ] {
+        let xml = |fields: &str| {
+            format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><{owner} uuid=\"a1583000-0000-4000-8000-000000000001\"><Properties><Name>Owner</Name></Properties><ChildObjects><{member} uuid=\"a1583000-0000-4000-8000-000000000002\"><Properties><Name>Member</Name><Synonym/><FillChecking>DontCheck</FillChecking>{fields}</Properties></{member}></ChildObjects></{owner}></MetaDataObject>")
+        };
+        let observed = |fields: &str| {
+            let info = read(
+                &xml(fields),
+                &format!("{owner}.Owner"),
+                Some(SourceSetKind::Configuration),
+            );
+            match member {
+                "Command" => info.collections.commands[0].clone(),
+                "Dimension" => info.collections.dimensions[0].clone(),
+                _ => info.collections.columns[0].clone(),
+            }
+        };
+        let empty = observed("");
+        assert!(empty.properties.is_empty(), "{owner}: {empty:?}");
+        assert!(empty.property_limits.is_empty(), "{owner}: {empty:?}");
+        let fields = facts
+            .iter()
+            .map(|(tag, value)| format!("<{tag}>{value}</{tag}>"))
+            .collect::<String>();
+        for (tag, value) in &facts {
+            let original = format!("<{tag}>{value}</{tag}>");
+            for replacement in [
+                format!("{original}{original}"),
+                format!("<{tag} xmlns=\"urn:foreign\">{value}</{tag}>"),
+                format!("<{tag}><Nested>{value}</Nested></{tag}>"),
+                format!("<{tag}/>"),
+                format!("<{tag}>UnsupportedValue</{tag}>"),
+            ] {
+                let item = observed(&fields.replace(&original, &replacement));
+                assert_eq!(item.name, "Member");
+                assert_eq!(
+                    item.properties.len(),
+                    facts.len() - 1,
+                    "{owner} {tag}: {item:?}"
+                );
+                assert!(!item.properties.iter().any(|property| property.name == *tag));
+                assert_eq!(item.property_limits.len(), 1, "{owner} {tag}: {item:?}");
+                assert!(item.property_limits[0].contains(&format!(".properties.{tag}")));
+                assert!(item.incomplete);
+            }
+            let item = observed(&fields.replace(&original, ""));
+            assert_eq!(item.properties.len(), facts.len() - 1);
+            assert!(item.property_limits.is_empty());
+            if [
+                "Master",
+                "MainFilter",
+                "DenyIncompleteValues",
+                "ModifiesData",
+                "UseInTotals",
+            ]
+            .contains(tag)
+            {
+                for boolean in ["true", "false"] {
+                    let item =
+                        observed(&fields.replace(&original, &format!("<{tag}>{boolean}</{tag}>")));
+                    let property = item
+                        .properties
+                        .iter()
+                        .find(|property| property.name == *tag)
+                        .unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&property.value).unwrap(),
+                        json!({"kind":"boolean","value":boolean == "true"})
+                    );
+                }
+            }
+        }
     }
 }
