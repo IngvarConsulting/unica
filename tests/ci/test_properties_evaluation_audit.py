@@ -278,6 +278,9 @@ class PropertiesEvidenceTests(unittest.TestCase):
             ("missing Comment", schema + ["properties", "values", "properties", "Comment"], None),
             ("wrong Comment type", schema + ["properties", "values", "properties", "Comment", "type"], "boolean"),
             ("unknown Comment schema", schema + ["properties", "values", "properties", "Comment"], True),
+            ("impossible Comment", schema + ["properties", "values", "properties", "Comment", "not"], {}),
+            ("impossible required field", schema + ["required"], ["values", "missing"]),
+            ("invalid schema", schema + ["properties", "values", "properties", "Vendor", "type"], "unknown"),
             ("invented Name", schema + ["properties", "values", "properties", "Name"], {"type": "string"}),
             ("invented name alias", schema + ["properties", "values", "properties", "name"], {"type": "string"}),
         ]

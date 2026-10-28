@@ -6,6 +6,8 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from jsonschema import Draft202012Validator, SchemaError, ValidationError
+
 from tests.agent_evaluation.dcs_driver import (
     REPO, changed_files, evaluate as evaluate_contract, independent_review as review_contract,
     terminal_calls,
@@ -86,8 +88,15 @@ def configuration_comment_contract(result):
         return False
     fields = values.get("properties")
     comment = fields.get("Comment") if isinstance(fields, dict) else None
-    return (isinstance(comment, dict) and comment.get("type") == "string"
-            and "Name" not in fields and "name" not in fields)
+    if not (isinstance(comment, dict) and comment.get("type") == "string"
+            and "Name" not in fields and "name" not in fields):
+        return False
+    try:
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate({"values": {"Comment": "Observed root Comment support"}})
+    except (SchemaError, ValidationError):
+        return False
+    return True
 
 
 def audit(records):
