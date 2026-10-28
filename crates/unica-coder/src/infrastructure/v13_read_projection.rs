@@ -945,6 +945,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "useOneCommand",
             "support",
             "content",
+            "recursiveContent",
             "groups",
             "children",
             "tree",
@@ -1199,10 +1200,33 @@ fn project_subsystem(
 /// по идентификатору или строка, которой грамматика адресов не знает, адреса
 /// не имеет; её называет слот `limits`, а чтение подсистемы продолжается.
 fn subsystem_content(address: &QualifiedAddress, payload: &Value) -> (Vec<Value>, Vec<String>) {
+    if payload.get("recursiveContent").is_some_and(Value::is_null) {
+        return (Vec::new(), Vec::new());
+    }
     let mut content = Vec::new();
     let mut dangling = Vec::new();
-    let items = payload.get("content").and_then(Value::as_array);
-    for reference in items.into_iter().flatten().filter_map(Value::as_str) {
+    let mut positions = std::collections::HashMap::<String, usize>::new();
+    let recursive = payload.get("recursiveContent").and_then(Value::as_array);
+    let direct = payload.get("content").and_then(Value::as_array);
+    let items: Vec<(&str, Option<&str>)> = match recursive {
+        Some(items) => items
+            .iter()
+            .filter_map(|item| {
+                Some((
+                    item.get("reference")?.as_str()?,
+                    item.get("subsystem").and_then(Value::as_str),
+                ))
+            })
+            .collect(),
+        None => direct
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|reference| (reference, None))
+            .collect(),
+    };
+    for (reference, subsystem) in items {
+        let source = subsystem.map(|at| format!("{}:{at}", address.source_set()));
         let target = QualifiedAddress::parse(&format!("{}:{reference}", address.source_set()))
             .ok()
             .and_then(|at| {
@@ -1210,12 +1234,29 @@ fn subsystem_content(address: &QualifiedAddress, payload: &Value) -> (Vec<Value>
                 Some((at, kind))
             });
         match target {
-            Some((at, kind)) => content.push(json!({
-                "relation": "content",
-                "at": at.to_string(),
-                "kind": kind.as_str(),
-            })),
-            None => dangling.push(reference.to_string()),
+            Some((at, kind)) => {
+                let key = at.to_string();
+                let index = *positions.entry(key.clone()).or_insert_with(|| {
+                    content.push(json!({"relation": "content", "at": key, "kind": kind.as_str()}));
+                    content.len() - 1
+                });
+                if let Some(source) = source {
+                    let sources = content[index]
+                        .as_object_mut()
+                        .expect("content row")
+                        .entry("subsystems")
+                        .or_insert_with(|| json!([]))
+                        .as_array_mut()
+                        .expect("sources array");
+                    if !sources.iter().any(|known| known.as_str() == Some(&source)) {
+                        sources.push(json!(source));
+                    }
+                }
+            }
+            None => dangling.push(match source {
+                Some(source) => format!("{reference} ({source})"),
+                None => reference.to_string(),
+            }),
         }
     }
     (content, dangling)

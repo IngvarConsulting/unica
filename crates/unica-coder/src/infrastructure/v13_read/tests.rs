@@ -9,6 +9,7 @@ mod form_support;
 mod job_schedule;
 mod metadata;
 mod metadata_declaration_diagnostics;
+mod subsystem_recursive_content;
 mod support;
 mod xdto_missing_target;
 
@@ -1966,8 +1967,8 @@ fn a_subsystem_shows_its_content_and_reads_registered_children_at_depth() {
     assert_eq!(
         view_items(&service.view(ViewRequest::new("main:Subsystem.Sales.Relation").unwrap())),
         vec![
-            json!({"relation": "content", "at": "main:Catalog.Items", "kind": "Catalog"}),
-            json!({"relation": "content", "at": "main:Document.Order", "kind": "Document"}),
+            json!({"relation": "content", "at": "main:Catalog.Items", "kind": "Catalog", "subsystems": ["main:Subsystem.Sales", "main:Subsystem.Sales.Subsystem.Orders.Subsystem.Returns"]}),
+            json!({"relation": "content", "at": "main:Document.Order", "kind": "Document", "subsystems": ["main:Subsystem.Sales", "main:Subsystem.Sales.Subsystem.Orders"]}),
         ]
     );
     let children =
@@ -1985,7 +1986,7 @@ fn a_subsystem_shows_its_content_and_reads_registered_children_at_depth() {
     assert_eq!(data["title"], "Orders");
     assert_eq!(
         view_branch_count(&nested, &format!("{nested_at}.Relation")),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         view_branch_count(&nested, &format!("{nested_at}.Subsystem")),
@@ -1998,7 +1999,10 @@ fn a_subsystem_shows_its_content_and_reads_registered_children_at_depth() {
     let content = service.view(ViewRequest::new(&format!("{nested_at}.Relation")).unwrap());
     assert_eq!(
         view_items(&content),
-        vec![json!({"relation": "content", "at": "main:Document.Order", "kind": "Document"})]
+        vec![
+            json!({"relation": "content", "at": "main:Document.Order", "kind": "Document", "subsystems": [nested_at]}),
+            json!({"relation": "content", "at": "main:Catalog.Items", "kind": "Catalog", "subsystems": [format!("{nested_at}.Subsystem.Returns")]}),
+        ]
     );
     let limits = content.data.as_ref().unwrap()["limits"].to_string();
     assert!(
@@ -7308,6 +7312,10 @@ fn subsystem_text_properties_preserve_presence_and_damage_at_every_depth() {
             let ci = fixture.source.join(path.trim_end_matches(".xml")).join("Ext/CommandInterface.xml");
             write(&ci, r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#);
         }
+        // Relation counts now include registered descendants; keep this text
+        // property fixture complete through its registered leaf.
+        write(&fixture.source.join("Subsystems/Sales/Subsystems/Orders/Subsystems/Returns.xml"),
+            &subsystem_descriptor("Returns", &[], &[]));
         let service = fixture.view_service();
         for (path, at) in paths.into_iter().zip(["main:Subsystem.Sales", "main:Subsystem.Sales.Subsystem.Orders"]) {
             let before = fs::read(fixture.source.join(path)).unwrap();

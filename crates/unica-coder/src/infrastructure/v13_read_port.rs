@@ -1916,6 +1916,37 @@ impl ProviderReadAuthority {
         self.artifacts.subsystem_topology(&self.root, checkpoint)
     }
 
+    pub(crate) fn subsystem_subtree_content(
+        &self,
+        target: &MetadataAddress,
+        nested: &[String],
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
+        use unica_metadata::subsystem::SubsystemAddress;
+        let name = target
+            .as_str()
+            .strip_prefix("Subsystem.")
+            .expect("subsystem reader target");
+        let selected = SubsystemAddress::from_names(
+            std::iter::once(name).chain(nested.iter().map(String::as_str)),
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+        let topology = self
+            .artifacts
+            .subsystem_subtree(&self.root, &selected, checkpoint)?;
+        let mut items = Vec::new();
+        for node in topology {
+            let subsystem = format!(
+                "Subsystem.{}",
+                node.address.as_str().replace('.', ".Subsystem.")
+            );
+            for reference in node.content {
+                items.push(json!({"reference": reference, "subsystem": subsystem}));
+            }
+        }
+        Ok(json!(items))
+    }
+
     fn support_state(
         &self,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
