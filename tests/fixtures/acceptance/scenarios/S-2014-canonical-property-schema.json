@@ -1,0 +1,267 @@
+{
+  "id": "S-2014-canonical-property-schema",
+  "issue": 2014,
+  "area": "Свойства конфигурации",
+  "workspace": "tests/fixtures/acceptance/workspace-borrowed",
+  "task": "Прочитать компактный Can без повторной схемы псевдонима и построить план каноническим или прежним именем свойства. Двойное имя, неверное значение и неизвестный ключ отклоняются; все вызовы сохраняют файл.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "cf": {
+          "file": "src/cf/Configuration.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CompatibilityMode/enum",
+          "contains": "Version8_3_27"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/compatibilityMode",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Version/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/version",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CompatibilityMode": "Version8_3_27"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cf"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "compatibilityMode": "Version8_3_27"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cf"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CompatibilityMode": "Version8_3_27",
+                "compatibilityMode": "Version8_3_27"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cf"
+        }
+      ],
+      "refusal": "bad_value: property `CompatibilityMode` takes one spelling; choose either `CompatibilityMode` or `compatibilityMode`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.compatibilityMode"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "compatibilityMode": "invalid"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cf"
+        }
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.compatibilityMode"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "compatibilityMode": null
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cf"
+        }
+      ],
+      "refusal": "bad_value: expected \"string\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.compatibilityMode"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "UnknownProperty": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.cf"
+        }
+      ],
+      "refusal": "bad_value: unknown field `UnknownProperty`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.UnknownProperty"
+        }
+      ]
+    }
+  ]
+}

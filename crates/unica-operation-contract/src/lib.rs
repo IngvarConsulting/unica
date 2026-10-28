@@ -198,12 +198,116 @@ impl OperationContract {
     }
 
     pub fn details(&self) -> Value {
-        json!({"argsSchema":self.schema,"target":self.target,"effect":self.effect,
+        json!({"argsSchema":published_schema(&self.schema),"target":self.target,"effect":self.effect,
             "notes":self.notes,"exampleArgs":self.example_args,
             "exampleUse":"Read existing targets and required names through view. For creation, choose a new unused name. These argument examples do not establish that their names exist in this workspace.",
             "help":{"scope":"plugin","path":self.help},
             "execution":"Preview with at/ops; execute only data.executionToken from the successful plan, then read the post-image and check. Observe the same Task to terminal state; never repeat a mutation to wait for it."})
     }
+}
+
+/// Publish one spelling per declared property group, keeping the acceptance
+/// schema intact for legacy callers and diagnostic provenance. Only schema
+/// positions are visited: enum/default/example objects are user values.
+fn published_schema(schema: &Value) -> Value {
+    let mut published = schema.clone();
+    project_schema(&mut published);
+    published
+}
+
+fn project_schema(schema: &mut Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    for key in [
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+    ] {
+        if let Some(children) = object.get_mut(key).and_then(Value::as_object_mut) {
+            for child in children.values_mut() {
+                project_schema(child);
+            }
+        }
+    }
+    for key in [
+        "items",
+        "additionalItems",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+        "propertyNames",
+    ] {
+        if let Some(child) = object.get_mut(key) {
+            if let Some(children) = child.as_array_mut() {
+                for child in children {
+                    project_schema(child);
+                }
+            } else {
+                project_schema(child);
+            }
+        }
+    }
+    for key in ["oneOf", "anyOf", "allOf", "prefixItems"] {
+        if let Some(children) = object.get_mut(key).and_then(Value::as_array_mut) {
+            for child in children {
+                project_schema(child);
+            }
+        }
+    }
+    let Some(groups) = object
+        .get("x-unica-alias-groups")
+        .and_then(Value::as_array)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) else {
+        return;
+    };
+    // Do not invent a canonical shape for an unrecognised declaration.
+    let mut aliases = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for group in &groups {
+        let Some(names) = group.as_array() else {
+            return;
+        };
+        if names.len() < 2 {
+            return;
+        }
+        let Some(canonical) = names[0].as_str().and_then(|name| properties.get(name)) else {
+            return;
+        };
+        for (index, name) in names.iter().enumerate() {
+            let Some(name) = name.as_str() else {
+                return;
+            };
+            if !seen.insert(name) || properties.get(name) != Some(canonical) {
+                return;
+            }
+            if index > 0 {
+                aliases.push(name.to_owned());
+            }
+        }
+    }
+    for alias in aliases {
+        properties.remove(&alias);
+    }
+    // This is the exact collision constraint emitted with alias groups.
+    // Other `not` constraints remain authoritative and are never discarded.
+    let collisions =
+        json!({"anyOf": groups.iter().map(|names| json!({"required":names})).collect::<Vec<_>>()});
+    if object.get("not") == Some(&collisions) {
+        object.remove("not");
+    }
+    object.remove("x-unica-alias-groups");
 }
 
 /// Compiled grammar of an owned contract pattern. Every pattern comes from a
@@ -532,6 +636,68 @@ mod tests {
             help: "help",
             format_validators,
         }
+    }
+
+    #[test]
+    fn public_alias_projection_preserves_runtime_and_non_schema_values() {
+        let group = json!({"type":"object", "additionalProperties":false,
+            "properties":{"Mode":{"type":"string","enum":["A","B"]},"mode":{"type":"string","enum":["A","B"]}},
+            "x-unica-alias-groups":[["Mode","mode"]],
+            "not":{"anyOf":[{"required":["Mode","mode"]}]}});
+        let schema = json!({"type":"object", "properties":{
+            "values":group,
+            "items":{"type":"array","items":{"oneOf":[group]}},
+            "literal":{"enum":[group],"default":group,"examples":[group]}
+        }});
+        let contract = contract(schema.clone(), &[]);
+        let published = contract.details()["argsSchema"].clone();
+        for node in [
+            &published["properties"]["values"],
+            &published["properties"]["items"]["items"]["oneOf"][0],
+        ] {
+            assert_eq!(
+                node["properties"],
+                json!({"Mode":{"type":"string","enum":["A","B"]}})
+            );
+            assert!(node.get("not").is_none());
+            assert!(node.get("x-unica-alias-groups").is_none());
+        }
+        assert_eq!(
+            published["properties"]["literal"],
+            schema["properties"]["literal"]
+        );
+        assert_eq!(contract.schema, schema);
+        for name in ["Mode", "mode"] {
+            let args = json!({"values":{name:"A"}});
+            assert_eq!(
+                contract.normalize(&args, "args").unwrap(),
+                json!({"values":{name:"A"}, "literal":group})
+            );
+            assert!(contract
+                .normalize(&json!({"values":{name:"invalid"}}), "args")
+                .is_err());
+        }
+        assert!(contract
+            .normalize(&json!({"values":{"Mode":"A","mode":"A"}}), "args")
+            .is_err());
+    }
+
+    #[test]
+    fn public_projection_keeps_other_constraints_and_dcs_alias_metadata() {
+        let schema = json!({"type":"object", "properties":{
+            "Mode":{"type":"string","enum":["A","B"]},
+            "mode":{"type":"string","enum":["A","B"]},
+            "Other":{"type":"string","enum":["A","B"]}},
+            "x-unica-alias-groups":[["Mode","mode"]],
+            "x-unica-aliases":["Mode","mode"],
+            "not":{"anyOf":[{"required":["Mode","mode"]},{"required":["Mode","Other"]}]}});
+        let published = contract(schema.clone(), &[]).details()["argsSchema"].clone();
+        assert_eq!(published["not"], schema["not"]);
+        assert_eq!(published["x-unica-aliases"], schema["x-unica-aliases"]);
+        assert_eq!(
+            published["properties"]["Other"],
+            schema["properties"]["Other"]
+        );
     }
 
     fn lower_word(value: &Value) -> Result<(), String> {
