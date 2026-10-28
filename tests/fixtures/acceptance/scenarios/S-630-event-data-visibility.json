@@ -1,0 +1,27 @@
+{
+  "id": "S-630-event-data-visibility",
+  "issue": 630,
+  "area": "Навыки событий и проведения",
+  "task": "Агент проверяет видимость данных по коду и официальной справке, отличает подтверждённый порядок от гипотезы о предыдущей записи.",
+  "workspace": "tests/fixtures/acceptance/workspace-event-data-visibility",
+  "profile": "agent-evaluation",
+  "driver": "codex",
+  "evaluation": "event-data-visibility",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.VisibilityProbe.Module.Object"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:Document.VisibilityProbe.Module.Object"
+        }
+      ]
+    }
+  ]
+}

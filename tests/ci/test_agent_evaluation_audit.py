@@ -184,6 +184,23 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 with self.subTest(event=event, position=position), self.assertRaises(ValueError):
                     audit_cli(valid[:position] + [event] + valid[position:], {"unica.view"}, help_path)
 
+    def test_agent_help_allowlist_accepts_only_each_declared_file(self):
+        paths = (Path("/prepared/skills/object-events/SKILL.md"),
+                 Path("/prepared/references/platform/object-events.md"))
+        call = {"type": "mcp_tool_call", "server": "unica", "tool": "unica.docs", "status": "completed"}
+        def transcript(command):
+            return [{"type": "turn.started"},
+                    {"type": "item.completed", "item": {"type": "command_execution", "command": command,
+                                                        "status": "completed", "exit_code": 0}},
+                    {"type": "item.completed", "item": call}, {"type": "turn.completed"}]
+        for path in paths:
+            self.assertEqual(audit_cli(transcript(f"cat {path}"), {"unica.docs"}, paths), [call])
+        for command in ["cat /prepared/other.md", f"cat {paths[0]} {paths[1]}",
+                        f"cat {paths[0]}; cat /prepared/other.md", f"cat -- {paths[0]}",
+                        "cat /prepared/references/../other.md"]:
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                audit_cli(transcript(command), {"unica.docs"}, paths)
+
     def test_dcs_physical_outcome_accepts_independent_platform_scaffold(self):
         """Accept native defaults or their removal without losing the requested schema data."""
         from tests.agent_evaluation.dcs_driver import verify_dcs_images

@@ -136,7 +136,8 @@ def allowed_help_command(command, help_path):
     parts = shlex.split(command)
     if len(parts) == 3 and parts[0] in {"/bin/zsh", "/bin/bash", "/bin/sh"} and parts[1] in {"-lc", "-c"}:
         parts = shlex.split(parts[2])
-    return parts == ["cat", str(help_path)]
+    paths = (help_path,) if isinstance(help_path, (str, Path)) else help_path
+    return any(parts == ["cat", str(path)] for path in paths)
 
 
 def audit_cli(events, allowed_tools, help_path):
@@ -158,7 +159,7 @@ def audit_cli(events, allowed_tools, help_path):
             continue
         if item_kind == "command_execution":
             if not allowed_help_command(item.get("command", ""), help_path):
-                raise ValueError("agent shell command is outside the single prepared help file")
+                raise ValueError("agent shell command is outside the prepared help files")
             if kind == "item.completed":
                 if item.get("exit_code") != 0 or item.get("status") != "completed":
                     raise ValueError("prepared help read failed")
@@ -712,7 +713,7 @@ def stop_owned_daemons(state, binary):
 
 
 def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", changed_paths=None, auditor=None,
-             help_ref="references/use-cases/reports-printing.md", source_roots=None):
+             help_ref="references/use-cases/reports-printing.md", source_roots=None, extra_help_refs=()):
     is_dcs_contract = fixture == FIXTURE and auditor is None
     auditor = audit_dcs_contract if is_dcs_contract else (auditor or audit_mcp)
     proof = proof_root / (scenario["id"] + "-" + uuid.uuid4().hex)
@@ -728,7 +729,9 @@ def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", cha
     for name in ("prompt.md", "AGENTS.md", "output.schema.json"):
         shutil.copy2(fixture / name, proof / name)
     help_path = packet / help_ref
+    help_paths = (help_path, *(packet / reference for reference in extra_help_refs))
     agents = (proof / "AGENTS.md").read_text().replace("{{HELP_PATH}}", str(help_path))
+    agents = agents.replace("{{HELP_PATHS}}", json.dumps([str(path) for path in help_paths], ensure_ascii=False))
     (proof / "AGENTS.md").write_text(agents)
     (server.workspace / "AGENTS.md").write_text(agents)
     environment = isolated_environment(packet, state)
@@ -774,7 +777,7 @@ def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", cha
         observations = verify_dcs_images(server.workspace)
         (proof / "file-observations.json").write_text(json.dumps(observations, ensure_ascii=False, indent=2))
         manifest["fileObservationsSha256"] = packager().sha256(proof / "file-observations.json")
-    completed = audit_cli(events, allowed, help_path)
+    completed = audit_cli(events, allowed, help_paths if extra_help_refs else help_path)
     if len(completed) != len(calls):
         raise ValueError("CLI and raw MCP transcripts disagree on tool calls")
     manifest["toolInventory"] = sorted(allowed)

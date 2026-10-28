@@ -38,6 +38,33 @@ Pick the handler by what the logic needs to see, not by what is convenient:
 
 Two rules cut across all of them: `ОбменДанными.Загрузка` is checked first in `ПередЗаписью`, `ПриЗаписи`, and `ПередУдалением` (std773), and `Отказ` is only ever assigned `Истина` (std686).
 
+## Data Visibility During A Document Write
+
+For a standard document write in 8.3.27, distinguish the form representation,
+the object being written and the database state of the same session. A form can
+be absent; trace its conversion to the object instead of assuming they match.
+
+| Handler | Form data | Object in memory | Database read in the same session | Platform write transaction |
+| --- | --- | --- | --- | --- |
+| Form `ПередЗаписьюНаСервере` | Separate representation | `ТекущийОбъект` is being prepared for writing | State before this write | Not started yet |
+| Object `ПередЗаписью` | Separate representation | Pending values for this write | State before this write, including any earlier writes in the current transaction | Already started |
+| Object `ПриЗаписи` | Separate representation | Object after writing; later memory changes can differ | Values actually written in the current transaction | Active, not yet completed |
+| Form `ПриЗаписиНаСервере` | Separate representation | `ТекущийОбъект` after object `ПриЗаписи` | Values actually written in the current transaction | Still active |
+
+Before diagnosing a mismatch, read the relevant class/event pages through
+`unica.docs` with `source: "platform-help"`; verify `applicableVersion` and open
+the returned `documentId`, not just its search snippet. A development standard
+is not evidence of event timing. A conclusion about ordering or freshness that
+has no supporting code, platform page or runtime observation remains a hypothesis
+and must be presented as one. Compare the reference, query parameters, object
+value and query result at the same point before proposing a change.
+
+For the posting contrast, memory changes after writing, movement sets and other
+sessions, follow [the worked example](../../references/platform/object-events.md#diagnosing-a-document-query-mismatch)
+and [transaction ownership](../../references/platform/transactions-locks.md).
+Other object classes, direct handler calls and caller-owned transactions need
+their own context checked; the table is not a universal event diagram.
+
 ## Workflow
 
 1. Name what the logic needs to observe — fill source, old values, written state, or nothing yet — and let that pick the handler.
