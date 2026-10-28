@@ -17,6 +17,11 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 #[derive(Debug, Clone)]
 pub enum FormEditStep {
     Definition(Value),
+    ColumnType {
+        attribute: String,
+        column: String,
+        type_name: String,
+    },
     Move {
         request: crate::form_move::FormItemMove,
         location: String,
@@ -27,6 +32,8 @@ pub enum FormEditStep {
 /// записи: отсутствующий даёт `not_found`, а не правку другого узла.
 #[derive(Debug, Clone)]
 pub enum FormEditSubject {
+    /// A data column checked by the column type writer before publication.
+    AttributeColumn,
     /// Форма или элемент, на который пишется событие или реквизит.
     Node(Vec<String>),
     /// Форма или элемент-контейнер, куда добавляются элементы.
@@ -37,6 +44,7 @@ pub enum FormEditSubject {
 impl FormEditSubject {
     fn items(&self) -> &[String] {
         match self {
+            Self::AttributeColumn => &[],
             Self::Node(items) | Self::Container(items) | Self::Removed(items) => items,
         }
     }
@@ -49,6 +57,7 @@ pub struct FormTarget {
     items: Vec<String>,
     /// Событие формы или последнего элемента цепочки.
     event: Option<String>,
+    column: Option<(String, String)>,
 }
 /// Элемент формы по цепочке имён от корня, как её адресует `view`.
 pub fn form_item_at<'a>(
@@ -104,6 +113,9 @@ pub fn check_form_edit_subject(
     definitions: &[FormEditStep],
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
+    if matches!(subject, FormEditSubject::AttributeColumn) {
+        return Ok(());
+    }
     let at_path = format!("ops[{op_index}].args.at");
     let elements = form_items_of(xml_text).map_err(|error| {
         ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error).at_path(at_path.clone())
@@ -206,8 +218,20 @@ pub fn form_target(
             .map(str::to_string)
             .ok_or_else(|| bad(op_index, "at", format!("the {what} must be named")))
     };
-    let (form, items, event) = match rest {
-        [] => (None, Vec::new(), None),
+    let (form, items, event, column) = match rest {
+        [] => (None, Vec::new(), None, None),
+        [form, attribute, column]
+            if form.kind() == NodeKind::Form
+                && attribute.kind() == NodeKind::Attribute
+                && column.kind() == NodeKind::Column =>
+        {
+            (
+                Some(named(form, "form")?),
+                Vec::new(),
+                None,
+                Some((named(attribute, "attribute")?, named(column, "column")?)),
+            )
+        }
         [form, tail @ ..] if form.kind() == NodeKind::Form => {
             let (items, event) = match tail {
                 [items @ .., last] if last.kind() == NodeKind::Event => {
@@ -225,7 +249,7 @@ pub fn form_target(
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            (Some(named(form, "form")?), items, event)
+            (Some(named(form, "form")?), items, event, None)
         }
         _ => return Err(bad(op_index, "at", FORM_ADDRESS_SHAPE)),
     };
@@ -234,6 +258,7 @@ pub fn form_target(
         form,
         items,
         event,
+        column,
     })
 }
 pub fn form_purpose(
@@ -538,23 +563,31 @@ pub fn parse_form_operation(
     let address =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
     let target = form_target(&address, op_index)?;
+    if target.column.is_some() && !unica_forms::applicability::is_form_column(address.segments()) {
+        return Err(bad(
+            op_index,
+            "at",
+            "a data column requires an owner with managed forms",
+        ));
+    }
     // Узел, на котором исполняется операция, — ровно её `at`: элемент и
     // событие задаются адресом, а операция другого узла отказывает, а не
     // пишет молча в форму, элемент или владельца (#1351, #1355).
-    let placed = match operation {
-        FormOperation::Add | FormOperation::Set => target.form.is_none(),
-        FormOperation::ItemAdd => target.form.is_some() && target.event.is_none(),
-        FormOperation::ItemRemove | FormOperation::ItemMove => {
-            !target.items.is_empty() && target.event.is_none()
-        }
-        FormOperation::EventBind => target.event.is_some(),
-        FormOperation::Remove
-        | FormOperation::AttributeAdd
-        | FormOperation::CommandAdd
-        | FormOperation::PropsSet => {
-            target.form.is_some() && target.items.is_empty() && target.event.is_none()
-        }
-    };
+    let placed = (target.column.is_none() || operation == FormOperation::PropsSet)
+        && match operation {
+            FormOperation::Add | FormOperation::Set => target.form.is_none(),
+            FormOperation::ItemAdd => target.form.is_some() && target.event.is_none(),
+            FormOperation::ItemRemove | FormOperation::ItemMove => {
+                !target.items.is_empty() && target.event.is_none()
+            }
+            FormOperation::EventBind => target.event.is_some(),
+            FormOperation::Remove
+            | FormOperation::AttributeAdd
+            | FormOperation::CommandAdd
+            | FormOperation::PropsSet => {
+                target.form.is_some() && target.items.is_empty() && target.event.is_none()
+            }
+        };
     if !placed {
         let shape = match operation {
             FormOperation::Add | FormOperation::Set => "the form owner `Owner.Name`, not a form",
@@ -578,7 +611,7 @@ pub fn parse_form_operation(
     }
     // Свойство-ссылку корня формы операция знает, но не пишет: отказ
     // называет причину, а не «неизвестный аргумент».
-    if operation == FormOperation::PropsSet {
+    if operation == FormOperation::PropsSet && target.column.is_none() {
         if let Some(values) = args.get("values").and_then(Value::as_object) {
             for name in values.keys() {
                 if unica_forms::root_properties::root_property(name).is_some_and(|(_, property)| {
@@ -610,7 +643,7 @@ pub fn parse_form_operation(
     // Опубликованный контракт и разбор планировщиком принимают одну форму
     // аргументов: ключ, которого писатель не пишет, отказывает до записи,
     // а не теряется молча (#1447).
-    let contract = operation.contract();
+    let contract = operation.contract_for_address(&address);
     {
         let mut checked = args.clone();
         // `at` операции уже разобран в адрес; контракт сверяет остальное.
@@ -661,6 +694,24 @@ pub fn parse_form_operation(
         ),
         FormOperation::PropsSet => {
             let form = form_of(&target)?;
+            if let Some((attribute, column)) = target.column {
+                let type_name = args["values"]["type"]
+                    .as_str()
+                    .expect("column contract validated the type");
+                let type_name = form_attribute_type(type_name);
+                crate::column_type::validate_type(&type_name)
+                    .map_err(|error| column_type_error(error, op_index))?;
+                return Ok(FormPlan::FormEdit {
+                    owner: target.owner,
+                    form,
+                    subject: FormEditSubject::AttributeColumn,
+                    definitions: vec![FormEditStep::ColumnType {
+                        attribute,
+                        column,
+                        type_name,
+                    }],
+                });
+            }
             let values = args
                 .get("values")
                 .cloned()
@@ -1476,6 +1527,22 @@ pub fn stage_form_remove(
     ));
     Ok(())
 }
+fn column_type_error(
+    error: crate::column_type::ColumnTypeError,
+    op_index: usize,
+) -> ApplyPlanError {
+    match error {
+        crate::column_type::ColumnTypeError::Missing(message) => {
+            ApplyPlanError::new(ApplyPlanErrorKind::NotFound, message)
+                .at_path(format!("ops[{op_index}].args.at"))
+        }
+        crate::column_type::ColumnTypeError::Invalid(message) => {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                .at_path(format!("ops[{op_index}].args.values.type"))
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn stage_form_edit(
     staged: &mut ApplyProposal<'_>,
@@ -1522,6 +1589,15 @@ pub fn stage_form_edit(
     for step in definitions {
         let definition = match step {
             FormEditStep::Definition(definition) => definition,
+            FormEditStep::ColumnType {
+                attribute,
+                column,
+                type_name,
+            } => {
+                crate::column_type::apply(&mut xml_text, attribute, column, type_name)
+                    .map_err(|error| column_type_error(error, op_index))?;
+                continue;
+            }
             FormEditStep::Move { request, location } => {
                 xml_text = crate::form_move::move_item(&xml_text, request).map_err(|error| {
                     ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(
@@ -1564,7 +1640,11 @@ pub fn stage_form_edit(
     let is_move = definitions
         .iter()
         .any(|step| matches!(step, FormEditStep::Move { .. }));
-    let postimage = if is_move && !preimage.starts_with(UTF8_BOM) {
+    let preserves_bytes = is_move
+        || definitions
+            .iter()
+            .any(|step| matches!(step, FormEditStep::ColumnType { .. }));
+    let postimage = if preserves_bytes && !preimage.starts_with(UTF8_BOM) {
         xml_text.as_bytes().to_vec()
     } else {
         with_bom(&xml_text)
@@ -1757,6 +1837,78 @@ mod attribute_type_tests {
             ("String+Date", "string | dateTime"),
         ] {
             assert_eq!(form_attribute_type(input), expected, "{input}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod column_type_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn column_type_properties_address_an_existing_column() {
+        let args = json!({"at":"main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value", "values":{"type":"DefinedType.Existing | CatalogRef.Additional"}});
+        let result = parse_form_operation(
+            FormOperation::PropsSet,
+            args.as_object().unwrap(),
+            0,
+            "main",
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+    #[test]
+    fn column_type_rejects_other_operations_and_extra_values() {
+        let at = "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value";
+        for values in [
+            json!({}),
+            json!({"type":true}),
+            json!({"type":"Boolean", "Title":"lost"}),
+            json!({"type":""}),
+            json!({"type":"Boolean | Boolean"}),
+        ] {
+            let args = json!({"at":at,"values":values});
+            assert!(
+                parse_form_operation(
+                    FormOperation::PropsSet,
+                    args.as_object().unwrap(),
+                    0,
+                    "main"
+                )
+                .is_err(),
+                "{args}"
+            );
+        }
+        for op in [
+            FormOperation::Remove,
+            FormOperation::ItemAdd,
+            FormOperation::AttributeAdd,
+            FormOperation::EventBind,
+        ] {
+            let args = json!({"at":at,"values":{"type":"Boolean"}});
+            assert!(parse_form_operation(op, args.as_object().unwrap(), 0, "main").is_err());
+        }
+        let invalid_owner = json!({"at":"main:DefinedType.Existing.Form.Main.Attribute.Rows.Column.Value","values":{"Title":"wrong profile"}});
+        assert!(parse_form_operation(
+            FormOperation::PropsSet,
+            invalid_owner.as_object().unwrap(),
+            0,
+            "main"
+        )
+        .is_err());
+        for at in [
+            "main:Catalog.Items.Form.Main.Attribute.Rows",
+            "main:Catalog.Items.Form.Main.Attribute.Rows.Column",
+            "main:Catalog.Items.Form.Main.Item.Value",
+        ] {
+            let args = json!({"at":at,"values":{"type":"Boolean"}});
+            assert!(parse_form_operation(
+                FormOperation::PropsSet,
+                args.as_object().unwrap(),
+                0,
+                "main"
+            )
+            .is_err());
         }
     }
 }

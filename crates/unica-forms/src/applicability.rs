@@ -8,6 +8,7 @@ use unica_source_contract::route::RouteClass;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApplicability {
     Form,
+    FormProperties,
     FormEvent,
     FormItem,
     FormItemContainer,
@@ -18,6 +19,9 @@ impl OperationApplicability {
         match self {
             Self::MetadataForms => "`Kind.Name` of a kind with forms",
             Self::Form => "`Kind.Name.Form.F`",
+            Self::FormProperties => {
+                "`Kind.Name.Form.F` or `Kind.Name.Form.F.Attribute.A.Column.C` of a ValueTable"
+            }
             Self::FormItemContainer => "`Kind.Name.Form.F[.Item.I…]`",
             Self::FormItem => "`Kind.Name.Form.F.Item.I[.Item.J…]`",
             Self::FormEvent => "`Kind.Name.Form.F[.Item.I…].Event.E`",
@@ -27,6 +31,9 @@ impl OperationApplicability {
         let segments = site.segments();
         match self {
             Self::MetadataForms => site.metadata_owner_with(MetaCollection::Forms),
+            Self::FormProperties => {
+                site.route() == RouteClass::Form && (site.owned_form() || is_form_column(segments))
+            }
             Self::Form => site.route() == RouteClass::Form && site.owned_form(),
             Self::FormItemContainer => site.form_items(segments).is_some(),
             Self::FormItem => site
@@ -67,4 +74,13 @@ impl SiteExt for OperationSite<'_> {
             _ => None,
         }
     }
+}
+
+/// Exact data-column address; visual columns use Item and are a different profile.
+pub fn is_form_column(segments: &[AddressSegment]) -> bool {
+    matches!(segments, [owner, form, attribute, column]
+        if owner.name().is_some() && metadata_collection_matches(owner.kind(), MetaCollection::Forms)
+        && form.kind() == NodeKind::Form && form.name().is_some()
+        && attribute.kind() == NodeKind::Attribute && attribute.name().is_some()
+        && column.kind() == NodeKind::Column && column.name().is_some())
 }

@@ -57,12 +57,23 @@ form_operations!(
     AttributeAdd => ("attribute.add", Form, Items),
     CommandAdd => ("command.add", Form, Items),
     EventBind => ("event.bind", FormEvent, Values),
-    PropsSet => ("props.set", Form, Values),
+    PropsSet => ("props.set", FormProperties, Values),
 );
 
 impl FormOperation {
     pub fn contract(self) -> OperationContract {
         crate::contracts::form(self)
+    }
+
+    pub fn contract_for_address(
+        self,
+        at: &unica_address::address::QualifiedAddress,
+    ) -> OperationContract {
+        if self == Self::PropsSet && crate::applicability::is_form_column(at.segments()) {
+            crate::contracts::form_column_type_set()
+        } else {
+            self.contract()
+        }
     }
 
     pub const fn content_resource(self) -> Option<&'static str> {
@@ -157,7 +168,7 @@ impl unica_operations::FamilyOperation for FormOperation {
                     .first()
                     .map(|segment| segment.kind().as_str()),
             ),
-            _ => self.contract(),
+            _ => self.contract_for_address(site.at()),
         })
     }
 
@@ -237,7 +248,7 @@ mod tests {
             (
                 FormOperation::PropsSet,
                 "props.set",
-                OperationApplicability::Form,
+                OperationApplicability::FormProperties,
                 OperationSkeleton::Values,
             ),
         ] {
