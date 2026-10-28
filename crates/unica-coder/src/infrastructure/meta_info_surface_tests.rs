@@ -1290,7 +1290,7 @@ fn info_observes_every_typed_mutation_field() {
             "comment": "Rows comment",
             "attributes": [
                 {"name": "LineText", "type": {"variants": [{"kind": "string", "length": 20, "allowedLength": "variable"}]}, "required": true},
-                {"name": "LineNumber", "type": {"variants": [{"kind": "number", "digits": 10, "fraction": 2, "sign": "nonNegative"}]}, "required": false, "position": {"before": "LineText"}}
+                {"name": "LineQuantity", "type": {"variants": [{"kind": "number", "digits": 10, "fraction": 2, "sign": "nonNegative"}]}, "required": false, "position": {"before": "LineText"}}
             ]
         }]},
         {"op": "update", "collection": "attributes", "elements": [{
@@ -1406,7 +1406,7 @@ fn info_observes_every_typed_mutation_field() {
             .iter()
             .map(|element| element["name"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["LineNumber", "LineText"]
+        vec!["LineQuantity", "LineText"]
     );
     assert_eq!(rows["attributes"][0]["required"], false);
     assert_eq!(rows["attributes"][1]["required"], true);
