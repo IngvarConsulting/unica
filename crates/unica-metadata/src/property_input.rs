@@ -41,6 +41,7 @@ pub struct ConfigurationPropertyChanges {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
+    CatalogOwner { fill_from_filling_value: bool },
     Role(RolePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
@@ -283,6 +284,20 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::CatalogOwner => {
+                    let value = values_reader
+                        .field("FillFromFillingValue", false)?
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| {
+                            invalid(
+                                format!("{values_path}.FillFromFillingValue"),
+                                "FillFromFillingValue must be a boolean",
+                            )
+                        })?;
+                    PropertiesIntent::CatalogOwner {
+                        fill_from_filling_value: value,
+                    }
+                }
                 PropertiesSite::Metadata(kind) => {
                     // Preserve Metadata's existing conversion diagnostics and
                     // structured Type model, then verify the shared shape.
@@ -352,6 +367,30 @@ mod tests {
     use super::*;
     use crate::{MetaPropertyKey, MetaPropertyValue, MetadataKind, MetadataTypeVariant};
     use serde_json::json;
+
+    #[test]
+    fn owner_filling_decoder_requires_exact_boolean_and_rejects_unknown_properties() {
+        for enabled in [false, true] {
+            assert_eq!(
+                decode(
+                    PropertiesSite::CatalogOwner,
+                    json!({"values":{"FillFromFillingValue":enabled}})
+                )
+                .unwrap(),
+                PropertiesIntent::CatalogOwner {
+                    fill_from_filling_value: enabled
+                }
+            );
+        }
+        for values in [
+            json!({}),
+            json!({"FillFromFillingValue":"true"}),
+            json!({"FillFromFillingValue":null}),
+            json!({"FillFromFillingValue":false,"FillValue":true}),
+        ] {
+            assert!(decode(PropertiesSite::CatalogOwner, json!({"values":values})).is_err());
+        }
+    }
 
     fn decode(site: PropertiesSite, args: Value) -> DecodeResult<PropertiesIntent> {
         decode_properties(PropertiesOperation::Set, site, &args, "ops[7].args")

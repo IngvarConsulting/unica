@@ -601,7 +601,8 @@ pub fn typed_operations_write_multilingual_text(operations: &[MetaEditOperation]
             elements.iter().any(|element| element.synonym.is_some())
         }
         // A copy carries the source's own translations, never new text.
-        MetaEditOperation::Remove { .. }
+        MetaEditOperation::SetOwnerFillingValue { .. }
+        | MetaEditOperation::Remove { .. }
         | MetaEditOperation::Copy { .. }
         | MetaEditOperation::EditRelations { .. }
         | MetaEditOperation::AddHelp { .. }
@@ -784,7 +785,8 @@ pub fn validate_typed_event_source_final_state(
 }
 pub fn typed_operation_name(operation: &MetaEditOperation) -> &'static str {
     match operation {
-        MetaEditOperation::SetProperties { .. } => "setProperties",
+        MetaEditOperation::SetProperties { .. }
+        | MetaEditOperation::SetOwnerFillingValue { .. } => "setProperties",
         MetaEditOperation::Add { .. } => "add",
         MetaEditOperation::Update { .. } => "update",
         MetaEditOperation::Remove { .. } => "remove",
@@ -810,6 +812,7 @@ pub fn typed_operation_target(
     let base = format!("{kind}.{name}");
     Ok(match operation {
         MetaEditOperation::SetProperties { .. } => format!("{base}.properties"),
+        MetaEditOperation::SetOwnerFillingValue { .. } => format!("{base}.StandardAttribute.Owner"),
         MetaEditOperation::Add {
             collection, scope, ..
         }
@@ -893,6 +896,9 @@ pub fn typed_operation_effect_value(
     })?;
     let properties = unica_xml_format::read::child_element(object, "Properties");
     let value = match operation {
+        MetaEditOperation::SetOwnerFillingValue { .. } => serde_json::json!({
+            "FillFromFillingValue": crate::owner_filling::observe(xml)?.0
+        }),
         MetaEditOperation::AddHelp { lang } => serde_json::json!({"lang": lang}),
         MetaEditOperation::SetProperties { values } => {
             let observed = super::info::typed_properties(properties, kind);
@@ -1158,6 +1164,10 @@ where
         // post-image.
         MetaEditOperation::AddHelp { .. } => {
             counts.added += 1;
+        }
+        MetaEditOperation::SetOwnerFillingValue { enabled } => {
+            crate::owner_filling::apply(xml_text, *enabled)?;
+            counts.modified += 1;
         }
         MetaEditOperation::SetProperties { values } => {
             apply_typed_properties(xml_text, values, lang)?;

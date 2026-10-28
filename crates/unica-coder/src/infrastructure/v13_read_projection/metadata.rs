@@ -846,8 +846,13 @@ fn metadata_item_node(
             .rev()
             .nth(1)
             .is_some_and(|segment| segment.kind() == NodeKind::TabularSection);
-        let allowed = if tabular {
+        let allowed: &[&str] = if tabular {
             unica_metadata::META_STANDARD_ATTRIBUTE_PROPERTY_NAMES
+        } else if matches!(address.segments(), [owner, member]
+            if owner.kind() == NodeKind::Catalog && owner.name().is_some()
+            && member.kind() == NodeKind::StandardAttribute && member.name() == Some("Owner"))
+        {
+            &["Synonym", "ToolTip", "FillChecking", "FillFromFillingValue"]
         } else {
             &["Synonym", "ToolTip", "FillChecking"]
         };

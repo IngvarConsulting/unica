@@ -1244,6 +1244,9 @@ impl MetaEditOperationTag {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetaEditOperation {
+    SetOwnerFillingValue {
+        enabled: bool,
+    },
     SetProperties {
         values: MetaPropertyChanges,
     },
@@ -1639,6 +1642,16 @@ pub fn validate_metadata_operation_capabilities(
     operation: &MetaEditOperation,
 ) -> Result<(), MetaDiagnostic> {
     match operation {
+        MetaEditOperation::SetOwnerFillingValue { .. } => {
+            if owner_kind == MetadataKind::Catalog {
+                Ok(())
+            } else {
+                Err(MetaDiagnostic::error(
+                    MetaDiagnosticCode::UnsupportedKind,
+                    "Owner filling is only supported for a catalog",
+                ))
+            }
+        }
         MetaEditOperation::SetProperties { .. } => Ok(()),
         // ADR-0072: every owner kind carries an object directory with an Ext
         // facet, so help has no per-kind capability gate; existence checks
@@ -2130,7 +2143,9 @@ impl MetaEditOperation {
                     }
                 }
             }
-            Self::SetProperties { .. } | Self::EditRelations { .. } => {}
+            Self::SetOwnerFillingValue { .. }
+            | Self::SetProperties { .. }
+            | Self::EditRelations { .. } => {}
             Self::AddPredefinedItems { .. }
             | Self::UpdatePredefinedItems { .. }
             | Self::RemovePredefinedItems { .. } => {}
