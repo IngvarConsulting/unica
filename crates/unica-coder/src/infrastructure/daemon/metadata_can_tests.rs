@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/relation_diagnostic_path.rs"]
+mod relation_diagnostic_path;
+
 use super::actor_capacity_tests::direct_v5;
 use super::*;
 use crate::domain::apply::ApplyRequest;
