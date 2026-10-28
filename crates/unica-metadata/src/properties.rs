@@ -17,6 +17,7 @@ pub enum MetaPropertyKey {
     ClientOrdinaryApplication,
     CodeAllowedLength,
     CodeMask,
+    CodeSeries,
     CodeType,
     Correspondence,
     DefaultPresentation,
@@ -310,6 +311,11 @@ const INCLUDE_HELP_KINDS: &[MetadataKind] = &[
 
 const CHOICE_MODE_VALUES: &[&str] = &["BothWays", "FromForm", "QuickChoice"];
 const CODE_ALLOWED_LENGTH_VALUES: &[&str] = &["Variable", "Fixed"];
+const CATALOG_CODE_SERIES_VALUES: &[&str] = &[
+    "WholeCatalog",
+    "WithinOwnerSubordination",
+    "WithinSubordination",
+];
 const CODE_TYPE_VALUES: &[&str] = &["String", "Number"];
 const DEFAULT_PRESENTATION_VALUES: &[&str] = &["AsDescription", "AsCode"];
 const DEPENDENCE_VALUES: &[&str] = &["DontUse", "OnActionPeriod"];
@@ -340,6 +346,13 @@ const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "T
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
+    enum_property(
+        "CodeSeries",
+        "CodeSeries",
+        MetaPropertyKey::CodeSeries,
+        CATALOG_KINDS,
+        CATALOG_CODE_SERIES_VALUES,
+    ),
     property(
         "Type",
         MetaPropertyKey::Type,
@@ -893,6 +906,42 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn catalog_code_series_has_a_closed_value_and_owner_matrix() {
+        for value in [
+            "WholeCatalog",
+            "WithinOwnerSubordination",
+            "WithinSubordination",
+        ] {
+            assert_property_kind_matrix(
+                "CodeSeries",
+                MetaPropertyValue::String(value.into()),
+                &[MetadataKind::Catalog],
+            );
+        }
+        for value in ["WholeChartOfAccounts", "WithinOwner", "", "wholeCatalog"] {
+            assert!(
+                MetaPropertyChanges::convert(
+                    MetadataKind::Catalog,
+                    vec![MetaPropertyInput::new(
+                        "CodeSeries",
+                        MetaPropertyValue::String(value.into())
+                    )],
+                )
+                .is_err(),
+                "{value}"
+            );
+        }
+        assert!(MetaPropertyChanges::convert(
+            MetadataKind::Catalog,
+            vec![MetaPropertyInput::new(
+                "CodeSeries",
+                MetaPropertyValue::Boolean(true)
+            )],
+        )
+        .is_err());
     }
 
     #[test]
