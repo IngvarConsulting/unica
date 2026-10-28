@@ -7,6 +7,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
+from jsonschema_specifications import REGISTRY as SPECIFICATIONS
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 
 from tests.agent_evaluation.dcs_driver import (
     REPO, changed_files, evaluate as evaluate_contract, independent_review as review_contract,
@@ -32,6 +35,9 @@ ALIASES = {"synonym": "Synonym", "comment": "Comment", "explanation": "Explanati
            "includeInCommandInterface": "IncludeInCommandInterface"}
 MD = "{http://v8.1c.ru/8.3/MDClasses}"
 CORE = "{http://v8.1c.ru/8.1/data/core}"
+# Registry's default retrieval refuses unknown URIs; only bundled metaschemas
+# and references within the observed schema are available to this offline audit.
+SCHEMA_REGISTRY = Registry().with_resources(SPECIFICATIONS.items())
 RUBRIC = (
     "Агент нашёл существующие CommonModule.GoogleПереводчик, Role.SalesReader и "
     "Subsystem.Администрирование, прочитал подробный contextual Can.props.set каждого "
@@ -92,9 +98,10 @@ def configuration_comment_contract(result):
             and "Name" not in fields and "name" not in fields):
         return False
     try:
-        Draft202012Validator.check_schema(schema)
-        Draft202012Validator(schema).validate({"values": {"Comment": "Observed root Comment support"}})
-    except (SchemaError, ValidationError):
+        Draft202012Validator(Draft202012Validator.META_SCHEMA, registry=SCHEMA_REGISTRY).validate(schema)
+        Draft202012Validator(schema, registry=SCHEMA_REGISTRY).validate(
+            {"values": {"Comment": "Observed root Comment support"}})
+    except (SchemaError, ValidationError, Unresolvable):
         return False
     return True
 

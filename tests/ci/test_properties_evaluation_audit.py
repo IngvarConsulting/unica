@@ -227,6 +227,26 @@ class PropertiesEvidenceTests(unittest.TestCase):
         self.assertEqual(allowed, {"unica.view", "unica.apply", "unica.check"})
         self.assertTrue(calls)
 
+    def test_audit_resolves_configuration_comment_from_local_definitions(self):
+        records, _, response = self.configuration_records()
+        schema = response["payload"]["result"]["structuredContent"]["data"]["props"]["contract"]["argsSchema"]
+        schema["$defs"] = {"rootComment": {"type": "string"}}
+        schema["properties"]["values"]["properties"]["Comment"]["$ref"] = "#/$defs/rootComment"
+        allowed, calls = props_driver.audit(records)
+        self.assertIn("unica.view", allowed)
+        self.assertTrue(calls)
+
+    def test_audit_rejects_unresolved_comment_references_without_retrieval(self):
+        for reference in ["#/$defs/missing", "https://example.invalid/comment-schema"]:
+            with self.subTest(reference=reference):
+                records, _, response = self.configuration_records()
+                schema = response["payload"]["result"]["structuredContent"]["data"]["props"]["contract"]["argsSchema"]
+                schema["properties"]["values"]["properties"]["Comment"]["$ref"] = reference
+                with patch("urllib.request.urlopen", side_effect=AssertionError("audit attempted network retrieval")) as fetch:
+                    with self.assertRaisesRegex(ValueError, "Configuration inspection"):
+                        props_driver.audit(records)
+                    fetch.assert_not_called()
+
     def test_audit_rejects_configuration_catalog_names_without_the_comment_contract(self):
         for at, data in [
             ("main:Configuration", {"at": "main:Configuration", "kind": "Configuration", "can": [
