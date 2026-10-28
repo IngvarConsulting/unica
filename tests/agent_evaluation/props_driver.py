@@ -53,11 +53,41 @@ RUBRIC = (
     "драйвера за собственное чтение XML. Ответ верно объясняет, что values не может "
     "быть пустым, boolean требует JSON false вместо строки, обе формы одного alias "
     "не допускаются, но synonym+Comment относятся к разным свойствам. Проверка "
-    "опубликованного Can-каталога Configuration в ответе узла или по адресу .Can "
-    "через Unica подтверждает отсутствие props.set у корня; "
-    "агент не обещает поддержку Configuration. Нет ручной записи XML и незапрошенных "
+    "подробного Configuration.Can.props.set через Unica подтверждает поддержку "
+    "строкового Comment в закрытом профиле корня; Name этот профиль не принимает. "
+    "Обнаружение возможности не разрешает менять Configuration в этом задании. "
+    "Нет ручной записи XML и незапрошенных "
     "изменений; нет заявления о загрузке в 1С без протокола такого запуска."
 )
+
+
+def configuration_comment_contract(result):
+    """A catalog name alone cannot prove which root properties are supported."""
+    at = "main:Configuration.Can.props.set"
+    data = result.get("data")
+    if not (result.get("ok") is True and result.get("at") == at
+            and isinstance(data, dict) and data.get("at") == at and data.get("kind") == "Can"):
+        return False
+    props = data.get("props")
+    if not (isinstance(props, dict) and props.get("op") == "props.set"
+            and props.get("args") == "values" and "implemented" not in props):
+        return False
+    contract = props.get("contract")
+    schema = contract.get("argsSchema") if isinstance(contract, dict) else None
+    if not (isinstance(schema, dict) and schema.get("type") == "object"
+            and schema.get("additionalProperties") is False
+            and isinstance(schema.get("required"), list) and "values" in schema["required"]):
+        return False
+    arguments = schema.get("properties")
+    values = arguments.get("values") if isinstance(arguments, dict) else None
+    if not (isinstance(values, dict) and values.get("type") == "object"
+            and values.get("additionalProperties") is False
+            and type(values.get("minProperties")) is int and values["minProperties"] >= 1):
+        return False
+    fields = values.get("properties")
+    comment = fields.get("Comment") if isinstance(fields, dict) else None
+    return (isinstance(comment, dict) and comment.get("type") == "string"
+            and "Name" not in fields and "name" not in fields)
 
 
 def audit(records):
@@ -85,28 +115,10 @@ def audit(records):
             at = args.get("at")
             if args == {} and result.get("ok") is True:
                 discovery = True
-            if at == "main:Configuration" and result.get("ok") is True:
-                capabilities = data.get("can")
-                if (result.get("at") == at and data.get("at") == at and data.get("kind") == "Configuration"
-                        and isinstance(capabilities, list) and capabilities
-                        and all(isinstance(item, dict) and isinstance(item.get("op"), str) and item["op"]
-                                and item["op"] == item["op"].strip()
-                                and isinstance(item.get("args"), str) and item["args"]
-                                and "implemented" not in item for item in capabilities)):
-                    operations = [item["op"] for item in capabilities]
-                    if len(set(operations)) == len(operations) and "props.set" not in operations:
-                        configuration = True
-            if at in {"main:Configuration.Can", "main:Configuration.Can.props.set"}:
-                if at.endswith(".Can") and result.get("ok") is True:
-                    items = data.get("items")
-                    if isinstance(items, list) and not any(item.get("props", {}).get("op") == "props.set"
-                                                          or str(item.get("at", "")).endswith(".Can.props.set")
-                                                          for item in items):
-                        configuration = True
-                elif (at.endswith(".Can.props.set") and result.get("ok") is False
-                      and any(item.get("code") in {"not_found", "bad_value"} for item in result.get("diagnostics", []))):
-                    configuration = True
-            if result.get("ok") is True and isinstance(at, str):
+            if at == "main:Configuration.Can.props.set" and configuration_comment_contract(result):
+                configuration = True
+            if (result.get("ok") is True and isinstance(at, str)
+                    and at.removesuffix(".Can.props.set") in PATHS):
                 target = at.removesuffix(".Can.props.set")
                 props = data.get("props") or {}
                 schema = (props.get("contract") or {}).get("argsSchema") or {}

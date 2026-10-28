@@ -172,7 +172,7 @@ class PropertiesEvidenceTests(unittest.TestCase):
             pair("tools/call", {"name": tool, "arguments": args},
                  {"structuredContent": result, "isError": result.get("ok") is False}, old, new)
         call("unica.view", {}, {"ok": True, "data": {}})
-        call("unica.view", {"at": "main:Configuration.Can"}, {"ok": True, "data": {"items": []}})
+        call("unica.view", {"at": "main:Configuration.Can.props.set"}, self.configuration_contract_result())
         for target in props_driver.PATHS:
             at = target + ".Can.props.set"
             call("unica.view", {"at": at}, {"ok": True, "at": at, "data": {"at": at, "kind": "Can", "props": {
@@ -202,75 +202,144 @@ class PropertiesEvidenceTests(unittest.TestCase):
             call("unica.check", {"at": target}, result, after, after)
         return records
 
-    def direct_configuration_records(self):
+    def configuration_contract_result(self):
+        at = "main:Configuration.Can.props.set"
+        return {"ok": True, "at": at, "data": {"at": at, "kind": "Can", "props": {
+            "op": "props.set", "args": "values", "contract": {"argsSchema": {
+                "type": "object", "additionalProperties": False, "required": ["values"],
+                "properties": {"values": {
+                    "type": "object", "additionalProperties": False, "minProperties": 1,
+                    "properties": {"Comment": {"type": "string"}, "Vendor": {"type": "string"}},
+                }},
+            }}}}}
+
+    def configuration_records(self):
         records = self.accepted_records()
         request = next(record for record in records if record["direction"] == "request"
                        and record["payload"].get("method") == "tools/call"
-                       and record["payload"]["params"]["arguments"].get("at") == "main:Configuration.Can")
-        request["payload"]["params"]["arguments"]["at"] = "main:Configuration"
+                       and record["payload"]["params"]["arguments"].get("at") == "main:Configuration.Can.props.set")
         response = next(record for record in records if record["direction"] == "response"
                         and record["payload"]["id"] == request["payload"]["id"])
-        response["payload"]["result"]["structuredContent"] = {
-            "ok": True, "at": "main:Configuration", "data": {
-                "at": "main:Configuration", "kind": "Configuration", "can": [
-                    {"op": "object.create", "args": "values"},
-                    {"op": "role.create", "args": "values"},
-                ]}}
-        return records, response
+        return records, request, response
 
-    def test_audit_accepts_published_configuration_capabilities_on_the_node(self):
-        records, _ = self.direct_configuration_records()
-        allowed, calls = props_driver.audit(records)
+    def test_audit_accepts_configuration_comment_from_its_detailed_contract(self):
+        allowed, calls = props_driver.audit(self.accepted_records())
         self.assertEqual(allowed, {"unica.view", "unica.apply", "unica.check"})
         self.assertTrue(calls)
 
-    def test_audit_rejects_unproven_direct_configuration_capabilities(self):
-        for mutation in ["missing can", "null can", "empty can", "non-list can", "non-object capability", "missing op", "empty op",
-                         "whitespace op", "non-text op", "duplicate op", "missing args", "non-text args",
-                         "stale implemented", "foreign result at", "foreign data at", "foreign kind",
-                         "props.set", "MCP error"]:
-            with self.subTest(mutation=mutation):
-                records, response = self.direct_configuration_records()
-                answer = response["payload"]["result"]["structuredContent"]
-                data = answer["data"]
-                if mutation == "missing can":
-                    del data["can"]
-                elif mutation == "null can":
-                    data["can"] = None
-                elif mutation == "empty can":
-                    data["can"] = []
-                elif mutation == "non-list can":
-                    data["can"] = {"op": "object.create"}
-                elif mutation == "non-object capability":
-                    data["can"][0] = "object.create"
-                elif mutation == "missing op":
-                    del data["can"][0]["op"]
-                elif mutation == "empty op":
-                    data["can"][0]["op"] = ""
-                elif mutation == "whitespace op":
-                    data["can"][0]["op"] = " props.set "
-                elif mutation == "non-text op":
-                    data["can"][0]["op"] = 7
-                elif mutation == "duplicate op":
-                    data["can"][1]["op"] = data["can"][0]["op"]
-                elif mutation == "missing args":
-                    del data["can"][0]["args"]
-                elif mutation == "non-text args":
-                    data["can"][0]["args"] = {}
-                elif mutation == "stale implemented":
-                    data["can"][0]["implemented"] = True
-                elif mutation == "foreign result at":
-                    answer["at"] = props_driver.ROLE
-                elif mutation == "foreign data at":
-                    data["at"] = props_driver.ROLE
-                elif mutation == "foreign kind":
-                    data["kind"] = "Role"
-                elif mutation == "props.set":
-                    data["can"].append({"op": "props.set", "args": "values"})
-                else:
-                    response["payload"]["result"]["isError"] = True
-                with self.assertRaises(ValueError):
+    def test_audit_rejects_configuration_catalog_names_without_the_comment_contract(self):
+        for at, data in [
+            ("main:Configuration", {"at": "main:Configuration", "kind": "Configuration", "can": [
+                {"op": "props.set", "args": "values"}, {"op": "object.create", "args": "values"}]}),
+            ("main:Configuration", {"at": "main:Configuration", "kind": "Configuration", "can": [
+                {"op": "object.create", "args": "values"}]}),
+            ("main:Configuration.Can", {"items": []}),
+            ("main:Configuration.Can", {"items": [{"at": "main:Configuration.Can.props.set",
+                                                   "props": {"op": "props.set"}}]}),
+        ]:
+            with self.subTest(at=at, data=data):
+                records, request, response = self.configuration_records()
+                request["payload"]["params"]["arguments"]["at"] = at
+                response["payload"]["result"]["structuredContent"] = {"ok": True, "at": at, "data": data}
+                with self.assertRaisesRegex(ValueError, "Configuration inspection"):
                     props_driver.audit(records)
+
+    def test_audit_rejects_unproven_configuration_comment_contracts(self):
+        mutations = [
+            ("foreign result at", ["at"], props_driver.ROLE),
+            ("foreign data at", ["data", "at"], props_driver.ROLE),
+            ("foreign kind", ["data", "kind"], "Role"),
+            ("foreign op", ["data", "props", "op"], "object.create"),
+            ("empty op", ["data", "props", "op"], ""),
+            ("whitespace op", ["data", "props", "op"], " props.set "),
+            ("non-text op", ["data", "props", "op"], 7),
+            ("missing args", ["data", "props", "args"], None),
+            ("wrong args", ["data", "props", "args"], "items"),
+            ("non-text args", ["data", "props", "args"], {}),
+            ("stale implemented", ["data", "props", "implemented"], True),
+            ("missing contract", ["data", "props", "contract"], None),
+            ("non-object props", ["data", "props"], ["props.set"]),
+            ("non-object contract", ["data", "props", "contract"], []),
+        ]
+        schema = ["data", "props", "contract", "argsSchema"]
+        mutations += [
+            ("missing schema", schema, None),
+            ("non-object schema", schema, []),
+            ("wrong schema type", schema + ["type"], "string"),
+            ("open schema", schema + ["additionalProperties"], True),
+            ("optional values", schema + ["required"], []),
+            ("non-list required", schema + ["required"], "values"),
+            ("missing values", schema + ["properties", "values"], None),
+            ("non-object values", schema + ["properties", "values"], []),
+            ("wrong values type", schema + ["properties", "values", "type"], "string"),
+            ("open values", schema + ["properties", "values", "additionalProperties"], True),
+            ("empty values", schema + ["properties", "values", "minProperties"], 0),
+            ("boolean size", schema + ["properties", "values", "minProperties"], True),
+            ("missing Comment", schema + ["properties", "values", "properties", "Comment"], None),
+            ("wrong Comment type", schema + ["properties", "values", "properties", "Comment", "type"], "boolean"),
+            ("unknown Comment schema", schema + ["properties", "values", "properties", "Comment"], True),
+            ("invented Name", schema + ["properties", "values", "properties", "Name"], {"type": "string"}),
+            ("invented name alias", schema + ["properties", "values", "properties", "name"], {"type": "string"}),
+        ]
+        for mutation, path, value in mutations:
+            with self.subTest(mutation=mutation):
+                records, _, response = self.configuration_records()
+                answer = response["payload"]["result"]["structuredContent"]
+                node = answer
+                for key in path[:-1]:
+                    node = node[key]
+                if value is None:
+                    del node[path[-1]]
+                else:
+                    node[path[-1]] = value
+                with self.assertRaisesRegex(ValueError, "Configuration inspection"):
+                    props_driver.audit(records)
+        for code in ["not_found", "bad_value"]:
+            records, _, response = self.configuration_records()
+            response["payload"]["result"].update({"isError": True, "structuredContent": {
+                "ok": False, "diagnostics": [{"code": code}]}})
+            with self.subTest(code=code), self.assertRaisesRegex(ValueError, "Configuration inspection"):
+                props_driver.audit(records)
+
+    def test_audit_rejects_missing_configuration_contract(self):
+        records, request, response = self.configuration_records()
+        records.remove(request)
+        records.remove(response)
+        with self.assertRaisesRegex(ValueError, "Configuration inspection"):
+            props_driver.audit(records)
+
+    def test_audit_rejects_a_missing_owner_publication(self):
+        records = self.accepted_records()
+        publications = [record for record in records if record["direction"] == "request"
+                        and record["payload"].get("method") == "tools/call"
+                        and "executionToken" in record["payload"]["params"]["arguments"]]
+        request = publications[-1]
+        response = next(record for record in records if record["direction"] == "response"
+                        and record["payload"]["id"] == request["payload"]["id"])
+        records.remove(request)
+        records.remove(response)
+        with self.assertRaisesRegex(ValueError, "Properties publication"):
+            props_driver.audit(records)
+
+    def test_audit_rejects_configuration_writes_despite_its_discovered_capability(self):
+        for mutation in ["preview", "publication"]:
+            records, _, _ = self.configuration_records()
+            preview = next(record for record in records if record["direction"] == "request"
+                           and record["payload"].get("method") == "tools/call"
+                           and "ops" in record["payload"]["params"]["arguments"])
+            if mutation == "preview":
+                preview["payload"]["params"]["arguments"]["at"] = "main:Configuration"
+                expected = "outside its fixed owner scope"
+            else:
+                publication = next(record for record in records if record["direction"] == "request"
+                                   and record["payload"].get("method") == "tools/call"
+                                   and "executionToken" in record["payload"]["params"]["arguments"])
+                response = next(record for record in records if record["direction"] == "response"
+                                and record["payload"]["id"] == publication["payload"]["id"])
+                response["sourceFilesSha256"] = {**response["sourceFilesSha256"], "src/Configuration.xml": "0" * 64}
+                expected = "outside its planned descriptors"
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, expected):
+                props_driver.audit(records)
 
     def test_audit_accepts_contextual_contracts_saved_token_and_honest_provider(self):
         allowed, calls = props_driver.audit(self.accepted_records())
@@ -278,12 +347,15 @@ class PropertiesEvidenceTests(unittest.TestCase):
         self.assertTrue(calls)
 
     def test_audit_rejects_successful_structured_answers_flagged_as_mcp_errors(self):
-        for observation in ["preview", "publication", "final view", "final check"]:
+        for observation in ["configuration contract", "preview", "publication", "final view", "final check"]:
             with self.subTest(observation=observation):
                 records = copy.deepcopy(self.accepted_records())
                 requests = [record for record in records if record["direction"] == "request"
                             and record["payload"].get("method") == "tools/call"]
-                if observation == "preview":
+                if observation == "configuration contract":
+                    request = next(record for record in requests
+                                   if record["payload"]["params"]["arguments"].get("at") == "main:Configuration.Can.props.set")
+                elif observation == "preview":
                     request = next(record for record in requests
                                    if "ops" in record["payload"]["params"]["arguments"])
                 elif observation == "publication":
