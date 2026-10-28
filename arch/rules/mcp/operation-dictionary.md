@@ -1,6 +1,8 @@
 ---
 id: INV.WIRE.V13-CAN-DICTIONARY
 check:
+  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::common_module_does_not_offer_uninhabited_relation_operations
+  - crates/unica-metadata/src/apply_operations.rs::relation_operations_require_a_relation_domain_for_every_metadata_kind
   - crates/unica-coder/src/domain/apply.rs::implemented_operations_have_contracts_and_target_skeletons_have_no_empty_address
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::code_contract_context_matrix_matches_staged_parser_and_previews_without_writes
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::subsystem_interface_contracts_preview_all_operations_without_source_writes

@@ -57,9 +57,9 @@ metadata_operations!(
     ObjectBorrow => ("object.borrow", ExtensionRoot, From),
     ObjectCreate => ("object.create", Configuration, Values),
     ObjectRemove => ("object.remove", MetadataOrCommonTemplate, Target),
-    RelationAdd => ("relation.add", Metadata, Values),
-    RelationRemove => ("relation.remove", Metadata, Values),
-    RelationReplace => ("relation.replace", Metadata, Values),
+    RelationAdd => ("relation.add", MetadataRelations, Values),
+    RelationRemove => ("relation.remove", MetadataRelations, Values),
+    RelationReplace => ("relation.replace", MetadataRelations, Values),
     HelpCreate => ("help.create", Metadata, Values),
     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
     AttributeSet => ("attribute.set", MetadataAttribute, Values),
@@ -247,6 +247,50 @@ mod tests {
     use super::*;
     use crate::MetadataKind;
     use serde_json::json;
+
+    /// #2243: a relation operation has at least one owner-specific value.
+    #[test]
+    fn relation_operations_require_a_relation_domain_for_every_metadata_kind() {
+        use unica_address::address::QualifiedAddress;
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::route::RouteClass;
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+        let source =
+            SourceSetTraits::from_profiles(SourceSetKind::Configuration, Some(profile), profile);
+        for &kind in MetadataKind::ALL {
+            let at = QualifiedAddress::parse(&format!("main:{}.Probe", kind.as_str())).unwrap();
+            let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
+            let expected = !crate::metadata_relation_specs(kind).is_empty();
+            for op in [
+                MetadataOperation::RelationAdd,
+                MetadataOperation::RelationRemove,
+                MetadataOperation::RelationReplace,
+            ] {
+                assert_eq!(
+                    op.applicability().matches(&site),
+                    expected,
+                    "{} {}",
+                    kind.as_str(),
+                    op.name()
+                );
+                if expected {
+                    let contract = op.contract_at(Some(crate::contracts::MetadataSite {
+                        owner: kind,
+                        in_section: false,
+                    }));
+                    let validator = jsonschema::validator_for(&contract.schema).unwrap();
+                    assert!(
+                        validator.is_valid(&contract.example_args),
+                        "{} {}: {}",
+                        kind.as_str(),
+                        op.name(),
+                        contract.example_args
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn registration_metadata_preserves_all_typed_member_operations() {

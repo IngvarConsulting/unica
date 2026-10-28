@@ -1,0 +1,776 @@
+{
+  "id": "S-2243-executable-relations",
+  "issue": 2243,
+  "area": "Словарь операций",
+  "task": "can не обещает связи для общего модуля и отчёта без допустимых связей; подробный контракт и apply согласованы, связь справочника строит preview без записи.",
+  "workspace": "tests/fixtures/acceptance/workspace",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "relation.add"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "relation.remove"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "relation.replace"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Can.relation.add"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: operation `relation.add` does not apply to CommonModule"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "owners",
+                "targets": [
+                  {
+                    "metadataPath": "Catalog.Валюты"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: apply operation `relation.add` does not apply to CommonModule `main:CommonModule.GoogleПереводчик`; it addresses `Kind.Name` of a kind with supported relations"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Can.relation.remove"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: operation `relation.remove` does not apply to CommonModule"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "relation.remove",
+            "args": {
+              "values": {
+                "relation": "owners",
+                "targets": [
+                  {
+                    "metadataPath": "Catalog.Валюты"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: apply operation `relation.remove` does not apply to CommonModule `main:CommonModule.GoogleПереводчик`; it addresses `Kind.Name` of a kind with supported relatio"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Can.relation.replace"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: operation `relation.replace` does not apply to CommonModule"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "relation.replace",
+            "args": {
+              "values": {
+                "relation": "owners",
+                "targets": [
+                  {
+                    "metadataPath": "Catalog.Валюты"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: apply operation `relation.replace` does not apply to CommonModule `main:CommonModule.GoogleПереводчик`; it addresses `Kind.Name` of a kind with supported relati"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "relation.add"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "relation.remove"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "relation.replace"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Can.relation.add"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: operation `relation.add` does not apply to Report"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "owners",
+                "targets": [
+                  {
+                    "metadataPath": "Catalog.Валюты"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: apply operation `relation.add` does not apply to Report `main:Report.АнализВерсийОбъектов`; it addresses `Kind.Name` of a kind with supported relations"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Can.relation.remove"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: operation `relation.remove` does not apply to Report"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов",
+        "ops": [
+          {
+            "op": "relation.remove",
+            "args": {
+              "values": {
+                "relation": "owners",
+                "targets": [
+                  {
+                    "metadataPath": "Catalog.Валюты"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: apply operation `relation.remove` does not apply to Report `main:Report.АнализВерсийОбъектов`; it addresses `Kind.Name` of a kind with supported relations"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Can.relation.replace"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: operation `relation.replace` does not apply to Report"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов",
+        "ops": [
+          {
+            "op": "relation.replace",
+            "args": {
+              "values": {
+                "relation": "owners",
+                "targets": [
+                  {
+                    "metadataPath": "Catalog.Валюты"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ],
+      "refusal": "bad_value: apply operation `relation.replace` does not apply to Report `main:Report.АнализВерсийОбъектов`; it addresses `Kind.Name` of a kind with supported relations"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Can.relation.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/exampleArgs/values/relation",
+          "eq": "owners"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "basedOn",
+                "targets": [
+                  {
+                    "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        }
+      ]
+    }
+  ]
+}
