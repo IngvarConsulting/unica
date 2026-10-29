@@ -564,7 +564,7 @@ fn listed_names(
 }
 
 /// `Subsystems/A/Subsystems/B.xml` for `Subsystem.A.Subsystem.B`.
-fn subsystem_descriptor_relative(
+pub(crate) fn subsystem_descriptor_relative(
     target: &QualifiedAddress,
     op_index: usize,
 ) -> Result<(String, PathBuf), ApplyPlanError> {
