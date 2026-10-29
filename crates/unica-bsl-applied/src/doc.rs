@@ -157,8 +157,11 @@ fn type_list(text: &str) -> Option<Vec<String>> {
 }
 
 fn is_type_text(text: &str) -> bool {
-    let text = strip_array(text).unwrap_or(text);
-    !text.is_empty() && text.split('.').all(is_identifier)
+    let mut leaf = text;
+    while let Some(element) = strip_array(leaf) {
+        leaf = element;
+    }
+    !leaf.is_empty() && leaf.split('.').all(is_identifier)
 }
 
 /// `X` of `Массив из X` / `Array of X`.

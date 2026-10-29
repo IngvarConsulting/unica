@@ -36,6 +36,7 @@ impl Templates for Catalog {
     fn platform(&self, name: &str) -> Option<TypeName> {
         match name {
             "Строка" | "String" => Some(TypeName::Primitive("String".into())),
+            "Число" | "Number" => Some(TypeName::Primitive("Number".into())),
             "Неопределено" => Some(TypeName::Primitive("Undefined".into())),
             "Массив" => Some(TypeName::Context("objects/Array".into())),
             "Структура" => Some(TypeName::Context("objects/Structure".into())),
@@ -558,4 +559,204 @@ fn a_model_of_one_object_resolves_comment_names_through_the_declared_objects() {
         manager.methods[0].method.variants[0].returns[0].ty,
         applied("Catalog", "Контрагенты", AppliedFacet::Ref)
     );
+}
+
+fn documented_signature(doc: &str) -> Signature {
+    let mut object = currencies();
+    object.modules[0].methods = vec![method("Проверить", true, true, doc)];
+    object.modules[0].methods[0].params[0].name = "Значение".into();
+    build(&[object], &[], &(), &Catalog)
+        .members(&applied("Catalog", "Валюты", AppliedFacet::Manager))
+        .unwrap()
+        .methods[0]
+        .method
+        .variants[0]
+        .clone()
+}
+
+#[test]
+fn nested_array_alternatives_preserve_parameter_and_return_types() {
+    let number = TypeRef {
+        ty: TypeName::Primitive("Number".into()),
+        element: None,
+    };
+    let nested = TypeRef {
+        ty: TypeName::Context("objects/Array".into()),
+        element: Some(TypeName::Context("objects/Array".into())),
+    };
+    let mut observed = Vec::new();
+    let mut wanted = Vec::new();
+    for (types, expected) in [
+        (
+            "Число, Массив из Массив из Строка",
+            vec![number.clone(), nested.clone()],
+        ),
+        (
+            "Массив из Массив из Строка, Число",
+            vec![nested.clone(), number.clone()],
+        ),
+        (
+            "Number, Array of Array of String",
+            vec![number.clone(), nested.clone()],
+        ),
+        (
+            "Array of Array of String, Number",
+            vec![nested.clone(), number.clone()],
+        ),
+    ] {
+        let doc = format!("Параметры:\n  Значение - {types} - описание.\nВозвращаемое значение:\n  {types} - описание.");
+        let signature = documented_signature(&doc);
+        observed.push((types, signature.params[0].types.clone(), signature.returns));
+        wanted.push((types, expected.clone(), expected));
+    }
+    assert_eq!(observed, wanted);
+}
+
+#[test]
+fn ordinary_arrays_unknown_names_and_prose_keep_their_boundaries() {
+    let n = TypeRef {
+        ty: TypeName::Primitive("Number".into()),
+        element: None,
+    };
+    let string = TypeRef {
+        ty: TypeName::Primitive("String".into()),
+        element: None,
+    };
+    let array = TypeRef {
+        ty: TypeName::Context("objects/Array".into()),
+        element: Some(TypeName::Primitive("String".into())),
+    };
+    for (text, expected) in [
+        ("Число", vec![n.clone()]),
+        ("Массив из Строка", vec![array.clone()]),
+        ("Число, Массив из Строка", vec![n.clone(), array]),
+        (
+            "Число, СправочникСсылка.Чужой",
+            vec![
+                n.clone(),
+                TypeRef {
+                    ty: TypeName::Unresolved("СправочникСсылка.Чужой".into()),
+                    element: None,
+                },
+            ],
+        ),
+        (
+            "Число, НераспознанныйТип",
+            vec![
+                n,
+                TypeRef {
+                    ty: TypeName::Unresolved("НераспознанныйТип".into()),
+                    element: None,
+                },
+            ],
+        ),
+        ("Массив из ", vec![]),
+        ("List<Строка>", vec![]),
+        ("Array[Строка]", vec![]),
+        ("Массив из Строка[]", vec![]),
+        ("Число, если успешно", vec![]),
+        ("Число, List<Строка>", vec![]),
+    ] {
+        let doc = format!("Параметры:\n  Значение - {text} - описание.\nВозвращаемое значение:\n  {text} - описание.");
+        let signature = documented_signature(&doc);
+        assert_eq!(signature.params[0].types, expected, "parameter: {text}");
+        assert_eq!(signature.returns, expected, "return: {text}");
+    }
+    let signature = documented_signature("Параметры:\n  Значение - Число - основной тип.\n    Массив из Массив из Строка - продолжение описания.\nВозвращаемое значение:\n  Строка - результат.\n    Число, Массив из Массив из Строка - подробное описание.\nПример:\n  Массив из Массив из Строка - пример.");
+    assert_eq!(
+        signature.params[0].types,
+        vec![TypeRef {
+            ty: TypeName::Primitive("Number".into()),
+            element: None
+        }]
+    );
+    assert_eq!(signature.returns, vec![string]);
+    let signature =
+        documented_signature("Описание.\n  Число, Массив из Массив из Строка - не типовой раздел.");
+    assert!(signature.params[0].types.is_empty());
+    assert!(signature.returns.is_empty());
+}
+
+#[test]
+fn deeply_nested_arrays_keep_only_the_representable_element_without_recursion() {
+    let text = format!("{}Строка", "Массив из ".repeat(10_000));
+    let signature = documented_signature(&format!("Возвращаемое значение:\n  {text} - глубина."));
+    assert_eq!(
+        signature.returns,
+        vec![TypeRef {
+            ty: TypeName::Context("objects/Array".into()),
+            element: Some(TypeName::Context("objects/Array".into()))
+        }]
+    );
+}
+
+#[test]
+fn method_addresses_and_areas_are_preserved() {
+    for area in [
+        Some("public"),
+        Some("internal"),
+        Some("crossSubsystem"),
+        Some("override"),
+        Some("private"),
+        Some("deprecated"),
+        None,
+    ] {
+        let mut object = currencies();
+        let mut facts = method("Проверить", true, true, "");
+        facts.at = "ext:Catalog.Валюты.Module.Manager.Method.Проверить".into();
+        facts.area = area.map(str::to_string);
+        object.modules[0].methods = vec![facts.clone()];
+        let model = build(&[object], &[], &(), &Catalog);
+        let members = model
+            .members(&applied("Catalog", "Валюты", AppliedFacet::Manager))
+            .unwrap();
+        assert_eq!(members.methods.len(), 1);
+        assert_eq!(members.methods[0].at, facts.at);
+        assert_eq!(members.methods[0].area, facts.area);
+    }
+}
+
+#[test]
+fn collection_partial_is_the_union_of_each_distinct_object() {
+    for (first_partial, second_partial) in [(false, true), (true, false), (false, false)] {
+        let objects = [first_partial, second_partial]
+            .into_iter()
+            .enumerate()
+            .map(|(index, partial)| {
+                let mut object = currencies();
+                object.name = format!("Справочник{index}");
+                object.at = format!("main:Catalog.Справочник{index}");
+                object.fields.clear();
+                object.modules.clear();
+                object.predefined.clear();
+                object.tabular_sections.clear();
+                object.partial = partial;
+                object
+            })
+            .collect::<Vec<_>>();
+        let model = build(&objects, &[], &(), &Catalog);
+        let collection = model
+            .members(&TypeName::Context("collections/CatalogsManager".into()))
+            .unwrap();
+        assert_eq!(collection.partial, first_partial || second_partial);
+        assert_eq!(collection.properties.len(), 2);
+        for (index, object) in objects.iter().enumerate() {
+            let property = &collection.properties[index];
+            assert_eq!(property.at.as_deref(), Some(object.at.as_str()));
+            assert_eq!(property.property.ru, object.name);
+            assert_eq!(
+                property.property.types[0].ty,
+                applied("Catalog", &object.name, AppliedFacet::Manager)
+            );
+            for facet in facets(object) {
+                assert_eq!(
+                    model
+                        .members(&applied("Catalog", &object.name, facet.clone()))
+                        .unwrap()
+                        .partial,
+                    object.partial
+                );
+            }
+        }
+    }
 }

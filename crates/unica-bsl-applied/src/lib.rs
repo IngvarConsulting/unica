@@ -424,12 +424,21 @@ impl Builder<'_> {
     /// `Unresolved` as written.
     fn resolve(&self, text: &str) -> TypeRef {
         if let Some(element) = doc::strip_array(text) {
-            return TypeRef {
-                ty: self
-                    .templates
+            let array = || {
+                self.templates
                     .platform("Массив")
-                    .unwrap_or_else(|| TypeName::Unresolved("Массив".to_string())),
-                element: Some(self.resolve(element).ty),
+                    .unwrap_or_else(|| TypeName::Unresolved("Массив".to_string()))
+            };
+            // TypeRef represents the immediate element only. A nested array
+            // needs its Array type, not recursion into unrepresented depths.
+            let element = if doc::strip_array(element).is_some() {
+                array()
+            } else {
+                self.resolve(element).ty
+            };
+            return TypeRef {
+                ty: array(),
+                element: Some(element),
             };
         }
         if let Some((prefix, name)) = text.split_once('.') {
