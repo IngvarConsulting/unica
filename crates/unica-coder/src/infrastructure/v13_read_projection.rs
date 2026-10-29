@@ -18,6 +18,8 @@ use role::project_role;
 
 const MAX_PROJECTED_BRANCHES: usize = 256;
 const MAX_COMPACT_PROP_BYTES: usize = 2_048;
+// Заголовок узла ограничен тем же пределом, что и компактное свойство.
+const _: () = assert!(MAX_COMPACT_PROP_BYTES == crate::domain::node_view::MAX_TITLE_BYTES);
 
 pub(super) fn project_typed_payload(
     route: &LogicalTreeRoute,
@@ -1892,8 +1894,12 @@ fn dropped_by_size(
         }
         let mut probe = object.clone();
         probe.insert(key.clone(), stand_in);
-        if project(&Value::Object(probe)).contains_key(key) {
-            limits.push(compact_limit(key, owner, key));
+        // Проекция может публиковать поле под именем свойства платформы:
+        // предел называет то имя, под которым свойство появилось бы.
+        for (name, _) in project(&Value::Object(probe)) {
+            if !props.contains_key(&name) {
+                limits.push(compact_limit(&name, owner, &name));
+            }
         }
     }
     limits
@@ -1997,6 +2003,43 @@ fn observed_value(value: &Value) -> Option<Value> {
             .cloned(),
         _ => Some(value.clone()),
     }
+}
+
+/// Свойства подсистемы под именами платформы — теми же, что принимает
+/// `props.set`; слева имя в сведениях читателя.
+const SUBSYSTEM_PLATFORM_PROPS: &[(&str, &str)] = &[
+    ("synonym", "Synonym"),
+    ("comment", "Comment"),
+    ("explanation", "Explanation"),
+    ("picture", "Picture"),
+    ("includeInCommandInterface", "IncludeInCommandInterface"),
+    ("useOneCommand", "UseOneCommand"),
+];
+
+fn subsystem_support_props(value: &Value, props: &mut Map<String, Value>) {
+    if let Some(root) = value.get("libraryRoot").filter(|root| root.is_object()) {
+        props.insert("libraryRoot".to_string(), root.clone());
+    }
+    if let Some(support) = value.get("support") {
+        for (source, key) in [("state", "support"), ("directEditSafe", "directEditSafe")] {
+            if let Some(value) = support.get(source).filter(|value| safe_prop(key, value)) {
+                props.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+}
+
+/// Скалярные сведения читателя под публикуемыми именами свойств платформы.
+fn platform_scalar_props(value: &Value, names: &[(&str, &str)]) -> Map<String, Value> {
+    names
+        .iter()
+        .filter_map(|(source, name)| {
+            value
+                .get(*source)
+                .filter(|value| safe_prop(name, value))
+                .map(|value| ((*name).to_string(), value.clone()))
+        })
+        .collect()
 }
 
 fn selected_scalar_props(value: &Value, keys: &[&str]) -> Map<String, Value> {
@@ -2112,14 +2155,13 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
             "drawingId",
             "contentCount",
         ],
-        (LogicalReader::Subsystem, _) => &[
-            "synonym",
-            "comment",
-            "explanation",
-            "picture",
-            "includeInCommandInterface",
-            "useOneCommand",
-        ],
+        (LogicalReader::Subsystem, _) => {
+            let mut props = platform_scalar_props(value, SUBSYSTEM_PLATFORM_PROPS);
+            if kind == NodeKind::Subsystem {
+                subsystem_support_props(value, &mut props);
+            }
+            return props;
+        }
         (LogicalReader::Interface, NodeKind::Command) => {
             &["visible", "roleOverrides", "group", "placement"]
         }
@@ -2149,18 +2191,6 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
         _ => &[],
     };
     let mut props = selected_scalar_props(value, keys);
-    if reader == LogicalReader::Subsystem && kind == NodeKind::Subsystem {
-        if let Some(root) = value.get("libraryRoot").filter(|root| root.is_object()) {
-            props.insert("libraryRoot".to_string(), root.clone());
-        }
-        if let Some(support) = value.get("support") {
-            for (source, key) in [("state", "support"), ("directEditSafe", "directEditSafe")] {
-                if let Some(value) = support.get(source).filter(|value| safe_prop(key, value)) {
-                    props.insert(key.to_string(), value.clone());
-                }
-            }
-        }
-    }
     if kind == NodeKind::Template {
         let format = match reader {
             LogicalReader::Dcs => Some("DataCompositionSchema"),

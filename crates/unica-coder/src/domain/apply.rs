@@ -1144,6 +1144,11 @@ mod tests {
             (
                 SourceSetKind::Configuration,
                 "main:Subsystem.Sales.Subsystem.Child",
+                true,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Subsystem.Sales.Interface",
                 false,
             ),
         ] {
