@@ -3,6 +3,7 @@ mod catalog_attribute_tooltip;
 mod catalog_tabular_properties;
 mod dcs_parameter_expression;
 mod defined_type_reference;
+mod external_artifact_alias;
 mod form;
 mod form_conditional_appearance;
 mod form_support;
@@ -5674,8 +5675,17 @@ fn named_external_descriptor_and_owner_evidence_preserve_chunk_cancellation() {
 
 #[test]
 fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
-    for evidence_read in [false, true] {
+    for (evidence_read, has_neighbour) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
         let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+        if has_neighbour {
+            fs::write(
+                source.join("Existing.xml"),
+                external_leaf_descriptor("ExternalDataProcessor", "Existing", 0),
+            )
+            .unwrap();
+        }
         let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
         let target = MetadataAddress::parse(
             PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -5695,10 +5705,22 @@ fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
         assert_eq!(missing.detail(), None);
         assert_eq!(
             missing.to_string(),
-            "metadata descriptor `Missing.xml` is absent"
+            "external owner `ExternalDataProcessor.Missing` is not registered"
         );
         assert_eq!(reader.metadata_descriptor_read_count(target.as_str()), 1);
 
+        // A successful positive lookup must not turn a later missing-name
+        // lookup into a cached proof of absence.
+        if has_neighbour {
+            let existing = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                "ExternalDataProcessor.Existing",
+            )
+            .unwrap();
+            reader
+                .external_metadata_payload(&existing, &mut || Ok(()))
+                .unwrap();
+        }
         fs::create_dir(source.join("Missing.xml")).unwrap();
         let unreadable = if evidence_read {
             reader

@@ -128,6 +128,9 @@ pub(crate) struct FindDocument {
     /// source-set root: a descriptor file, or the directory of a command.
     path: Option<String>,
     path_alias: Option<FindPathAlias>,
+    /// Exact root descriptor observed by point lookup. A path is not authority;
+    /// the resource reader proves this owner before accepting its contents.
+    owner_descriptor: Option<String>,
     facts: Vec<FindFact>,
 }
 
@@ -158,8 +161,17 @@ impl FindDocument {
             title: title.into(),
             path: None,
             path_alias: None,
+            owner_descriptor: None,
             facts,
         }
+    }
+
+    pub(crate) fn with_owner_descriptor(mut self, path: impl Into<String>) -> Self {
+        self.owner_descriptor = Some(path.into());
+        self
+    }
+    pub(crate) fn owner_descriptor(&self) -> Option<&str> {
+        self.owner_descriptor.as_deref()
     }
 
     pub(crate) fn with_path(mut self, path: impl Into<String>) -> Self {
