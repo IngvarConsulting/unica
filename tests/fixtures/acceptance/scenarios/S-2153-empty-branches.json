@@ -128,7 +128,7 @@
           }
         },
         {
-          "pointer": "/data/branches/5",
+          "pointer": "/data/branches/4",
           "eq": {
             "at": "main:Catalog.ПримерА.Command",
             "count": 0
@@ -141,7 +141,7 @@
       ],
       "captures": {
         "commands": {
-          "pointer": "/data/branches/5/at"
+          "pointer": "/data/branches/4/at"
         }
       }
     },

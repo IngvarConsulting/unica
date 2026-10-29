@@ -779,6 +779,7 @@
         "crates/unica-coder/src/application/v13/source_text.rs",
         "crates/unica-coder/src/application/v13/view.rs",
         "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
         "crates/unica-coder/src/infrastructure/v13_read.rs",
         "crates/unica-coder/src/interfaces/task_projection.rs"
       ],
@@ -3555,6 +3556,7 @@
       "value": 4096,
       "applied": [
         "crates/unica-execution-contract/src/result_delivery.rs",
+        "crates/unica-execution-contract/src/source_text_budget.rs",
         "crates/unica-execution/src/receipt_ledger.rs"
       ],
       "status": "unproven",

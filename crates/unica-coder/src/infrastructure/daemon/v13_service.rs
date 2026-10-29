@@ -4067,6 +4067,15 @@ fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
     let mut result = error_result(at, code, error.to_string());
     result.next.extend(error.next().cloned());
     result
+        .diagnostics
+        .extend(error.diagnostics().iter().cloned());
+    // The stored answer fits the largest client; each client cuts it to its
+    // own budget when it is delivered.
+    unica_execution_contract::source_text_budget::fit_refusal_diagnostics(
+        &result,
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
+    .into_owned()
 }
 
 /// Отказ подготовки staged-исходников называет нарушенное предусловие.
