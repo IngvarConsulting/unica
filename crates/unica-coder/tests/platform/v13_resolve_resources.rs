@@ -579,6 +579,16 @@ fn resolve_external_form_resources_require_registered_matching_owner_and_form() 
                     "unica.resolve",
                     json!({"path":path}),
                 ));
+                if fault == "wrong-owner-name" {
+                    // The descriptor's declared identity is independent of its
+                    // export filename; children stay under the physical stem.
+                    assert_eq!(resolved["ok"], true, "{set}/{fault}: {resolved:#}");
+                    assert!(resolved["data"]["at"]
+                        .as_str()
+                        .unwrap()
+                        .contains(".Other.Form.Main"));
+                    continue;
+                }
                 assert_eq!(resolved["ok"], false, "{set}/{fault}: {resolved:#}");
                 assert!(
                     ["not_found", "invalid_source"]
@@ -618,4 +628,61 @@ fn resolve_external_form_resources_never_follow_linked_content() {
         }
         mcp.finish();
     }
+}
+
+#[test]
+fn resolve_external_alias_batch_lines_keep_point_owner_proof() {
+    let root = tempfile::tempdir().unwrap();
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-external-alias"),
+        root.path(),
+    );
+    for (set, stem) in [("epf", "source"), ("erf", "report-source")] {
+        std::fs::write(root.path().join(set).join("broken.xml"), "<broken").unwrap();
+        for module in ["Ext/ObjectModule.bsl", "Forms/Main/Ext/Form/Module.bsl"] {
+            std::fs::write(
+                root.path().join(set).join(stem).join(module),
+                "Procedure Probe() Export\nEndProcedure\n// outside\n",
+            )
+            .unwrap();
+        }
+    }
+    let mut mcp = resource_resolve_mcp(root.path());
+    let mut id = 2;
+    for (set, stem, kind, name) in [
+        (
+            "epf",
+            "source",
+            "ExternalDataProcessor",
+            "SyntheticProcessor",
+        ),
+        ("erf", "report-source", "ExternalReport", "SyntheticReport"),
+    ] {
+        for (module, suffix) in [
+            ("Ext/ObjectModule.bsl", ".Module.Object"),
+            ("Forms/Main/Ext/Form/Module.bsl", ".Form.Main.Module.Form"),
+        ] {
+            let path = format!("{set}/{stem}/{module}");
+            let address = format!("{set}:{kind}.{name}{suffix}");
+            let batch = mcp.completed_tool_call(call_tool(
+                id,
+                "unica.resolve",
+                json!({"paths": [path, format!("{path}:1"), format!("{path}:3")]}),
+            ));
+            id += 1;
+            assert_eq!(batch["ok"], true, "{batch:#}");
+            let items = batch["data"]["items"].as_array().unwrap();
+            assert_eq!(items[0]["at"], address, "{batch:#}");
+            assert_eq!(
+                items[1]["at"],
+                format!("{address}.Method.Probe"),
+                "{batch:#}"
+            );
+            assert_eq!(items[1]["line"], "inMethod");
+            assert_eq!(items[2]["at"], address, "{batch:#}");
+            assert_eq!(items[2]["line"], "outsideMethod");
+        }
+    }
+    mcp.finish();
 }

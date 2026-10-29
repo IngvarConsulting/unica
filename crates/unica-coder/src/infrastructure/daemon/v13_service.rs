@@ -86,6 +86,13 @@ use unica_workspace::actor::{
 };
 use unica_workspace::apply::ApplyStagedState;
 
+/// Keep the point-proven external placement for subsequent batch line reads.
+/// This is invocation-local evidence, not a complete external inventory.
+struct LocatedSource {
+    source: ResolvedSource,
+    external_binding: Option<unica_source_designer::external_artifact::ExternalArtifactBinding>,
+}
+
 /// Canonical v0.13 service installed by the production v3 daemon composition.
 /// Each public name has a useful closed mode; unfinished variants fail with a
 /// typed `unsupported_*` result rather than pretending an engine is missing.
@@ -2860,7 +2867,7 @@ impl CanonicalV13ReadService {
                 match with_resolve_layout(invocation, |layout, deadline| {
                     self.locate_path(invocation, layout, deadline, &path, cancellation)
                 }) {
-                    Ok(Ok(source)) => resolve_result(source),
+                    Ok(Ok(source)) => resolve_result(source.source),
                     Ok(Err(refusal)) | Err(refusal) => *refusal,
                 }
             }
@@ -2891,7 +2898,7 @@ impl CanonicalV13ReadService {
         items: &[Result<PathLine, ResolveError>],
         cancellation: &CancellationToken,
     ) -> DomainResult {
-        let mut located = BTreeMap::<String, Result<ResolvedSource, Box<DomainResult>>>::new();
+        let mut located = BTreeMap::<String, Result<LocatedSource, Box<DomainResult>>>::new();
         let mut lines = BTreeMap::<String, BTreeSet<usize>>::new();
         for item in items.iter().flatten() {
             let key = item.key();
@@ -2908,7 +2915,7 @@ impl CanonicalV13ReadService {
             if let (Some(line), Ok(source)) = (item.line(), &located[&key]) {
                 // Строчный источник — файл BSL; у модуля целиком диапазона
                 // нет, но строки у файла есть.
-                if source.path().to_ascii_lowercase().ends_with(".bsl") {
+                if source.source.path().to_ascii_lowercase().ends_with(".bsl") {
                     lines.entry(key).or_default().insert(line);
                 }
             }
@@ -2916,9 +2923,10 @@ impl CanonicalV13ReadService {
         let mut placed =
             BTreeMap::<String, Result<BTreeMap<usize, ModuleLine>, Box<DomainResult>>>::new();
         for (key, requested) in lines {
-            let Ok(source) = &located[&key] else {
+            let Ok(located_source) = &located[&key] else {
                 continue;
             };
+            let source = &located_source.source;
             let requested = requested.into_iter().collect::<Vec<_>>();
             let module = QualifiedAddress::parse(source.address())
                 .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))
@@ -2929,6 +2937,10 @@ impl CanonicalV13ReadService {
                         .map_err(|error| {
                             ViewError::detailed(RefusalDetail::SourceUnreadable, error)
                         })?;
+                    let authority = match &located_source.external_binding {
+                        Some(binding) => authority.with_external_point_binding(binding.clone()),
+                        None => authority,
+                    };
                     authority.module_lines(&module, &requested)
                 });
             let answer = match module {
@@ -2959,7 +2971,7 @@ impl CanonicalV13ReadService {
                     }
                 };
                 let source = match &located[&item.key()] {
-                    Ok(source) => source,
+                    Ok(source) => &source.source,
                     Err(refusal) => return batch_refusal(refusal),
                 };
                 let answer = match (item.line(), placed.get(&item.key())) {
@@ -3012,7 +3024,7 @@ impl CanonicalV13ReadService {
         deadline: ProviderDeadline,
         path: &str,
         cancellation: &CancellationToken,
-    ) -> Result<ResolvedSource, Box<DomainResult>> {
+    ) -> Result<LocatedSource, Box<DomainResult>> {
         let entry = self
             .find_builder
             .locate_path(layout, path, deadline, cancellation)
@@ -3045,8 +3057,60 @@ impl CanonicalV13ReadService {
                         error,
                     ))
                 })?;
+            let (authority, external_binding) = if let Some(descriptor) = entry.owner_descriptor() {
+                let source = invocation
+                    .layout_read_source(address.source_set())
+                    .map_err(|message| {
+                        Box::new(error_result_detailed(
+                            Some(entry.at().to_owned()),
+                            RefusalDetail::SourceUnreadable,
+                            message,
+                        ))
+                    })?;
+                if matches!(
+                    source.source_kind(),
+                    unica_source_contract::SourceSetKind::ExternalProcessor
+                        | unica_source_contract::SourceSetKind::ExternalReport
+                ) {
+                    let name = address
+                        .segments()
+                        .first()
+                        .and_then(|owner| owner.name())
+                        .ok_or_else(|| {
+                            Box::new(error_result(
+                                Some(entry.at().to_owned()),
+                                RefusalCode::InvalidSource,
+                                "external target has no owner name",
+                            ))
+                        })?;
+                    let binding =
+                        unica_source_designer::external_artifact::ExternalArtifactBinding::new(
+                            source.source_kind(),
+                            name,
+                            std::path::Path::new(descriptor),
+                        )
+                        .map_err(|message| {
+                            Box::new(error_result(
+                                Some(entry.at().to_owned()),
+                                RefusalCode::InvalidSource,
+                                message,
+                            ))
+                        })?;
+                    (
+                        authority.with_external_point_binding(binding.clone()),
+                        Some(binding),
+                    )
+                } else {
+                    (authority, None)
+                }
+            } else {
+                (authority, None)
+            };
             return match Self::resolve_with_authority(&authority, &address, entry.placed_path()) {
-                Ok(source) if Some(source.path()) == entry.placed_path() => Ok(source),
+                Ok(source) if Some(source.path()) == entry.placed_path() => Ok(LocatedSource {
+                    source,
+                    external_binding,
+                }),
                 Ok(_) => Err(Box::new(error_result(
                     Some(entry.at().to_owned()),
                     RefusalCode::InvalidSource,
@@ -3058,12 +3122,15 @@ impl CanonicalV13ReadService {
                 ))),
             };
         }
-        Ok(ResolvedSource::new(
-            entry.at(),
-            entry.kind(),
-            entry.placed_path().expect("located path has a place"),
-            ResolvedLines::NotLineBased,
-        ))
+        Ok(LocatedSource {
+            source: ResolvedSource::new(
+                entry.at(),
+                entry.kind(),
+                entry.placed_path().expect("located path has a place"),
+                ResolvedLines::NotLineBased,
+            ),
+            external_binding: None,
+        })
     }
 
     fn resolve_address(
@@ -3171,6 +3238,23 @@ impl CanonicalV13ReadService {
                 Ok(entry) => entry,
                 Err(error) => return Some(find_build_error_result(Some(at), error)),
             };
+        let external = matches!(
+            source.source_kind(),
+            unica_source_contract::SourceSetKind::ExternalProcessor
+                | unica_source_contract::SourceSetKind::ExternalReport
+        );
+        if external
+            && entry.as_ref().is_none_or(|entry| {
+                entry.at() != at
+                    && QualifiedAddress::parse(entry.at())
+                        .ok()
+                        .and_then(|located| located.form_metadata_owner())
+                        .as_ref()
+                        != Some(address)
+            })
+        {
+            return None;
+        }
         let Some((kind, placed)) = entry.as_ref().and_then(|entry| {
             (entry.at() == at
                 || QualifiedAddress::parse(entry.at())
