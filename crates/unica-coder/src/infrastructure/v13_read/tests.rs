@@ -12,6 +12,7 @@ mod metadata;
 mod metadata_declaration_diagnostics;
 mod numerator_read_profile;
 mod session_parameter_comment;
+mod structured_property_names;
 mod support;
 mod xdto_missing_target;
 
