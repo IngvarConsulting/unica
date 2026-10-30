@@ -134,7 +134,7 @@ fn property_add_can_is_closed_and_previews_without_writes() {
     assert_contract_and_preview(
         OBJECT,
         "property.add",
-        json!({"values": {"property": {"name": "XdtoContractProperty", "type": "xs:string", "minOccurs": 0}}}),
+        json!({"values": {"property": {"name": "XdtoContractProperty", "type": "xs:string", "lowerBound": 0}}}),
         true,
     );
 }

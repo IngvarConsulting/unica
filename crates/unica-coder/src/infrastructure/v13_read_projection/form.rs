@@ -1,4 +1,4 @@
-use super::{item_identity, select_named, selected_scalar_props};
+use super::{dropped_by_size, item_identity, select_named, selected_scalar_props};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_bsl::projection::EventProjection;
 use unica_execution_contract::view_error::ViewError;
@@ -6,6 +6,15 @@ use unica_execution_contract::view_error::ViewError;
 use serde_json::{Map, Value};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_refusal::RefusalCode;
+
+/// Скаляры корня формы в его `props`.
+const FORM_ROOT_SCALAR_KEYS: &[&str] = &[
+    "title",
+    "objectContext",
+    "isExtension",
+    "baseFormVersion",
+    "commandBarLocation",
+];
 
 pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "name",
@@ -78,16 +87,12 @@ pub(super) fn project_form(
         return project_semantic_form_event(address, suffix, events);
     }
     if suffix.is_empty() {
-        let mut props = selected_scalar_props(
-            payload,
-            &[
-                "title",
-                "objectContext",
-                "isExtension",
-                "baseFormVersion",
-                "commandBarLocation",
-            ],
-        );
+        let mut props = selected_scalar_props(payload, FORM_ROOT_SCALAR_KEYS);
+        // Заголовок длиннее предела не пропадает молча: предел называет
+        // адрес, по которому он читается целиком.
+        let limits = dropped_by_size(payload, &props, address, |probe| {
+            selected_scalar_props(probe, FORM_ROOT_SCALAR_KEYS)
+        });
         if let Some(properties) = root_properties(payload) {
             props.insert("properties".to_string(), properties);
         }
@@ -137,7 +142,8 @@ pub(super) fn project_form(
                     .unwrap_or("Form"),
                 props,
             )
-            .with_branches(branches),
+            .with_branches(branches)
+            .with_additional_limits(limits),
         ));
     }
     let first = &suffix[0];
@@ -313,6 +319,8 @@ fn form_node(
     item: &Value,
     semantic_events: Option<&[EventProjection]>,
 ) -> NodeView {
+    let props = node_props(kind, item);
+    let limits = dropped_by_size(item, &props, address, |probe| node_props(kind, probe));
     let mut node = NodeView::new(
         address.to_string(),
         kind.as_str(),
@@ -320,8 +328,9 @@ fn form_node(
             .and_then(Value::as_str)
             .or_else(|| item_identity(item))
             .unwrap_or(kind.as_str()),
-        node_props(kind, item),
-    );
+        props,
+    )
+    .with_additional_limits(limits);
     let branch_kinds: &[NodeKind] = match kind {
         NodeKind::Item => &[NodeKind::Item, NodeKind::Event],
         NodeKind::Attribute => &[NodeKind::Column],

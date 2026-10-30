@@ -42,17 +42,17 @@ fn dcs_parameter_expression_reaches_collection_and_detail_without_writes() {
         (
             "Period",
             json!({"type":"DateTime", "value":null, "expression":null,
-            "restricted":false, "availableAsField":null}),
+            "useRestriction":false, "availableAsField":null}),
         ),
         (
             "НачалоПериода",
             json!({"type":"DateTime", "value":null,
-            "expression":"&Период.ДатаНачала", "restricted":true, "availableAsField":false}),
+            "expression":"&Период.ДатаНачала", "useRestriction":true, "availableAsField":false}),
         ),
         (
             "Условие",
             json!({"type":"Boolean", "value":null,
-            "expression":"&НачалоПериода < &КонецПериода", "restricted":false, "availableAsField":null}),
+            "expression":"&НачалоПериода < &КонецПериода", "useRestriction":false, "availableAsField":null}),
         ),
     ];
     for suffix in ["Parameter", "DataSet.MainData.Parameter"] {
@@ -108,7 +108,7 @@ fn dcs_parameter_expression_obeys_compact_property_byte_limit() {
             assert!(result.ok, "{:?}", refusal_codes(&result));
             let data = result.data.unwrap();
             assert_eq!(data["props"].get("expression"), expected.as_ref());
-            assert_eq!(data["props"]["restricted"], false);
+            assert_eq!(data["props"]["useRestriction"], false);
             assert_eq!(data["title"], name);
         }
     }

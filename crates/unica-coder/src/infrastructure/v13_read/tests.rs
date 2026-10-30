@@ -3,6 +3,7 @@ mod catalog_attribute_tooltip;
 mod catalog_tabular_properties;
 mod dcs_parameter_expression;
 mod defined_type_reference;
+mod external_artifact_alias;
 mod form;
 mod form_conditional_appearance;
 mod form_support;
@@ -11,6 +12,7 @@ mod metadata;
 mod metadata_declaration_diagnostics;
 mod numerator_read_profile;
 mod session_parameter_comment;
+mod structured_property_names;
 mod support;
 mod xdto_missing_target;
 
@@ -122,7 +124,7 @@ fn styleitem_preserves_absent_false_and_damaged_overrides_independently() {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["props"]["fontHeight"], 16);
         assert_eq!(data["props"]["Type"], "Font");
-        assert!(data["props"]["synonym"].is_string());
+        assert!(data["props"]["Synonym"].is_string());
         assert_eq!(
             data["props"].get("fontItalic"),
             expected_flag.map(serde_json::Value::Bool).as_ref()
@@ -172,7 +174,7 @@ fn styleitem_value_type_is_namespace_aware_and_damage_preserves_identity() {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["props"].get("fontHeight").is_some(), visible, "{data}");
         assert_eq!(data["props"]["kind"], "StyleItem");
-        assert!(data["props"]["synonym"].is_string());
+        assert!(data["props"]["Synonym"].is_string());
         if !visible {
             assert!(!data["limits"].as_array().unwrap().is_empty());
         }
@@ -5673,8 +5675,17 @@ fn named_external_descriptor_and_owner_evidence_preserve_chunk_cancellation() {
 
 #[test]
 fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
-    for evidence_read in [false, true] {
+    for (evidence_read, has_neighbour) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
         let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+        if has_neighbour {
+            fs::write(
+                source.join("Existing.xml"),
+                external_leaf_descriptor("ExternalDataProcessor", "Existing", 0),
+            )
+            .unwrap();
+        }
         let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
         let target = MetadataAddress::parse(
             PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -5694,10 +5705,22 @@ fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
         assert_eq!(missing.detail(), None);
         assert_eq!(
             missing.to_string(),
-            "metadata descriptor `Missing.xml` is absent"
+            "external owner `ExternalDataProcessor.Missing` is not registered"
         );
         assert_eq!(reader.metadata_descriptor_read_count(target.as_str()), 1);
 
+        // A successful positive lookup must not turn a later missing-name
+        // lookup into a cached proof of absence.
+        if has_neighbour {
+            let existing = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                "ExternalDataProcessor.Existing",
+            )
+            .unwrap();
+            reader
+                .external_metadata_payload(&existing, &mut || Ok(()))
+                .unwrap();
+        }
         fs::create_dir(source.join("Missing.xml")).unwrap();
         let unreadable = if evidence_read {
             reader
@@ -7316,8 +7339,8 @@ fn subsystem_text_properties_preserve_presence_and_damage_at_every_depth() {
             let result = service.view(ViewRequest::new(at).unwrap());
             assert!(result.ok, "{fragment}: the call failed");
             let data = result.data.as_ref().unwrap();
-            assert_eq!(data["props"]["comment"], json!(comment), "{at}: {fragment}");
-            assert_eq!(data["props"]["explanation"], json!(explanation), "{at}: {fragment}");
+            assert_eq!(data["props"]["Comment"], json!(comment), "{at}: {fragment}");
+            assert_eq!(data["props"]["Explanation"], json!(explanation), "{at}: {fragment}");
             let limits = data["limits"].to_string();
             assert_eq!(limits.contains("properties."), damaged, "{at}: {fragment}: unexpected answer");
             for branch in ["Relation", "Subsystem", "Interface"] {
@@ -7369,8 +7392,8 @@ fn common_template_empty_synonyms_have_no_value_like_other_metadata() {
         assert!(result.ok, "{synonym:?}: the call failed");
         let data = result.data.unwrap();
         assert!(
-            data["props"]["synonym"].is_null(),
-            "{synonym:?}: unexpected answer"
+            data["props"]["Synonym"].is_null(),
+            "an empty synonym publishes no Synonym value"
         );
         assert_eq!(data["props"]["format"], "SpreadsheetDocument");
     }
@@ -7399,8 +7422,8 @@ fn common_template_damaged_synonym_keeps_independent_template_facts() {
         let data = result.data.unwrap();
         assert_eq!(data["title"], "Print");
         assert!(
-            data["props"]["synonym"].is_null(),
-            "{synonym}: unexpected answer"
+            data["props"]["Synonym"].is_null(),
+            "a damaged synonym publishes no Synonym value"
         );
         assert_eq!(data["props"]["format"], "SpreadsheetDocument");
         assert!(
@@ -7426,7 +7449,7 @@ fn common_template_exposes_mxl_areas_body_and_parameters_through_public_view() {
     assert!(template.ok, "the call failed");
     let data = template.data.unwrap();
     assert_eq!(data["props"]["format"], "SpreadsheetDocument");
-    assert_eq!(data["props"]["synonym"], "Общий Print");
+    assert_eq!(data["props"]["Synonym"], "Общий Print");
     assert!(data["branches"]
         .as_array()
         .unwrap()
@@ -7601,7 +7624,7 @@ fn common_opaque_and_inherited_templates_do_not_open_a_body() {
     assert!(html.ok, "the call failed");
     let data = html.data.unwrap();
     assert_eq!(data["props"]["format"], "HTMLDocument");
-    assert_eq!(data["props"]["synonym"], "Общий Html");
+    assert_eq!(data["props"]["Synonym"], "Общий Html");
     assert!(data.get("branches").is_none());
     for suffix in [".Area", ".DataSet", ".Parameter", ".Item", ".Area.A.Body"] {
         let view = fixture
