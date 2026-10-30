@@ -3628,10 +3628,10 @@ fn main() {
             serde_json::to_writer(
                 &mut stream,
                 &PreparedBslReply::Finished {
-                    response: ServiceResponse {
+                    response: Box::new(ServiceResponse {
                         ok: true,
                         ..ServiceResponse::default()
-                    },
+                    }),
                 },
             )
             .unwrap();

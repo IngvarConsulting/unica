@@ -1160,7 +1160,7 @@ impl SystemServiceConnector {
             read_service_reply(stream.as_mut(), &deadline, clock, cancellation)?;
         match admitted {
             PreparedBslReply::Admitted { operation_id: id } if id == operation_id => {}
-            PreparedBslReply::Finished { response } if !response.ok => return Ok(response),
+            PreparedBslReply::Finished { response } if !response.ok => return Ok(*response),
             _ => return Err("workspace service admitted a different operation".into()),
         }
         let remaining =
@@ -1224,7 +1224,7 @@ impl SystemServiceConnector {
             write_with_deadline(stream.as_mut(), b"\n", &deadline, clock, cancellation)?;
             flush_with_deadline(stream.as_mut(), &deadline, clock, cancellation)?;
             match read_service_reply(stream.as_mut(), &deadline, clock, cancellation)? {
-                PreparedBslReply::Finished { response } => Ok(response),
+                PreparedBslReply::Finished { response } => Ok(*response),
                 PreparedBslReply::Admitted { .. } => {
                     Err("workspace service repeated admission instead of a result".into())
                 }
@@ -2111,9 +2111,9 @@ pub struct WorkspaceServicesState<B: BslBackend, R: RlmBackend> {
     #[cfg(any(test, feature = "test-support"))]
     prepared_dispatch_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(any(test, feature = "test-support"))]
-    bsl_session_deadline_hook: Mutex<Option<Arc<dyn Fn(Option<Duration>, bool) + Send + Sync>>>,
+    bsl_session_deadline_hook: Mutex<Option<Arc<BslSessionDeadlineHook>>>,
     #[cfg(any(test, feature = "test-support"))]
-    operation_retired_hook: Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>,
+    operation_retired_hook: Mutex<Option<Arc<OperationRetiredHook>>>,
     #[cfg(any(test, feature = "test-support"))]
     authenticated_request_hook: Mutex<Option<Arc<AuthenticatedWorkspaceRequestHook>>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -2134,6 +2134,12 @@ pub struct WorkspaceServicesProjection<'a, B: BslBackend, R: RlmBackend>(
 
 #[cfg(any(test, feature = "test-support"))]
 pub type AuthenticatedWorkspaceRequestHook = dyn Fn(u16, &ServiceRequestKind) + Send + Sync;
+
+#[cfg(any(test, feature = "test-support"))]
+pub type BslSessionDeadlineHook = dyn Fn(Option<Duration>, bool) + Send + Sync;
+
+#[cfg(any(test, feature = "test-support"))]
+pub type OperationRetiredHook = dyn Fn(&str) + Send + Sync;
 
 #[cfg(any(test, feature = "test-support"))]
 pub type DetachedWorkspaceCallerHook = dyn Fn(&CancellationToken) + Send + Sync;
@@ -3909,8 +3915,13 @@ fn write_registered_response(
     prepared: bool,
 ) -> Result<(), String> {
     if prepared {
-        serde_json::to_writer(&mut stream, &PreparedBslReply::Finished { response })
-            .map_err(|error| format!("failed to encode workspace service result: {error}"))?;
+        serde_json::to_writer(
+            &mut stream,
+            &PreparedBslReply::Finished {
+                response: Box::new(response),
+            },
+        )
+        .map_err(|error| format!("failed to encode workspace service result: {error}"))?;
         stream
             .write_all(b"\n")
             .and_then(|_| stream.flush())
@@ -4507,10 +4518,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
     pub fn test_set_rlm_starter(&mut self, starter: Arc<RlmSessionStarter<R>>) {
         self.runtime_mut_for_test().rlm_starter = starter;
     }
-    pub fn test_set_bsl_session_deadline_hook(
-        &self,
-        hook: Option<Arc<dyn Fn(Option<Duration>, bool) + Send + Sync>>,
-    ) {
+    pub fn test_set_bsl_session_deadline_hook(&self, hook: Option<Arc<BslSessionDeadlineHook>>) {
         *self
             .actor
             .runtime_projection()
@@ -4519,7 +4527,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             .lock()
             .unwrap() = hook;
     }
-    pub fn test_set_operation_retired_hook(&self, hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
+    pub fn test_set_operation_retired_hook(&self, hook: Option<Arc<OperationRetiredHook>>) {
         *self
             .actor
             .runtime_projection()

@@ -112,7 +112,7 @@ pub enum BslStopCause {
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreparedBslReply {
     Admitted { operation_id: String },
-    Finished { response: ServiceResponse },
+    Finished { response: Box<ServiceResponse> },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -247,12 +247,11 @@ mod tests {
                 "invalid deadline accepted: {invalid}"
             );
         }
-        for invalid in [r#"{"mode":"finite","seconds":1,"nanos":1000000000}"#] {
-            assert!(serde_json::from_str::<BslOperationDeadline>(invalid)
-                .unwrap()
-                .remaining()
-                .is_err());
-        }
+        let invalid = r#"{"mode":"finite","seconds":1,"nanos":1000000000}"#;
+        assert!(serde_json::from_str::<BslOperationDeadline>(invalid)
+            .unwrap()
+            .remaining()
+            .is_err());
     }
 
     #[test]
