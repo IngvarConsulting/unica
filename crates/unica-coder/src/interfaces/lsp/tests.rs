@@ -188,7 +188,7 @@ fn editor_output_releases_and_joins_the_writer_when_a_reader_assertion_unwinds()
 }
 
 #[test]
-fn editor_output_reports_a_truncated_header_or_body_only_at_terminal_eof() {
+fn editor_output_reports_truncated_published_frames_without_poisoning_writer() {
     for (prefix, expected_error) in [
         (b"Content-Len".as_slice(), io::ErrorKind::InvalidData),
         (
@@ -196,15 +196,22 @@ fn editor_output_reports_a_truncated_header_or_body_only_at_terminal_eof() {
             io::ErrorKind::UnexpectedEof,
         ),
     ] {
-        let (mut editor, mut writer) = output_only_editor();
-        writer.write_all(prefix).unwrap();
-        assert!(editor.receive_result(Instant::now()).unwrap());
-        assert!(editor.received.is_empty());
-        drop(writer);
-        let error = editor.receive_result(Instant::now()).unwrap_err();
-        assert_eq!(error.kind(), expected_error);
-        assert!(editor.received.is_empty());
-        assert!(!editor.output.0.is_poisoned());
+        for terminal_eof in [false, true] {
+            let (mut editor, mut writer) = output_only_editor();
+            writer.write_all(prefix).unwrap();
+            assert!(editor.receive_result(Instant::now()).unwrap());
+            assert!(editor.received.is_empty());
+            if terminal_eof {
+                drop(writer);
+            } else {
+                // An explicit flush of an incomplete frame violates the producer contract.
+                writer.flush().unwrap();
+            }
+            let error = editor.receive_result(Instant::now()).unwrap_err();
+            assert_eq!(error.kind(), expected_error);
+            assert!(editor.received.is_empty());
+            assert!(!editor.output.0.is_poisoned());
+        }
     }
 }
 
