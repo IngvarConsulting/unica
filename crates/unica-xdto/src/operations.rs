@@ -800,6 +800,11 @@ impl<'a> ArgumentReader<'a> {
             // the conversion is exact or the value is refused.
             let parsed = value.as_i64().or_else(|| {
                 value.as_f64().and_then(|number| {
+                    // i64::MAX rounds to 2^63 as f64; a saturating cast would
+                    // otherwise appear exact at this out-of-range boundary.
+                    if number >= i64::MAX as f64 {
+                        return None;
+                    }
                     let integer = number as i64;
                     (number.fract() == 0.0 && integer as f64 == number).then_some(integer)
                 })
@@ -1284,6 +1289,21 @@ mod tests {
             bound(json!(9007199254740993_i64)),
             Ok(Some(9007199254740993))
         );
+        assert_eq!(bound(json!(i64::MAX)), Ok(Some(i64::MAX)));
+        assert_eq!(
+            bound(json!(9223372036854774784.0)),
+            Ok(Some(9223372036854774784))
+        );
+        for value in [
+            json!(9223372036854775808_u64),
+            json!(9223372036854775808.0),
+            json!(u64::MAX),
+        ] {
+            assert_eq!(
+                bound(value),
+                Err("ops[0].args.values.property.upperBound".to_string())
+            );
+        }
         assert_eq!(bound(json!(2.0)), Ok(Some(2)));
         assert_eq!(bound(json!(-1.0)), Ok(Some(-1)));
         assert_eq!(
