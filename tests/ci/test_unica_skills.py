@@ -993,8 +993,6 @@ def find_unsafe_platform_evidence_routes(
     documents: list[tuple[str, str]],
 ) -> list[str]:
     safe_boundaries = [
-        "development-standard",
-        "development standards",
         "not platform",
         "do not infer",
         "do not present",
@@ -1532,6 +1530,16 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "standards tools must not be presented as platform evidence:\n"
             + "\n".join(unsafe_routes),
         )
+
+    def test_standards_label_does_not_prove_platform_evidence(self) -> None:
+        for label in ["development standards", "development-standard"]:
+            with self.subTest(label=label):
+                self.assertEqual(len(find_unsafe_platform_evidence_routes([
+                    ("probe.md", f"Use unica.standards.search for platform {label}.")
+                ])), 1)
+                self.assertEqual(find_unsafe_platform_evidence_routes([
+                    ("probe.md", f"Use unica.standards.search for {label}, not platform evidence.")
+                ]), [])
 
     def test_route_linter_checks_adjacent_markdown_items_independently(self) -> None:
         unsafe_routes = find_unsafe_platform_evidence_routes(
