@@ -2500,3 +2500,524 @@ fn literal_search_pages_past_two_hundred_matches(git: bool) {
     assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
     mcp.finish();
 }
+
+fn external_alias_search_workspace(workspace: &std::path::Path, git: bool) {
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-external-alias"),
+        workspace,
+    );
+    for (set, payload) in [("erf", "report-source"), ("epf", "source")] {
+        for relative in ["Ext/ObjectModule.bsl", "Forms/Main/Ext/Form/Module.bsl"] {
+            std::fs::write(workspace.join(set).join(payload).join(relative),
+                "Функция AliasProbe() Экспорт\n // AliasSearchNeedle first\n // AliasSearchNeedle second\nКонецФункции\n").unwrap();
+        }
+    }
+    let xml = std::fs::read_to_string(workspace.join("erf/report-source.xml")).unwrap();
+    std::fs::write(
+        workspace.join("erf/foreign.xml"),
+        xml.replace("SyntheticReport", "ForeignReport"),
+    )
+    .unwrap();
+    copy_tree(
+        &workspace.join("erf/report-source"),
+        &workspace.join("erf/foreign"),
+    );
+    if git {
+        for args in [["init", "-q"].as_slice(), ["add", "."].as_slice()] {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(workspace)
+                .status()
+                .unwrap()
+                .success());
+        }
+    }
+}
+
+#[test]
+fn external_alias_search_preserves_owner_module_readback_and_physical_pages() {
+    for git in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        external_alias_search_workspace(root.path(), git);
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let mut id = 2;
+        for (owner, payload) in [
+            ("erf:ExternalReport.SyntheticReport", "report-source"),
+            ("epf:ExternalDataProcessor.SyntheticProcessor", "source"),
+        ] {
+            let viewed = mcp.completed_tool_call(call_tool(id, "unica.view", json!({"at":owner})));
+            id += 1;
+            assert_eq!(viewed["ok"], true, "{viewed:#}");
+            for suffix in ["", ".Module.Object", ".Form.Main.Module.Form"] {
+                let scope = format!("{owner}{suffix}");
+                let question = json!({"query":"AliasSearchNeedle", "scope":scope,"limit":1});
+                let mut arguments = question.clone();
+                let mut hits = std::collections::BTreeSet::new();
+                let mut pages = 0;
+                loop {
+                    let page = mcp.completed_tool_call(call_tool(id, "unica.search", arguments));
+                    id += 1;
+                    assert_eq!(page["ok"], true, "git={git} {scope}: {page:#}");
+                    for hit in page["data"]["matches"].as_array().unwrap() {
+                        let at = hit["at"]
+                            .as_str()
+                            .expect("a proven alias hit is addressable");
+                        assert!(at.starts_with(owner), "{hit:#}");
+                        assert!(at.contains(".Method.AliasProbe.Body#L"), "{hit:#}");
+                        let line = hit["line"].as_u64().unwrap();
+                        assert!(view_body_lines(&mut mcp, &mut id, at)[&line]
+                            .contains("AliasSearchNeedle"));
+                        let resolved = mcp.completed_tool_call(call_tool(
+                            id,
+                            "unica.resolve",
+                            json!({"at":hit_module(at)}),
+                        ));
+                        id += 1;
+                        assert_eq!(resolved["ok"], true, "{resolved:#}");
+                        let physical = if hit_module(at).contains(".Form.Main.") {
+                            format!("{payload}/Forms/Main/Ext/Form/Module.bsl")
+                        } else {
+                            format!("{payload}/Ext/ObjectModule.bsl")
+                        };
+                        assert_eq!(resolved["data"]["path"], physical, "{resolved:#}");
+                        assert!(hits.insert((at.to_owned(), line)), "duplicate hit: {hit:#}");
+                    }
+                    pages += 1;
+                    assert!(pages <= 4, "cursor must finish");
+                    let Some(cursor) = page["cursor"].as_str() else {
+                        assert_eq!(page["data"]["fileCoverage"]["complete"], true, "{page:#}");
+                        break;
+                    };
+                    arguments = question.clone();
+                    arguments["cursor"] = json!(cursor);
+                }
+                assert_eq!(
+                    hits.len(),
+                    if suffix.is_empty() { 4 } else { 2 },
+                    "git={git} {scope}"
+                );
+            }
+        }
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_alias_unscoped_search_keeps_ambiguous_hits_unaddressed() {
+    for (git, set, descriptor, payload, expected_unaddressed, malformed) in [
+        (
+            false,
+            "erf",
+            "report-source.xml",
+            "report-source",
+            12,
+            false,
+        ),
+        (true, "erf", "report-source.xml", "report-source", 12, false),
+        (false, "epf", "source.xml", "source", 8, false),
+        (true, "epf", "source.xml", "source", 8, false),
+        (false, "erf", "report-source.xml", "report-source", 8, true),
+        (true, "erf", "report-source.xml", "report-source", 8, true),
+        (false, "epf", "source.xml", "source", 4, true),
+        (true, "epf", "source.xml", "source", 4, true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        external_alias_search_workspace(root.path(), false);
+        if malformed {
+            // Sorted after the valid descriptors: never publish their prefix
+            // as ordinary logical addresses when the complete inventory fails.
+            std::fs::write(root.path().join(set).join("zzz-invalid.xml"), "<broken").unwrap();
+        } else {
+            std::fs::copy(
+                root.path().join(set).join(descriptor),
+                root.path().join(set).join("duplicate.xml"),
+            )
+            .unwrap();
+            copy_tree(
+                &root.path().join(set).join(payload),
+                &root.path().join(set).join("duplicate"),
+            );
+        }
+        if git {
+            for args in [["init", "-q"].as_slice(), ["add", "."].as_slice()] {
+                assert!(Command::new("git")
+                    .args(args)
+                    .current_dir(root.path())
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+        }
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let page = mcp.completed_tool_call(call_tool(
+            2,
+            "unica.search",
+            json!({"query":"AliasSearchNeedle", "limit":50}),
+        ));
+        assert_eq!(page["ok"], true, "git={git} duplicate={set}: {page:#}");
+        let matches = page["data"]["matches"].as_array().unwrap();
+        assert_eq!(
+            matches.len(),
+            if malformed { 12 } else { 16 },
+            "all physical matches survive: {page:#}"
+        );
+        let mut unaddressed = 0;
+        let mut files = std::collections::BTreeSet::new();
+        let mut id = 3;
+        for hit in matches {
+            if let Some(at) = hit["at"].as_str() {
+                assert!(
+                    !at.starts_with(&format!("{set}:")),
+                    "ambiguous source must not claim a view-readable address: {hit:#}"
+                );
+                let line = hit["line"].as_u64().unwrap();
+                assert!(view_body_lines(&mut mcp, &mut id, at)[&line].contains("AliasSearchNeedle"));
+            } else {
+                assert_eq!(hit["unaddressed"], "owner_unproven", "{hit:#}");
+                files.insert(
+                    hit["fileId"]
+                        .as_str()
+                        .expect("unproven owner retains physical fileId")
+                        .to_owned(),
+                );
+                unaddressed += 1;
+            }
+        }
+        assert_eq!(unaddressed, expected_unaddressed, "{page:#}");
+        assert_eq!(
+            files.len(),
+            expected_unaddressed / 2,
+            "different physical files keep distinct identities"
+        );
+        assert_eq!(page["data"]["fileCoverage"]["complete"], true, "{page:#}");
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_alias_unscoped_cursor_rejects_a_new_duplicate_descriptor() {
+    for git in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        external_alias_search_workspace(root.path(), git);
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let first = mcp.completed_tool_call(call_tool(
+            2,
+            "unica.search",
+            json!({"query":"AliasSearchNeedle", "limit":1}),
+        ));
+        assert_eq!(first["ok"], true, "{first:#}");
+        assert!(
+            first["data"]["matches"][0]["at"]
+                .as_str()
+                .unwrap()
+                .starts_with("epf:"),
+            "{first:#}"
+        );
+        let cursor = first["cursor"].as_str().unwrap();
+        let module = root.path().join("epf/source/Ext/ObjectModule.bsl");
+        let before = std::fs::read(&module).unwrap();
+        std::fs::copy(
+            root.path().join("epf/source.xml"),
+            root.path().join("epf/duplicate.xml"),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&module).unwrap(), before);
+        let next = mcp.completed_tool_call(call_tool(
+            3,
+            "unica.search",
+            json!({"query":"AliasSearchNeedle", "limit":1,"cursor":cursor}),
+        ));
+        assert_eq!(next["ok"], false, "git={git}: {next:#}");
+        assert_eq!(next["diagnostics"][0]["code"], "stale_cursor", "{next:#}");
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_alias_search_rejects_wrong_missing_damaged_and_ambiguous_owners() {
+    for case in ["wrong-kind", "missing", "damaged", "ambiguous"] {
+        let root = tempfile::tempdir().unwrap();
+        external_alias_search_workspace(root.path(), false);
+        let descriptor = root.path().join("erf/report-source.xml");
+        match case {
+            "missing" => std::fs::remove_file(&descriptor).unwrap(),
+            "damaged" => std::fs::write(&descriptor, "<broken").unwrap(),
+            "ambiguous" => {
+                std::fs::copy(&descriptor, root.path().join("erf/duplicate.xml")).unwrap();
+            }
+            _ => {}
+        }
+        let owner = if case == "wrong-kind" {
+            "erf:ExternalDataProcessor.SyntheticReport"
+        } else {
+            "erf:ExternalReport.SyntheticReport"
+        };
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        for (id, suffix) in [(2, ""), (3, ".Module.Object")] {
+            let answer = mcp.completed_tool_call(call_tool(
+                id,
+                "unica.search",
+                json!({"query":"AliasSearchNeedle", "scope":format!("{owner}{suffix}")}),
+            ));
+            assert_eq!(answer["ok"], false, "{case}: {answer:#}");
+            assert!(
+                answer["data"].get("matches").is_none(),
+                "no fabricated complete-empty answer: {answer:#}"
+            );
+        }
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_alias_search_cursor_rejects_changed_descriptor_without_payload_changes() {
+    for (git, rename) in [(false, true), (true, true), (false, false), (true, false)] {
+        let root = tempfile::tempdir().unwrap();
+        external_alias_search_workspace(root.path(), git);
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let question = json!({"query":"AliasSearchNeedle", "limit":1});
+        let first = mcp.completed_tool_call(call_tool(2, "unica.search", question.clone()));
+        assert_eq!(first["ok"], true, "{first:#}");
+        let cursor = first["cursor"]
+            .as_str()
+            .expect("fixture has several matches");
+        let at = first["data"]["matches"][0]["at"]
+            .as_str()
+            .expect("alias hit must be proven");
+        let (descriptor, old_name) = if at.starts_with("epf:") {
+            ("epf/source.xml", "SyntheticProcessor")
+        } else if at.contains("ForeignReport") {
+            ("erf/foreign.xml", "ForeignReport")
+        } else {
+            ("erf/report-source.xml", "SyntheticReport")
+        };
+        let path = root.path().join(descriptor);
+        let xml = std::fs::read_to_string(&path).unwrap();
+        let changed = if rename {
+            xml.replace(old_name, "ChangedIdentity")
+        } else {
+            // Even an identity-only edit, with unchanged names, placement and
+            // BSL bytes, invalidates the descriptor proof retained by a cursor.
+            let start = xml.find("uuid=\"").unwrap() + "uuid=\"".len();
+            let mut changed = xml.clone();
+            changed.replace_range(start..start + 36, "00000000-0000-4000-8000-000000000001");
+            changed
+        };
+        std::fs::write(path, changed).unwrap();
+        let mut arguments = question;
+        arguments["cursor"] = json!(cursor);
+        let resumed = mcp.completed_tool_call(call_tool(3, "unica.search", arguments));
+        assert_eq!(
+            resumed["ok"], false,
+            "old descriptor proof must not survive: {resumed:#}"
+        );
+        assert_eq!(
+            resumed["diagnostics"][0]["code"], "stale_cursor",
+            "{resumed:#}"
+        );
+        mcp.finish();
+    }
+}
+
+fn external_search_workspace(workspace: &std::path::Path) {
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-external"),
+        workspace,
+    );
+    for (set, owner) in [("erf", "Sales"), ("epf", "Import"), ("epf", "Other")] {
+        for relative in ["Ext/ObjectModule.bsl", "Forms/Main/Ext/Form/Module.bsl"] {
+            std::fs::write(
+                workspace.join(set).join(owner).join(relative),
+                "// ExternalScopedNeedle\n",
+            )
+            .unwrap();
+        }
+    }
+    // A second report proves owner scoping within the same source set.
+    let descriptor = std::fs::read_to_string(workspace.join("erf/Sales.xml")).unwrap();
+    std::fs::write(
+        workspace.join("erf/Other.xml"),
+        descriptor.replace("Sales", "Other"),
+    )
+    .unwrap();
+    copy_tree(&workspace.join("erf/Sales"), &workspace.join("erf/Other"));
+}
+
+#[test]
+fn external_owner_and_module_search_keep_logical_locations_and_scope() {
+    for git in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        external_search_workspace(root.path());
+        if git {
+            for args in [["init", "-q"].as_slice(), ["add", "."].as_slice()] {
+                assert!(Command::new("git")
+                    .args(args)
+                    .current_dir(root.path())
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+        }
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let mut id = 2;
+        for owner in [
+            "erf:ExternalReport.Sales",
+            "epf:ExternalDataProcessor.Import",
+        ] {
+            let modules = [
+                format!("{owner}.Module.Object"),
+                format!("{owner}.Form.Main.Module.Form"),
+            ];
+            for (scope, expected) in [
+                (owner.to_owned(), modules.to_vec()),
+                (modules[0].clone(), vec![modules[0].clone()]),
+                (modules[1].clone(), vec![modules[1].clone()]),
+            ] {
+                let answer = mcp.completed_tool_call(call_tool(
+                    id,
+                    "unica.search",
+                    json!({"query":"ExternalScopedNeedle", "scope":scope}),
+                ));
+                id += 1;
+                assert_eq!(answer["ok"], true, "git={git} {scope}: {answer:#}");
+                assert_eq!(answer["page"]["stoppedBy"], "complete", "{answer:#}");
+                assert_eq!(
+                    answer["data"]["fileCoverage"]["complete"], true,
+                    "{answer:#}"
+                );
+                assert_eq!(
+                    answer["data"]["totals"]["matches"],
+                    expected.len(),
+                    "{answer:#}"
+                );
+                let hits = answer["data"]["matches"].as_array().unwrap();
+                let actual = hits
+                    .iter()
+                    .map(|hit| {
+                        assert_eq!(hit["scope"], scope);
+                        assert_eq!(hit["line"], 1);
+                        let at = hit["at"].as_str().unwrap();
+                        assert_eq!(
+                            view_body_lines(&mut mcp, &mut id, at).get(&1).unwrap(),
+                            "// ExternalScopedNeedle"
+                        );
+                        hit_module(at).to_owned()
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(actual, expected.into_iter().collect(), "{answer:#}");
+            }
+        }
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_search_refuses_wrong_kind_missing_and_damaged_owner() {
+    for damage in ["none", "missing", "damaged"] {
+        let root = tempfile::tempdir().unwrap();
+        external_search_workspace(root.path());
+        match damage {
+            "missing" => std::fs::remove_file(root.path().join("erf/Sales.xml")).unwrap(),
+            "damaged" => std::fs::write(root.path().join("erf/Sales.xml"), "<broken>").unwrap(),
+            _ => {}
+        }
+        let scopes = if damage == "none" {
+            vec![
+                "erf:ExternalDataProcessor.Sales",
+                "epf:ExternalReport.Import",
+                "erf:Catalog.Sales",
+                "erf:ExternalDataProcessor",
+            ]
+        } else {
+            vec![
+                "erf:ExternalReport.Sales",
+                "erf:ExternalReport.Sales.Module.Object",
+            ]
+        };
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        for (index, scope) in scopes.into_iter().enumerate() {
+            let answer = mcp.completed_tool_call(call_tool(
+                index as u64 + 2,
+                "unica.search",
+                json!({"query":"ExternalScopedNeedle", "scope":scope}),
+            ));
+            assert_eq!(answer["ok"], false, "{damage} {scope}: {answer:#}");
+            assert!(answer["data"].get("matches").is_none(), "{answer:#}");
+            assert!(
+                !answer["diagnostics"].as_array().unwrap().is_empty(),
+                "{answer:#}"
+            );
+        }
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_scoped_search_never_follows_linked_descriptors_modules_or_subtrees() {
+    use unica_workspace::test_support::{
+        create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
+        FileLinkFixtureOutcome,
+    };
+    for link in ["descriptor", "module", "subtree"] {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        external_search_workspace(root.path());
+        let original = root.path().join(match link {
+            "descriptor" => "erf/Sales.xml",
+            "module" => "erf/Sales/Ext/ObjectModule.bsl",
+            _ => "erf/Sales",
+        });
+        let target = outside.path().join("linked");
+        if original.is_dir() {
+            copy_tree(&original, &target);
+            std::fs::remove_dir_all(&original).unwrap();
+        } else {
+            std::fs::copy(&original, &target).unwrap();
+            std::fs::remove_file(&original).unwrap();
+        }
+        let outcome = if link == "subtree" {
+            create_directory_link_fixture_for_test(&target, &original)
+        } else {
+            create_file_link_fixture_for_test(&target, &original)
+        }
+        .expect("external search link fixture creation must report its real OS error");
+        match outcome {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "external search containment requires file and directory link fixtures",
+                );
+                return;
+            }
+        }
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let answer = mcp.completed_tool_call(call_tool(2, "unica.search", json!({"query":"ExternalScopedNeedle", "scope":"erf:ExternalReport.Sales.Module.Object"})));
+        if answer["ok"] == true {
+            assert_eq!(answer["data"]["matches"], json!([]), "{link}: {answer:#}");
+        } else {
+            assert!(
+                answer["data"].get("matches").is_none(),
+                "{link}: {answer:#}"
+            );
+        }
+        assert!(
+            !answer
+                .to_string()
+                .contains(outside.path().to_str().unwrap()),
+            "{link}: {answer:#}"
+        );
+        mcp.finish();
+    }
+}
