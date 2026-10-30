@@ -3103,106 +3103,134 @@ mod tests {
         };
         use unica_source_contract::workspace::ResolvedSourceRoot;
 
-        let context = test_context("prepared-symbol-full-route");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules/SearchProbe/Ext")).unwrap();
-        fs::write(source_root.join(SNAPSHOT_MODULE), SNAPSHOT_BEFORE).unwrap();
-        fs::create_dir_all(&context.cache_root).unwrap();
-        let source = context.cache_root.join("symbol-session.rs");
-        let executable = unica_process::test_support::fixture_executable_path(
-            &context.cache_root,
-            "symbol-session",
-        );
-        let answer = json!({"status":"ok", "symbol":"DeadlineProbe", "kind":"procedure", "definitions":[],
+        for finite in [false, true] {
+            let context = test_context(&format!("prepared-symbol-full-route-{finite}"));
+            let source_root = context.workspace_root.join("src");
+            fs::create_dir_all(source_root.join("CommonModules/SearchProbe/Ext")).unwrap();
+            fs::write(source_root.join(SNAPSHOT_MODULE), SNAPSHOT_BEFORE).unwrap();
+            fs::create_dir_all(&context.cache_root).unwrap();
+            let source = context.cache_root.join("symbol-session.rs");
+            let executable = unica_process::test_support::fixture_executable_path(
+                &context.cache_root,
+                "symbol-session",
+            );
+            let answer = json!({"status":"ok", "symbol":"DeadlineProbe", "kind":"procedure", "definitions":[],
             "freshness":{"stale":false,"completeness":{"status":"complete"}}});
-        let reply = json!({"jsonrpc":"2.0", "id":2, "result":{"content":[{"type":"text","text":answer.to_string()}]}}).to_string();
-        let program = r#"use std::{env, fs::OpenOptions, io::{self, BufRead, Write}};
+            let reply = json!({"jsonrpc":"2.0", "id":2, "result":{"content":[{"type":"text","text":answer.to_string()}]}}).to_string();
+            let program = r#"use std::{env, fs::OpenOptions, io::{self, BufRead, Write}};
 fn main() {
     let pid_file = env::args().nth(2).unwrap();
     writeln!(OpenOptions::new().create(true).append(true).open(pid_file).unwrap(), "{}", std::process::id()).unwrap();
     for (index, line) in io::stdin().lock().lines().enumerate() {
         let line = line.unwrap();
         match index {
-            0 => println!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}"),
+            0 => { std::thread::sleep(std::time::Duration::from_millis(150)); println!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}"); },
             2 => { assert!(line.contains("symbol_info"), "{}", line); println!("{}", __REPLY__); }
             _ => {}
         }
         io::stdout().flush().unwrap();
     }
 }"#.replace("__REPLY__", &format!("{reply:?}"));
-        fs::write(&source, program).unwrap();
-        assert!(Command::new("rustc")
-            .arg(&source)
-            .arg("-o")
-            .arg(&executable)
-            .status()
-            .unwrap()
-            .success());
-        let helper = CanonicalInvalidationHelper::start(&context, &source_root, &executable);
-        let (session_observed, session_received) = mpsc::channel();
-        helper
-            .runtime
-            .test_set_bsl_session_deadline_hook(Some(Arc::new(move |remaining, elapsed| {
-                session_observed.send((remaining, elapsed)).unwrap();
-            })));
-        let (observed, received) = mpsc::channel();
-        helper
-            .runtime
-            .test_set_authenticated_request_hook(Some(Arc::new(move |_, request| {
-                if let ServiceRequestKind::BslMcpBegin { deadline, call, .. } = request {
-                    observed
-                        .send((deadline.clone(), call.tool_name.clone()))
+            fs::write(&source, program).unwrap();
+            assert!(Command::new("rustc")
+                .arg(&source)
+                .arg("-o")
+                .arg(&executable)
+                .status()
+                .unwrap()
+                .success());
+            let helper = CanonicalInvalidationHelper::start(&context, &source_root, &executable);
+            let dispatch_observed_at = Arc::new(Mutex::new(None));
+            if finite {
+                let dispatch_observed_at = dispatch_observed_at.clone();
+                helper
+                    .runtime
+                    .test_set_prepared_dispatch_hook(Some(Arc::new(move || {
+                        *dispatch_observed_at.lock().unwrap() = Some(Instant::now());
+                        // Budget consumption before System execution, not a readiness wait.
+                        thread::sleep(Duration::from_millis(100));
+                    })));
+            }
+            let (session_observed, session_received) = mpsc::channel();
+            helper
+                .runtime
+                .test_set_bsl_session_deadline_hook(Some(Arc::new(move |remaining, elapsed| {
+                    session_observed
+                        .send((remaining, elapsed, Instant::now()))
                         .unwrap();
-                }
-            })));
-        let client = WorkspaceBslToolClient {
-            environment: analysis_composition::service_environment,
-        };
-        let symbols = BslAnalyzerSymbols::new(
-            &client,
-            CodeIntelligenceContext::new(
-                context.clone(),
-                ResolvedSourceRoot {
-                    source_set: Some("main".into()),
-                    path: source_root,
-                },
-                Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
-                    &context.workspace_root,
-                )),
-            ),
-        );
-        let cancellation = CancellationToken::new();
-        let symbol = symbols
-            .symbol(
-                &SymbolQuery::At {
-                    path: SNAPSHOT_MODULE.into(),
-                    position: SymbolPosition { line: 0, column: 1 },
-                },
-                &SymbolRequestContext {
-                    deadline: ProviderDeadline::no_deadline(),
-                    cancellation: &cancellation,
-                },
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(symbol.name, "DeadlineProbe");
-        assert_eq!(
-            session_received
+                })));
+            let (observed, received) = mpsc::channel();
+            helper
+                .runtime
+                .test_set_authenticated_request_hook(Some(Arc::new(move |_, request| {
+                    if let ServiceRequestKind::BslMcpBegin { deadline, call, .. } = request {
+                        observed
+                            .send((deadline.clone(), call.tool_name.clone()))
+                            .unwrap();
+                    }
+                })));
+            let client = WorkspaceBslToolClient {
+                environment: analysis_composition::service_environment,
+            };
+            let symbols = BslAnalyzerSymbols::new(
+                &client,
+                CodeIntelligenceContext::new(
+                    context.clone(),
+                    ResolvedSourceRoot {
+                        source_set: Some("main".into()),
+                        path: source_root,
+                    },
+                    Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                        &context.workspace_root,
+                    )),
+                ),
+            );
+            let cancellation = CancellationToken::new();
+            let symbol = symbols
+                .symbol(
+                    &SymbolQuery::At {
+                        path: SNAPSHOT_MODULE.into(),
+                        position: SymbolPosition { line: 0, column: 1 },
+                    },
+                    &SymbolRequestContext {
+                        deadline: if finite {
+                            ProviderDeadline::from_budget(Duration::from_secs(5))
+                        } else {
+                            ProviderDeadline::no_deadline()
+                        },
+                        cancellation: &cancellation,
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(symbol.name, "DeadlineProbe");
+            let (remaining, elapsed, session_observed_at) = session_received
                 .recv_timeout(Duration::from_secs(3))
-                .unwrap(),
-            (None, false),
-            "the actual session deadline port must retain absence, not a finite replacement"
-        );
-        let (deadline, tool) = received.recv_timeout(Duration::from_secs(3)).unwrap();
-        assert!(matches!(deadline, BslOperationDeadline::Absent {}));
-        assert_eq!(tool, "symbol_info");
-        assert_eq!(
-            helper.pids().len(),
-            1,
-            "one real MCP child handled the symbol request"
-        );
-        helper.stop_and_verify();
-        cleanup(&context);
+                .unwrap();
+            assert!(!elapsed);
+            if finite {
+                let remaining = remaining.expect("finite must not become absence");
+                let dispatch_observed_at = dispatch_observed_at.lock().unwrap().unwrap();
+                let consumed = session_observed_at.saturating_duration_since(dispatch_observed_at);
+                let upper = Duration::from_secs(5)
+                    .saturating_sub(consumed)
+                    .saturating_add(Duration::from_millis(5));
+                assert!(remaining > Duration::ZERO && remaining <= upper,
+                    "same receiver anchor must account for all actual dispatch/initialization delay: remaining={remaining:?}, consumed={consumed:?}");
+            } else {
+                assert_eq!(remaining, None, "the actual session deadline port must retain absence, not a finite replacement");
+            }
+            let (deadline, tool) = received.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert_eq!(matches!(deadline, BslOperationDeadline::Absent {}), !finite);
+            assert_eq!(tool, "symbol_info");
+            assert_eq!(
+                helper.pids().len(),
+                1,
+                "one real MCP child handled the symbol request"
+            );
+            helper.stop_and_verify();
+            cleanup(&context);
+        }
     }
 
     #[test]
@@ -3608,84 +3636,647 @@ fn main() {
     }
 
     #[test]
-    fn prepared_bsl_sender_rejects_success_before_start() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let mut record = connector_test_record();
-        record.port = listener.local_addr().unwrap().port();
-        let peer = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut begin = String::new();
-            reader.read_line(&mut begin).unwrap();
-            let request: ServiceRequest = serde_json::from_str(&begin).unwrap();
-            assert!(matches!(
-                request.kind,
-                ServiceRequestKind::BslMcpBegin { .. }
-            ));
-            serde_json::to_writer(
-                &mut stream,
-                &PreparedBslReply::Finished {
-                    response: Box::new(ServiceResponse {
-                        ok: true,
-                        ..ServiceResponse::default()
-                    }),
-                },
-            )
-            .unwrap();
-            writeln!(stream).unwrap();
-            stream.flush().unwrap();
-        });
-        let result = SYSTEM_SERVICE_CONNECTOR.send_operation_before(
-            &record,
-            connector_test_request(prepared_begin("not-executed")),
-            &CancellationToken::new(),
-            ProviderDeadline::no_deadline(),
-        );
-        peer.join().unwrap();
-        assert!(
-            result.is_err(),
-            "a peer fabricated provider success without Start"
-        );
+    fn prepared_bsl_manager_retains_original_finite_cutoff_through_reuse_spawn_and_result() {
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        struct PreparedConnector {
+            original: ProviderDeadline,
+            late: bool,
+            exhaust: bool,
+            expected_remaining: Duration,
+            calls: AtomicUsize,
+        }
+        impl ServiceConnector for PreparedConnector {
+            fn send(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("typed operations must not fall back to legacy durations")
+            }
+            fn send_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("typed operations must retain their original provider cutoff")
+            }
+            fn send_operation_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                request: ServiceRequest,
+                _: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                assert_eq!(deadline, self.original);
+                match request.kind {
+                    ServiceRequestKind::Ping => {
+                        ADVANCE.store(if self.exhaust { 11 } else { 3 }, Ordering::Release);
+                        Ok(ServiceResponse {
+                            ok: true,
+                            status: Some("alive".into()),
+                            ..ServiceResponse::default()
+                        })
+                    }
+                    ServiceRequestKind::BslMcpBegin {
+                        operation_id,
+                        deadline: offered,
+                        ..
+                    } => {
+                        Uuid::parse_str(&operation_id).unwrap();
+                        self.calls.fetch_add(1, Ordering::AcqRel);
+                        assert_eq!(offered.remaining().unwrap(), Some(self.expected_remaining));
+                        assert_eq!(deadline.remaining(), Some(self.expected_remaining));
+                        if self.late {
+                            ADVANCE.store(11, Ordering::Release);
+                        }
+                        Ok(ServiceResponse {
+                            ok: true,
+                            result_text: Some("actual-result".into()),
+                            ..ServiceResponse::default()
+                        })
+                    }
+                    other => panic!("unexpected typed request: {other:?}"),
+                }
+            }
+        }
+        struct PreparedSpawner {
+            original: ProviderDeadline,
+            exhaust: bool,
+            calls: AtomicUsize,
+        }
+        impl ServiceSpawner for PreparedSpawner {
+            fn spawn(
+                &self,
+                _: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                _: &str,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                unreachable!("typed startup must not rearm a duration")
+            }
+            fn spawn_operation_before(
+                &self,
+                identity: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                token: &str,
+                _: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                assert_eq!(deadline, self.original);
+                self.calls.fetch_add(1, Ordering::AcqRel);
+                ADVANCE.store(if self.exhaust { 11 } else { 2 }, Ordering::Release);
+                let mut record = test_record(identity, 34567, CoreIdentity::production().as_str());
+                record.token = token.into();
+                Ok(record)
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        for reuse in [false, true] {
+            for (late, exhaust) in [(false, false), (true, false), (false, true)] {
+                ADVANCE.store(0, Ordering::Release);
+                let context =
+                    test_context(&format!("prepared-manager-cutoff-{reuse}-{late}-{exhaust}"));
+                let root = context.workspace_root.join("src");
+                let identity = WorkspaceServiceIdentity::new(&context, &root).unwrap();
+                if reuse {
+                    write_record(
+                        &identity,
+                        test_record(&identity, 34567, CoreIdentity::production().as_str()),
+                    );
+                }
+                let original = ProviderDeadline::with_clock(start + Duration::from_secs(10), now);
+                let connector = PreparedConnector {
+                    original,
+                    late,
+                    exhaust,
+                    expected_remaining: Duration::from_secs(if reuse { 7 } else { 8 }),
+                    calls: AtomicUsize::new(0),
+                };
+                let spawner = PreparedSpawner {
+                    original,
+                    exhaust,
+                    calls: AtomicUsize::new(0),
+                };
+                let manager = WorkspaceServiceManager::with_io(
+                    &connector,
+                    &spawner,
+                    analysis_composition::service_environment(),
+                );
+                let result = manager.call_bsl_mcp_before(
+                    &context,
+                    &root,
+                    PreparedBslCall {
+                        tool_name: "symbol_info".into(),
+                        tool_args: json!({}),
+                        yields: false,
+                    },
+                    &CancellationToken::new(),
+                    original,
+                );
+                if late || exhaust {
+                    assert!(result.unwrap_err().starts_with("timeout:"));
+                } else {
+                    assert_eq!(result.unwrap().result_text, "actual-result");
+                }
+                assert_eq!(
+                    connector.calls.load(Ordering::Acquire),
+                    usize::from(!exhaust)
+                );
+                assert_eq!(spawner.calls.load(Ordering::Acquire), usize::from(!reuse));
+                cleanup(&context);
+            }
+        }
     }
 
     #[test]
-    fn prepared_bsl_late_stop_does_not_replace_a_factual_provider_failure() {
-        let server = WorkspaceAdmissionTestServer::start("prepared-factual-failure");
-        let id = "factual-error-after-stop";
-        let mut work = open_test_request(&server.record, prepared_begin(id));
-        assert!(matches!(
-            read_prepared_reply(&mut work),
-            PreparedBslReply::Admitted { .. }
-        ));
-        write_prepared_phase(
-            &mut work,
-            &server.record,
-            ServiceRequestKind::BslMcpStart {
-                operation_id: id.into(),
-                deadline: BslOperationDeadline::Absent {},
-            },
+    fn prepared_bsl_admitted_delay_shrinks_start_and_original_cutoff_rejects_late_result() {
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        fn accept(listener: &TcpListener) -> TcpStream {
+            let fuse = Instant::now() + Duration::from_secs(3);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(3)))
+                            .unwrap();
+                        return stream;
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < fuse,
+                            "expected prepared connection was not opened"
+                        );
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("accept prepared peer: {error}"),
+                }
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        for (expired_admission, late_result) in [(false, false), (true, false), (false, true)] {
+            ADVANCE.store(0, Ordering::Release);
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let mut record = connector_test_record();
+            record.port = listener.local_addr().unwrap().port();
+            thread::scope(|scope| {
+                let peer = scope.spawn(move || {
+                    let mut stream = accept(&listener);
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let begin: ServiceRequest = serde_json::from_str(&line).unwrap();
+                    let ServiceRequestKind::BslMcpBegin { operation_id, .. } = begin.kind else { panic!("not Begin") };
+                    serde_json::to_writer(&mut stream, &PreparedBslReply::Admitted { operation_id: operation_id.clone() }).unwrap();
+                    writeln!(stream).unwrap();
+                    stream.flush().unwrap();
+                    line.clear();
+                    let count = match reader.read_line(&mut line) {
+                        Ok(count) => count,
+                        Err(error) if expired_admission && error.kind() == ErrorKind::ConnectionReset => 0,
+                        Err(error) => panic!("read prepared phase: {error}"),
+                    };
+                    if expired_admission {
+                        if count != 0 {
+                            let stop: ServiceRequest = serde_json::from_str(&line).unwrap();
+                            assert!(matches!(stop.kind, ServiceRequestKind::BslMcpStop { operation_id: id, cause: BslStopCause::Expire } if id == operation_id));
+                        }
+                        return;
+                    }
+                    let start_request: ServiceRequest = serde_json::from_str(&line).unwrap();
+                    let ServiceRequestKind::BslMcpStart { operation_id: id, deadline } = start_request.kind else { panic!("not Start") };
+                    assert_eq!(id, operation_id);
+                    assert_eq!(deadline.remaining().unwrap(), Some(Duration::from_secs(7)), "admission latency must consume the original budget");
+                    serde_json::to_writer(&mut stream, &PreparedBslReply::Finished { response: Box::new(ServiceResponse { ok: true, result_text: Some("observed-provider-result".into()), ..ServiceResponse::default() }) }).unwrap();
+                    writeln!(stream).unwrap();
+                    stream.flush().unwrap();
+                    if late_result {
+                        let mut control = BufReader::new(accept(&listener));
+                        line.clear();
+                        control.read_line(&mut line).unwrap();
+                        let stop: ServiceRequest = serde_json::from_str(&line).unwrap();
+                        assert!(matches!(stop.kind, ServiceRequestKind::Expire { operation_id: id } if id == operation_id));
+                    }
+                });
+                let original = ProviderDeadline::with_clock(start + Duration::from_secs(10), now);
+                let mut request = prepared_begin("prepared-delayed-admission");
+                if let ServiceRequestKind::BslMcpBegin { deadline, .. } = &mut request {
+                    *deadline = BslOperationDeadline::from_remaining(original.remaining());
+                }
+                let trace = Arc::new(Mutex::new(Vec::new()));
+                let transport = PreparedTestWireIo {
+                    trace: trace.clone(),
+                    disconnect_after_admitted: None,
+                    after_reply: Some(Arc::new(move |reply| {
+                        // Advance only after the actual bytes were delivered, before sender admission.
+                        if reply == 1 {
+                            ADVANCE
+                                .store(if expired_admission { 11 } else { 3 }, Ordering::Release);
+                        } else if late_result {
+                            ADVANCE.store(11, Ordering::Release);
+                        }
+                    })),
+                };
+                let result = SYSTEM_SERVICE_CONNECTOR.send_prepared_with(
+                    &record,
+                    connector_test_request(request),
+                    &CancellationToken::new(),
+                    original,
+                    &transport,
+                    &SystemClock::start(),
+                );
+                peer.join().unwrap();
+                let bytes = trace.lock().unwrap().clone();
+                let sent: Vec<ServiceRequest> = bytes
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| serde_json::from_slice(line).unwrap())
+                    .collect();
+                assert_eq!(
+                    sent.iter()
+                        .filter(|request| matches!(
+                            request.kind,
+                            ServiceRequestKind::BslMcpStart { .. }
+                        ))
+                        .count(),
+                    usize::from(!expired_admission),
+                    "expired admission must never submit Start, even when peer observes TCP reset"
+                );
+
+                if expired_admission || late_result {
+                    assert!(result.unwrap_err().starts_with("timeout:"));
+                } else {
+                    assert_eq!(
+                        result.unwrap().result_text.as_deref(),
+                        Some("observed-provider-result")
+                    );
+                }
+            });
+        }
+    }
+
+    type PreparedReplyReadObserver = dyn Fn(usize) + Send + Sync;
+
+    struct PreparedTestWireIo {
+        trace: Arc<Mutex<Vec<u8>>>,
+        disconnect_after_admitted: Option<Arc<AdmissionTestExecutor>>,
+        after_reply: Option<Arc<PreparedReplyReadObserver>>,
+    }
+    struct PreparedTestWireStream {
+        stream: TcpStream,
+        admitted: bool,
+        replies: usize,
+        trace: Arc<Mutex<Vec<u8>>>,
+        disconnect_after_admitted: Option<Arc<AdmissionTestExecutor>>,
+        after_reply: Option<Arc<PreparedReplyReadObserver>>,
+    }
+    impl Read for PreparedTestWireStream {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if self.admitted {
+                if let Some(executor) = &self.disconnect_after_admitted {
+                    executor.wait_started(1);
+                    self.stream.shutdown(std::net::Shutdown::Both)?;
+                    return Ok(0);
+                }
+            }
+            let count = self.stream.read(bytes)?;
+            let complete = bytes[..count].iter().filter(|byte| **byte == b'\n').count();
+            self.admitted |= complete != 0;
+            if complete != 0 {
+                self.replies += complete;
+                if let Some(observe) = &self.after_reply {
+                    observe(self.replies);
+                }
+            }
+            Ok(count)
+        }
+    }
+    impl Write for PreparedTestWireStream {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let written = self.stream.write(&bytes[..bytes.len().min(7)])?;
+            self.trace
+                .lock()
+                .unwrap()
+                .extend_from_slice(&bytes[..written]);
+            Ok(written)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.stream.flush()
+        }
+    }
+    impl ConnectorStream for PreparedTestWireStream {
+        fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+            self.stream.set_read_timeout(timeout)
+        }
+        fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+            self.stream.set_write_timeout(timeout)
+        }
+    }
+    impl ConnectorIo for PreparedTestWireIo {
+        fn connect(&self, port: u16, timeout: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+            let stream = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), timeout)?;
+            Ok(Box::new(PreparedTestWireStream {
+                stream,
+                admitted: false,
+                replies: 0,
+                after_reply: self.after_reply.clone(),
+                trace: self.trace.clone(),
+                disconnect_after_admitted: self.disconnect_after_admitted.clone(),
+            }))
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_ambiguous_accepted_start_is_not_replayed_or_implicitly_cancelled() {
+        struct AmbiguousConnector {
+            executor: Arc<AdmissionTestExecutor>,
+            trace: Arc<Mutex<Vec<u8>>>,
+            attempts: AtomicUsize,
+        }
+        impl ServiceConnector for AmbiguousConnector {
+            fn send(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("no legacy fallback")
+            }
+            fn send_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("no legacy fallback")
+            }
+            fn send_operation_before(
+                &self,
+                record: &WorkspaceServiceRecord,
+                request: ServiceRequest,
+                cancellation: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                if matches!(request.kind, ServiceRequestKind::BslMcpBegin { .. }) {
+                    assert_eq!(
+                        self.attempts.fetch_add(1, Ordering::AcqRel),
+                        0,
+                        "ambiguous accepted Start must not be replayed"
+                    );
+                    SYSTEM_SERVICE_CONNECTOR.send_prepared_with(
+                        record,
+                        request,
+                        cancellation,
+                        deadline,
+                        &PreparedTestWireIo {
+                            trace: self.trace.clone(),
+                            disconnect_after_admitted: Some(self.executor.clone()),
+                            after_reply: None,
+                        },
+                        &SystemClock::start(),
+                    )
+                } else {
+                    SYSTEM_SERVICE_CONNECTOR.send_operation_before(
+                        record,
+                        request,
+                        cancellation,
+                        deadline,
+                    )
+                }
+            }
+        }
+        let server = WorkspaceAdmissionTestServer::start("prepared-ambiguous-accepted-start");
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let connector = AmbiguousConnector {
+            executor: server.executor.clone(),
+            trace: trace.clone(),
+            attempts: AtomicUsize::new(0),
+        };
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(
+            &connector,
+            &spawner,
+            analysis_composition::service_environment(),
         );
-        server.executor.wait_started(1);
+        let result = manager.call_bsl_mcp_before(
+            &server.context,
+            &server.context.workspace_root.join("src"),
+            PreparedBslCall {
+                tool_name: "diagnostics".into(),
+                tool_args: json!({}),
+                yields: false,
+            },
+            &CancellationToken::new(),
+            ProviderDeadline::no_deadline(),
+        );
+        assert!(result
+            .unwrap_err()
+            .contains("disconnected before responding"));
+        let bytes = trace.lock().unwrap().clone();
+        let phases: Vec<ServiceRequest> = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(phases.len(), 2);
+        let ServiceRequestKind::BslMcpBegin {
+            operation_id: id, ..
+        } = &phases[0].kind
+        else {
+            panic!("not Begin")
+        };
+        assert!(
+            matches!(&phases[1].kind, ServiceRequestKind::BslMcpStart { operation_id, .. } if operation_id == id)
+        );
+        Uuid::parse_str(id).unwrap();
+        assert_eq!(
+            server.executor.started.lock().unwrap().as_slice(),
+            &[id.clone()]
+        );
+        assert!(
+            !server.token(id).is_cancelled(),
+            "an ambiguous transport outcome must not invent explicit cancellation"
+        );
+        assert_eq!(connector.attempts.load(Ordering::Acquire), 1);
         assert!(
             send_test_request(
                 &server.record,
                 ServiceRequestKind::Expire {
-                    operation_id: id.into()
+                    operation_id: id.clone()
                 }
             )
             .ok
         );
-        let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
-            panic!("missing failure")
-        };
-        assert!(!response.ok);
-        assert_eq!(
-            response.error.as_deref(),
-            Some("controlled provider protocol failure")
-        );
+        wait_operation_retired(&server.runtime, id);
+    }
+
+    #[test]
+    fn prepared_bsl_sender_rejects_success_before_start() {
+        for wrong_admitted in [false, true] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let mut record = connector_test_record();
+            record.port = listener.local_addr().unwrap().port();
+            thread::scope(|scope| {
+                let peer = scope.spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut begin = String::new();
+                    reader.read_line(&mut begin).unwrap();
+                    let request: ServiceRequest = serde_json::from_str(&begin).unwrap();
+                    assert!(matches!(
+                        request.kind,
+                        ServiceRequestKind::BslMcpBegin { .. }
+                    ));
+                    let reply = if wrong_admitted {
+                        PreparedBslReply::Admitted {
+                            operation_id: "foreign-admission".into(),
+                        }
+                    } else {
+                        PreparedBslReply::Finished {
+                            response: Box::new(ServiceResponse {
+                                ok: true,
+                                ..ServiceResponse::default()
+                            }),
+                        }
+                    };
+                    serde_json::to_writer(&mut stream, &reply).unwrap();
+                    writeln!(stream).unwrap();
+                    stream.flush().unwrap();
+                    let mut phase = String::new();
+                    assert_eq!(
+                        reader.read_line(&mut phase).unwrap(),
+                        0,
+                        "a refused admission must never submit Start: {phase}"
+                    );
+                });
+                let result = SYSTEM_SERVICE_CONNECTOR.send_operation_before(
+                    &record,
+                    connector_test_request(prepared_begin("not-executed")),
+                    &CancellationToken::new(),
+                    ProviderDeadline::no_deadline(),
+                );
+                peer.join().unwrap();
+                assert!(
+                    result.is_err(),
+                    "fabricated success or foreign admission was accepted"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_phase_uuid_cannot_dispatch_or_stop_a_held_neighbor() {
+        for stop in [false, true] {
+            let mut server = WorkspaceAdmissionTestServer::start("prepared-foreign-phase");
+            let _neighbor_work = server.work("held-neighbor");
+            server.executor.wait_started(1);
+            let neighbor = server.token("held-neighbor");
+            let mut work =
+                open_test_request(&server.record, prepared_begin("pending-own-admission"));
+            assert!(
+                matches!(read_prepared_reply(&mut work), PreparedBslReply::Admitted { operation_id } if operation_id == "pending-own-admission")
+            );
+            let phase = if stop {
+                ServiceRequestKind::BslMcpStop {
+                    operation_id: "held-neighbor".into(),
+                    cause: BslStopCause::Cancel,
+                }
+            } else {
+                ServiceRequestKind::BslMcpStart {
+                    operation_id: "held-neighbor".into(),
+                    deadline: BslOperationDeadline::Absent {},
+                }
+            };
+            write_prepared_phase(&mut work, &server.record, phase);
+            let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
+                panic!("missing foreign-phase refusal")
+            };
+            assert!(!response.ok);
+            wait_operation_retired(&server.runtime, "pending-own-admission");
+            assert!(!neighbor.is_cancelled());
+            assert!(server
+                .runtime
+                .test_operation_ids()
+                .iter()
+                .any(|id| id == "held-neighbor"));
+            assert_eq!(
+                server.executor.started.lock().unwrap().as_slice(),
+                &["held-neighbor"]
+            );
+            assert!(
+                send_test_request(
+                    &server.record,
+                    ServiceRequestKind::Expire {
+                        operation_id: "held-neighbor".into()
+                    }
+                )
+                .ok
+            );
+            wait_operation_retired(&server.runtime, "held-neighbor");
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_late_stop_does_not_replace_a_factual_provider_failure() {
+        for id in ["factual-error-after-stop", "late-success-after-stop"] {
+            let server = WorkspaceAdmissionTestServer::start(id);
+            let mut work = open_test_request(&server.record, prepared_begin(id));
+            assert!(matches!(
+                read_prepared_reply(&mut work),
+                PreparedBslReply::Admitted { .. }
+            ));
+            write_prepared_phase(
+                &mut work,
+                &server.record,
+                ServiceRequestKind::BslMcpStart {
+                    operation_id: id.into(),
+                    deadline: BslOperationDeadline::Absent {},
+                },
+            );
+            server.executor.wait_started(1);
+            assert!(
+                send_test_request(
+                    &server.record,
+                    ServiceRequestKind::Expire {
+                        operation_id: id.into()
+                    }
+                )
+                .ok
+            );
+            let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
+                panic!("missing failure")
+            };
+            if id.starts_with("late-success") {
+                assert!(response.ok);
+                assert_eq!(response.result_text.as_deref(), Some("actual-late-success"));
+                assert!(response.error.is_none());
+            } else {
+                assert!(!response.ok);
+                assert_eq!(
+                    response.error.as_deref(),
+                    Some("controlled provider protocol failure")
+                );
+            }
+        }
     }
 
     #[test]
@@ -3782,6 +4373,13 @@ fn main() {
                     .changed
                     .wait_timeout(started, Duration::from_millis(10))
                     .unwrap();
+            }
+            if id.starts_with("late-success") {
+                return ServiceResponse {
+                    ok: true,
+                    result_text: Some("actual-late-success".into()),
+                    ..ServiceResponse::default()
+                };
             }
             if id.starts_with("factual-error") {
                 return unica_analysis_services::test_support::error_response(
