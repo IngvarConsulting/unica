@@ -1,5 +1,6 @@
 use super::super::protocol::InvocationRequest;
 use super::super::v13_workspace_bootstrap::project_config_present;
+use crate::application::v13::view::ViewReadAuthority;
 use crate::domain::apply::ApplyRequest;
 use unica_analysis_services::provider_host::{LongWorkFailure, ProviderHostKey, ProviderHostOwner};
 use unica_execution::invocation::InvocationResponseDeadline;
@@ -39,6 +40,34 @@ const CANONICAL_SEARCH_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 const CANONICAL_SEARCH_MAX_DEPTH: usize = 32;
 const CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS: usize = 32;
 
+/// Invocation-local placement evidence. This value is not a read capability;
+/// the actor's retained source and its reader still own every observation.
+#[derive(Debug, Clone)]
+pub(in crate::infrastructure::daemon) struct ExternalSearchBinding {
+    pub binding: unica_source_designer::external_artifact::ExternalArtifactBinding,
+    pub stamp: unica_source_contract::read::FileStamp,
+}
+
+impl ExternalSearchBinding {
+    pub(in crate::infrastructure::daemon) fn validate(
+        &self,
+        source: &ActorReadSourceCapability,
+    ) -> Result<(), ViewError> {
+        let stamp = source
+            .retained_root()
+            .open_relative_regular_nofollow(self.binding.descriptor())
+            .and_then(|file| file.stamp())
+            .map_err(|error| ViewError::new(RefusalCode::ConcurrentChange, error.to_string()))?;
+        if stamp != self.stamp {
+            return Err(ViewError::new(
+                RefusalCode::ConcurrentChange,
+                "external owner descriptor changed during search",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Proves that the owner of a module address derived from a hit path is
 /// registered in this source set, so a hit names only a module `view` admits.
 /// Configuration and extension owners are checked against the source set's own
@@ -47,26 +76,107 @@ const CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS: usize = 32;
 /// is decided once per scan. An extension object that is neither its own nor
 /// borrowed is not registered there and stays unproven.
 pub(in crate::infrastructure::daemon) struct SearchHitOwners<'a> {
+    source: &'a ActorReadSourceCapability,
     root: Arc<SourceDirectory>,
     source_kind: SourceSetKind,
+    // The source-set/root/revision component of this key is the fixed actor
+    // capability above; each source entry/page creates a fresh proof cache.
+    external: std::collections::BTreeMap<std::path::PathBuf, ExternalSearchBinding>,
     cache: &'a RegistrationCache,
     index: Option<Option<Arc<RegistrationIndex>>>,
     owners: std::collections::BTreeMap<(&'static str, String), bool>,
 }
 
 impl<'a> SearchHitOwners<'a> {
-    fn new(
-        root: Arc<SourceDirectory>,
-        source_kind: SourceSetKind,
-        cache: &'a RegistrationCache,
-    ) -> Self {
+    fn new(source: &'a ActorReadSourceCapability) -> Self {
         Self {
-            root,
-            source_kind,
-            cache,
+            source,
+            root: source.binding.retained_root(),
+            source_kind: source.binding.source_kind(),
+            cache: &source.registration_cache,
             index: None,
             owners: std::collections::BTreeMap::new(),
+            external: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Reuse the point locator's owner/child-registration proof. No full name
+    /// directory or second XML-name resolver is built by text search.
+    fn external_module(
+        &mut self,
+        relative: &std::path::Path,
+        admitted: Option<&unica_source_designer::external_artifact::ExternalArtifactBinding>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<ExternalSearchBinding>, ViewError> {
+        use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
+        use unica_source_designer::external_artifact::ExternalArtifactBinding;
+        if admitted.is_some_and(|binding| binding.logical_path(relative).is_none()) {
+            return Ok(None);
+        }
+        let layout = [LayoutFindSource::new(
+            self.source.source_set_name(),
+            self.source_kind,
+            &self.root,
+        )];
+        let entry = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &layout,
+                &relative.to_string_lossy(),
+                self.source.deadline(),
+                cancellation,
+            )
+            .map_err(|error| match error.detail() {
+                Some(detail) => ViewError::detailed(detail, error.to_string()),
+                None => ViewError::new(error.code(), error.to_string()),
+            })?;
+        let Some(entry) = entry.filter(|entry| entry.kind() == "Module") else {
+            return Ok(None);
+        };
+        let at = QualifiedAddress::parse(entry.at())
+            .map_err(|error| ViewError::new(RefusalCode::InvalidSource, error.to_string()))?;
+        let Some(name) = at.segments().first().and_then(|part| part.name()) else {
+            return Ok(None);
+        };
+        let Some(descriptor) = entry.owner_descriptor() else {
+            return Ok(None);
+        };
+        let binding =
+            ExternalArtifactBinding::new(self.source_kind, name, std::path::Path::new(descriptor))
+                .map_err(|error| ViewError::new(RefusalCode::InvalidSource, error))?;
+        if admitted.is_some_and(|admitted| *admitted != binding) {
+            return Err(ViewError::new(
+                RefusalCode::ConcurrentChange,
+                "external search placement changed after admission",
+            ));
+        }
+        if let Some(proved) = self.external.get(binding.descriptor()) {
+            if proved.binding != binding {
+                return Err(ViewError::new(
+                    RefusalCode::ConcurrentChange,
+                    "external owner identity changed during search",
+                ));
+            }
+            proved.validate(self.source)?;
+            return Ok(Some(proved.clone()));
+        }
+        let stamp = self
+            .root
+            .open_relative_regular_nofollow(binding.descriptor())
+            .and_then(|file| file.stamp())
+            .map_err(|error| ViewError::new(RefusalCode::InvalidSource, error.to_string()))?;
+        let authority = self
+            .source
+            .logical_view_read_authority(cancellation)
+            .map_err(|error| ViewError::new(RefusalCode::InvalidSource, error))?
+            .with_external_point_binding(binding.clone());
+        let owner = at.prefix(1);
+        let snapshot = authority.snapshot(&owner)?;
+        authority.validate_search_scope_owner(&owner, &snapshot)?;
+        let proved = ExternalSearchBinding { binding, stamp };
+        proved.validate(self.source)?;
+        self.external
+            .insert(proved.binding.descriptor().to_path_buf(), proved.clone());
+        Ok(Some(proved))
     }
 
     /// `Err` only for cancellation or an elapsed deadline; an unreadable
@@ -119,11 +229,9 @@ impl<'a> SearchHitOwners<'a> {
                 None => false,
             }
         } else {
-            // An external processor or report is described by its root
-            // descriptor beside its directory.
-            self.root
-                .open_relative_regular_nofollow(std::path::Path::new(&format!("{name}.xml")))
-                .is_ok()
+            // External paths require the shared typed binding and point proof;
+            // a file named after the logical owner is not authority.
+            false
         };
         self.owners.insert(key, proved);
         Ok(proved)
@@ -254,11 +362,7 @@ impl ActorReadSourceCapability {
 
     // The owner proofs of one text-search traversal of this source set.
     pub(in crate::infrastructure::daemon) fn search_hit_owners(&self) -> SearchHitOwners<'_> {
-        SearchHitOwners::new(
-            self.binding.retained_root(),
-            self.binding.source_kind(),
-            &self.registration_cache,
-        )
+        SearchHitOwners::new(self)
     }
 }
 

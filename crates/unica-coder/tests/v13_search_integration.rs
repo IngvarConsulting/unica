@@ -2501,6 +2501,197 @@ fn literal_search_pages_past_two_hundred_matches(git: bool) {
     mcp.finish();
 }
 
+fn external_alias_search_workspace(workspace: &std::path::Path, git: bool) {
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-external-alias"),
+        workspace,
+    );
+    for (set, payload) in [("erf", "report-source"), ("epf", "source")] {
+        for relative in ["Ext/ObjectModule.bsl", "Forms/Main/Ext/Form/Module.bsl"] {
+            std::fs::write(workspace.join(set).join(payload).join(relative),
+                "Функция AliasProbe() Экспорт\n // AliasSearchNeedle first\n // AliasSearchNeedle second\nКонецФункции\n").unwrap();
+        }
+    }
+    let xml = std::fs::read_to_string(workspace.join("erf/report-source.xml")).unwrap();
+    std::fs::write(
+        workspace.join("erf/foreign.xml"),
+        xml.replace("SyntheticReport", "ForeignReport"),
+    )
+    .unwrap();
+    copy_tree(
+        &workspace.join("erf/report-source"),
+        &workspace.join("erf/foreign"),
+    );
+    if git {
+        for args in [["init", "-q"].as_slice(), ["add", "."].as_slice()] {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(workspace)
+                .status()
+                .unwrap()
+                .success());
+        }
+    }
+}
+
+#[test]
+fn external_alias_search_preserves_owner_module_readback_and_physical_pages() {
+    for git in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        external_alias_search_workspace(root.path(), git);
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let mut id = 2;
+        for (owner, payload) in [
+            ("erf:ExternalReport.SyntheticReport", "report-source"),
+            ("epf:ExternalDataProcessor.SyntheticProcessor", "source"),
+        ] {
+            let viewed = mcp.completed_tool_call(call_tool(id, "unica.view", json!({"at":owner})));
+            id += 1;
+            assert_eq!(viewed["ok"], true, "{viewed:#}");
+            for suffix in ["", ".Module.Object", ".Form.Main.Module.Form"] {
+                let scope = format!("{owner}{suffix}");
+                let question = json!({"query":"AliasSearchNeedle", "scope":scope,"limit":1});
+                let mut arguments = question.clone();
+                let mut hits = std::collections::BTreeSet::new();
+                let mut pages = 0;
+                loop {
+                    let page = mcp.completed_tool_call(call_tool(id, "unica.search", arguments));
+                    id += 1;
+                    assert_eq!(page["ok"], true, "git={git} {scope}: {page:#}");
+                    for hit in page["data"]["matches"].as_array().unwrap() {
+                        let at = hit["at"]
+                            .as_str()
+                            .expect("a proven alias hit is addressable");
+                        assert!(at.starts_with(owner), "{hit:#}");
+                        assert!(at.contains(".Method.AliasProbe.Body#L"), "{hit:#}");
+                        let line = hit["line"].as_u64().unwrap();
+                        assert!(view_body_lines(&mut mcp, &mut id, at)[&line]
+                            .contains("AliasSearchNeedle"));
+                        let resolved = mcp.completed_tool_call(call_tool(
+                            id,
+                            "unica.resolve",
+                            json!({"at":hit_module(at)}),
+                        ));
+                        id += 1;
+                        assert_eq!(resolved["ok"], true, "{resolved:#}");
+                        let physical = if hit_module(at).contains(".Form.Main.") {
+                            format!("{payload}/Forms/Main/Ext/Form/Module.bsl")
+                        } else {
+                            format!("{payload}/Ext/ObjectModule.bsl")
+                        };
+                        assert_eq!(resolved["data"]["path"], physical, "{resolved:#}");
+                        assert!(hits.insert((at.to_owned(), line)), "duplicate hit: {hit:#}");
+                    }
+                    pages += 1;
+                    assert!(pages <= 4, "cursor must finish");
+                    let Some(cursor) = page["cursor"].as_str() else {
+                        assert_eq!(page["data"]["fileCoverage"]["complete"], true, "{page:#}");
+                        break;
+                    };
+                    arguments = question.clone();
+                    arguments["cursor"] = json!(cursor);
+                }
+                assert_eq!(
+                    hits.len(),
+                    if suffix.is_empty() { 4 } else { 2 },
+                    "git={git} {scope}"
+                );
+            }
+        }
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_alias_search_rejects_wrong_missing_damaged_and_ambiguous_owners() {
+    for case in ["wrong-kind", "missing", "damaged", "ambiguous"] {
+        let root = tempfile::tempdir().unwrap();
+        external_alias_search_workspace(root.path(), false);
+        let descriptor = root.path().join("erf/report-source.xml");
+        match case {
+            "missing" => std::fs::remove_file(&descriptor).unwrap(),
+            "damaged" => std::fs::write(&descriptor, "<broken").unwrap(),
+            "ambiguous" => {
+                std::fs::copy(&descriptor, root.path().join("erf/duplicate.xml")).unwrap();
+            }
+            _ => {}
+        }
+        let owner = if case == "wrong-kind" {
+            "erf:ExternalDataProcessor.SyntheticReport"
+        } else {
+            "erf:ExternalReport.SyntheticReport"
+        };
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        for (id, suffix) in [(2, ""), (3, ".Module.Object")] {
+            let answer = mcp.completed_tool_call(call_tool(
+                id,
+                "unica.search",
+                json!({"query":"AliasSearchNeedle", "scope":format!("{owner}{suffix}")}),
+            ));
+            assert_eq!(answer["ok"], false, "{case}: {answer:#}");
+            assert!(
+                answer["data"].get("matches").is_none(),
+                "no fabricated complete-empty answer: {answer:#}"
+            );
+        }
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_alias_search_cursor_rejects_changed_descriptor_without_payload_changes() {
+    for (git, rename) in [(false, true), (true, true), (false, false), (true, false)] {
+        let root = tempfile::tempdir().unwrap();
+        external_alias_search_workspace(root.path(), git);
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let question = json!({"query":"AliasSearchNeedle", "limit":1});
+        let first = mcp.completed_tool_call(call_tool(2, "unica.search", question.clone()));
+        assert_eq!(first["ok"], true, "{first:#}");
+        let cursor = first["cursor"]
+            .as_str()
+            .expect("fixture has several matches");
+        let at = first["data"]["matches"][0]["at"]
+            .as_str()
+            .expect("alias hit must be proven");
+        let (descriptor, old_name) = if at.starts_with("epf:") {
+            ("epf/source.xml", "SyntheticProcessor")
+        } else if at.contains("ForeignReport") {
+            ("erf/foreign.xml", "ForeignReport")
+        } else {
+            ("erf/report-source.xml", "SyntheticReport")
+        };
+        let path = root.path().join(descriptor);
+        let xml = std::fs::read_to_string(&path).unwrap();
+        let changed = if rename {
+            xml.replace(old_name, "ChangedIdentity")
+        } else {
+            // Even an identity-only edit, with unchanged names, placement and
+            // BSL bytes, invalidates the descriptor proof retained by a cursor.
+            let start = xml.find("uuid=\"").unwrap() + "uuid=\"".len();
+            let mut changed = xml.clone();
+            changed.replace_range(start..start + 36, "00000000-0000-4000-8000-000000000001");
+            changed
+        };
+        std::fs::write(path, changed).unwrap();
+        let mut arguments = question;
+        arguments["cursor"] = json!(cursor);
+        let resumed = mcp.completed_tool_call(call_tool(3, "unica.search", arguments));
+        assert_eq!(
+            resumed["ok"], false,
+            "old descriptor proof must not survive: {resumed:#}"
+        );
+        assert_eq!(
+            resumed["diagnostics"][0]["code"], "stale_cursor",
+            "{resumed:#}"
+        );
+        mcp.finish();
+    }
+}
+
 fn external_search_workspace(workspace: &std::path::Path) {
     copy_tree(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -674,6 +674,8 @@ mod operation_dictionary_tests {
 pub(super) struct SearchScopeRoute {
     pub(super) prefix: Option<String>,
     pub(super) module: Option<QualifiedAddress>,
+    pub(super) external_binding:
+        Option<unica_source_designer::external_artifact::ExternalArtifactBinding>,
 }
 
 pub(super) fn search_scope_route(
@@ -698,6 +700,7 @@ pub(super) fn search_scope_route(
         return Ok(SearchScopeRoute {
             prefix: None,
             module,
+            external_binding: None,
         });
     }
     // The application modules of the configuration live in its own `Ext`.
@@ -705,10 +708,11 @@ pub(super) fn search_scope_route(
         return Ok(SearchScopeRoute {
             prefix: Some("Ext".to_string()),
             module,
+            external_binding: None,
         });
     }
-    // External artifacts are exported directly under their name, without
-    // the collection directory used by configuration metadata.
+    // External placement is supplied by the admitted descriptor binding;
+    // a logical name alone cannot name a physical subtree.
     let external_source = match owner.kind() {
         NodeKind::ExternalReport => Some(unica_source_contract::SourceSetKind::ExternalReport),
         NodeKind::ExternalDataProcessor => {
@@ -723,8 +727,9 @@ pub(super) fn search_scope_route(
             ));
         }
         return Ok(SearchScopeRoute {
-            prefix: owner.name().map(str::to_owned),
+            prefix: None,
             module,
+            external_binding: None,
         });
     }
     let layout = metadata_kind(owner.kind().as_str()).ok_or_else(|| {
@@ -741,6 +746,7 @@ pub(super) fn search_scope_route(
     Ok(SearchScopeRoute {
         prefix: Some(prefix),
         module,
+        external_binding: None,
     })
 }
 
@@ -764,7 +770,10 @@ mod tests {
             for suffix in ["", ".Module.Object", ".Form.Main.Module.Form"] {
                 let scope = QualifiedAddress::parse(&format!("main:{kind}.Item{suffix}")).unwrap();
                 let route = search_scope_route(&scope, source_kind).unwrap();
-                assert_eq!(route.prefix.as_deref(), Some("Item"));
+                assert_eq!(
+                    route.prefix, None,
+                    "external placement requires a proven binding"
+                );
                 assert_eq!(route.module, (!suffix.is_empty()).then_some(scope.clone()));
                 for other in [
                     SourceSetKind::Configuration,

@@ -24,7 +24,7 @@
 
 use super::super::super::v13_read_modes::SearchMatcher;
 use super::{
-    read_search_line_bounded, ActorReadSourceCapability, SearchHitOwners,
+    read_search_line_bounded, ActorReadSourceCapability, ExternalSearchBinding, SearchHitOwners,
     CANONICAL_SEARCH_MAX_DEPTH, CANONICAL_SEARCH_MAX_LINE_BYTES,
     CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS,
 };
@@ -209,6 +209,8 @@ pub(in crate::infrastructure::daemon) struct TextSource<'a> {
     pub(in crate::infrastructure::daemon) scope: String,
     /// Retained-relative subtree to read; `None` reads the whole root.
     pub(in crate::infrastructure::daemon) prefix: Option<String>,
+    pub(in crate::infrastructure::daemon) external_binding:
+        Option<unica_source_designer::external_artifact::ExternalArtifactBinding>,
     /// Retained-relative roots of nested source sets, read by their owner.
     pub(in crate::infrastructure::daemon) excluded: Vec<String>,
 }
@@ -355,12 +357,14 @@ impl TextTotals {
 /// The proven module of a file and the kind of its owner.
 #[derive(Debug, Clone)]
 struct ModuleOf {
+    external_binding: Option<ExternalSearchBinding>,
     at: String,
     kind: &'static str,
 }
 
 /// A collected match and the continuation right after it.
 pub(in crate::infrastructure::daemon) struct TextHit {
+    pub(in crate::infrastructure::daemon) external_binding: Option<ExternalSearchBinding>,
     pub(in crate::infrastructure::daemon) value: Value,
     pub(in crate::infrastructure::daemon) source_set: String,
     pub(in crate::infrastructure::daemon) next: (TextContinuation, String),
@@ -948,6 +952,7 @@ struct Collector<'a> {
     scope: String,
     source: Option<&'a ActorReadSourceCapability>,
     owners: Option<SearchHitOwners<'a>>,
+    external_binding: Option<unica_source_designer::external_artifact::ExternalArtifactBinding>,
     // The traversal.
     current: Option<CurrentFile>,
     passed_digest: Option<String>,
@@ -992,6 +997,7 @@ impl<'a> Collector<'a> {
             scope: String::new(),
             source: None,
             owners: None,
+            external_binding: None,
             current: None,
             passed_digest: match &request.continuation {
                 TextContinuation::Start => Some(String::new()),
@@ -1020,6 +1026,7 @@ impl<'a> Collector<'a> {
         self.scope = source.scope.clone();
         self.source = Some(source.source);
         self.owners = Some(source.source.search_hit_owners());
+        self.external_binding = source.external_binding.clone();
     }
 
     fn leave_file(&mut self) {
@@ -1045,7 +1052,39 @@ impl<'a> Collector<'a> {
         }) {
             return FileStep::Skip;
         }
-        let identity = digest(&[self.source_set.as_bytes(), path.as_bytes()]);
+        let physical_identity = digest(&[self.source_set.as_bytes(), path.as_bytes()]);
+        let source = self.source.expect("source entered");
+        let external_module = if matches!(
+            source.source_kind(),
+            unica_source_contract::SourceSetKind::ExternalProcessor
+                | unica_source_contract::SourceSetKind::ExternalReport
+        ) {
+            match self.external_module_of(relative) {
+                Ok(module) => Some(module),
+                Err(error) => {
+                    self.fatal = Some(error);
+                    return FileStep::Stop;
+                }
+            }
+        } else {
+            None
+        };
+        // Continuations retain their physical file. The proof of its logical
+        // owner must also survive, even when the module bytes are unchanged.
+        let identity = match external_module
+            .as_ref()
+            .and_then(|module| module.as_ref().ok())
+            .and_then(|module| module.external_binding.as_ref())
+        {
+            Some(proof) => digest(&[
+                &physical_identity,
+                proof.binding.kind().as_bytes(),
+                proof.binding.name().as_bytes(),
+                proof.binding.descriptor().as_os_str().as_encoded_bytes(),
+                format!("{:?}", proof.stamp).as_bytes(),
+            ]),
+            None => physical_identity,
+        };
         let key = resume_key(&self.source_set, &path);
         let mut passing = 0;
         if let TextContinuation::Resume(resume) = &self.request.continuation {
@@ -1081,10 +1120,10 @@ impl<'a> Collector<'a> {
         self.files_read += 1;
         let mut current = CurrentFile {
             key,
-            file_id: format!("bsl-{}", &hex(&identity)[..16]),
+            file_id: format!("bsl-{}", &hex(&physical_identity)[..16]),
             identity,
             relative: relative.to_path_buf(),
-            module: None,
+            module: external_module,
             matches: 0,
             chain: [0; 32],
             passing,
@@ -1144,6 +1183,7 @@ impl<'a> Collector<'a> {
                         .map_err(TextSearchError::Interrupted)?
                     {
                         Ok(ModuleOf {
+                            external_binding: None,
                             at: at.to_string(),
                             // The configuration's own modules belong to it.
                             kind: match at.segments()[0].kind() {
@@ -1159,6 +1199,54 @@ impl<'a> Collector<'a> {
         };
         current.module = Some(mapped.clone());
         Ok(mapped)
+    }
+
+    fn external_module_of(
+        &mut self,
+        relative: &Path,
+    ) -> Result<Result<ModuleOf, &'static str>, TextSearchError> {
+        let source = self.source.expect("source entered");
+        let proved = self
+            .owners
+            .as_mut()
+            .expect("source entered")
+            .external_module(relative, self.external_binding.as_ref(), self.cancellation);
+        let proof = match proved {
+            Ok(Some(proof)) => proof,
+            Ok(None) => return Ok(Err("outside_module_layout")),
+            Err(error)
+                if matches!(
+                    error.code(),
+                    RefusalCode::Cancelled
+                        | RefusalCode::DeadlineExceeded
+                        | RefusalCode::ConcurrentChange
+                ) =>
+            {
+                return Err(TextSearchError::Interrupted(error))
+            }
+            Err(_) => return Ok(Err("owner_unproven")),
+        };
+        let Some(logical) = proof.binding.logical_path(relative) else {
+            return Ok(Err("outside_module_layout"));
+        };
+        let Some(profile) =
+            crate::domain::source_capabilities::bsl_profile_for_source(source.source_profile())
+        else {
+            return Ok(Err("unsupported_source_profile"));
+        };
+        let Some(at) = module_address_for_relative(
+            source.source_set_name(),
+            source.source_kind(),
+            profile,
+            &logical,
+        ) else {
+            return Ok(Err("outside_module_layout"));
+        };
+        Ok(Ok(ModuleOf {
+            kind: at.segments()[0].kind().as_str(),
+            at: at.to_string(),
+            external_binding: Some(proof),
+        }))
     }
 
     /// Leaves the current file uncovered once and stops reading it.
@@ -1308,6 +1396,10 @@ impl<'a> Collector<'a> {
                 Self::walk_digest(&current.identity, &current.chain),
             );
             self.hits.push(TextHit {
+                external_binding: module
+                    .as_ref()
+                    .ok()
+                    .and_then(|module| module.external_binding.clone()),
                 value,
                 source_set: self.source_set.clone(),
                 next,
