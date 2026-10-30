@@ -204,36 +204,212 @@ fn a_cancellation_that_overtakes_its_request_keeps_the_request_from_running() {
     assert_eq!(host.calls.load(Ordering::Acquire), 0);
 }
 
+/// Controls when the real workers first dequeue; admission still uses `call`.
+struct HeldLane {
+    host: Arc<HeldHost>,
+    lane: Arc<LspLane>,
+    session: V5LspSessionId,
+    deadline: Instant,
+    callers: Vec<thread::JoinHandle<V5LspOutcome>>,
+    workers: Vec<thread::JoinHandle<()>>,
+    busy: Arc<AtomicUsize>,
+    completed: Arc<AtomicUsize>,
+    workers_finished: Arc<AtomicUsize>,
+    finished: bool,
+}
+
+impl HeldLane {
+    fn before_workers_start() -> Self {
+        let host = Arc::new(HeldHost::default());
+        let lane = Arc::new(LspLane {
+            shared: Arc::new(Shared {
+                host: Arc::clone(&host) as Arc<dyn LspHost>,
+                state: Mutex::new(LaneState::default()),
+                queued: Condvar::new(),
+            }),
+            workers: Vec::new(),
+        });
+        let (session, _) = lane.open(&[], soon()).unwrap();
+        Self {
+            host,
+            lane,
+            session,
+            deadline: Instant::now() + Duration::from_secs(10),
+            callers: Vec::new(),
+            workers: Vec::new(),
+            busy: Arc::new(AtomicUsize::new(0)),
+            completed: Arc::new(AtomicUsize::new(0)),
+            workers_finished: Arc::new(AtomicUsize::new(0)),
+            finished: false,
+        }
+    }
+
+    fn spawn_calls(&mut self, requests: std::ops::Range<usize>) {
+        for request in requests {
+            let lane = Arc::clone(&self.lane);
+            let session = self.session.clone();
+            let deadline = self.deadline;
+            let busy = Arc::clone(&self.busy);
+            let completed = Arc::clone(&self.completed);
+            self.callers.push(thread::spawn(move || {
+                let outcome = lane.call(&session, request as u64, hover("file:///a.bsl"), deadline);
+                if matches!(
+                    outcome,
+                    V5LspOutcome::Failed {
+                        failure: V5LspFailure::Busy
+                    }
+                ) {
+                    busy.fetch_add(1, Ordering::AcqRel);
+                }
+                completed.fetch_add(1, Ordering::AcqRel);
+                outcome
+            }));
+        }
+    }
+
+    fn start_workers(&mut self) {
+        assert!(self.workers.is_empty());
+        for _ in 0..MAX_LSP_LANE_WORKERS {
+            let shared = Arc::clone(&self.lane.shared);
+            let finished = Arc::clone(&self.workers_finished);
+            self.workers.push(thread::spawn(move || {
+                run_worker(&shared);
+                finished.fetch_add(1, Ordering::AcqRel);
+            }));
+        }
+    }
+
+    fn queued(&self) -> usize {
+        self.lane.shared.state.lock().unwrap().jobs.len()
+    }
+
+    fn full(&self) -> bool {
+        self.host.started.load(Ordering::Acquire) == MAX_LSP_LANE_WORKERS
+            && self.queued() == LSP_LANE_QUEUE_CAPACITY
+    }
+
+    fn finish(&mut self) -> Vec<thread::Result<V5LspOutcome>> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.host.release.store(true, Ordering::Release);
+        if self.workers.is_empty() && !self.callers.is_empty() {
+            self.start_workers();
+        }
+        // Join every caller even if one panicked; inspect outcomes afterwards.
+        let outcomes = self.callers.drain(..).map(|caller| caller.join()).collect();
+        self.lane.shared.state.lock().unwrap().stopping = true;
+        self.lane.shared.queued.notify_all();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+        self.finished = true;
+        outcomes
+    }
+}
+
+impl Drop for HeldLane {
+    fn drop(&mut self) {
+        let _ = self.finish();
+    }
+}
+
 #[test]
 fn a_full_lane_refuses_new_requests_instead_of_growing() {
-    let host = Arc::new(HeldHost::default());
-    let (lane, session) = lane_with(&host);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let callers = (0..MAX_LSP_LANE_WORKERS + LSP_LANE_QUEUE_CAPACITY)
-        .map(|request| {
-            let (lane, session) = (Arc::clone(&lane), session.clone());
-            thread::spawn(move || {
-                lane.call(&session, request as u64, hover("file:///a.bsl"), deadline)
-            })
-        })
-        .collect::<Vec<_>>();
-    wait_until(|| {
-        host.started.load(Ordering::Acquire) == MAX_LSP_LANE_WORKERS
-            && lane.shared.state.lock().unwrap().jobs.len() == LSP_LANE_QUEUE_CAPACITY
-    });
-
-    let refused = lane.call(&session, 10_000, hover("file:///a.bsl"), deadline);
-
+    let mut held = HeldLane::before_workers_start();
+    held.spawn_calls(0..MAX_LSP_LANE_WORKERS);
+    wait_until(|| held.queued() == MAX_LSP_LANE_WORKERS);
+    held.start_workers();
+    wait_until(|| held.host.started.load(Ordering::Acquire) == MAX_LSP_LANE_WORKERS);
+    // Both workers now hold requests, so every subsequent admission queues.
+    held.spawn_calls(MAX_LSP_LANE_WORKERS..MAX_LSP_LANE_WORKERS + LSP_LANE_QUEUE_CAPACITY);
+    wait_until(|| held.full());
+    assert_eq!(held.busy.load(Ordering::Acquire), 0);
+    let refused = held
+        .lane
+        .call(&held.session, 10_000, hover("file:///a.bsl"), held.deadline);
+    assert_eq!(refused, failed(V5LspFailure::Busy));
+    assert_eq!(held.queued(), LSP_LANE_QUEUE_CAPACITY);
+    let outcomes = held.finish();
     assert_eq!(
-        refused,
-        V5LspOutcome::Failed {
-            failure: V5LspFailure::Busy
-        }
+        outcomes.len(),
+        MAX_LSP_LANE_WORKERS + LSP_LANE_QUEUE_CAPACITY
     );
-    host.release.store(true, Ordering::Release);
-    for caller in callers {
-        assert!(matches!(caller.join().unwrap(), V5LspOutcome::Hover { .. }));
+    for outcome in outcomes {
+        assert!(matches!(outcome, Ok(V5LspOutcome::Hover { .. })));
     }
+}
+
+#[test]
+fn callers_admitted_before_workers_can_refuse_before_the_lane_is_full() {
+    let mut held = HeldLane::before_workers_start();
+    held.spawn_calls(0..MAX_LSP_LANE_WORKERS + LSP_LANE_QUEUE_CAPACITY);
+    wait_until(|| {
+        held.queued() == LSP_LANE_QUEUE_CAPACITY
+            && held.busy.load(Ordering::Acquire) == MAX_LSP_LANE_WORKERS
+    });
+    assert_eq!(held.host.started.load(Ordering::Acquire), 0);
+    held.start_workers();
+    wait_until(|| held.host.started.load(Ordering::Acquire) == MAX_LSP_LANE_WORKERS);
+    assert_eq!(
+        held.queued(),
+        LSP_LANE_QUEUE_CAPACITY - MAX_LSP_LANE_WORKERS
+    );
+    assert!(
+        !held.full(),
+        "early refusals leave no callers to fill the two newly free queue slots"
+    );
+    eprintln!(
+        "controlled old schedule: started={}, queued={}, early_busy={}",
+        held.host.started.load(Ordering::Acquire),
+        held.queued(),
+        held.busy.load(Ordering::Acquire)
+    );
+    let outcomes = held.finish();
+    assert_eq!(
+        outcomes.len(),
+        MAX_LSP_LANE_WORKERS + LSP_LANE_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(
+                outcome,
+                Ok(V5LspOutcome::Failed {
+                    failure: V5LspFailure::Busy
+                })
+            ))
+            .count(),
+        MAX_LSP_LANE_WORKERS
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Ok(V5LspOutcome::Hover { .. })))
+            .count(),
+        LSP_LANE_QUEUE_CAPACITY
+    );
+}
+
+#[test]
+fn held_lane_releases_and_joins_callers_and_workers_when_an_assertion_unwinds() {
+    let mut held = HeldLane::before_workers_start();
+    let host = Arc::clone(&held.host);
+    let completed = Arc::clone(&held.completed);
+    let workers_finished = Arc::clone(&held.workers_finished);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        held.spawn_calls(0..MAX_LSP_LANE_WORKERS);
+        held.start_workers();
+        wait_until(|| held.host.started.load(Ordering::Acquire) == MAX_LSP_LANE_WORKERS);
+        panic!("injected assertion failure while both requests are held");
+    }));
+    assert!(unwound.is_err());
+    assert!(host.release.load(Ordering::Acquire));
+    assert_eq!(completed.load(Ordering::Acquire), MAX_LSP_LANE_WORKERS);
+    assert_eq!(
+        workers_finished.load(Ordering::Acquire),
+        MAX_LSP_LANE_WORKERS
+    );
 }
 
 #[test]
