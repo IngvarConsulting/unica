@@ -42,10 +42,19 @@ const CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS: usize = 32;
 
 /// Invocation-local placement evidence. This value is not a read capability;
 /// the actor's retained source and its reader still own every observation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(in crate::infrastructure::daemon) struct ExternalSearchBinding {
     pub binding: unica_source_designer::external_artifact::ExternalArtifactBinding,
     pub stamp: unica_source_contract::read::FileStamp,
+}
+
+impl Clone for ExternalSearchBinding {
+    fn clone(&self) -> Self {
+        Self {
+            binding: self.binding.clone(),
+            stamp: self.stamp,
+        }
+    }
 }
 
 impl ExternalSearchBinding {
