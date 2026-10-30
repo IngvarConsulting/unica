@@ -61,6 +61,153 @@ fn lsp_frames_round_trip_and_broken_frames_are_refused() {
     }
 }
 
+struct ReleaseOnDrop(Option<mpsc::Sender<()>>);
+
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+impl ReleaseOnDrop {
+    fn release(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+fn output_only_editor() -> (Editor, SharedWriter) {
+    let output = Arc::new((Mutex::new(EditorOutput::default()), Condvar::new()));
+    let writer = SharedWriter::new(Arc::clone(&output));
+    (
+        Editor {
+            input: None,
+            output,
+            received: VecDeque::new(),
+            next_id: 0,
+            thread: None,
+            lost: Arc::new(AtomicBool::new(false)),
+        },
+        writer,
+    )
+}
+
+#[test]
+fn editor_output_waits_for_a_complete_fragmented_frame() {
+    let expected = json!({"jsonrpc": "2.0", "id": 7, "result": "готово"});
+    let mut frame = Vec::new();
+    codec::write_message(&mut frame, &expected).unwrap();
+    let split = b"Content-Len".len();
+    assert!(frame.starts_with(b"Content-Len"));
+    let (mut editor, mut writer) = output_only_editor();
+    let (prefix_written, prefix_ready) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    thread::scope(|scope| {
+        let writing = scope.spawn(move || {
+            writer.write_all(&frame[..split]).unwrap();
+            prefix_written.send(()).unwrap();
+            released.recv_timeout(WAIT).unwrap();
+            for chunk in frame[split..].chunks(3) {
+                writer.write_all(chunk).unwrap();
+            }
+            writer.flush().unwrap();
+        });
+        // Release the writer before the scope joins, including on assertion unwind.
+        let mut release = ReleaseOnDrop(Some(release));
+        prefix_ready.recv_timeout(WAIT).unwrap();
+        editor.receive(Instant::now());
+        assert!(editor.received.is_empty());
+        release.release();
+        writing.join().unwrap();
+    });
+    editor.receive(Instant::now());
+    assert_eq!(editor.received.pop_front(), Some(expected));
+    assert!(editor.received.is_empty());
+}
+
+#[test]
+fn editor_output_reads_complete_and_coalesced_frames_then_terminal_eof() {
+    let first = json!({"id": 1, "result": "первый"});
+    let second = json!({"id": 2, "result": "second"});
+    for messages in [vec![first.clone()], vec![first.clone(), second]] {
+        let (mut editor, mut writer) = output_only_editor();
+        let mut frames = Vec::new();
+        for message in &messages {
+            codec::write_message(&mut frames, message).unwrap();
+        }
+        writer.write_all(&frames).unwrap();
+        writer.flush().unwrap();
+        editor.receive_result(Instant::now()).unwrap();
+        assert_eq!(editor.received.drain(..).collect::<Vec<_>>(), messages);
+        drop(writer);
+        assert!(editor.output.0.lock().unwrap().closed);
+        assert!(!editor.receive_result(Instant::now() + WAIT).unwrap());
+        assert!(editor.received.is_empty());
+    }
+}
+
+#[test]
+fn editor_output_releases_and_joins_the_writer_when_a_reader_assertion_unwinds() {
+    let expected = json!({"id": 9, "result": "after unwind"});
+    let mut frame = Vec::new();
+    codec::write_message(&mut frame, &expected).unwrap();
+    let (mut editor, mut writer) = output_only_editor();
+    let (prefix_written, prefix_ready) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let completed = Arc::new(AtomicBool::new(false));
+    let written = Arc::clone(&completed);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        thread::scope(|scope| {
+            scope.spawn(move || {
+                writer.write_all(&frame[..11]).unwrap();
+                prefix_written.send(()).unwrap();
+                released.recv_timeout(WAIT).unwrap();
+                writer.write_all(&frame[11..]).unwrap();
+                writer.flush().unwrap();
+                written.store(true, Ordering::Release);
+            });
+            let _release = ReleaseOnDrop(Some(release));
+            prefix_ready.recv_timeout(WAIT).unwrap();
+            panic!("injected reader assertion with the writer waiting for release");
+        });
+    }));
+    assert!(unwound.is_err());
+    assert!(completed.load(Ordering::Acquire));
+    assert!(editor.output.0.lock().unwrap().closed);
+    editor.receive(Instant::now());
+    assert_eq!(editor.received.pop_front(), Some(expected));
+}
+
+#[test]
+fn editor_output_reports_a_truncated_header_or_body_only_at_terminal_eof() {
+    for (prefix, expected_error) in [
+        (b"Content-Len".as_slice(), io::ErrorKind::InvalidData),
+        (
+            b"Content-Length: 2\r\n\r\n{".as_slice(),
+            io::ErrorKind::UnexpectedEof,
+        ),
+    ] {
+        let (mut editor, mut writer) = output_only_editor();
+        writer.write_all(prefix).unwrap();
+        assert!(editor.receive_result(Instant::now()).unwrap());
+        assert!(editor.received.is_empty());
+        drop(writer);
+        let error = editor.receive_result(Instant::now()).unwrap_err();
+        assert_eq!(error.kind(), expected_error);
+        assert!(editor.received.is_empty());
+        assert!(!editor.output.0.is_poisoned());
+    }
+}
+
 #[test]
 fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
     let daemon = LiveV5Daemon::start(canonical_v13_service());
@@ -292,45 +439,51 @@ fn an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call() {
     }
     let stop = Arc::new(AtomicBool::new(false));
     let hovers = Arc::new(AtomicUsize::new(0));
-    let stream = {
-        let (stop, hovers) = (Arc::clone(&stop), Arc::clone(&hovers));
-        thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                let ids = (0..MAX_LSP_LANE_WORKERS * 4)
-                    .map(|_| {
-                        editor
-                            .send_request("textDocument/hover", hover_params("file:///work/a.bsl"))
-                    })
-                    .collect::<Vec<_>>();
-                for id in ids {
-                    assert!(editor.response(&id)["result"]["contents"].is_object());
-                    hovers.fetch_add(1, Ordering::AcqRel);
+    thread::scope(|scope| {
+        let stream = {
+            let (stop, hovers) = (Arc::clone(&stop), Arc::clone(&hovers));
+            scope.spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    let ids = (0..MAX_LSP_LANE_WORKERS * 4)
+                        .map(|_| {
+                            editor.send_request(
+                                "textDocument/hover",
+                                hover_params("file:///work/a.bsl"),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    for id in ids {
+                        assert!(editor.response(&id)["result"]["contents"].is_object());
+                        hovers.fetch_add(1, Ordering::AcqRel);
+                    }
                 }
-            }
-            editor
-        })
-    };
-    wait_until(|| hovers.load(Ordering::Acquire) > 0);
-    let before = host.answered.load(Ordering::Acquire);
-    let started = Instant::now();
-    let under_lsp = median((0..MCP_SAMPLES).map(|_| mcp_view(&daemon, &owner, &view)));
-    let window = started.elapsed();
-    let during = host.answered.load(Ordering::Acquire) - before;
-    stop.store(true, Ordering::Release);
-    let _editor = stream.join().unwrap();
+                editor
+            })
+        };
+        let _stop_on_drop = StopOnDrop(Arc::clone(&stop));
+        wait_until(|| hovers.load(Ordering::Acquire) > 0);
+        let before = host.answered.load(Ordering::Acquire);
+        let started = Instant::now();
+        let under_lsp = median((0..MCP_SAMPLES).map(|_| mcp_view(&daemon, &owner, &view)));
+        let window = started.elapsed();
+        let during = host.answered.load(Ordering::Acquire) - before;
+        stop.store(true, Ordering::Release);
+        let _editor = stream.join().unwrap();
 
-    // The lane was computing hovers through the window: at least half of
-    // what its workers fit in it, the rest lost between the stream's batches.
-    let capacity = (window.as_millis() / HOVER_COST.as_millis()) as usize * MAX_LSP_LANE_WORKERS;
-    assert!(
-        during * 2 >= capacity,
-        "the LSP lane answered {during} hovers in {window:?}, under half of its {capacity}"
-    );
-    let allowed = baseline * 3 / 2 + MCP_LATENCY_TOLERANCE;
-    assert!(
+        // The lane was computing hovers through the window: at least half of
+        // what its workers fit in it, the rest lost between the stream's batches.
+        let capacity =
+            (window.as_millis() / HOVER_COST.as_millis()) as usize * MAX_LSP_LANE_WORKERS;
+        assert!(
+            during * 2 >= capacity,
+            "the LSP lane answered {during} hovers in {window:?}, under half of its {capacity}"
+        );
+        let allowed = baseline * 3 / 2 + MCP_LATENCY_TOLERANCE;
+        assert!(
         under_lsp <= allowed,
         "MCP median {under_lsp:?} under a hover stream exceeds {allowed:?} (median {baseline:?} without LSP)"
     );
+    });
 }
 
 /// Приёмка #2173: устаревший запрос отменяется и его результат не выдаётся.
@@ -543,9 +696,15 @@ impl LspHost for HeldHost {
 
 /// Редактор на другом конце stdio: пишет кадры во вход `serve` и разбирает
 /// кадры её вывода.
+#[derive(Default)]
+struct EditorOutput {
+    bytes: Vec<u8>,
+    closed: bool,
+}
+
 struct Editor {
     input: Option<mpsc::Sender<Vec<u8>>>,
-    output: Arc<(Mutex<Vec<u8>>, Condvar)>,
+    output: Arc<(Mutex<EditorOutput>, Condvar)>,
     received: VecDeque<Value>,
     next_id: u64,
     thread: Option<thread::JoinHandle<i32>>,
@@ -555,9 +714,9 @@ struct Editor {
 impl Editor {
     fn start(daemon: &LiveV5Daemon) -> Self {
         let (input, receiver) = mpsc::channel();
-        let output = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
+        let output = Arc::new((Mutex::new(EditorOutput::default()), Condvar::new()));
         let client = Arc::new(V5DaemonClient::from(daemon.owner()));
-        let writer = SharedWriter(Arc::clone(&output));
+        let writer = SharedWriter::new(Arc::clone(&output));
         let lost = Arc::new(AtomicBool::new(false));
         let session_lost: SessionLost = {
             let lost = Arc::clone(&lost);
@@ -657,17 +816,36 @@ impl Editor {
     /// Move every complete frame written so far into `received`, waiting
     /// for output until `deadline` when there is none.
     fn receive(&mut self, deadline: Instant) {
-        let (bytes, written) = &*self.output;
-        let mut bytes = bytes.lock().unwrap();
-        if bytes.is_empty() {
+        assert!(
+            self.receive_result(deadline).unwrap(),
+            "LSP output ended while awaiting a message"
+        );
+    }
+
+    /// `false` is terminal EOF between messages, not a temporarily empty buffer.
+    fn receive_result(&mut self, deadline: Instant) -> io::Result<bool> {
+        let (incoming, closed) = {
+            let (output, written) = &*self.output;
+            let output = output.lock().unwrap();
             let wait = deadline.saturating_duration_since(Instant::now());
-            bytes = written.wait_timeout(bytes, wait).unwrap().0;
+            let mut output = written
+                .wait_timeout_while(output, wait, |output| {
+                    output.bytes.is_empty() && !output.closed
+                })
+                .unwrap()
+                .0;
+            (std::mem::take(&mut output.bytes), output.closed)
+        };
+        let ended = closed && incoming.is_empty();
+        // A malformed terminal frame must not poison the writer's mutex.
+        let mut reader = BufReader::new(Cursor::new(incoming));
+        while let Some(body) = codec::read_message(&mut reader)? {
+            self.received.push_back(
+                serde_json::from_slice(&body)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+            );
         }
-        let mut reader = BufReader::new(Cursor::new(std::mem::take(&mut *bytes)));
-        while let Some(body) = codec::read_message(&mut reader).unwrap() {
-            self.received
-                .push_back(serde_json::from_slice(&body).unwrap());
-        }
+        Ok(!ended)
     }
 
     fn finish(mut self) -> i32 {
@@ -685,18 +863,47 @@ impl Drop for Editor {
     }
 }
 
-/// Кадры приходят целиком: писатель держит блокировку на всё сообщение.
-struct SharedWriter(Arc<(Mutex<Vec<u8>>, Condvar)>);
+/// `codec::write_message` ends each whole message with `flush`.
+/// Keep its individual write chunks private until that publication point.
+struct SharedWriter {
+    output: Arc<(Mutex<EditorOutput>, Condvar)>,
+    pending: Vec<u8>,
+}
+
+impl SharedWriter {
+    fn new(output: Arc<(Mutex<EditorOutput>, Condvar)>) -> Self {
+        Self {
+            output,
+            pending: Vec::new(),
+        }
+    }
+
+    fn publish(&mut self, closed: bool) {
+        let (output, written) = &*self.output;
+        let mut output = output.lock().unwrap();
+        output.bytes.append(&mut self.pending);
+        output.closed |= closed;
+        drop(output);
+        written.notify_all();
+    }
+}
 
 impl Write for SharedWriter {
     fn write(&mut self, chunk: &[u8]) -> io::Result<usize> {
-        self.0 .0.lock().unwrap().extend_from_slice(chunk);
+        self.pending.extend_from_slice(chunk);
         Ok(chunk.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.0 .1.notify_all();
+        self.publish(false);
         Ok(())
+    }
+}
+
+impl Drop for SharedWriter {
+    fn drop(&mut self) {
+        // Do not hide an unflushed truncated prefix when the producer ends.
+        self.publish(true);
     }
 }
 
