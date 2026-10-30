@@ -1,0 +1,275 @@
+{
+  "id": "S-1621-numerator-read-profile",
+  "name": "document-numerator-read-profile",
+  "issue": 1621,
+  "area": "Навигация по исходникам",
+  "task": "Прочитать четыре настройки DocumentNumerator по адресам из коллекции; сохранить false, отсутствие и локальные ограничения без записи и публикации NumberLength",
+  "workspace": "tests/fixtures/acceptance/workspace-numerator-read-profile",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "file0": {
+          "kind": "sha256",
+          "file": "src/DocumentNumerators/A_String.xml"
+        },
+        "file1": {
+          "kind": "sha256",
+          "file": "src/DocumentNumerators/B_Number.xml"
+        },
+        "file2": {
+          "kind": "sha256",
+          "file": "src/DocumentNumerators/C_Absent.xml"
+        },
+        "file3": {
+          "kind": "sha256",
+          "file": "src/DocumentNumerators/D_Damaged.xml"
+        },
+        "file4": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "file5": {
+          "kind": "sha256",
+          "file": "v8project.yaml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentNumerator"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "A_String": {
+          "pointer": "/data/items/0/at"
+        },
+        "B_Number": {
+          "pointer": "/data/items/1/at"
+        },
+        "C_Absent": {
+          "pointer": "/data/items/2/at"
+        },
+        "D_Damaged": {
+          "pointer": "/data/items/3/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.A_String"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberType",
+          "eq": "String"
+        },
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "eq": "Fixed"
+        },
+        {
+          "pointer": "/data/props/NumberPeriodicity",
+          "eq": "Year"
+        },
+        {
+          "pointer": "/data/props/CheckUnique",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/kind",
+          "eq": "DocumentNumerator"
+        },
+        {
+          "pointer": "/data/props/NumberLength",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.B_Number"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberType",
+          "eq": "Number"
+        },
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "eq": "Variable"
+        },
+        {
+          "pointer": "/data/props/NumberPeriodicity",
+          "eq": "Month"
+        },
+        {
+          "pointer": "/data/props/CheckUnique",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/kind",
+          "eq": "DocumentNumerator"
+        },
+        {
+          "pointer": "/data/props/NumberLength",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.C_Absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "DocumentNumerator"
+        },
+        {
+          "pointer": "/data/props/NumberLength",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/NumberType",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/NumberPeriodicity",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/CheckUnique",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.D_Damaged"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "eq": "Fixed"
+        },
+        {
+          "pointer": "/data/props/NumberPeriodicity",
+          "eq": "Day"
+        },
+        {
+          "pointer": "/data/props/CheckUnique",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/kind",
+          "eq": "DocumentNumerator"
+        },
+        {
+          "pointer": "/data/props/NumberLength",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/NumberType",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "properties.NumberType не прочитано: DocumentNumerator contains a malformed NumberType"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.A_String",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CheckUnique": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `props.set` does not apply to DocumentNumerator `main:DocumentNumerator.A_String`; it applies at `main:Configuration`",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/DocumentNumerators/A_String.xml",
+          "eq": "$capture.file0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentNumerators/B_Number.xml",
+          "eq": "$capture.file1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentNumerators/C_Absent.xml",
+          "eq": "$capture.file2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentNumerators/D_Damaged.xml",
+          "eq": "$capture.file3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.file4"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.file5"
+        }
+      ]
+    }
+  ]
+}

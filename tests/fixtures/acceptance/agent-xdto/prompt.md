@@ -1,9 +1,9 @@
 В существующем XDTO-пакете EnterpriseData_1_17_3 выполни связанные изменения:
 
 1. Добавь valueType Agent1721Value с base xs:string и objectType Agent1721Object.
-2. В Agent1721Object добавь свойство Value типа tns:Agent1721Value с minOccurs 0.0.
+2. В Agent1721Object добавь свойство Value типа tns:Agent1721Value с lowerBound 0.0.
 3. В существующий анонимный ObjectType свойства ЛюбаяСсылка.СсылкаНаОбъект добавь
-   свойство с буквальным именем Agent1721.A, типом xs:string, без minOccurs.
+   свойство с буквальным именем Agent1721.A, типом xs:string, без lowerBound.
 4. Удали существующий пустой тип СоставнойЛюбойОбъект и свойство EnterpriseData.Версия.
 
 Другие исходники и соседний пакет ReadonlyNeighbor сохрани. Все пять видов
@@ -14,4 +14,6 @@
 main:XDTOPackage.EnterpriseData_1_17_3.Type.СоставнойЛюбойОбъект и
 main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Property.Версия.
 Оба вызова должны вернуть структурированный not_found. Затем выполни check пакета. Опиши контракт add/remove и
-какие значения minOccurs допустимы. Не заявляй о загрузке в 1С без её запуска.
+какие значения lowerBound допустимы и почему integer допускает запись числа
+с точкой или экспонентой. Укажи также, что происходит с дробными значениями,
+числами вне диапазона, строками, bool и null. Не заявляй о загрузке в 1С без её запуска.

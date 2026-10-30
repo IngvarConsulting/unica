@@ -129,7 +129,7 @@
               "values": {
                 "property": {
                   "name": "Строки",
-                  "maxOccurs": -1,
+                  "upperBound": -1,
                   "objectType": {
                     "properties": [
                       {
@@ -340,7 +340,7 @@
               "values": {
                 "property": {
                   "name": "Строки",
-                  "maxOccurs": -1,
+                  "upperBound": -1,
                   "objectType": {
                     "properties": [
                       {

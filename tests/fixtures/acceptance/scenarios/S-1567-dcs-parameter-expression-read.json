@@ -218,7 +218,7 @@
             "type": "StandardPeriod",
             "value": null,
             "expression": null,
-            "restricted": false,
+            "useRestriction": false,
             "availableAsField": null
           }
         },
@@ -232,7 +232,7 @@
             "type": "DateTime",
             "value": "-",
             "expression": "&Период.ДатаНачала",
-            "restricted": true,
+            "useRestriction": true,
             "availableAsField": false
           }
         }
@@ -302,7 +302,7 @@
             "type": "DateTime",
             "value": "-",
             "expression": "&Период.ДатаОкончания",
-            "restricted": false,
+            "useRestriction": false,
             "availableAsField": true
           }
         },
@@ -316,7 +316,7 @@
             "type": "Boolean",
             "value": "false",
             "expression": "&НачалоПериода < &КонецПериода",
-            "restricted": true,
+            "useRestriction": true,
             "availableAsField": null
           }
         },

@@ -1337,11 +1337,17 @@ fn field_mapping_patch_preserves_type_title_roles_and_unprovided_restrictions_ex
     let preserved = "<title xsi:type=\"v8:LocalStringType\"><v8:item><v8:lang>ru</v8:lang><v8:content>Amount</v8:content></v8:item></title><useRestriction><field>true</field></useRestriction><attributeUseRestriction><condition>false</condition></attributeUseRestriction><role><com:dimension>true</com:dimension></role>";
     let typed_tail = "<valueType><v8:Type>xs:decimal</v8:Type></valueType><appearance/><u:future xmlns:u='urn:future'> exact </u:future>";
     let mut xml = schema(&format!("<dataSet xsi:type=\"s:DataSetObject\"><name>Data</name><field><dataPath>Amount</dataPath><field>Old.Amount</field>{preserved}<presentationExpression>Old.Amount</presentationExpression>{typed_tail}</field><objectName>Catalog.Items</objectName></dataSet>"));
-    let args = normalized(
-        Primitive::FieldSet,
-        json!({"values":{"field":"Amount","sourceField":"New.Amount","presentationExpression":"String(New.Amount)"}}),
-    );
-    run(&mut xml, Primitive::FieldSet, args, &target(&["Data"], "")).unwrap();
+    // The canonical target names the dataPath; field is the mapping to write.
+    // Do not pass this payload through the legacy selector fixture adapter.
+    let mut selected = target(&["Data"], "");
+    selected.terminal = Some("Amount".into());
+    let intent = Primitive::FieldSet
+        .decode(
+            &json!({"values":{"field":"New.Amount","presentationExpression":"String(New.Amount)"}}),
+            "args",
+        )
+        .unwrap();
+    apply(&mut xml, &intent, &selected, Some("ru")).unwrap();
     assert!(xml.contains(preserved));
     assert!(xml.contains(typed_tail));
     let doc = Document::parse(&xml).unwrap();
