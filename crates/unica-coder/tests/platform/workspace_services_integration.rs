@@ -4127,6 +4127,70 @@ fn main() {
     }
 
     #[test]
+    fn prepared_bsl_connect_failure_preserves_original_expiry_and_cancel_precedence() {
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        struct FailingConnect {
+            cancellation: CancellationToken,
+            cancel: bool,
+            expire: bool,
+            connections: AtomicUsize,
+        }
+        impl ConnectorIo for FailingConnect {
+            fn connect(&self, _: u16, _: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+                self.connections.fetch_add(1, Ordering::AcqRel);
+                if self.expire {
+                    ADVANCE.store(10, Ordering::Release);
+                }
+                if self.cancel {
+                    self.cancellation.cancel();
+                }
+                Err(io::Error::new(
+                    ErrorKind::ConnectionRefused,
+                    "controlled prepared connect failure",
+                ))
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        for (cancel, expire) in [(false, false), (false, true), (true, false), (true, true)] {
+            ADVANCE.store(0, Ordering::Release);
+            let cancellation = CancellationToken::new();
+            let io = FailingConnect {
+                cancellation: cancellation.clone(),
+                cancel,
+                expire,
+                connections: AtomicUsize::new(0),
+            };
+            let original = ProviderDeadline::with_clock(start + Duration::from_secs(5), now);
+            let error = SYSTEM_SERVICE_CONNECTOR
+                .send_prepared_with(
+                    &connector_test_record(),
+                    connector_test_request(prepared_begin("connect-never-submitted")),
+                    &cancellation,
+                    original,
+                    &io,
+                    &SystemClock::start(),
+                )
+                .unwrap_err();
+            let expected = if cancel {
+                "cancelled:"
+            } else if expire {
+                "timeout:"
+            } else {
+                "failed to connect workspace service:"
+            };
+            assert!(
+                error.starts_with(expected),
+                "cancel={cancel}, expire={expire}: {error}"
+            );
+            assert_eq!(io.connections.load(Ordering::Acquire), 1);
+        }
+    }
+
+    #[test]
     fn prepared_bsl_sender_rejects_success_before_start() {
         for wrong_admitted in [false, true] {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();

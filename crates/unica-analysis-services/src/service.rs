@@ -1140,14 +1140,16 @@ impl SystemServiceConnector {
             .map_or(SERVICE_CONNECT_TIMEOUT, |remaining| {
                 remaining.min(SERVICE_CONNECT_TIMEOUT)
             });
-        let mut stream = io
-            .connect(record.port, connect_timeout)
-            .map_err(|error| format!("failed to connect workspace service: {error}"))?;
+        let mut stream = match io.connect(record.port, connect_timeout) {
+            Ok(stream) => stream,
+            Err(error) => {
+                cancellation_error(cancellation)?;
+                remaining_or_timeout(&deadline, clock)?;
+                return Err(format!("failed to connect workspace service: {error}"));
+            }
+        };
         cancellation_error(cancellation)?;
         remaining_or_timeout(&deadline, clock)?;
-        stream
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .map_err(|error| format!("failed to configure workspace service stream: {error}"))?;
         let bytes = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
         write_with_deadline(stream.as_mut(), &bytes, &deadline, clock, cancellation)
             .and_then(|_| {
