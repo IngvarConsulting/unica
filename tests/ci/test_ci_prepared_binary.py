@@ -145,12 +145,13 @@ class PreparedBinaryTests(unittest.TestCase):
         script = "\n".join([
             "import json, os, sys",
             "sys.path.insert(0, sys.argv[1])",
-            "from test_product_contracts import ProductContractTests",
+            "from test_product_contracts import ProductContractTests, RELATIVE_TOOL_CONTRACT_TIMEOUT_SECONDS",
             "case = ProductContractTests('test_tool_help_contracts_accept_relative_tools_dir')",
             "with case.relative_tool_contract_fixture() as (cwd, tools):",
             "    files = sorted((cwd / tools).iterdir())",
             "    print(json.dumps({'files': [str(p) for p in files], 'relative': not tools.is_absolute(),",
-            "                      'executable': all(os.access(p, os.X_OK) for p in files)}), flush=True)",
+            "                      'executable': all(os.access(p, os.X_OK) for p in files),",
+            "                      'innerTimeout': RELATIVE_TOOL_CONTRACT_TIMEOUT_SECONDS}), flush=True)",
             "    if sys.stdin.readline().strip() != 'release': raise RuntimeError('barrier not released')",
             "    case.assertEqual(case.check_relative_tool_contracts(cwd, tools), [])",
         ])
@@ -160,12 +161,16 @@ class PreparedBinaryTests(unittest.TestCase):
             stderr=subprocess.PIPE, text=True,
         )
         released = False
+        completion_timeout = 15
         with ThreadPoolExecutor(max_workers=1) as reader:
             try:
                 # The timeout is a hang fuse, not synchronization by elapsed time.
                 ready = reader.submit(child.stdout.readline).result(timeout=15)
                 self.assertTrue(ready, "fixture child exited before the barrier")
                 held = json.loads(ready)
+                # The inner checker must report its own timeout and diagnostics
+                # before the outer process/cleanup fuse can terminate it.
+                completion_timeout = held["innerTimeout"] + 15
                 files = [Path(p) for p in held["files"]]
                 self.assertEqual(
                     {p.name for p in files},
@@ -178,14 +183,14 @@ class PreparedBinaryTests(unittest.TestCase):
                 self.assertEqual(observed, self.identity)
                 self.assertEqual(product.verify(self.manifest, checkout, expected=observed), self.binary.resolve())
                 released = True
-                stdout, stderr = child.communicate("release\n", timeout=15)
+                stdout, stderr = child.communicate("release\n", timeout=completion_timeout)
                 self.assertEqual(child.returncode, 0, stdout + stderr)
             finally:
                 if child.poll() is None:
                     try:
                         # Let the creator leave its context and remove fixtures
                         # even when the parent's identity assertion fails.
-                        child.communicate(None if released else "release\n", timeout=15)
+                        child.communicate(None if released else "release\n", timeout=completion_timeout)
                     except subprocess.TimeoutExpired:
                         child.kill()
                 child.wait(timeout=15)

@@ -30,6 +30,7 @@ RLM_FAKE_HANG_SECONDS = 30
 # Предохранитель ожидания старта фейка и выхода его дерева, не проверяемый
 # срок; он короче зависания, чтобы не спутать «убит» с «сам доспал».
 RLM_FAKE_EVENT_FUSE_SECONDS = RLM_FAKE_HANG_SECONDS / 2
+RELATIVE_TOOL_CONTRACT_TIMEOUT_SECONDS = 15
 RMCP_INTERFACE_ROOT = "crates/unica-coder/src/interfaces/"
 RMCP_CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 RMCP_ALLOWED_FEATURES = ["server", "transport-io"]
@@ -2544,20 +2545,30 @@ fn test_only() { std::process::Command::new("git"); }
     def check_relative_tool_contracts(self, cwd: Path, tools_dir: Path):
         self.assertFalse(tools_dir.is_absolute())
         module_path = REPO_ROOT / "scripts" / "ci" / "check-tool-contracts.py"
-        checked = subprocess.run(
-            [sys.executable, "-c", "\n".join([
-                "import importlib.util, json, sys",
-                "from pathlib import Path",
-                "spec = importlib.util.spec_from_file_location('contracts', sys.argv[1])",
-                "module = importlib.util.module_from_spec(spec)",
-                "spec.loader.exec_module(module)",
-                "print(json.dumps(module.check_tool_contracts(Path(sys.argv[2]))))",
-            ]), str(module_path), str(tools_dir)],
-            cwd=cwd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=15,
+        try:
+            checked = subprocess.run(
+                [sys.executable, "-c", "\n".join([
+                    "import importlib.util, json, sys",
+                    "from pathlib import Path",
+                    "spec = importlib.util.spec_from_file_location('contracts', sys.argv[1])",
+                    "module = importlib.util.module_from_spec(spec)",
+                    "spec.loader.exec_module(module)",
+                    "print(json.dumps(module.check_tool_contracts(Path(sys.argv[2]))))",
+                ]), str(module_path), str(tools_dir)],
+                cwd=cwd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=RELATIVE_TOOL_CONTRACT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            self.fail(
+                f"relative tools child timed out after {error.timeout}s\n"
+                f"stdout: {error.stdout!r}\nstderr: {error.stderr!r}"
+            )
+        self.assertEqual(
+            checked.returncode, 0,
+            f"relative tools child failed\nstdout:\n{checked.stdout}\nstderr:\n{checked.stderr}",
         )
         return json.loads(checked.stdout)
 
@@ -2566,6 +2577,34 @@ fn test_only() { std::process::Command::new("git"); }
             errors = self.check_relative_tool_contracts(cwd, tools_dir)
 
         self.assertEqual(errors, [])
+
+    def test_relative_tool_contract_child_failure_preserves_captured_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checker = root / "scripts" / "ci" / "check-tool-contracts.py"
+            checker.parent.mkdir(parents=True)
+            checker.write_text(
+                "print('unexpected-child-stdout', flush=True)\n"
+                "raise RuntimeError('unexpected-child-stderr')\n",
+                encoding="utf-8",
+            )
+            with patch.dict(globals(), {"REPO_ROOT": root}):
+                with self.assertRaises(Exception) as failure:
+                    self.check_relative_tool_contracts(root, Path("tools"))
+            self.assertIsInstance(failure.exception, AssertionError)
+            self.assertIn("unexpected-child-stdout", str(failure.exception))
+            self.assertIn("unexpected-child-stderr", str(failure.exception))
+
+    def test_relative_tool_contract_child_timeout_preserves_captured_output(self):
+        timeout = subprocess.TimeoutExpired(
+            ["child"], 15, output=b"timeout-child-stdout", stderr=b"timeout-child-stderr",
+        )
+        with patch.object(subprocess, "run", side_effect=timeout):
+            with self.assertRaises(Exception) as failure:
+                self.check_relative_tool_contracts(Path.cwd(), Path("tools"))
+        self.assertIsInstance(failure.exception, AssertionError)
+        self.assertIn("timeout-child-stdout", str(failure.exception))
+        self.assertIn("timeout-child-stderr", str(failure.exception))
 
     def test_tool_help_contracts_report_missing_expected_flag(self) -> None:
         module = load_contract_module()
