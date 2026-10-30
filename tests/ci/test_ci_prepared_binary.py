@@ -1,11 +1,13 @@
 """Prepared binary consumers reject stale, test-feature and substituted bytes."""
 from __future__ import annotations
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import io
 import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -126,6 +128,84 @@ class PreparedBinaryTests(unittest.TestCase):
             self.assertNotEqual(before, product.source_digest(self.root))
             source.unlink()
             self.assertNotEqual(before, product.source_digest(self.root))
+
+    def test_relative_tools_fixture_keeps_shared_checkout_identity_while_alive(self):
+        checkout = self.root / "checkout"
+        checkout.mkdir()
+        source = checkout / "source.rs"
+        source.write_text("original source")
+        for command in (["git", "init", "-q"], ["git", "add", "source.rs"]):
+            subprocess.run(command, cwd=checkout, check=True, capture_output=True)
+        before = product.source_digest(checkout)
+        self.identity["sourceDigest"] = before
+        self.save()
+
+        # Invoke the same creator as the product case, under a shared checkout
+        # cwd. Hold its real files until the parent finishes verification.
+        script = "\n".join([
+            "import json, os, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "from test_product_contracts import ProductContractTests",
+            "case = ProductContractTests('test_tool_help_contracts_accept_relative_tools_dir')",
+            "with case.relative_tool_contract_fixture() as (cwd, tools):",
+            "    files = sorted((cwd / tools).iterdir())",
+            "    print(json.dumps({'files': [str(p) for p in files], 'relative': not tools.is_absolute(),",
+            "                      'executable': all(os.access(p, os.X_OK) for p in files)}), flush=True)",
+            "    if sys.stdin.readline().strip() != 'release': raise RuntimeError('barrier not released')",
+            "    case.assertEqual(case.check_relative_tool_contracts(cwd, tools), [])",
+        ])
+        child = subprocess.Popen(
+            [sys.executable, "-c", script, str(Path(__file__).resolve().parent)],
+            cwd=checkout, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+        )
+        released = False
+        with ThreadPoolExecutor(max_workers=1) as reader:
+            try:
+                # The timeout is a hang fuse, not synchronization by elapsed time.
+                ready = reader.submit(child.stdout.readline).result(timeout=15)
+                self.assertTrue(ready, "fixture child exited before the barrier")
+                held = json.loads(ready)
+                files = [Path(p) for p in held["files"]]
+                self.assertEqual(
+                    {p.name for p in files},
+                    {"bsl-analyzer.py", "rlm-bsl-index.py", "rlm-bsl-mcp.py", "v8-runner.py"},
+                )
+                self.assertTrue(held["relative"])
+                self.assertTrue(held["executable"])
+                self.assertTrue(all(p.is_file() for p in files))
+                observed = {**self.identity, "sourceDigest": product.source_digest(checkout)}
+                self.assertEqual(observed, self.identity)
+                self.assertEqual(product.verify(self.manifest, checkout, expected=observed), self.binary.resolve())
+                released = True
+                stdout, stderr = child.communicate("release\n", timeout=15)
+                self.assertEqual(child.returncode, 0, stdout + stderr)
+            finally:
+                if child.poll() is None:
+                    try:
+                        # Let the creator leave its context and remove fixtures
+                        # even when the parent's identity assertion fails.
+                        child.communicate(None if released else "release\n", timeout=15)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                child.wait(timeout=15)
+                for stream in (child.stdin, child.stdout, child.stderr):
+                    stream.close()
+        self.assertTrue(all(not p.exists() for p in files))
+        self.assertEqual(product.source_digest(checkout), before)
+
+        # Isolation must not hide real modified or newly introduced source input.
+        for change in ("tracked", "untracked"):
+            with self.subTest(source_change=change):
+                changed = source if change == "tracked" else checkout / "new.rs"
+                changed.write_text("changed source")
+                observed = {**self.identity, "sourceDigest": product.source_digest(checkout)}
+                with self.assertRaisesRegex(ValueError, "another source tree"):
+                    product.verify(self.manifest, checkout, expected=observed)
+                if change == "tracked":
+                    source.write_text("original source")
+                else:
+                    changed.unlink()
 
 
 if __name__ == "__main__":

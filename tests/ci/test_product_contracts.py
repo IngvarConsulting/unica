@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 import gc
 import importlib.util
 import json
@@ -2512,11 +2512,12 @@ fn test_only() { std::process::Command::new("git"); }
             errors,
         )
 
-    def test_tool_help_contracts_accept_relative_tools_dir(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
-            tools_dir = Path(tmp)
+    @contextmanager
+    def relative_tool_contract_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            tools_dir = cwd / "tools"
+            tools_dir.mkdir()
             self.write_executable(
                 tools_dir,
                 "bsl-analyzer",
@@ -2538,7 +2539,31 @@ fn test_only() { std::process::Command::new("git"); }
                 "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push'\n",
             )
 
-            errors = module.check_tool_contracts(tools_dir.relative_to(Path.cwd()))
+            yield cwd, tools_dir.relative_to(cwd)
+
+    def check_relative_tool_contracts(self, cwd: Path, tools_dir: Path):
+        self.assertFalse(tools_dir.is_absolute())
+        module_path = REPO_ROOT / "scripts" / "ci" / "check-tool-contracts.py"
+        checked = subprocess.run(
+            [sys.executable, "-c", "\n".join([
+                "import importlib.util, json, sys",
+                "from pathlib import Path",
+                "spec = importlib.util.spec_from_file_location('contracts', sys.argv[1])",
+                "module = importlib.util.module_from_spec(spec)",
+                "spec.loader.exec_module(module)",
+                "print(json.dumps(module.check_tool_contracts(Path(sys.argv[2]))))",
+            ]), str(module_path), str(tools_dir)],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return json.loads(checked.stdout)
+
+    def test_tool_help_contracts_accept_relative_tools_dir(self) -> None:
+        with self.relative_tool_contract_fixture() as (cwd, tools_dir):
+            errors = self.check_relative_tool_contracts(cwd, tools_dir)
 
         self.assertEqual(errors, [])
 
