@@ -1002,11 +1002,17 @@ fn serve_lsp_request(
         result.map_or_else(refused, |()| V5ServerResponse::LspAccepted {})
     };
     match request {
-        V5ClientRequest::LspOpen { workspace_folders } => {
+        V5ClientRequest::LspOpen {
+            workspace_folders,
+            diagnostics,
+        } => {
             if guard.owned.is_some() {
                 return refused(V5LspFailure::DuplicateRequest);
             }
-            match guard.lane.open(&workspace_folders, deadlines.operation) {
+            match guard
+                .lane
+                .open(&workspace_folders, diagnostics, deadlines.operation)
+            {
                 Ok((session, opening)) => {
                     guard.owned = Some(session.clone());
                     V5ServerResponse::LspOpened {

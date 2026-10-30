@@ -466,6 +466,32 @@ impl DiagnosticProviderDescriptor {
     }
 }
 
+/// A provider finding in Unica's own words, for surfaces that must not show
+/// the provider (the editor, #2176): a Unica code and a fixed Unica message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorFinding {
+    pub code: &'static str,
+    pub message: &'static str,
+}
+
+impl EditorFinding {
+    /// The code of a finding Unica has no word for yet.
+    pub const GENERIC_CODE: &'static str = "bsl.finding";
+
+    /// A finding Unica has no word for: only its severity is told.
+    pub fn generic(severity: DiagnosticSeverity) -> Self {
+        Self {
+            code: Self::GENERIC_CODE,
+            message: match severity {
+                DiagnosticSeverity::Error => "Ошибка, найденная анализом кода",
+                DiagnosticSeverity::Warning => "Предупреждение анализа кода",
+                DiagnosticSeverity::Info => "Замечание анализа кода",
+                DiagnosticSeverity::Hint => "Подсказка анализа кода",
+            },
+        }
+    }
+}
+
 pub trait DiagnosticProvider: Send + Sync {
     fn descriptor(&self) -> &'static DiagnosticProviderDescriptor;
 
@@ -476,6 +502,13 @@ pub trait DiagnosticProvider: Send + Sync {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> DiagnosticProviderOutcome;
+
+    /// The Unica code and message of one of this provider's findings. A
+    /// provider without its own table answers generically.
+    fn editor_finding(&self, code: &str, severity: DiagnosticSeverity) -> EditorFinding {
+        let _ = code;
+        EditorFinding::generic(severity)
+    }
 }
 
 pub struct DiagnosticProviderRegistry {

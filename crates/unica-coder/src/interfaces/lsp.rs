@@ -19,9 +19,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unica_daemon::client_v5::{V5DaemonClient, V5DaemonProcessOwner, V5LspExchangeError};
 use unica_daemon::protocol_v5::lsp::{
-    V5LspCall, V5LspContentChange, V5LspFailure, V5LspMessageLevel, V5LspNotification,
-    V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange, V5LspServerNotification, V5LspSessionId,
-    V5LspTextSync, V5LspWorkspaceFolder,
+    V5LspCall, V5LspContentChange, V5LspDiagnosticsDelivery, V5LspFailure, V5LspMessageLevel,
+    V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange,
+    V5LspServerNotification, V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
 };
 use unica_daemon::protocol_v5::V5EndpointRecord;
 
@@ -46,6 +46,7 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const SERVER_NOT_INITIALIZED: i64 = -32002;
 const REQUEST_FAILED: i64 = -32803;
+const SERVER_CANCELLED: i64 = -32802;
 const CONTENT_MODIFIED: i64 = -32801;
 const REQUEST_CANCELLED: i64 = -32800;
 
@@ -93,6 +94,7 @@ pub(crate) fn serve(
         phase: Phase::Uninitialized,
         in_flight: Arc::new(Mutex::new(HashMap::new())),
         next_request: 0,
+        unsynced: std::collections::HashSet::new(),
     };
     let code = loop {
         let body = match codec::read_message(&mut input) {
@@ -126,6 +128,9 @@ struct Frontend {
     phase: Phase,
     in_flight: InFlight,
     next_request: u64,
+    /// Documents whose text the daemon lost track of. Requests about them
+    /// are refused until the editor opens them again.
+    unsynced: std::collections::HashSet<String>,
 }
 
 enum Phase {
@@ -174,7 +179,8 @@ impl Frontend {
         match (method, id) {
             (Some(method), Some(id)) => self.request(method, id, params),
             (Some(method), None) => self.notification(method, params),
-            // Answers to server requests: this server sends none.
+            // Answers to server requests: the server asks only for a refresh
+            // of diagnostics and needs nothing back.
             (None, Some(_))
                 if message.get("result").is_some() || message.get("error").is_some() =>
             {
@@ -227,6 +233,12 @@ impl Frontend {
                     None => self.send(error_response(id, INVALID_PARAMS, "invalid content params")),
                 }
             }
+            (Phase::Running(_), method) if document_call(method, &Value::Null).is_some() => {
+                match document_call(method, &params).flatten() {
+                    Some(call) => self.dispatch(id, call),
+                    None => self.send(error_response(id, INVALID_PARAMS, "invalid params")),
+                }
+            }
             (Phase::Running(_), _) => {
                 self.send(error_response(
                     id,
@@ -254,7 +266,10 @@ impl Frontend {
                 }
                 Flow::Continue
             }
-            "textDocument/didOpen" | "textDocument/didChange" | "textDocument/didClose" => {
+            "textDocument/didOpen"
+            | "textDocument/didChange"
+            | "textDocument/didSave"
+            | "textDocument/didClose" => {
                 let Phase::Running(_) = self.phase else {
                     return Flow::Continue;
                 };
@@ -263,10 +278,20 @@ impl Frontend {
                 let Some(notification) = notification else {
                     return self.forget_document(&params);
                 };
-                if !matches!(notification, V5LspNotification::DidOpen { .. }) {
+                if matches!(
+                    notification,
+                    V5LspNotification::DidChange { .. } | V5LspNotification::DidClose { .. }
+                ) {
                     // A request about an older version would answer about a
                     // state the editor no longer has.
                     self.withdraw_document(notification.document_uri());
+                }
+                if matches!(
+                    notification,
+                    V5LspNotification::DidOpen { .. } | V5LspNotification::DidClose { .. }
+                ) {
+                    // Opening sends the whole text again; closing ends it.
+                    self.unsynced.remove(notification.document_uri());
                 }
                 self.forward(notification)
             }
@@ -276,13 +301,14 @@ impl Frontend {
 
     fn initialize(&mut self, id: Value, params: &Value) -> Flow {
         let deadline = Instant::now() + LSP_SESSION_EXCHANGE_TIMEOUT;
+        let delivery = DiagnosticDelivery::of_client(params);
         let opened = self
             .client
             .connect_peer_before(deadline)
             .map_err(|error| V5LspExchangeError::Transport(error.to_string()))
             .and_then(|mut anchor| {
                 let (session, opening) =
-                    anchor.lsp_open_before(workspace_folders(params), deadline)?;
+                    anchor.lsp_open_before(workspace_folders(params), delivery.wire(), deadline)?;
                 Ok((anchor, session, opening))
             });
         let (anchor, session, opening) = match opened {
@@ -303,6 +329,7 @@ impl Frontend {
             Arc::clone(&self.output),
             Arc::clone(&poll_stop),
             Arc::clone(&self.session_lost),
+            delivery,
         );
         self.phase = Phase::Running(Box::new(Session {
             id: session,
@@ -322,6 +349,17 @@ impl Frontend {
     }
 
     fn dispatch(&mut self, id: Value, call: V5LspCall) {
+        if call
+            .document_uri()
+            .is_some_and(|uri| self.unsynced.contains(uri))
+        {
+            self.send(error_response(
+                id,
+                CONTENT_MODIFIED,
+                "document is out of sync",
+            ));
+            return;
+        }
         let Phase::Running(session) = &self.phase else {
             return;
         };
@@ -403,6 +441,7 @@ impl Frontend {
         };
         eprintln!("unica lsp ignored a document notification it cannot pass on");
         self.withdraw_document(&uri);
+        self.unsynced.insert(uri.clone());
         let close = V5LspNotification::DidClose { uri };
         if close.validate().is_err() {
             return Flow::Continue;
@@ -415,15 +454,29 @@ impl Frontend {
             return Flow::Continue;
         };
         let deadline = Instant::now() + LSP_SESSION_EXCHANGE_TIMEOUT;
+        let changed = match &notification {
+            V5LspNotification::DidOpen { uri, .. } | V5LspNotification::DidChange { uri, .. } => {
+                Some(uri.clone())
+            }
+            // A refused save or close leaves no buffer behind the editor.
+            V5LspNotification::DidSave { .. } | V5LspNotification::DidClose { .. } => None,
+        };
         match session
             .anchor
             .lsp_notify_before(&session.id, notification, deadline)
         {
             Ok(()) => Flow::Continue,
-            // The daemon refused this document; the session stays.
+            // The daemon refused this document; the session stays. A refused
+            // change leaves the daemon's buffer behind the editor's text, so
+            // the document is dropped there rather than answered from it.
             Err(V5LspExchangeError::Refused(failure))
                 if failure != V5LspFailure::SessionUnknown =>
             {
+                // The daemon closed the document on its side.
+                if let Some(uri) = changed {
+                    self.withdraw_document(&uri);
+                    self.unsynced.insert(uri);
+                }
                 Flow::Continue
             }
             Err(error) => Flow::Fail(exchange_message(&error)),
@@ -485,17 +538,86 @@ fn call_daemon(
         Ok(V5LspOutcome::Text { text }) => {
             json!({"jsonrpc": "2.0", "id": id, "result": {"text": text}})
         }
+        Ok(V5LspOutcome::Json { value }) => json!({"jsonrpc": "2.0", "id": id, "result": value}),
         Ok(V5LspOutcome::Cancelled {}) => {
             error_response(id, REQUEST_CANCELLED, "request cancelled")
         }
         Ok(V5LspOutcome::Failed {
             failure: V5LspFailure::NotSupported,
         }) => error_response(id, METHOD_NOT_FOUND, "method is not supported"),
+        // The server gave up, the editor did not cancel.
+        Ok(V5LspOutcome::Failed {
+            failure: V5LspFailure::DeadlineExceeded,
+        }) => error_response(
+            id,
+            SERVER_CANCELLED,
+            &failure_message(V5LspFailure::DeadlineExceeded),
+        ),
         Ok(V5LspOutcome::Failed { failure }) => {
             error_response(id, REQUEST_FAILED, &failure_message(failure))
         }
         Err(error) => error_response(id, REQUEST_FAILED, &exchange_message(&error)),
     }
+}
+
+/// How an editor takes diagnostics (#2176): one that asks for them itself
+/// is never sent them as well, and is asked to ask again when a background
+/// analysis finishes, if it can be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiagnosticDelivery {
+    Push,
+    Pull { refresh: bool },
+}
+
+impl DiagnosticDelivery {
+    fn of_client(initialize: &Value) -> Self {
+        let capabilities = &initialize["capabilities"];
+        if capabilities["textDocument"]["diagnostic"].is_object() {
+            Self::Pull {
+                refresh: capabilities["workspace"]["diagnostics"]["refreshSupport"] == true,
+            }
+        } else {
+            Self::Push
+        }
+    }
+
+    fn wire(self) -> V5LspDiagnosticsDelivery {
+        match self {
+            Self::Push => V5LspDiagnosticsDelivery::Push,
+            Self::Pull { .. } => V5LspDiagnosticsDelivery::Pull,
+        }
+    }
+}
+
+/// The editor messages of one batch of server notifications. A pull editor
+/// is asked once per batch to refresh, however many analyses finished.
+fn server_messages(
+    items: Vec<V5LspServerNotification>,
+    delivery: DiagnosticDelivery,
+    refreshes: &mut u64,
+) -> Vec<Value> {
+    let mut messages = Vec::with_capacity(items.len());
+    let mut refresh = false;
+    for item in items {
+        match (&item, delivery) {
+            (
+                V5LspServerNotification::PublishDiagnostics { analysed, .. },
+                DiagnosticDelivery::Pull { refresh: can },
+            ) => {
+                refresh |= *analysed && can;
+            }
+            _ => messages.push(server_notification_json(item)),
+        }
+    }
+    if refresh {
+        *refreshes += 1;
+        messages.push(json!({
+            "jsonrpc": "2.0",
+            "id": format!("unica-diagnostic-refresh-{refreshes}"),
+            "method": "workspace/diagnostic/refresh",
+        }));
+    }
+    messages
 }
 
 fn spawn_poller(
@@ -504,12 +626,14 @@ fn spawn_poller(
     output: Output,
     stop: Arc<AtomicBool>,
     session_lost: SessionLost,
+    delivery: DiagnosticDelivery,
 ) {
     let _ = thread::Builder::new()
         .name("unica-lsp-notifications".into())
         .spawn(move || {
             let mut peer: Option<V5DaemonProcessOwner> = None;
             let mut failures = 0;
+            let mut refreshes = 0;
             while !stop.load(Ordering::Acquire) {
                 let deadline =
                     Instant::now() + Duration::from_millis(LSP_POLL_WAIT_MS) + LSP_EXCHANGE_MARGIN;
@@ -529,8 +653,8 @@ fn spawn_poller(
                 match polled {
                     Ok(items) => {
                         failures = 0;
-                        for item in items {
-                            write(&output, &server_notification_json(item));
+                        for message in server_messages(items, delivery, &mut refreshes) {
+                            write(&output, &message);
                         }
                     }
                     // The daemon answered: this session is gone there.
@@ -584,6 +708,8 @@ fn failure_code(failure: V5LspFailure) -> &'static str {
         V5LspFailure::DeadlineExceeded => "lsp_deadline_exceeded",
         V5LspFailure::Unavailable => "lsp_unavailable",
         V5LspFailure::WorkspaceUnavailable => "lsp_workspace_unavailable",
+        V5LspFailure::DocumentUnknown => "lsp_document_unknown",
+        V5LspFailure::Incomplete => "lsp_answer_incomplete",
     }
 }
 
@@ -608,10 +734,12 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
         V5LspTextSync::Incremental => Some(2),
     };
     if let Some(change) = sync {
-        result.insert(
-            "textDocumentSync".into(),
-            json!({"openClose": true, "change": change}),
-        );
+        let mut sync = json!({"openClose": true, "change": change});
+        // A save starts the analysis of the saved text.
+        if capabilities.diagnostics {
+            sync["save"] = json!(true);
+        }
+        result.insert("textDocumentSync".into(), sync);
     }
     if capabilities.hover {
         result.insert("hoverProvider".into(), json!(true));
@@ -620,6 +748,45 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
         result.insert(
             "workspace".into(),
             json!({"textDocumentContent": {"schemes": ["unica"]}}),
+        );
+    }
+    if capabilities.document_symbols {
+        result.insert("documentSymbolProvider".into(), json!(true));
+    }
+    if capabilities.folding_ranges {
+        result.insert("foldingRangeProvider".into(), json!(true));
+    }
+    if let Some(legend) = capabilities.semantic_tokens_legend {
+        result.insert(
+            "semanticTokensProvider".into(),
+            json!({"legend": legend, "full": true}),
+        );
+    }
+    if capabilities.definition {
+        result.insert("definitionProvider".into(), json!(true));
+    }
+    if capabilities.references {
+        result.insert("referencesProvider".into(), json!(true));
+    }
+    if capabilities.call_hierarchy {
+        result.insert("callHierarchyProvider".into(), json!(true));
+    }
+    if capabilities.completion {
+        result.insert(
+            "completionProvider".into(),
+            json!({"triggerCharacters": ["."], "resolveProvider": true}),
+        );
+    }
+    if capabilities.diagnostics {
+        result.insert(
+            "diagnosticProvider".into(),
+            json!({"interFileDependencies": false, "workspaceDiagnostics": false}),
+        );
+    }
+    if capabilities.signature_help {
+        result.insert(
+            "signatureHelpProvider".into(),
+            json!({"triggerCharacters": ["(", ","]}),
         );
     }
     let workspaces = opening
@@ -654,6 +821,11 @@ fn server_notification_json(notification: V5LspServerNotification) -> Value {
                 "params": {"type": kind, "message": message},
             })
         }
+        V5LspServerNotification::PublishDiagnostics { params, .. } => json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": params,
+        }),
     }
 }
 
@@ -697,6 +869,69 @@ fn position(value: &Value) -> Option<V5LspPosition> {
     })
 }
 
+/// A request about one document. `None` — not such a method; `Some(None)`
+/// — the method, with params it cannot be built from.
+fn document_call(method: &str, params: &Value) -> Option<Option<V5LspCall>> {
+    let uri = || document_uri(params);
+    Some(match method {
+        "textDocument/documentSymbol" => uri().map(|uri| V5LspCall::DocumentSymbol { uri }),
+        "textDocument/foldingRange" => uri().map(|uri| V5LspCall::FoldingRange { uri }),
+        "textDocument/semanticTokens/full" => {
+            uri().map(|uri| V5LspCall::SemanticTokensFull { uri })
+        }
+        "textDocument/diagnostic" => uri().map(|uri| V5LspCall::Diagnostic {
+            uri,
+            previous_result_id: params
+                .get("previousResultId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }),
+        "textDocument/signatureHelp" => uri().and_then(|uri| {
+            Some(V5LspCall::SignatureHelp {
+                uri,
+                position: position(params.get("position")?)?,
+            })
+        }),
+        "textDocument/completion" => uri().and_then(|uri| {
+            Some(V5LspCall::Completion {
+                uri,
+                position: position(params.get("position")?)?,
+            })
+        }),
+        "textDocument/definition" => uri().and_then(|uri| {
+            Some(V5LspCall::Definition {
+                uri,
+                position: position(params.get("position")?)?,
+            })
+        }),
+        "textDocument/references" => uri().and_then(|uri| {
+            Some(V5LspCall::References {
+                uri,
+                position: position(params.get("position")?)?,
+            })
+        }),
+        "textDocument/prepareCallHierarchy" => uri().and_then(|uri| {
+            Some(V5LspCall::PrepareCallHierarchy {
+                uri,
+                position: position(params.get("position")?)?,
+            })
+        }),
+        "callHierarchy/incomingCalls" => params
+            .get("item")
+            .filter(|item| item.is_object())
+            .map(|item| V5LspCall::IncomingCalls { item: item.clone() }),
+        "callHierarchy/outgoingCalls" => params
+            .get("item")
+            .filter(|item| item.is_object())
+            .map(|item| V5LspCall::OutgoingCalls { item: item.clone() }),
+        // The params are the item the service gave, as the editor returns it.
+        "completionItem/resolve" => params.is_object().then(|| V5LspCall::CompletionResolve {
+            item: params.clone(),
+        }),
+        _ => return None,
+    })
+}
+
 fn hover_call(params: &Value) -> Option<V5LspCall> {
     Some(V5LspCall::Hover {
         uri: document_uri(params)?,
@@ -737,6 +972,7 @@ fn document_notification(method: &str, params: &Value) -> Option<V5LspNotificati
                 })
                 .collect::<Option<Vec<_>>>()?,
         }),
+        "textDocument/didSave" => Some(V5LspNotification::DidSave { uri }),
         "textDocument/didClose" => Some(V5LspNotification::DidClose { uri }),
         _ => None,
     }

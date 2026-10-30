@@ -43,6 +43,9 @@ struct IndexedPage {
     title: String,
     snippet: String,
     signature: Option<Signature>,
+    /// `Синтаксис: Имя(<Параметр>, ...)` cut from the whole page: the
+    /// snippet may end before it. Empty on a page without one.
+    syntax: String,
 }
 
 struct IndexedCorpus {
@@ -89,6 +92,7 @@ fn corpus_from_pages(
         .into_iter()
         .map(|page| IndexedPage {
             snippet: page.text.chars().take(SNIPPET_CHARS).collect(),
+            syntax: syntax_line(&page.text),
             path: page.path,
             title: page.title,
             signature: page.signature,
@@ -263,6 +267,116 @@ fn indexed(key: IndexKey, corpora: &InstallationCorpora) -> Arc<InstallationInde
         index: Arc::clone(&index),
     });
     index
+}
+
+/// Вид члена глобального контекста платформы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalContextMemberKind {
+    Method,
+    Property,
+}
+
+/// Член глобального контекста по справке установки: русское и английское
+/// имя и сигнатура метода.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalContextMember {
+    pub kind: GlobalContextMemberKind,
+    pub name_ru: String,
+    pub name_en: Option<String>,
+    pub signature_ru: Option<String>,
+    pub signature_en: Option<String>,
+    /// Parameter names of the first syntax variant, as the page writes
+    /// them (`Значение`); empty for a property or a method without any.
+    pub parameters: Vec<String>,
+}
+
+/// Методы и свойства глобального контекста установки `root`. Читаются из
+/// того же индекса синтакс-помощника, что и поиск, поэтому вторая выборка
+/// той же установки не перечитывает контейнеры.
+pub fn global_context_members(root: &Path) -> Result<Vec<GlobalContextMember>, String> {
+    let corpora =
+        discover(root, "ru").map_err(|error| format!("установка не разобрана: {error:?}"))?;
+    let index = indexed(IndexKey::for_corpora(root, &corpora), &corpora);
+    let syntax = &index.corpora[0];
+    let mut members = syntax
+        .pages
+        .iter()
+        .filter_map(|page| {
+            let rest = page.path.strip_prefix("objects/Global context/")?;
+            let kind = if rest.starts_with("methods/") {
+                GlobalContextMemberKind::Method
+            } else if rest.starts_with("properties/") {
+                GlobalContextMemberKind::Property
+            } else {
+                return None;
+            };
+            let (name_ru, name_en) = global_context_names(&page.title)?;
+            let parameters = syntax_parameters(&page.syntax, &name_ru);
+            Some(GlobalContextMember {
+                parameters,
+                kind,
+                name_ru,
+                name_en,
+                signature_ru: page.signature.as_ref().and_then(|value| value.ru.clone()),
+                signature_en: page.signature.as_ref().and_then(|value| value.en.clone()),
+            })
+        })
+        .collect::<Vec<_>>();
+    members.sort_by(|a, b| a.name_ru.cmp(&b.name_ru));
+    members.dedup_by(|a, b| a.name_ru == b.name_ru && a.kind == b.kind);
+    Ok(members)
+}
+
+/// `Синтаксис:` of `text` up to the first closing parenthesis after it.
+fn syntax_line(text: &str) -> String {
+    let Some(start) = text.find("Синтаксис:") else {
+        return String::new();
+    };
+    let rest = &text[start..];
+    rest.find(')').map_or(rest, |end| &rest[..=end]).to_owned()
+}
+
+/// Параметры из `Синтаксис: Сообщить(<ТекстСообщения>, <Статус>)` начала
+/// страницы. Угловые скобки в тексте страницы экранированы.
+fn syntax_parameters(text: &str, name: &str) -> Vec<String> {
+    let text = text.replace("&lt;", "<").replace("&gt;", ">");
+    let Some(syntax) = text
+        .split_once("Синтаксис:")
+        .map(|(_, rest)| rest.trim_start())
+        .and_then(|rest| rest.strip_prefix(name))
+        .and_then(|rest| rest.strip_prefix('('))
+        .and_then(|rest| rest.split_once(')'))
+        .map(|(arguments, _)| arguments.to_owned())
+    else {
+        return Vec::new();
+    };
+    syntax
+        .split(',')
+        .map(|argument| {
+            argument
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_owned()
+        })
+        .filter(|argument| !argument.is_empty())
+        .collect()
+}
+
+/// `Глобальный контекст.СтрНайти (Global context.StrFind)` — имена члена;
+/// английский заголовок без русского даёт английское имя за русское.
+fn global_context_names(title: &str) -> Option<(String, Option<String>)> {
+    let (first, rest) = match title.split_once(" (") {
+        Some((first, rest)) => (first, Some(rest.trim_end_matches(')'))),
+        None => (title, None),
+    };
+    let member = |text: &str| {
+        text.rsplit_once('.')
+            .map(|(_, name)| name.trim().to_owned())
+    };
+    let name = member(first)?;
+    let english = rest.and_then(member).filter(|english| *english != name);
+    Some((name, english))
 }
 
 /// Сигнатура на локали КОРПУСА, а не запроса. `.st` хранит обе локали, поэтому
@@ -1907,5 +2021,83 @@ mod tests {
             syntax.status
         );
         assert_eq!(syntax.hits.len(), 1, "попадание приходит из индекса");
+    }
+}
+
+#[cfg(test)]
+mod global_context_tests {
+    use super::global_context_names;
+
+    #[test]
+    fn member_names_come_from_both_halves_of_the_title() {
+        assert_eq!(
+            global_context_names("Глобальный контекст.СтрНайти (Global context.StrFind)"),
+            Some(("СтрНайти".to_owned(), Some("StrFind".to_owned())))
+        );
+        assert_eq!(
+            global_context_names("Global context.Message"),
+            Some(("Message".to_owned(), None))
+        );
+        assert_eq!(global_context_names("Без точки"), None);
+    }
+
+    #[test]
+    fn parameters_come_from_the_syntax_line() {
+        let text = "Глобальный контекст.Сообщить Доступен, начиная с версии 8.0. Синтаксис: Сообщить(&lt;ТекстСообщения&gt;, &lt;Статус&gt;) Параметры: &lt;ТекстСообщения&gt;";
+        assert_eq!(
+            super::syntax_parameters(text, "Сообщить"),
+            ["ТекстСообщения", "Статус"]
+        );
+        assert!(super::syntax_parameters("Синтаксис: ТекущаяДата()", "ТекущаяДата").is_empty());
+        assert!(super::syntax_parameters("без синтаксиса", "Ф").is_empty());
+    }
+
+    #[test]
+    fn parameters_are_read_past_the_search_snippet() {
+        let preamble = "Описание метода. ".repeat(40);
+        let text = format!("{preamble}Синтаксис: Сообщить(&lt;ТекстСообщения&gt;) Параметры:");
+        assert!(text.chars().count() > super::SNIPPET_CHARS);
+        let corpus = super::corpus_from_pages(
+            vec![crate::platform_help::corpus::CorpusPage {
+                path: "objects/Global context/methods/Message.html".into(),
+                title: "Глобальный контекст.Сообщить (Global context.Message)".into(),
+                text,
+                signature: None,
+            }],
+            "ru",
+            Vec::new(),
+        );
+        let page = &corpus.pages[0];
+        assert!(!page.snippet.contains("Синтаксис:"));
+        assert_eq!(
+            super::syntax_parameters(&page.syntax, "Сообщить"),
+            ["ТекстСообщения"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod global_context_installation {
+    /// Point `UNICA_PLATFORM_ROOT` at an installed platform version.
+    #[test]
+    #[ignore = "needs an installed platform in UNICA_PLATFORM_ROOT"]
+    fn an_installation_lists_its_global_context() {
+        let Some(root) = std::env::var_os("UNICA_PLATFORM_ROOT") else {
+            return;
+        };
+        let started = std::time::Instant::now();
+        let members = super::global_context_members(std::path::Path::new(&root)).unwrap();
+        println!("{} members in {:?}", members.len(), started.elapsed());
+        let filled = members
+            .iter()
+            .find(|member| member.name_ru == "ЗначениеЗаполнено")
+            .unwrap();
+        assert_eq!(filled.parameters, ["Значение"]);
+        for name in ["Сообщить", "ТекущаяДата", "НСтр", "Справочники"]
+        {
+            let member = members.iter().find(|member| member.name_ru == name);
+            println!("{name}: {member:?}");
+            assert!(member.is_some(), "{name}");
+        }
     }
 }

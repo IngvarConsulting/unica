@@ -24,6 +24,7 @@ pub(crate) use self::invocation_service::{
 };
 use super::protocol::InvocationRequest;
 use crate::application::tool_contracts::SurfaceRelease;
+pub(super) use invocation_service::closed_daemon_source_relative_path;
 use unica_analysis_services::provider_host::ProviderHostOwner;
 use unica_execution::clock::TokioClock;
 use unica_execution::invocation::InvocationResponseDeadline;
@@ -536,7 +537,9 @@ pub(super) struct V5CanonicalInvocationRuntime {
     /// Saved check results, shared with the read service: one retention
     /// budget covers node checks and the workspace verdict.
     check_snapshots: Arc<unica_navigation::result_store::ViewCursorStore>,
-    workspace_actors: WorkspaceActorRegistry,
+    /// Shared with the daemon's LSP service: an editor's folder and an MCP
+    /// call on the same workspace reach one actor.
+    workspace_actors: Arc<WorkspaceActorRegistry>,
     deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
@@ -866,6 +869,7 @@ fn detached_check_snapshots() -> Arc<unica_navigation::result_store::ViewCursorS
 }
 
 impl V5CanonicalInvocationRuntime {
+    #[cfg(test)]
     pub(super) fn new(service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
         Self::with_workspace_actors(
             service,
@@ -899,10 +903,19 @@ impl V5CanonicalInvocationRuntime {
         self.workspace_actors.has_retained_work()
     }
 
+    #[cfg(test)]
     fn with_workspace_actors(
         service: Arc<dyn CanonicalInvocationService>,
         clock: Arc<dyn Clock>,
         workspace_actors: WorkspaceActorRegistry,
+    ) -> Self {
+        Self::with_shared_workspace_actors(service, clock, Arc::new(workspace_actors))
+    }
+
+    fn with_shared_workspace_actors(
+        service: Arc<dyn CanonicalInvocationService>,
+        clock: Arc<dyn Clock>,
+        workspace_actors: Arc<WorkspaceActorRegistry>,
     ) -> Self {
         let check_snapshots = service
             .check_snapshots()
@@ -1417,8 +1430,9 @@ pub(crate) struct DaemonServerConfig {
     pub(crate) capacity_observer:
         Arc<crate::infrastructure::capacity_observation::CapacityObserver>,
     invocation_service: Arc<dyn CanonicalInvocationService>,
-    /// The LSP service behind the daemon's LSP lane. It declares no
-    /// capability until a product service is composed here (#2171).
+    /// The workspace actors of the daemon, shared by MCP and LSP.
+    workspace_actors: Arc<crate::infrastructure::source_workspace::WorkspaceActorRegistry>,
+    /// The LSP service behind the daemon's LSP lane.
     lsp_host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
     /// Overrides installed by tests and the contract harness. Production
     /// leaves every one of them empty; the fields exist unconditionally so
@@ -1441,18 +1455,25 @@ impl DaemonServerConfig {
     ) -> Self {
         let capacity_observer =
             Arc::new(crate::infrastructure::capacity_observation::CapacityObserver::default());
-        let invocation_service: Arc<dyn CanonicalInvocationService> = Arc::new(
+        let read_service = Arc::new(
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::with_capacity_observer(
                 Arc::clone(&capacity_observer),
             ),
         );
+        let invocation_service: Arc<dyn CanonicalInvocationService> = read_service.clone();
+        let workspace_actors = Arc::new(crate::infrastructure::source_workspace::actor_registry());
+        let lsp_host = Arc::new(super::lsp_host::UnicaLspHost::with_read_service(
+            Arc::clone(&workspace_actors),
+            read_service,
+        ));
         Self {
             state_root,
             core_identity,
             idle_grace,
             capacity_observer,
             invocation_service,
-            lsp_host: Arc::new(unica_daemon::lsp_lane::NoLspHost),
+            workspace_actors,
+            lsp_host,
             invocation_clock: None,
             v5_epoch_clock: None,
             skip_v5_startup_reconciliation: false,
@@ -1607,9 +1628,10 @@ impl DaemonServerConfig {
                 let runtime = match preset {
                     Some(runtime) => runtime,
                     None => Arc::new(
-                        V5CanonicalInvocationRuntime::new(
+                        V5CanonicalInvocationRuntime::with_shared_workspace_actors(
                             source.invocation_service_for_v5(),
                             source.invocation_clock_for_v5(),
+                            Arc::clone(&source.workspace_actors),
                         )
                         .with_root_check_continuations(Arc::clone(&root_check_continuations)),
                     ),
@@ -4225,6 +4247,24 @@ pub(crate) mod actor_capacity_tests {
             Self::over(canonical, service)
         }
 
+        /// The live daemon with the product LSP service over the same actors
+        /// its MCP calls reach.
+        pub(crate) fn start_with_product_lsp(service: Arc<dyn CanonicalInvocationService>) -> Self {
+            let actors = Arc::new(crate::infrastructure::source_workspace::actor_registry());
+            let canonical = Arc::new(V5CanonicalInvocationRuntime::with_shared_workspace_actors(
+                Arc::clone(&service),
+                Arc::new(TokioClock),
+                Arc::clone(&actors),
+            ));
+            let host = Arc::new(super::super::lsp_host::UnicaLspHost::new(actors));
+            Self::over_configured(
+                canonical,
+                service,
+                Some(Arc::new(AtomicBool::new(false))),
+                Some(host),
+            )
+        }
+
         /// The same live daemon with an LSP service the test controls.
         pub(crate) fn start_with_lsp_host(
             service: Arc<dyn CanonicalInvocationService>,
@@ -4296,6 +4336,11 @@ pub(crate) mod actor_capacity_tests {
                 ),
                 None => unica_daemon::transport::run_daemon(config.into_transport_config()),
             })
+        }
+
+        /// Workspace actors alive in the daemon's one registry.
+        pub(crate) fn live_workspace_actors(&self) -> usize {
+            self.canonical.workspace_actors.live_len_for_test().unwrap()
         }
 
         fn runtime(&self) -> &V5CanonicalInvocationRuntime {
@@ -14712,8 +14757,14 @@ struct ActorLogicalReadLease {"#,
             fn symbol(
                 &self,
                 query: &SymbolQuery,
-                _context: &SymbolRequestContext<'_>,
+                context: &SymbolRequestContext<'_>,
             ) -> Result<Option<ProviderSymbol>, ProviderFailure> {
+                // The analyzer answers a call without a deadline as not
+                // ready: the MCP entry gives the call graph's read timeout.
+                assert!(
+                    context.deadline.remaining().is_some(),
+                    "the provider gets a finite deadline"
+                );
                 self.0.lock().unwrap().push(query.clone());
                 let at = |line| SymbolRange {
                     start: SymbolPosition { line, column: 10 },
