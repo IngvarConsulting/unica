@@ -2967,3 +2967,75 @@ fn form_edit_inserts_lines_with_the_form_line_ending() {
         "{edited:?}"
     );
 }
+
+#[test]
+fn column_group_add_rejects_nonfields_for_direct_and_sibling_placement() {
+    for placement in [json!({"into":"Columns"}), json!({"after":"Existing"})] {
+        for element in [
+            json!({"button":"Added","command":"Run"}),
+            json!({"group":"Added"}),
+            json!({"label":"Added"}),
+        ] {
+            let before = format!(
+                r#"<Form xmlns="{FORM_LOGFORM_NS}"><ChildItems><Table name="Rows" id="1"><ChildItems><ColumnGroup name="Columns" id="2"><ChildItems><InputField name="Existing" id="3"/></ChildItems></ColumnGroup></ChildItems></Table></ChildItems></Form>"#
+            );
+            let mut xml = before.clone();
+            let mut definition = placement.clone();
+            definition["elements"] = json!([element]);
+            let result = form_edit_apply_definition(
+                &mut xml,
+                &definition,
+                std::path::Path::new("Main/Form.xml"),
+                0,
+                Some("ru"),
+            );
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("accepted {definition}"),
+            };
+            assert!(error.contains("column group holds only fields"), "{error}");
+            assert_eq!(xml, before);
+        }
+    }
+}
+
+#[test]
+fn column_group_add_accepts_supported_fields_and_preserves_their_container() {
+    for (element, tag) in [
+        (json!({"input":"Added"}), "InputField"),
+        (json!({"labelField":"Added"}), "LabelField"),
+        (json!({"check":"Added"}), "CheckBoxField"),
+        (json!({"html":"Added"}), "HTMLDocumentField"),
+        (
+            json!({"textDoc":"Added","path":"Text"}),
+            "TextDocumentField",
+        ),
+    ] {
+        let mut xml = format!(
+            r#"<Form xmlns="{FORM_LOGFORM_NS}" xmlns:v8="http://v8.1c.ru/8.1/data/core"><ChildItems><Table name="Rows" id="1"><ChildItems><ColumnGroup name="Columns" id="2"/></ChildItems></Table></ChildItems><Attributes><Attribute name="Text" id="1"><Type><v8:Type xmlns:txt="http://v8.1c.ru/8.1/data/txtedt">txt:TextDocument</v8:Type></Type></Attribute></Attributes></Form>"#
+        );
+        form_edit_apply_definition(
+            &mut xml,
+            &json!({"into":"Columns","elements":[element]}),
+            std::path::Path::new("Main/Form.xml"),
+            0,
+            Some("ru"),
+        )
+        .unwrap();
+        let doc = Document::parse(&xml).unwrap();
+        let added = doc
+            .descendants()
+            .find(|node| node.attribute("name") == Some("Added"))
+            .unwrap();
+        assert_eq!(added.tag_name().name(), tag);
+        assert_eq!(
+            added
+                .parent_element()
+                .unwrap()
+                .parent_element()
+                .unwrap()
+                .attribute("name"),
+            Some("Columns")
+        );
+    }
+}
