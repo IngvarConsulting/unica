@@ -1831,7 +1831,7 @@ fn bounded_observed_prop(key: &str, value: &Value) -> Option<Value> {
 
 /// Кладёт значение в `props`. Если значение есть, но не прошло предел,
 /// ответ называет предел в `limits`, а не теряет свойство молча.
-fn place_prop(
+pub(super) fn place_prop(
     props: &mut Map<String, Value>,
     limits: &mut Vec<String>,
     owner: &QualifiedAddress,
