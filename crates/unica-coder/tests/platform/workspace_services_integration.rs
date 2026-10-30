@@ -4107,7 +4107,7 @@ fn main() {
         Uuid::parse_str(id).unwrap();
         assert_eq!(
             server.executor.started.lock().unwrap().as_slice(),
-            &[id.clone()]
+            std::slice::from_ref(id)
         );
         assert!(
             !server.token(id).is_cancelled(),
