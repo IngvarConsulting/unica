@@ -319,8 +319,31 @@ fn form_node(
     item: &Value,
     semantic_events: Option<&[EventProjection]>,
 ) -> NodeView {
-    let props = node_props(kind, item);
-    let limits = dropped_by_size(item, &props, address, |probe| node_props(kind, probe));
+    let mut props = node_props(kind, item);
+    let mut limits = dropped_by_size(item, &props, address, |probe| node_props(kind, probe));
+    if kind == NodeKind::Item {
+        for (source, property) in [("dataPath", "DataPath"), ("commandName", "CommandName")] {
+            if let Some(value) = item.get(source).filter(|value| value.is_string()) {
+                super::place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    property,
+                    value,
+                    false,
+                    property,
+                );
+            }
+        }
+        limits.extend(
+            item.get("bindingLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
+    }
     let mut node = NodeView::new(
         address.to_string(),
         kind.as_str(),
