@@ -6,6 +6,11 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from jsonschema import Draft202012Validator, SchemaError, ValidationError
+from jsonschema_specifications import REGISTRY as SPECIFICATIONS
+from referencing import Registry
+from referencing.exceptions import Unresolvable
+
 from tests.agent_evaluation.dcs_driver import (
     REPO, changed_files, evaluate as evaluate_contract, independent_review as review_contract,
     terminal_calls,
@@ -30,6 +35,9 @@ ALIASES = {"synonym": "Synonym", "comment": "Comment", "explanation": "Explanati
            "includeInCommandInterface": "IncludeInCommandInterface"}
 MD = "{http://v8.1c.ru/8.3/MDClasses}"
 CORE = "{http://v8.1c.ru/8.1/data/core}"
+# Registry's default retrieval refuses unknown URIs; only bundled metaschemas
+# and references within the observed schema are available to this offline audit.
+SCHEMA_REGISTRY = Registry().with_resources(SPECIFICATIONS.items())
 RUBRIC = (
     "Агент нашёл существующие CommonModule.GoogleПереводчик, Role.SalesReader и "
     "Subsystem.Администрирование, прочитал подробный contextual Can.props.set каждого "
@@ -53,11 +61,66 @@ RUBRIC = (
     "драйвера за собственное чтение XML. Ответ верно объясняет, что values не может "
     "быть пустым, boolean требует JSON false вместо строки, обе формы одного alias "
     "не допускаются, но synonym+Comment относятся к разным свойствам. Проверка "
-    "опубликованного Can-каталога Configuration в ответе узла или по адресу .Can "
-    "через Unica подтверждает отсутствие props.set у корня; "
-    "агент не обещает поддержку Configuration. Нет ручной записи XML и незапрошенных "
+    "подробного Configuration.Can.props.set через Unica подтверждает поддержку "
+    "строкового Comment в закрытом профиле корня; Name этот профиль не принимает. "
+    "Обнаружение возможности не разрешает менять Configuration в этом задании. "
+    "Нет ручной записи XML и незапрошенных "
     "изменений; нет заявления о загрузке в 1С без протокола такого запуска."
 )
+
+
+def explicit_dictionary_schema(schema):
+    """Recognize the producer's finite dictionary grammar, not arbitrary JSON Schema.
+
+    Literal properties plus additionalProperties:false prove closure. References,
+    patterns, alternative applicators and dialect changes at dictionary boundaries
+    require a different proof; a successful Comment witness alone cannot prove it.
+    The producer's alias exclusion (not) only restricts this set. Property schemas
+    may still use local definitions, checked by the validator.
+    """
+    keys = {"type", "properties", "required", "additionalProperties", "minProperties",
+            "maxProperties", "title", "description", "$defs", "$schema", "not",
+            "x-unica-alias-groups"}
+    return (isinstance(schema, dict) and schema.keys() <= keys
+            and schema.get("$schema", "https://json-schema.org/draft/2020-12/schema")
+            == "https://json-schema.org/draft/2020-12/schema"
+            and schema.get("type") == "object"
+            and schema.get("additionalProperties") is False)
+
+
+def configuration_comment_contract(result):
+    """A catalog name alone cannot prove which root properties are supported."""
+    at = "main:Configuration.Can.props.set"
+    data = result.get("data")
+    if not (result.get("ok") is True and result.get("at") == at
+            and isinstance(data, dict) and data.get("at") == at and data.get("kind") == "Can"):
+        return False
+    props = data.get("props")
+    if not (isinstance(props, dict) and props.get("op") == "props.set"
+            and props.get("args") == "values" and "implemented" not in props):
+        return False
+    contract = props.get("contract")
+    schema = contract.get("argsSchema") if isinstance(contract, dict) else None
+    if not (explicit_dictionary_schema(schema)
+            and isinstance(schema.get("required"), list) and "values" in schema["required"]):
+        return False
+    arguments = schema.get("properties")
+    values = arguments.get("values") if isinstance(arguments, dict) else None
+    if not (explicit_dictionary_schema(values)
+            and type(values.get("minProperties")) is int and values["minProperties"] >= 1):
+        return False
+    fields = values.get("properties")
+    comment = fields.get("Comment") if isinstance(fields, dict) else None
+    if not (isinstance(comment, dict) and comment.get("type") == "string"
+            and "Name" not in fields and "name" not in fields):
+        return False
+    try:
+        Draft202012Validator(Draft202012Validator.META_SCHEMA, registry=SCHEMA_REGISTRY).validate(schema)
+        Draft202012Validator(schema, registry=SCHEMA_REGISTRY).validate(
+            {"values": {"Comment": "Observed root Comment support"}})
+    except (SchemaError, ValidationError, Unresolvable):
+        return False
+    return True
 
 
 def audit(records):
@@ -85,28 +148,10 @@ def audit(records):
             at = args.get("at")
             if args == {} and result.get("ok") is True:
                 discovery = True
-            if at == "main:Configuration" and result.get("ok") is True:
-                capabilities = data.get("can")
-                if (result.get("at") == at and data.get("at") == at and data.get("kind") == "Configuration"
-                        and isinstance(capabilities, list) and capabilities
-                        and all(isinstance(item, dict) and isinstance(item.get("op"), str) and item["op"]
-                                and item["op"] == item["op"].strip()
-                                and isinstance(item.get("args"), str) and item["args"]
-                                and "implemented" not in item for item in capabilities)):
-                    operations = [item["op"] for item in capabilities]
-                    if len(set(operations)) == len(operations) and "props.set" not in operations:
-                        configuration = True
-            if at in {"main:Configuration.Can", "main:Configuration.Can.props.set"}:
-                if at.endswith(".Can") and result.get("ok") is True:
-                    items = data.get("items")
-                    if isinstance(items, list) and not any(item.get("props", {}).get("op") == "props.set"
-                                                          or str(item.get("at", "")).endswith(".Can.props.set")
-                                                          for item in items):
-                        configuration = True
-                elif (at.endswith(".Can.props.set") and result.get("ok") is False
-                      and any(item.get("code") in {"not_found", "bad_value"} for item in result.get("diagnostics", []))):
-                    configuration = True
-            if result.get("ok") is True and isinstance(at, str):
+            if at == "main:Configuration.Can.props.set" and configuration_comment_contract(result):
+                configuration = True
+            if (result.get("ok") is True and isinstance(at, str)
+                    and at.removesuffix(".Can.props.set") in PATHS):
                 target = at.removesuffix(".Can.props.set")
                 props = data.get("props") or {}
                 schema = (props.get("contract") or {}).get("argsSchema") or {}

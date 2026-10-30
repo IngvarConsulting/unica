@@ -37,7 +37,6 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
 /// Скаляры корня объекта метаданных в его `props`.
 const ROOT_SCALAR_KEYS: &[&str] = &[
     "kind",
-    "synonym",
     "support",
     // Заимствование расширением: ключи есть только в наборе
     // расширения и только у заимствованного объекта, кроме
@@ -138,6 +137,31 @@ fn project_metadata(
         let mut limits = metadata_limits(payload);
         limits.extend(size_limits);
         props.extend(metadata_property_props(address, payload, &mut limits));
+        // Синоним — свойство платформы и публикуется под её именем, тем же,
+        // что принимает `props.set`. У видов, чей профиль не перечисляет
+        // его среди свойств, значение берётся из сведений читателя; если
+        // профиль его перечисляет, предел или порча уже сказаны там.
+        let profiled = payload
+            .get("properties")
+            .and_then(Value::as_array)
+            .is_some_and(|properties| {
+                properties
+                    .iter()
+                    .any(|property| property.get("key").and_then(Value::as_str) == Some("Synonym"))
+            });
+        if !profiled {
+            if let Some(synonym) = payload.get("synonym").filter(|value| value.is_string()) {
+                place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    "Synonym",
+                    synonym,
+                    true,
+                    "metadata property Synonym",
+                );
+            }
+        }
         props.extend(metadata_detail_props(address, payload, &mut limits));
         // Счёт предопределённых элементов берётся из ответа читателя, а не из
         // длины страницы: при урезанной странице они расходятся, и ветвь
@@ -1006,12 +1030,14 @@ fn metadata_detail_props(
             }
         }
     }
+    // Тип корня — свойство платформы `Type`, под тем же именем его
+    // принимает запись.
     if let Some(value) = details.get("type") {
         place_prop(
             &mut props,
             limits,
             address,
-            "type",
+            "Type",
             value,
             false,
             "metadata type",
@@ -1038,10 +1064,6 @@ fn metadata_property_props(
         ) else {
             continue;
         };
-        // Синоним узел уже назвал сам — заголовком и собственным `props`.
-        if key == "Synonym" {
-            continue;
-        }
         let subject = format!("metadata property {key}");
         place_prop(&mut props, limits, address, key, value, true, &subject);
     }

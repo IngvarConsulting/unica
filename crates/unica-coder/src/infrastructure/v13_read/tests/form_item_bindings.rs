@@ -141,3 +141,59 @@ fn form_item_bindings_use_public_property_names_for_compact_and_whole_reads() {
         assert_eq!(whole.data.as_ref().unwrap()["props"][property], text);
     }
 }
+
+#[test]
+fn form_item_bindings_preserve_baseline_size_limits_with_both_targets() {
+    let fixture = RealReaderFixture::new();
+    let title = "З".repeat(1025);
+    install(
+        &fixture,
+        &format!(
+            "<Button name=\"Контроль\" id=\"9\">\
+             <Title xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"><v8:item>\
+             <v8:lang>ru</v8:lang><v8:content>{title}</v8:content></v8:item></Title>\
+             <DataPath>Объект.Code</DataPath>\
+             <CommandName>CommonCommand.Проба</CommandName></Button>"
+        ),
+    );
+    let at = format!("{FORM}.Item.Группа.Item.Контроль");
+    let service = fixture.view_service();
+    let collection = service.view(ViewRequest::new(&format!("{FORM}.Item.Группа.Item")).unwrap());
+    assert!(collection.ok);
+    let row = collection.data.as_ref().unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["at"] == at)
+        .unwrap();
+    let detail = service.view(ViewRequest::new(&at).unwrap());
+    assert!(detail.ok);
+    for node in [row, detail.data.as_ref().unwrap()] {
+        assert!(node["props"].get("title").is_none());
+        assert!(
+            node["limits"]
+                .as_array()
+                .is_some_and(|limits| limits.iter().any(|limit| {
+                    limit
+                        .as_str()
+                        .is_some_and(|text| text.contains(&format!("{at}.Props.title")))
+                })),
+            "the baseline oversized title must retain its whole-property address"
+        );
+        assert_eq!(node["props"]["DataPath"], "Объект.Code");
+        assert_eq!(node["props"]["CommandName"], "CommonCommand.Проба");
+    }
+    let whole = crate::infrastructure::v13_read_projection::with_whole_prop("title", || {
+        service.view(ViewRequest::new(&at).unwrap())
+    });
+    assert!(whole.ok);
+    assert_eq!(whole.data.as_ref().unwrap()["props"]["title"], title);
+    assert_eq!(
+        whole.data.as_ref().unwrap()["props"]["DataPath"],
+        "Объект.Code"
+    );
+    assert_eq!(
+        whole.data.as_ref().unwrap()["props"]["CommandName"],
+        "CommonCommand.Проба"
+    );
+}
