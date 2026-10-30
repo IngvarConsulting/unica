@@ -1,0 +1,1289 @@
+{
+  "id": "S-1524-external-artifact-addresses",
+  "issue": 1524,
+  "area": "Навигация по исходникам",
+  "task": "В workspace с двумя расширениями найти EPF/ERF с несовпадающим именем XML-файла, получить адреса владельца, модуля и трёх ресурсов формы; прочитать каждый адрес, сохранить физические пути и отказать в записи без изменения файлов",
+  "workspace": "tests/fixtures/acceptance/workspace-external-alias",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "f0": {
+          "file": ".gitattributes",
+          "kind": "sha256"
+        },
+        "f1": {
+          "file": ".gitignore",
+          "kind": "sha256"
+        },
+        "f2": {
+          "file": "ExtA/Configuration.xml",
+          "kind": "sha256"
+        },
+        "f3": {
+          "file": "ExtB/Configuration.xml",
+          "kind": "sha256"
+        },
+        "f4": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "f5": {
+          "file": "epf/source/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "f6": {
+          "file": "epf/source/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "f7": {
+          "file": "epf/source/Forms/Auxiliary.xml",
+          "kind": "sha256"
+        },
+        "f8": {
+          "file": "epf/source/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "f9": {
+          "file": "epf/source/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "f10": {
+          "file": "epf/source/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "f11": {
+          "file": "epf/source/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256"
+        },
+        "f12": {
+          "file": "epf/source/Templates/Blob.xml",
+          "kind": "sha256"
+        },
+        "f13": {
+          "file": "epf/source/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "f14": {
+          "file": "epf/source/Templates/Layout.xml",
+          "kind": "sha256"
+        },
+        "f15": {
+          "file": "epf/source/Templates/Notes/Ext/Template.txt",
+          "kind": "sha256"
+        },
+        "f16": {
+          "file": "epf/source/Templates/Notes.xml",
+          "kind": "sha256"
+        },
+        "f17": {
+          "file": "epf/source.xml",
+          "kind": "sha256"
+        },
+        "f18": {
+          "file": "erf/report-source/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "f19": {
+          "file": "erf/report-source/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "f20": {
+          "file": "erf/report-source/Forms/Auxiliary.xml",
+          "kind": "sha256"
+        },
+        "f21": {
+          "file": "erf/report-source/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "f22": {
+          "file": "erf/report-source/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "f23": {
+          "file": "erf/report-source/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "f24": {
+          "file": "erf/report-source/Forms/Settings/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "f25": {
+          "file": "erf/report-source/Forms/Settings.xml",
+          "kind": "sha256"
+        },
+        "f26": {
+          "file": "erf/report-source/Forms/Variant/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "f27": {
+          "file": "erf/report-source/Forms/Variant.xml",
+          "kind": "sha256"
+        },
+        "f28": {
+          "file": "erf/report-source/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256"
+        },
+        "f29": {
+          "file": "erf/report-source/Templates/Blob.xml",
+          "kind": "sha256"
+        },
+        "f30": {
+          "file": "erf/report-source/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "f31": {
+          "file": "erf/report-source/Templates/Layout.xml",
+          "kind": "sha256"
+        },
+        "f32": {
+          "file": "erf/report-source/Templates/MainSchema/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "f33": {
+          "file": "erf/report-source/Templates/MainSchema.xml",
+          "kind": "sha256"
+        },
+        "f34": {
+          "file": "erf/report-source/Templates/Notes/Ext/Template.txt",
+          "kind": "sha256"
+        },
+        "f35": {
+          "file": "erf/report-source/Templates/Notes.xml",
+          "kind": "sha256"
+        },
+        "f36": {
+          "file": "erf/report-source.xml",
+          "kind": "sha256"
+        },
+        "f37": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/sourceSets/0/sourceState",
+          "eq": "supported"
+        },
+        {
+          "pointer": "/data/sourceSets/1/sourceState",
+          "eq": "supported"
+        },
+        {
+          "pointer": "/data/sourceSets/2/sourceState",
+          "eq": "supported"
+        },
+        {
+          "pointer": "/data/sourceSets/3/sourceState",
+          "eq": "supported"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/ready",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "corpus": "names",
+        "query": "SyntheticProcessor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "epf:ExternalDataProcessor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "epfOwner": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.epfOwner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "epf/source.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "epf0": {
+          "pointer": "/data/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "source.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.epf0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "source.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.epf0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "epf/source/Ext/ObjectModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "epf1": {
+          "pointer": "/data/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "source/Ext/ObjectModule.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.epf1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "source/Ext/ObjectModule.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.epf1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "epf/source/Forms/Main.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "epf2": {
+          "pointer": "/data/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Form.Main.Metadata"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "source/Forms/Main.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.epf2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Form.Main.Metadata"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "source/Forms/Main.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.epf2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Form.Main.Metadata"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "epf/source/Forms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "epf3": {
+          "pointer": "/data/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "source/Forms/Main/Ext/Form.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.epf3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "source/Forms/Main/Ext/Form.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.epf3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Form.Main"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "epf/source/Forms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "epf4": {
+          "pointer": "/data/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "source/Forms/Main/Ext/Form/Module.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.epf4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "source/Forms/Main/Ext/Form/Module.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.epf4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Form.Main.Module.Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.epfOwner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "provider"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": ".gitattributes",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": ".gitignore",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "ExtA/Configuration.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "ExtB/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "README.md",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Ext/ObjectModule.bsl",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Forms/Auxiliary/Ext/Form.xml",
+          "eq": "$capture.f6"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Forms/Auxiliary.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Forms/Main.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Blob/Ext/Template.bin",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Blob.xml",
+          "eq": "$capture.f12"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Layout/Ext/Template.xml",
+          "eq": "$capture.f13"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Layout.xml",
+          "eq": "$capture.f14"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Notes/Ext/Template.txt",
+          "eq": "$capture.f15"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Notes.xml",
+          "eq": "$capture.f16"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source.xml",
+          "eq": "$capture.f17"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Ext/ObjectModule.bsl",
+          "eq": "$capture.f18"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Auxiliary/Ext/Form.xml",
+          "eq": "$capture.f19"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Auxiliary.xml",
+          "eq": "$capture.f20"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "$capture.f21"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.f22"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Main.xml",
+          "eq": "$capture.f23"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Settings/Ext/Form.xml",
+          "eq": "$capture.f24"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Settings.xml",
+          "eq": "$capture.f25"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Variant/Ext/Form.xml",
+          "eq": "$capture.f26"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Variant.xml",
+          "eq": "$capture.f27"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Blob/Ext/Template.bin",
+          "eq": "$capture.f28"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Blob.xml",
+          "eq": "$capture.f29"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Layout/Ext/Template.xml",
+          "eq": "$capture.f30"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Layout.xml",
+          "eq": "$capture.f31"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/MainSchema/Ext/Template.xml",
+          "eq": "$capture.f32"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/MainSchema.xml",
+          "eq": "$capture.f33"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Notes/Ext/Template.txt",
+          "eq": "$capture.f34"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Notes.xml",
+          "eq": "$capture.f35"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source.xml",
+          "eq": "$capture.f36"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f37"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "erf:ExternalReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "erfOwner": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "erf:ExternalReport.SyntheticReport"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.erfOwner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "erf/report-source.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "erf0": {
+          "pointer": "/data/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.SyntheticReport"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "report-source.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.erf0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.SyntheticReport"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "report-source.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.erf0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "erf:ExternalReport.SyntheticReport"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "erf/report-source/Ext/ObjectModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "erf1": {
+          "pointer": "/data/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Module.Object"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "report-source/Ext/ObjectModule.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.erf1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Module.Object"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "report-source/Ext/ObjectModule.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.erf1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Module.Object"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "erf/report-source/Forms/Main.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "erf2": {
+          "pointer": "/data/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Form.Main.Metadata"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "report-source/Forms/Main.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.erf2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Form.Main.Metadata"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "report-source/Forms/Main.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.erf2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Form.Main.Metadata"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "erf/report-source/Forms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "erf3": {
+          "pointer": "/data/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "report-source/Forms/Main/Ext/Form.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.erf3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "report-source/Forms/Main/Ext/Form.xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.erf3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Form.Main"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "erf/report-source/Forms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "erf4": {
+          "pointer": "/data/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "report-source/Forms/Main/Ext/Form/Module.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.erf4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "report-source/Forms/Main/Ext/Form/Module.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.erf4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "erf:ExternalReport.SyntheticReport.Form.Main.Module.Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.erfOwner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not publish"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "provider"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": ".gitattributes",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": ".gitignore",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "ExtA/Configuration.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "ExtB/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "README.md",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Ext/ObjectModule.bsl",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Forms/Auxiliary/Ext/Form.xml",
+          "eq": "$capture.f6"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Forms/Auxiliary.xml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "$capture.f8"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.f9"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Forms/Main.xml",
+          "eq": "$capture.f10"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Blob/Ext/Template.bin",
+          "eq": "$capture.f11"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Blob.xml",
+          "eq": "$capture.f12"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Layout/Ext/Template.xml",
+          "eq": "$capture.f13"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Layout.xml",
+          "eq": "$capture.f14"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Notes/Ext/Template.txt",
+          "eq": "$capture.f15"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Templates/Notes.xml",
+          "eq": "$capture.f16"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source.xml",
+          "eq": "$capture.f17"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Ext/ObjectModule.bsl",
+          "eq": "$capture.f18"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Auxiliary/Ext/Form.xml",
+          "eq": "$capture.f19"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Auxiliary.xml",
+          "eq": "$capture.f20"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Main/Ext/Form/Module.bsl",
+          "eq": "$capture.f21"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.f22"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Main.xml",
+          "eq": "$capture.f23"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Settings/Ext/Form.xml",
+          "eq": "$capture.f24"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Settings.xml",
+          "eq": "$capture.f25"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Variant/Ext/Form.xml",
+          "eq": "$capture.f26"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Forms/Variant.xml",
+          "eq": "$capture.f27"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Blob/Ext/Template.bin",
+          "eq": "$capture.f28"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Blob.xml",
+          "eq": "$capture.f29"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Layout/Ext/Template.xml",
+          "eq": "$capture.f30"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Layout.xml",
+          "eq": "$capture.f31"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/MainSchema/Ext/Template.xml",
+          "eq": "$capture.f32"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/MainSchema.xml",
+          "eq": "$capture.f33"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Notes/Ext/Template.txt",
+          "eq": "$capture.f34"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source/Templates/Notes.xml",
+          "eq": "$capture.f35"
+        },
+        {
+          "kind": "sha256",
+          "path": "erf/report-source.xml",
+          "eq": "$capture.f36"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f37"
+        }
+      ]
+    }
+  ]
+}

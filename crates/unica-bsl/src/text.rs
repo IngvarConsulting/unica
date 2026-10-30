@@ -580,10 +580,13 @@ fn syntax_refusal(
 }
 
 /// Адрес замены и её охват.
+/// Входной комментарий Method заменяет прежний; без него прежний сохраняется.
 pub struct ReplacementTarget {
     pub at: QualifiedAddress,
     /// Замена начинается с документирующего комментария над методом.
     pub with_doc_comment: bool,
+    /// Полный текст Method.Body включает комментарий после окончания.
+    pub with_closing_comment: bool,
 }
 
 /// `…Method.<Имя>.Body` с текстом, который сам объявляет метод, — это текст,
@@ -602,7 +605,20 @@ pub fn replacement_target(
     let unchanged = || ReplacementTarget {
         at: at.clone(),
         with_doc_comment: false,
+        with_closing_comment: false,
     };
+    if matches!(code_projection(at), Some((_, CodeProjection::Method(_)))) {
+        let with_doc_comment = analyze_module(text).is_ok_and(|analysis| {
+            analysis.methods.first().is_some_and(|method| {
+                let declaration_start = safe_line_start(text, method.start);
+                doc_comment_start(text, declaration_start) < declaration_start
+            })
+        });
+        return Ok(ReplacementTarget {
+            with_doc_comment,
+            ..unchanged()
+        });
+    }
     if !matches!(
         code_projection(at),
         Some((_, CodeProjection::MethodBody(_)))
@@ -637,6 +653,7 @@ pub fn replacement_target(
     Ok(method_at.map_or_else(unchanged, |at| ReplacementTarget {
         at,
         with_doc_comment: true,
+        with_closing_comment: true,
     }))
 }
 
@@ -766,7 +783,7 @@ pub fn locate_addressed_replacement(
             // but executable code on that line belongs outside this method.
             let closing_tail = text[method.end..line_end].trim();
             let end = if closing_tail.is_empty()
-                || (target.with_doc_comment && closing_tail.starts_with("//"))
+                || (target.with_closing_comment && closing_tail.starts_with("//"))
             {
                 line_end
             } else {
@@ -1999,6 +2016,26 @@ mod tests {
     use serde_json::json;
     use unica_xml_format::text::{resolve_line_ending, EolPolicy};
     const MODULE: &str = "Процедура Первая()\n    Сообщить(\"один\");\nКонецПроцедуры\n\nФункция Вторая()\n    Возврат Истина;\nКонецФункции\n";
+    #[test]
+    fn method_documentation_does_not_expand_ownership_to_the_closing_comment() {
+        let before = "// Old.\nProcedure Base()\nEndProcedure // Keep tail.\n";
+        let input = "// New.\nProcedure Base()\nEndProcedure";
+        let snapshot = SourceTextSnapshot::from_bytes(before.as_bytes()).unwrap();
+        let methods = analyze_module(before).unwrap().methods;
+        for (suffix, expected_end) in [
+            ("", before.find(" // Keep tail.").unwrap()),
+            (".Body", before.len()),
+        ] {
+            let at =
+                QualifiedAddress::parse(&format!("main:CommonModule.Sample.Method.Base{suffix}"))
+                    .unwrap();
+            let target = replacement_target(&at, input, "text").unwrap();
+            let site = locate_addressed_replacement(&snapshot, &target, &methods, "at").unwrap();
+            assert_eq!(site.start, 0);
+            assert_eq!(site.end, expected_end);
+        }
+    }
+
     #[test]
     fn method_selector_places_after_the_complete_method() {
         let args = arguments(json!({"method": "Первая"}), "after");

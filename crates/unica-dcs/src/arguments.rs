@@ -607,7 +607,7 @@ fn field(reader: &mut DcsArgumentReader<'_>) -> DecodeResult<FieldSpec> {
 }
 fn field_patch(reader: &mut DcsArgumentReader<'_>) -> DecodeResult<FieldPatch> {
     Ok(FieldPatch {
-        source_field: reader.string("sourceField")?,
+        source_field: reader.string("field")?,
         type_name: reader.string("type")?,
         title: reader.localized("title")?,
         use_restriction: reader.object("useRestriction", restriction)?,

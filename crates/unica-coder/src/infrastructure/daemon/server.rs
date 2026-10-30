@@ -13401,14 +13401,14 @@ struct ActorLogicalReadLease {"#,
             assert!(viewed.ok, "{viewed:?}");
             let props = &viewed.data.as_ref().unwrap()["props"];
             assert!(
-                props.get("Type").is_none(),
+                props.get("type").is_none(),
                 "type has one public projection: {props}"
             );
             assert!(
-                props["type"].is_object(),
+                props["Type"].is_object(),
                 "type is nested JSON, not a string: {props}"
             );
-            props["type"].clone()
+            props["Type"].clone()
         };
         let assert_xml_type = |expected: &str| {
             let xml = std::fs::read_to_string(source.join("Constants/Enabled.xml")).unwrap();
