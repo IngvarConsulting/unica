@@ -1965,16 +1965,6 @@ impl AnalyzerLane {
         self.acquire_with_hook_before(cancellation, None, || {})
     }
 
-    /// The lane for a call that gives way: it waits behind every call that
-    /// does not, and its permit carries the token such a call cancels.
-    pub fn acquire_yielding_before(
-        &self,
-        cancellation: &CancellationToken,
-        deadline: &ElapsedBudgetDeadline,
-    ) -> Result<AnalyzerLanePermit<'_>, String> {
-        self.acquire_queued(cancellation, Some(deadline), true, || {})
-    }
-
     pub fn acquire_before(
         &self,
         cancellation: &CancellationToken,
