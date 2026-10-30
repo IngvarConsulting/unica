@@ -1673,7 +1673,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(NodeViewData::Node(event_node(&event)));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
-        let view = module_projection_view(route.at(), prefix_len, projections.as_ref())?;
+        let mut view = module_projection_view(route.at(), prefix_len, projections.as_ref())?;
+        if capability.role() == ModuleRole::Common && route.at() == &module_at {
+            let (synonym, limits) = self.common_module_synonym(&module_at)?;
+            if let Some(synonym) = synonym {
+                view = view.with_prop("synonym", synonym);
+            }
+            view = view.with_additional_limits(limits);
+        }
         // Узел общего модуля — и узел объекта метаданных: его ветвь `Relation`
         // (подсистемы и библиотеки) читается по адресу, поэтому узел её
         // называет; непрочитанный состав подсистем узел называет пределом.
@@ -1718,6 +1725,53 @@ impl<'a> LogicalViewReadAuthority<'a> {
             }
         }
         Ok(view)
+    }
+
+    fn common_module_synonym(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<(Option<Value>, Vec<String>), ViewError> {
+        self.read_checkpoint()?;
+        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &at.logical_path())
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        let descriptor = self.read.metadata_descriptor(&owner)?;
+        let text = std::str::from_utf8(&descriptor).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        let document =
+            roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        let properties = common_module_property_container(&document)?;
+        let observation = unica_metadata_designer::info_projection::observe_meta_info_property(
+            properties,
+            MetadataKind::CommonModule,
+            "Synonym",
+        );
+        let mut props = Map::new();
+        let mut limits = Vec::new();
+        match observation {
+            Ok(Some(unica_metadata::MetaInfoPropertyValue::String(text))) if !text.is_empty() => {
+                crate::infrastructure::v13_read_projection::place_prop(
+                    &mut props,
+                    &mut limits,
+                    at,
+                    "synonym",
+                    &json!(text),
+                    false,
+                    "common module Synonym",
+                );
+            }
+            Ok(None | Some(unica_metadata::MetaInfoPropertyValue::String(_))) => {}
+            Ok(Some(_)) => unreachable!("the closed Synonym profile yields a string"),
+            Err(error) => limits.push(format!(
+                "properties.Synonym is unreadable: {}",
+                error.message
+            )),
+        }
+        Ok((props.remove("synonym"), limits))
     }
 
     fn module_projection(
@@ -2450,6 +2504,40 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 )?;
             self.with_template_body_branches(projected, &route)?
         };
+        let projected = match projected {
+            NodeViewData::Collection(collection)
+                if matches!(at.segments(), [root]
+                    if root.kind() == NodeKind::CommonModule && root.name().is_none()) =>
+            {
+                NodeViewData::Collection(collection.try_map_items(|mut row| {
+                    let owner = row["at"].as_str().ok_or_else(|| {
+                        ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
+                            "common module row has no address",
+                        )
+                    })?;
+                    let owner = QualifiedAddress::parse(owner).map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+                    let (synonym, limits) = match self.common_module_synonym(&owner) {
+                        Ok(fact) => fact,
+                        Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => (
+                            None,
+                            vec![format!("common module Synonym is unreadable: {error}")],
+                        ),
+                        Err(error) => return Err(error),
+                    };
+                    if let Some(synonym) = synonym {
+                        row["props"] = json!({"synonym": synonym});
+                    }
+                    if !limits.is_empty() {
+                        row["limits"] = json!(limits);
+                    }
+                    Ok::<_, ViewError>(row)
+                })?)
+            }
+            other => other,
+        };
         // Модуль формы без `Form.xml` платформа не выгружает: ветви модуля у
         // унаследованной формы нет.
         let projected = if inherited.is_some() {
@@ -3056,28 +3144,14 @@ fn module_source_address(
     .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
 }
 
-fn common_module_properties(
-    bytes: &[u8],
-    source_kind: SourceSetKind,
-) -> Result<CommonModuleProperties, ViewError> {
-    let text = std::str::from_utf8(bytes).map_err(|_| {
-        ViewError::detailed(
-            RefusalDetail::SourceUnreadable,
-            "common module descriptor is not UTF-8",
-        )
-    })?;
-    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+fn common_module_property_container<'a, 'input>(
+    document: &'a roxmltree::Document<'input>,
+) -> Result<roxmltree::Node<'a, 'input>, ViewError> {
     let root = document.root_element();
-    use unica_metadata::{
-        MetaInfoPropertyAbsence, MetaInfoPropertyValue, META_INFO_PROPERTY_PROFILE,
-    };
     const NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-    // Идентичность заимствования проверяется строго до того, как разрешить
-    // пропуски: один объект `CommonModule`, один прямой `Properties` из
-    // пространства имён метаданных, единственные корректные `ObjectBelonging`
-    // и `ExtendedConfigurationObject`. Иначе повреждённый маркер открыл бы
-    // послабление для любого описания.
+    // Оба читателя требуют один CommonModule и один прямой Properties
+    // из пространства имён метаданных. Повреждение структуры не становится
+    // отсутствием локального свойства.
     let objects = root
         .children()
         .filter(roxmltree::Node::is_element)
@@ -3107,6 +3181,25 @@ fn common_module_properties(
             ))
         }
     };
+    Ok(properties)
+}
+
+fn common_module_properties(
+    bytes: &[u8],
+    source_kind: SourceSetKind,
+) -> Result<CommonModuleProperties, ViewError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "common module descriptor is not UTF-8",
+        )
+    })?;
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+    use unica_metadata::{
+        MetaInfoPropertyAbsence, MetaInfoPropertyValue, META_INFO_PROPERTY_PROFILE,
+    };
+    let properties = common_module_property_container(&document)?;
     let borrowing_property = |name| {
         unica_metadata_designer::info_projection::observe_meta_borrowing_property(
             properties,
