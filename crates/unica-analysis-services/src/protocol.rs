@@ -23,6 +23,23 @@ pub enum ServiceRequestKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         yields: bool,
     },
+    /// Reserves an operation before the client may submit its Start frame.
+    BslMcpBegin {
+        operation_id: String,
+        call: PreparedBslCall,
+        deadline: BslOperationDeadline,
+    },
+    BslMcpStart {
+        operation_id: String,
+        deadline: BslOperationDeadline,
+    },
+    BslMcpStop {
+        operation_id: String,
+        cause: BslStopCause,
+    },
+    Expire {
+        operation_id: String,
+    },
     RlmReady {
         operation_id: String,
         args: Value,
@@ -42,6 +59,60 @@ pub enum ServiceRequestKind {
         events: Vec<DomainEvent>,
     },
     Shutdown,
+}
+
+/// The new request shape is closed independently of the legacy wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedBslCall {
+    pub tool_name: String,
+    pub tool_args: Value,
+    pub yields: bool,
+}
+
+/// Absence is explicit; a finite zero remainder is an expired deadline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BslOperationDeadline {
+    Absent {},
+    Finite { seconds: u64, nanos: u32 },
+}
+
+impl BslOperationDeadline {
+    pub fn from_remaining(remaining: Option<std::time::Duration>) -> Self {
+        match remaining {
+            None => Self::Absent {},
+            Some(remaining) => Self::Finite {
+                seconds: remaining.as_secs(),
+                nanos: remaining.subsec_nanos(),
+            },
+        }
+    }
+
+    pub fn remaining(&self) -> Result<Option<std::time::Duration>, String> {
+        match *self {
+            Self::Absent {} => Ok(None),
+            Self::Finite { seconds, nanos } if nanos < 1_000_000_000 => {
+                Ok(Some(std::time::Duration::new(seconds, nanos)))
+            }
+            Self::Finite { .. } => Err("invalid workspace service operation deadline".into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BslStopCause {
+    Cancel,
+    Expire,
+}
+
+/// Admission is not the result of the requested provider operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PreparedBslReply {
+    Admitted { operation_id: String },
+    Finished { response: ServiceResponse },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -98,6 +169,7 @@ impl ServiceRequestKind {
     pub fn operation_id(&self) -> Option<&str> {
         match self {
             Self::BslMcp { operation_id, .. }
+            | Self::BslMcpBegin { operation_id, .. }
             | Self::RlmReady { operation_id, .. }
             | Self::RlmMcp { operation_id, .. } => Some(operation_id),
             _ => None,
@@ -107,7 +179,11 @@ impl ServiceRequestKind {
     pub fn is_control(&self) -> bool {
         matches!(
             self,
-            Self::Ping | Self::Invalidate { .. } | Self::Shutdown | Self::Cancel { .. }
+            Self::Ping
+                | Self::Invalidate { .. }
+                | Self::Shutdown
+                | Self::Cancel { .. }
+                | Self::Expire { .. }
         )
     }
 }
@@ -139,6 +215,78 @@ pub enum IndexMaintenanceStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_deadline_wire_distinguishes_absence_expiry_and_rejects_unknown_modes() {
+        assert_eq!(
+            serde_json::from_str::<BslOperationDeadline>(r#"{"mode":"absent"}"#)
+                .unwrap()
+                .remaining()
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            serde_json::from_str::<BslOperationDeadline>(
+                r#"{"mode":"finite","seconds":0,"nanos":0}"#
+            )
+            .unwrap()
+            .remaining()
+            .unwrap(),
+            Some(std::time::Duration::ZERO)
+        );
+        for invalid in [
+            "null",
+            "{}",
+            r#"{"mode":"unknown"}"#,
+            r#"{"mode":"absent","seconds":1}"#,
+            r#"{"mode":"finite","seconds":1}"#,
+            r#"{"mode":"finite","seconds":1,"nanos":0,"extra":1}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<BslOperationDeadline>(invalid).is_err(),
+                "invalid deadline accepted: {invalid}"
+            );
+        }
+        for invalid in [r#"{"mode":"finite","seconds":1,"nanos":1000000000}"#] {
+            assert!(serde_json::from_str::<BslOperationDeadline>(invalid)
+                .unwrap()
+                .remaining()
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn prepared_finite_wire_preserves_the_full_duration_domain_without_becoming_absent() {
+        for duration in [
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(i64::MAX as u64),
+            std::time::Duration::MAX,
+        ] {
+            let wire = BslOperationDeadline::from_remaining(Some(duration));
+            let encoded = serde_json::to_string(&wire).unwrap();
+            let decoded: BslOperationDeadline = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded.remaining().unwrap(), Some(duration));
+            assert_ne!(decoded, BslOperationDeadline::Absent {});
+        }
+    }
+
+    #[test]
+    fn prepared_begin_requires_explicit_deadline_and_admission_is_not_final_success() {
+        let begin = r#"{"token":"secret","kind":{"type":"bsl-mcp-begin","operation_id":"read-op","call":{"tool_name":"symbol_info","tool_args":{},"yields":true},"deadline":{"mode":"absent"}}}"#;
+        let request: ServiceRequest = serde_json::from_str(begin).unwrap();
+        assert_eq!(serde_json::to_string(&request).unwrap(), begin);
+        assert_eq!(request.kind.operation_id(), Some("read-op"));
+        assert!(serde_json::from_str::<ServiceRequest>(
+            &begin.replace(r#","deadline":{"mode":"absent"}"#, "")
+        )
+        .is_err());
+        let admitted = r#"{"phase":"admitted","operation_id":"read-op"}"#;
+        assert!(matches!(
+            serde_json::from_str::<PreparedBslReply>(admitted).unwrap(),
+            PreparedBslReply::Admitted { .. }
+        ));
+        assert!(serde_json::from_str::<PreparedBslReply>(r#"{"ok":true}"#).is_err());
+    }
 
     // Concrete pre-extraction serde schema: field order, omission, the
     // complete maintenance schema, and the default shutdown field all matter.

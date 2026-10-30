@@ -1762,6 +1762,18 @@ mod tests {
         ) -> Result<McpToolOutput, String> {
             Err(self.error.clone())
         }
+
+        fn call_before(
+            &self,
+            _tool: &'static str,
+            _context: &CodeIntelligenceContext,
+            _arguments: Value,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+            _yields: bool,
+        ) -> Result<McpToolOutput, String> {
+            Err(self.error.clone())
+        }
     }
 
     #[test]
@@ -1802,6 +1814,18 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((context.source_root.path.clone(), arguments, timeout));
+            Ok(self.output.clone())
+        }
+
+        fn call_before(
+            &self,
+            _tool: &'static str,
+            _context: &CodeIntelligenceContext,
+            _arguments: Value,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+            _yields: bool,
+        ) -> Result<McpToolOutput, String> {
             Ok(self.output.clone())
         }
     }

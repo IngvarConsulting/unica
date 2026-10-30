@@ -17,6 +17,39 @@ use std::time::Duration;
 use std::time::Instant;
 use unica_work_control::cancellation::{cancelled_error, CancellationToken};
 use unica_work_control::elapsed_budget::ElapsedBudgetDeadline;
+use unica_work_control::provider_deadline::ProviderDeadline;
+
+/// Both legacy finite steps and caller-owned operation deadlines use the
+/// same transport loops. Absence is not an elapsed finite deadline.
+pub trait McpRequestDeadline {
+    fn remaining(&self) -> Option<Duration>;
+    fn is_elapsed(&self) -> bool;
+
+    fn poll_interval(&self, interval: Duration) -> Duration {
+        self.remaining()
+            .map_or(interval, |remaining| remaining.min(interval))
+    }
+}
+
+impl McpRequestDeadline for ElapsedBudgetDeadline {
+    fn remaining(&self) -> Option<Duration> {
+        ElapsedBudgetDeadline::remaining(self)
+    }
+
+    fn is_elapsed(&self) -> bool {
+        self.remaining().is_none()
+    }
+}
+
+impl McpRequestDeadline for ProviderDeadline {
+    fn remaining(&self) -> Option<Duration> {
+        ProviderDeadline::remaining(*self)
+    }
+
+    fn is_elapsed(&self) -> bool {
+        ProviderDeadline::is_elapsed(*self)
+    }
+}
 
 const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const SERVICE_RESPONSE_LINE_LIMIT: usize = 8 * 1024 * 1024;
@@ -162,12 +195,39 @@ impl PersistentMcpSession {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<McpToolOutput, String> {
+        let deadline = ElapsedBudgetDeadline::new(timeout);
+        self.call_with_deadline(tool_name, tool_args, &deadline, cancellation)
+    }
+
+    pub fn call_with_failure_capture_deadline(
+        &mut self,
+        tool_name: &str,
+        tool_args: Value,
+        deadline: &dyn McpRequestDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<McpToolOutput, String> {
+        self.failure_snapshot = None;
+        self.active_failure_request = Some(self.next_id);
+        let result = self.call_with_deadline(tool_name, tool_args, deadline, cancellation);
+        self.active_failure_request = None;
+        result
+    }
+
+    pub fn call_with_deadline(
+        &mut self,
+        tool_name: &str,
+        tool_args: Value,
+        deadline: &dyn McpRequestDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<McpToolOutput, String> {
         if cancellation.is_cancelled() {
             return Err(cancelled_error("persistent MCP request stopped"));
         }
+        if deadline.is_elapsed() {
+            return Err("timeout: persistent MCP request deadline elapsed before dispatch".into());
+        }
         let id = self.next_id;
         self.next_id += 1;
-        let deadline = ElapsedBudgetDeadline::new(timeout);
         self.send_json_cancellable(
             json!({
                 "jsonrpc": "2.0",
@@ -178,10 +238,10 @@ impl PersistentMcpSession {
                     "arguments": tool_args
                 }
             }),
-            &deadline,
+            deadline,
             cancellation,
         )?;
-        let response = match read_json_response_typed(&self.rx, id, &deadline, cancellation) {
+        let response = match read_json_response_typed(&self.rx, id, deadline, cancellation) {
             Ok(response) => response,
             Err(error)
                 if matches!(
@@ -284,7 +344,7 @@ impl PersistentMcpSession {
     fn send_json_cancellable(
         &mut self,
         payload: Value,
-        deadline: &ElapsedBudgetDeadline,
+        deadline: &dyn McpRequestDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), String> {
         let (result, result_rx) = mpsc::sync_channel(1);
@@ -299,7 +359,7 @@ impl PersistentMcpSession {
                     ),
                 );
             }
-            if deadline.remaining().is_none() {
+            if deadline.is_elapsed() {
                 return self.fail(
                     FailurePhase::WriteRequest,
                     TransportFailure::new(
@@ -342,7 +402,7 @@ impl PersistentMcpSession {
                     ),
                 );
             }
-            let Some(remaining) = deadline.remaining() else {
+            if deadline.is_elapsed() {
                 return self.fail(
                     FailurePhase::WriteRequest,
                     TransportFailure::new(
@@ -350,8 +410,9 @@ impl PersistentMcpSession {
                         "timeout: persistent MCP write timed out".to_string(),
                     ),
                 );
-            };
-            let received = result_rx.recv_timeout(remaining.min(Duration::from_millis(25)));
+            }
+            let received =
+                result_rx.recv_timeout(deadline.poll_interval(Duration::from_millis(25)));
             if cancellation.is_cancelled() {
                 return self.fail(
                     FailurePhase::WriteRequest,
@@ -361,7 +422,7 @@ impl PersistentMcpSession {
                     ),
                 );
             }
-            if deadline.remaining().is_none() {
+            if deadline.is_elapsed() {
                 return self.fail(
                     FailurePhase::WriteRequest,
                     TransportFailure::new(
@@ -394,7 +455,7 @@ impl PersistentMcpSession {
     fn read_response(
         &mut self,
         id: i64,
-        deadline: &ElapsedBudgetDeadline,
+        deadline: &dyn McpRequestDeadline,
         cancellation: &CancellationToken,
     ) -> Result<Value, String> {
         match read_json_response_typed(&self.rx, id, deadline, cancellation) {
@@ -570,7 +631,7 @@ fn bsl_reader_with_state(
 fn read_json_response_cancellable(
     rx: &mpsc::Receiver<BslReaderEvent>,
     id: i64,
-    deadline: &ElapsedBudgetDeadline,
+    deadline: &dyn McpRequestDeadline,
     cancellation: &CancellationToken,
 ) -> Result<Value, String> {
     read_json_response_typed(rx, id, deadline, cancellation).map_err(|error| error.message)
@@ -579,24 +640,24 @@ fn read_json_response_cancellable(
 fn read_json_response_typed(
     rx: &mpsc::Receiver<BslReaderEvent>,
     id: i64,
-    deadline: &ElapsedBudgetDeadline,
+    deadline: &dyn McpRequestDeadline,
     cancellation: &CancellationToken,
 ) -> Result<Value, TransportFailure> {
-    while let Some(remaining) = deadline.remaining() {
+    while !deadline.is_elapsed() {
         if cancellation.is_cancelled() {
             return Err(TransportFailure::new(
                 FailureCause::Cancelled,
                 cancelled_error(format!("persistent MCP request {id} stopped")),
             ));
         }
-        let received = rx.recv_timeout(remaining.min(Duration::from_millis(50)));
+        let received = rx.recv_timeout(deadline.poll_interval(Duration::from_millis(50)));
         if cancellation.is_cancelled() {
             return Err(TransportFailure::new(
                 FailureCause::Cancelled,
                 cancelled_error(format!("persistent MCP request {id} stopped")),
             ));
         }
-        if deadline.remaining().is_none() {
+        if deadline.is_elapsed() {
             return Err(TransportFailure::new(
                 FailureCause::DeadlineElapsed,
                 format!("timeout: persistent MCP request {id} timed out"),
@@ -727,6 +788,49 @@ impl PersistentMcpSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_operation_deadline_reads_the_matching_response_after_other_messages() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(BslReaderEvent::Message(json!({"method": "progress"})))
+            .unwrap();
+        tx.send(BslReaderEvent::Message(json!({"id": 6, "result": {}})))
+            .unwrap();
+        tx.send(BslReaderEvent::Message(
+            json!({"id": 7, "result": {"late": true}}),
+        ))
+        .unwrap();
+        let answer = read_json_response_typed(
+            &rx,
+            7,
+            &ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(answer["result"]["late"], true);
+    }
+
+    #[test]
+    fn expired_operation_does_not_consume_a_queued_reply_and_explicit_cancel_wins() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(BslReaderEvent::Message(json!({"id": 7, "result": {}})))
+            .unwrap();
+        let deadline = ProviderDeadline::new(Instant::now());
+        let cancellation = CancellationToken::new();
+        let error = read_json_response_typed(&rx, 7, &deadline, &cancellation).unwrap_err();
+        assert!(matches!(error.cause, FailureCause::DeadlineElapsed));
+        cancellation.cancel();
+        let error = read_json_response_typed(&rx, 7, &deadline, &cancellation).unwrap_err();
+        assert!(matches!(error.cause, FailureCause::Cancelled));
+        let answer = read_json_response_typed(
+            &rx,
+            7,
+            &ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(answer["id"], 7);
+    }
 
     #[test]
     fn workspace_service_control_path_analyzer_wait_observes_operation_token() {
