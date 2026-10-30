@@ -54,12 +54,6 @@ pub const RETIRED_ARGUMENTS: &[RetiredArgument] = &[
     },
     RetiredArgument {
         op: "field.set",
-        key: "values.field",
-        address: "{at^DataSet}.Field.{value}",
-        retired: true,
-    },
-    RetiredArgument {
-        op: "field.set",
         key: "values.dataPath",
         address: "{at^DataSet}.Field.{value}",
         retired: true,

@@ -20,6 +20,24 @@ pub(crate) struct NodeView {
     limits: Vec<String>,
 }
 
+/// Предел заголовка узла — тот же, что у компактного свойства: заголовок
+/// берётся из синонима, а огромный синоним не должен раздувать каждую
+/// строку коллекции. Синоним целиком читается по `<узел>.Props.Synonym`.
+pub(crate) const MAX_TITLE_BYTES: usize = 2_048;
+
+/// Заголовок длиннее предела усекается по границе символа и помечается
+/// многоточием.
+pub(crate) fn compact_title(title: String) -> String {
+    if title.len() <= MAX_TITLE_BYTES {
+        return title;
+    }
+    let mut end = MAX_TITLE_BYTES - '…'.len_utf8();
+    while !title.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &title[..end])
+}
+
 impl NodeView {
     pub(crate) fn new(
         at: impl Into<String>,
@@ -30,7 +48,7 @@ impl NodeView {
         Self {
             at: at.into(),
             kind: kind.into(),
-            title: title.into(),
+            title: compact_title(title.into()),
             props,
             branches: Vec::new(),
             can: Vec::new(),
@@ -231,7 +249,31 @@ impl NodeViewData {
 
 #[cfg(test)]
 mod tests {
-    use super::{BranchRef, CollectionView, NodeView, NodeViewData};
+
+    #[test]
+    fn a_title_past_the_limit_is_cut_on_a_character_boundary_and_marked() {
+        let short = "Валюты".to_string();
+        assert_eq!(compact_title(short.clone()), short);
+        // Two-, three- and four-byte characters and the first length past
+        // the limit: the cut keeps all it can and marks itself.
+        for long in [
+            "р".repeat(MAX_TITLE_BYTES),
+            "€".repeat(MAX_TITLE_BYTES),
+            "𝄞".repeat(MAX_TITLE_BYTES),
+            "a".repeat(MAX_TITLE_BYTES + 1),
+        ] {
+            let title = compact_title(long.clone());
+            let kept = title.strip_suffix('…').expect("the cut is marked");
+            assert!(title.len() <= MAX_TITLE_BYTES);
+            assert!(kept.len() + 4 > MAX_TITLE_BYTES - '…'.len_utf8());
+            assert!(long.starts_with(kept));
+        }
+        let exact = "a".repeat(MAX_TITLE_BYTES);
+        assert_eq!(compact_title(exact.clone()), exact);
+    }
+    use super::{
+        compact_title, BranchRef, CollectionView, NodeView, NodeViewData, MAX_TITLE_BYTES,
+    };
     use serde_json::{json, Map};
 
     #[test]

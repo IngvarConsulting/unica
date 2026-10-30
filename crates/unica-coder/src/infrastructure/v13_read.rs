@@ -223,6 +223,16 @@ impl<'a> LogicalViewReadAuthority<'a> {
         }
     }
 
+    /// Only the path resolver supplies this placement; subsequent owner and
+    /// child-registration checks still consume the target's actual XML.
+    pub(crate) fn with_external_point_binding(
+        mut self,
+        binding: unica_source_designer::external_artifact::ExternalArtifactBinding,
+    ) -> Self {
+        self.read = self.read.with_external_point_binding(binding);
+        self
+    }
+
     pub(crate) fn object_borrowing(
         &self,
         at: &QualifiedAddress,
@@ -1570,6 +1580,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
         owner_name: &str,
         admitted: &ViewSourceSnapshot,
     ) -> Result<(), ViewError> {
+        if let Some(matches) = self
+            .read
+            .point_external_owner_matches(owner_kind, owner_name)
+        {
+            return matches.then_some(()).ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::NotFound,
+                    "metadata owner is outside the point-proven external artifact",
+                )
+            });
+        }
         if matches!(
             self.read.source_set_kind(),
             SourceSetKind::Configuration | SourceSetKind::Extension

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
@@ -772,7 +773,9 @@ class RustPlatformBoundaryTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(repo_root), "add", "."], check=True)
 
             result = subprocess.run(
-                ["python3", str(SCRIPT_PATH), "--repo-root", str(repo_root)],
+                # The interpreter running the suite: a bare `python3` may be an
+                # older one without `tomllib`, which the checker imports.
+                [sys.executable, str(SCRIPT_PATH), "--repo-root", str(repo_root)],
                 text=True,
                 capture_output=True,
                 check=False,

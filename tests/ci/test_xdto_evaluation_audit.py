@@ -117,7 +117,7 @@ class XdtoEvidenceTests(unittest.TestCase):
             "valueType.add": closed_object({"name": name, "base": qname}, ["name", "base"]),
             "objectType.add": closed_object({"name": name}, ["name"]),
             "property.add": closed_object({"property": closed_object({"name": name, "type": qname,
-                "minOccurs": {"type": "integer", "enum": [0, 1]}}, ["name", "type"])}, ["property"]),
+                "lowerBound": {"type": "integer", "enum": [0, 1]}}, ["name", "type"])}, ["property"]),
         }
         for index, (selected, old, new) in enumerate([(requests[:2], before, intermediate), (requests[2:], intermediate, after)]):
             operations = []
@@ -150,7 +150,7 @@ class XdtoEvidenceTests(unittest.TestCase):
         records = self.records()
         preview = next(r for r in records if r["direction"] == "request" and r["payload"].get("method") == "tools/call"
                        and any(op.get("op") == "property.add" for op in r["payload"]["params"]["arguments"].get("ops", [])))
-        preview["payload"]["params"]["arguments"]["ops"][0]["args"]["values"]["property"]["minOccurs"] = 0.0
+        preview["payload"]["params"]["arguments"]["ops"][0]["args"]["values"]["property"]["lowerBound"] = 0.0
         driver.audit(records)
 
     def test_audit_accepts_final_package_check_with_published_limit(self):
@@ -353,7 +353,7 @@ class XdtoEvidenceTests(unittest.TestCase):
                     operations = previews[1]["payload"]["params"]["arguments"]["ops"]
                     next(op for op in operations if op["op"] == "type.remove")["args"]["values"] = {}
                 elif mutation in {"string numeric", "boolean numeric", "fraction"}:
-                    previews[1]["payload"]["params"]["arguments"]["ops"][0]["args"]["values"]["property"]["minOccurs"] = {
+                    previews[1]["payload"]["params"]["arguments"]["ops"][0]["args"]["values"]["property"]["lowerBound"] = {
                         "string numeric": "0", "boolean numeric": False, "fraction": 0.5}[mutation]
                 elif mutation == "collection outer":
                     preview["payload"]["params"]["arguments"]["at"] = "main:XDTOPackage"
