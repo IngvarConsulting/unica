@@ -82,6 +82,12 @@ pub(in crate::infrastructure::daemon) struct SearchHitOwners<'a> {
     // The source-set/root/revision component of this key is the fixed actor
     // capability above; each source entry/page creates a fresh proof cache.
     external: std::collections::BTreeMap<std::path::PathBuf, ExternalSearchBinding>,
+    // Logical-address admission must also establish unique external names.
+    // One shared inventory per source scan (including a fallback scan), never
+    // one inventory per physical hit. Errors cannot publish a valid prefix.
+    external_inventory: Option<
+        Result<unica_source_designer::external_artifact::ExternalArtifactInventory, ViewError>,
+    >,
     cache: &'a RegistrationCache,
     index: Option<Option<Arc<RegistrationIndex>>>,
     owners: std::collections::BTreeMap<(&'static str, String), bool>,
@@ -97,6 +103,7 @@ impl<'a> SearchHitOwners<'a> {
             index: None,
             owners: std::collections::BTreeMap::new(),
             external: std::collections::BTreeMap::new(),
+            external_inventory: None,
         }
     }
 
@@ -148,6 +155,46 @@ impl<'a> SearchHitOwners<'a> {
                 RefusalCode::ConcurrentChange,
                 "external search placement changed after admission",
             ));
+        }
+        if admitted.is_none() {
+            let mut checkpoint = || {
+                if cancellation.is_cancelled() {
+                    Err(ViewError::new(
+                        RefusalCode::Cancelled,
+                        "external owner admission was cancelled",
+                    ))
+                } else if self.source.deadline().is_elapsed() {
+                    Err(ViewError::new(
+                        RefusalCode::DeadlineExceeded,
+                        "external owner admission deadline elapsed",
+                    ))
+                } else {
+                    Ok(())
+                }
+            };
+            checkpoint()?;
+            if self.external_inventory.is_none() {
+                self.external_inventory = Some(
+                    crate::infrastructure::external_artifact_inventory::read_inventory(
+                        &self.root,
+                        self.source_kind,
+                        &mut checkpoint,
+                    ),
+                );
+            }
+            checkpoint()?;
+            let inventory = self
+                .external_inventory
+                .as_ref()
+                .expect("external inventory observed")
+                .as_ref()
+                .map_err(Clone::clone)?;
+            if inventory.get(name) != Some(&binding) {
+                return Err(ViewError::new(
+                    RefusalCode::ConcurrentChange,
+                    "external logical owner differs from its physical placement",
+                ));
+            }
         }
         if let Some(proved) = self.external.get(binding.descriptor()) {
             if proved.binding != binding {

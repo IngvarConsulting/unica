@@ -2605,6 +2605,139 @@ fn external_alias_search_preserves_owner_module_readback_and_physical_pages() {
 }
 
 #[test]
+fn external_alias_unscoped_search_keeps_ambiguous_hits_unaddressed() {
+    for (git, set, descriptor, payload, expected_unaddressed, malformed) in [
+        (
+            false,
+            "erf",
+            "report-source.xml",
+            "report-source",
+            12,
+            false,
+        ),
+        (true, "erf", "report-source.xml", "report-source", 12, false),
+        (false, "epf", "source.xml", "source", 8, false),
+        (true, "epf", "source.xml", "source", 8, false),
+        (false, "erf", "report-source.xml", "report-source", 8, true),
+        (true, "erf", "report-source.xml", "report-source", 8, true),
+        (false, "epf", "source.xml", "source", 4, true),
+        (true, "epf", "source.xml", "source", 4, true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        external_alias_search_workspace(root.path(), false);
+        if malformed {
+            // Sorted after the valid descriptors: never publish their prefix
+            // as ordinary logical addresses when the complete inventory fails.
+            std::fs::write(root.path().join(set).join("zzz-invalid.xml"), "<broken").unwrap();
+        } else {
+            std::fs::copy(
+                root.path().join(set).join(descriptor),
+                root.path().join(set).join("duplicate.xml"),
+            )
+            .unwrap();
+            copy_tree(
+                &root.path().join(set).join(payload),
+                &root.path().join(set).join("duplicate"),
+            );
+        }
+        if git {
+            for args in [["init", "-q"].as_slice(), ["add", "."].as_slice()] {
+                assert!(Command::new("git")
+                    .args(args)
+                    .current_dir(root.path())
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+        }
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let page = mcp.completed_tool_call(call_tool(
+            2,
+            "unica.search",
+            json!({"query":"AliasSearchNeedle", "limit":50}),
+        ));
+        assert_eq!(page["ok"], true, "git={git} duplicate={set}: {page:#}");
+        let matches = page["data"]["matches"].as_array().unwrap();
+        assert_eq!(
+            matches.len(),
+            if malformed { 12 } else { 16 },
+            "all physical matches survive: {page:#}"
+        );
+        let mut unaddressed = 0;
+        let mut files = std::collections::BTreeSet::new();
+        let mut id = 3;
+        for hit in matches {
+            if let Some(at) = hit["at"].as_str() {
+                assert!(
+                    !at.starts_with(&format!("{set}:")),
+                    "ambiguous source must not claim a view-readable address: {hit:#}"
+                );
+                let line = hit["line"].as_u64().unwrap();
+                assert!(view_body_lines(&mut mcp, &mut id, at)[&line].contains("AliasSearchNeedle"));
+            } else {
+                assert_eq!(hit["unaddressed"], "owner_unproven", "{hit:#}");
+                files.insert(
+                    hit["fileId"]
+                        .as_str()
+                        .expect("unproven owner retains physical fileId")
+                        .to_owned(),
+                );
+                unaddressed += 1;
+            }
+        }
+        assert_eq!(unaddressed, expected_unaddressed, "{page:#}");
+        assert_eq!(
+            files.len(),
+            expected_unaddressed / 2,
+            "different physical files keep distinct identities"
+        );
+        assert_eq!(page["data"]["fileCoverage"]["complete"], true, "{page:#}");
+        mcp.finish();
+    }
+}
+
+#[test]
+fn external_alias_unscoped_cursor_rejects_a_new_duplicate_descriptor() {
+    for git in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        external_alias_search_workspace(root.path(), git);
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let first = mcp.completed_tool_call(call_tool(
+            2,
+            "unica.search",
+            json!({"query":"AliasSearchNeedle", "limit":1}),
+        ));
+        assert_eq!(first["ok"], true, "{first:#}");
+        assert!(
+            first["data"]["matches"][0]["at"]
+                .as_str()
+                .unwrap()
+                .starts_with("epf:"),
+            "{first:#}"
+        );
+        let cursor = first["cursor"].as_str().unwrap();
+        let module = root.path().join("epf/source/Ext/ObjectModule.bsl");
+        let before = std::fs::read(&module).unwrap();
+        std::fs::copy(
+            root.path().join("epf/source.xml"),
+            root.path().join("epf/duplicate.xml"),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&module).unwrap(), before);
+        let next = mcp.completed_tool_call(call_tool(
+            3,
+            "unica.search",
+            json!({"query":"AliasSearchNeedle", "limit":1,"cursor":cursor}),
+        ));
+        assert_eq!(next["ok"], false, "git={git}: {next:#}");
+        assert_eq!(next["diagnostics"][0]["code"], "stale_cursor", "{next:#}");
+        mcp.finish();
+    }
+}
+
+#[test]
 fn external_alias_search_rejects_wrong_missing_damaged_and_ambiguous_owners() {
     for case in ["wrong-kind", "missing", "damaged", "ambiguous"] {
         let root = tempfile::tempdir().unwrap();
