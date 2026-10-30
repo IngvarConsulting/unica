@@ -3,9 +3,44 @@ use crate::backend::{
     BackgroundTaskTracker, BslBackend, ReadyScope, RlmBackend, RlmIndex, RlmSession,
     ServiceEnvironment,
 };
-use crate::protocol::{ServiceRequest, ServiceRequestKind, ServiceResponse, WorkspaceRlmOperation};
-use unica_process::mcp_session::{McpToolOutput, PersistentMcpSession};
+use crate::protocol::{
+    BslOperationDeadline, BslStopCause, PreparedBslCall, PreparedBslReply, ServiceRequest,
+    ServiceRequestKind, ServiceResponse, WorkspaceRlmOperation,
+};
+use unica_process::mcp_session::{McpRequestDeadline, McpToolOutput, PersistentMcpSession};
 use unica_work_control::elapsed_budget::ElapsedBudgetDeadline;
+use unica_work_control::provider_deadline::ProviderDeadline;
+/// A receiver anchors an explicit finite Start once, then lends the same
+/// deadline through queue, replacement and the persistent provider session.
+struct ServiceMcpDeadline<'a>(Option<&'a ElapsedBudgetDeadline>);
+
+impl McpRequestDeadline for ServiceMcpDeadline<'_> {
+    fn remaining(&self) -> Option<Duration> {
+        self.0
+            .map(|deadline| deadline.remaining().unwrap_or(Duration::ZERO))
+    }
+
+    fn is_elapsed(&self) -> bool {
+        self.0
+            .is_some_and(|deadline| deadline.remaining().is_none())
+    }
+}
+
+impl ServiceMcpDeadline<'_> {
+    fn check(&self, cancellation: &CancellationToken) -> Result<(), String> {
+        cancellation_error(cancellation)?;
+        if self.is_elapsed() {
+            return Err("timeout: workspace service operation deadline elapsed".into());
+        }
+        Ok(())
+    }
+
+    fn replacement_poll(&self, cancellation: &CancellationToken) -> Result<Duration, String> {
+        self.check(cancellation)?;
+        Ok(self.poll_interval(Duration::from_millis(10)))
+    }
+}
+
 pub trait ServiceElapsedBudget {
     fn remaining_cancellable(&self, cancellation: &CancellationToken) -> Result<Duration, String>;
 }
@@ -156,6 +191,7 @@ impl WorkspaceServiceConfig {
 pub struct WorkspaceServiceCallDeadline {
     started: Instant,
     budget: Duration,
+    caller: Option<ProviderDeadline>,
 }
 
 pub struct WorkspaceServiceBslCall<'a> {
@@ -195,15 +231,85 @@ impl WorkspaceServiceCallDeadline {
         Self {
             started: Instant::now(),
             budget,
+            caller: None,
+        }
+    }
+
+    fn from_provider(deadline: ProviderDeadline) -> Self {
+        Self {
+            started: Instant::now(),
+            budget: Duration::ZERO,
+            caller: Some(deadline),
+        }
+    }
+
+    fn check(&self, cancellation: &CancellationToken) -> Result<(), String> {
+        self.remaining_optional(cancellation).map(|_| ())
+    }
+
+    fn remaining_optional(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Duration>, String> {
+        cancellation_error(cancellation)?;
+        if let Some(deadline) = self.caller {
+            return match deadline.remaining() {
+                Some(remaining) if remaining.is_zero() => {
+                    Err("timeout: workspace service operation deadline elapsed".into())
+                }
+                remaining => Ok(remaining),
+            };
+        }
+        self.budget
+            .checked_sub(self.started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .map(Some)
+            .ok_or_else(|| workspace_service_request_timeout_error(self.budget))
+    }
+
+    fn send(
+        &self,
+        connector: &dyn ServiceConnector,
+        record: &WorkspaceServiceRecord,
+        request: ServiceRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<ServiceResponse, String> {
+        self.check(cancellation)?;
+        match self.caller {
+            Some(deadline) => {
+                connector.send_operation_before(record, request, cancellation, deadline)
+            }
+            None => connector.send(record, request, cancellation, self.remaining(cancellation)?),
+        }
+    }
+
+    fn spawn(
+        &self,
+        spawner: &dyn ServiceSpawner,
+        identity: &WorkspaceServiceIdentity,
+        config: WorkspaceServiceConfig,
+        token: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceServiceRecord, String> {
+        self.check(cancellation)?;
+        match self.caller {
+            Some(deadline) => {
+                spawner.spawn_operation_before(identity, config, token, cancellation, deadline)
+            }
+            None => spawner.spawn(
+                identity,
+                config,
+                token,
+                cancellation,
+                self.remaining(cancellation)?,
+            ),
         }
     }
 
     pub fn remaining(&self, cancellation: &CancellationToken) -> Result<Duration, String> {
-        cancellation_error(cancellation)?;
-        self.budget
-            .checked_sub(self.started.elapsed())
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| workspace_service_request_timeout_error(self.budget))
+        self.remaining_optional(cancellation)?.ok_or_else(|| {
+            "internal legacy finite-budget access on an absent operation deadline".into()
+        })
     }
 }
 
@@ -277,29 +383,33 @@ impl<'a> WorkspaceServiceManager<'a> {
         cancellation: &CancellationToken,
         deadline: &WorkspaceServiceCallDeadline,
     ) -> Result<WorkspaceServiceRecord, String> {
-        deadline.remaining(cancellation)?;
+        deadline.check(cancellation)?;
         let identity = WorkspaceServiceIdentity::new(context, source_root)?;
         loop {
-            deadline.remaining(cancellation)?;
+            deadline.check(cancellation)?;
             if let Some(spawn_lock) = acquire_spawn_lock(&identity)? {
                 if let Some(record) = self.reusable_record(&identity, cancellation, deadline)? {
                     return Ok(record);
                 }
                 let token = new_token(&identity);
-                let spawn_budget = deadline.remaining(cancellation)?;
-                let result = self
-                    .spawner
-                    .unwrap_or(&SystemServiceSpawner {
+                let result = deadline.spawn(
+                    self.spawner.unwrap_or(&SystemServiceSpawner {
                         environment: Arc::clone(&self.environment),
-                    })
-                    .spawn(&identity, self.config, &token, cancellation, spawn_budget);
+                    }),
+                    &identity,
+                    self.config,
+                    &token,
+                    cancellation,
+                );
                 drop(spawn_lock);
-                deadline.remaining(cancellation)?;
+                deadline.check(cancellation)?;
                 return result;
             }
 
-            let remaining = deadline.remaining(cancellation)?;
-            thread::sleep(Duration::from_millis(50).min(remaining));
+            let remaining = deadline.remaining_optional(cancellation)?;
+            thread::sleep(remaining.map_or(Duration::from_millis(50), |remaining| {
+                remaining.min(Duration::from_millis(50))
+            }));
         }
     }
 
@@ -396,6 +506,45 @@ impl<'a> WorkspaceServiceManager<'a> {
                 stderr: response.stderr.unwrap_or_default(),
             });
         }
+    }
+
+    pub fn call_bsl_mcp_before(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+        call: PreparedBslCall,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<McpToolOutput, String> {
+        let call_deadline = WorkspaceServiceCallDeadline::from_provider(deadline);
+        let record = self.ensure_service_cancellable_with_deadline(
+            context,
+            source_root,
+            cancellation,
+            &call_deadline,
+        )?;
+        let remaining = call_deadline.remaining_optional(cancellation)?;
+        let request = ServiceRequest {
+            token: record.token.clone(),
+            kind: ServiceRequestKind::BslMcpBegin {
+                operation_id: Uuid::new_v4().to_string(),
+                call,
+                deadline: BslOperationDeadline::from_remaining(remaining),
+            },
+        };
+        let response =
+            self.connector
+                .send_operation_before(&record, request, cancellation, deadline)?;
+        call_deadline.check(cancellation)?;
+        if !response.ok {
+            return Err(response
+                .error
+                .unwrap_or_else(|| "workspace service provider call failed".into()));
+        }
+        Ok(McpToolOutput {
+            result_text: response.result_text.unwrap_or_default(),
+            stderr: response.stderr.unwrap_or_default(),
+        })
     }
 
     pub fn call_rlm_response(
@@ -614,13 +763,11 @@ impl<'a> WorkspaceServiceManager<'a> {
             token: record.token.clone(),
             kind: ServiceRequestKind::Ping,
         };
-        let send_budget = deadline.remaining(cancellation)?;
-        let result = self
-            .connector
-            .send(record, request, cancellation, send_budget)
+        let result = deadline
+            .send(self.connector, record, request, cancellation)
             .map(|response| service_response_is_alive(&response))
             .unwrap_or(false);
-        deadline.remaining(cancellation)?;
+        deadline.check(cancellation)?;
         Ok(result)
     }
 
@@ -651,17 +798,17 @@ impl<'a> WorkspaceServiceManager<'a> {
         if record.token.is_empty() || record.port == 0 {
             return;
         }
-        let Ok(send_budget) = deadline.remaining(cancellation) else {
+        if deadline.check(cancellation).is_err() {
             return;
-        };
-        let _ = self.connector.send(
+        }
+        let _ = deadline.send(
+            self.connector,
             record,
             ServiceRequest {
                 token: record.token.clone(),
                 kind: ServiceRequestKind::Shutdown,
             },
             cancellation,
-            send_budget,
         );
     }
 }
@@ -769,6 +916,13 @@ pub trait ServiceConnector {
         cancellation: &CancellationToken,
         deadline: OperationDeadline,
     ) -> Result<ServiceResponse, String>;
+    fn send_operation_before(
+        &self,
+        record: &WorkspaceServiceRecord,
+        request: ServiceRequest,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<ServiceResponse, String>;
 }
 
 pub trait ServiceSpawner {
@@ -779,6 +933,14 @@ pub trait ServiceSpawner {
         token: &str,
         cancellation: &CancellationToken,
         budget: Duration,
+    ) -> Result<WorkspaceServiceRecord, String>;
+    fn spawn_operation_before(
+        &self,
+        identity: &WorkspaceServiceIdentity,
+        config: WorkspaceServiceConfig,
+        token: &str,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
     ) -> Result<WorkspaceServiceRecord, String>;
 }
 
@@ -852,6 +1014,20 @@ impl ConnectorRequestDeadline for OperationDeadline {
     }
 }
 
+impl ConnectorRequestDeadline for ProviderDeadline {
+    fn remaining_or_timeout(
+        &self,
+        _clock: &dyn ConnectorClock,
+    ) -> Result<Option<Duration>, String> {
+        match self.remaining() {
+            Some(remaining) if remaining.is_zero() => {
+                Err("timeout: workspace service operation deadline elapsed".into())
+            }
+            remaining => Ok(remaining),
+        }
+    }
+}
+
 pub trait ConnectorStream: Read + Write {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
     fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
@@ -915,9 +1091,183 @@ impl ServiceConnector for SystemServiceConnector {
             &SystemClock::start(),
         )
     }
+    fn send_operation_before(
+        &self,
+        record: &WorkspaceServiceRecord,
+        request: ServiceRequest,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<ServiceResponse, String> {
+        let clock = SystemClock::start();
+        if matches!(&request.kind, ServiceRequestKind::BslMcpBegin { .. }) {
+            self.send_prepared_with(
+                record,
+                request,
+                cancellation,
+                deadline,
+                &SystemConnectorIo,
+                &clock,
+            )
+        } else {
+            self.send_with_deadline(
+                record,
+                request,
+                cancellation,
+                &deadline,
+                &SystemConnectorIo,
+                &clock,
+            )
+        }
+    }
 }
 
 impl SystemServiceConnector {
+    pub fn send_prepared_with(
+        &self,
+        record: &WorkspaceServiceRecord,
+        request: ServiceRequest,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+        io: &dyn ConnectorIo,
+        clock: &dyn ConnectorClock,
+    ) -> Result<ServiceResponse, String> {
+        let operation_id = match &request.kind {
+            ServiceRequestKind::BslMcpBegin { operation_id, .. } => operation_id.clone(),
+            _ => return Err("workspace prepared connector requires a Begin request".into()),
+        };
+        cancellation_error(cancellation)?;
+        let connect_timeout = remaining_or_timeout(&deadline, clock)?
+            .map_or(SERVICE_CONNECT_TIMEOUT, |remaining| {
+                remaining.min(SERVICE_CONNECT_TIMEOUT)
+            });
+        let mut stream = match io.connect(record.port, connect_timeout) {
+            Ok(stream) => stream,
+            Err(error) => {
+                cancellation_error(cancellation)?;
+                remaining_or_timeout(&deadline, clock)?;
+                return Err(format!("failed to connect workspace service: {error}"));
+            }
+        };
+        cancellation_error(cancellation)?;
+        remaining_or_timeout(&deadline, clock)?;
+        let bytes = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+        write_with_deadline(stream.as_mut(), &bytes, &deadline, clock, cancellation)
+            .and_then(|_| {
+                write_with_deadline(stream.as_mut(), b"\n", &deadline, clock, cancellation)
+            })
+            .and_then(|_| flush_with_deadline(stream.as_mut(), &deadline, clock, cancellation))?;
+        // Begin alone cannot execute anything. A stop before admission may
+        // close the connection without losing an already submitted operation.
+        let admitted: PreparedBslReply =
+            read_service_reply(stream.as_mut(), &deadline, clock, cancellation)?;
+        match admitted {
+            PreparedBslReply::Admitted { operation_id: id } if id == operation_id => {}
+            PreparedBslReply::Finished { response } if !response.ok => return Ok(*response),
+            _ => return Err("workspace service admitted a different operation".into()),
+        }
+        let remaining =
+            cancellation_error(cancellation).and_then(|_| remaining_or_timeout(&deadline, clock));
+        let remaining = match remaining {
+            Ok(remaining) => remaining,
+            Err(error) => {
+                // This phase uses only a bounded control step; an operation
+                // deadline is not restarted to submit provider work.
+                let cause = if cancellation.is_cancelled() {
+                    BslStopCause::Cancel
+                } else {
+                    BslStopCause::Expire
+                };
+                let stop = ServiceRequest {
+                    token: record.token.clone(),
+                    kind: ServiceRequestKind::BslMcpStop {
+                        operation_id,
+                        cause,
+                    },
+                };
+                let control_deadline = Deadline::new(clock, SERVICE_CONTROL_CONNECT_TIMEOUT);
+                if let Ok(bytes) = serde_json::to_vec(&stop) {
+                    let _ = write_control_with_deadline(
+                        stream.as_mut(),
+                        &bytes,
+                        &control_deadline,
+                        clock,
+                    )
+                    .and_then(|_| {
+                        write_control_with_deadline(
+                            stream.as_mut(),
+                            b"\n",
+                            &control_deadline,
+                            clock,
+                        )
+                    })
+                    .and_then(|_| {
+                        flush_with_deadline(
+                            stream.as_mut(),
+                            &control_deadline,
+                            clock,
+                            &CancellationToken::new(),
+                        )
+                        .map_err(io::Error::other)
+                    });
+                }
+                return Err(error);
+            }
+        };
+        let start = ServiceRequest {
+            token: record.token.clone(),
+            kind: ServiceRequestKind::BslMcpStart {
+                operation_id: operation_id.clone(),
+                deadline: BslOperationDeadline::from_remaining(remaining),
+            },
+        };
+        let bytes = serde_json::to_vec(&start).map_err(|error| error.to_string())?;
+        let result: Result<ServiceResponse, String> = (|| {
+            write_with_deadline(stream.as_mut(), &bytes, &deadline, clock, cancellation)?;
+            write_with_deadline(stream.as_mut(), b"\n", &deadline, clock, cancellation)?;
+            flush_with_deadline(stream.as_mut(), &deadline, clock, cancellation)?;
+            match read_service_reply(stream.as_mut(), &deadline, clock, cancellation)? {
+                PreparedBslReply::Finished { response } => Ok(*response),
+                PreparedBslReply::Admitted { .. } => {
+                    Err("workspace service repeated admission instead of a result".into())
+                }
+            }
+        })();
+        match result {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                Err(self.stop_prepared_after_error(&error, &operation_id, record, io, clock))
+            }
+        }
+    }
+
+    fn stop_prepared_after_error(
+        &self,
+        error: &str,
+        operation_id: &str,
+        record: &WorkspaceServiceRecord,
+        io: &dyn ConnectorIo,
+        clock: &dyn ConnectorClock,
+    ) -> String {
+        let kind = if error.starts_with("cancelled:") {
+            ServiceRequestKind::Cancel {
+                operation_id: operation_id.to_owned(),
+            }
+        } else if error.starts_with("timeout:") {
+            ServiceRequestKind::Expire {
+                operation_id: operation_id.to_owned(),
+            }
+        } else {
+            // Loss of observation does not itself request cancellation.
+            return error.to_owned();
+        };
+        match self.send_control_with(record, kind, io, clock) {
+            Ok(()) => error.to_owned(),
+            Err(delivery) => {
+                format!("{error}; workspace service stop delivery is unconfirmed: {delivery}")
+            }
+        }
+    }
+
     pub fn send_with(
         &self,
         record: &WorkspaceServiceRecord,
@@ -1082,6 +1432,15 @@ pub fn read_service_response(
     clock: &dyn ConnectorClock,
     cancellation: &CancellationToken,
 ) -> Result<ServiceResponse, String> {
+    read_service_reply(stream, deadline, clock, cancellation)
+}
+
+fn read_service_reply<T: serde::de::DeserializeOwned>(
+    stream: &mut dyn ConnectorStream,
+    deadline: &dyn ConnectorRequestDeadline,
+    clock: &dyn ConnectorClock,
+    cancellation: &CancellationToken,
+) -> Result<T, String> {
     let mut response = Vec::new();
     let mut chunk = [0_u8; 8192];
     loop {
@@ -1326,18 +1685,53 @@ impl ServiceSpawner for SystemServiceSpawner {
         cancellation: &CancellationToken,
         budget: Duration,
     ) -> Result<WorkspaceServiceRecord, String> {
-        let deadline = WorkspaceServiceCallDeadline::new(budget);
-        deadline.remaining(cancellation)?;
+        self.spawn_before(
+            identity,
+            config,
+            token,
+            cancellation,
+            &WorkspaceServiceCallDeadline::new(budget),
+        )
+    }
+
+    fn spawn_operation_before(
+        &self,
+        identity: &WorkspaceServiceIdentity,
+        config: WorkspaceServiceConfig,
+        token: &str,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<WorkspaceServiceRecord, String> {
+        self.spawn_before(
+            identity,
+            config,
+            token,
+            cancellation,
+            &WorkspaceServiceCallDeadline::from_provider(deadline),
+        )
+    }
+}
+
+impl SystemServiceSpawner {
+    fn spawn_before(
+        &self,
+        identity: &WorkspaceServiceIdentity,
+        config: WorkspaceServiceConfig,
+        token: &str,
+        cancellation: &CancellationToken,
+        deadline: &WorkspaceServiceCallDeadline,
+    ) -> Result<WorkspaceServiceRecord, String> {
+        deadline.check(cancellation)?;
         fs::create_dir_all(&identity.service_dir)
             .map_err(|err| format!("failed to create workspace service directory: {err}"))?;
-        deadline.remaining(cancellation)?;
+        deadline.check(cancellation)?;
         let stdout = ProcessLog::create(&identity.service_dir.join("service.stdout.log"))
             .map_err(|err| format!("failed to create workspace service stdout log: {err}"))?;
-        deadline.remaining(cancellation)?;
+        deadline.check(cancellation)?;
         let stderr_path = identity.service_dir.join("service.stderr.log");
         let stderr = ProcessLog::create(&stderr_path)
             .map_err(|err| format!("failed to create workspace service stderr log: {err}"))?;
-        deadline.remaining(cancellation)?;
+        deadline.check(cancellation)?;
         let exe = env::current_exe()
             .map_err(|err| format!("failed to locate current unica executable: {err}"))?;
         // Unit tests run inside libtest, which cannot serve --workspace-service.
@@ -1368,8 +1762,10 @@ impl ServiceSpawner for SystemServiceSpawner {
         let child_pid = child.id();
         let readiness: Result<WorkspaceServiceRecord, String> = (|| {
             let wait_budget = deadline
-                .remaining(cancellation)?
-                .min(SERVICE_CONNECT_TIMEOUT);
+                .remaining_optional(cancellation)?
+                .map_or(SERVICE_CONNECT_TIMEOUT, |remaining| {
+                    remaining.min(SERVICE_CONNECT_TIMEOUT)
+                });
             // Сервис, завершившийся до готовности, записи уже не напишет:
             // ожидание прекращается сразу, а не досиживает весь срок.
             let record = wait_for_record_while(
@@ -1384,7 +1780,7 @@ impl ServiceSpawner for SystemServiceSpawner {
                 // запуск уже не владеет, а причину назовёт отчёт о старте.
                 &mut || !matches!(child.try_wait_status(), Ok(None)),
             )?;
-            deadline.remaining(cancellation)?;
+            deadline.check(cancellation)?;
             Ok(record)
         })();
         match readiness {
@@ -1444,9 +1840,9 @@ pub fn workspace_service_startup_failure(
         Ok(None) => format!(
             "{readiness_error}; spawned workspace service {pid} was still running when readiness failed"
         ),
-        Err(error) => format!(
-            "{readiness_error}; failed to inspect spawned workspace service {pid}: {error}"
-        ),
+        Err(error) => {
+            format!("{readiness_error}; failed to inspect spawned workspace service {pid}: {error}")
+        }
     }
 }
 
@@ -1567,16 +1963,6 @@ impl AnalyzerLane {
         cancellation: &CancellationToken,
     ) -> Result<AnalyzerLanePermit<'_>, String> {
         self.acquire_with_hook_before(cancellation, None, || {})
-    }
-
-    /// The lane for a call that gives way: it waits behind every call that
-    /// does not, and its permit carries the token such a call cancels.
-    pub fn acquire_yielding_before(
-        &self,
-        cancellation: &CancellationToken,
-        deadline: &ElapsedBudgetDeadline,
-    ) -> Result<AnalyzerLanePermit<'_>, String> {
-        self.acquire_queued(cancellation, Some(deadline), true, || {})
     }
 
     pub fn acquire_before(
@@ -1710,10 +2096,16 @@ pub struct WorkspaceServicesState<B: BslBackend, R: RlmBackend> {
     session_teardowns: SessionTeardownLifecycle,
     analyzer_invalidated: AtomicBool,
     rlm_invalidated: AtomicBool,
-    operations: Mutex<HashMap<String, CancellationToken>>,
+    operations: Mutex<HashMap<String, Arc<OperationControl>>>,
     shutting_down: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     handler_started_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    prepared_dispatch_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    bsl_session_deadline_hook: Mutex<Option<Arc<BslSessionDeadlineHook>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    operation_retired_hook: Mutex<Option<Arc<OperationRetiredHook>>>,
     #[cfg(any(test, feature = "test-support"))]
     authenticated_request_hook: Mutex<Option<Arc<AuthenticatedWorkspaceRequestHook>>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -1734,6 +2126,12 @@ pub struct WorkspaceServicesProjection<'a, B: BslBackend, R: RlmBackend>(
 
 #[cfg(any(test, feature = "test-support"))]
 pub type AuthenticatedWorkspaceRequestHook = dyn Fn(u16, &ServiceRequestKind) + Send + Sync;
+
+#[cfg(any(test, feature = "test-support"))]
+pub type BslSessionDeadlineHook = dyn Fn(Option<Duration>, bool) + Send + Sync;
+
+#[cfg(any(test, feature = "test-support"))]
+pub type OperationRetiredHook = dyn Fn(&str) + Send + Sync;
 
 #[cfg(any(test, feature = "test-support"))]
 pub type DetachedWorkspaceCallerHook = dyn Fn(&CancellationToken) + Send + Sync;
@@ -1844,6 +2242,12 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             #[cfg(any(test, feature = "test-support"))]
             handler_started_hook: Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
+            prepared_dispatch_hook: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            bsl_session_deadline_hook: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            operation_retired_hook: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
             authenticated_request_hook: Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
             invalidation_response_hook: Mutex::new(None),
@@ -1928,7 +2332,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         &self.actor.runtime_projection().0.rlm_invalidated
     }
 
-    fn operations(&self) -> &Mutex<HashMap<String, CancellationToken>> {
+    fn operations(&self) -> &Mutex<HashMap<String, Arc<OperationControl>>> {
         &self.actor.runtime_projection().0.operations
     }
 
@@ -2077,6 +2481,14 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         self: &Arc<Self>,
         operation_id: String,
     ) -> Result<(CancellationToken, OperationGuard<B, R>), String> {
+        let (control, guard) = self.register_control(operation_id)?;
+        Ok((control.cancellation.clone(), guard))
+    }
+
+    fn register_control(
+        self: &Arc<Self>,
+        operation_id: String,
+    ) -> Result<(Arc<OperationControl>, OperationGuard<B, R>), String> {
         if self.shutting_down().load(Ordering::Acquire) {
             return Err("workspace service is shutting down".to_string());
         }
@@ -2092,7 +2504,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
                 "workspace service operation id is already active: {operation_id}"
             ));
         }
-        let cancellation = CancellationToken::new();
+        let cancellation = Arc::new(OperationControl::new());
         operations.insert(operation_id.clone(), cancellation.clone());
         Ok((
             cancellation,
@@ -2115,6 +2527,25 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         ServiceResponse {
             ok: true,
             status: Some("cancel-requested".to_string()),
+            ..ServiceResponse::default()
+        }
+    }
+
+    fn expire_operation(&self, operation_id: &str) -> ServiceResponse {
+        let control = self
+            .operations()
+            .lock()
+            .ok()
+            .and_then(|operations| operations.get(operation_id).cloned());
+        let Some(control) = control else {
+            return ServiceResponse::error(
+                "workspace service expiry target is not observed; termination is unconfirmed",
+            );
+        };
+        control.expire();
+        ServiceResponse {
+            ok: true,
+            status: Some("expiry-requested".into()),
             ..ServiceResponse::default()
         }
     }
@@ -2204,14 +2635,6 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         self.rlm_lane().acquire(cancellation)
     }
 
-    fn acquire_analyzer_lane_before(
-        &self,
-        cancellation: &CancellationToken,
-        deadline: &ElapsedBudgetDeadline,
-    ) -> Result<AnalyzerLanePermit<'_>, String> {
-        self.analyzer_lane().acquire_before(cancellation, deadline)
-    }
-
     fn acquire_rlm_lane_before(
         &self,
         cancellation: &CancellationToken,
@@ -2237,18 +2660,36 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             Err(error) => return ServiceResponse::error(error),
         };
         let deadline = ElapsedBudgetDeadline::new(timeout);
-        let lane = if yields {
+        self.run_bsl_mcp(
+            tool_name,
+            tool_args,
+            yields,
+            Some(&deadline),
+            request_cancellation,
+        )
+    }
+
+    fn run_bsl_mcp(
+        &self,
+        tool_name: &str,
+        tool_args: Value,
+        yields: bool,
+        deadline: Option<&ElapsedBudgetDeadline>,
+        request_cancellation: &CancellationToken,
+    ) -> ServiceResponse {
+        let call_deadline = ServiceMcpDeadline(deadline);
+        if let Err(error) = call_deadline.check(request_cancellation) {
+            return ServiceResponse::error(error);
+        }
+        let lane =
             self.analyzer_lane()
-                .acquire_yielding_before(request_cancellation, &deadline)
-        } else {
-            self.acquire_analyzer_lane_before(request_cancellation, &deadline)
-        };
+                .acquire_queued(request_cancellation, deadline, yields, || {});
         let lane = match lane {
             Ok(lane) => lane,
             Err(error) => return ServiceResponse::error(error),
         };
         let cancellation = lane.yielding_cancellation().unwrap_or(request_cancellation);
-        if let Err(error) = deadline.remaining_cancellable(cancellation) {
+        if let Err(error) = call_deadline.check(cancellation) {
             return ServiceResponse::error(error);
         }
         let binding = match self.provider_binding() {
@@ -2275,7 +2716,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             drop(analyzer);
             if invalidated {
                 let retirement = stale_session
-                    .retire_for_replacement(|| deadline.remaining_cancellable(cancellation));
+                    .retire_for_replacement(|| call_deadline.replacement_poll(cancellation));
                 analyzer = self
                     .analyzer()
                     .lock()
@@ -2294,7 +2735,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             }
         }
         let result = self.actor.read(&binding, |source_root| {
-            deadline.remaining_cancellable(cancellation)?;
+            call_deadline.check(cancellation)?;
             if analyzer.is_none() {
                 *analyzer = Some((self.analyzer_starter())(
                     self.context(),
@@ -2302,11 +2743,30 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
                     cancellation,
                 )?);
             }
-            let remaining = deadline.remaining_cancellable(cancellation)?;
+            call_deadline.check(cancellation)?;
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                let hook = self
+                    .actor
+                    .runtime_projection()
+                    .0
+                    .bsl_session_deadline_hook
+                    .lock()
+                    .unwrap()
+                    .clone();
+                if let Some(hook) = hook {
+                    hook(call_deadline.remaining(), call_deadline.is_elapsed());
+                }
+            }
             analyzer
                 .as_mut()
                 .expect("bsl session must exist after start")
-                .call_with_failure_capture(tool_name, tool_args, remaining, cancellation)
+                .call_with_failure_capture_deadline(
+                    tool_name,
+                    tool_args,
+                    &call_deadline,
+                    cancellation,
+                )
         });
         match result {
             Ok(output) => ServiceResponse {
@@ -2505,6 +2965,47 @@ pub fn update_service_record_last_access_with_hook<B: BslBackend, R: RlmBackend>
     });
 }
 
+/// A registered operation has one cancellation authority and one stop cause.
+/// The entry is retained by its existing guard, not by a timeout/tombstone.
+struct OperationControl {
+    cancellation: CancellationToken,
+    cause: Mutex<Option<BslStopCause>>,
+}
+
+impl OperationControl {
+    fn new() -> Self {
+        Self {
+            cancellation: CancellationToken::new(),
+            cause: Mutex::new(None),
+        }
+    }
+
+    fn cancel(&self) {
+        *self.cause.lock().unwrap_or_else(|error| error.into_inner()) = Some(BslStopCause::Cancel);
+        self.cancellation.cancel();
+    }
+
+    fn expire(&self) {
+        let mut cause = self.cause.lock().unwrap_or_else(|error| error.into_inner());
+        if *cause != Some(BslStopCause::Cancel) {
+            *cause = Some(BslStopCause::Expire);
+        }
+        self.cancellation.cancel();
+    }
+
+    fn stop_error(&self) -> Option<String> {
+        match *self.cause.lock().unwrap_or_else(|error| error.into_inner()) {
+            Some(BslStopCause::Expire) => {
+                Some("timeout: workspace service operation deadline elapsed".into())
+            }
+            Some(BslStopCause::Cancel) => {
+                Some(cancelled_error("workspace service operation stopped"))
+            }
+            None => None,
+        }
+    }
+}
+
 pub struct OperationGuard<B: BslBackend, R: RlmBackend> {
     runtime: Arc<WorkspaceServices<B, R>>,
     operation_id: String,
@@ -2512,9 +3013,30 @@ pub struct OperationGuard<B: BslBackend, R: RlmBackend> {
 
 impl<B: BslBackend, R: RlmBackend> Drop for OperationGuard<B, R> {
     fn drop(&mut self) {
-        if let Ok(mut operations) = self.runtime.operations().lock() {
-            operations.remove(&self.operation_id);
+        let removed = self
+            .runtime
+            .operations()
+            .lock()
+            .ok()
+            .and_then(|mut operations| operations.remove(&self.operation_id))
+            .is_some();
+        #[cfg(any(test, feature = "test-support"))]
+        if removed {
+            let hook = self
+                .runtime
+                .actor
+                .runtime_projection()
+                .0
+                .operation_retired_hook
+                .lock()
+                .unwrap()
+                .clone();
+            if let Some(hook) = hook {
+                hook(&self.operation_id);
+            }
         }
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = removed;
     }
 }
 
@@ -2525,6 +3047,18 @@ pub trait WorkspaceServiceOperationExecutor<B: BslBackend, R: RlmBackend>: Send 
         kind: ServiceRequestKind,
         cancellation: &CancellationToken,
     ) -> ServiceResponse;
+    fn execute_prepared(
+        &self,
+        runtime: &WorkspaceServices<B, R>,
+        kind: ServiceRequestKind,
+        cancellation: &CancellationToken,
+        deadline: Option<&ElapsedBudgetDeadline>,
+    ) -> ServiceResponse {
+        if let Err(error) = ServiceMcpDeadline(deadline).check(cancellation) {
+            return ServiceResponse::error(error);
+        }
+        self.execute(runtime, kind, cancellation)
+    }
 }
 
 pub struct SystemWorkspaceServiceOperationExecutor;
@@ -2554,6 +3088,14 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServiceOperationExecutor<B, R>
                 yields,
                 cancellation,
             ),
+            ServiceRequestKind::BslMcpBegin { .. } => ServiceResponse::error(
+                "workspace provider work requires its accepted Start deadline",
+            ),
+            ServiceRequestKind::BslMcpStart { .. }
+            | ServiceRequestKind::BslMcpStop { .. }
+            | ServiceRequestKind::Expire { .. } => {
+                ServiceResponse::error("workspace service control is outside its admission phase")
+            }
             ServiceRequestKind::RlmReady {
                 args,
                 timeout_seconds,
@@ -2567,6 +3109,26 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServiceOperationExecutor<B, R>
                 ..
             } => runtime.handle_rlm_mcp(operation, timeout_seconds, timeout_nanos, cancellation),
             _ => ServiceResponse::error("workspace service received non-work operation"),
+        }
+    }
+    fn execute_prepared(
+        &self,
+        runtime: &WorkspaceServices<B, R>,
+        kind: ServiceRequestKind,
+        cancellation: &CancellationToken,
+        deadline: Option<&ElapsedBudgetDeadline>,
+    ) -> ServiceResponse {
+        match kind {
+            ServiceRequestKind::BslMcpBegin { call, .. } => runtime.run_bsl_mcp(
+                &call.tool_name,
+                call.tool_args,
+                call.yields,
+                deadline,
+                cancellation,
+            ),
+            _ => {
+                ServiceResponse::error("workspace prepared executor received a different operation")
+            }
         }
     }
 }
@@ -3094,7 +3656,13 @@ pub fn handle_workspace_service_stream<B: BslBackend, R: RlmBackend>(
     {
         Some(BoundedServiceLine::Line(line)) => line,
         Some(BoundedServiceLine::TooLarge) => {
-            write_service_response(stream, &ServiceResponse::error(format!("invalid workspace service request: request line exceeds {SERVICE_REQUEST_LINE_LIMIT} bytes")), false)?;
+            write_service_response(
+                stream,
+                &ServiceResponse::error(format!(
+                    "invalid workspace service request: request line exceeds {SERVICE_REQUEST_LINE_LIMIT} bytes"
+                )),
+                false,
+            )?;
             return Ok(());
         }
         None => return Ok(()),
@@ -3132,6 +3700,32 @@ pub fn handle_workspace_service_request<B: BslBackend, R: RlmBackend>(
         ServiceRequestKind::Cancel { operation_id } => {
             write_service_response(stream, &runtime.cancel_operation(&operation_id), true)?;
         }
+        ServiceRequestKind::Expire { operation_id } => {
+            write_service_response(stream, &runtime.expire_operation(&operation_id), true)?;
+        }
+        ServiceRequestKind::BslMcpBegin {
+            operation_id,
+            call,
+            deadline,
+        } => {
+            return handle_prepared_bsl_request(
+                stream,
+                runtime,
+                executor,
+                operation_id,
+                call,
+                deadline,
+            );
+        }
+        ServiceRequestKind::BslMcpStart { .. } | ServiceRequestKind::BslMcpStop { .. } => {
+            write_service_response(
+                stream,
+                &ServiceResponse::error(
+                    "workspace service frame has no owning admission connection",
+                ),
+                false,
+            )?;
+        }
         ServiceRequestKind::Invalidate { events } => {
             let response = runtime.invalidate(&events);
             #[cfg(any(test, feature = "test-support"))]
@@ -3167,83 +3761,321 @@ pub fn handle_workspace_service_request<B: BslBackend, R: RlmBackend>(
                     return Ok(());
                 }
             };
-            let (result_tx, result_rx) = mpsc::sync_channel(1);
-            let worker_runtime = Arc::clone(&runtime);
-            let worker_cancellation = cancellation.clone();
-            let _ = thread::Builder::new()
-                .name("unica-workspace-worker".into())
-                .spawn(move || {
-                    let response = executor.execute(&worker_runtime, kind, &worker_cancellation);
-                    drop(guard);
-                    let _ = result_tx.send(response);
-                });
-            let mut caller_error = configure_workspace_caller_monitor(&stream, &runtime)
-                .err()
-                .map(|error| format!("failed to monitor workspace service caller: {error}"));
-            let mut monitor_caller = caller_error.is_none();
-            #[cfg(any(test, feature = "test-support"))]
-            if !monitor_caller {
-                runtime.notify_caller_detached(&cancellation);
-            }
-            loop {
-                match result_rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(response) => {
-                        // An inbound FIN can be a half-close: the peer may still
-                        // read the result. Delivery is attempted only after the
-                        // accepted worker has really completed, even if its
-                        // transport could no longer be monitored.
-                        stream.set_nonblocking(false).map_err(|err| {
-                            format!("failed to restore workspace service response stream: {err}")
-                        })?;
-                        write_service_response(stream, &response, false)?;
-                        break;
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        stream.set_nonblocking(false).map_err(|err| {
-                            format!("failed to restore workspace service response stream: {err}")
-                        })?;
-                        write_service_response(
-                            stream,
-                            &ServiceResponse::error("workspace service worker disconnected"),
-                            false,
-                        )?;
-                        return Err("workspace service worker disconnected".into());
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if !monitor_caller {
-                            continue;
-                        }
-                        let mut byte = [0_u8; 1];
-                        match peek_workspace_caller(&stream, &mut byte, &runtime) {
-                            Ok(0) => {
-                                monitor_caller = false;
-                            }
-                            Ok(_) => {}
-                            Err(error)
-                                if matches!(
-                                    error.kind(),
-                                    ErrorKind::WouldBlock | ErrorKind::Interrupted
-                                ) => {}
-                            Err(error) => {
-                                caller_error = Some(format!(
-                                    "failed to monitor workspace service caller: {error}"
-                                ));
-                                monitor_caller = false;
-                            }
-                        }
-                        #[cfg(any(test, feature = "test-support"))]
-                        if !monitor_caller {
-                            runtime.notify_caller_detached(&cancellation);
-                        }
-                    }
-                }
-            }
-            if let Some(error) = caller_error {
-                return Err(error);
-            }
+            run_registered_workspace_operation(
+                stream,
+                runtime,
+                executor,
+                kind,
+                cancellation,
+                guard,
+                None,
+            )?;
         }
     }
     Ok(())
+}
+
+struct PreparedExecutionControl {
+    control: Arc<OperationControl>,
+    deadline: Option<ElapsedBudgetDeadline>,
+}
+
+fn run_registered_workspace_operation<B: BslBackend, R: RlmBackend>(
+    stream: TcpStream,
+    runtime: Arc<WorkspaceServices<B, R>>,
+    executor: Arc<dyn WorkspaceServiceOperationExecutor<B, R>>,
+    kind: ServiceRequestKind,
+    cancellation: CancellationToken,
+    guard: OperationGuard<B, R>,
+    control: Option<PreparedExecutionControl>,
+) -> Result<(), String> {
+    let prepared = control.is_some();
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    let worker_runtime = Arc::clone(&runtime);
+    let worker_cancellation = cancellation.clone();
+    let _ = thread::Builder::new()
+        .name("unica-workspace-worker".into())
+        .spawn(move || {
+            #[cfg(any(test, feature = "test-support"))]
+            if control.is_some() {
+                let hook = worker_runtime
+                    .actor
+                    .runtime_projection()
+                    .0
+                    .prepared_dispatch_hook
+                    .lock()
+                    .unwrap()
+                    .clone();
+                if let Some(hook) = hook {
+                    hook();
+                }
+            }
+            let mut response = match &control {
+                Some(prepared) => executor.execute_prepared(
+                    &worker_runtime,
+                    kind,
+                    &worker_cancellation,
+                    prepared.deadline.as_ref(),
+                ),
+                None => executor.execute(&worker_runtime, kind, &worker_cancellation),
+            };
+            if response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("cancelled:"))
+            {
+                if let Some(stop) = control
+                    .as_ref()
+                    .and_then(|control| control.control.stop_error())
+                {
+                    response.error = Some(stop);
+                }
+            }
+            drop(guard);
+            let _ = result_tx.send(response);
+        });
+    let mut caller_error = configure_workspace_caller_monitor(&stream, &runtime)
+        .err()
+        .map(|error| format!("failed to monitor workspace service caller: {error}"));
+    let mut monitor_caller = caller_error.is_none();
+    #[cfg(any(test, feature = "test-support"))]
+    if !monitor_caller {
+        runtime.notify_caller_detached(&cancellation);
+    }
+    loop {
+        match result_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(response) => {
+                // An inbound FIN can be a half-close: the peer may still
+                // read the result. Delivery is attempted only after the
+                // accepted worker has really completed, even if its
+                // transport could no longer be monitored.
+                stream.set_nonblocking(false).map_err(|err| {
+                    format!("failed to restore workspace service response stream: {err}")
+                })?;
+                write_registered_response(stream, response, prepared)?;
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                stream.set_nonblocking(false).map_err(|err| {
+                    format!("failed to restore workspace service response stream: {err}")
+                })?;
+                write_registered_response(
+                    stream,
+                    ServiceResponse::error("workspace service worker disconnected"),
+                    prepared,
+                )?;
+                return Err("workspace service worker disconnected".into());
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if !monitor_caller {
+                    continue;
+                }
+                let mut byte = [0_u8; 1];
+                match peek_workspace_caller(&stream, &mut byte, &runtime) {
+                    Ok(0) => {
+                        monitor_caller = false;
+                    }
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::Interrupted
+                        ) => {}
+                    Err(error) => {
+                        caller_error = Some(format!(
+                            "failed to monitor workspace service caller: {error}"
+                        ));
+                        monitor_caller = false;
+                    }
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                if !monitor_caller {
+                    runtime.notify_caller_detached(&cancellation);
+                }
+            }
+        }
+    }
+    if let Some(error) = caller_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn write_registered_response(
+    mut stream: TcpStream,
+    response: ServiceResponse,
+    prepared: bool,
+) -> Result<(), String> {
+    if prepared {
+        serde_json::to_writer(
+            &mut stream,
+            &PreparedBslReply::Finished {
+                response: Box::new(response),
+            },
+        )
+        .map_err(|error| format!("failed to encode workspace service result: {error}"))?;
+        stream
+            .write_all(b"\n")
+            .and_then(|_| stream.flush())
+            .map_err(|error| format!("failed to write workspace service result: {error}"))
+    } else {
+        write_service_response(stream, &response, false).map(|_| ())
+    }
+}
+
+fn handle_prepared_bsl_request<B: BslBackend, R: RlmBackend>(
+    mut stream: TcpStream,
+    runtime: Arc<WorkspaceServices<B, R>>,
+    executor: Arc<dyn WorkspaceServiceOperationExecutor<B, R>>,
+    operation_id: String,
+    call: PreparedBslCall,
+    offered: BslOperationDeadline,
+) -> Result<(), String> {
+    let offered_budget = offered.remaining()?;
+    let (control, guard) = match runtime.register_control(operation_id.clone()) {
+        Ok(registered) => registered,
+        Err(error) => {
+            return write_registered_response(stream, ServiceResponse::error(error), true);
+        }
+    };
+    // This acknowledges only a reservation. No provider/lane work has started.
+    let admitted = serde_json::to_vec(&PreparedBslReply::Admitted {
+        operation_id: operation_id.clone(),
+    })
+    .map_err(|error| error.to_string())?;
+    let clock = SystemClock::start();
+    let ack_deadline = Deadline::new(&clock, SERVICE_CONTROL_CONNECT_TIMEOUT);
+    write_control_with_deadline(&mut stream, &admitted, &ack_deadline, &clock)
+        .map_err(|error| format!("failed to acknowledge workspace admission: {error}"))?;
+    write_control_with_deadline(&mut stream, b"\n", &ack_deadline, &clock)
+        .map_err(|error| format!("failed to acknowledge workspace admission: {error}"))?;
+    stream.flush().map_err(|error| error.to_string())?;
+    remaining_or_control_timeout(&ack_deadline, &clock).map_err(|error| error.to_string())?;
+
+    let header_stream = stream.try_clone().map_err(|error| error.to_string())?;
+    let mut reader = BufReader::new(
+        header_stream
+            .try_clone()
+            .map_err(|error| error.to_string())?,
+    );
+    header_stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .map_err(|error| error.to_string())?;
+    loop {
+        if let Some(error) = control.stop_error() {
+            return write_registered_response(stream, ServiceResponse::error(error), true);
+        }
+        if control.cancellation.is_cancelled() {
+            return write_registered_response(
+                stream,
+                ServiceResponse::error(cancelled_error("workspace reservation stopped")),
+                true,
+            );
+        }
+        match reader.fill_buf() {
+            Ok([]) => return Ok(()),
+            Ok(_) => break,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) => {}
+            Err(error) => return Err(format!("failed to observe workspace Start: {error}")),
+        }
+    }
+    let header_clock = SystemClock::start();
+    let header_deadline = Deadline::new(&header_clock, SERVICE_REQUEST_HEADER_TIMEOUT);
+    let phase = read_bounded_service_line_with_deadline(
+        &mut reader,
+        &header_deadline,
+        &header_clock,
+        |remaining| header_stream.set_read_timeout(Some(remaining)),
+    )
+    .map_err(|error| format!("failed to read workspace admission phase: {error}"))?;
+    let line = match phase {
+        None => return Ok(()), // No Start: release only this unsubmitted reservation.
+        Some(BoundedServiceLine::TooLarge) => {
+            return Err("workspace admission frame exceeds its bound".into());
+        }
+        Some(BoundedServiceLine::Line(line)) => line,
+    };
+    let request: ServiceRequest = serde_json::from_slice(&line)
+        .map_err(|error| format!("invalid workspace admission frame: {error}"))?;
+    runtime
+        .authenticate(&request.token)
+        .map_err(str::to_owned)?;
+    let deadline = match request.kind {
+        ServiceRequestKind::BslMcpStop {
+            operation_id: id,
+            cause,
+        } if id == operation_id => {
+            match cause {
+                BslStopCause::Cancel => control.cancel(),
+                BslStopCause::Expire => control.expire(),
+            }
+            return write_registered_response(
+                stream,
+                ServiceResponse::error(control.stop_error().unwrap()),
+                true,
+            );
+        }
+        ServiceRequestKind::BslMcpStart {
+            operation_id: id,
+            deadline,
+        } if id == operation_id => deadline,
+        _ => {
+            return write_registered_response(
+                stream,
+                ServiceResponse::error("workspace admission does not own this phase"),
+                true,
+            );
+        }
+    };
+    let remaining = deadline.remaining()?;
+    if offered_budget.is_some_and(|offered| remaining.is_none_or(|remaining| remaining > offered)) {
+        return write_registered_response(
+            stream,
+            ServiceResponse::error("workspace Start renews its offered deadline"),
+            true,
+        );
+    }
+    if let Some(error) = control.stop_error() {
+        return write_registered_response(stream, ServiceResponse::error(error), true);
+    }
+    if control.cancellation.is_cancelled() {
+        return write_registered_response(
+            stream,
+            ServiceResponse::error(cancelled_error("workspace admission stopped")),
+            true,
+        );
+    }
+    if remaining == Some(Duration::ZERO) {
+        return write_registered_response(
+            stream,
+            ServiceResponse::error("timeout: workspace Start deadline elapsed"),
+            true,
+        );
+    }
+    // After Start, EOF is only loss of observation. The worker keeps the guard.
+    let deadline_anchor = remaining.map(ElapsedBudgetDeadline::new);
+    let cancellation = control.cancellation.clone();
+    let kind = ServiceRequestKind::BslMcpBegin {
+        operation_id,
+        call,
+        deadline,
+    };
+    run_registered_workspace_operation(
+        stream,
+        runtime,
+        executor,
+        kind,
+        cancellation,
+        guard,
+        Some(PreparedExecutionControl {
+            control,
+            deadline: deadline_anchor,
+        }),
+    )
 }
 
 pub fn configure_workspace_caller_monitor<B: BslBackend, R: RlmBackend>(
@@ -3336,7 +4168,7 @@ where
         let available = match reader.fill_buf() {
             Ok(available) => available,
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                continue
+                continue;
             }
             Err(error) => return Err(error),
         };
@@ -3678,6 +4510,33 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
     pub fn test_set_rlm_starter(&mut self, starter: Arc<RlmSessionStarter<R>>) {
         self.runtime_mut_for_test().rlm_starter = starter;
     }
+    pub fn test_set_bsl_session_deadline_hook(&self, hook: Option<Arc<BslSessionDeadlineHook>>) {
+        *self
+            .actor
+            .runtime_projection()
+            .0
+            .bsl_session_deadline_hook
+            .lock()
+            .unwrap() = hook;
+    }
+    pub fn test_set_operation_retired_hook(&self, hook: Option<Arc<OperationRetiredHook>>) {
+        *self
+            .actor
+            .runtime_projection()
+            .0
+            .operation_retired_hook
+            .lock()
+            .unwrap() = hook;
+    }
+    pub fn test_set_prepared_dispatch_hook(&self, hook: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *self
+            .actor
+            .runtime_projection()
+            .0
+            .prepared_dispatch_hook
+            .lock()
+            .unwrap() = hook;
+    }
     pub fn test_set_authenticated_request_hook(
         &self,
         hook: Option<Arc<AuthenticatedWorkspaceRequestHook>>,
@@ -3795,8 +4654,15 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
     pub fn test_rlm_invalidated(&self) -> &AtomicBool {
         self.rlm_invalidated()
     }
-    pub fn test_operations(&self) -> &Mutex<HashMap<String, CancellationToken>> {
+    pub fn test_operation_ids(&self) -> Vec<String> {
+        self.operations().lock().unwrap().keys().cloned().collect()
+    }
+    pub fn test_operation_cancellation(&self, id: &str) -> Option<CancellationToken> {
         self.operations()
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|control| control.cancellation.clone())
     }
     pub fn test_shutting_down(&self) -> &AtomicBool {
         self.shutting_down()
@@ -3937,6 +4803,10 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
 #[cfg(any(test, feature = "test-support"))]
 impl WorkspaceServiceCallDeadline {
     pub fn test_with_started(started: Instant, budget: Duration) -> Self {
-        Self { started, budget }
+        Self {
+            started,
+            budget,
+            caller: None,
+        }
     }
 }
