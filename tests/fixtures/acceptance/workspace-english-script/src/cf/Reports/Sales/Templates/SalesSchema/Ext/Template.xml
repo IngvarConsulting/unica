@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <dataSource><name>LocalSource</name><dataSourceType>Local</dataSourceType></dataSource>
+ <dataSet xsi:type="DataSetQuery"><name>SalesData</name>
+  <field xsi:type="DataSetFieldField"><dataPath>Amount</dataPath><field>Amount</field><title xsi:type="v8:LocalStringType"><v8:item><v8:lang>en</v8:lang><v8:content>Amount</v8:content></v8:item></title></field>
+  <dataSource>LocalSource</dataSource><query>SELECT 1 AS Amount, 2 AS Quantity</query>
+ </dataSet>
+ <settingsVariant><dcsset:name>Main</dcsset:name><dcsset:presentation xsi:type="v8:LocalStringType"><v8:item><v8:lang>en</v8:lang><v8:content>Main</v8:content></v8:item></dcsset:presentation><dcsset:settings>
+  <dcsset:selection><dcsset:item xsi:type="dcsset:SelectedItemAuto"/></dcsset:selection>
+ </dcsset:settings></settingsVariant>
+</DataCompositionSchema>

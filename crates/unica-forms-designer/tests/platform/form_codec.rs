@@ -559,7 +559,10 @@ fn form_compile_writes_the_same_command_block_as_form_command_add() {
         "action": "СписокОбновить",
         "representation": "Picture"
     }]);
-    let mut ids = FormIdAllocator { next: 4 };
+    let mut ids = FormEmissionContext {
+        next: 4,
+        ..Default::default()
+    };
     let mut lines = Vec::new();
     emit_form_commands(&mut lines, Some(&commands), "\t", &mut ids, Some("ru")).unwrap();
     assert_eq!(
@@ -1895,7 +1898,7 @@ fn form_compile_accepts_every_8_3_27_element_enum_value() {
 #[test]
 fn form_element_emitters_escape_enum_text_when_preflight_is_bypassed() {
     let mut lines = vec!["<Form>".to_string()];
-    let mut ids = FormIdAllocator::new();
+    let mut ids = FormEmissionContext::new();
     let check = json!({
         "checkBoxType": "</CheckBoxType><Injected/>",
         "titleLocation": "</TitleLocation><Injected/>"
@@ -3025,4 +3028,126 @@ fn form_edit_inserts_lines_with_the_form_line_ending() {
         has_bare_lf(&edited) && edited.contains("\r\n"),
         "{edited:?}"
     );
+}
+
+#[test]
+fn generated_form_main_attributes_follow_the_script_variant() {
+    for (kind, purpose, russian, english) in [
+        ("Catalog", "Object", "Объект", "Object"),
+        ("Catalog", "List", "Список", "List"),
+        ("Catalog", "Choice", "Список", "List"),
+        ("InformationRegister", "Record", "Запись", "Record"),
+    ] {
+        for (variant, attribute, bar) in [
+            (ScriptVariant::Russian, russian, "ФормаКоманднаяПанель"),
+            (ScriptVariant::English, english, "FormCommandBar"),
+        ] {
+            let xml = form_add_content_xml_with_variant(kind, "Sample", purpose, "2.20", variant)
+                .unwrap();
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let root = doc.root_element();
+            assert_eq!(
+                root.children()
+                    .find(|n| n.has_tag_name("AutoCommandBar"))
+                    .unwrap()
+                    .attribute("name"),
+                Some(bar)
+            );
+            assert_eq!(
+                root.descendants()
+                    .find(|n| n.has_tag_name("Attribute"))
+                    .unwrap()
+                    .attribute("name"),
+                Some(attribute)
+            );
+            assert_platform_text_uses_crlf_without_bare_lf(&xml);
+        }
+    }
+    assert_platform_text_uses_crlf_without_bare_lf(form_add_module_bsl_with_variant(
+        ScriptVariant::English,
+    ));
+}
+
+#[test]
+fn english_companions_preserve_existing_names_and_repeat_without_changes() {
+    let mut xml = form_add_content_xml("Catalog", "Sample", "Object", "2.20").unwrap();
+    let before = xml.clone();
+    let root_start = xml.find("<Form ").unwrap();
+    let definition = json!({"elements": [{"button": "Обновить", "name": "Обновить"}]});
+    form_edit_apply_definition_with_variant(
+        &mut xml,
+        &definition,
+        Path::new("Form.xml"),
+        root_start,
+        None,
+        ScriptVariant::English,
+    )
+    .unwrap();
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    let root = doc.root_element();
+    assert_eq!(
+        root.children()
+            .find(|n| n.has_tag_name("AutoCommandBar"))
+            .unwrap()
+            .attribute("name"),
+        Some("ФормаКоманднаяПанель")
+    );
+    assert!(root
+        .descendants()
+        .any(|n| n.has_tag_name("Attribute") && n.attribute("name") == Some("Объект")));
+    assert!(root.descendants().any(|n| n.has_tag_name("ExtendedTooltip")
+        && n.attribute("name") == Some("ОбновитьExtendedTooltip")));
+    // Attribute subtree is byte-for-byte unchanged by adding the button.
+    let attributes = |text: &str| {
+        text[text.find("\t<Attributes>").unwrap()
+            ..text.find("\t</Attributes>").unwrap() + "\t</Attributes>".len()]
+            .to_string()
+    };
+    assert_eq!(attributes(&xml), attributes(&before));
+    let first = xml.clone();
+    form_edit_apply_definition_with_variant(
+        &mut xml,
+        &definition,
+        Path::new("Form.xml"),
+        root_start,
+        None,
+        ScriptVariant::English,
+    )
+    .unwrap();
+    assert_eq!(xml, first);
+}
+
+#[test]
+fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() {
+    // Names are independently present in platform_8_3_27/external_artifacts/
+    // epf/SyntheticProcessor/Forms/Main/Ext/Form.xml (LinesSearchString etc.).
+    for autofill in [None, Some(true), Some(false)] {
+        let mut table = json!({"table": "Lines", "path": "Object.Lines"});
+        if let Some(value) = autofill {
+            table["tableAutofill"] = json!(value);
+        }
+        let mut lines = Vec::new();
+        let mut context = FormEmissionContext::with_script_variant(ScriptVariant::English);
+        emit_form_element(&mut lines, &table, "", &mut context, None).unwrap();
+        let fragment = format!("<Form {FORM_ROOT_NAMESPACES}>{}</Form>", lines.join("\n"));
+        let doc = roxmltree::Document::parse(&fragment).unwrap();
+        let names = doc
+            .descendants()
+            .filter_map(|node| node.attribute("name"))
+            .collect::<Vec<_>>();
+        for expected in [
+            "LinesCommandBar",
+            "LinesSearchString",
+            "LinesViewStatus",
+            "LinesSearchControl",
+            "LinesSearchStringContextMenu",
+            "LinesViewStatusExtendedTooltip",
+            "LinesSearchControlExtendedTooltip",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "{autofill:?}: missing {expected}: {names:?}"
+            );
+        }
+    }
 }

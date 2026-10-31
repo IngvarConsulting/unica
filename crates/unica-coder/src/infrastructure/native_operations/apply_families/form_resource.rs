@@ -368,7 +368,7 @@ mod tests {
     /// писатель вида не пишет, в контракт не попадает.
     #[test]
     fn every_published_element_key_reaches_the_xml_of_its_kind() {
-        use unica_forms_designer::codec::{emit_form_element, FormIdAllocator};
+        use unica_forms_designer::codec::{emit_form_element, FormEmissionContext};
         let fixture = ApplySeamFixture::new();
         let contract = unica_forms::operations::FormOperation::ItemAdd.contract();
         let variants = contract.schema["properties"]["items"]["items"]["anyOf"]
@@ -387,7 +387,7 @@ mod tests {
                 &mut lines,
                 &definition,
                 "\t",
-                &mut FormIdAllocator::new(),
+                &mut FormEmissionContext::new(),
                 Some("en"),
             )
             .unwrap_or_else(|error| panic!("{item}: {error}"));
@@ -721,6 +721,78 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
         assert!(!text.contains("name=\"Header\""), "{text}");
+    }
+
+    #[test]
+    fn english_script_variant_controls_generated_form_names_and_regions() {
+        for use_staged_profile in [false, true] {
+            let fixture = ApplySeamFixture::new();
+            let configuration = fixture.source_dir().join("Configuration.xml");
+            let text = std::fs::read_to_string(&configuration).unwrap();
+            // Keep DefaultLanguage=Russian: script syntax is independent of text language.
+            let english = text.replace(
+                "</Properties>",
+                "<ScriptVariant>English</ScriptVariant></Properties>",
+            );
+            if !use_staged_profile {
+                std::fs::write(&configuration, &english).unwrap();
+            }
+            let admission = fixture.admission();
+            let mut staged = admission.staged_state().unwrap();
+            if use_staged_profile {
+                staged
+                    .proposal()
+                    .replace("Configuration.xml", text.as_bytes(), english.into_bytes())
+                    .unwrap();
+            }
+            let authority = admission
+                .form_resource_planning_authority(&fixture.binding)
+                .unwrap();
+            let form = "main:Document.First.Form.Main";
+            let operations = [
+            ("form.add", json!({"at": "main:Document.First", "items": [{"name": "Main", "type": "ObjectForm"}]})),
+            ("command.add", json!({"at": form, "items": [{"name": "TestCommand", "title": "Test", "action": "TestCommand"}]})),
+            ("item.add", json!({"at": form, "items": [{"name": "TestButton", "type": "Button", "command": "TestCommand"}]})),
+            ("item.add", json!({"at": form, "items": [{"name": "TestInput", "path": "Object.Total"}]})),
+        ].into_iter().enumerate().map(|(index, (op, args))| {
+            IndexedPlanOperation::new(index, parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                .unwrap_or_else(|error| panic!("{op}: {error:?}")))
+        }).collect::<Vec<_>>();
+            let (staged, _) =
+                plan_form_resource_batch_owned_for_test(staged, authority, &operations)
+                    .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+            let xml = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            let names = document
+                .descendants()
+                .filter_map(|node| node.attribute("name"))
+                .collect::<Vec<_>>();
+            for name in [
+                "FormCommandBar",
+                "Object",
+                "TestButtonExtendedTooltip",
+                "TestInputContextMenu",
+                "TestInputExtendedTooltip",
+            ] {
+                assert!(names.contains(&name), "missing {name}: {names:?}");
+            }
+            let module = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form/Module.bsl");
+            let expected = concat!(
+                "\u{feff}#Region FormEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region FormHeaderItemsEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region FormCommandsEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region NotificationHandlers\r\n\r\n#EndRegion\r\n\r\n",
+                "#Region Private\r\n\r\n#EndRegion"
+            );
+            assert_eq!(module, expected);
+            assert!(
+                !fixture
+                    .source_dir()
+                    .join("Documents/First/Forms/Main/Ext/Form.xml")
+                    .exists(),
+                "planning must not publish files"
+            );
+        }
     }
 
     #[test]

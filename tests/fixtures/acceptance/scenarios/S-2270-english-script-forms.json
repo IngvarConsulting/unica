@@ -1,0 +1,251 @@
+{
+  "id": "S-2270-english-script-forms",
+  "name": "generated-form-names-follow-script-variant",
+  "issue": 2270,
+  "area": "Формы",
+  "task": "Create an English-script report form, command, button and input through one preview/apply; read the generated form and BSL region names.",
+  "workspace": "tests/fixtures/acceptance/workspace-english-script",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.Sales",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Main",
+                  "type": "ObjectForm"
+                }
+              ]
+            }
+          },
+          {
+            "op": "command.add",
+            "args": {
+              "at": "cf:Report.Sales.Form.Main",
+              "items": [
+                {
+                  "name": "Refresh",
+                  "title": "Refresh",
+                  "action": "Refresh"
+                }
+              ]
+            }
+          },
+          {
+            "op": "attribute.add",
+            "args": {
+              "at": "cf:Report.Sales.Form.Main",
+              "items": [
+                {
+                  "name": "Text",
+                  "type": "String"
+                },
+                {
+                  "name": "Rows",
+                  "type": "ValueTable"
+                }
+              ]
+            }
+          },
+          {
+            "op": "item.add",
+            "args": {
+              "at": "cf:Report.Sales.Form.Main",
+              "items": [
+                {
+                  "name": "RefreshButton",
+                  "type": "Button",
+                  "command": "Refresh"
+                },
+                {
+                  "name": "TextInput",
+                  "path": "Text"
+                },
+                {
+                  "name": "Lines",
+                  "type": "Table",
+                  "path": "Rows"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xmlTags",
+          "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}AutoCommandBar[@name=\"FormCommandBar\"]",
+          "eq": [
+            "AutoCommandBar"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"Object\"]",
+          "eq": [
+            "Attribute"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}ExtendedTooltip[@name=\"RefreshButtonExtendedTooltip\"]",
+          "eq": [
+            "ExtendedTooltip"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}ContextMenu[@name=\"TextInputContextMenu\"]",
+          "eq": [
+            "ContextMenu"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}ExtendedTooltip[@name=\"TextInputExtendedTooltip\"]",
+          "eq": [
+            "ExtendedTooltip"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}AutoCommandBar[@name=\"LinesCommandBar\"]",
+          "eq": [
+            "AutoCommandBar"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}SearchStringAddition[@name=\"LinesSearchString\"]",
+          "eq": [
+            "SearchStringAddition"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}ViewStatusAddition[@name=\"LinesViewStatus\"]",
+          "eq": [
+            "ViewStatusAddition"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}SearchControlAddition[@name=\"LinesSearchControl\"]",
+          "eq": [
+            "SearchControlAddition"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.Sales.Form.Main.Attribute.Object"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.Sales.Form.Main.Item.RefreshButton"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.Sales.Form.Main.Event.OnOpen",
+        "ops": [
+          {
+            "op": "event.implement"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "eventToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.eventToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.Sales.Form.Main.Module.Form.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "contains": "#Region FormEventHandlers"
+        },
+        {
+          "pointer": "/sourceText",
+          "contains": "#Region FormHeaderItemsEventHandlers"
+        },
+        {
+          "pointer": "/sourceText",
+          "contains": "#Region FormCommandsEventHandlers"
+        },
+        {
+          "pointer": "/sourceText",
+          "contains": "#Region Private"
+        }
+      ]
+    }
+  ]
+}

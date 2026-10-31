@@ -12,6 +12,7 @@ use unica_forms::facts::*;
 use unica_metadata::support_state::ObjectSupportData as DomainObjectSupportData;
 use unica_operation_contract::input::*;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
+use unica_source_contract::ScriptVariant;
 use unica_source_designer::format_profile::{
     classify_root_version, format_compatibility_warning, FormatCompatibility,
 };
@@ -3172,16 +3173,35 @@ pub fn form_add_content_xml(
     purpose: &str,
     format_version: &str,
 ) -> Result<String, String> {
+    form_add_content_xml_with_variant(
+        object_type,
+        object_name,
+        purpose,
+        format_version,
+        ScriptVariant::Russian,
+    )
+}
+
+pub fn form_add_content_xml_with_variant(
+    object_type: &str,
+    object_name: &str,
+    purpose: &str,
+    format_version: &str,
+    script_variant: ScriptVariant,
+) -> Result<String, String> {
     let ns = FORM_ROOT_NAMESPACES;
+    let names = FormEmissionContext::with_script_variant(script_variant);
+    let command_bar = names.select("ФормаКоманднаяПанель", "FormCommandBar");
     if matches!(purpose, "List" | "Choice") {
+        let list_name = names.select("Список", "List");
         let main_table = format!("{object_type}.{object_name}");
         return Ok(format!(
             concat!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
                 "<Form {ns} version=\"{format_version}\">\r\n",
-                "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\r\n",
+                "\t<AutoCommandBar name=\"{command_bar}\" id=\"-1\"/>\r\n",
                 "\t<Attributes>\r\n",
-                "\t\t<Attribute name=\"Список\" id=\"1\">\r\n",
+                "\t\t<Attribute name=\"{list_name}\" id=\"1\">\r\n",
                 "\t\t\t<Type>\r\n",
                 "\t\t\t\t<v8:Type>cfg:DynamicList</v8:Type>\r\n",
                 "\t\t\t</Type>\r\n",
@@ -3194,19 +3214,22 @@ pub fn form_add_content_xml(
                 "</Form>"
             ),
             ns = ns,
+            command_bar = command_bar,
             format_version = unica_xml_format::text::escape_xml(format_version),
             main_table = unica_xml_format::text::escape_xml(&main_table),
+            list_name = list_name,
         ));
     }
     if purpose == "Record" {
+        let record_name = names.select("Запись", "Record");
         let main_attr_type = format!("InformationRegisterRecordManager.{object_name}");
         return Ok(format!(
             concat!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
                 "<Form {ns} version=\"{format_version}\">\r\n",
-                "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\r\n",
+                "\t<AutoCommandBar name=\"{command_bar}\" id=\"-1\"/>\r\n",
                 "\t<Attributes>\r\n",
-                "\t\t<Attribute name=\"Запись\" id=\"1\">\r\n",
+                "\t\t<Attribute name=\"{record_name}\" id=\"1\">\r\n",
                 "\t\t\t<Type>\r\n",
                 "\t\t\t\t<v8:Type>cfg:{main_attr_type}</v8:Type>\r\n",
                 "\t\t\t</Type>\r\n",
@@ -3217,8 +3240,10 @@ pub fn form_add_content_xml(
                 "</Form>"
             ),
             ns = ns,
+            command_bar = command_bar,
             format_version = unica_xml_format::text::escape_xml(format_version),
             main_attr_type = unica_xml_format::text::escape_xml(&main_attr_type),
+            record_name = record_name,
         ));
     }
 
@@ -3260,14 +3285,15 @@ pub fn form_add_content_xml(
         ),
         _ => "",
     };
+    let object_attribute = names.select("Объект", "Object");
     Ok(format!(
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
             "<Form {ns} version=\"{format_version}\">\r\n",
             "{root_defaults}",
-            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\r\n",
+            "\t<AutoCommandBar name=\"{command_bar}\" id=\"-1\"/>\r\n",
             "\t<Attributes>\r\n",
-            "\t\t<Attribute name=\"Объект\" id=\"1\">\r\n",
+            "\t\t<Attribute name=\"{object_attribute}\" id=\"1\">\r\n",
             "\t\t\t<Type>\r\n",
             "\t\t\t\t<v8:Type>cfg:{main_attr_type}</v8:Type>\r\n",
             "\t\t\t</Type>\r\n",
@@ -3278,6 +3304,8 @@ pub fn form_add_content_xml(
             "</Form>"
         ),
         ns = ns,
+        command_bar = command_bar,
+        object_attribute = object_attribute,
         format_version = unica_xml_format::text::escape_xml(format_version),
         root_defaults = root_defaults,
         main_attr_type = unica_xml_format::text::escape_xml(&main_attr_type),
@@ -3286,6 +3314,19 @@ pub fn form_add_content_xml(
 }
 
 pub fn form_add_module_bsl() -> &'static str {
+    form_add_module_bsl_with_variant(ScriptVariant::Russian)
+}
+
+pub fn form_add_module_bsl_with_variant(script_variant: ScriptVariant) -> &'static str {
+    if script_variant == ScriptVariant::English {
+        return concat!(
+            "#Region FormEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+            "#Region FormHeaderItemsEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+            "#Region FormCommandsEventHandlers\r\n\r\n#EndRegion\r\n\r\n",
+            "#Region NotificationHandlers\r\n\r\n#EndRegion\r\n\r\n",
+            "#Region Private\r\n\r\n#EndRegion"
+        );
+    }
     concat!(
         "#Область ОбработчикиСобытийФормы\r\n\r\n",
         "#КонецОбласти\r\n\r\n",
@@ -3555,12 +3596,37 @@ pub fn form_edit_apply_definition(
     form_root_start: usize,
     lang: Option<&str>,
 ) -> Result<FormEditApplied, String> {
+    form_edit_apply_definition_with_variant(
+        xml_text,
+        defn,
+        form_path,
+        form_root_start,
+        lang,
+        ScriptVariant::Russian,
+    )
+}
+
+pub fn form_edit_apply_definition_with_variant(
+    xml_text: &mut String,
+    defn: &Value,
+    form_path: &Path,
+    form_root_start: usize,
+    lang: Option<&str>,
+    script_variant: ScriptVariant,
+) -> Result<FormEditApplied, String> {
     // The fragments are built with LF. A platform export ends every line
     // with CRLF, so in such a form each bare LF after the edit is a new one
     // and takes the form's line ending (#1996). A form with LF or mixed
     // endings keeps the inserted LF.
     let crlf_only = xml_text.contains("\r\n") && !has_bare_lf(xml_text) && !has_bare_cr(xml_text);
-    let applied = form_edit_apply_definition_lf(xml_text, defn, form_path, form_root_start, lang)?;
+    let applied = form_edit_apply_definition_lf(
+        xml_text,
+        defn,
+        form_path,
+        form_root_start,
+        lang,
+        script_variant,
+    )?;
     if crlf_only && has_bare_lf(xml_text) {
         *xml_text = xml_text.replace("\r\n", "\n").replace('\n', "\r\n");
     }
@@ -3583,6 +3649,7 @@ fn form_edit_apply_definition_lf(
     form_path: &Path,
     form_root_start: usize,
     lang: Option<&str>,
+    script_variant: ScriptVariant,
 ) -> Result<FormEditApplied, String> {
     if let Some(values) = defn.get("rootProperties").and_then(Value::as_object) {
         crate::form_root_properties::set_root_properties(xml_text, values, lang)?;
@@ -3608,14 +3675,17 @@ fn form_edit_apply_definition_lf(
     let planned_events = form_edit_plan_events(defn, xml_text, form_metadata_owner(form_path))?;
     form_edit_apply_planned_removals(xml_text, &planned_removals);
     let form_name = form_edit_form_name(form_path);
-    let mut elem_ids = FormIdAllocator {
+    let mut elem_ids = FormEmissionContext {
         next: form_edit_max_ui_id(xml_text),
+        script_variant,
     };
-    let mut attr_ids = FormIdAllocator {
+    let mut attr_ids = FormEmissionContext {
         next: form_edit_next_id(xml_text, &["Attribute", "Column"]),
+        script_variant,
     };
-    let mut cmd_ids = FormIdAllocator {
+    let mut cmd_ids = FormEmissionContext {
         next: form_edit_next_id(xml_text, &["Command"]),
+        script_variant,
     };
     if form_edit_is_extension_form(xml_text) {
         elem_ids.next = elem_ids.next.max(999_999);
@@ -3635,6 +3705,7 @@ fn form_edit_apply_definition_lf(
                 defn.get("into").and_then(Value::as_str),
                 defn.get("after").and_then(Value::as_str),
                 lang,
+                script_variant,
             )?;
             if !elements_are_idempotent {
                 form_edit_validate_element_names(xml_text, elements)?;
@@ -5272,9 +5343,10 @@ fn form_edit_expected_element_fingerprint(
     element: &Value,
     in_command_bar: bool,
     lang: Option<&str>,
+    script_variant: ScriptVariant,
 ) -> Result<FormEditElementFingerprint, String> {
     let mut lines = Vec::new();
-    let mut ids = FormIdAllocator::new();
+    let mut ids = FormEmissionContext::with_script_variant(script_variant);
     emit_form_element_with_context(&mut lines, element, "\t", &mut ids, in_command_bar, lang)?;
     let fragment = lines.join("\n");
 
@@ -5385,6 +5457,7 @@ fn form_edit_elements_are_idempotent_noop(
     into_name: Option<&str>,
     after_name: Option<&str>,
     lang: Option<&str>,
+    script_variant: ScriptVariant,
 ) -> Result<bool, String> {
     let document =
         Document::parse(xml_text).map_err(|error| format!("[ERROR] XML parse error: {error}"))?;
@@ -5405,8 +5478,13 @@ fn form_edit_elements_are_idempotent_noop(
         let [node] = matches.as_slice() else {
             return Ok(false);
         };
-        let expected =
-            form_edit_expected_element_fingerprint(xml_text, element, in_command_bar, lang)?;
+        let expected = form_edit_expected_element_fingerprint(
+            xml_text,
+            element,
+            in_command_bar,
+            lang,
+            script_variant,
+        )?;
         if form_edit_element_fingerprint(*node) != expected {
             return Ok(false);
         }
@@ -6167,13 +6245,28 @@ struct FormCompileEvent {
 }
 
 #[derive(Default)]
-pub struct FormIdAllocator {
+pub struct FormEmissionContext {
     pub next: usize,
+    pub script_variant: ScriptVariant,
 }
 
-impl FormIdAllocator {
+impl FormEmissionContext {
     pub fn new() -> Self {
-        Self { next: 0 }
+        Self::default()
+    }
+
+    pub fn with_script_variant(script_variant: ScriptVariant) -> Self {
+        Self {
+            next: 0,
+            script_variant,
+        }
+    }
+
+    fn select<'a>(&self, russian: &'a str, english: &'a str) -> &'a str {
+        match self.script_variant {
+            ScriptVariant::Russian => russian,
+            ScriptVariant::English => english,
+        }
     }
 
     pub fn allocate(&mut self) -> Result<usize, String> {
@@ -6449,7 +6542,7 @@ pub fn form_compile_xml(
     }
 
     let lang = Some(LEGACY_FORM_TEXT_LANGUAGE);
-    let mut ids = FormIdAllocator::new();
+    let mut ids = FormEmissionContext::new();
     let mut lines = Vec::<String>::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
@@ -7582,7 +7675,7 @@ pub fn emit_form_element(
     lines: &mut Vec<String>,
     element: &Value,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     emit_form_element_with_context(lines, element, indent, ids, false, lang)
@@ -7592,7 +7685,7 @@ fn emit_form_element_with_context(
     lines: &mut Vec<String>,
     element: &Value,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     in_command_bar: bool,
     lang: Option<&str>,
 ) -> Result<(), String> {
@@ -7682,7 +7775,7 @@ pub fn emit_form_group(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
@@ -7744,7 +7837,10 @@ pub fn emit_form_group(
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -7758,7 +7854,7 @@ pub fn emit_form_pages(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
@@ -7786,7 +7882,10 @@ pub fn emit_form_pages(
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -7801,7 +7900,7 @@ pub fn emit_form_page(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
@@ -7831,7 +7930,10 @@ pub fn emit_form_page(
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -7844,7 +7946,7 @@ pub fn emit_form_children(
     lines: &mut Vec<String>,
     element: &Map<String, Value>,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(children) = element.get("children").and_then(Value::as_array) else {
@@ -7970,7 +8072,7 @@ pub fn emit_form_check(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
@@ -8014,14 +8116,17 @@ pub fn emit_form_check(
     emit_form_companion(
         lines,
         "ContextMenu",
-        &format!("{name}КонтекстноеМеню"),
+        &format!("{name}{}", ids.select("КонтекстноеМеню", "ContextMenu")),
         &inner,
         ids,
     )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -8035,7 +8140,7 @@ pub fn emit_form_input(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
@@ -8147,14 +8252,17 @@ pub fn emit_form_input(
     emit_form_companion(
         lines,
         "ContextMenu",
-        &format!("{name}КонтекстноеМеню"),
+        &format!("{name}{}", ids.select("КонтекстноеМеню", "ContextMenu")),
         &inner,
         ids,
     )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -8168,7 +8276,7 @@ pub fn emit_form_button(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     in_command_bar: bool,
     lang: Option<&str>,
 ) -> Result<(), String> {
@@ -8281,7 +8389,10 @@ pub fn emit_form_button(
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -8295,7 +8406,7 @@ pub fn emit_form_command_bar_element(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
@@ -8350,7 +8461,7 @@ pub fn emit_form_label_decoration(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
@@ -8394,14 +8505,17 @@ pub fn emit_form_label_decoration(
     emit_form_companion(
         lines,
         "ContextMenu",
-        &format!("{name}КонтекстноеМеню"),
+        &format!("{name}{}", ids.select("КонтекстноеМеню", "ContextMenu")),
         &inner,
         ids,
     )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -8457,7 +8571,7 @@ fn emit_form_document_field(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
     field_tag: &str,
 ) -> Result<(), String> {
@@ -8520,14 +8634,17 @@ fn emit_form_document_field(
     emit_form_companion(
         lines,
         "ContextMenu",
-        &format!("{name}КонтекстноеМеню"),
+        &format!("{name}{}", ids.select("КонтекстноеМеню", "ContextMenu")),
         &inner,
         ids,
     )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -8541,7 +8658,7 @@ pub fn emit_form_label_field(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
@@ -8562,14 +8679,17 @@ pub fn emit_form_label_field(
     emit_form_companion(
         lines,
         "ContextMenu",
-        &format!("{name}КонтекстноеМеню"),
+        &format!("{name}{}", ids.select("КонтекстноеМеню", "ContextMenu")),
         &inner,
         ids,
     )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -8583,7 +8703,7 @@ pub fn emit_form_table(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
@@ -8644,7 +8764,7 @@ pub fn emit_form_table(
     emit_form_companion(
         lines,
         "ContextMenu",
-        &format!("{name}КонтекстноеМеню"),
+        &format!("{name}{}", ids.select("КонтекстноеМеню", "ContextMenu")),
         &inner,
         ids,
     )?;
@@ -8656,8 +8776,9 @@ pub fn emit_form_table(
             "false"
         };
         lines.push(format!(
-            "{inner}<AutoCommandBar name=\"{}КоманднаяПанель\" id=\"{id}\">",
-            unica_xml_format::text::escape_xml(name)
+            "{inner}<AutoCommandBar name=\"{}{}\" id=\"{id}\">",
+            unica_xml_format::text::escape_xml(name),
+            ids.select("КоманднаяПанель", "CommandBar")
         ));
         lines.push(format!("{inner}\t<Autofill>{value}</Autofill>"));
         lines.push(format!("{inner}</AutoCommandBar>"));
@@ -8665,7 +8786,7 @@ pub fn emit_form_table(
         emit_form_companion(
             lines,
             "AutoCommandBar",
-            &format!("{name}КоманднаяПанель"),
+            &format!("{name}{}", ids.select("КоманднаяПанель", "CommandBar")),
             &inner,
             ids,
         )?;
@@ -8673,7 +8794,10 @@ pub fn emit_form_table(
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -8681,7 +8805,7 @@ pub fn emit_form_table(
         lines,
         "SearchStringAddition",
         name,
-        "СтрокаПоиска",
+        ids.select("СтрокаПоиска", "SearchString"),
         "SearchStringRepresentation",
         &inner,
         ids,
@@ -8690,7 +8814,7 @@ pub fn emit_form_table(
         lines,
         "ViewStatusAddition",
         name,
-        "СостояниеПросмотра",
+        ids.select("СостояниеПросмотра", "ViewStatus"),
         "ViewStatusRepresentation",
         &inner,
         ids,
@@ -8699,7 +8823,7 @@ pub fn emit_form_table(
         lines,
         "SearchControlAddition",
         name,
-        "УправлениеПоиском",
+        ids.select("УправлениеПоиском", "SearchControl"),
         "SearchControl",
         &inner,
         ids,
@@ -8810,7 +8934,7 @@ pub fn emit_form_table_addition(
     suffix: &str,
     source_type: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
 ) -> Result<(), String> {
     let name = format!("{table_name}{suffix}");
     let id = ids.allocate()?;
@@ -8829,14 +8953,17 @@ pub fn emit_form_table_addition(
     emit_form_companion(
         lines,
         "ContextMenu",
-        &format!("{name}КонтекстноеМеню"),
+        &format!("{name}{}", ids.select("КонтекстноеМеню", "ContextMenu")),
         &inner,
         ids,
     )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
-        &format!("{name}РасширеннаяПодсказка"),
+        &format!(
+            "{name}{}",
+            ids.select("РасширеннаяПодсказка", "ExtendedTooltip")
+        ),
         &inner,
         ids,
     )?;
@@ -8973,7 +9100,7 @@ pub fn emit_form_companion(
     tag: &str,
     name: &str,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -9003,7 +9130,7 @@ pub fn emit_form_attributes(
     lines: &mut Vec<String>,
     attrs: Option<&Value>,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(attrs) = attrs.and_then(Value::as_array) else {
@@ -9080,7 +9207,7 @@ fn emit_form_compile_attribute_columns(
     lines: &mut Vec<String>,
     columns: Option<&Value>,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     emit_form_attribute_columns_with_ids(lines, columns, indent, |_| ids.allocate(), lang)
@@ -9252,7 +9379,7 @@ pub fn emit_form_commands(
     lines: &mut Vec<String>,
     cmds: Option<&Value>,
     indent: &str,
-    ids: &mut FormIdAllocator,
+    ids: &mut FormEmissionContext,
     lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(cmds) = cmds.and_then(Value::as_array) else {
