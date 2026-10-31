@@ -1,0 +1,10 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="e52a4a4f51589244a696a338ab343f3e00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="39173309124bb24985fadb4ba888ffcc00000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="4bd8e32e5d85364babf81c737e55dd8b00000000"/>
+		<Metadata name="WSReference.Probe" id="16620000-0000-4000-8000-000000000001" configVersion="863a6337639be3449d0542266556561500000000"/>
+		<Metadata name="WSReference.Probe.WSDefinition" id="16620000-0000-4000-8000-000000000001.0" configVersion="74b676272d37ea419240ef88e1ebd57f00000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>
