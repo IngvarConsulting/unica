@@ -897,6 +897,23 @@ impl MetadataValidator {
         )
     }
 
+    /// Public check keeps writable structural admission and additionally
+    /// proves the named event sources belong to this source set.
+    pub fn validate_check(
+        &self,
+        subject: &unica_metadata::validation_subject::MetadataValidationSubject,
+        context: &WorkspaceContext,
+    ) -> unica_metadata::validation_subject::MetadataValidationResult {
+        let mut result = self.validate(subject, context);
+        for diagnostic in event_subscription_source_evidence(subject, EventSourceProof::Identity) {
+            result.status = MetaValidationStatus::Failed;
+            if !result.diagnostics.contains(&diagnostic) {
+                result.diagnostics.push(diagnostic);
+            }
+        }
+        result
+    }
+
     pub fn validate_complete_read(
         &self,
         subject: &unica_metadata::validation_subject::MetadataValidationSubject,
@@ -1383,87 +1400,10 @@ pub fn complete_read_proof_diagnostics(
     }
 
     if object_type == "EventSubscription" {
-        if let Ok(sources) = crate::xml_model::meta_event_subscription_source_node(&document)
-            .and_then(crate::xml_model::parse_meta_event_subscription_source)
-        {
-            let registration = subject.resources.iter().find(|resource| {
-                matches!(
-                    resource.role,
-                    unica_metadata::validation_subject::MetadataResourceRole::Registration
-                )
-            });
-            for (index, source) in sources.sources.iter().enumerate() {
-                let Some(target) = source.metadata_path() else {
-                    continue;
-                };
-                let dependency = subject.resources.iter().find(|resource| {
-                    matches!(
-                        &resource.role,
-                        unica_metadata::validation_subject::MetadataResourceRole::Dependency { target: dependency_target }
-                            if dependency_target == target
-                    )
-                });
-                let Some(dependency) = dependency else {
-                    diagnostics.push(complete_read_source_missing(
-                        subject,
-                        index,
-                        format!("EventSubscription Source dependency `{target}` is unavailable"),
-                    ));
-                    continue;
-                };
-                let (
-                    registration_kind,
-                    registration_name,
-                    descriptor_kind,
-                    descriptor_name,
-                    generated_name,
-                ) = match crate::validation_context::event_source_dependency_contract(target) {
-                    Ok(contract) => contract,
-                    _ => {
-                        diagnostics.push(complete_read_source_invalid(
-                                subject,
-                                index,
-                                format!(
-                                    "EventSubscription Source dependency `{target}` is not an addressable metadata object"
-                                ),
-                            ));
-                        continue;
-                    }
-                };
-                let Some(registration) = registration else {
-                    diagnostics.push(complete_read_source_missing(
-                        subject,
-                        index,
-                        "EventSubscription Source registration evidence is unavailable",
-                    ));
-                    continue;
-                };
-                let generated_prefixes =
-                    match crate::xml_model::event_source_generated_prefix(source) {
-                        Ok(prefix) => vec![prefix.to_string()],
-                        Err(message) => {
-                            diagnostics.push(complete_read_source_invalid(subject, index, message));
-                            continue;
-                        }
-                    };
-                if let Err(message) = crate::validation_context::validate_event_source_registration(
-                    &registration.bytes,
-                    registration_kind,
-                    registration_name,
-                )
-                .and_then(|()| {
-                    crate::validation_context::validate_event_source_dependency_descriptor(
-                        &dependency.bytes,
-                        descriptor_kind,
-                        descriptor_name,
-                        generated_name.as_deref(),
-                        &generated_prefixes,
-                    )
-                }) {
-                    diagnostics.push(complete_read_source_invalid(subject, index, message));
-                }
-            }
-        }
+        diagnostics.extend(event_subscription_source_evidence(
+            subject,
+            EventSourceProof::CompleteRead,
+        ));
     }
 
     if matches!(object_type, "EventSubscription" | "ScheduledJob") {
@@ -1560,6 +1500,174 @@ pub fn complete_read_proof_diagnostics(
         }
     }
     diagnostics
+}
+
+#[derive(Clone, Copy)]
+enum EventSourceProof {
+    /// Public check proves local registration and descriptor identity.
+    Identity,
+    /// Preserve the complete reader's direct GeneratedType/UUID profile.
+    CompleteRead,
+}
+
+/// Source proofs use only the registration and dependency images gathered
+/// for the subscription's own source set. No parent lookup is performed.
+fn event_subscription_source_evidence(
+    subject: &unica_metadata::validation_subject::MetadataValidationSubject,
+    proof: EventSourceProof,
+) -> Vec<MetaDiagnostic> {
+    use unica_metadata::validation_subject::MetadataResourceRole;
+    let Some(descriptor) = subject
+        .resources
+        .iter()
+        .find(|r| matches!(r.role, MetadataResourceRole::Descriptor))
+    else {
+        return Vec::new();
+    };
+    let Ok((_, document)) = unica_xml_format::read::parse_metadata_image(&descriptor.bytes) else {
+        return Vec::new();
+    };
+    let Ok(sources) = crate::xml_model::meta_event_subscription_source_node(&document)
+        .and_then(crate::xml_model::parse_meta_event_subscription_source)
+    else {
+        // Structural diagnostics belong to the ordinary validator.
+        return Vec::new();
+    };
+    let mut diagnostics = Vec::new();
+    let mut visiting = HashSet::new();
+    for (index, source) in sources.sources.iter().enumerate() {
+        validate_event_source_evidence(
+            subject,
+            source,
+            index,
+            &mut visiting,
+            &mut diagnostics,
+            proof,
+        );
+    }
+    diagnostics
+}
+
+fn validate_event_source_evidence(
+    subject: &unica_metadata::validation_subject::MetadataValidationSubject,
+    source: &MetaEventSource,
+    index: usize,
+    visiting: &mut HashSet<MetadataAddress>,
+    diagnostics: &mut Vec<MetaDiagnostic>,
+    proof: EventSourceProof,
+) {
+    use unica_metadata::validation_subject::MetadataResourceRole;
+    // A family is a class, not an absent metadata object. TypeId members
+    // have no logical address and are not invented by the source reader.
+    let Some(target) = source.metadata_path() else {
+        return;
+    };
+    let dependency = subject.resources.iter().find(|r| matches!(&r.role, MetadataResourceRole::Dependency { target: dependency } if dependency == target));
+    let missing_dependency = || {
+        complete_read_source_missing(
+            subject,
+            index,
+            format!("EventSubscription Source dependency `{target}` is unavailable"),
+        )
+    };
+    // CompleteRead keeps its established diagnostic priority. Check first
+    // distinguishes a known missing registration from unavailable file proof.
+    if matches!(proof, EventSourceProof::CompleteRead) && dependency.is_none() {
+        diagnostics.push(missing_dependency());
+        return;
+    }
+    let (registration_kind, registration_name, descriptor_kind, descriptor_name, generated_name) =
+        match crate::validation_context::event_source_dependency_contract(target) {
+            Ok(contract) => contract,
+            Err(message) => {
+                diagnostics.push(complete_read_source_invalid(subject, index, message));
+                return;
+            }
+        };
+    let Some(registration) = subject
+        .resources
+        .iter()
+        .find(|r| matches!(r.role, MetadataResourceRole::Registration))
+    else {
+        diagnostics.push(complete_read_source_missing(
+            subject,
+            index,
+            "EventSubscription Source registration evidence is unavailable",
+        ));
+        return;
+    };
+    if let Err(message) = crate::validation_context::validate_event_source_registration(
+        &registration.bytes,
+        registration_kind,
+        registration_name,
+    ) {
+        diagnostics.push(complete_read_source_invalid(subject, index, message));
+        return;
+    }
+    let Some(dependency) = dependency else {
+        diagnostics.push(missing_dependency());
+        return;
+    };
+    let prefixes = match crate::xml_model::event_source_generated_prefix(source) {
+        Ok(prefix) => vec![prefix.to_owned()],
+        Err(message) => {
+            diagnostics.push(complete_read_source_invalid(subject, index, message));
+            return;
+        }
+    };
+    let descriptor_proof = match proof {
+        EventSourceProof::Identity => {
+            crate::validation_context::validate_event_source_dependency_identity(
+                &dependency.bytes,
+                descriptor_kind,
+                descriptor_name,
+            )
+        }
+        EventSourceProof::CompleteRead => {
+            crate::validation_context::validate_event_source_dependency_descriptor(
+                &dependency.bytes,
+                descriptor_kind,
+                descriptor_name,
+                generated_name.as_deref(),
+                &prefixes,
+            )
+        }
+    };
+    if let Err(message) = descriptor_proof {
+        diagnostics.push(complete_read_source_invalid(subject, index, message));
+        return;
+    }
+    // Full reading keeps its established direct-source proof scope. The
+    // check's local-identity guarantee follows named members recursively.
+    if !matches!(proof, EventSourceProof::Identity)
+        || !matches!(source, MetaEventSource::DefinedType { .. })
+    {
+        return;
+    }
+    if !visiting.insert(target.clone()) {
+        diagnostics.push(complete_read_source_invalid(
+            subject,
+            index,
+            format!("DefinedType event source cycle contains `{target}`"),
+        ));
+        return;
+    }
+    match crate::xml_model::parse_defined_type_event_sources(&dependency.bytes) {
+        Ok(members) => {
+            for member in members {
+                validate_event_source_evidence(
+                    subject,
+                    &member,
+                    index,
+                    visiting,
+                    diagnostics,
+                    proof,
+                );
+            }
+        }
+        Err(message) => diagnostics.push(complete_read_source_invalid(subject, index, message)),
+    }
+    visiting.remove(target);
 }
 
 pub fn has_dependency(

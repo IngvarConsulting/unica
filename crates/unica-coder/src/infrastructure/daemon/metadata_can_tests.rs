@@ -1221,6 +1221,165 @@ fn canonical_check_reports_list_presentation_findings_with_field_and_language() 
 /// INV.SOURCE.EVENT-DEFINED-TYPE: `check` подписки раскрывает определяемый
 /// тип источника вместе с вложенным определяемым типом до классов событий;
 /// цикл и неподходящий член остаются ошибками у `relations.source`.
+fn extension_subscription_complete_read(
+    fixture: &Fixture,
+) -> unica_metadata::validation_subject::MetadataValidationResult {
+    let context = WorkspaceContext {
+        cwd: fixture.workspace.clone(),
+        workspace_root: fixture.workspace.clone(),
+        cache_root: fixture.workspace.join(".build/read-profile-test"),
+        workspace_epoch: 1,
+    };
+    let cancellation = unica_work_control::cancellation::CancellationToken::new();
+    let readers = crate::infrastructure::support_state::WorkspaceSupportStateReaderFactory;
+    let reader =
+        crate::infrastructure::support_state::SupportStateReaderFactory::create(&readers, &context);
+    let request = unica_metadata::request::MetaInfoRequest {
+        source_set: "ext".to_owned(),
+        metadata_path: unica_address::source_target::MetadataAddress::parse(
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "EventSubscription.ПР_ПередЗаписьюНастроек",
+        )
+        .unwrap(),
+        sections: Vec::new(),
+        limit: 0,
+    };
+    let local = crate::infrastructure::metadata_operations::MetadataOperations::read_local(
+        &request,
+        &context,
+        &cancellation,
+        reader.as_ref(),
+    )
+    .unwrap();
+    crate::infrastructure::metadata_operations::MetadataOperations::validate_read(
+        &local.validation_subject,
+        &context,
+        &cancellation,
+    )
+}
+
+#[test]
+fn canonical_check_requires_an_event_source_registration_and_descriptor_in_the_extension() {
+    for (file_present, registered, code) in [
+        (false, false, "validation_failed"),
+        (true, false, "validation_failed"),
+        (false, true, "provider_unavailable"),
+    ] {
+        let fixture = Fixture::new("workspace-extension-subscription-source");
+        let ext = fixture.workspace.join("ext");
+        if file_present {
+            std::fs::create_dir_all(ext.join("Documents")).unwrap();
+            std::fs::copy(
+                fixture.workspace.join("base/Documents/Приход.xml"),
+                ext.join("Documents/Приход.xml"),
+            )
+            .unwrap();
+        }
+        if registered {
+            rewrite(
+                &ext.join("Configuration.xml"),
+                "<ChildObjects>",
+                "<ChildObjects><Document>Приход</Document>",
+            );
+        }
+        let before = unica_workspace::test_support::tree_snapshot(&ext);
+        let checked = call(
+            &runtime(),
+            &fixture,
+            ToolIdentity::Check,
+            json!({"at":"ext:EventSubscription.ПР_ПередЗаписьюНастроек"}),
+        );
+        assert_eq!(
+            check_status(&checked),
+            "failed",
+            "{file_present}/{registered}: {checked:?}"
+        );
+        assert!(
+            diagnostics(&checked)
+                .iter()
+                .any(|d| d["code"] == code && d["field"] == "relations.source[0]"),
+            "{checked:?}"
+        );
+        if !file_present && !registered {
+            let complete = extension_subscription_complete_read(&fixture);
+            assert!(
+                complete.diagnostics.iter().any(|d| d.code
+                    == unica_metadata::MetaDiagnosticCode::ProviderUnavailable
+                    && d.field.as_deref() == Some("relations.source[0]")),
+                "{complete:?}"
+            );
+        }
+        assert_eq!(unica_workspace::test_support::tree_snapshot(&ext), before);
+    }
+}
+
+#[test]
+fn canonical_check_requires_an_own_named_source_through_nested_defined_types() {
+    let fixture = Fixture::new("workspace-extension-subscription-source");
+    let ext = fixture.workspace.join("ext");
+    std::fs::create_dir_all(ext.join("DefinedTypes")).unwrap();
+    for name in ["Outer", "Inner"] {
+        std::fs::copy(repo_root().join(format!("tests/fixtures/acceptance/workspace-event-defined-type/src/DefinedTypes/{name}.xml")), ext.join(format!("DefinedTypes/{name}.xml"))).unwrap();
+    }
+    set_defined_type_members(&ext, "Inner", &["DocumentObject.Приход"]);
+    rewrite(
+        &ext.join("Configuration.xml"),
+        "<ChildObjects>",
+        "<ChildObjects><DefinedType>Outer</DefinedType><DefinedType>Inner</DefinedType>",
+    );
+    rewrite(
+        &ext.join("EventSubscriptions/ПР_ПередЗаписьюНастроек.xml"),
+        "<v8:Type>cfg:DocumentObject.Приход</v8:Type>",
+        "<v8:TypeSet>cfg:DefinedType.Outer</v8:TypeSet>",
+    );
+    let runtime = runtime();
+    let args = json!({"at":"ext:EventSubscription.ПР_ПередЗаписьюНастроек"});
+    let absent = call(&runtime, &fixture, ToolIdentity::Check, args.clone());
+    assert_eq!(check_status(&absent), "failed", "{absent:?}");
+    assert!(
+        diagnostics(&absent)
+            .iter()
+            .any(|d| d["field"] == "relations.source[0]"
+                && d["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("Document") && m.contains("Приход"))),
+        "{absent:?}"
+    );
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"ext:Configuration","ops":[{"op":"object.borrow","args":{"from":"base:Document.Приход"}}]}),
+    );
+    let present = call(&runtime, &fixture, ToolIdentity::Check, args);
+    assert_eq!(check_status(&present), "passed", "{present:?}");
+    // CompleteRead retains its older direct-source proof: Outer has the
+    // strict generated image, while the borrowed nested document has UUIDv8.
+    let complete = extension_subscription_complete_read(&fixture);
+    assert_eq!(
+        complete.status,
+        unica_metadata::MetaValidationStatus::Passed,
+        "{complete:?}"
+    );
+}
+
+#[test]
+fn canonical_check_keeps_document_validation_separate_from_complete_read() {
+    let fixture = Fixture::new("workspace-extension-subscription-source");
+    std::fs::remove_file(
+        fixture
+            .workspace
+            .join("base/AccumulationRegisters/Остатки.xml"),
+    )
+    .unwrap();
+    let checked = call(
+        &runtime(),
+        &fixture,
+        ToolIdentity::Check,
+        json!({"at":"base:Document.Приход"}),
+    );
+    assert_eq!(check_status(&checked), "passed", "{checked:?}");
+}
+
 #[test]
 fn canonical_check_expands_nested_defined_type_event_sources() {
     let fixture = Fixture::new("workspace-event-source-order");

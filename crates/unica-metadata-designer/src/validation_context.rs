@@ -117,13 +117,20 @@ pub fn event_source_dependency_contract(
         _ => Err("event source dependency must identify one metadata object"),
     }
 }
-pub fn validate_event_source_dependency_descriptor(
+pub fn validate_event_source_dependency_identity(
     descriptor_bytes: &[u8],
     expected_kind: &str,
     expected_name: &str,
-    expected_generated_name: Option<&str>,
-    expected_generated_prefixes: &[String],
 ) -> Result<(), String> {
+    event_source_dependency_identity_image(descriptor_bytes, expected_kind, expected_name)
+        .map(|_| ())
+}
+
+fn event_source_dependency_identity_image<'a>(
+    descriptor_bytes: &'a [u8],
+    expected_kind: &str,
+    expected_name: &str,
+) -> Result<roxmltree::Document<'a>, String> {
     let (source, document) = unica_xml_format::read::parse_metadata_image(descriptor_bytes)?;
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
@@ -173,7 +180,24 @@ pub fn validate_event_source_dependency_descriptor(
             "EventSubscription source descriptor declares {expected_kind}.{actual_name}, expected {expected_kind}.{expected_name}"
         ));
     }
-    let internal_infos = direct_children(*object, MD_CLASSES_NS, "InternalInfo");
+    Ok(document)
+}
+
+pub fn validate_event_source_dependency_descriptor(
+    descriptor_bytes: &[u8],
+    expected_kind: &str,
+    expected_name: &str,
+    expected_generated_name: Option<&str>,
+    expected_generated_prefixes: &[String],
+) -> Result<(), String> {
+    let document =
+        event_source_dependency_identity_image(descriptor_bytes, expected_kind, expected_name)?;
+    let object = document
+        .root_element()
+        .children()
+        .find(roxmltree::Node::is_element)
+        .expect("the identity parser proved exactly one artifact");
+    let internal_infos = direct_children(object, MD_CLASSES_NS, "InternalInfo");
     let [internal_info] = internal_infos.as_slice() else {
         return Err(format!(
             "EventSubscription source descriptor must contain exactly one direct InternalInfo, found {}",

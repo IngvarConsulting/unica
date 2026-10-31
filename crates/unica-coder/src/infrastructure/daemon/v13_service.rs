@@ -5244,7 +5244,7 @@ fn run_meta_validator(
     ) {
         Ok(read) => {
             let validated =
-                crate::infrastructure::metadata_operations::MetadataOperations::validate(
+                crate::infrastructure::metadata_operations::MetadataOperations::validate_check(
                     &read.validation_subject,
                     context,
                     cancellation,
