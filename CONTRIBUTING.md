@@ -653,8 +653,18 @@ rust-analyzer --version
 сценарии:
 
 ```sh
+export UNICA_PROPERTIES_AGENT_BINARY=/absolute/path/to/immutable/unica
+export UNICA_XDTO_AGENT_BINARY="$UNICA_PROPERTIES_AGENT_BINARY"
+export UNICA_EVENT_DATA_AGENT_BINARY="$UNICA_PROPERTIES_AGENT_BINARY"
 python3.12 -m unittest discover -s tests/agent_evaluation -p 'test_*.py'
 ```
+
+Полный discovery требует явно выбранный неизменяемый бинарь текущей сборки.
+Перед командой задайте абсолютные пути: `UNICA_PROPERTIES_AGENT_BINARY`
+для `test_props`, `UNICA_XDTO_AGENT_BINARY` для `test_xdto` и
+`UNICA_EVENT_DATA_AGENT_BINARY` для `test_event_data`. Все три переменные
+могут указывать на одну неизменяемую копию проверяемого бинаря. Эти тесты
+не собирают его сами и не подставляют другую сборку при отсутствии переменной.
 
 Для прогона нужны установленный Codex CLI и действующая авторизация.
 Команда приёмки проверена с `0.163.0-alpha.10.2`: CLI должен поддерживать
@@ -677,3 +687,17 @@ python3.12 -m unittest tests.agent_evaluation.test_codex_cli
 или пропущенными. Агент и отдельный reviewer работают с подготовленным пакетом
 текущей сборки; протокол и физический результат сохраняются в
 `.session-temp/acceptance-agent/`.
+
+Сценарий видимости данных при записи документа (`S-630-event-data-visibility`)
+запускается отдельно с неизменяемым бинарём текущего кандидата и установленной
+справкой платформы линии 8.3.27:
+
+```sh
+UNICA_EVENT_DATA_AGENT_BINARY=/absolute/path/to/candidate/unica \
+  python3.12 -m unittest tests.agent_evaluation.test_event_data
+```
+
+Он проверяет чтение обоих навыков событий и проведения, полного модуля и
+официальных страниц через MCP, отсутствие изменений исходников и карты проекта,
+а затем передаёт ответ отдельному reviewer-у. Документ в базе не выполняется;
+объяснение по коду и справке не считается наблюдением значений при исполнении.
