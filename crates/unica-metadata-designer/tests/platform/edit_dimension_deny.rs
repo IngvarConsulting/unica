@@ -25,6 +25,7 @@ fn deny(name: &str, value: bool) -> MetaEditOperation {
             position: None,
             indexing: None,
             deny_incomplete_values: Some(value),
+            fill_from_filling_value: None,
         }],
     }
 }
