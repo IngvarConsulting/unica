@@ -661,6 +661,14 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<FormInfoData, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
+        if form_content_profile(&descriptor)
+            .is_ok_and(|profile| profile == MetadataChildProfile::OrdinaryForm)
+        {
+            return Err(ViewError::new(RefusalCode::UnsupportedSource, format!(
+                "ordinary Form.bin content is not supported; read `{}:{}.Metadata` for the form declaration",
+                self.source_set(), target.as_str(),
+            )));
+        }
         let relative = self.attached_resource_relative(target, "Form.xml")?;
         let bytes = self.read_relative_whole(&relative)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
@@ -2351,6 +2359,22 @@ fn encode_export_path_components<'a>(
         encoded.push_str(component);
     }
     Ok(encoded)
+}
+
+/// Only a proven Ordinary discriminator changes the content reader. A damaged
+/// declaration keeps the existing Form.xml path and its independent diagnostics;
+/// neither unrelated properties nor a support UUID decide the content format.
+fn form_content_profile(descriptor: &[u8]) -> Result<MetadataChildProfile, String> {
+    use unica_metadata_designer::validation::{
+        exact_mdclasses_children, exact_metadata_artifact, form_profile, MetadataAdmission,
+    };
+    let (_, document) = unica_xml_format::read::parse_metadata_image(descriptor)?;
+    let artifact = exact_metadata_artifact(&document, MetadataAdmission::Read)?;
+    let properties = exact_mdclasses_children(artifact, "Properties", "Form descriptor")?;
+    let [properties] = properties.as_slice() else {
+        return Err("Form descriptor must contain one Properties element".to_string());
+    };
+    form_profile(*properties)
 }
 
 /// Missing marker is proven absence; with a marker the descriptor UUID is

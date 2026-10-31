@@ -1,0 +1,383 @@
+{
+  "id": "S-1634-ordinary-form",
+  "issue": 1634,
+  "area": "Формы",
+  "workspace": "tests/fixtures/acceptance/workspace-ordinary-form",
+  "task": "Прочитать обычные общую и вложенную формы с Form.bin: закрытый отказ называет доступную Metadata, соседние узлы читаются, байты неизменны; потерянный Form.xml управляемой формы остаётся ошибкой источника.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main"
+      },
+      "expect": [
+        "unsupported"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "unsupported_source"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "main:CommonForm.Main.Metadata"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "file0": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "file1": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "file2": {
+          "file": "src/Catalogs/Items/Ext/ManagerModule.bsl",
+          "kind": "sha256"
+        },
+        "file3": {
+          "file": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "file4": {
+          "file": "src/Catalogs/Items/Forms/Broken.xml",
+          "kind": "sha256"
+        },
+        "file5": {
+          "file": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "file6": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.bin",
+          "kind": "sha256"
+        },
+        "file7": {
+          "file": "src/Catalogs/Items/Forms/Managed.xml",
+          "kind": "sha256"
+        },
+        "file8": {
+          "file": "src/Catalogs/Items/Forms/Managed/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "file9": {
+          "file": "src/Catalogs/Items/Forms/Managed/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "file10": {
+          "file": "src/CommonForms/Main.xml",
+          "kind": "sha256"
+        },
+        "file11": {
+          "file": "src/CommonForms/Main/Ext/Form.bin",
+          "kind": "sha256"
+        },
+        "file12": {
+          "file": "src/CommonModules/Probe.xml",
+          "kind": "sha256"
+        },
+        "file13": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "file14": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "file15": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:CommonForm.Main"
+      },
+      "expect": [
+        "unsupported"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "unsupported_source"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "main:CommonForm.Main.Metadata"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FormType",
+          "eq": "Ordinary"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main"
+      },
+      "expect": [
+        "unsupported"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "unsupported_source"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "main:Catalog.Items.Form.Main.Metadata"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main"
+      },
+      "expect": [
+        "unsupported"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "unsupported_source"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "main:Catalog.Items.Form.Main.Metadata"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FormType",
+          "eq": "Ordinary"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Module.Object.Body"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Managed"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Managed.Metadata"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Managed.Module.Form"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Body"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Broken"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Broken.xml",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.bin",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Managed.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Managed/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.file8"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Managed/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonForms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.file10"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form.bin",
+          "kind": "sha256",
+          "eq": "$capture.file11"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file12"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file13"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file14"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.file15"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Broken/Ext/Form.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}
