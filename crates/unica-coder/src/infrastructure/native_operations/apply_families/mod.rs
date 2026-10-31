@@ -1239,6 +1239,15 @@ pub(crate) fn plan_hidden_v13_apply(
         binding.source_set_name(),
         binding.source_kind(),
     )?;
+    unica_metadata_designer::report_variants_storage::validate_final(
+        &mut staged.proposal(),
+        binding.source_set_name(),
+        binding.source_kind(),
+        parsed.iter().filter_map(|operation| match operation {
+            ParsedApplyOperation::Metadata(operation) => Some(operation.operation()),
+            _ => None,
+        }),
+    )?;
     let dcs_edits = parsed
         .iter()
         .filter_map(|operation| match operation {

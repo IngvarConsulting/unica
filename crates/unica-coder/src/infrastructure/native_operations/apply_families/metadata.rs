@@ -64,6 +64,9 @@ pub(crate) fn plan_metadata_batch_owned_for_test(
 
 #[cfg(test)]
 mod tests {
+    mod report_variants_storage_tests {
+        include!("metadata/report_variants_storage_tests.rs");
+    }
     mod contract_shape_tests {
         include!("metadata/contract_shape_tests.rs");
     }

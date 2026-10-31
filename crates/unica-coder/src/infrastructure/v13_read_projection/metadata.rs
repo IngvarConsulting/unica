@@ -648,6 +648,7 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
     let relations = payload.get("relations");
     for (field, relation) in [
         ("owners", "owner"),
+        ("variantsStorage", "variantsStorage"),
         ("registerRecords", "registerRecord"),
         ("basedOn", "basedOn"),
         ("inputByString", "inputByString"),

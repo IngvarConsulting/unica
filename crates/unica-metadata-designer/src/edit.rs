@@ -1380,6 +1380,57 @@ pub fn apply_typed_properties(
                     Some("values"),
                 )
             })?;
+        if *key == MetaPropertyKey::VariantsStorage {
+            let (_, name) = meta_edit_object_identity(parsed_body).map_err(|message| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    message,
+                    Some("values.VariantsStorage"),
+                )
+            })?;
+            let strict_properties = crate::report_variants_storage::owner_properties(
+                &doc, "Report", &name,
+            )
+            .map_err(|message| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    message,
+                    Some("values.VariantsStorage"),
+                )
+            })?;
+            let observed =
+                crate::report_variants_storage::observe(strict_properties).map_err(|message| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        message,
+                        Some("values.VariantsStorage"),
+                    )
+                })?;
+            let MetaPropertyValue::String(value) = value else {
+                unreachable!("the property registry proved a string reference")
+            };
+            if observed.as_ref().map(MetadataAddress::as_str) == Some(value.as_str()) {
+                continue;
+            }
+            let property = unica_xml_format::read::child_element(strict_properties, tag)
+                .expect("reference observation proved an existing field");
+            let replacement =
+                crate::report_variants_storage::replacement(parsed_body, property, value).map_err(
+                    |message| {
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            message,
+                            Some("values.VariantsStorage"),
+                        )
+                    },
+                )?;
+            let property_range = property.range();
+            replacements.push((
+                property_range.start - range.start..property_range.end - range.start,
+                replacement,
+            ));
+            continue;
+        }
         let property = unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
             typed_diagnostic(
                 MetaDiagnosticCode::InvalidArguments,

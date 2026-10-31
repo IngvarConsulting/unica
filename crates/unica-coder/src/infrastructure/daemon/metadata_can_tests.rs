@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/report_variants_storage.rs"]
+mod report_variants_storage;
+
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
 
