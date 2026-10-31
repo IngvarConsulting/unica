@@ -212,6 +212,7 @@ allowed-tools:
 | Права роли | `Role.<Роль>` → ветвь `Right`, объект права в `props` со счётчиками |
 | Схема компоновки | `<объект>.Template.<Макет>` → `DataSet` → набор → `Field`, `Query`; варианты настроек — `Setting` |
 | Табличный макет | `<объект>.Template.<Макет>` → `Area` → область → `Body` (непустой текст) и `Parameter` |
+| Реквизиты адресации задачи | `Task.<Имя>` → отдельная ветвь `AddressingAttribute`; обычные реквизиты — `Attribute` |
 | Пакет XDTO | `XDTOPackage.<Пакет>` → `Namespace`, `Type`, `Property` |
 | Подсистема | `Subsystem.<Имя>` → `Interface` → `Command` |
 | Методы модуля | `<объект>.Module.<Роль>` → `Method`, `Region`, `Event`, `Body` |

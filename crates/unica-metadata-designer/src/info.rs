@@ -944,6 +944,31 @@ pub fn typed_optional_root_collection(
         target,
         diagnostics,
     );
+    // This newly exposed collection must prove unique member identities and
+    // must not silently discard a foreign same-named entry as an empty list.
+    if route.tag == "AddressingAttribute" {
+        let foreign = parent.children().any(|node| {
+            node.is_element()
+                && node.tag_name().name() == route.tag
+                && node.tag_name().namespace() != Some(super::info_projection::MD_CLASSES_NAMESPACE)
+        });
+        let mut names = std::collections::HashSet::new();
+        let duplicate = values.iter().any(|item| !names.insert(item.name.as_str()));
+        if foreign || duplicate {
+            diagnostics.push(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ValidationFailed,
+                    if foreign {
+                        "AddressingAttribute has a foreign namespace"
+                    } else {
+                        "AddressingAttribute has duplicate member names"
+                    },
+                )
+                .with_metadata_path(target.clone())
+                .with_field(route.field),
+            );
+        }
+    }
     let errors_after = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)

@@ -16,6 +16,7 @@ mod numerator_read_profile;
 mod session_parameter_comment;
 mod structured_property_names;
 mod support;
+mod task_addressing;
 mod xdto_missing_target;
 
 use support::*;

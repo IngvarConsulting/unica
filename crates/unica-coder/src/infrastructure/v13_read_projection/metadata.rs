@@ -180,9 +180,20 @@ fn project_metadata(
             .unwrap_or_default(),
             _ => &[],
         };
+        let addressing_issue = task_addressing_applies(address, payload)
+            .then(|| task_addressing_issue(payload))
+            .flatten();
+        if let Some(reason) = &addressing_issue {
+            limits.push(reason.clone());
+        }
         let mut branches = metadata_branch_kinds()
             .iter()
             .filter_map(|kind| {
+                if *kind == NodeKind::AddressingAttribute
+                    && (!task_addressing_applies(address, payload) || addressing_issue.is_some())
+                {
+                    return None;
+                }
                 let value = metadata_collection(payload, *kind);
                 let count = match (kind, predefined_total) {
                     (NodeKind::PredefinedItem, Some(total)) => {
@@ -303,6 +314,17 @@ fn project_metadata(
             .with_limits(metadata_relation_limits(payload)),
             metadata_relations(address, payload),
         )));
+    }
+    if first.kind() == NodeKind::AddressingAttribute {
+        if !task_addressing_applies(address, payload) {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "AddressingAttribute belongs only to a named Task",
+            ));
+        }
+        if let Some(reason) = task_addressing_issue(payload) {
+            return Err(ViewError::detailed(RefusalDetail::SourceUnreadable, reason));
+        }
     }
     // Непрочитанная коллекция приходит `null`; без этой проверки она читалась
     // бы как пустая.
@@ -528,6 +550,7 @@ fn unreadable_limits(payload: &Value) -> Vec<String> {
 /// «нет такой коллекции», и агент счёл бы сервис пустым.
 fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     let (prefix, property) = match kind {
+        NodeKind::AddressingAttribute => ("collections.addressingAttributes", None),
         NodeKind::PredefinedItem => ("predefinedItems", None),
         NodeKind::UrlTemplate => ("details.urlTemplates", None),
         NodeKind::Operation => ("details.operations", None),
@@ -558,6 +581,30 @@ fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     (!reasons.is_empty()).then(|| reasons.join("; "))
 }
 
+fn task_addressing_applies(address: &QualifiedAddress, payload: &Value) -> bool {
+    address
+        .segments()
+        .first()
+        .is_some_and(|owner| owner.kind() == NodeKind::Task && owner.name().is_some())
+        && payload.get("kind").and_then(Value::as_str) == Some("Task")
+}
+
+// The optional native collection distinguishes an unreadable/absent container
+// from a proved empty collection. Never run the generic empty fallback for it.
+fn task_addressing_issue(payload: &Value) -> Option<String> {
+    if let Some(reason) = unreadable_collection(payload, NodeKind::AddressingAttribute) {
+        return Some(format!(
+            "metadata AddressingAttribute collection is unreadable: {reason}"
+        ));
+    }
+    if metadata_collection(payload, NodeKind::AddressingAttribute)
+        .is_none_or(|value| !value.is_array())
+    {
+        return Some("collections.addressingAttributes is unknown: Task ChildObjects is absent or unreadable".into());
+    }
+    None
+}
+
 fn unreadable_entries(payload: &Value) -> impl Iterator<Item = (&str, &str)> {
     payload
         .get("unreadable")
@@ -582,6 +629,7 @@ fn metadata_branch_kinds() -> &'static [NodeKind] {
         NodeKind::Dimension,
         NodeKind::Resource,
         NodeKind::Attribute,
+        NodeKind::AddressingAttribute,
         NodeKind::StandardAttribute,
         NodeKind::TabularSection,
         NodeKind::StandardTabularSection,
@@ -603,6 +651,11 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
     let declarations = payload.get("declarations");
     match kind {
         NodeKind::Attribute => collections.get("attributes"),
+        NodeKind::AddressingAttribute
+            if payload.get("kind").and_then(Value::as_str) == Some("Task") =>
+        {
+            collections.get("addressingAttributes")
+        }
         NodeKind::StandardAttribute => declarations?.get("standardAttributes"),
         NodeKind::Characteristic => declarations?.get("characteristics"),
         NodeKind::StandardTabularSection => declarations?.get("standardTabularSections"),
