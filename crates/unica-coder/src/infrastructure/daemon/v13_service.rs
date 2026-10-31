@@ -48,7 +48,6 @@ use {
 
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::infrastructure::capacity_observation::CapacityObserver;
-use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
     FindBuildError, LayoutFindSource, WorkspaceFindDirectoryBuilder,
 };
@@ -489,7 +488,32 @@ impl CanonicalV13ReadService {
                 )
             }),
         );
-        let (staged, mut effects) = match plan_hidden_v13_apply(&request, &binding, &admission) {
+        let supplier_reader = if request
+            .ops()
+            .iter()
+            .any(|operation| operation.name() == "supportRule.restore")
+        {
+            let runner = match super::v13_infobase_exports::resolve_bundled_runner(
+                &invocation.workspace_context().cwd,
+            ) {
+                Ok(runner) => runner,
+                Err(absence) => {
+                    return super::v13_infobase_exports::missing_runner_rejection(
+                        Some(request.at().to_string()),
+                        absence,
+                    )
+                }
+            };
+            Some(super::v13_support_restore::SupplierReader::new(
+                runner,
+                invocation.workspace_context(),
+                binding.source_root(),
+                cancellation,
+            ))
+        } else {
+            None
+        };
+        let (staged, mut effects) = match crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply_with_restore(&request, &binding, &admission, supplier_reader.as_ref().map(|reader| reader as &dyn unica_metadata_designer::support_restore::RestoreSupplierRead)) {
             Err(error)
                 if error.kind() == ApplyPlanErrorKind::ProviderUnavailable
                     && error.to_string().contains("not implemented") =>
@@ -3991,6 +4015,7 @@ fn owning_metadata_address(address: &QualifiedAddress) -> String {
 const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
     unica_xdto::results::XDTO_OBJECTS,
     unica_metadata::EXCHANGE_CONTENT,
+    unica_metadata::support::SUPPORT_RESTORATION,
 ];
 
 /// Fields the apply answer writes itself; a family section cannot take them.

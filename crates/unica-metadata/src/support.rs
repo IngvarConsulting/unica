@@ -3,6 +3,24 @@ use serde_json::json;
 use unica_operation_contract::OperationSkeleton;
 use unica_operation_contract::{object, text, OperationContract};
 
+pub const SUPPORT_RESTORATION: unica_source_contract::proposal::PlanDetailKey =
+    unica_source_contract::proposal::PlanDetailKey::new("supportRestoration");
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportRestorationData {
+    pub at: String,
+    pub suppliers: Vec<RestorationSupplier>,
+    pub files_compared: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RestorationSupplier {
+    pub name: String,
+    pub vendor: String,
+    pub version: String,
+}
+
 macro_rules! support_operations {
     ($($variant:ident => ($name:literal, $applicability:ident, $skeleton:ident)),+ $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,16 +60,28 @@ macro_rules! support_operations {
 support_operations!(
     CapabilitySet => ("supportCapability.set", Configuration, Values),
     RuleSet => ("supportRule.set", SupportRule, Values),
+    RuleRestore => ("supportRule.restore", SupportRestore, Target),
 );
 
 impl SupportOperation {
     pub const fn changes_support_state(self) -> bool {
         match self {
-            Self::CapabilitySet | Self::RuleSet => true,
+            Self::CapabilitySet | Self::RuleSet | Self::RuleRestore => true,
         }
     }
 
     pub fn contract(self) -> OperationContract {
+        if self == Self::RuleRestore {
+            return OperationContract {
+                schema: object(&[("at", text(true))], &[]),
+                target: "One existing metadata object or its named form in a configuration on vendor support.",
+                effect: "Restore the locked rule only after every file of the object is byte-for-byte equal to its own version at every supporting supplier.",
+                notes: "The preview checks descriptor, complete companion trees, modules, forms, templates and unknown files. Formatting differences also prevent restoration. The saved plan checks that sources and supplier payloads are unchanged before applying only the support rule. Ordinary supportRule.set keeps its existing behavior. Use a separate Support-only apply.",
+                example_args: json!({}),
+                help: "skills/release-support/SKILL.md",
+                format_validators: &[],
+            };
+        }
         let (values, target, effect, notes, example_args) = match self {
             Self::CapabilitySet => (
                 json!({"anyOf":[
@@ -70,6 +100,7 @@ impl SupportOperation {
                 "locked/NotEditable prohibit edits; editable/EditableWithSupport allow edits while keeping vendor support; off-support/NotSupported remove the object from vendor support. This Support-only apply must be separate from ordinary edits; source profile, registration and support state are still checked.",
                 json!({"values":{"rule":"editable"}}),
             ),
+            Self::RuleRestore => unreachable!("restoration has no values"),
         };
         OperationContract {
             schema: object(&[("at", text(true)), ("values", values)], &["values"]),

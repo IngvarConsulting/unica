@@ -1688,7 +1688,7 @@
     {
       "id": "run.runner-output-bytes",
       "class": "retention",
-      "resource": "Захват stdout и stderr процесса v8-runner в операциях run.",
+      "resource": "Захват stdout и stderr процесса v8-runner в операциях Unica.",
       "unit": "bytes",
       "scope": "process",
       "source": {
@@ -1705,12 +1705,13 @@
         "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_source_export/publication_protocol.rs",
-        "crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs"
+        "crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs",
+        "crates/unica-coder/src/infrastructure/daemon/v13_support_restore.rs"
       ],
       "status": "unproven",
       "origin": "8a85591e3 (#693)",
       "problem": null,
-      "onReach": "stdout сверх предела — отказ invalid_result «v8-runner returned an unreadable or oversized JSON result»; кадр протокола публикации pull сверх предела не читается — отказ invalid_result с пределом и причиной; отказ после публикации сообщает, что исходники опубликованы, а заменённые сохранены в recovery; stderr тихо сохраняет хвост с пометкой об усечении.",
+      "onReach": "stdout сверх предела — отказ invalid_result «v8-runner returned an unreadable or oversized JSON result»; при восстановлении поддержки план отклоняется до изменения маркера; кадр протокола публикации pull сверх предела не читается — отказ invalid_result с пределом и причиной; отказ после публикации сообщает, что исходники опубликованы, а заменённые сохранены в recovery; stderr тихо сохраняет хвост с пометкой об усечении.",
       "issue": null,
       "evidence": [],
       "decision": null,

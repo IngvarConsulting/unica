@@ -1,6 +1,7 @@
 //! Designer codecs for metadata and its supplier-support state.
 pub mod layout;
 pub mod support;
+pub mod support_restore;
 
 pub mod xml_model;
 

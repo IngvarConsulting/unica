@@ -131,7 +131,7 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
             pub const fn bind<T: 'static>(_: &'static TypedOperationBundle<T>) -> Self {{ Self }}
         }}
         enum OperationApplicability {{
-            Configuration, ExtensionRoot, Metadata, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
+            Configuration, ExtensionRoot, Metadata, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, SupportRestore, MetadataAttributeContainer,
             CatalogTabularAttribute,
             MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms,
             Form, FormItemContainer, FormItem, FormEvent,
