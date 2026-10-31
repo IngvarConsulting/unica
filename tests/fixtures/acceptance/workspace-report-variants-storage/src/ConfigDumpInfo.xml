@@ -1,0 +1,36 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="e4616df0a52776429d636bc0c945df4800000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="2662aad322f9ed4b8ad631703ffa2d0c00000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="df81140cb490ba4ab464611a70c4063000000000"/>
+		<Metadata name="Report.SyntheticReport" id="f30c7939-01a6-57a4-95d9-3c5f812e32ab" configVersion="0aeb0b58d9f8e343ae7033eb8794f84d00000000">
+			<Metadata name="Report.SyntheticReport.Attribute.TextValue" id="1ca7efe9-bd68-5ba3-9bc6-d026691b079f"/>
+			<Metadata name="Report.SyntheticReport.Attribute.DocDate" id="38df354f-392b-5ee9-9729-aa6549431e54"/>
+			<Metadata name="Report.SyntheticReport.Attribute.Flag" id="6f08b571-1154-5270-9863-d24c26d6dee0"/>
+			<Metadata name="Report.SyntheticReport.TabularSection.Lines" id="a629beeb-7ed9-5d6a-9c9e-c96fcc3cd6f2"/>
+			<Metadata name="Report.SyntheticReport.Attribute.Amount" id="ad3413f9-524c-58cb-b552-f702647c990c"/>
+			<Metadata name="Report.SyntheticReport.TabularSection.Lines.Attribute.Quantity" id="b2ee8a86-c8db-5c98-961b-621ff83c9411"/>
+			<Metadata name="Report.SyntheticReport.TabularSection.Lines.Attribute.Item" id="c89e9b31-7025-5a91-b3e7-2d8e2bc1bd02"/>
+		</Metadata>
+		<Metadata name="Report.SyntheticReport.Form.Auxiliary" id="4cd23171-92b4-5360-b9db-ef84de2ae9ad" configVersion="68990dd1e468eb428b3eb2391e1728e300000000"/>
+		<Metadata name="Report.SyntheticReport.Form.Auxiliary.Form" id="4cd23171-92b4-5360-b9db-ef84de2ae9ad.0" configVersion="1cb44e0cd316f24db9a284eb44b7805800000000"/>
+		<Metadata name="Report.SyntheticReport.Form.Main" id="058f256b-dcf9-502c-a299-b076610336c7" configVersion="833f0969a9ab484f8fd0382cbf8c1d6f00000000"/>
+		<Metadata name="Report.SyntheticReport.Form.Main.Form" id="058f256b-dcf9-502c-a299-b076610336c7.0" configVersion="03812c388e8a9b45a7e16bb0c9b68dc900000000"/>
+		<Metadata name="Report.SyntheticReport.Form.Settings" id="d074f998-1e01-5497-81f3-476af4cb9212" configVersion="8d28a86f2fcbe244a6c47f5b34187ec500000000"/>
+		<Metadata name="Report.SyntheticReport.Form.Settings.Form" id="d074f998-1e01-5497-81f3-476af4cb9212.0" configVersion="30af9f007412354b90ec34a3a595318d00000000"/>
+		<Metadata name="Report.SyntheticReport.Form.Variant" id="8aaaeff8-3856-5c27-85bf-ca8b727a3725" configVersion="b62049b76891954da3f40a082694016800000000"/>
+		<Metadata name="Report.SyntheticReport.Form.Variant.Form" id="8aaaeff8-3856-5c27-85bf-ca8b727a3725.0" configVersion="b2c09456e9a1dd418f9a23932e1a881700000000"/>
+		<Metadata name="Report.SyntheticReport.ObjectModule" id="f30c7939-01a6-57a4-95d9-3c5f812e32ab.0" configVersion="09bfd3454b65c44e92779565f219662f00000000"/>
+		<Metadata name="Report.SyntheticReport.Template.Blob" id="c2c03520-c54e-537c-ab1d-86b3f0f86c3e" configVersion="c3313fadba6d754a944dd0518a5bb0dd00000000"/>
+		<Metadata name="Report.SyntheticReport.Template.Blob.Template" id="c2c03520-c54e-537c-ab1d-86b3f0f86c3e.0" configVersion="344ee615bc45984991c9395a34da933900000000"/>
+		<Metadata name="Report.SyntheticReport.Template.Layout" id="a08cace2-782a-5550-86c7-271460d711e6" configVersion="cecaafb04aa7f14ca0a7ed84bdf509dc00000000"/>
+		<Metadata name="Report.SyntheticReport.Template.Layout.Template" id="a08cace2-782a-5550-86c7-271460d711e6.0" configVersion="36f4273cc1a95646a5915b784f435f7300000000"/>
+		<Metadata name="Report.SyntheticReport.Template.MainSchema" id="4b1eb8c5-9f97-5d79-98f9-bf57aae40ed1" configVersion="a3ceefa37bd9f749a4f4d9de601d8b3100000000"/>
+		<Metadata name="Report.SyntheticReport.Template.MainSchema.Template" id="4b1eb8c5-9f97-5d79-98f9-bf57aae40ed1.0" configVersion="84d3b88517c77e419236363010af7a5000000000"/>
+		<Metadata name="Report.SyntheticReport.Template.Notes" id="f6c79533-d376-5bd4-a132-14d7c0af91c0" configVersion="0a721436306f3545b51666b9f10b9f4a00000000"/>
+		<Metadata name="Report.SyntheticReport.Template.Notes.Template" id="f6c79533-d376-5bd4-a132-14d7c0af91c0.0" configVersion="6b83da7ff8a670479895efba7371c5a100000000"/>
+		<Metadata name="SettingsStorage.StorageA" id="bf61cd14-f52b-5647-91cb-2fb04f84542c" configVersion="6d92e6c0b831a945a0a3b49b0cf4ff7b00000000"/>
+		<Metadata name="SettingsStorage.StorageB" id="bacb878d-5066-5dba-a935-722d09298002" configVersion="9372a23e933840448b61e66cdaf8e27700000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

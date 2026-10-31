@@ -21,6 +21,7 @@ pub mod edit;
 
 pub mod info;
 pub mod numerator_read;
+pub mod report_variants_storage;
 pub mod session_parameter_comment;
 
 pub mod job_schedule;

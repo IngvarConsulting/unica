@@ -6,6 +6,7 @@ use serde_json::{json, Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_operation_contract::OperationSkeleton;
 use unica_operation_contract::{object, OperationContract};
+use unica_source_contract::SourceSetKind;
 
 macro_rules! properties_operations {
     ($($variant:ident => ($name:literal, $applicability:ident, $skeleton:ident)),+ $(,)?) => {
@@ -44,7 +45,10 @@ properties_operations!(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
-    Metadata(MetadataKind),
+    Metadata {
+        kind: MetadataKind,
+        source_kind: SourceSetKind,
+    },
     Role,
     Subsystem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
@@ -91,7 +95,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
-                    PropertiesSite::Metadata(_) => false,
+                    PropertiesSite::Metadata { .. } => false,
                 }
             }
         }
@@ -169,7 +173,7 @@ impl PropertiesSite {
         if site.route() == unica_source_contract::route::RouteClass::Configuration {
             return Self::root_of(site.source().kind());
         }
-        Self::from_address(site.at())
+        Self::from_address(site.at(), site.source().kind())
     }
 
     /// The root profile of a source set; external processors and reports
@@ -190,7 +194,7 @@ impl PropertiesSite {
     /// a module and still owns a metadata descriptor. Members do not acquire
     /// the owner's write profile; a nested subsystem owns a descriptor of its
     /// own and the subsystem profile with it.
-    pub fn from_address(at: &QualifiedAddress) -> Option<Self> {
+    pub fn from_address(at: &QualifiedAddress, source_kind: SourceSetKind) -> Option<Self> {
         if at.segments().len() > 1
             && at
                 .segments()
@@ -206,7 +210,9 @@ impl PropertiesSite {
         match owner.kind() {
             NodeKind::Role => Some(Self::Role),
             NodeKind::Subsystem => Some(Self::Subsystem),
-            kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
+            kind => MetadataKind::parse(kind.as_str())
+                .ok()
+                .map(|kind| Self::Metadata { kind, source_kind }),
         }
     }
 
@@ -221,7 +227,12 @@ impl PropertiesSite {
         let mut properties = Map::new();
         let mut groups = Vec::new();
         match self {
-            Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
+            Self::Metadata { kind, source_kind } => {
+                properties = metadata_property_schemas(Some(kind));
+                if source_kind != SourceSetKind::Configuration {
+                    properties.remove("VariantsStorage");
+                }
+            }
             Self::Role | Self::Subsystem | Self::Configuration { .. } => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
@@ -263,13 +274,13 @@ impl PropertiesOperation {
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
-                notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
+                notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text when its property schema permits it; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 example_args: match site {
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata { .. } => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -320,6 +331,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn report_variants_storage_profile_uses_the_actual_source_kind() {
+        for source_kind in [
+            SourceSetKind::Configuration,
+            SourceSetKind::Extension,
+            SourceSetKind::ExternalReport,
+        ] {
+            let site = PropertiesSite::from_address(
+                &QualifiedAddress::parse("main:Report.Probe").unwrap(),
+                source_kind,
+            )
+            .unwrap();
+            let contract = PropertiesOperation::Set.contract(site);
+            let fields = &contract.schema["properties"]["values"]["properties"];
+            assert_eq!(
+                fields.get("VariantsStorage").is_some(),
+                source_kind == SourceSetKind::Configuration
+            );
+            let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+            assert!(oracle.is_valid(&json!({"values":{"Comment":"independent"}})));
+            assert_eq!(
+                oracle.is_valid(&json!({"values":{"VariantsStorage":"SettingsStorage.StorageA"}})),
+                source_kind == SourceSetKind::Configuration
+            );
+        }
+    }
+
+    #[test]
     fn registration_and_context_cover_only_current_descriptor_owners() {
         let operation = PropertiesOperation::Set;
         assert_eq!(PropertiesOperation::ALL, &[operation]);
@@ -332,8 +370,11 @@ mod tests {
         for kind in MetadataKind::ALL {
             let at = QualifiedAddress::parse(&format!("main:{}.Example", kind.as_str())).unwrap();
             assert_eq!(
-                PropertiesSite::from_address(&at),
-                Some(PropertiesSite::Metadata(*kind))
+                PropertiesSite::from_address(&at, SourceSetKind::Configuration),
+                Some(PropertiesSite::Metadata {
+                    kind: *kind,
+                    source_kind: SourceSetKind::Configuration
+                })
             );
         }
         assert_eq!(
@@ -361,7 +402,10 @@ mod tests {
             ("main:Subsystem.Sales.Interface", None),
         ] {
             assert_eq!(
-                PropertiesSite::from_address(&QualifiedAddress::parse(at).unwrap()),
+                PropertiesSite::from_address(
+                    &QualifiedAddress::parse(at).unwrap(),
+                    SourceSetKind::Configuration
+                ),
                 expected,
                 "{at}"
             );
@@ -427,7 +471,10 @@ mod tests {
                 false,
             ),
         ] {
-            let contract = PropertiesOperation::Set.contract(PropertiesSite::Metadata(kind));
+            let contract = PropertiesOperation::Set.contract(PropertiesSite::Metadata {
+                kind,
+                source_kind: SourceSetKind::Configuration,
+            });
             let oracle = jsonschema::validator_for(&contract.schema).unwrap();
             assert_eq!(
                 oracle.is_valid(&json!({"values":values})),
