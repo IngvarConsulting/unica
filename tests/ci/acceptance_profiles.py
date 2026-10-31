@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -40,7 +41,7 @@ ACCEPTANCE_ROOT = REPO / "tests/fixtures/acceptance"
 SOURCE_PROFILE_DIR = "source-profiles"
 
 
-def load_source_workspaces(root: Path = ACCEPTANCE_ROOT) -> set[str]:
+def load_source_workspace_profiles(root: Path = ACCEPTANCE_ROOT) -> dict[str, dict]:
     """Explicit source-fixture registrations, one file per sibling workspace.
 
     Adding a fixture does not edit a shared Python set. Declarations stay
@@ -50,23 +51,52 @@ def load_source_workspaces(root: Path = ACCEPTANCE_ROOT) -> set[str]:
     directory = root / SOURCE_PROFILE_DIR
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError(f"{directory}: source profiles need a regular directory")
-    workspaces = set()
+    workspaces = {}
     for declaration in sorted(directory.iterdir()):
         if declaration.name.startswith("."):
             continue
         if (declaration.suffix != ".json" or declaration.stem in {".", ".."}
                 or declaration.is_symlink() or not declaration.is_file()):
             raise ValueError(f"{declaration}: expected a regular <workspace>.json declaration")
-        if load_corpus(declaration) != {"profile": "source"}:
-            raise ValueError(f"{declaration}: expected exactly a source profile")
+        profile = load_corpus(declaration)
+        if (not isinstance(profile, dict) or profile.get("profile") != "source"
+                or set(profile) - {"profile", "git"}
+                or ("git" in profile and type(profile["git"]) is not bool)):
+            raise ValueError(f"{declaration}: expected a source profile with optional boolean git")
         workspace = root / declaration.stem
         if workspace.is_symlink() or not workspace.is_dir():
             raise ValueError(f"{declaration}: source fixture must be a regular sibling directory")
-        workspaces.add(f"tests/fixtures/acceptance/{workspace.name}")
+        workspaces[f"tests/fixtures/acceptance/{workspace.name}"] = profile
     return workspaces
 
 
-SOURCE_WORKSPACES = load_source_workspaces()
+def load_source_workspaces(root: Path = ACCEPTANCE_ROOT) -> set[str]:
+    return set(load_source_workspace_profiles(root))
+
+
+SOURCE_WORKSPACE_PROFILES = load_source_workspace_profiles()
+SOURCE_WORKSPACES = set(SOURCE_WORKSPACE_PROFILES)
+
+
+def prepare_source_workspace(workspace: Path, profile: dict) -> None:
+    """Index only the disposable copy when its declaration requests Git."""
+    if not profile.get("git", False):
+        return
+    try:
+        (workspace / ".git").lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ValueError(f"{workspace}: Git initialization refuses an existing .git entry")
+    environment = {
+        **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+        "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    git = ["git", "-c", "init.templateDir=", "-c", "core.autocrlf=false"]
+    for arguments in (["init", "--quiet"], ["add", "--all", "--", "."]):
+        subprocess.run([*git, *arguments], cwd=workspace, env=environment,
+                       check=True, capture_output=True)
+
 
 
 def helper_invalidation_step(step):
