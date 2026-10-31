@@ -47,6 +47,7 @@ pub enum PropertiesSite {
     Metadata(MetadataKind),
     Role,
     Subsystem,
+    IntegrationService,
     /// The root of a source set: the configuration's own `Configuration.xml`,
     /// or an extension's, which may change only its identity properties.
     Configuration {
@@ -91,6 +92,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
+                    PropertiesSite::IntegrationService => matches!(self, Self::ExternalIntegrationServiceAddress),
                     PropertiesSite::Metadata(_) => false,
                 }
             }
@@ -105,6 +107,7 @@ macro_rules! descriptor_properties {
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    ExternalIntegrationServiceAddress => ("ExternalIntegrationServiceAddress", "externalIntegrationServiceAddress", String, false, false, false, false),
     Synonym => ("Synonym", "synonym", String, true, true, true, true),
     Comment => ("Comment", "comment", String, true, true, true, true),
     Explanation => ("Explanation", "explanation", String, true, false, false, false),
@@ -204,6 +207,7 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::IntegrationService => Some(Self::IntegrationService),
             NodeKind::Role => Some(Self::Role),
             NodeKind::Subsystem => Some(Self::Subsystem),
             kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
@@ -222,7 +226,10 @@ impl PropertiesSite {
         let mut groups = Vec::new();
         match self {
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
-            Self::Role | Self::Subsystem | Self::Configuration { .. } => {
+            Self::Role
+            | Self::Subsystem
+            | Self::IntegrationService
+            | Self::Configuration { .. } => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
                         DescriptorPropertyKind::String => json!({"type":"string"}),
@@ -266,10 +273,11 @@ impl PropertiesOperation {
                 notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 example_args: match site {
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
+                    PropertiesSite::IntegrationService => json!({"values":{"ExternalIntegrationServiceAddress":"https://example.invalid/service"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::IntegrationService => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -452,6 +460,51 @@ mod tests {
                     .normalize(&json!({"values":values}), "args")
                     .is_err());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod integration_service_tests {
+    use super::*;
+
+    #[test]
+    fn integration_service_properties_are_a_narrow_existing_descriptor_site() {
+        let at = QualifiedAddress::parse("main:IntegrationService.Bus").unwrap();
+        let site = PropertiesSite::from_address(&at)
+            .expect("existing integration service has a scalar write profile");
+        let contract = PropertiesOperation::Set.contract(site);
+        let fields = contract.schema["properties"]["values"]["properties"]
+            .as_object()
+            .unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(
+            fields["ExternalIntegrationServiceAddress"]["type"],
+            "string"
+        );
+        assert_eq!(
+            fields["externalIntegrationServiceAddress"]["type"],
+            "string"
+        );
+        assert!(
+            MetadataKind::parse("IntegrationService").is_err(),
+            "one property must not grant object.create and unrelated writers"
+        );
+        assert!(PropertiesSite::from_address(
+            &QualifiedAddress::parse("main:IntegrationService.Bus.Module.IntegrationService")
+                .unwrap()
+        )
+        .is_none());
+        for other in [
+            PropertiesSite::Role,
+            PropertiesSite::Subsystem,
+            PropertiesSite::Configuration { extension: false },
+            PropertiesSite::Metadata(MetadataKind::Catalog),
+        ] {
+            let schema = PropertiesOperation::Set.contract(other).schema;
+            assert!(schema["properties"]["values"]["properties"]
+                .get("ExternalIntegrationServiceAddress")
+                .is_none());
         }
     }
 }

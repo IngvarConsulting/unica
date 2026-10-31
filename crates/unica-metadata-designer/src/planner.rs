@@ -1389,6 +1389,41 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::IntegrationService(changes) => {
+            let invalid = |message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let configuration = unica_source_designer::registration::read_required(
+                staged,
+                Path::new("Configuration.xml"),
+                "configuration descriptor",
+                &at_path,
+            )?;
+            let proof = unica_source_designer::owner::prove_already_read_source_set_owner(
+                Path::new("Configuration.xml"),
+                &configuration,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if let Some(refusal) = unica_source_designer::format_profile::writable_profile_refusal(
+                "Configuration.xml",
+                proof.version(),
+            ) {
+                return Err(invalid(refusal.message));
+            }
+            if !proof.registers("IntegrationService", name) {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "integration service is not registered in Configuration.xml",
+                )
+                .at_path(&at_path));
+            }
+            let text = crate::integration_service_address::patch(&source, name, &changes.address)
+                .map_err(invalid)?;
+            (NodeKind::IntegrationService, text)
+        }
+
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
             synonym,
             comment,
