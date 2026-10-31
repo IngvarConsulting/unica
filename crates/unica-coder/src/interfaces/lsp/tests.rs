@@ -493,6 +493,74 @@ fn an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call() {
     });
 }
 
+/// A completes its daemon call before cancellation, but cannot remove pending
+/// until B has reused its public id and reached the same completion boundary.
+#[test]
+fn a_late_cancelled_worker_cannot_remove_a_reused_public_request_id() {
+    let host = Arc::new(HeldHost::default());
+    let daemon =
+        LiveV5Daemon::start_with_lsp_host(canonical_v13_service(), host as Arc<dyn LspHost>);
+    let (entered, entering) = mpsc::channel();
+    let (finished, finishing) = mpsc::channel();
+    let (release_a, gate_a) = mpsc::channel();
+    let (release_b, gate_b) = mpsc::channel();
+    let gates = Mutex::new(HashMap::from([(1, gate_a), (2, gate_b)]));
+    let hook: WorkerHook = Arc::new(move |ticket, stage| {
+        if stage == WorkerStage::BeforePendingRemoval {
+            let gate = gates.lock().unwrap().remove(&ticket);
+            if let Some(gate) = gate {
+                let _ = entered.send(ticket);
+                // Closing the guard also releases a worker after an assertion.
+                let _ = gate.recv();
+            }
+        } else {
+            let _ = finished.send(ticket);
+        }
+    });
+    let mut editor = Editor::start_with_worker_hook(&daemon, Some(hook));
+    // Declared after Editor: gates open before its Drop joins the frontend.
+    let mut release_a = ReleaseOnDrop(Some(release_a));
+    let mut release_b = ReleaseOnDrop(Some(release_b));
+    editor.initialize();
+    let id = json!(7);
+    let send = |editor: &Editor, id: Value, uri: &str| {
+        editor.send(json!({
+            "jsonrpc":"2.0", "id":id, "method":"workspace/textDocumentContent", "params":{"uri":uri}
+        }))
+    };
+    send(&editor, id.clone(), "unica://old-A");
+    assert_eq!(entering.recv_timeout(WAIT).unwrap(), 1);
+    editor.notify("$/cancelRequest", json!({"id":id}));
+    assert_eq!(error_code(&editor.response(&id)), REQUEST_CANCELLED);
+    send(&editor, id.clone(), "unica://new-B");
+    assert_eq!(entering.recv_timeout(WAIT).unwrap(), 2);
+    send(&editor, json!(8), "unica://neighbor-C");
+    assert_eq!(
+        editor.response(&json!(8))["result"]["text"],
+        "// unica://neighbor-C"
+    );
+    release_a.release();
+    while finishing.recv_timeout(WAIT).unwrap() != 1 {}
+    assert!(
+        editor.try_response(&id).is_none(),
+        "late A must not answer for B"
+    );
+    release_b.release();
+    while finishing.recv_timeout(WAIT).unwrap() != 2 {}
+    assert_eq!(editor.response(&id)["result"]["text"], "// unica://new-B");
+    assert!(
+        editor.try_response(&id).is_none(),
+        "B gets exactly one response"
+    );
+    // A late cancel without pending does not prohibit legal reuse.
+    editor.notify("$/cancelRequest", json!({"id":id}));
+    send(&editor, id.clone(), "unica://reused-D");
+    assert_eq!(
+        editor.response(&id)["result"]["text"],
+        "// unica://reused-D"
+    );
+}
+
 /// Приёмка #2173: устаревший запрос отменяется и его результат не выдаётся.
 #[test]
 fn a_stale_lsp_request_is_cancelled_and_its_answer_withheld() {
@@ -720,6 +788,10 @@ struct Editor {
 
 impl Editor {
     fn start(daemon: &LiveV5Daemon) -> Self {
+        Self::start_with_worker_hook(daemon, None)
+    }
+
+    fn start_with_worker_hook(daemon: &LiveV5Daemon, worker_hook: Option<WorkerHook>) -> Self {
         let (input, receiver) = mpsc::channel();
         let output = Arc::new((Mutex::new(EditorOutput::default()), Condvar::new()));
         let client = Arc::new(V5DaemonClient::from(daemon.owner()));
@@ -730,14 +802,14 @@ impl Editor {
             Arc::new(move || lost.store(true, Ordering::Release))
         };
         let thread = thread::spawn(move || {
-            serve(
+            let mut frontend = Frontend::new(writer, client, session_lost);
+            frontend.worker_hook = worker_hook;
+            serve_frontend(
                 BufReader::new(ChannelReader {
                     receiver,
                     pending: Cursor::new(Vec::new()),
                 }),
-                writer,
-                client,
-                session_lost,
+                frontend,
             )
         });
         Self {

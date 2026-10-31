@@ -81,19 +81,15 @@ pub(crate) type SessionLost = Arc<dyn Fn() + Send + Sync>;
 /// Обслужить одно соединение редактора до `exit` или конца ввода.
 /// Возвращает код выхода процесса.
 pub(crate) fn serve(
-    mut input: impl BufRead,
+    input: impl BufRead,
     output: impl Write + Send + 'static,
     client: Arc<V5DaemonClient>,
     session_lost: SessionLost,
 ) -> i32 {
-    let mut frontend = Frontend {
-        client,
-        session_lost,
-        output: Arc::new(Mutex::new(Box::new(output))),
-        phase: Phase::Uninitialized,
-        in_flight: Arc::new(Mutex::new(HashMap::new())),
-        next_request: 0,
-    };
+    serve_frontend(input, Frontend::new(output, client, session_lost))
+}
+
+fn serve_frontend(mut input: impl BufRead, mut frontend: Frontend) -> i32 {
     let code = loop {
         let body = match codec::read_message(&mut input) {
             Ok(Some(body)) => body,
@@ -126,7 +122,18 @@ struct Frontend {
     phase: Phase,
     in_flight: InFlight,
     next_request: u64,
+    #[cfg(test)]
+    worker_hook: Option<WorkerHook>,
 }
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkerStage {
+    BeforePendingRemoval,
+    AfterPendingRemoval,
+}
+#[cfg(test)]
+type WorkerHook = Arc<dyn Fn(u64, WorkerStage) + Send + Sync>;
 
 enum Phase {
     Uninitialized,
@@ -159,6 +166,22 @@ enum Flow {
 }
 
 impl Frontend {
+    fn new(
+        output: impl Write + Send + 'static,
+        client: Arc<V5DaemonClient>,
+        session_lost: SessionLost,
+    ) -> Self {
+        Self {
+            client,
+            session_lost,
+            output: Arc::new(Mutex::new(Box::new(output))),
+            phase: Phase::Uninitialized,
+            in_flight: Arc::new(Mutex::new(HashMap::new())),
+            next_request: 0,
+            #[cfg(test)]
+            worker_hook: None,
+        }
+    }
     fn handle(&mut self, body: &[u8]) -> Flow {
         let Ok(message) = serde_json::from_slice::<Value>(body) else {
             self.send(error_response(
@@ -349,12 +372,33 @@ impl Frontend {
         let in_flight = Arc::clone(&self.in_flight);
         let output = Arc::clone(&self.output);
         let worker_key = key.clone();
+        #[cfg(test)]
+        let worker_hook = self.worker_hook.clone();
         let spawned = thread::Builder::new()
             .name("unica-lsp-request".into())
             .spawn(move || {
                 let answer = call_daemon(&client, &session, request, call);
-                if let Some(pending) = lock(&in_flight).remove(&worker_key) {
+                #[cfg(test)]
+                if let Some(hook) = &worker_hook {
+                    hook(request, WorkerStage::BeforePendingRemoval);
+                }
+                let pending = {
+                    let mut in_flight = lock(&in_flight);
+                    if in_flight
+                        .get(&worker_key)
+                        .is_some_and(|pending| pending.request == request)
+                    {
+                        in_flight.remove(&worker_key)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(pending) = pending {
                     write(&output, &answer(pending.id));
+                }
+                #[cfg(test)]
+                if let Some(hook) = &worker_hook {
+                    hook(request, WorkerStage::AfterPendingRemoval);
                 }
             });
         if spawned.is_err() {
