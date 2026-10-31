@@ -1,0 +1,462 @@
+{
+  "id": "S-1662-wsreference-location-url",
+  "issue": 1662,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-wsreference-location-url",
+  "task": "Через discovery и Can изменить существующий LocationURL WSReference: preview не пишет, token публикует точную строку и XML, повтор даёт нулевые эффекты, пустая строка очищает поле. Все соседние байты, регистрация, InternalInfo и локальный WSDL сохранены. Нативная фикстура 8.3.27.2214.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "config": {
+          "pointer": "/next/0/args/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.config"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/22/at",
+          "eq": "main:WSReference"
+        }
+      ],
+      "captures": {
+        "refs": {
+          "pointer": "/data/branches/22/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.refs"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:WSReference.Probe"
+        }
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "WSReference"
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "props.set",
+            "args": "values"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference.Probe.Props.LocationURL"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/LocationURL",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties",
+          "eq": {
+            "LocationURL": {
+              "type": "string"
+            },
+            "locationURL": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LocationURL": "https://example.invalid/?a=1&b=<ю>&quote=\"x\""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "publishUrl": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "8d839cf89539bbaebf74c3d48fadbe4d2f59cbf7d81226cfc14994c05a5c4004"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "83d8e0ba2d3817d213a9b677e07dc80e058ed81eacb3fbc49c6dc1fac092bdca"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/WSReferences/Probe/Ext/WSDefinition.xml",
+          "kind": "sha256",
+          "eq": "381059ec15351f64069604a6eb7117acc875f76335e7b67b3337fdc29061e49c"
+        },
+        {
+          "path": "src/WSReferences/Probe.xml",
+          "kind": "sha256",
+          "eq": "3d704e63f78747108cb83f690486ed49ce9fe039b0837248b78d1ae458520655"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.publishUrl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "8d839cf89539bbaebf74c3d48fadbe4d2f59cbf7d81226cfc14994c05a5c4004"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "83d8e0ba2d3817d213a9b677e07dc80e058ed81eacb3fbc49c6dc1fac092bdca"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/WSReferences/Probe/Ext/WSDefinition.xml",
+          "kind": "sha256",
+          "eq": "381059ec15351f64069604a6eb7117acc875f76335e7b67b3337fdc29061e49c"
+        },
+        {
+          "path": "src/WSReferences/Probe.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}WSReference/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}LocationURL",
+          "eq": [
+            "https://example.invalid/?a=1&b=<ю>&quote=\"x\""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/LocationURL",
+          "eq": "https://example.invalid/?a=1&b=<ю>&quote=\"x\""
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "readable"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": []
+        }
+      ],
+      "status": "readable",
+      "validators": []
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LocationURL": "https://example.invalid/?a=1&b=<ю>&quote=\"x\""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "8d839cf89539bbaebf74c3d48fadbe4d2f59cbf7d81226cfc14994c05a5c4004"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "83d8e0ba2d3817d213a9b677e07dc80e058ed81eacb3fbc49c6dc1fac092bdca"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/WSReferences/Probe/Ext/WSDefinition.xml",
+          "kind": "sha256",
+          "eq": "381059ec15351f64069604a6eb7117acc875f76335e7b67b3337fdc29061e49c"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "LocationURL": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "clearUrl": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.clearUrl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "8d839cf89539bbaebf74c3d48fadbe4d2f59cbf7d81226cfc14994c05a5c4004"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "83d8e0ba2d3817d213a9b677e07dc80e058ed81eacb3fbc49c6dc1fac092bdca"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/WSReferences/Probe/Ext/WSDefinition.xml",
+          "kind": "sha256",
+          "eq": "381059ec15351f64069604a6eb7117acc875f76335e7b67b3337fdc29061e49c"
+        },
+        {
+          "path": "src/WSReferences/Probe.xml",
+          "kind": "sha256",
+          "eq": "3d704e63f78747108cb83f690486ed49ce9fe039b0837248b78d1ae458520655"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WSReference.Probe.Props.LocationURL"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/LocationURL",
+          "eq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "8d839cf89539bbaebf74c3d48fadbe4d2f59cbf7d81226cfc14994c05a5c4004"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "83d8e0ba2d3817d213a9b677e07dc80e058ed81eacb3fbc49c6dc1fac092bdca"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/WSReferences/Probe/Ext/WSDefinition.xml",
+          "kind": "sha256",
+          "eq": "381059ec15351f64069604a6eb7117acc875f76335e7b67b3337fdc29061e49c"
+        },
+        {
+          "path": "src/WSReferences/Probe.xml",
+          "kind": "sha256",
+          "eq": "3d704e63f78747108cb83f690486ed49ce9fe039b0837248b78d1ae458520655"
+        }
+      ]
+    }
+  ]
+}

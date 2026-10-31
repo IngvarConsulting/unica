@@ -1203,6 +1203,21 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "WSReference" {
+            match unica_metadata_designer::ws_reference::read_location_url(&descriptor) {
+                Ok(Some(value)) => {
+                    payload["properties"] = json!([{
+                        "key": "LocationURL",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value },
+                    }])
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    payload["unreadable"] =
+                        json!([{"field":"properties.LocationURL","message":message}])
+                }
+            }
+        }
         if evidence.artifact_kind() == "SessionParameter" {
             match unica_metadata_designer::session_parameter_comment::read_comment(&descriptor) {
                 Ok(Some(comment)) => {

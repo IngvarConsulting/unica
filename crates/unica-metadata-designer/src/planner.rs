@@ -1389,6 +1389,39 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::WSReference(values) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = std::path::Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".to_string()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            let owner = unica_source_designer::owner::prove_already_read_metadata_owner(
+                relative, &preimage,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if source_kind != SourceSetKind::Configuration
+                || root.version() != Some("2.20")
+                || owner.version() != Some("2.20")
+                || !root.registers("WSReference", name)
+                || owner.artifact_kind() != "WSReference"
+                || owner.artifact_name() != Some(name)
+            {
+                return Err(invalid("WSReference must match an existing registered configuration descriptor in format 2.20".to_string()));
+            }
+            let text = crate::ws_reference::patch_location_url(&source, name, &values.location_url)
+                .map_err(invalid)?;
+            (NodeKind::WsReference, text)
+        }
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
             synonym,
             comment,
