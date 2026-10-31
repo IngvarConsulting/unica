@@ -38,8 +38,8 @@ fn member_views(fixture: &RealReaderFixture, at: &str) -> [Value; 2] {
 fn localized(node: &Value) -> Value {
     let tooltip = node["props"]["ToolTip"].clone();
     assert!(
-        tooltip.is_array(),
-        "public ToolTip must preserve localized XML as a nested array of translations"
+        tooltip.is_string(),
+        "public ToolTip must arrive as one string in NStr form"
     );
     tooltip
 }
@@ -56,10 +56,7 @@ fn assert_no_tooltip(node: &Value) {
 }
 
 fn expected_tooltip() -> Value {
-    json!([
-        {"language": "ru", "content": "Настройки представления суммы прописью"},
-        {"language": "en", "content": "Amount spelling settings & presentation"}
-    ])
+    json!("ru = 'Настройки представления суммы прописью'; en = 'Amount spelling settings & presentation'")
 }
 
 fn has_tooltip_limit(node: &Value) -> bool {
@@ -149,7 +146,7 @@ fn catalog_attribute_tooltip_empty_set_reads_as_absence_but_an_empty_translation
         ("<ToolTip> \n\t </ToolTip>", None),
         (
             "<ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></ToolTip>",
-            Some(json!([{"language": "ru", "content": ""}])),
+            Some(json!("ru = ''")),
         ),
     ] {
         let fixture = fixture_with_catalog(&replace_spelling_tooltip(CATALOG, replacement));
@@ -282,7 +279,7 @@ fn catalog_attribute_tooltip_never_inherits_section_header_or_sibling_values() {
     }
     assert_eq!(
         localized(&read(&fixture, LANGUAGE)),
-        json!([{"language": "ru", "content": "Подсказка соседа"}])
+        json!("ru = 'Подсказка соседа'")
     );
     assert_eq!(tree_snapshot(&fixture.source), before);
 }

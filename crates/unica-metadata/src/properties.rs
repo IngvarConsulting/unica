@@ -86,15 +86,134 @@ pub enum MetaPropertyValueKind {
 pub enum MetaPropertyValue {
     Type(MetadataType),
     String(String),
+    /// Every language of a multilingual property, as `view` reads it at
+    /// `<node>.Props.<name>` (#2163).
+    Localized(Vec<LocalizedItem>),
     Boolean(bool),
     UnsignedInteger(u32),
+}
+
+/// One language of a multilingual value: `{"language", "content"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalizedItem {
+    pub language: String,
+    pub content: String,
+}
+
+impl LocalizedItem {
+    pub fn new(language: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            language: language.into(),
+            content: content.into(),
+        }
+    }
+}
+
+/// The JSON Schema of a multilingual property: one string in the NStr form
+/// of 1C, `ru = 'Валюты'; en = 'Currencies'`.
+pub fn localized_value_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "string",
+        "pattern": NSTR_PATTERN,
+        "description": "Every language of the value in NStr form: ru = 'Валюты'; en = 'Currencies'. A quote inside the text is doubled. Languages not listed are removed; an empty string clears the value."
+    })
+}
+
+/// The NStr grammar `parse_nstr` reads; language codes are ASCII. A repeated
+/// code is refused by the parser alone.
+pub const NSTR_PATTERN: &str = r"^\s*(?:[A-Za-z0-9_-]+\s*=\s*'(?:[^']|'')*'\s*(?:;\s*[A-Za-z0-9_-]+\s*=\s*'(?:[^']|'')*'\s*)*;?\s*)?$";
+
+/// The hint a refused multilingual value carries.
+pub const LOCALIZED_VALUE_FORM: &str =
+    "a multilingual value is a string in NStr form: ru = 'Валюты'; en = 'Currencies'";
+
+/// Every language of an NStr-form string: `code = 'text'` pairs separated by
+/// `;`, a doubled quote standing for one quote. An empty or blank string has
+/// no languages. Codes are distinct.
+pub fn parse_nstr(value: &str) -> Result<Vec<LocalizedItem>, String> {
+    let mut items: Vec<LocalizedItem> = Vec::new();
+    let mut rest = value.trim_start();
+    while !rest.is_empty() {
+        let code_end = rest
+            .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+            .unwrap_or(rest.len());
+        let language = &rest[..code_end];
+        if language.is_empty() {
+            return Err(format!(
+                "{LOCALIZED_VALUE_FORM}; a language code is missing"
+            ));
+        }
+        rest = rest[code_end..].trim_start();
+        rest = rest
+            .strip_prefix('=')
+            .ok_or_else(|| format!("{LOCALIZED_VALUE_FORM}; `=` must follow `{language}`"))?
+            .trim_start();
+        rest = rest.strip_prefix('\'').ok_or_else(|| {
+            format!("{LOCALIZED_VALUE_FORM}; the text of `{language}` must be quoted")
+        })?;
+        let mut content = String::new();
+        loop {
+            let quote = rest.find('\'').ok_or_else(|| {
+                format!("{LOCALIZED_VALUE_FORM}; the text of `{language}` is not closed")
+            })?;
+            content.push_str(&rest[..quote]);
+            rest = &rest[quote + 1..];
+            match rest.strip_prefix('\'') {
+                Some(after) => {
+                    content.push('\'');
+                    rest = after;
+                }
+                None => break,
+            }
+        }
+        if items.iter().any(|item| item.language == language) {
+            return Err(format!(
+                "{LOCALIZED_VALUE_FORM}; language `{language}` is listed twice"
+            ));
+        }
+        items.push(LocalizedItem {
+            language: language.to_string(),
+            content,
+        });
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        rest = rest
+            .strip_prefix(';')
+            .ok_or_else(|| format!("{LOCALIZED_VALUE_FORM}; `;` separates the languages"))?
+            .trim_start();
+    }
+    Ok(items)
+}
+
+/// The NStr form of `items`, as `view` writes a multilingual value. Items an
+/// NStr string cannot carry — a code outside the grammar or a repeated code —
+/// have no form, so a reader never publishes what a write would refuse.
+pub fn format_nstr(items: &[LocalizedItem]) -> Option<String> {
+    let mut seen = Vec::with_capacity(items.len());
+    let mut pairs = Vec::with_capacity(items.len());
+    for item in items {
+        let code = item.language.as_str();
+        if code.is_empty()
+            || !code
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+            || seen.contains(&code)
+        {
+            return None;
+        }
+        seen.push(code);
+        pairs.push(format!("{code} = '{}'", item.content.replace('\'', "''")));
+    }
+    Some(pairs.join("; "))
 }
 
 impl MetaPropertyValue {
     fn kind(&self) -> MetaPropertyValueKind {
         match self {
             Self::Type(_) => MetaPropertyValueKind::Type,
-            Self::String(_) => MetaPropertyValueKind::String,
+            Self::String(_) | Self::Localized(_) => MetaPropertyValueKind::String,
             Self::Boolean(_) => MetaPropertyValueKind::Boolean,
             Self::UnsignedInteger(_) => MetaPropertyValueKind::UnsignedInteger,
         }
@@ -873,6 +992,55 @@ impl MetaPropertyChanges {
 
 #[cfg(test)]
 mod tests {
+    /// #2163: the NStr form of a multilingual value, read and written alike.
+    #[test]
+    fn nstr_round_trips_quotes_and_rejects_text_without_a_language() {
+        let items = super::parse_nstr(" ru = 'Товары ''склада''' ;en='Goods'; ").unwrap();
+        assert_eq!(
+            items,
+            [
+                super::LocalizedItem {
+                    language: "ru".into(),
+                    content: "Товары 'склада'".into()
+                },
+                super::LocalizedItem {
+                    language: "en".into(),
+                    content: "Goods".into()
+                },
+            ]
+        );
+        assert_eq!(
+            super::format_nstr(&items).unwrap(),
+            "ru = 'Товары ''склада'''; en = 'Goods'"
+        );
+        assert_eq!(
+            super::parse_nstr(&super::format_nstr(&items).unwrap()).unwrap(),
+            items
+        );
+        for unwritable in [" custom ", "", "ru"] {
+            let mut items = items.clone();
+            items.push(super::LocalizedItem::new(unwritable, "x"));
+            assert_eq!(super::format_nstr(&items), None, "{unwritable:?}");
+        }
+        assert!(super::parse_nstr("").unwrap().is_empty());
+        assert!(super::parse_nstr("  ").unwrap().is_empty());
+        assert_eq!(
+            super::parse_nstr("ru = 'строка;\nдругая'").unwrap()[0].content,
+            "строка;\nдругая"
+        );
+        for invalid in [
+            "Товары",
+            "ru 'А'",
+            "ru = А",
+            "ru = 'А",
+            "ru = 'А' en = 'B'",
+            "ru = 'А'; ru = 'Б'",
+            "= 'А'",
+        ] {
+            assert!(super::parse_nstr(invalid).is_err(), "{invalid}");
+        }
+    }
+
     use super::*;
     use crate::{MetaDiagnosticCode, MetadataKind};
 

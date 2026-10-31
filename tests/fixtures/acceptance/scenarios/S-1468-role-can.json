@@ -410,7 +410,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: ops[0].args.values.name: text does not match the supported argument grammar",
+      "refusal": "bad_value: ops[0].args.values.name: text does not match the supported argument grammar: A new 1C role identifier; surrounding whitespace is trimmed.",
       "assertions": [
         {
           "pointer": "/at",

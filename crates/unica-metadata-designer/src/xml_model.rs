@@ -1251,6 +1251,31 @@ pub fn meta_mltext_with_language_value(
     ))
 }
 
+/// The multilingual property `existing` holding exactly `items` (#2163).
+pub fn meta_mltext_with_values(
+    existing: &str,
+    indent: &str,
+    items: &[unica_metadata::LocalizedItem],
+) -> Result<String, String> {
+    const WRAPPER_OPEN: &str =
+        "<w xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">";
+    let wrapped = format!("{WRAPPER_OPEN}{existing}</w>");
+    let document = roxmltree::Document::parse(&wrapped)
+        .map_err(|error| format!("multilingual property is not valid XML: {error}"))?;
+    let property = document
+        .root_element()
+        .children()
+        .find(roxmltree::Node::is_element)
+        .ok_or_else(|| "multilingual property is missing".to_string())?;
+    let values = items
+        .iter()
+        .map(|item| (item.language.clone(), item.content.clone()))
+        .collect::<Vec<_>>();
+    Ok(unica_xml_format::localized::replace_language_values(
+        &wrapped, property, indent, &values,
+    ))
+}
+
 pub enum MetadataXmlType<'a> {
     Boolean,
     String { length: u32 },

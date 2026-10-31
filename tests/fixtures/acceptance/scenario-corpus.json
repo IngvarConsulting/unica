@@ -775,7 +775,7 @@
         "op": "props.set",
         "args": {
          "values": {
-          "Synonym": "Важность проблемы"
+          "Synonym": "ru = 'Важность проблемы'"
          }
         }
        }
@@ -827,7 +827,7 @@
         "op": "props.set",
         "args": {
          "values": {
-          "Synonym": "Акт об уничтожении ПДн"
+          "Synonym": "ru = 'Акт об уничтожении ПДн'"
          }
         }
        }
@@ -879,7 +879,7 @@
         "op": "props.set",
         "args": {
          "values": {
-          "Synonym": "Анализ версий"
+          "Synonym": "ru = 'Анализ версий'"
          }
         }
        }
@@ -1144,7 +1144,7 @@
         "op": "attribute.set",
         "args": {
          "values": {
-          "synonym": "Организация-оператор"
+          "synonym": "ru = 'Организация-оператор'"
          }
         }
        }
@@ -1345,7 +1345,7 @@
         "op": "tabularSection.set",
         "args": {
          "values": {
-          "synonym": "Мультиязычные представления"
+          "synonym": "ru = 'Мультиязычные представления'"
          }
         }
        }
@@ -1397,7 +1397,7 @@
         "op": "props.set",
         "args": {
          "values": {
-          "Synonym": "Администрирование системы"
+          "Synonym": "ru = 'Администрирование системы'"
          }
         }
        }
@@ -1662,7 +1662,7 @@
              }
             ]
            },
-           "synonym": "Код по классификатору",
+           "synonym": "ru = 'Код по классификатору'",
            "position": {
             "after": "Организация"
            }
@@ -1818,7 +1818,7 @@
         "op": "attribute.set",
         "args": {
          "values": {
-          "synonym": "Ответственный",
+          "synonym": "ru = 'Ответственный'",
           "type": {
            "variants": [
             {
@@ -1981,7 +1981,7 @@
         "op": "tabularSection.set",
         "args": {
          "values": {
-          "synonym": "Языковые представления"
+          "synonym": "ru = 'Языковые представления'"
          }
         }
        }
@@ -2068,7 +2068,7 @@
         "op": "dimension.set",
         "args": {
          "values": {
-          "synonym": "Код субъекта"
+          "synonym": "ru = 'Код субъекта'"
          }
         }
        }
@@ -2153,7 +2153,7 @@
         "op": "dimension.set",
         "args": {
          "values": {
-          "synonym": "Идентификатор узла"
+          "synonym": "ru = 'Идентификатор узла'"
          }
         }
        }
@@ -2231,7 +2231,7 @@
         "op": "enumValue.set",
         "args": {
          "values": {
-          "synonym": "Ошибка учёта"
+          "synonym": "ru = 'Ошибка учёта'"
          }
         }
        }
@@ -2306,7 +2306,7 @@
         "op": "column.set",
         "args": {
          "values": {
-          "synonym": "Организация документа"
+          "synonym": "ru = 'Организация документа'"
          }
         }
        }
@@ -3045,7 +3045,7 @@
         "op": "attribute.set",
         "args": {
          "values": {
-          "synonym": "Проверка диффа"
+          "synonym": "ru = 'Проверка диффа'"
          }
         }
        }
@@ -5702,7 +5702,7 @@
         "op": "template.set",
         "args": {
          "values": {
-          "synonym": "Основная схема"
+          "synonym": "ru = 'Основная схема'"
          }
         }
        }
@@ -33978,7 +33978,7 @@
         "op": "attribute.set",
         "args": {
          "values": {
-          "synonym": "Код"
+          "synonym": "ru = 'Код'"
          }
         }
        }
@@ -34899,7 +34899,7 @@
         "args": {
          "values": {
           "name": "Идентификатор",
-          "synonym": "Идентификатор узла"
+          "synonym": "ru = 'Идентификатор узла'"
          }
         }
        }

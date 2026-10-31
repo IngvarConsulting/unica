@@ -110,7 +110,7 @@ allowed-tools:
           "args": {
             "at": "main:Subsystem.Продажи",
             "values": {
-              "Synonym": "Продажи",
+              "Synonym": "ru = 'Продажи'",
               "Comment": "Раздел продаж",
               "IncludeInCommandInterface": true
             }

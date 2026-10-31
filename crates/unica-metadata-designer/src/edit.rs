@@ -183,6 +183,29 @@ pub fn meta_edit_set_mltext_property(
     emit_meta_mltext(&mut lines, child_indent, tag, lang, value);
     meta_edit_replace_or_insert_property(properties, tag, &lines.join("\n"), child_indent)
 }
+/// Writes the multilingual `tag` inside a `<Properties>` text as exactly
+/// `items`; a missing property is inserted (#2163).
+pub fn meta_edit_set_mltext_values(
+    properties: &mut String,
+    tag: &str,
+    child_indent: &str,
+    items: &[unica_metadata::LocalizedItem],
+) -> Result<(), String> {
+    if meta_edit_xml_element_range(properties, tag)?.is_none() {
+        meta_edit_replace_or_insert_property(
+            properties,
+            tag,
+            &format!("{child_indent}<{tag}/>"),
+            child_indent,
+        )?;
+    }
+    let range = meta_edit_xml_element_range(properties, tag)?
+        .ok_or_else(|| format!("multilingual property `{tag}` is missing"))?;
+    let replacement =
+        crate::xml_model::meta_mltext_with_values(&properties[range.clone()], child_indent, items)?;
+    properties.replace_range(range, &replacement);
+    Ok(())
+}
 pub fn meta_edit_xml_element_range(
     text: &str,
     tag: &str,
@@ -592,14 +615,15 @@ const TYPED_COMMAND_STORAGE_PROFILE: TypedChildStorageProfile = TypedChildStorag
 /// template always carries a synonym.
 pub fn typed_operations_write_multilingual_text(operations: &[MetaEditOperation]) -> bool {
     operations.iter().any(|operation| match operation {
-        MetaEditOperation::SetProperties { values } => values
-            .entries()
-            .iter()
-            .any(|(key, _)| *key == MetaPropertyKey::Synonym),
-        MetaEditOperation::Add { .. } => true,
-        MetaEditOperation::Update { elements, .. } => {
-            elements.iter().any(|element| element.synonym.is_some())
+        // Every language of a full multilingual value is named by the caller.
+        MetaEditOperation::SetProperties { values } => {
+            values.entries().iter().any(|(key, value)| {
+                *key == MetaPropertyKey::Synonym && matches!(value, MetaPropertyValue::String(_))
+            })
         }
+        MetaEditOperation::Add { .. } => true,
+        // A listed synonym names all its languages itself.
+        MetaEditOperation::Update { .. } => false,
         // A copy carries the source's own translations, never new text.
         MetaEditOperation::Remove { .. }
         | MetaEditOperation::Copy { .. }
@@ -1202,7 +1226,6 @@ where
                     *collection,
                     scope.as_ref().map(|scope| scope.tabular_section.as_str()),
                     element,
-                    lang,
                 )
                 .map_err(|diagnostic| qualify_element_diagnostic(diagnostic, index))?;
                 counts.modified += 1;
@@ -1422,6 +1445,25 @@ pub fn apply_typed_properties(
                     value,
                 )
             }
+            (MetaPropertyKey::Synonym, MetaPropertyValue::Localized(items)) => {
+                let values = items
+                    .iter()
+                    .map(|item| (item.language.clone(), item.content.clone()))
+                    .collect::<Vec<_>>();
+                unica_xml_format::localized::replace_language_values(
+                    parsed_body,
+                    property,
+                    &indent,
+                    &values,
+                )
+            }
+            (_, MetaPropertyValue::Localized(_)) => {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    format!("property `{tag}` takes a single text value"),
+                    Some("values"),
+                ))
+            }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}<{tag}/>")
             }
@@ -1633,10 +1675,8 @@ where
     let mut lines = Vec::new();
     let attr = || MetadataAttributeTemplate {
         name: element.name.clone(),
-        synonym: element
-            .synonym
-            .clone()
-            .unwrap_or_else(|| split_meta_camel_case(&element.name)),
+        // A listed synonym replaces this one with all its languages below.
+        synonym: split_meta_camel_case(&element.name),
         required: element.required.unwrap_or(false),
     };
     match collection {
@@ -1664,10 +1704,8 @@ where
                 .iter()
                 .map(|attribute| MetadataAttributeTemplate {
                     name: attribute.name.clone(),
-                    synonym: attribute
-                        .synonym
-                        .clone()
-                        .unwrap_or_else(|| split_meta_camel_case(&attribute.name)),
+                    // A listed synonym replaces this one with all its languages below.
+                    synonym: split_meta_camel_case(&attribute.name),
                     required: attribute.required.unwrap_or(false),
                 })
                 .collect();
@@ -1684,8 +1722,8 @@ where
                 next_uuid,
             );
             let mut rendered = lines.join("\n");
-            apply_typed_element_fields(&mut rendered, element, lang);
-            apply_typed_nested_attribute_fields(&mut rendered, &ordered_attributes, lang)?;
+            apply_typed_element_fields(&mut rendered, element);
+            apply_typed_nested_attribute_fields(&mut rendered, &ordered_attributes)?;
             return Ok(rendered.lines().map(ToOwned::to_owned).collect());
         }
         MetaCollection::Dimensions | MetaCollection::Resources => emit_meta_register_field(
@@ -1702,10 +1740,8 @@ where
             "\t\t\t",
             &MetadataEnumValueTemplate {
                 name: element.name.clone(),
-                synonym: element
-                    .synonym
-                    .clone()
-                    .unwrap_or_else(|| split_meta_camel_case(&element.name)),
+                // A listed synonym replaces this one with all its languages below.
+                synonym: split_meta_camel_case(&element.name),
                 comment: element.comment.clone().unwrap_or_default(),
             },
             lang,
@@ -1748,7 +1784,7 @@ where
                 ),
             );
     }
-    apply_typed_element_fields(&mut rendered, element, lang);
+    apply_typed_element_fields(&mut rendered, element);
     Ok(rendered.lines().map(ToOwned::to_owned).collect())
 }
 pub fn order_typed_nested_attributes(
@@ -1789,7 +1825,6 @@ pub fn order_typed_nested_attributes(
 pub fn apply_typed_nested_attribute_fields(
     xml: &mut String,
     attributes: &[MetaElementDefinition],
-    lang: &str,
 ) -> Result<(), MetaDiagnostic> {
     const WRAPPER: &str = "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">";
     for attribute in attributes {
@@ -1818,19 +1853,19 @@ pub fn apply_typed_nested_attribute_fields(
             })?;
         drop(document);
         let mut attribute_xml = xml[range.clone()].to_string();
-        apply_typed_element_fields(&mut attribute_xml, attribute, lang);
+        apply_typed_element_fields(&mut attribute_xml, attribute);
         xml.replace_range(range, &attribute_xml);
     }
     Ok(())
 }
-pub fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition, lang: &str) {
+pub fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition) {
     let Some(range) = typed_properties_text_range(xml) else {
         return;
     };
     let mut text = xml[range.clone()].to_string();
     let indent = meta_edit_property_child_indent(&text);
     if let Some(synonym) = &element.synonym {
-        let _ = meta_edit_set_mltext_property(&mut text, "Synonym", &indent, lang, synonym);
+        let _ = meta_edit_set_mltext_values(&mut text, "Synonym", &indent, synonym);
     }
     if let Some(comment) = &element.comment {
         let replacement = if comment.is_empty() {
@@ -1947,7 +1982,6 @@ pub fn update_typed_element(
     collection: MetaCollection,
     scope: Option<&str>,
     update: &MetaElementUpdate,
-    lang: &str,
 ) -> Result<(), MetaDiagnostic> {
     let tag = collection_tag(collection);
     let range = find_typed_element_range(xml_text, tag, scope, &update.name)?;
@@ -2007,14 +2041,15 @@ pub fn update_typed_element(
         })?;
     }
     if let Some(synonym) = &update.synonym {
-        meta_edit_set_mltext_property(&mut properties_text, "Synonym", &indent, lang, synonym)
-            .map_err(|_| {
+        meta_edit_set_mltext_values(&mut properties_text, "Synonym", &indent, synonym).map_err(
+            |_| {
                 typed_diagnostic(
                     MetaDiagnosticCode::ProviderUnavailable,
                     "metadata synonym could not be updated",
                     Some("synonym"),
                 )
-            })?;
+            },
+        )?;
     }
     if let Some(comment) = &update.comment {
         let replacement = if comment.is_empty() {

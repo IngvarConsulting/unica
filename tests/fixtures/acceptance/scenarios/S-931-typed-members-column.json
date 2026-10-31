@@ -96,7 +96,7 @@
               "items": [
                 {
                   "name": "NewColumn",
-                  "synonym": "New member",
+                  "synonym": "ru = 'New member'",
                   "comment": "new member comment"
                 }
               ]
@@ -221,7 +221,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "2e7fe31380c794954cd26f4ee27c8c9a6afc358272a6f56b3a23a254df9c4e67"
+          "eq": "1a181db9fcb82d8b07341a056f4dc42ea4f30580776e2993d17267e125516572"
         },
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
@@ -284,7 +284,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewColumn"
           ]
@@ -292,7 +292,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "new member comment"
           ]
@@ -300,7 +300,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "New member"
           ]
@@ -333,7 +333,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "2e7fe31380c794954cd26f4ee27c8c9a6afc358272a6f56b3a23a254df9c4e67"
+          "eq": "1a181db9fcb82d8b07341a056f4dc42ea4f30580776e2993d17267e125516572"
         }
       ]
     },
@@ -347,7 +347,7 @@
             "args": {
               "values": {
                 "newName": "NewColumnRenamed",
-                "synonym": "Renamed member",
+                "synonym": "ru = 'Renamed member'",
                 "comment": "updated member comment"
               }
             }
@@ -379,7 +379,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "2e7fe31380c794954cd26f4ee27c8c9a6afc358272a6f56b3a23a254df9c4e67"
+          "eq": "1a181db9fcb82d8b07341a056f4dc42ea4f30580776e2993d17267e125516572"
         },
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
@@ -442,7 +442,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewColumn"
           ]
@@ -450,7 +450,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "new member comment"
           ]
@@ -458,7 +458,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "New member"
           ]
@@ -495,7 +495,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "a5758fe8f733ab5bda107d003aaa28dba840b46ef134d8fafc61019a96d2664d"
+          "eq": "dc79595de71664a515b48f326d6c0fe9daad70ec4493c871bf6352acadacd8db"
         },
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
@@ -558,7 +558,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewColumnRenamed"
           ]
@@ -566,7 +566,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "updated member comment"
           ]
@@ -574,7 +574,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "Renamed member"
           ]
@@ -607,7 +607,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "a5758fe8f733ab5bda107d003aaa28dba840b46ef134d8fafc61019a96d2664d"
+          "eq": "dc79595de71664a515b48f326d6c0fe9daad70ec4493c871bf6352acadacd8db"
         }
       ]
     },
@@ -646,7 +646,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "a5758fe8f733ab5bda107d003aaa28dba840b46ef134d8fafc61019a96d2664d"
+          "eq": "dc79595de71664a515b48f326d6c0fe9daad70ec4493c871bf6352acadacd8db"
         },
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
@@ -709,7 +709,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewColumnRenamed"
           ]
@@ -717,7 +717,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "updated member comment"
           ]
@@ -725,7 +725,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "Renamed member"
           ]
@@ -825,7 +825,7 @@
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"3be6ef1b-4dc9-4ff6-819a-1823ff5e514e\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentJournal/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Column[@uuid=\"34160c32-450d-4ba7-84ce-c5c93101a83d\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": []
         }
       ]

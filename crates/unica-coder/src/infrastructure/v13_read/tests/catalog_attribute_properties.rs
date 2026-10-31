@@ -94,9 +94,7 @@ fn catalog_attribute_profile_reaches_public_collection_and_detail_without_writes
     assert_eq!(sibling["props"]["DataHistory"], "Use");
     assert_eq!(
         sibling["props"]["ToolTip"],
-        json!([{
-            "language": "ru", "content": "Настройки представления суммы прописью"
-        }])
+        "ru = 'Настройки представления суммы прописью'"
     );
     assert_eq!(tree_snapshot(&fixture.source), before);
 }

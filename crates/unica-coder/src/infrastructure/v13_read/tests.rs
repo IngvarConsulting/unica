@@ -6906,10 +6906,7 @@ fn tabular_sections_expose_source_standard_attributes_without_losing_applied_att
         ("DataHistory", Some(json!("Use"))),
         ("MarkNegatives", Some(json!(false))),
         ("MinValue", None),
-        (
-            "Synonym",
-            Some(json!([{"language":"ru","content":"Номер строки"}])),
-        ),
+        ("Synonym", Some(json!("ru = 'Номер строки'"))),
         ("Comment", Some(json!("Line-number note"))),
         ("FullTextSearch", Some(json!("Use"))),
         ("ChoiceParameterLinks", None),

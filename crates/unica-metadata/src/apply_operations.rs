@@ -449,7 +449,7 @@ mod tests {
         assert!(contract.normalize(&contract.example_args, "args").is_ok());
         for values in [
             json!({"newName":"PrintCopy"}),
-            json!({"synonym":"Print","comment":"kept"}),
+            json!({"synonym":"ru = 'Print'","comment":"kept"}),
             json!({"position":{"before":"Other"}}),
         ] {
             assert!(

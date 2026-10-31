@@ -365,7 +365,7 @@ fn props_set_common_module_can_is_contextual_and_previews_without_writes() {
 fn props_set_role_can_is_contextual_and_previews_without_writes() {
     assert_props_can_and_preview(
         "main:Role.SalesReader",
-        json!({"values":{"synonym":"Properties role preview","Comment":"Independent alias groups"}}),
+        json!({"values":{"synonym":"ru = 'Properties role preview'","Comment":"Independent alias groups"}}),
         &[
             (json!({"values":{"Synonym":"","comment":""}}), true),
             (json!({"values":{"synonym":"","Comment":""}}), true),
