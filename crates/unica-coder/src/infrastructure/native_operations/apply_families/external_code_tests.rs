@@ -14,7 +14,10 @@ use unica_workspace::actor::{
     ApplyAdmission, ApplyPublicationError, ApplyPublicationErrorKind, ProviderRootBinding,
     WorkspaceIdentity, WorkspaceSourceSetInput,
 };
-use unica_workspace::test_support::tree_snapshot;
+use unica_workspace::test_support::{
+    attempt_retained_directory_replacement_for_test, tree_snapshot,
+    RetainedDirectoryReplacementOutcome,
+};
 
 const INSERT: &str =
     "Процедура CorpusProbe() Экспорт\n    Сообщить(\"external code\");\nКонецПроцедуры\n";
@@ -320,7 +323,15 @@ fn external_code_cannot_publish_through_a_replaced_collection_root() {
     let token = fixture.save();
     let old_module = std::fs::read(fixture.module()).unwrap();
     let held = fixture.source.with_file_name("erf-held");
-    std::fs::rename(&fixture.source, &held).unwrap();
+    let original = tree_snapshot(&fixture.source);
+    match attempt_retained_directory_replacement_for_test(&fixture.source, &held).unwrap() {
+        RetainedDirectoryReplacementOutcome::Replaced => {}
+        RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+            assert_eq!(tree_snapshot(&fixture.source), original);
+            assert!(!held.exists());
+            return;
+        }
+    }
     copy_tree(&held, &fixture.source);
     let replacement = tree_snapshot(&fixture.source);
     assert!(fixture.execute(&token).is_err());
