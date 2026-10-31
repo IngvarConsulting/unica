@@ -1064,6 +1064,11 @@ fn metadata_property_props(
         ) else {
             continue;
         };
+        // The compact node omits an empty synonym; its explicit property
+        // address still carries the reader's known empty string.
+        if key == "Synonym" && value.as_str() == Some("") && super::prop_limit(key) != usize::MAX {
+            continue;
+        }
         let subject = format!("metadata property {key}");
         place_prop(&mut props, limits, address, key, value, true, &subject);
     }
