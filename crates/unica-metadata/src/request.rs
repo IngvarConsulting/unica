@@ -1113,9 +1113,20 @@ pub fn parse_event_source(value: &Value, field: &str) -> Result<MetaEventSource,
     let Some(shape) =
         ArgumentShape::new(metadata_event_source_input_schema()).variant("kind", &kind)
     else {
+        let supported = metadata_event_source_input_schema()["oneOf"]
+            .as_array()
+            .expect("the event source schema is a closed union")
+            .iter()
+            .map(|variant| {
+                variant["properties"]["kind"]["enum"][0]
+                    .as_str()
+                    .expect("each event source variant has one kind")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(invalid(
             format!("{field}.kind"),
-            format!("unsupported event source kind `{kind}`"),
+            format!("unsupported event source kind `{kind}`; use {supported}; example: {{\"kind\":\"object\",\"metadataPath\":\"Document.Order\"}}"),
         ));
     };
     let reader = MetadataArgumentReader {
