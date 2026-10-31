@@ -277,6 +277,14 @@ impl WorkspaceServiceCallDeadline {
         self.check(cancellation)?;
         match self.caller {
             Some(deadline) => {
+                let deadline = if matches!(
+                    &request.kind,
+                    ServiceRequestKind::Ping | ServiceRequestKind::Shutdown
+                ) {
+                    deadline.earlier(ProviderDeadline::from_budget(SERVICE_REQUEST_TIMEOUT))
+                } else {
+                    deadline
+                };
                 connector.send_operation_before(record, request, cancellation, deadline)
             }
             None => connector.send(record, request, cancellation, self.remaining(cancellation)?),

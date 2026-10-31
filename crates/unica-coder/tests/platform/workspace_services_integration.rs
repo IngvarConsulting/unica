@@ -3798,6 +3798,346 @@ fn main() {
     }
 
     #[test]
+    fn prepared_bsl_control_steps_are_finite_without_replacing_the_business_deadline() {
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        struct Connector {
+            original: ProviderDeadline,
+            controls: AtomicUsize,
+            begins: AtomicUsize,
+        }
+        impl ServiceConnector for Connector {
+            fn send(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<ServiceResponse, String> {
+                panic!("a control step must retain typed deadline dispatch");
+            }
+            fn send_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                panic!("a prepared call must retain its provider deadline");
+            }
+            fn send_operation_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                request: ServiceRequest,
+                _: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                match request.kind {
+                    ServiceRequestKind::Ping | ServiceRequestKind::Shutdown => {
+                        let remaining = deadline.remaining().expect("Ping/Shutdown require a finite step even when the business call has no deadline");
+                        assert!(remaining > Duration::ZERO && remaining <= SERVICE_REQUEST_TIMEOUT);
+                        if self.original.remaining() == Some(Duration::from_secs(10)) {
+                            assert_eq!(
+                                deadline, self.original,
+                                "a shorter original endpoint must win"
+                            );
+                            ADVANCE.store(3, Ordering::Release);
+                            assert_eq!(
+                                deadline.remaining(),
+                                Some(Duration::from_secs(7)),
+                                "the selected original deadline must retain its own clock"
+                            );
+                        }
+                        self.controls.fetch_add(1, Ordering::AcqRel);
+                        Ok(ServiceResponse {
+                            ok: true,
+                            status: Some("alive".into()),
+                            ..ServiceResponse::default()
+                        })
+                    }
+                    ServiceRequestKind::BslMcpBegin {
+                        deadline: offered, ..
+                    } => {
+                        assert_eq!(
+                            deadline, self.original,
+                            "the control cap must not escape into the operation"
+                        );
+                        assert_eq!(offered.remaining().unwrap(), self.original.remaining());
+                        self.begins.fetch_add(1, Ordering::AcqRel);
+                        Ok(ServiceResponse {
+                            ok: true,
+                            result_text: Some("business-result".into()),
+                            ..ServiceResponse::default()
+                        })
+                    }
+                    other => panic!("unexpected request: {other:?}"),
+                }
+            }
+        }
+        struct Spawner {
+            original: ProviderDeadline,
+        }
+        impl ServiceSpawner for Spawner {
+            fn spawn(
+                &self,
+                _: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                _: &str,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                panic!("typed startup required");
+            }
+            fn spawn_operation_before(
+                &self,
+                identity: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                token: &str,
+                _: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                assert_eq!(deadline, self.original);
+                let mut record = test_record(identity, 34567, CoreIdentity::production().as_str());
+                record.token = token.into();
+                Ok(record)
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        let current_build = CoreIdentity::production();
+        for mismatch in [false, true] {
+            for budget in [
+                None,
+                Some(Duration::from_secs(240)),
+                Some(Duration::from_secs(10)),
+            ] {
+                for stopped in ["running", "cancelled", "expired"] {
+                    ADVANCE.store(0, Ordering::Release);
+                    let context = test_context(&format!(
+                        "prepared-control-step-{mismatch}-{budget:?}-{stopped}"
+                    ));
+                    let root = context.workspace_root.join("src");
+                    let identity = WorkspaceServiceIdentity::new(&context, &root).unwrap();
+                    write_record(
+                        &identity,
+                        test_record(
+                            &identity,
+                            34567,
+                            if mismatch {
+                                "replaced-build"
+                            } else {
+                                current_build.as_str()
+                            },
+                        ),
+                    );
+                    let original = if stopped == "expired" {
+                        ProviderDeadline::with_clock(start, now)
+                    } else {
+                        budget.map_or(ProviderDeadline::no_deadline(), |budget| {
+                            ProviderDeadline::with_clock(start + budget, now)
+                        })
+                    };
+                    let cancellation = CancellationToken::new();
+                    if stopped == "cancelled" {
+                        cancellation.cancel();
+                    }
+                    let connector = Connector {
+                        original,
+                        controls: AtomicUsize::new(0),
+                        begins: AtomicUsize::new(0),
+                    };
+                    let spawner = Spawner { original };
+                    let manager = WorkspaceServiceManager::with_io(
+                        &connector,
+                        &spawner,
+                        analysis_composition::service_environment(),
+                    );
+                    let result = manager.call_bsl_mcp_before(
+                        &context,
+                        &root,
+                        PreparedBslCall {
+                            tool_name: "symbol_info".into(),
+                            tool_args: json!({}),
+                            yields: false,
+                        },
+                        &cancellation,
+                        original,
+                    );
+                    if stopped == "running" {
+                        assert_eq!(result.unwrap().result_text, "business-result");
+                        assert_eq!(connector.controls.load(Ordering::Acquire), 1);
+                        assert_eq!(connector.begins.load(Ordering::Acquire), 1);
+                    } else {
+                        let error = result.unwrap_err();
+                        assert!(
+                            error.starts_with(if stopped == "cancelled" {
+                                "cancelled:"
+                            } else {
+                                "timeout:"
+                            }),
+                            "{error}"
+                        );
+                        assert_eq!(connector.controls.load(Ordering::Acquire), 0);
+                        assert_eq!(connector.begins.load(Ordering::Acquire), 0);
+                    }
+                    cleanup(&context);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_control_transport_observes_the_selected_original_clock() {
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        struct SilentIo {
+            reads: Arc<AtomicUsize>,
+        }
+        struct SilentStream {
+            reads: Arc<AtomicUsize>,
+        }
+        impl ConnectorIo for SilentIo {
+            fn connect(&self, _: u16, timeout: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+                assert!(timeout > Duration::ZERO && timeout <= Duration::from_secs(10));
+                Ok(Box::new(SilentStream {
+                    reads: self.reads.clone(),
+                }))
+            }
+        }
+        impl Read for SilentStream {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                assert_eq!(
+                    self.reads.fetch_add(1, Ordering::AcqRel),
+                    0,
+                    "an expired original deadline must not start another polling slice"
+                );
+                ADVANCE.store(11, Ordering::Release);
+                Err(io::Error::new(ErrorKind::TimedOut, "silent control peer"))
+            }
+        }
+        impl Write for SilentStream {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl ConnectorStream for SilentStream {
+            fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+                assert!(timeout.is_some_and(
+                    |timeout| timeout > Duration::ZERO && timeout <= Duration::from_millis(100)
+                ));
+                Ok(())
+            }
+            fn set_write_timeout(&self, _: Option<Duration>) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        struct Connector {
+            original: ProviderDeadline,
+            io: SilentIo,
+        }
+        impl ServiceConnector for Connector {
+            fn send(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<ServiceResponse, String> {
+                panic!("typed deadline required");
+            }
+            fn send_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                panic!("provider deadline required");
+            }
+            fn send_operation_before(
+                &self,
+                record: &WorkspaceServiceRecord,
+                request: ServiceRequest,
+                cancellation: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                assert!(matches!(
+                    request.kind,
+                    ServiceRequestKind::Ping | ServiceRequestKind::Shutdown
+                ));
+                assert_eq!(deadline, self.original);
+                let result = SYSTEM_SERVICE_CONNECTOR.send_with_deadline(
+                    record,
+                    request,
+                    cancellation,
+                    &deadline,
+                    &self.io,
+                    &ManualClock::default(),
+                );
+                assert!(result.as_ref().unwrap_err().starts_with("timeout:"));
+                result
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        let current_build = CoreIdentity::production();
+        for mismatch in [false, true] {
+            ADVANCE.store(0, Ordering::Release);
+            let context = test_context(&format!("prepared-control-transport-{mismatch}"));
+            let root = context.workspace_root.join("src");
+            let identity = WorkspaceServiceIdentity::new(&context, &root).unwrap();
+            write_record(
+                &identity,
+                test_record(
+                    &identity,
+                    34567,
+                    if mismatch {
+                        "replaced-build"
+                    } else {
+                        current_build.as_str()
+                    },
+                ),
+            );
+            let original = ProviderDeadline::with_clock(start + Duration::from_secs(10), now);
+            let reads = Arc::new(AtomicUsize::new(0));
+            let connector = Connector {
+                original,
+                io: SilentIo {
+                    reads: reads.clone(),
+                },
+            };
+            let spawner = RecordingSpawner::default();
+            let result = WorkspaceServiceManager::with_io(
+                &connector,
+                &spawner,
+                analysis_composition::service_environment(),
+            )
+            .call_bsl_mcp_before(
+                &context,
+                &root,
+                PreparedBslCall {
+                    tool_name: "symbol_info".into(),
+                    tool_args: json!({}),
+                    yields: false,
+                },
+                &CancellationToken::new(),
+                original,
+            );
+            assert!(result.unwrap_err().starts_with("timeout:"));
+            assert_eq!(reads.load(Ordering::Acquire), 1);
+            assert_eq!(*spawner.spawns.borrow(), 0);
+            cleanup(&context);
+        }
+    }
+
+    #[test]
     fn prepared_bsl_admitted_delay_shrinks_start_and_original_cutoff_rejects_late_result() {
         static START: OnceLock<Instant> = OnceLock::new();
         static ADVANCE: AtomicUsize = AtomicUsize::new(0);
