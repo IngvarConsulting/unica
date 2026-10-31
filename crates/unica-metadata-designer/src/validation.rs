@@ -3440,6 +3440,19 @@ pub fn meta_validate_check_standard_attributes(
     };
     let std_attrs = unica_xml_format::read::child_elements(std_attr_node, "StandardAttribute");
     let expected_std_attrs = meta_validate_standard_attributes(md_type).unwrap_or_default();
+    // RecordType belongs to balances. Keep the common attributes checkable
+    // when the register kind is not proven, without inventing a default kind.
+    let record_type_applies = if md_type == "AccumulationRegister" {
+        let applies = accumulation_register_record_type_applies(props_node);
+        if applies.is_none() {
+            report.warn(
+                "5. Cannot determine RecordType applicability: RegisterType is missing or invalid",
+            );
+        }
+        applies
+    } else {
+        Some(true)
+    };
     let mut check_ok = true;
     let mut found_names = Vec::<String>::new();
     for standard_attr in &std_attrs {
@@ -3450,7 +3463,8 @@ pub fn meta_validate_check_standard_attributes(
             continue;
         }
         found_names.push(name.to_string());
-        if !expected_std_attrs.contains(&name)
+        if (!expected_std_attrs.contains(&name)
+            || (name == "RecordType" && record_type_applies == Some(false)))
             && !meta_validate_dynamic_standard_attr(md_type, name)
         {
             report.warn(format!(
@@ -3460,6 +3474,7 @@ pub fn meta_validate_check_standard_attributes(
     }
     let missing_attrs = expected_std_attrs
         .iter()
+        .filter(|attr| **attr != "RecordType" || record_type_applies == Some(true))
         .filter(|attr| !found_names.iter().any(|found| found == **attr))
         .copied()
         .collect::<Vec<_>>();
@@ -3474,6 +3489,25 @@ pub fn meta_validate_check_standard_attributes(
             "5. StandardAttributes: {} entries",
             std_attrs.len()
         ));
+    }
+}
+
+fn accumulation_register_record_type_applies(properties: roxmltree::Node<'_, '_>) -> Option<bool> {
+    let kinds = unica_xml_format::read::child_elements_in_namespace(
+        properties,
+        "RegisterType",
+        MD_CLASSES_NS,
+    );
+    let [kind] = kinds.as_slice() else {
+        return None;
+    };
+    if kind.attributes().len() != 0 || kind.children().any(|child| child.is_element()) {
+        return None;
+    }
+    match unica_xml_format::read::direct_text(*kind).as_str() {
+        "Balance" => Some(true),
+        "Turnovers" => Some(false),
+        _ => None,
     }
 }
 
