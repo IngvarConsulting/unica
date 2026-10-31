@@ -685,6 +685,11 @@ def terminal_calls(calls):
     for call in calls:
         name = call["params"]["name"]
         result = call["result"]
+        if result is None and name not in {"unica.task.result", "unica.task.get", "unica.task.cancel"}:
+            # Keep ordinary refusals on their existing terminal-call path.
+            # A Task observer still needs its structured completion evidence.
+            terminal.append(call)
+            continue
         if not isinstance(result, dict):
             raise ValueError("Tool result omitted its structured response")
         data = result.get("data")

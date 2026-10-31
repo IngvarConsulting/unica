@@ -1151,6 +1151,15 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                     for key in ("done", "after", "filesAfter", "rootsAfter", "result", "isError"):
                         self.assertEqual(finished[key], result[key])
 
+    def test_non_task_refusal_without_structured_content_keeps_its_terminal_path(self):
+        origin, _ = self.task_error_calls()
+        refusal = {**origin, "result": None, "isError": True}
+        self.assertEqual(terminal_calls([refusal]), [refusal])
+        for tool in ["unica.task.get", "unica.task.cancel", "unica.task.result"]:
+            observer = {**refusal, "params": {"name": tool, "arguments": {"taskId": "t"}}}
+            with self.subTest(tool=tool), self.assertRaises(ValueError):
+                terminal_calls([origin, observer])
+
     @staticmethod
     def task_error_calls(status="cancelled", reason=None):
         origin = {"index": 0, "done": 1, "params": {"name": "unica.docs", "arguments": {"query": "optional"}},
