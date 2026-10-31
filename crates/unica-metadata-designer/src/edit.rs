@@ -1550,16 +1550,15 @@ pub fn ensure_typed_name_free(
         None => meta_edit_ensure_top_child_name_free(xml_text, tag, name),
     };
     result.map_err(|message| {
-        let code = if message.contains("already exists") {
-            MetaDiagnosticCode::AlreadyExists
+        if message.contains("already exists") {
+            typed_diagnostic(MetaDiagnosticCode::AlreadyExists, message, Some("name"))
         } else {
-            MetaDiagnosticCode::TargetNotFound
-        };
-        typed_diagnostic(
-            code,
-            "metadata element identity is not available",
-            Some("name"),
-        )
+            typed_diagnostic(
+                MetaDiagnosticCode::TargetNotFound,
+                "metadata element identity is not available",
+                Some("name"),
+            )
+        }
     })
 }
 /// Settings a new register field takes from the fields already in the register.
