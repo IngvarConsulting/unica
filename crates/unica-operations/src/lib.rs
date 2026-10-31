@@ -11,8 +11,8 @@ use std::any::{Any, TypeId};
 use std::fmt;
 use unica_address::address::QualifiedAddress;
 use unica_operation_contract::{OperationContract, OperationSkeleton};
-use unica_source_contract::context::OperationSite;
 use unica_source_contract::context::RegistryContext;
+use unica_source_contract::context::{OperationSite, SourceSetTraits};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OperationFamily {
@@ -55,6 +55,9 @@ pub trait FamilyOperation: Copy + fmt::Debug + Send + Sync + 'static {
     fn skeleton(self) -> OperationSkeleton;
     fn address_shape(self) -> &'static str;
     fn matches(self, site: &OperationSite<'_>) -> bool;
+    fn writes_source(self, source: SourceSetTraits) -> bool {
+        source.is_writable()
+    }
 
     fn contract(self) -> Option<OperationContract> {
         None
@@ -124,6 +127,7 @@ trait ErasedOperation: Sync {
     fn skeleton(&self) -> OperationSkeleton;
     fn address_shape(&self) -> &'static str;
     fn matches(&self, site: &OperationSite<'_>) -> bool;
+    fn writes_source(&self, source: SourceSetTraits) -> bool;
     fn contract(&self) -> Option<OperationContract>;
     fn contract_at(&self, site: &OperationSite<'_>) -> Option<OperationContract>;
     fn content_resource(&self) -> Option<&'static str>;
@@ -169,6 +173,9 @@ impl<O: FamilyOperation> ErasedOperation for TypedOperationBundle<O> {
     }
     fn matches(&self, site: &OperationSite<'_>) -> bool {
         self.operation.matches(site)
+    }
+    fn writes_source(&self, source: SourceSetTraits) -> bool {
+        self.operation.writes_source(source)
     }
     fn contract(&self) -> Option<OperationContract> {
         self.operation.contract()
@@ -282,9 +289,13 @@ impl OperationDescriptor {
         self.binding.contract_at(site)
     }
 
+    pub fn writes_source(self, source: SourceSetTraits) -> bool {
+        self.binding.writes_source(source)
+    }
+
     pub fn applies_at(self, site: &OperationSite<'_>) -> bool {
         site.at().line_range().is_none()
-            && site.source().is_writable()
+            && self.writes_source(site.source())
             && self.binding.matches(site)
     }
 

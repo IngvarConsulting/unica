@@ -15,6 +15,18 @@ pub fn prove_staged_code_owner(
     identity: &PlatformXmlModuleIdentity,
     at_path: &str,
 ) -> Result<Vec<Vec<u8>>, ApplyPlanError> {
+    if matches!(
+        source_kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return prove_staged_external_code_owner(
+            staged,
+            source_kind,
+            expected_format,
+            identity,
+            at_path,
+        );
+    }
     let root_relative = Path::new("Configuration.xml");
     let root = staged
         .read(root_relative)
@@ -88,6 +100,42 @@ pub fn prove_staged_code_owner(
     }
     Ok(owner_bytes)
 }
+fn prove_staged_external_code_owner(
+    staged: &mut ApplyProposal<'_>,
+    source_kind: SourceSetKind,
+    expected_format: &str,
+    identity: &PlatformXmlModuleIdentity,
+    at_path: &str,
+) -> Result<Vec<Vec<u8>>, ApplyPlanError> {
+    let plan =
+        crate::owner::owner_evidence_plan(source_kind, &identity.address, &identity.descriptors)
+            .map_err(|_| invalid_code_owner(at_path))?;
+    // External object modules have one artifact owner, without a configuration
+    // registration layer. A nested owner requires its own proven write route.
+    let [step] = plan.descriptors.as_slice() else {
+        return Err(invalid_code_owner(at_path));
+    };
+    let bytes = staged
+        .read(&step.relative)
+        .map_err(|e| ApplyPlanError::staging(e, at_path))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "source-set owner descriptor is absent",
+            )
+            .at_path(at_path)
+        })?;
+    let evidence = prove_already_read_source_set_owner(&step.relative, &bytes, source_kind)
+        .map_err(|_| invalid_code_owner(at_path))?;
+    require_code_owner_format(&evidence, expected_format, &step.relative, at_path)?;
+    if evidence.artifact_kind() != step.expected_kind
+        || evidence.artifact_name() != step.expected_name.as_deref()
+    {
+        return Err(invalid_code_owner(at_path));
+    }
+    Ok(vec![bytes])
+}
+
 /// The refusal names the owner file, the version it records and the
 /// re-export the platform needs, as the shared writable-profile guard does.
 fn require_code_owner_format(

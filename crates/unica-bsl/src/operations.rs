@@ -50,6 +50,9 @@ impl unica_operations::FamilyOperation for CodeOperation {
     ) -> Option<unica_operation_contract::OperationContract> {
         Some(self.contract(Some(site.at())))
     }
+    fn writes_source(self, source: unica_source_contract::context::SourceSetTraits) -> bool {
+        source.exact_writable_profile().is_some()
+    }
     type Observation = ();
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Code

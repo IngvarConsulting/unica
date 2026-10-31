@@ -991,12 +991,7 @@ impl ApplyAdmission {
                 "code planning binding does not belong to this apply admission",
             ));
         }
-        if binding.source_format() != SourceFormat::PlatformXml
-            || !matches!(
-                binding.source_kind(),
-                SourceSetKind::Configuration | SourceSetKind::Extension
-            )
-        {
+        if binding.source_format() != SourceFormat::PlatformXml {
             return Err(ApplyPlanError::new(
                 ApplyPlanErrorKind::ProviderUnavailable,
                 "admitted source does not provide writable Platform XML code",

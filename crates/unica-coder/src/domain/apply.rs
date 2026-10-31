@@ -10,7 +10,7 @@ use unica_metadata::MetadataKind;
 use unica_metadata::{
     interface_operations::InterfaceOperation, subsystem_operations::SubsystemOperation,
 };
-use unica_operations::{OperationDescriptor, OperationFamily, OperationRegistry};
+use unica_operations::{OperationDescriptor, OperationRegistry};
 use unica_source_contract::context::{OperationSite, RegistryContext, SourceSetTraits};
 use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
 use unica_templates::operations::MxlOperation;
@@ -375,30 +375,6 @@ pub(crate) fn operation_site(
     Some(OperationSite::from_route(at, source, route))
 }
 
-/// Family write policy remains with operation composition during extraction.
-pub(crate) trait SourceSetWriteSupport {
-    fn writes(self, family: OperationFamily) -> bool;
-}
-
-impl SourceSetWriteSupport for SourceSetTraits {
-    fn writes(self, family: OperationFamily) -> bool {
-        match family {
-            OperationFamily::Metadata
-            | OperationFamily::Properties
-            | OperationFamily::Form
-            | OperationFamily::Role
-            | OperationFamily::Dcs
-            | OperationFamily::Mxl
-            | OperationFamily::Xdto
-            | OperationFamily::Subsystem
-            | OperationFamily::Interface
-            | OperationFamily::Support
-            | OperationFamily::Code
-            | OperationFamily::Event => self.is_writable(),
-        }
-    }
-}
-
 /// Отказ записи в набор, который семейство не пишет. Один текст для
 /// предварительной проверки и разбора планировщиком.
 pub(crate) const UNWRITABLE_SOURCE_MESSAGE: &str =
@@ -718,17 +694,80 @@ mod tests {
     use super::{
         operation_registry, operation_site, retired_arguments, source_set_traits_for_read,
         ApplyRequest, EventOperation, FormOperation, MxlOperation, OperationDescriptor,
-        OperationFamily, OperationSkeleton, Primitive, RoleOperation, SupportOperation,
-        TemplateFormat, OPERATION_DESCRIPTORS,
+        OperationSkeleton, Primitive, RoleOperation, SupportOperation, TemplateFormat,
+        OPERATION_DESCRIPTORS,
     };
     use super::{OperationDescriptorExt, OperationRegistryExt, RetiredOperationExt};
     use serde_json::{json, Value};
     use unica_address::address::QualifiedAddress;
     use unica_bsl::profile::PlatformProfile;
     use unica_metadata::descriptor_operations::PropertiesOperation;
+    use unica_operations::OperationFamily;
     use unica_source_contract::route::RouteClass;
     use unica_source_contract::SourceSetKind;
     use unica_xdto::operations::XdtoOperation;
+
+    #[test]
+    fn external_object_code_has_one_family_owned_source_admission() {
+        use unica_source_contract::{SourceFormat, SourceProfile};
+        let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+        for (kind, owner, foreign) in [
+            (
+                SourceSetKind::ExternalReport,
+                "ExternalReport",
+                "ExternalDataProcessor",
+            ),
+            (
+                SourceSetKind::ExternalProcessor,
+                "ExternalDataProcessor",
+                "ExternalReport",
+            ),
+        ] {
+            let traits =
+                super::source_set_traits_of_source(kind, SourceFormat::PlatformXml, profile);
+            for (path, allowed) in [
+                (format!("artifact:{owner}.Sales.Module.Object"), true),
+                (
+                    format!("artifact:{owner}.Sales.Module.Object.Method.Probe"),
+                    true,
+                ),
+                (
+                    format!("artifact:{owner}.Sales.Form.Main.Module.Form"),
+                    false,
+                ),
+                (
+                    format!("artifact:{owner}.Sales.Command.Run.Module.Command"),
+                    false,
+                ),
+                (format!("artifact:{foreign}.Sales.Module.Object"), false),
+            ] {
+                let at = QualifiedAddress::parse(&path).unwrap();
+                let site = operation_site(&at, traits).unwrap();
+                for code in [
+                    unica_bsl::operations::CodeOperation::Insert,
+                    unica_bsl::operations::CodeOperation::Replace,
+                ] {
+                    assert_eq!(
+                        code.descriptor().applies_at(&site),
+                        allowed,
+                        "{path}: {code:?}"
+                    );
+                    let readonly =
+                        super::source_set_traits_of_source(kind, SourceFormat::Edt, profile);
+                    let site = operation_site(&at, readonly).unwrap();
+                    assert!(
+                        !code.descriptor().applies_at(&site),
+                        "classification is not write admission"
+                    );
+                }
+            }
+            for descriptor in operation_registry().descriptors() {
+                if descriptor.family() != OperationFamily::Code {
+                    assert!(!descriptor.writes_source(traits), "{}", descriptor.name());
+                }
+            }
+        }
+    }
 
     #[test]
     fn implemented_operations_have_contracts_and_target_skeletons_have_no_empty_address() {

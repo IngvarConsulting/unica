@@ -2,7 +2,6 @@ use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocati
 use crate::domain::apply::OperationDescriptorExt;
 use crate::domain::apply::OperationRegistryExt;
 use crate::domain::apply::RetiredOperationExt;
-use crate::domain::apply::SourceSetWriteSupport;
 use crate::domain::engine::MissingEngineRefusal;
 use unica_work_control::provider_deadline::ProviderDeadline;
 /// Потолок страницы ветви графа: объявленный максимум поверхности.
@@ -5418,7 +5417,7 @@ pub(super) fn preflight_apply_operations_with(
             .unwrap_or(descriptor);
         // Набор, который семейство не пишет, — свойство набора, а не «не тот
         // узел»: тот же отказ даёт разбор планировщиком.
-        if !source.writes(descriptor.family()) {
+        if !descriptor.writes_source(source) {
             return Err(Box::new(DomainResult::canonical_rejection_detailed(
                 Some(format!("ops[{index}].op")),
                 RefusalDetail::WrongSourceKind,
