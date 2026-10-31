@@ -2064,6 +2064,7 @@ mod tests {
                 Step::Reply(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Task {
                         snapshot: V5DaemonTaskSnapshot::Working {
+                            progress: None,
                             task_id,
                             invocation_id: receipt_key.invocation_id(),
                             receipt_key_digest: unica_execution::receipt_ledger::receipt_key_digest(

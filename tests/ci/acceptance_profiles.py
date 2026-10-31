@@ -156,6 +156,10 @@ def select_profile(corpus, profile):
                     for step in scenario["wire"]
                 ):
                     raise ValueError(f"{scenario['id']}: invalid analyzer delivery failure wire")
+            elif driver == "silent-extension-runner":
+                expected = ["unica.run", "unica.task.get", "unica.task.cancel", "unica.task.result"]
+                if workspace != "tests/fixtures/acceptance/workspace-task-progress" or [step["tool"] for step in scenario["wire"]] != expected:
+                    raise ValueError(f"{scenario['id']}: invalid silent runner wire or fixture")
             elif driver != "analyzer-jsonl-fault" or workspace != DIAGNOSTICS_WORKSPACE or scenario.get("evaluation") not in FAULT_CASES or any(
                 step["tool"] != "unica.check" or step["args"] != {"at": "main:CommonModule.Пример"}
                 for step in scenario["wire"]

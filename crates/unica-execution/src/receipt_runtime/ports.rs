@@ -42,6 +42,16 @@ pub trait InvocationRequestFacts: Clone + Send + Sync + 'static {
 pub trait PreparedInvocation: Send + 'static {
     fn execution_class(&self) -> &ExecutionClass;
     fn execute(self, cancellation: CancellationToken) -> Result<DomainResult, InvocationFailure>;
+    fn execute_with_progress(
+        self,
+        cancellation: CancellationToken,
+        _progress: super::progress::InvocationProgress,
+    ) -> Result<DomainResult, InvocationFailure>
+    where
+        Self: Sized,
+    {
+        self.execute(cancellation)
+    }
 }
 
 pub trait BoundInvocation: Send + 'static {

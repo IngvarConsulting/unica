@@ -76,6 +76,7 @@ pub(crate) struct CompatibilityTaskSnapshot {
     pub(crate) updated_at_epoch_ms: u64,
     pub(crate) ttl_ms: u64,
     pub(crate) poll_interval_ms: u64,
+    pub(crate) progress: Option<unica_execution::receipt_runtime::progress::TaskProgress>,
 }
 
 impl CompatibilityTaskSnapshot {
@@ -101,6 +102,7 @@ impl CompatibilityTaskSnapshot {
             updated_at_epoch_ms,
             ttl_ms,
             poll_interval_ms,
+            progress: None,
         }
     }
 }
@@ -260,6 +262,9 @@ pub(crate) fn project_task_snapshot(
             "pollIntervalMs": snapshot.poll_interval_ms
         }
     });
+    if let Some(progress) = &snapshot.progress {
+        data["task"]["progress"] = json!(progress);
+    }
     if snapshot.cancel_requested {
         data["task"]["cancelRequested"] = json!(true);
     }
@@ -285,7 +290,7 @@ pub(crate) fn project_task_snapshot(
             "tool": "unica.task.result",
             "args": {
                 "taskId": snapshot.task_id.to_string(),
-                "waitMs": snapshot.poll_interval_ms.min(DEFAULT_TASK_RESULT_WAIT_MS)
+                "waitMs": DEFAULT_TASK_RESULT_WAIT_MS
             }
         }));
     }
@@ -504,7 +509,7 @@ mod tests {
                     "tool": "unica.task.result",
                     "args": {
                         "taskId": "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4",
-                        "waitMs": 250
+                        "waitMs": 7000
                     }
                 }]
             })

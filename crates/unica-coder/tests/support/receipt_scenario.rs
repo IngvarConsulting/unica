@@ -3323,6 +3323,7 @@ fn nonterminal_probe_task(
     );
     Ok(if working {
         V5DaemonTaskSnapshot::Working {
+            progress: None,
             task_id: common.0,
             invocation_id: common.1,
             receipt_key_digest: common.2,
