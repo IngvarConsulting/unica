@@ -1070,6 +1070,13 @@ pub(crate) fn plan_hidden_v13_apply(
         .enumerate()
         .map(|(op_index, operation)| parse_apply_operation(op_index, operation, binding))
         .collect::<Result<Vec<_>, ApplyPlanError>>()?;
+    let metadata_creation_overrides =
+        unica_metadata_designer::planner::MetadataCreationOverrides::from_operations(
+            parsed.iter().filter_map(|operation| match operation {
+                ParsedApplyOperation::Metadata(operation) => Some(operation),
+                _ => None,
+            }),
+        );
 
     let mut staged = admission
         .staged_state()
@@ -1197,7 +1204,7 @@ pub(crate) fn plan_hidden_v13_apply(
                     .collect::<Vec<_>>();
                 let authority = admission.metadata_planning_authority(binding)?;
                 let planned =
-                    unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml),&mut staged.proposal(), &authority, &operations)?;
+                    unica_metadata_designer::planner::plan_metadata_batch_with_context(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml),&mut staged.proposal(), &authority, &operations, &metadata_creation_overrides)?;
                 provisional.extend(planned);
             }
             ParsedApplyOperation::FormResource(_) => {
@@ -1234,6 +1241,11 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    unica_metadata_designer::planner::finalize_subscription_defaults(
+        &mut staged.proposal(),
+        binding.source_kind(),
+        &metadata_creation_overrides,
+    )?;
     unica_metadata_designer::planner::validate_final_object_integrity(
         &mut staged.proposal(),
         binding.source_set_name(),

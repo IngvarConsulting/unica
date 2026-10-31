@@ -1,0 +1,422 @@
+{
+  "id": "S-2320-subscription-handler-signatures",
+  "issue": 2320,
+  "area": "Метаданные",
+  "task": "Создать подписку BeforeWrite документа с четырьмя параметрами без вспомогательного справочника и подписку справочника с двумя; apply и check согласны, обратные арности отказывают без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-subscription-signatures",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "rootBefore": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "moduleBefore": {
+          "kind": "sha256",
+          "file": "src/CommonModules/Handlers/Ext/Module.bsl"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "EventSubscription",
+                "name": "OnDocumentWrite"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Document",
+                "name": "Probe"
+              }
+            }
+          },
+          {
+            "op": "form.add",
+            "args": {
+              "at": "main:Document.Probe",
+              "items": [
+                {
+                  "name": "Main",
+                  "type": "ObjectForm"
+                }
+              ]
+            }
+          },
+          {
+            "op": "relation.replace",
+            "args": {
+              "at": "main:EventSubscription.OnDocumentWrite",
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Document.Records"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:EventSubscription.OnDocumentWrite",
+              "values": {
+                "Event": "BeforeWrite",
+                "Handler": "CommonModule.Handlers.DocumentBeforeWrite"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.rootBefore"
+        },
+        {
+          "kind": "exists",
+          "path": "src/EventSubscriptions/OnDocumentWrite.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/EventSubscriptions/OnDocumentWrite.xml",
+          "select": "./{*}EventSubscription/{*}Properties/{*}Source/{*}Type",
+          "eq": [
+            "cfg:DocumentObject.Records"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/EventSubscriptions/OnDocumentWrite.xml",
+          "select": "./{*}EventSubscription/{*}Properties/{*}Handler",
+          "eq": [
+            "CommonModule.Handlers.DocumentBeforeWrite"
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/Handlers/Ext/Module.bsl",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:EventSubscription.OnDocumentWrite"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "docAfter": {
+          "kind": "sha256",
+          "file": "src/EventSubscriptions/OnDocumentWrite.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.OnDocumentWrite",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Handler": "CommonModule.Handlers.CatalogBeforeWrite"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: properties.handler: handler for `BeforeWrite` must have 4 parameters (Source plus 3 event parameters: Source, Cancel, WriteMode, PostingMode), got 2",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/EventSubscriptions/OnDocumentWrite.xml",
+          "eq": "$capture.docAfter"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "EventSubscription",
+                "name": "AutomaticDocument"
+              }
+            }
+          },
+          {
+            "op": "relation.replace",
+            "args": {
+              "at": "main:EventSubscription.AutomaticDocument",
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Document.Records"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/AutomaticDocument.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/AutomaticDocument.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}EventSubscription/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Handler",
+          "eq": [
+            "CommonModule.Handlers.DocumentBeforeWrite"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:EventSubscription.AutomaticDocument"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Catalog",
+                "name": "Items"
+              }
+            }
+          },
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "EventSubscription",
+                "name": "OnCatalogWrite"
+              }
+            }
+          },
+          {
+            "op": "relation.replace",
+            "args": {
+              "at": "main:EventSubscription.OnCatalogWrite",
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.Items"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "main:EventSubscription.OnCatalogWrite",
+              "values": {
+                "Event": "BeforeWrite",
+                "Handler": "CommonModule.Handlers.CatalogBeforeWrite"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/EventSubscriptions/OnCatalogWrite.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:EventSubscription.OnCatalogWrite"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "catalogAfter": {
+          "kind": "sha256",
+          "file": "src/EventSubscriptions/OnCatalogWrite.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.OnCatalogWrite",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Handler": "CommonModule.Handlers.DocumentBeforeWrite"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: properties.handler: handler for `BeforeWrite` must have 2 parameters (Source plus 1 event parameters: Source, Cancel), got 4",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/EventSubscriptions/OnCatalogWrite.xml",
+          "eq": "$capture.catalogAfter"
+        }
+      ]
+    }
+  ]
+}

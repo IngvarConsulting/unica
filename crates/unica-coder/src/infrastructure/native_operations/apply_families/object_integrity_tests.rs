@@ -226,6 +226,491 @@ fn create(kind: &str) -> Value {
     json!({"op":"object.create","args":{"values":{"kind":kind,"name":"Target"}}})
 }
 
+#[test]
+fn canonical_subscription_creation_uses_the_explicit_final_document_binding() {
+    for kind in [SourceSetKind::Configuration, SourceSetKind::Extension] {
+        let fixture = Fixture::new(kind);
+        fixture.put_named(
+            "CommonModule",
+            "CommonModules",
+            "Handlers",
+            "<Global>false</Global><Server>true</Server>",
+            "",
+        );
+        let module = fixture.source.join("CommonModules/Handlers/Ext/Module.bsl");
+        std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+        std::fs::write(
+            &module,
+            "Procedure BeforeWrite(Source, Cancel, WriteMode, PostingMode) Export\nEndProcedure\n",
+        )
+        .unwrap();
+        fixture.preview_and_publish("main:Configuration", json!([
+        create("EventSubscription"),
+        {"op":"object.create","args":{"values":{"kind":"Document","name":"Probe"}}},
+        {"op":"form.add","args":{"at":"main:Document.Probe","items":[{"name":"Main","type":"ObjectForm"}]}},
+        {"op":"relation.replace","args":{"at":"main:EventSubscription.Target","values":{"relation":"source","targets":[{"kind":"object","metadataPath":"Document.Records"}]}}},
+        {"op":"props.set","args":{"at":"main:EventSubscription.Target","values":{"Event":"BeforeWrite","Handler":"CommonModule.Handlers.BeforeWrite"}}}
+    ]));
+        let text =
+            std::fs::read_to_string(fixture.source.join("EventSubscriptions/Target.xml")).unwrap();
+        assert!(text.contains("cfg:DocumentObject.Records"), "{text}");
+        assert!(
+            text.contains("<Handler>CommonModule.Handlers.BeforeWrite</Handler>"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn canonical_subscription_default_handler_uses_the_final_source_and_event() {
+    for (event, body, expected) in [
+        ("BeforeWrite", "Procedure Doc4(A,B,C,D) Export\nEndProcedure\n", "Doc4"),
+        ("BeforeWrite", "Procedure Catalog2(A,B) Export\nEndProcedure\nProcedure Doc4(A,B,C,D) Export\nEndProcedure\n", "Doc4"),
+        ("OnWrite", "Procedure Doc4(A,B,C,D) Export\nEndProcedure\nProcedure Other2(A,B) Export\nEndProcedure\n", "Other2"),
+    ] {
+        let fixture = Fixture::new(SourceSetKind::Configuration);
+        fixture.put_named("CommonModule", "CommonModules", "Handlers", "<Global>false</Global><Server>true</Server>", "");
+        let path = fixture.source.join("CommonModules/Handlers/Ext/Module.bsl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+        fixture.preview_and_publish("main:Configuration", json!([
+            create("EventSubscription"),
+            {"op":"relation.replace","args":{"at":"main:EventSubscription.Target","values":{"relation":"source","targets":[{"kind":"object","metadataPath":"Document.Records"}]}}},
+            {"op":"props.set","args":{"at":"main:EventSubscription.Target","values":{"Event":event}}}
+        ]));
+        let text = std::fs::read_to_string(fixture.source.join("EventSubscriptions/Target.xml")).unwrap();
+        assert!(text.contains(&format!("<Handler>CommonModule.Handlers.{expected}</Handler>")), "{text}");
+    }
+}
+
+#[test]
+fn canonical_subscription_default_refuses_when_only_the_wrong_arity_exists() {
+    let fixture =
+        Fixture::with_creation_prerequisites(SourceSetKind::Configuration, CALLABLE_HANDLERS);
+    fixture.refuse_preview("main:Configuration", json!([
+        create("EventSubscription"),
+        {"op":"relation.replace","args":{"at":"main:EventSubscription.Target","values":{"relation":"source","targets":[{"kind":"object","metadataPath":"Document.Records"}]}}}
+    ]), "ops[0].args", "BeforeWrite(Source, Cancel, WriteMode, PostingMode)");
+}
+
+#[test]
+fn canonical_subscription_default_handler_never_replaces_an_explicit_empty_handler() {
+    let fixture = Fixture::new(SourceSetKind::Configuration);
+    fixture.refuse_preview("main:Configuration", json!([
+        create("EventSubscription"),
+        {"op":"relation.replace","args":{"at":"main:EventSubscription.Target","values":{"relation":"source","targets":[{"kind":"object","metadataPath":"Document.Records"}]}}},
+        {"op":"props.set","args":{"at":"main:EventSubscription.Target","values":{"Handler":""}}}
+    ]), "ops[2].args.values.Handler", "Handler must use CommonModule");
+}
+
+#[test]
+fn canonical_subscription_default_does_not_replace_an_explicit_incompatible_handler() {
+    let fixture = subscription_fixture(
+        SourceSetKind::Configuration,
+        false,
+        "Procedure Good(A,B,C,D) Export\nEndProcedure\nProcedure Bad(A,B) Export\nEndProcedure\n",
+        "<Global>false</Global><Server>true</Server>",
+    );
+    fixture.refuse_preview("main:Configuration", json!([
+        {"op":"object.create","args":{"values":{"kind":"EventSubscription","name":"Denied"}}},
+        {"op":"relation.replace","args":{"at":"main:EventSubscription.Denied","values":{"relation":"source","targets":[{"kind":"object","metadataPath":"Document.Records"}]}}},
+        {"op":"props.set","args":{"at":"main:EventSubscription.Denied","values":{"Handler":"CommonModule.Handlers.Bad"}}}
+    ]), "main:EventSubscription.Denied", "must have 4 parameters");
+}
+
+#[test]
+fn canonical_subscription_automatic_handler_retains_selection_inputs() {
+    for relative in [
+        "Configuration.xml",
+        "CommonModules/Handlers.xml",
+        "CommonModules/Handlers/Ext/Module.bsl",
+    ] {
+        let fixture =
+            Fixture::with_creation_prerequisites(SourceSetKind::Configuration, CALLABLE_HANDLERS);
+        let token =
+            fixture.save_preview("main:Configuration", json!([create("EventSubscription")]));
+        let path = fixture.source.join(relative);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(if relative.ends_with(".xml") {
+            b"<!-- concurrent -->"
+        } else {
+            b"\n// concurrent\n"
+        });
+        std::fs::write(path, bytes).unwrap();
+        let concurrent = tree_snapshot(&fixture.source);
+        let error = fixture.execute_refused(&token);
+        assert_eq!(
+            error.kind(),
+            ApplyPublicationErrorKind::ConcurrentRevision,
+            "{relative}: {error:?}"
+        );
+        assert_eq!(tree_snapshot(&fixture.source), concurrent);
+    }
+}
+
+fn subscription_fixture(kind: SourceSetKind, catalog: bool, module: &str, flags: &str) -> Fixture {
+    let fixture = Fixture::new(kind);
+    fixture.put_named("CommonModule", "CommonModules", "Handlers", flags, "");
+    let path = fixture.source.join("CommonModules/Handlers/Ext/Module.bsl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, module).unwrap();
+    let source = if catalog {
+        fixture.put_named("Catalog", "Catalogs", "Items", "", "");
+        "CatalogObject.Items"
+    } else {
+        "DocumentObject.Records"
+    };
+    fixture.put("EventSubscription", "EventSubscriptions", &format!("<Source><v8:Type>cfg:{source}</v8:Type></Source><Event>BeforeWrite</Event><Handler>CommonModule.Handlers.Good</Handler>"), "");
+    // The fixture's source QName uses the platform namespace independently
+    // of the logical `object` input used by apply.
+    let path = fixture.source.join("EventSubscriptions/Target.xml");
+    let text = std::fs::read_to_string(&path).unwrap().replace(
+        "xmlns:v8=",
+        "xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:v8=",
+    );
+    std::fs::write(path, text).unwrap();
+    fixture
+}
+
+#[test]
+fn canonical_subscription_handler_only_edits_use_the_source_signature() {
+    for (catalog, good, bad, expected) in [
+        (
+            false,
+            "Source, Cancel, WriteMode, PostingMode",
+            "Source, Cancel",
+            "Source, Cancel, WriteMode, PostingMode",
+        ),
+        (
+            true,
+            "Source, Cancel",
+            "Source, Cancel, WriteMode, PostingMode",
+            "Source, Cancel",
+        ),
+    ] {
+        let body = format!("Procedure Good({good}) Export\nEndProcedure\nProcedure Bad({bad}) Export\nEndProcedure\n");
+        let fixture = subscription_fixture(
+            SourceSetKind::Configuration,
+            catalog,
+            &body,
+            "<Global>false</Global><Server>true</Server>",
+        );
+        fixture.refuse_preview(
+            "main:EventSubscription.Target",
+            json!([
+                {"op":"props.set","args":{"values":{"Handler":"CommonModule.Handlers.Bad"}}}
+            ]),
+            "main:EventSubscription.Target",
+            expected,
+        );
+        fixture.preview_and_publish(
+            "main:EventSubscription.Target",
+            json!([
+                {"op":"props.set","args":{"values":{"Comment":"unrelated edit"}}}
+            ]),
+        );
+    }
+}
+
+#[test]
+fn canonical_subscription_refuses_unfit_handlers_without_writing() {
+    for (body, flags, method, reason) in [
+        (
+            "Procedure Other(A,B,C,D)\nEndProcedure",
+            "<Global>false</Global><Server>true</Server>",
+            "Other",
+            "must be exported",
+        ),
+        (
+            "Function Other(A,B,C,D) Export\nReturn Undefined;\nEndFunction",
+            "<Global>false</Global><Server>true</Server>",
+            "Other",
+            "must be a procedure",
+        ),
+        (
+            "Procedure Other(A,B,C,D) Export\nEndProcedure",
+            "<Global>true</Global><Server>true</Server>",
+            "Other",
+            "Global=false",
+        ),
+        (
+            "Procedure Other(A,B,C,D) Export\nEndProcedure",
+            "<Global>false</Global><Server>false</Server>",
+            "Other",
+            "Server=true",
+        ),
+        (
+            "Procedure Other(A,B,C,D) Export\nEndProcedure",
+            "<Server>true</Server>",
+            "Other",
+            "Global=false",
+        ),
+        (
+            "Procedure Other(A,B,C,D) Export\nEndProcedure",
+            "<Global>false</Global><Server>true</Server>",
+            "Missing",
+            "was not found",
+        ),
+    ] {
+        let fixture = subscription_fixture(SourceSetKind::Configuration, false, body, flags);
+        fixture.refuse_preview("main:EventSubscription.Target", json!([
+            {"op":"props.set","args":{"values":{"Handler":format!("CommonModule.Handlers.{method}")}}}
+        ]), "main:EventSubscription.Target", reason);
+    }
+}
+
+#[test]
+fn canonical_subscription_requires_registration_in_configuration_child_objects() {
+    for fake in [
+        "<foreign:CommonModule xmlns:foreign=\"urn:foreign\">Handlers</foreign:CommonModule>",
+        "<Ignored><CommonModule>Handlers</CommonModule></Ignored>",
+        "<CommonModule>Handlers</CommonModule><CommonModule>Handlers</CommonModule>",
+        "<CommonModule>Handlers<Nested/></CommonModule>",
+    ] {
+        let fixture = subscription_fixture(SourceSetKind::Configuration, false,
+            "Procedure Good(A,B,C,D) Export\nEndProcedure\nProcedure Other(A,B,C,D) Export\nEndProcedure\n",
+            "<Global>false</Global><Server>true</Server>");
+        let path = fixture.source.join("Configuration.xml");
+        let image = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            path,
+            image.replace("<CommonModule>Handlers</CommonModule>", fake),
+        )
+        .unwrap();
+        fixture.refuse_preview(
+            "main:EventSubscription.Target",
+            json!([
+                {"op":"props.set","args":{"values":{"Handler":"CommonModule.Handlers.Other"}}}
+            ]),
+            "main:EventSubscription.Target",
+            "evidence is unavailable in this source set",
+        );
+    }
+}
+
+#[test]
+fn canonical_subscription_refuses_a_misnamed_handler_descriptor() {
+    let fixture = subscription_fixture(SourceSetKind::Configuration, false,
+        "Procedure Good(A,B,C,D) Export\nEndProcedure\nProcedure Other(A,B,C,D) Export\nEndProcedure\n",
+        "<Global>false</Global><Server>true</Server>");
+    let path = fixture.source.join("CommonModules/Handlers.xml");
+    let image = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        path,
+        image.replace("<Name>Handlers</Name>", "<Name>Different</Name>"),
+    )
+    .unwrap();
+    fixture.refuse_preview(
+        "main:EventSubscription.Target",
+        json!([
+            {"op":"props.set","args":{"values":{"Handler":"CommonModule.Handlers.Other"}}}
+        ]),
+        "main:EventSubscription.Target",
+        "descriptor does not match its registered name",
+    );
+}
+
+#[test]
+fn canonical_subscription_unrelated_edit_preserves_an_existing_invalid_binding() {
+    let fixture = subscription_fixture(
+        SourceSetKind::Configuration,
+        false,
+        "Procedure Good(Source, Cancel) Export\nEndProcedure\n",
+        "<Global>false</Global><Server>true</Server>",
+    );
+    fixture.preview_and_publish(
+        "main:EventSubscription.Target",
+        json!([
+            {"op":"props.set","args":{"values":{"Comment":"keep existing binding"}}}
+        ]),
+    );
+}
+
+#[test]
+fn canonical_subscription_inputs_include_both_handler_images() {
+    for relative in [
+        "CommonModules/Handlers.xml",
+        "CommonModules/Handlers/Ext/Module.bsl",
+    ] {
+        let fixture = subscription_fixture(SourceSetKind::Configuration, false,
+            "Procedure Good(A,B,C,D) Export\nEndProcedure\nProcedure Other(A,B,C,D) Export\nEndProcedure\n", "<Global>false</Global><Server>true</Server>");
+        let token = fixture.save_preview(
+            "main:EventSubscription.Target",
+            json!([
+                {"op":"props.set","args":{"values":{"Handler":"CommonModule.Handlers.Other"}}}
+            ]),
+        );
+        let path = fixture.source.join(relative);
+        let mut bytes = std::fs::read(&path).unwrap();
+        if relative.ends_with(".xml") {
+            bytes.extend_from_slice(b"<!-- concurrent descriptor -->");
+        } else {
+            bytes.extend_from_slice(b"\n// concurrent module\n");
+        }
+        std::fs::write(path, bytes).unwrap();
+        let concurrent = tree_snapshot(&fixture.source);
+        let error = fixture.execute_refused(&token);
+        assert_eq!(
+            error.kind(),
+            ApplyPublicationErrorKind::ConcurrentRevision,
+            "{relative}: {error:?}"
+        );
+        assert_eq!(tree_snapshot(&fixture.source), concurrent);
+    }
+}
+
+#[test]
+fn canonical_subscription_default_skips_an_incompatible_first_module() {
+    for valid in [true, false] {
+        let fixture =
+            Fixture::with_creation_prerequisites(SourceSetKind::Configuration, CALLABLE_HANDLERS);
+        fixture.put_named(
+            "CommonModule",
+            "CommonModules",
+            "Wrong",
+            "<Global>true</Global><Server>true</Server>",
+            "",
+        );
+        let path = fixture.source.join("CommonModules/Wrong/Ext/Module.bsl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "Procedure Wrong(A,B) Export\nEndProcedure\n").unwrap();
+        if valid {
+            fixture.preview_and_publish("main:Configuration", json!([create("EventSubscription")]));
+            let text =
+                std::fs::read_to_string(fixture.source.join("EventSubscriptions/Target.xml"))
+                    .unwrap();
+            assert!(
+                text.contains("<Handler>CommonModule.Handlers.Handle</Handler>"),
+                "{text}"
+            );
+        } else {
+            let path = fixture.source.join("CommonModules/Handlers.xml");
+            let text = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("<Global>false</Global>", "<Global>true</Global>");
+            std::fs::write(path, text).unwrap();
+            let before = tree_snapshot(&fixture.source);
+            let request = request("main:Configuration", json!([create("EventSubscription")]));
+            let result =
+                plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission(&request));
+            assert!(result.is_err(), "no compatible handler exists");
+            assert_eq!(tree_snapshot(&fixture.source), before);
+        }
+    }
+}
+
+#[test]
+fn canonical_subscription_uses_final_staged_module_and_descriptor() {
+    for explicit in [true, false] {
+        let fixture = Fixture::new(SourceSetKind::Configuration);
+        let values = if explicit {
+            json!({"Event":"BeforeWrite","Handler":"CommonModule.Handlers.Handle"})
+        } else {
+            json!({"Event":"BeforeWrite"})
+        };
+        fixture.preview_and_publish("main:Configuration", json!([
+        {"op":"object.create","args":{"values":{"kind":"CommonModule","name":"Handlers"}}},
+        {"op":"props.set","args":{"at":"main:CommonModule.Handlers","values":{"Global":false,"Server":true}}},
+        create("EventSubscription"),
+        {"op":"code.insert","args":{"at":"main:CommonModule.Handlers","text":"Procedure Handle(Source, Cancel, WriteMode, PostingMode) Export\nEndProcedure\n"}},
+        {"op":"relation.replace","args":{"at":"main:EventSubscription.Target","values":{"relation":"source","targets":[{"kind":"object","metadataPath":"Document.Records"}]}}},
+        {"op":"props.set","args":{"at":"main:EventSubscription.Target","values":values}}
+    ]));
+        let text =
+            std::fs::read_to_string(fixture.source.join("EventSubscriptions/Target.xml")).unwrap();
+        assert!(
+            text.contains("<Handler>CommonModule.Handlers.Handle</Handler>"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn canonical_subscription_never_substitutes_a_module_outside_its_source_set() {
+    let mut fixture = subscription_fixture(
+        SourceSetKind::Extension,
+        false,
+        "Procedure Good(A,B,C,D) Export\nEndProcedure\nProcedure Other(A,B,C,D) Export\nEndProcedure\n",
+        "<Global>false</Global><Server>true</Server>",
+    );
+    let outside = fixture
+        .source
+        .parent()
+        .unwrap()
+        .join("other-source-set/CommonModules");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::rename(
+        fixture.source.join("CommonModules/Handlers.xml"),
+        outside.join("Handlers.xml"),
+    )
+    .unwrap();
+    std::fs::rename(
+        fixture.source.join("CommonModules/Handlers"),
+        outside.join("Handlers"),
+    )
+    .unwrap();
+    let workspace = fixture.source.parent().unwrap().to_path_buf();
+    let other = outside.parent().unwrap().to_path_buf();
+    std::fs::write(
+        other.join("Configuration.xml"),
+        descriptor(
+            "Configuration",
+            "Base",
+            "<DefaultLanguage>Language.English</DefaultLanguage>",
+            "<Language>English</Language><CommonModule>Handlers</CommonModule>",
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(other.join("Languages")).unwrap();
+    std::fs::copy(
+        fixture.source.join("Languages/English.xml"),
+        other.join("Languages/English.xml"),
+    )
+    .unwrap();
+    std::fs::write(workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: base\n    type: CONFIGURATION\n    path: other-source-set\n  - name: main\n    type: EXTENSION\n    path: src\n").unwrap();
+    let context = WorkspaceContext {
+        cwd: workspace.clone(),
+        workspace_root: workspace.clone(),
+        cache_root: workspace.join(".build/unica"),
+        workspace_epoch: 1,
+    };
+    let identity = WorkspaceIdentity::new(
+        &context,
+        [
+            WorkspaceSourceSetInput::new(
+                "base",
+                &other,
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+            WorkspaceSourceSetInput::new(
+                "main",
+                &fixture.source,
+                SourceSetKind::Extension,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+        ],
+        "subscription-source-set-isolation-test",
+    )
+    .unwrap();
+    fixture.actor = crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
+    fixture.binding = fixture
+        .actor
+        .bind_provider_root("main", &fixture.source)
+        .unwrap();
+    fixture.refuse_preview(
+        "main:EventSubscription.Target",
+        json!([
+            {"op":"props.set","args":{"values":{"Handler":"CommonModule.Handlers.Other"}}}
+        ]),
+        "main:EventSubscription.Target",
+        "evidence is unavailable in this source set",
+    );
+}
+
 fn assert_member_names(path: &Path, kind: &str, names: &[&str]) {
     let text = std::fs::read_to_string(path).unwrap();
     let document = roxmltree::Document::parse(&text).unwrap();
@@ -569,7 +1054,7 @@ impl Fixture {
             "CommonModule",
             "CommonModules",
             "Handlers",
-            "<Server>true</Server>",
+            "<Global>false</Global><Server>true</Server>",
             "",
         );
         let module_path = fixture.source.join("CommonModules/Handlers/Ext/Module.bsl");
