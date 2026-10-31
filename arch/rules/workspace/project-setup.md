@@ -8,6 +8,9 @@ check:
   - crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_hands_the_project_file_recipe_without_an_initialize_operation
   - crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_names_mixed_source_formats_instead_of_recommending_a_project_file
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_repairs_a_valid_config_without_source_sets
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_setup_recommends_the_local_layer_without_a_password
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_root_verdict_is_silent_about_a_pinned_platform
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_recognizes_an_infobase_only_workspace
 ---
 
 # Корневой просмотр предлагает настройки и не записывает проектный файл
@@ -21,6 +24,14 @@ check:
 `workspace.initialize`; её вызов отвечает `unsupported_operation`.
 Существующий проектный файл не перезаписывается: если в нём нет наборов,
 ответ даёт пример настройки, сохраняя прежние байты файла.
+
+Вместе с рецептом проектного файла `setup` предлагает содержимое
+`v8project.local.yaml`, если его нет: подключение базы `origin` без пароля
+и линию платформы, на которую рассчитан формат выгрузки.
+
+Проверка рабочей области предупреждает, если ни один слой не задаёт
+`tools.platform`: версия платформы не задана, и раннер выберет её сам.
+Предупреждение называет, где её задать, и не снимает готовность.
 
 Проверки рецепта и смешанных форматов вызывают собранный продукт по MCP.
 

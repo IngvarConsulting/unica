@@ -5619,9 +5619,62 @@ fn main() {
 
         assert!(verdict.ok, "{verdict:?}");
         let verdict_data = verdict.data.as_ref().expect("verdict data");
+        // The unpinned platform is a warning: the workspace stays ready.
         assert_eq!(verdict_data["status"], "passed");
         assert_eq!(verdict_data["ready"], true);
-        assert_eq!(verdict_data["diagnostics"], serde_json::json!([]));
+        let diagnostics = verdict_data["diagnostics"].as_array().unwrap();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0]["code"], "config.platform_unpinned");
+        assert_eq!(diagnostics[0]["severity"], "warning");
+    }
+
+    #[test]
+    fn canonical_root_verdict_is_silent_about_a_pinned_platform() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.local.yaml"),
+            "infobases:\n  origin:\n    connection: 'File=base'\ntools:\n  platform:\n    version: '8.3.27'\n",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime();
+
+        let verdict = submit_root_verdict(&runtime, workspace.path());
+
+        let data = verdict.data.as_ref().expect("verdict data");
+        assert_eq!(data["ready"], true, "{data}");
+        assert_eq!(data["diagnostics"], serde_json::json!([]), "{data}");
+    }
+
+    #[test]
+    fn canonical_view_setup_recommends_the_local_layer_without_a_password() {
+        let workspace = tempfile::tempdir().unwrap();
+        let runtime = bootstrap_runtime();
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        let data = result.data.as_ref().expect("bootstrap data");
+        let local = &data["setup"]["local"];
+        assert_eq!(local["path"], "v8project.local.yaml", "{data}");
+        let content = local["content"].as_str().unwrap();
+        let layer: serde_yaml::Value = serde_yaml::from_str(content).unwrap();
+        assert_eq!(layer["tools"]["platform"]["version"], "8.3.27");
+        assert_eq!(layer["infobases"]["origin"]["connection"], "File=build/ib");
+        assert!(layer["infobases"]["origin"]["password"].is_null());
+        assert!(!content.to_lowercase().contains("password"), "{content}");
+        assert!(!workspace.path().join("v8project.local.yaml").exists());
+
+        std::fs::write(workspace.path().join("v8project.local.yaml"), "{}\n").unwrap();
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert!(
+            data["setup"]["local"].is_null(),
+            "an existing local layer is kept: {data}"
+        );
     }
 
     #[test]

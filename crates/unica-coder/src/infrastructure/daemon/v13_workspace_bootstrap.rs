@@ -520,6 +520,13 @@ fn bootstrap_result(
             items.push(legacy_connection_finding(&infobase.legacy_connection));
         }
     }
+    // Without `tools.platform` the platform version is left to the runner's
+    // own choice. A warning: readiness stays.
+    if config_state == "configured" && !platform_pinned(&context.workspace_root) {
+        if let Value::Array(items) = &mut diagnostics {
+            items.push(platform_unpinned_finding());
+        }
+    }
     // A former top-level `connection` is the one thing to fix first: the
     // source-set example would lead away from it.
     let setup = if !infobase.legacy_connection.is_empty() {
@@ -683,7 +690,12 @@ fn bootstrap_result(
             value(&source_map.effective_source_root),
         ),
         ("sourceSelectionError", value(source_selection_error)),
-        ("setup", setup.unwrap_or(Value::Null)),
+        (
+            "setup",
+            setup
+                .map(|setup| with_local_recipe(setup, &context.workspace_root))
+                .unwrap_or(Value::Null),
+        ),
     ]));
     if !infobase.legacy_connection.is_empty() {
         result
@@ -804,6 +816,89 @@ fn inspect_infobase_target(
         source: configured.then_some(source.expect("configured connection has a source")),
         legacy_connection,
     })
+}
+
+/// Whether either layer names the platform installation: `tools.platform`
+/// with a version or a path. An unreadable layer is reported elsewhere and
+/// does not add this warning.
+fn platform_pinned(workspace_root: &std::path::Path) -> bool {
+    ["v8project.yaml", "v8project.local.yaml"]
+        .iter()
+        .any(|file| match read_yaml_config(workspace_root, file) {
+            Ok(Some(layer)) => ["version", "path"].iter().any(|key| {
+                let value = &layer["tools"]["platform"][*key];
+                !value.is_null() && value.as_str() != Some("")
+            }),
+            Ok(None) => false,
+            Err(_) => true,
+        })
+}
+
+/// The recommended machine-local layer next to a project-file recipe, when
+/// the workspace has none: the origin infobase without a password and the
+/// platform line the export format is written for.
+fn with_local_recipe(mut setup: Value, workspace_root: &std::path::Path) -> Value {
+    if workspace_root.join("v8project.local.yaml").exists() {
+        return setup;
+    }
+    let line = unica_source_contract::ACTIVE_PLATFORM_LINE;
+    if let Value::Object(fields) = &mut setup {
+        fields.insert(
+            "local".to_string(),
+            object([
+                ("path", Value::String("v8project.local.yaml".to_string())),
+                (
+                    "content",
+                    Value::String(format!(
+                        "infobases:\n  origin:\n    connection: 'File=build/ib'\ntools:\n  platform:\n    version: '{line}'\n"
+                    )),
+                ),
+                (
+                    "reason",
+                    Value::String(format!(
+                        "Create this machine-local layer beside v8project.yaml: it names the origin infobase, created later by infobase.create, and pins the {line} platform line the export format is written for; without tools.platform the runner chooses the platform version itself. If the infobase has a user, add `user` and write its `password` here yourself."
+                    )),
+                ),
+            ]),
+        );
+    }
+    setup
+}
+
+/// The warning that no layer names the platform installation.
+fn platform_unpinned_finding() -> Value {
+    let line = unica_source_contract::ACTIVE_PLATFORM_LINE;
+    object([
+        ("code", Value::String("config.platform_unpinned".to_string())),
+        ("severity", Value::String("warning".to_string())),
+        ("scope", Value::String("config".to_string())),
+        (
+            "message",
+            Value::String(format!(
+                "the platform version is not set: neither v8project.yaml nor v8project.local.yaml has tools.platform, so v8-runner chooses the version itself. Set tools.platform.version in v8project.local.yaml; the export format is written for the {line} line"
+            )),
+        ),
+        ("evidence", Value::Array(Vec::new())),
+        (
+            "remediation",
+            object([
+                (
+                    "summary",
+                    Value::String(format!("Pin the {line} platform line in v8project.local.yaml")),
+                ),
+                (
+                    "steps",
+                    Value::Array(vec![
+                        Value::String(format!(
+                            "Add `tools: {{platform: {{version: '{line}'}}}}` to v8project.local.yaml"
+                        )),
+                        Value::String("Run unica.check with an empty object again".to_string()),
+                    ]),
+                ),
+                ("commands", Value::Array(Vec::new())),
+            ]),
+        ),
+    ])
 }
 
 /// The finding about a top-level `connection`: the key, the layers that hold
