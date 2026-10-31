@@ -66,7 +66,7 @@ class GitEventClassificationTests(unittest.TestCase):
         self.assertFalse(scope.docs_only)
         self.assertTrue(all(scope.classification.as_dict().values()), scope)
 
-    def invoke_workflow(self, repo: Path, event: dict, head: str, runners: str = '["ubuntu-latest", "macos-14"]'):
+    def invoke_workflow(self, repo: Path, event: dict, head: str, runners: str = '["ubuntu-latest", "macos-15"]'):
         payload = repo / "event.json"
         payload.write_text(json.dumps(event))
         script = Path(__file__).resolve().parents[2] / "scripts/ci/classify-workflow-changes.py"
@@ -91,7 +91,7 @@ class GitEventClassificationTests(unittest.TestCase):
         self.assertTrue(all(outputs[name] == "false" for name in OUTPUT_NAMES))
         self.assertFalse((repo / "routing/run.json").exists())
         self.assertEqual(2, len(list((repo / "routing").rglob("*.*"))))
-        for runner in ("ubuntu-latest", "macos-14"):
+        for runner in ("ubuntu-latest", "macos-15"):
             marker = json.loads((repo / f"routing/results-rust-{runner}/run.json").read_text())
             self.assertEqual(("rust", "queue", "main", runner, head),
                 tuple(marker[field] for field in ("ecosystem", "profile", "ref", "runner", "sha")))
@@ -109,7 +109,7 @@ class GitEventClassificationTests(unittest.TestCase):
         collector.collect(repo / "routing", repo / "report", jobs, "", "")
         report = json.loads((repo / "report/main/run.json").read_text())
         self.assertEqual(head, report["sha"])
-        self.assertEqual({"ubuntu-latest", "macos-14"}, {item["runner"] for item in report["routing_skips"]})
+        self.assertEqual({"ubuntu-latest", "macos-15"}, {item["runner"] for item in report["routing_skips"]})
         self.assertTrue(all(item["inventory_count"] == 0 for item in report["routing_skips"]))
         self.assertEqual([], list((repo / "report").rglob("*-result.json")))
 
