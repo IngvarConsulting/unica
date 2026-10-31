@@ -30,6 +30,8 @@ pub struct CodeReplaceArgs {
     /// Текстовый якорь внутри модуля. Метод целиком задаётся адресом
     /// `…Method.M`, а не селектором (#1353).
     pub anchor: Option<String>,
+    /// Ревизия текста модуля, от которой начиналась правка (#2225).
+    pub if_rev: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +52,7 @@ pub fn parse_code_plan_operation(
         .ok_or_else(|| bad_code_arg(&base, "code operation args must be an object"))?;
     let allowed = match operation {
         "code.insert" => &["at", "text", "selector", "position"][..],
-        "code.replace" => &["at", "text", "selector"][..],
+        "code.replace" => &["at", "text", "selector", "ifRev"][..],
         _ => {
             return Err(bad_code_arg(
                 &base,
@@ -169,10 +171,22 @@ pub fn parse_code_plan_operation(
             if anchor.is_none() && addressed.is_none() {
                 return Err(bad_code_arg(&selector_path, "selector.anchor is required for a module address; address its Body or a Method instead"));
             }
+            let if_rev_path = format!("{base}.ifRev");
+            let if_rev = object
+                .get("ifRev")
+                .map(|value| match value.as_str() {
+                    Some(revision) if !revision.trim().is_empty() => Ok(revision.to_owned()),
+                    _ => Err(bad_code_arg(
+                        &if_rev_path,
+                        "ifRev must be a module text revision",
+                    )),
+                })
+                .transpose()?;
             Ok(CodePlanOperation::Replace(CodeReplaceArgs {
                 at,
                 text,
                 anchor,
+                if_rev,
             }))
         }
         _ => unreachable!("closed operation checked above"),

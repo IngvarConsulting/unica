@@ -189,6 +189,18 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
                 "docs is answered before workspace admission and does not reach the actor-bound read service",
             )),
         }?;
+        // A read takes no revision of the whole source tree. A module's Body
+        // keeps the revision of that module's text alone: `code.replace`
+        // checks it in `ifRev` (#2225).
+        let body_text_revision = matches!(invocation.tool(), ToolIdentity::View)
+            && result.ok
+            && result.source_text.is_some()
+            && result
+                .data
+                .as_ref()
+                .and_then(|data| data.get("kind"))
+                .and_then(Value::as_str)
+                == Some("Body");
         if matches!(
             invocation.tool(),
             ToolIdentity::View
@@ -196,7 +208,8 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
                 | ToolIdentity::Search
                 | ToolIdentity::Check
                 | ToolIdentity::Diff
-        ) {
+        ) && !body_text_revision
+        {
             result.rev = None;
         }
         Ok(result)
@@ -4185,6 +4198,7 @@ fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
             return apply_staging_refusal(at, kind, error.to_string())
         }
         ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
+        ApplyPlanErrorKind::StaleRevision => RefusalCode::StaleRevision,
     };
     let mut result = error_result(at, code, error.to_string());
     result.next.extend(error.next().cloned());

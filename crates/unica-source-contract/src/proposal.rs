@@ -57,6 +57,8 @@ pub enum ApplyPlanErrorKind {
     InvalidSource,
     Staging(ApplyStagingErrorKind),
     Postcondition,
+    /// The source the caller read has changed since; it reads it again.
+    StaleRevision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

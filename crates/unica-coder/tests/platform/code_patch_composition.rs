@@ -2063,6 +2063,7 @@ fn framed_method_body_text_replaces_its_closing_comment_and_repeats_as_noop() {
                     )
                     .unwrap(),
                     anchor: None,
+                    if_rev: None,
                     text: edited.clone(),
                 });
                 let post = plan_code_postimage(before.as_bytes(), &operation, 0)
@@ -2087,6 +2088,7 @@ fn method_body_replacement_keeps_executable_tail_on_its_closing_line() {
             )
             .unwrap(),
             anchor: None,
+            if_rev: None,
             text: "Procedure Base() Value = 2; EndProcedure".to_owned(),
         });
         let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
@@ -2252,6 +2254,87 @@ fn a_module_that_did_not_parse_names_its_errors_as_the_source() {
         .iter()
         .all(|diagnostic| diagnostic.get("textRange").is_none()));
     fixture.cleanup();
+}
+
+/// #2225: a replacement names the revision of the text it was made from.
+/// A module changed since is refused before anything is staged; two edits
+/// of one read in one call both stand on that read; a repeat of a
+/// replacement already in the text writes nothing and is no conflict.
+#[test]
+fn a_replacement_from_a_stale_read_is_refused_and_a_fresh_one_plans() {
+    let before =
+        "Procedure Base()\n    Value = 1;\nEndProcedure\n\nProcedure Other()\nEndProcedure\n";
+    let fixture = staged_code_fixture("if-rev", before.as_bytes());
+    let module = fixture.source.join("CommonModules/Sample/Ext/Module.bsl");
+    let read = unica_bsl::text::module_text_revision(before.as_bytes());
+    let replace = |at: &str, text: &str, if_rev: &str| {
+        parse_code_plan_operation(
+            "code.replace",
+            &json!({"at": at, "text": text, "ifRev": if_rev}),
+            0,
+            fixture.binding.source_set_name(),
+        )
+        .unwrap()
+    };
+    let base = replace(
+        "main:CommonModule.Sample.Method.Base.Body",
+        "    Value = 2;",
+        &read,
+    );
+    let other = replace(
+        "main:CommonModule.Sample.Method.Other.Body",
+        "    Value = 3;",
+        &read,
+    );
+    let admission = staged_code_admission(&fixture, false);
+    let (state, _) = plan_admitted_code(&admission, &fixture.binding, &[base.clone(), other])
+        .expect("two edits of one read plan together");
+    assert!(!state.planned_changes().is_empty());
+
+    let changed = format!("// Чужая правка.\n{before}");
+    fs::write(&module, &changed).unwrap();
+    let admission = staged_code_admission(&fixture, false);
+    let error = plan_admitted_code(&admission, &fixture.binding, std::slice::from_ref(&base))
+        .expect_err("a module changed since the read refuses the replacement");
+    assert_eq!(error.kind(), ApplyPlanErrorKind::StaleRevision, "{error}");
+    assert_eq!(error.path(), Some("ops[0].args.ifRev"));
+    assert_eq!(fs::read_to_string(&module).unwrap(), changed);
+
+    let replaced = before.replace("Value = 1;", "Value = 2;");
+    fs::write(&module, &replaced).unwrap();
+    let admission = staged_code_admission(&fixture, false);
+    let (state, _) = plan_admitted_code(&admission, &fixture.binding, std::slice::from_ref(&base))
+        .expect("a repeat of a replacement already made is no conflict");
+    assert!(
+        state.planned_changes().is_empty(),
+        "the repeat writes nothing"
+    );
+    fixture.cleanup();
+}
+
+/// #2225: `ifRev` is an argument of `code.replace` alone; it names a
+/// revision, so an empty or non-string value is a bad call.
+#[test]
+fn if_rev_belongs_to_code_replace_and_names_a_revision() {
+    let parse = |op: &str, args: Value| parse_code_plan_operation(op, &args, 2, "main");
+    let at = "main:CommonModule.Sample.Method.Base.Body";
+    let Ok(CodePlanOperation::Replace(args)) = parse(
+        "code.replace",
+        json!({"at": at, "text": "x", "ifRev": "abc"}),
+    ) else {
+        panic!("code.replace takes ifRev");
+    };
+    assert_eq!(args.if_rev.as_deref(), Some("abc"));
+    for (op, target, value) in [
+        ("code.replace", at, json!("")),
+        ("code.replace", at, json!(7)),
+        ("code.insert", "main:CommonModule.Sample", json!("abc")),
+    ] {
+        let error = parse(op, json!({"at": target, "text": "x", "ifRev": value}))
+            .expect_err("a bad ifRev is refused");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op} {value}");
+        assert_eq!(error.path(), Some("ops[2].args.ifRev"), "{op} {value}");
+    }
 }
 
 #[test]
@@ -4438,6 +4521,7 @@ fn staged_replace(at: &str, text: &str, anchor: Option<&str>) -> CodePlanOperati
         at: unica_address::address::QualifiedAddress::parse(at).unwrap(),
         text: text.to_string(),
         anchor: anchor.map(str::to_string),
+        if_rev: None,
     })
 }
 
