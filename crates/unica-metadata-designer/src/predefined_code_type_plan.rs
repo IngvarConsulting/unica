@@ -136,8 +136,8 @@ impl PredefinedCodeTypePlan {
             let invalid_source = |message| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(&path)
             };
-            let relative = metadata_descriptor_relative(&intent.owner, source_kind)
-                .map_err(invalid_source)?;
+            let relative =
+                metadata_descriptor_relative(&intent.owner, source_kind).map_err(invalid_source)?;
             let Some(current) = staged
                 .read(&relative)
                 .map_err(|error| ApplyPlanError::staging(error, &path))?
