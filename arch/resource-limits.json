@@ -832,7 +832,7 @@
       "scope": "process",
       "source": {
         "file": "crates/unica-bootstrap/src/main.rs",
-        "literal": "provider_state_root, Duration::from_secs(20)",
+        "literal": "startup_notice: None, }, Duration::from_secs(20)",
         "count": 1
       },
       "expr": "Duration::from_secs(20)",

@@ -7,7 +7,26 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 use unica_artifact_delivery::Failure;
-use unica_bootstrap::verify_mcp_runtime;
+use unica_bootstrap::{verify_mcp_runtime, RuntimeHandoff};
+
+fn verify_runtime(
+    runtime: &Path,
+    root: &Path,
+    provider_state_root: &Path,
+    timeout: Duration,
+) -> unica_artifact_delivery::Result<()> {
+    verify_mcp_runtime(
+        runtime,
+        root,
+        &RuntimeHandoff {
+            provider_state_root,
+            artifact_cache: &root.join("artifact-cache"),
+            runtime_manifest: &root.join("runtime-manifest.json"),
+            startup_notice: None,
+        },
+        timeout,
+    )
+}
 
 #[test]
 fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {
@@ -23,19 +42,33 @@ fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {
     );
     let provider_state = root.join("private-provider-state");
 
-    verify_mcp_runtime(
-        &runtime,
-        &root,
-        None,
-        &provider_state,
-        Duration::from_secs(2),
-    )
-    .unwrap();
+    verify_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap();
 
     assert_eq!(
         fs::read_to_string(record).unwrap(),
         provider_state.display().to_string()
     );
+    let cache = root.join("artifact-cache");
+    assert_eq!(
+        fs::read_to_string(root.join("artifact-caches.txt")).unwrap(),
+        format!("{0}\n{0}\n", cache.display()),
+        "both verification lifecycles must pass the selected delivery cache"
+    );
+    for (file, expected) in [
+        ("provider-states.txt", provider_state.display().to_string()),
+        (
+            "runtime-manifests.txt",
+            root.join("runtime-manifest.json").display().to_string(),
+        ),
+        ("startup-notices.txt", "unset".to_string()),
+    ] {
+        assert_eq!(
+            fs::read_to_string(root.join(file)).unwrap(),
+            format!("{expected}\n{expected}\n"),
+            "{file}"
+        );
+    }
+    assert!(!cache.exists(), "verification must not provision an engine");
     assert_eq!(
         fs::read_to_string(root.join("requests.txt")).unwrap(),
         concat!(
@@ -84,10 +117,9 @@ fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
                 &["2025-06-18", "2025-11-25", "2026-07-28"],
             );
 
-            let error = verify_mcp_runtime(
+            let error = verify_runtime(
                 &runtime,
                 &root,
-                None,
                 &root.join("private-provider-state"),
                 Duration::from_secs(2),
             )
@@ -118,10 +150,9 @@ fn verify_rejects_legacy_names_mixed_into_the_v13_surface() {
         &["2025-06-18", "2025-11-25", "2026-07-28"],
     );
 
-    let error = verify_mcp_runtime(
+    let error = verify_runtime(
         &runtime,
         &root,
-        None,
         &root.join("private-provider-state"),
         Duration::from_secs(2),
     )
@@ -147,10 +178,9 @@ fn verify_rejects_duplicate_names_in_the_v13_surface() {
         &["2025-06-18", "2025-11-25", "2026-07-28"],
     );
 
-    let error = verify_mcp_runtime(
+    let error = verify_runtime(
         &runtime,
         &root,
-        None,
         &root.join("private-provider-state"),
         Duration::from_secs(2),
     )
@@ -173,14 +203,8 @@ fn verify_rejects_discover_without_the_guaranteed_versions() {
         let runtime = write_fake_runtime(&root, &record, None, None, &[], &supported);
         let provider_state = root.join("private-provider-state");
 
-        let error = verify_mcp_runtime(
-            &runtime,
-            &root,
-            None,
-            &provider_state,
-            Duration::from_secs(2),
-        )
-        .unwrap_err();
+        let error =
+            verify_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap_err();
 
         assert!(
             error.to_string().contains(missing),
@@ -208,6 +232,10 @@ fn write_fake_runtime(
         format!(
             r#"#!/bin/sh
 printf '%s' "$UNICA_PROVIDER_STATE_DIR" > '{record}'
+printf '%s\n' "$UNICA_ARTIFACT_CACHE" >> '{artifact_caches}'
+printf '%s\n' "$UNICA_PROVIDER_STATE_DIR" >> '{provider_states}'
+printf '%s\n' "$UNICA_RUNTIME_MANIFEST" >> '{runtime_manifests}'
+printf '%s\n' "${{UNICA_STARTUP_NOTICE-unset}}" >> '{startup_notices}'
 while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*) printf '%s\n' initialize >> '{requests}'; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"unica","version":"0.7.0"}}}}}}' ;;
@@ -226,6 +254,10 @@ while IFS= read -r line; do
 done
 "#,
 	            record = provider_state_record.display(),
+	            artifact_caches = root.join("artifact-caches.txt").display(),
+	            provider_states = root.join("provider-states.txt").display(),
+	            runtime_manifests = root.join("runtime-manifests.txt").display(),
+	            startup_notices = root.join("startup-notices.txt").display(),
 	            requests = requests.display(),
 	            tools_list_seen = tools_list_seen.display(),
 	        ),
@@ -283,10 +315,9 @@ fn a_runtime_that_never_answers_is_a_timeout_not_a_defect() {
     fs::write(&runtime, "#!/bin/sh\nexec sleep 5\n").unwrap();
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
 
-    let error = verify_mcp_runtime(
+    let error = verify_runtime(
         &runtime,
         &root,
-        None,
         &root.join("private-provider-state"),
         Duration::from_millis(300),
     )
