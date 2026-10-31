@@ -1105,7 +1105,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
       - name: Upload required runtime archive
-        if: ${{ matrix.target == 'linux-x64' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
+        if: ${{ matrix.target == 'linux-x64' || (matrix.target == 'darwin-arm64' && github.event_name == 'workflow_dispatch') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-runtime-${{ matrix.target }}
