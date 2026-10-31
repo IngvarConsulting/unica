@@ -1,0 +1,290 @@
+{
+  "id": "S-2291-defined-type-object-members",
+  "issue": 2291,
+  "area": "Метаданные",
+  "task": "Прочитать источник подписки и различить объект, ссылку и набор записей в определяемых типах; неизвестный TypeSet не выдаётся за полный состав, изменение комментария сохраняет тип без потерь",
+  "workspace": "tests/fixtures/acceptance/workspace-defined-type-object-members",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.BeforeWrite.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "contains": {
+            "relation": "source",
+            "at": "main:DefinedType.CatalogObjects",
+            "kind": "DefinedType",
+            "target": {
+              "kind": "definedType",
+              "metadataPath": "DefinedType.CatalogObjects"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DefinedType.CatalogObjects"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "object",
+              "metadataPath": "Catalog.Items"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/type/mutationCapability",
+          "eq": "readOnly"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DefinedType.CatalogReferences"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "reference",
+              "metadataPath": "Catalog.Items"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/type/mutationCapability",
+          "eq": "editable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DefinedType.MixedCatalogConcrete"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "reference",
+              "metadataPath": "Catalog.Items"
+            },
+            {
+              "kind": "object",
+              "metadataPath": "Catalog.Items"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/type/mutationCapability",
+          "eq": "readOnly"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DefinedType.DocumentObjects"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "object",
+              "metadataPath": "Document.Orders"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/type/mutationCapability",
+          "eq": "readOnly"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DefinedType.RegisterRecordSets"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "recordSet",
+              "metadataPath": "InformationRegister.Facts"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/type/mutationCapability",
+          "eq": "readOnly"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DefinedType.UnknownFamily"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "TypeSet QName {http://v8.1c.ru/8.1/data/enterprise/current-config}CatalogObject"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "validation_warning: metadata type composition is incomplete:"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DefinedType.CatalogObjects",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Observed object member"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DefinedTypes/CatalogObjects.xml",
+          "kind": "sha256",
+          "eq": "8a7e1968b2cb14254c90e2e1c7dd5c164a1e9e63035d717a876eb31a8baa2c8f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DefinedTypes/CatalogObjects.xml",
+          "kind": "sha256",
+          "eq": "e17cb7aa847ef1db81da56669657df055a0c205917ea09a70757a542fa946c44"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DefinedType.CatalogObjects"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Observed object member"
+        },
+        {
+          "pointer": "/data/props/type/variants",
+          "eq": [
+            {
+              "kind": "object",
+              "metadataPath": "Catalog.Items"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DefinedType.CatalogObjects",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: property `Type` is not supported for DefinedType",
+      "fileAssertions": [
+        {
+          "path": "src/DefinedTypes/CatalogObjects.xml",
+          "kind": "sha256",
+          "eq": "e17cb7aa847ef1db81da56669657df055a0c205917ea09a70757a542fa946c44"
+        }
+      ]
+    }
+  ]
+}

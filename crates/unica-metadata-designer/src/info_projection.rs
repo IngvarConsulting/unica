@@ -314,7 +314,9 @@ pub fn parse_observed_metadata_type_contents_node(
             }
             let metadata_path =
                 MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &local_name).map_err(
-                    |_| invalid_observed_type("existing defined type is not a metadata address"),
+                    |_| invalid_observed_type(format!(
+                        "TypeSet QName {{{namespace}}}{local_name} is not supported by this format profile; complete type composition is unavailable"
+                    )),
                 )?;
             if metadata_path.segments().next() != Some("DefinedType")
                 || metadata_path.segments().count() != 2
@@ -387,31 +389,11 @@ pub fn parse_observed_metadata_type_contents_node(
                 }
                 (DATA_CORE_NAMESPACE, "ValueStorage") => ObservedMetadataTypeVariant::ValueStorage,
                 (DATA_CORE_NAMESPACE, "UUID") => ObservedMetadataTypeVariant::Uuid,
-                (CURRENT_CONFIG_NAMESPACE, raw) => {
-                    let Some((generated, name)) = raw.split_once('.') else {
-                        return Err(invalid_observed_type(
-                            "existing reference type is malformed",
-                        ));
-                    };
-                    let kind = generated.strip_suffix("Ref").ok_or_else(|| {
-                        invalid_observed_type("existing generated type is not a reference")
-                    })?;
-                    ObservedMetadataTypeVariant::Reference {
-                        metadata_path: MetadataAddress::parse(
-                            PLATFORM_XML_8_3_27_FORMAT_2_20,
-                            &format!("{kind}.{name}"),
-                        )
-                        .map_err(|_| {
-                            invalid_observed_type(
-                                "existing reference type is not a metadata address",
-                            )
-                        })?,
-                    }
-                }
+                (CURRENT_CONFIG_NAMESPACE, raw) => parse_generated_observed_type(raw)?,
                 _ => {
-                    return Err(invalid_observed_type(
-                        "existing metadata type is unsupported by typed read",
-                    ))
+                    return Err(invalid_observed_type(format!(
+                        "Type QName {{{namespace}}}{local_name} is not supported by this format profile; complete type composition is unavailable"
+                    )))
                 }
             }
         };
@@ -427,6 +409,42 @@ pub fn parse_observed_metadata_type_contents_node(
         ));
     }
     ObservedMetadataType::new(variants)
+}
+
+// The generated class remains distinct from the metadata address it names.
+// Only the read algebra grows; managers and unknown classes remain unmodelled.
+fn parse_generated_observed_type(raw: &str) -> Result<ObservedMetadataTypeVariant, MetaDiagnostic> {
+    let unsupported = || {
+        invalid_observed_type(format!(
+        "Type QName {{{CURRENT_CONFIG_NAMESPACE}}}{raw} is not supported by this format profile; complete type composition is unavailable"
+    ))
+    };
+    let (generated, name) = raw.split_once('.').ok_or_else(unsupported)?;
+    let (kind, class) = if let Some(kind) = generated.strip_suffix("Ref") {
+        (kind, "reference")
+    } else if let Some(kind) = generated.strip_suffix("Object") {
+        (kind, "object")
+    } else if let Some(kind) = generated.strip_suffix("RecordSet") {
+        (kind, "recordSet")
+    } else {
+        return Err(unsupported());
+    };
+    let metadata_path =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
+            .map_err(|_| unsupported())?;
+    if class != "reference" {
+        let kind = MetadataKind::parse(kind).map_err(|_| unsupported())?;
+        if !unica_metadata::identifier::is_1c_identifier(name)
+            || !crate::layout::metadata_kind_value_types(kind).contains(&generated)
+        {
+            return Err(unsupported());
+        }
+    }
+    Ok(match class {
+        "object" => ObservedMetadataTypeVariant::Object { metadata_path },
+        "recordSet" => ObservedMetadataTypeVariant::RecordSet { metadata_path },
+        _ => ObservedMetadataTypeVariant::Reference { metadata_path },
+    })
 }
 
 pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_>) -> bool {
@@ -596,6 +614,15 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
             }
             _ => {}
         }
+        if namespace == CURRENT_CONFIG_NAMESPACE {
+            if let Some((generated, name)) = local.split_once('.') {
+                if (generated.ends_with("Object") || generated.ends_with("RecordSet"))
+                    && !unica_metadata::identifier::is_1c_identifier(name)
+                {
+                    return false;
+                }
+            }
+        }
         let known = match (namespace.as_str(), local.as_str()) {
             (
                 XML_SCHEMA_NAMESPACE,
@@ -606,14 +633,7 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
                 true
             }
             (DATA_CORE_NAMESPACE, "UUID") => true,
-            (CURRENT_CONFIG_NAMESPACE, raw) => {
-                raw.split_once('.').is_some_and(|(generated, name)| {
-                    generated.strip_suffix("Ref").is_some_and(|kind| {
-                        MetadataKind::parse(kind).is_ok()
-                            && unica_metadata::identifier::is_1c_identifier(name)
-                    })
-                })
-            }
+            (CURRENT_CONFIG_NAMESPACE, raw) => parse_generated_observed_type(raw).is_ok(),
             (XML_SCHEMA_NAMESPACE | DATA_CORE_NAMESPACE, _) => false,
             _ => return false,
         };
@@ -698,7 +718,10 @@ pub fn project_meta_info_details(
                 let diagnostic = if observed_type_is_strict_but_unmodelled(properties) {
                     MetaDiagnostic::warning(
                         MetaDiagnosticCode::ValidationWarning,
-                        "metadata type is syntactically valid but not modelled by this format profile",
+                        format!(
+                            "metadata type composition is incomplete: {}",
+                            diagnostic.message
+                        ),
                     )
                 } else {
                     MetaDiagnostic::error(diagnostic.code, diagnostic.message)
