@@ -26,13 +26,14 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 LANES = ("ordinary", "receipt", "vendor")
 LINUX = "ubuntu-latest"
-HOSTS = (LINUX, "macos-14", "windows-latest")
+HOSTS = (LINUX, "macos-15", "windows-latest")
 # The queue runs the complete suite on Linux and only the platform facades on
 # macOS: OS-specific code lives in the platform directories of
 # INV.PLATFORM.OS-BEHIND-FACADE, and `size-filters.py` derives the
 # `queue-platform` nextest profile from them. Nightly `large` and release keep
 # the complete macOS matrix; pull requests do not run macOS by default.
-PLATFORM_ONLY = {("queue", "macos-14")}
+PLATFORM_ONLY = {("queue", "macos-15"), ("queue", "macos-14")}
+# macos-14 is comparison-only history; it is not a current HOSTS entry.
 PLATFORM_NEXTEST_PROFILE = "queue-platform"
 
 
@@ -57,7 +58,7 @@ def profile_hosts(profile: str, *, full_matrix: bool = True) -> list[str]:
         return list(HOSTS)
     if profile == "pr" and not full_matrix:
         return [LINUX]
-    return [LINUX, "macos-14"]
+    return [LINUX, "macos-15"]
 
 
 def selection(lane: str) -> tuple[str, ...]:
@@ -327,7 +328,7 @@ ARCHIVE_RUNNER_CAPABILITIES = frozenset({"archive-fixture-binary"})
 REQUIRED_HOST_CAPABILITIES = {
     "ubuntu-latest": UNIX_RUNNER_CAPABILITIES | ARCHIVE_RUNNER_CAPABILITIES
     | {"case-sensitive-filesystem", "non-utf8-file-names"},
-    "macos-14": UNIX_RUNNER_CAPABILITIES | ARCHIVE_RUNNER_CAPABILITIES
+    "macos-15": UNIX_RUNNER_CAPABILITIES | ARCHIVE_RUNNER_CAPABILITIES
     | {"case-insensitive-filesystem", "normalization-insensitive-filesystem"},
     # A decision, not a fact about the runner: no host capability is required
     # on Windows yet, so those skips are visible but none is refused. A red
@@ -787,6 +788,8 @@ def inventory_summary(manifests: list[dict], *, profile: str, sha: str, jobs: li
         selected = Counter(case["binary"] for case in manifest["inventory"] if not case["ignored"])
         configurations.append({
             "runner": manifest["runner"], "lane": manifest["lane"], "shards": len(manifest["shards"]),
+            "identity": {key: manifest["identity"].get(key) for key in ("os", "target")},
+            "selection": manifest["selection"], "nextestProfile": manifest["nextestProfile"],
             "binaries": sorted(manifest["binaries"]),
             "selected": {binary: selected.get(binary, 0) for binary in sorted(manifest["binaries"])},
             "cases": [case_id(case) for case in manifest["inventory"]],
@@ -822,6 +825,41 @@ def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[s
                for pattern in tests)
 
 
+def macos_runner_transition(baseline: dict, old: dict, new: dict, profile: str) -> None:
+    """Admit only the evidenced ARM64 image replacement, without retagging history."""
+    previous = baseline["inventory"]
+    evidence = baseline.get("previousPlans", {})
+    source = evidence.get("source", {})
+    if (source.get("artifact") != "plan-macos-14"
+        or str(source.get("runId")) != str(previous.get("runId"))
+        or source.get("headSha") != previous.get("sha")
+        or str(source.get("attempt")) != str(previous.get("attempt"))):
+        raise ValueError("macos-14 to macos-15 requires the same verified run's previous plan")
+    matches = [plan for plan in evidence.get("plans", [])
+               if (plan.get("runner"), plan.get("lane")) == ("macos-14", old["lane"])]
+    if len(matches) != 1:
+        raise ValueError("macos-14 transition has missing or duplicate previous lane plans")
+    plan = matches[0]
+    if (plan.get("profile") != previous["profile"] or plan.get("identity", {}).get("sha") != previous["sha"]
+        or str(plan.get("runId")) != str(previous["runId"])
+        or str(plan.get("attempt")) != str(previous["attempt"])):
+        raise ValueError("macos-14 transition plan belongs to another revision, profile, run or attempt")
+    projected = inventory_summary([plan], profile=previous["profile"], sha=previous["sha"], jobs=None)["configurations"][0]
+    if any(projected[key] != old[key] for key in ("binaries", "cases", "selected", "shards")):
+        raise ValueError("macos-14 transition plan differs from the verified compact inventory")
+    identity = {"os": "Darwin", "target": "aarch64-apple-darwin"}
+    if projected["identity"] != identity or new.get("identity") != identity:
+        raise ValueError("macos-14 to macos-15 must preserve the Darwin ARM64 target")
+    if (plan.get("selection") != list(selection(old["lane"]))
+        or plan.get("nextestProfile") != nextest_profile(previous["profile"], old["lane"], "macos-14")
+        or new.get("selection") != list(selection(new["lane"]))):
+        raise ValueError("macos-14 transition has an unexpected feature or test selection")
+    if same_selection(previous["profile"], profile, "macos-14"):
+        # The caller additionally compares cases only when gate profiles agree.
+        if new.get("nextestProfile") != plan["nextestProfile"]:
+            raise ValueError("macos-14 transition changed the nextest selection")
+
+
 def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
     """Return the blocking losses and the explained drift."""
     explanations = baseline.get("explanations")
@@ -845,16 +883,40 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
         raise ValueError("malformed previous inventory")
     problems = []
     # Jobs depend on the profile's runners: a pull request has no macOS job.
+    transitions = {}
+    destinations = Counter(("macos-15" if item["runner"] == "macos-14" else item["runner"], item["lane"])
+                           for item in previous["configurations"])
+    blocked_lanes = {item["lane"] for item in previous["configurations"]
+                     if item["runner"] == "macos-14" and destinations[("macos-15", item["lane"])] != 1}
+    problems += [f"macos-14/{lane}: duplicate or colliding previous configurations cannot share macos-15/{lane}"
+                 for lane in sorted(blocked_lanes)]
+    for old in previous["configurations"]:
+        if old.get("runner") != "macos-14" or old["lane"] in blocked_lanes:
+            continue
+        matches = [item for item in current["configurations"]
+                   if (item.get("runner"), item.get("lane")) == ("macos-15", old.get("lane"))]
+        if not matches:
+            continue
+        try:
+            if len(matches) != 1:
+                raise ValueError("macos-15 transition has duplicate configurations")
+            macos_runner_transition(baseline, old, matches[0], current["profile"])
+            transitions[("macos-14", old["lane"])] = ("macos-15", old["lane"])
+        except (KeyError, TypeError, ValueError) as error:
+            problems.append(str(error))
+    drift["runnerTransitions"] = [{"from": old[0], "to": new[0], "lane": old[1]}
+                                  for old, new in sorted(transitions.items())]
     same_jobs = all(same_selection(previous.get("profile"), current["profile"], host) for host in HOSTS)
     if same_jobs and previous.get("jobs") is not None and current["jobs"] is not None:
-        problems += [f"job {job} disappeared since the previous inventory" for job in sorted(set(previous["jobs"]) - set(current["jobs"]))]
+        problems += [f"job {job} disappeared since the previous inventory" for job in sorted({os_job("macos-15") if job == os_job("macos-14") and transitions else job
+                                      for job in previous["jobs"]} - set(current["jobs"]))]
     present = {(item["runner"], item["lane"]): item for item in current["configurations"]}
     for old in previous["configurations"]:
         key = (old["runner"], old["lane"])
         label = f"{key[0]}/{key[1]}"
         # Comparable per host: the queue narrows macOS, not Linux.
         same_profile = same_selection(previous.get("profile"), current["profile"], key[0])
-        new = present.get(key)
+        new = present.get(transitions.get(key, key))
         if new is None:
             if same_profile or old["lane"] not in lanes(previous["profile"], key[0]):
                 problems.append(f"{label}: configuration and its results disappeared since the previous inventory")

@@ -213,5 +213,71 @@ class InventoryBaselineTests(unittest.TestCase):
             self.run_baseline([], failure="api")
 
 
+class MacosPreviousPlanTests(unittest.TestCase):
+    def download(self, *, mutate=None):
+        inventory = {"sha": "a" * 40, "runId": "41", "attempt": "2", "profile": "queue"}
+        run = {"id": 41, "run_attempt": 2, "head_sha": "a" * 40, "conclusion": "success", "path": baseline.WORKFLOW,
+               "repository": {"id": 7}, "head_repository": {"id": 7}}
+        plan = {"runner": "macos-14", "lane": "ordinary", "profile": "queue", "runId": "41", "attempt": "2",
+                "identity": {"sha": "a" * 40, "os": "Darwin", "target": "aarch64-apple-darwin"}}
+        asset = {"id": 19, "name": "plan-macos-14", "expired": False, "workflow_run": {
+                 "id": 41, "head_sha": "a" * 40, "repository_id": 7, "head_repository_id": 7}}
+        if mutate:
+            mutate(run, asset, plan)
+        calls = []
+        def gh(*args):
+            calls.append(args)
+            if args[0] == "run":
+                root = Path(args[args.index("--dir") + 1]) / "plan-rust-macos-14-ordinary"
+                root.mkdir()
+                (root / "lane.json").write_text(json.dumps(plan))
+                return ""
+            if "/attempts/" in args[1]:
+                return json.dumps(run)
+            if "/artifacts?" in args[1]:
+                return json.dumps({"artifacts": [asset]})
+            if args[1].endswith("/artifacts/19"):
+                return json.dumps(asset)
+            raise AssertionError(args)
+        with patch.object(baseline, "gh", side_effect=gh):
+            evidence = baseline.previous_macos_plans(REPOSITORY, 7, inventory)
+        return evidence, calls
+
+    def test_old_plan_comes_from_its_successful_exact_attempt_and_keeps_raw_identity(self):
+        evidence, calls = self.download()
+        self.assertEqual(evidence["plans"][0]["runner"], "macos-14")
+        self.assertEqual(evidence["source"]["attempt"], "2")
+        self.assertIn(("api", f"repos/{REPOSITORY}/actions/runs/41/attempts/2"), calls)
+        self.assertTrue(evidence["source"]["planFilesSha256"])
+
+    def test_only_a_current_15_matrix_against_old_14_fetches_supplementary_plans(self):
+        for current_hosts, previous_host, expected in [(["ubuntu-latest"], "macos-14", False),
+                                                       (["ubuntu-latest", "macos-15"], "macos-14", True),
+                                                       (["ubuntu-latest", "macos-15"], "macos-15", False)]:
+            inventory = {"sha": "a" * 40, "configurations": [{"runner": previous_host}]}
+            found = artifact("a" * 40)
+            with self.subTest(current=current_hosts, previous=previous_host), \
+                 patch.object(baseline, "git", return_value="a" * 40), \
+                 patch.object(baseline, "find", return_value=found), \
+                 patch.object(baseline, "download", return_value=inventory), \
+                 patch.object(baseline, "explanations", return_value={}), \
+                 patch.object(baseline, "previous_macos_plans", return_value={"plans": []}) as fetch:
+                result = baseline.baseline(Path("unused"), REPOSITORY, 7, "pr", runners=current_hosts)
+                self.assertEqual(fetch.called, expected)
+                self.assertEqual("previousPlans" in result, expected)
+
+    def test_failed_foreign_or_other_attempt_source_never_becomes_migration_proof(self):
+        changes = [lambda run, asset, plan: run.update(conclusion="failure"),
+                   lambda run, asset, plan: run.update(run_attempt=1),
+                   lambda run, asset, plan: run.update(path="other.yml"),
+                   lambda run, asset, plan: asset["workflow_run"].update(repository_id=99),
+                   lambda run, asset, plan: plan.update(attempt="1"),
+                   lambda run, asset, plan: plan.update(runner="macos-15"),
+                   lambda run, asset, plan: plan["identity"].update(sha="b" * 40)]
+        for change in changes:
+            with self.subTest(change=changes.index(change)), self.assertRaises(ValueError):
+                self.download(mutate=change)
+
+
 if __name__ == "__main__":
     unittest.main()
