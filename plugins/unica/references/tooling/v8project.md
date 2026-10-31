@@ -115,6 +115,27 @@ operation/provider pair. Do not mechanically replace `builder` with one global
 provider: each operation has its own supported executors. Keep machine-specific
 overrides in `v8project.local.yaml`. Unica does not rewrite existing project files.
 
+## Headless source export
+
+For Designer XML, select `ibcmd` for `pull` in `v8project.local.yaml`:
+
+```yaml
+providers:
+  pull: ibcmd
+```
+
+This selects `ibcmd config export` for the main configuration and for an
+installed extension. It does not start the Designer agent, so no GTK/X display
+or wrapper forcing `GDK_BACKEND` is needed for that export. A local 1C 8.3.27
+installation with `ibcmd` must be available and verifiable; configure
+`tools.platform` as described below when discovery is ambiguous.
+
+Use `unica.run` to preview and execute `pull`; see
+[workspace runtime](../use-cases/workspace-runtime.md#headless-pull).
+The Unica adapter requires `force:true` and replaces the whole source set,
+including untracked files. It does not expose incremental `--sync` export.
+The `pull` provider does not choose the executor of `push`.
+
 ## Strict platform resolution
 
 Use `tools.platform.strict` when one machine must fail closed on an exact 1C
