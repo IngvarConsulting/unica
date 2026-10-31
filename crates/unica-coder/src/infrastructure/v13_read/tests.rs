@@ -17,6 +17,7 @@ mod session_parameter_comment;
 mod structured_property_names;
 mod support;
 mod xdto_missing_target;
+mod xdto_serialization;
 
 use support::*;
 

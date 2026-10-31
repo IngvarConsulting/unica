@@ -981,6 +981,9 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "metadataPath",
             "location",
             "targetNamespace",
+            "elementFormQualified",
+            "attributeFormQualified",
+            "serializationLimits",
             "imports",
             "counts",
             "globalProperties",
@@ -1548,6 +1551,17 @@ fn interface_commands(interface: &Value) -> Vec<Value> {
     commands.into_values().map(Value::Object).collect()
 }
 
+fn xdto_serialization_limits(value: &Value) -> Vec<String> {
+    value
+        .get("serializationLimits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
 fn project_xdto(
     address: &QualifiedAddress,
     payload: &Value,
@@ -1601,7 +1615,8 @@ fn project_xdto(
                     .unwrap_or("XDTO"),
                 props,
             )
-            .with_branches(branches),
+            .with_branches(branches)
+            .with_limits(xdto_serialization_limits(payload)),
         ));
     }
     let segment = &suffix[0];
@@ -1654,7 +1669,7 @@ fn project_xdto(
             ));
         }
         let mut props = reader_node_props(LogicalReader::Xdto, segment.kind(), item);
-        let mut limits = Vec::new();
+        let mut limits = xdto_serialization_limits(item);
         for key in ["base", "baseAt", "facets"] {
             if let Some(value) = item.get(key) {
                 if let Some(value) = bounded_prop(key, value) {
@@ -1753,11 +1768,17 @@ fn xdto_property_branch(
 
 fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
     let mut props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
-    let mut limits: Vec<String> = [("type", "type"), ("reference", "ref"), ("bounds", "bounds")]
-        .into_iter()
-        .filter(|(input, output)| property.get(*input).is_some() && !props.contains_key(*output))
-        .map(|(_, key)| compact_limit(&format!("XDTO property {key}"), address, key))
-        .collect();
+    let mut limits: Vec<String> = [
+        ("type", "type"),
+        ("reference", "ref"),
+        ("bounds", "bounds"),
+        ("default", "default"),
+    ]
+    .into_iter()
+    .filter(|(input, output)| property.get(*input).is_some() && !props.contains_key(*output))
+    .map(|(_, key)| compact_limit(&format!("XDTO property {key}"), address, key))
+    .collect();
+    limits.extend(xdto_serialization_limits(property));
     if let Some(bounds) = property.get("bounds") {
         for (explicit, key) in [
             ("lowerExplicit", "lowerBound"),
@@ -2240,6 +2261,9 @@ fn known_reader_node(
             .collect();
     }
     node = node.with_branches(branches);
+    if reader == LogicalReader::Xdto {
+        node = node.with_additional_limits(xdto_serialization_limits(value));
+    }
     node
 }
 
@@ -2339,16 +2363,38 @@ fn collection_item(
 ) -> Value {
     let Some(name) = item_identity(value) else {
         return if value.is_object() {
-            Value::Object(reader_node_props(reader, kind, value))
+            unaddressed_reader_row(reader, kind, value)
         } else {
             data_row(value)
         };
     };
     let Ok(at) = address.member(name) else {
-        return Value::Object(reader_node_props(reader, kind, value));
+        return unaddressed_reader_row(reader, kind, value);
     };
     serde_json::to_value(known_reader_node(reader, &at, kind, value))
-        .unwrap_or_else(|_| Value::Object(reader_node_props(reader, kind, value)))
+        .unwrap_or_else(|_| unaddressed_reader_row(reader, kind, value))
+}
+
+fn unaddressed_reader_row(reader: LogicalReader, kind: NodeKind, value: &Value) -> Value {
+    let mut props = reader_node_props(reader, kind, value);
+    if reader == LogicalReader::Xdto {
+        let mut limits = xdto_serialization_limits(value);
+        if kind == NodeKind::Property
+            && value
+                .get("default")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.len() > prop_limit("default"))
+            && !props.contains_key("default")
+        {
+            limits.push(
+                "XDTO default exceeds the compact property limit in an unaddressed row".into(),
+            );
+        }
+        if !limits.is_empty() {
+            props.insert("limits".into(), json!(limits));
+        }
+    }
+    Value::Object(props)
 }
 
 fn data_row(value: &Value) -> Value {

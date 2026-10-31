@@ -3277,10 +3277,11 @@ pub(crate) mod tests {
         let before = findings(
             &model::PackageModel::parse(&decode(RENAMED_PACKAGE.as_bytes()).unwrap()).unwrap(),
         );
+        assert_eq!(before.len(), 1, "localName remains an unsupported finding");
         assert_eq!(
-            before.len(),
-            2,
-            "form and localName stay unsupported findings"
+            model.types[0].properties[1].serialization.form,
+            Some(unica_xdto::results::XdtoPropertyForm::Attribute),
+            "form is now a read observation and stays preserved by rename"
         );
         assert_eq!(
             findings(&model),
