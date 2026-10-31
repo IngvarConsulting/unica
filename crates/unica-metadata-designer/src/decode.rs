@@ -100,6 +100,8 @@ pub enum AddressedFields {
     Items,
     /// Changed fields of the member in `values`.
     Values,
+    /// Relation operands live directly under values, not elements[0].
+    RelationValues,
     /// No arguments beyond the address.
     None,
 }
@@ -117,6 +119,7 @@ impl AddressedFields {
         Some(match self {
             Self::Items => field.replacen("elements", "items", 1),
             Self::Values => field.replacen("elements[0]", "values", 1),
+            Self::RelationValues => format!("values.{field}"),
             Self::None => field.to_string(),
         })
     }
@@ -1412,7 +1415,7 @@ pub fn parse_addressed_member_change(
         AddressedFields::Values,
     ))
 }
-/// Marks a typed edit whose member is named by the operation address.
+/// Maps writer diagnostics of a typed edit to its public argument layout.
 pub fn addressed_edit(kind: MetadataPlanKind, fields: AddressedFields) -> MetadataPlanKind {
     match kind {
         MetadataPlanKind::Edit {
@@ -1821,14 +1824,17 @@ pub fn parse_relation(
         )
         .at_path(format!("ops[{op_index}].args.values")));
     }
-    parse_legacy_edit(
-        binding.source_set_name(),
-        owner,
-        kind,
-        json!({"op": "editRelations", "relation": relation, "mode": mode.as_str(), "targets": targets}),
-        |field| format!("ops[{op_index}].args.values.{field}"),
-        op_index,
-    )
+    Ok(addressed_edit(
+        parse_legacy_edit(
+            binding.source_set_name(),
+            owner,
+            kind,
+            json!({"op": "editRelations", "relation": relation, "mode": mode.as_str(), "targets": targets}),
+            |field| format!("ops[{op_index}].args.values.{field}"),
+            op_index,
+        )?,
+        AddressedFields::RelationValues,
+    ))
 }
 
 const PREDEFINED_PLACEHOLDER_ID: &str = "00000000-0000-4000-8000-000000000000";
