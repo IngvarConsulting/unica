@@ -13,8 +13,45 @@ use super::descriptor::KNOWN;
 /// the context of other calls sharing the same frontend.
 #[derive(Clone, Debug)]
 pub struct HostWorkspaceContext {
-    launch_directory: Result<LaunchDirectory, String>,
+    launch_directory: Result<LaunchDirectory, LaunchFailure>,
     require_existing_directory: bool,
+}
+
+/// Startup capture is retained, but a valid per-call channel can override it.
+#[derive(Clone, Debug)]
+enum LaunchFailure {
+    MissingRequired,
+    Captured(String),
+}
+
+impl From<String> for LaunchFailure {
+    fn from(message: String) -> Self {
+        Self::Captured(message)
+    }
+}
+
+impl LaunchFailure {
+    fn describe(&self, request: &HostRequest) -> String {
+        let variables = host_workspace_environment_keys().join(", ");
+        let metadata = KNOWN
+            .iter()
+            .filter_map(|host| host.workspace_metadata)
+            .map(|channel| format!("{} ({})", channel.capability, channel.directory_field))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let roots = match &request.roots {
+            ClientRoots::NotDeclared => "not supplied for this call",
+            ClientRoots::Listed(_) => "empty",
+            ClientRoots::Unavailable(RootsFailure::Error) => "roots/list error",
+            ClientRoots::Unavailable(RootsFailure::Timeout) => "roots/list timeout",
+            ClientRoots::Unavailable(RootsFailure::Closed) => "roots/list transport closed",
+        };
+        let reason = match self {
+            Self::MissingRequired => String::from("No host workspace context for this call: no startup project was captured. This connection requires host context (UNICA_HOST_CONTEXT_REQUIRED=1 or packaged runtime); launch cwd is not an allowed fallback."),
+            Self::Captured(message) => format!("The startup workspace context captured for this MCP connection is invalid: {message}."),
+        };
+        format!("{reason} No recognized request metadata ({metadata}); client roots: {roots}. Project variables ({variables}) are captured once: set one to an existing absolute project directory and reconnect the MCP server from that project. The host can restore a later call without reconnecting by supplying valid recognized metadata or client roots when this session supports roots/list. Startup capture stays unchanged until reconnect.")
+    }
 }
 
 /// The launch context and the project variable that named it, if any.
@@ -247,7 +284,10 @@ impl HostWorkspaceContext {
             }),
             ClientRoots::NotDeclared => None,
         };
-        let launch = self.launch_directory.as_ref().map_err(Clone::clone)?;
+        let launch = self
+            .launch_directory
+            .as_ref()
+            .map_err(|failure| failure.describe(request))?;
         let directory = if self.require_existing_directory {
             existing_directory(&launch.path)?
         } else {
@@ -280,9 +320,9 @@ fn capture_with(
                     .as_ref()
                     .is_some_and(|previous| !same_directory(&previous.path, &directory))
                 {
-                    return Err(
-                        "Host project environment declares conflicting directories".to_owned()
-                    );
+                    return Err(LaunchFailure::Captured(
+                        "Host project environment declares conflicting directories".to_owned(),
+                    ));
                 }
                 if selected.is_none() {
                     selected = Some(LaunchDirectory {
@@ -298,12 +338,13 @@ fn capture_with(
         let required = read_env("UNICA_HOST_CONTEXT_REQUIRED").is_some_and(|v| v == "1")
             || read_env("UNICA_RUNTIME_MANIFEST").is_some_and(|v| !v.is_empty());
         if required {
-            return Err("The host did not supply workspace context for this request".to_owned());
+            return Err(LaunchFailure::MissingRequired);
         }
         cwd.map(|path| LaunchDirectory {
             path,
             variable: None,
         })
+        .map_err(LaunchFailure::Captured)
     })();
     HostWorkspaceContext {
         launch_directory,
@@ -780,5 +821,163 @@ mod tests {
                 ))
                 .is_ok());
         }
+    }
+
+    #[test]
+    fn missing_launch_context_names_channels_and_recovers_without_reusing_a_previous_project() {
+        let fixture = Fixture::new();
+        let context = capture_with(
+            &env(&[("UNICA_HOST_CONTEXT_REQUIRED", "1".into())]),
+            Ok(fixture.0.clone()),
+        );
+        let missing = context
+            .resolve_request(&HostRequest::default())
+            .unwrap_err();
+        for channel in [
+            "CLAUDE_PROJECT_DIR",
+            "ZCODE_PROJECT_DIR",
+            "codex/sandbox-state-meta",
+            "sandboxCwd",
+            "roots",
+            "reconnect",
+        ] {
+            assert!(
+                missing.contains(channel),
+                "missing recovery channel {channel}: {missing}"
+            );
+        }
+        let selected = context
+            .resolve_request(&HostRequest::from_metadata(metadata(
+                serde_json::json!({"sandboxCwd":fixture.project()}),
+            )))
+            .unwrap();
+        assert!(same_directory(
+            Path::new(&selected.directory),
+            &fixture.project()
+        ));
+        assert_eq!(
+            context
+                .resolve_request(&HostRequest::default())
+                .unwrap_err(),
+            missing
+        );
+        let selected = context
+            .resolve_request(&with_roots(
+                Map::new(),
+                ClientRoots::Listed(vec![root_uri(&fixture.project())]),
+            ))
+            .unwrap();
+        assert_eq!(selected.origin, WorkspaceOrigin::ClientRoots {});
+        assert_eq!(
+            context
+                .resolve_request(&HostRequest::default())
+                .unwrap_err(),
+            missing
+        );
+    }
+
+    #[test]
+    fn both_required_context_triggers_and_root_failures_report_their_actual_scope() {
+        let fixture = Fixture::new();
+        for trigger in ["UNICA_HOST_CONTEXT_REQUIRED", "UNICA_RUNTIME_MANIFEST"] {
+            let context = capture_with(&env(&[(trigger, "1".into())]), Ok(fixture.0.clone()));
+            for (roots, status) in [
+                (ClientRoots::NotDeclared, "not supplied for this call"),
+                (ClientRoots::Listed(Vec::new()), "empty"),
+                (
+                    ClientRoots::Unavailable(RootsFailure::Error),
+                    "roots/list error",
+                ),
+                (
+                    ClientRoots::Unavailable(RootsFailure::Timeout),
+                    "roots/list timeout",
+                ),
+                (
+                    ClientRoots::Unavailable(RootsFailure::Closed),
+                    "roots/list transport closed",
+                ),
+            ] {
+                let request = with_roots(
+                    Map::from_iter([(
+                        "unknown-host-context".into(),
+                        serde_json::json!({"private":"must-not-leak"}),
+                    )]),
+                    roots,
+                );
+                let error = context.resolve_request(&request).unwrap_err();
+                assert!(error.contains(status), "{error}");
+                assert!(
+                    !error.contains("must-not-leak") && !error.contains("unknown-host-context"),
+                    "{error}"
+                );
+                assert!(matches!(
+                    context.launch_directory,
+                    Err(LaunchFailure::MissingRequired)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn a_captured_startup_error_does_not_poison_future_metadata_or_roots() {
+        let fixture = Fixture::new();
+        let context = capture_with(
+            &env(&[("ZCODE_PROJECT_DIR", "relative/project".into())]),
+            Ok(fixture.0.clone()),
+        );
+        assert!(matches!(
+            context.launch_directory,
+            Err(LaunchFailure::Captured(_))
+        ));
+        let missing = context.resolve(&Map::new()).unwrap_err();
+        assert!(missing.contains("startup workspace context"), "{missing}");
+        assert!(missing.contains("must be absolute"), "{missing}");
+        assert!(missing.contains("reconnect"), "{missing}");
+        for channel in [
+            "CLAUDE_PROJECT_DIR",
+            "ZCODE_PROJECT_DIR",
+            "codex/sandbox-state-meta",
+            "sandboxCwd",
+            "roots",
+        ] {
+            assert!(missing.contains(channel), "{missing}");
+        }
+        assert!(context
+            .resolve(&metadata(
+                serde_json::json!({"sandboxCwd":fixture.project()})
+            ))
+            .is_ok());
+        assert_eq!(context.resolve(&Map::new()).unwrap_err(), missing);
+        assert!(context
+            .resolve_request(&with_roots(
+                Map::new(),
+                ClientRoots::Listed(vec![root_uri(&fixture.project())])
+            ))
+            .is_ok());
+        assert_eq!(context.resolve(&Map::new()).unwrap_err(), missing);
+    }
+
+    #[test]
+    fn a_later_launch_directory_failure_remains_recoverable_without_recapturing_startup() {
+        let fixture = Fixture::new();
+        let launch = fixture.0.join("launch");
+        std::fs::create_dir(&launch).unwrap();
+        let context = capture_with(
+            &env(&[("CLAUDE_PROJECT_DIR", launch.clone().into())]),
+            Err("no cwd".into()),
+        );
+        std::fs::remove_dir(&launch).unwrap();
+        assert!(context.resolve(&Map::new()).is_err());
+        assert!(context.launch_directory.is_ok());
+        assert!(context
+            .resolve(&metadata(
+                serde_json::json!({"sandboxCwd":fixture.project()})
+            ))
+            .is_ok());
+        std::fs::create_dir(&launch).unwrap();
+        assert!(same_directory(
+            Path::new(&context.resolve(&Map::new()).unwrap()),
+            &launch
+        ));
     }
 }

@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.ci.acceptance_profiles import REPO, SOURCE_PROFILE_DIR, load_source_workspaces
+from tests.ci.acceptance_profiles import REPO, SOURCE_PROFILE_DIR, load_source_workspaces, missing_host_context_environment
 
 
 def register(root: Path, name: str) -> None:
@@ -24,6 +24,20 @@ def register(root: Path, name: str) -> None:
 
 
 class SourceProfileStorageTests(unittest.TestCase):
+    def test_missing_context_fixture_clears_project_aliases_and_preserves_other_launch_inputs(self):
+        contract = json.loads((REPO / "tests/fixtures/mcp/host-workspace-context.json").read_text())
+        initial = {key: "another-project" for key in contract["projectEnvironment"]}
+        initial.update({"UNICA_RUNTIME_MANIFEST": "another-runtime", "UNICA_HOST_CONTEXT_REQUIRED": "0",
+                        "UNICA_PLUGIN_ROOT": "controlled-plugin", "UNICA_PROVIDER_STATE_DIR": "controlled-state"})
+        before = dict(initial)
+        actual = missing_host_context_environment(initial)
+        self.assertEqual(initial, before)
+        for key in [*contract["projectEnvironment"], "UNICA_RUNTIME_MANIFEST"]:
+            self.assertNotIn(key, actual)
+        self.assertEqual(actual["UNICA_HOST_CONTEXT_REQUIRED"], "1")
+        for key in ["UNICA_PLUGIN_ROOT", "UNICA_PROVIDER_STATE_DIR"]:
+            self.assertEqual(actual[key], initial[key])
+
     def test_only_explicit_sibling_fixtures_are_registered(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

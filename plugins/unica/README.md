@@ -247,6 +247,23 @@ them afresh, and the first root outranks the captured variables. A new session
 project is therefore picked up without restarting the server. The existing canonical workspace/profile keys continue to
 isolate project state.
 
+
+If a host-required connection reports missing workspace context, the refusal
+names the project variables, recognized request-metadata channel and the
+client-roots status. `UNICA_HOST_CONTEXT_REQUIRED=1` (also used by packaged
+launches) prevents the plugin's technical cwd from becoming a project.
+Project variables are captured once: set `ZCODE_PROJECT_DIR` or the compatible
+`CLAUDE_PROJECT_DIR` to an existing absolute project directory and reconnect
+the MCP server from that project. A valid later request can recover the same
+connection through recognized metadata, or client roots in a session that
+supports them; the previous call's project is never remembered as fallback.
+The recognized metadata channel is `codex/sandbox-state-meta` with `sandboxCwd`.
+This is a channel contract, not a claim that every ZCode-compatible host sends
+it. Unknown metadata keys are not used to guess the project. A captured startup
+error remains unchanged until reconnect, but does not block valid per-call
+context. A malformed context supplied for the current call still refuses
+instead of choosing another project.
+
 Each installed artifact lives below
 `<artifact>/<version>--<asset-sha256>/<target>`. The SHA-256 component prevents
 a rebuilt engine with the same upstream version from reusing or overwriting old

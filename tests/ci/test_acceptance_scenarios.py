@@ -72,7 +72,7 @@ from tests.ci.form_runtime_diagnostics import WORKSPACE as FORM_RUNTIME_WORKSPAC
 
 from tests.ci.acceptance_profiles import (
     DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
-    select_profile,
+    select_profile, HOST_CONTEXT_MISSING_WORKSPACE, missing_host_context_environment,
 )
 
 from tests.ci.acceptance_pull_validation import WORKSPACE as PULL_VALIDATION_WORKSPACE
@@ -2217,6 +2217,8 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
         state = home / "state"
         state.mkdir()
         environment = isolated_environment(plugin, state) if plugin else None
+        if workspace_relative == HOST_CONTEXT_MISSING_WORKSPACE:
+            environment = missing_host_context_environment(environment)
         server_type = DeliveredAcceptanceServer if plugin else AcceptanceServer
         return server_type(workspace, state, corpus["protocolVersion"], environment)
 
