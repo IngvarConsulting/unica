@@ -615,6 +615,13 @@ pub fn form(operation: FormOperation) -> OperationContract {
             "The item is named by its address; the operation takes no other arguments.",
             json!({}),
         ),
+        FormOperation::AttributeRemove => (
+            object(&[at()], &[]),
+            "The existing form attribute: <source-set>:<Kind>.<Name>.Form.<Form>.Attribute.<Attribute>.",
+            "Remove the named unused top-level form attribute after checking supported XML references and validating the form.",
+            "No arguments. Main and inherited attributes are protected. Remove BSL uses beforehand; the operation checks XML bindings, report attribute slots and typed conditional-appearance field references, not all BSL uses. An opaque binding prevents proving safe removal and is refused.",
+            json!({}),
+        ),
         FormOperation::EventBind => (
             object(&[at(), ("values", object(&[
                 ("handler",json!({"type":"string","pattern":r"\S","description":"Handler procedure in the form module."})),
@@ -922,6 +929,7 @@ mod tests {
             FormOperation::ItemRemove,
             FormOperation::ItemMove,
             FormOperation::AttributeAdd,
+            FormOperation::AttributeRemove,
             FormOperation::CommandAdd,
             FormOperation::EventBind,
         ] {

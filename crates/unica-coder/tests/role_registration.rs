@@ -134,7 +134,7 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
             Configuration, ExtensionRoot, Metadata, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
             CatalogTabularAttribute,
             MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms,
-            Form, FormItemContainer, FormItem, FormEvent,
+            Form, FormItemContainer, FormItem, FormEvent, FormAttribute,
             MetadataTabularSections, MetadataTabularSection,
             MetadataDimensions, MetadataDimension, MetadataResources, MetadataResource,
             MetadataEnumValues, MetadataEnumValue, MetadataColumns, MetadataColumn,
@@ -231,7 +231,7 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
             (MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),
             (FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),
             (FormOperation::ItemAdd), (FormOperation::ItemRemove), (FormOperation::ItemMove),
-            (FormOperation::AttributeAdd), (FormOperation::CommandAdd),
+            (FormOperation::AttributeAdd), (FormOperation::AttributeRemove), (FormOperation::CommandAdd),
             (FormOperation::EventBind),
             (MetadataOperation::ObjectCreate)"#,
     );

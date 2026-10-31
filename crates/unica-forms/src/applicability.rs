@@ -9,6 +9,7 @@ use unica_source_contract::route::RouteClass;
 pub enum OperationApplicability {
     Form,
     FormEvent,
+    FormAttribute,
     FormItem,
     FormItemContainer,
     MetadataForms,
@@ -21,6 +22,7 @@ impl OperationApplicability {
             Self::FormItemContainer => "`Kind.Name.Form.F[.Item.I…]`",
             Self::FormItem => "`Kind.Name.Form.F.Item.I[.Item.J…]`",
             Self::FormEvent => "`Kind.Name.Form.F[.Item.I…].Event.E`",
+            Self::FormAttribute => "`Kind.Name.Form.F.Attribute.A`",
         }
     }
     pub fn matches(self, site: &OperationSite<'_>) -> bool {
@@ -32,6 +34,15 @@ impl OperationApplicability {
             Self::FormItem => site
                 .form_items(segments)
                 .is_some_and(|items| !items.is_empty()),
+            Self::FormAttribute => match segments {
+                [path @ .., attribute] => {
+                    path.len() == 2
+                        && attribute.kind() == NodeKind::Attribute
+                        && attribute.name().is_some()
+                        && site.form_items(path).is_some()
+                }
+                [] => false,
+            },
             Self::FormEvent => match segments {
                 [path @ .., event] => {
                     event.kind() == NodeKind::Event

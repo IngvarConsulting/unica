@@ -2672,4 +2672,62 @@ mod tests {
         assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
         assert_eq!(error.path(), Some("ops[0].args.at"));
     }
+
+    #[test]
+    fn removing_a_form_attribute_uses_its_address_and_preserves_its_neighbour() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let form = "main:Document.First.Form.Main";
+        let requests = [
+            (
+                "form.add",
+                json!({"at":"main:Document.First","items":[{"name":"Main","type":"ObjectForm"}]}),
+            ),
+            (
+                "attribute.add",
+                json!({"at":form,"items":[{"name":"Unused","type":"Boolean"},{"name":"UnusedExtra","type":"Boolean"}]}),
+            ),
+            (
+                "attribute.remove",
+                json!({"at":format!("{form}.Attribute.Unused")}),
+            ),
+        ];
+        let operations = requests
+            .into_iter()
+            .enumerate()
+            .map(|(index, (operation, args))| {
+                IndexedPlanOperation::new(
+                    index,
+                    parse_form_resource_plan_operation(operation, &args, index, &fixture.binding)
+                        .expect("form attribute removal is parsed"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let authority = admission
+            .form_resource_planning_authority(&fixture.binding)
+            .unwrap();
+        let (staged, _) = plan_form_resource_batch_owned_for_test(
+            admission.staged_state().unwrap(),
+            authority,
+            &operations,
+        )
+        .expect("an unused form attribute can be removed");
+        let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+        let doc = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let names = doc
+            .descendants()
+            .filter(|n| n.has_tag_name(("http://v8.1c.ru/8.3/xcf/logform", "Attribute")))
+            .filter_map(|n| n.attribute("name"))
+            .collect::<Vec<_>>();
+        assert!(!names.contains(&"Unused"));
+        assert!(names.contains(&"UnusedExtra"));
+        assert!(names.contains(&"Объект"));
+        assert!(
+            !fixture
+                .source_dir()
+                .join("Documents/First/Forms/Main/Ext/Form.xml")
+                .exists(),
+            "preview must not publish the new form"
+        );
+    }
 }
