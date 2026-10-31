@@ -12,6 +12,7 @@ default = []
 research = []
 
 [dependencies]
+serde.workspace = true
 percent-encoding.workspace = true
 unica-documentation = { path = "../unica-documentation" }
 unica-configuration = { path = "../unica-configuration" }

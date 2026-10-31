@@ -2,6 +2,7 @@
 //! Provider-neutral contracts remain in unica-documentation.
 
 pub mod configuration_help;
+pub mod diagnostic_rules;
 pub mod documentation_policy;
 pub(crate) mod documentation_retrieval;
 pub mod platform_help;
