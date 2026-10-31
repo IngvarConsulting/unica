@@ -665,7 +665,7 @@ fn project_compatibility_snapshot(
     snapshot: &V5DaemonTaskSnapshot,
     projection: CompatibilityProjection,
 ) -> unica_execution_contract::invocation::DomainResult {
-    let state = CompatibilityTaskSnapshot::new(
+    let mut state = CompatibilityTaskSnapshot::new(
         snapshot.task_id(),
         snapshot.status(),
         snapshot.completed_result().cloned(),
@@ -676,6 +676,7 @@ fn project_compatibility_snapshot(
         snapshot.ttl_ms(),
         snapshot.poll_interval_ms(),
     );
+    state.progress = snapshot.progress().cloned();
     crate::application::v13::task_tools::project_task_snapshot(&state, projection).unwrap_or_else(
         |_| {
             crate::application::v13::task_tools::task_tool_error_result(
@@ -2867,6 +2868,7 @@ mod tests {
                 cancel_requested,
             },
             InvocationStatus::Working => V5DaemonTaskSnapshot::Working {
+                progress: None,
                 task_id,
                 invocation_id,
                 receipt_key_digest,
@@ -4619,6 +4621,176 @@ mod tests {
             }
         }
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn silent_extension_runner_progress_and_cancel_are_visible_over_public_mcp() {
+        silent_extension_runner_case(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn silent_extension_runner_release_guard_cleans_the_tree_after_observer_failure() {
+        silent_extension_runner_case(true).await;
+    }
+
+    async fn silent_extension_runner_case(release_after_failure: bool) {
+        async fn wait_for_tree_exit(
+            processes: &[unica_process::test_support::RuntimeProcessTreeTestProbe],
+        ) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if processes.iter().all(|process| !process.is_alive().unwrap()) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "fixture process survived cleanup"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        use crate::infrastructure::daemon::server::actor_capacity_tests::{
+            canonical_v13_service, install_runner_probe, LiveV5Daemon,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().canonicalize().unwrap();
+        install_runner_probe(
+            &workspace,
+            include_str!(
+                "../../../../tests/fixtures/acceptance/providers/silent-extension-runner.rs"
+            ),
+        );
+        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ninfobase:\n  connection: 'File=base'\n  password: never-publish-this-secret\n").unwrap();
+        std::fs::create_dir(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("src/Configuration.xml"),
+            "<MetaDataObject><Configuration/></MetaDataObject>",
+        )
+        .unwrap();
+        let daemon = ManualCanonicalDaemonOwner(Some(LiveV5Daemon::start(canonical_v13_service())));
+        let _runner_release = ManualRunnerRelease(workspace.join("release.marker"));
+        let owner = daemon.owner();
+        let (mut compatibility, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            daemon.owner(),
+            workspace.to_string_lossy().into_owned(),
+        ));
+        compatibility.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"extensions.list","args":{},"dryRun":false},"_meta":modern_meta()}})).await;
+        let seed = compatibility.receive().await;
+        let task_id = seed["result"]["structuredContent"]["data"]["task"]["taskId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let before = loop {
+            assert!(
+                Instant::now() < deadline,
+                "runner phase not observed: {seed}"
+            );
+            compatibility.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unica.task.get","arguments":{"taskId":task_id},"_meta":modern_meta()}})).await;
+            let reply = compatibility.receive().await;
+            let task = reply["result"]["structuredContent"]["data"]["task"].clone();
+            if task["progress"]["phase"] == "waitingForRunner"
+                && workspace.join("tree.pids").exists()
+            {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let pids: Vec<u32> = std::fs::read_to_string(workspace.join("tree.pids"))
+            .unwrap()
+            .split_whitespace()
+            .map(|v| v.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2);
+        let processes: Vec<_> = pids
+            .iter()
+            .map(|pid| {
+                unica_process::test_support::RuntimeProcessTreeTestProbe::capture(*pid).unwrap()
+            })
+            .collect();
+        assert!(processes.iter().all(|process| process.is_alive().unwrap()));
+        if release_after_failure {
+            let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _release = _runner_release;
+                panic!("controlled progress observer failed before cancel");
+            }));
+            assert!(failure.is_err());
+            let terminal =
+                daemon.wait_terminal(&owner, task_id.parse().unwrap(), Duration::from_secs(20));
+            assert_eq!(
+                terminal.status(),
+                unica_execution_contract::invocation::InvocationStatus::Completed
+            );
+            assert!(!terminal.cancel_requested());
+            let result = terminal.completed_result().unwrap();
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+            wait_for_tree_exit(&processes).await;
+            compatibility.shutdown().await;
+            daemon.finish(owner);
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        compatibility.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"unica.task.get","arguments":{"taskId":task_id},"_meta":modern_meta()}})).await;
+        let after = compatibility.receive().await;
+        let after = &after["result"]["structuredContent"]["data"]["task"];
+        assert_eq!(before["updatedAtEpochMs"], after["updatedAtEpochMs"]);
+        assert_eq!(
+            before["progress"]["phaseStartedAtEpochMs"],
+            after["progress"]["phaseStartedAtEpochMs"]
+        );
+        assert!(
+            after["progress"]["executionElapsedMs"].as_u64().unwrap()
+                > before["progress"]["executionElapsedMs"].as_u64().unwrap()
+        );
+        assert_eq!(after["pollIntervalMs"], 1000);
+        assert!(!after.to_string().contains("never-publish-this-secret"));
+        assert!(!after
+            .to_string()
+            .contains(&workspace.to_string_lossy().to_string()));
+        let (mut native, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            daemon.owner(),
+            workspace.to_string_lossy().into_owned(),
+        ));
+        native.send(json!({"jsonrpc":"2.0","id":4,"method":"tasks/get","params":{"taskId":task_id,"_meta":modern_tasks_meta()}})).await;
+        let live = native.receive().await;
+        assert_eq!(live["result"]["status"], "working", "{live}");
+        assert!(
+            live["result"]["statusMessage"]
+                .as_str()
+                .unwrap()
+                .contains("platform phase is unknown"),
+            "{live}"
+        );
+        assert!(!live.to_string().contains("never-publish-this-secret"));
+        compatibility.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"unica.task.get","arguments":{"taskId":unica_execution_contract::invocation::TaskId::new().to_string()},"_meta":modern_meta()}})).await;
+        let unknown = compatibility.receive().await;
+        assert!(unknown.to_string().contains("task_not_found"), "{unknown}");
+        assert!(!unknown.to_string().contains("waitingForRunner"));
+        compatibility.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"unica.task.cancel","arguments":{"taskId":task_id},"_meta":modern_meta()}})).await;
+        let requested = compatibility.receive().await;
+        let requested = &requested["result"]["structuredContent"]["data"]["task"];
+        assert_eq!(requested["cancelRequested"], true);
+        assert!(
+            requested["status"] == "working" || requested["status"] == "cancelled",
+            "{requested}"
+        );
+        let terminal =
+            daemon.wait_terminal(&owner, task_id.parse().unwrap(), Duration::from_secs(20));
+        assert_eq!(
+            terminal.status(),
+            unica_execution_contract::invocation::InvocationStatus::Cancelled
+        );
+        assert!(terminal.progress().is_none());
+        // Observe the real owned tree, independently of its Task status.
+        wait_for_tree_exit(&processes).await;
+        native.send(json!({"jsonrpc":"2.0","id":7,"method":"tasks/get","params":{"taskId":task_id,"_meta":modern_tasks_meta()}})).await;
+        let ended = native.receive().await;
+        assert_eq!(ended["result"]["status"], "cancelled", "{ended}");
+        assert!(!ended.to_string().contains("Waiting for runner"));
+        compatibility.shutdown().await;
+        native.shutdown().await;
+        daemon.finish(owner);
+    }
+
     struct ManualRunnerRelease(std::path::PathBuf);
     impl Drop for ManualRunnerRelease {
         fn drop(&mut self) {

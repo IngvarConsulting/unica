@@ -76,6 +76,7 @@ from tests.ci.acceptance_profiles import (
 )
 
 from tests.ci.acceptance_pull_validation import WORKSPACE as PULL_VALIDATION_WORKSPACE
+from tests.ci.acceptance_task_progress import WORKSPACE as TASK_PROGRESS_WORKSPACE
 
 REFUSAL_DICTIONARY = REPO_ROOT / "crates/unica-refusal/src/lib.rs"
 
@@ -691,7 +692,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                SOURCE_WORKSPACES | {SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, FORM_RUNTIME_WORKSPACE, PULL_VALIDATION_WORKSPACE},
+                SOURCE_WORKSPACES | {SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, FORM_RUNTIME_WORKSPACE, PULL_VALIDATION_WORKSPACE, TASK_PROGRESS_WORKSPACE},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
@@ -2423,6 +2424,35 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
             run_corpus(self, fault_cases(self.corpus, "analyzer-jsonl-fault"), plugin,
                        scenario_driver=fault_driver(plugin, records))
             self.assertEqual(sum(record["tool"] == "unica.check" for record in records), 6)
+
+    def test_silent_runner_task_phase_and_cancellation_over_public_mcp(self):
+        from tests.ci.acceptance_task_progress import prepare_silent_runner
+        run_corpus(self, fault_cases(self.corpus, "silent-extension-runner"),
+                   scenario_driver=prepare_silent_runner)
+
+    def test_failed_task_progress_assertion_releases_the_real_fixture_processes(self):
+        import copy
+        from tests.ci.acceptance_task_progress import prepare_silent_runner
+        corpus = copy.deepcopy(fault_cases(self.corpus, "silent-extension-runner"))
+        corpus["scenarios"][0]["wire"][1]["assertions"][0]["eq"] = "intentional-mismatch"
+        for release_only in (False, True):
+            with self.subTest(release_only=release_only):
+                records = []
+                def prepare(server, scenario):
+                    original = server.call
+                    if release_only:
+                        def broken_cleanup_call(tool, arguments, label=None, *, timeout=None):
+                            if tool in {"unica.task.cancel", "unica.task.result"}:
+                                raise OSError("simulated cleanup transport failure")
+                            return original(tool, arguments, label, timeout=timeout)
+                        server.call = broken_cleanup_call
+                    return prepare_silent_runner(server, scenario, records=records)
+                with self.assertRaisesRegex(AssertionError, "intentional-mismatch"):
+                    run_corpus(self, corpus, scenario_driver=prepare)
+                self.assertEqual(len(records), 1)
+                self.assertEqual(len(records[0]["pids"]), 2)
+                self.assertEqual(records[0]["remaining"], set())
+                self.assertEqual(bool(records[0]["cancel_errors"]), release_only)
 
     def test_call_graph_branch_names_a_failed_analyzer_delivery(self):
         from tests.ci.acceptance_faults import stage_missing_analyzer, delivery_failure_driver

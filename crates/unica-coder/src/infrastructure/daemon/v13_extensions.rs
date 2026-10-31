@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::invocation_store::ToolIdentity;
+use unica_execution::receipt_runtime::progress::{InvocationPhase, InvocationProgress};
 use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
 use unica_process::runner::{ProcessCommand, ProcessRunner};
 use unica_redaction::redactor;
@@ -146,13 +147,19 @@ impl PreparedExtensions {
         hasher.update(self.context.workspace_root.as_os_str().as_encoded_bytes());
         SafeIdentityHash::from_sha256(hasher.finalize().into())
     }
-    pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
+    pub(super) fn execute_observed(
+        &self,
+        cancellation: CancellationToken,
+        progress: InvocationProgress,
+    ) -> DomainResult {
+        progress.phase(InvocationPhase::ResolvingRunner);
         match resolve_bundled_runner(&self.context.cwd) {
-            Ok(resolved) => self.execute_with(
+            Ok(resolved) => self.execute_observed_with(
                 &Runner015ProcessRunner,
                 &resolved.tool,
                 &resolved.version,
                 cancellation,
+                progress,
             ),
             Err(message) => missing_runner_rejection(Some(self.operation.name().into()), message),
         }
@@ -407,6 +414,7 @@ impl PreparedExtensions {
         }
         Ok(receipt)
     }
+    #[cfg(test)]
     fn execute_with(
         &self,
         runner: &dyn ProcessRunner,
@@ -414,7 +422,23 @@ impl PreparedExtensions {
         version: &str,
         cancellation: CancellationToken,
     ) -> DomainResult {
-        match self.execute_checked(runner, tool, version, cancellation) {
+        self.execute_observed_with(
+            runner,
+            tool,
+            version,
+            cancellation,
+            InvocationProgress::default(),
+        )
+    }
+    fn execute_observed_with(
+        &self,
+        runner: &dyn ProcessRunner,
+        tool: &BundledTool,
+        version: &str,
+        cancellation: CancellationToken,
+        progress: InvocationProgress,
+    ) -> DomainResult {
+        match self.execute_checked(runner, tool, version, cancellation, progress) {
             Ok(result) | Err(result) => result,
         }
     }
@@ -424,6 +448,7 @@ impl PreparedExtensions {
         tool: &BundledTool,
         _version: &str,
         cancellation: CancellationToken,
+        progress: InvocationProgress,
     ) -> Result<DomainResult, DomainResult> {
         if cancellation.is_cancelled() {
             return Err(self.fail(
@@ -432,6 +457,7 @@ impl PreparedExtensions {
             ));
         }
         let before = self.inputs()?;
+        progress.phase(InvocationPhase::PreviewingProvider);
         let preview = self.invoke(runner, tool, &cancellation, true)?;
         let receipt = self.validate(&preview, true)?;
         let target = self.target_description()?;
@@ -452,7 +478,9 @@ impl PreparedExtensions {
             super::v13_infobase_exports::note_another_copy(&mut result, &preview);
             return Ok(result);
         }
+        progress.phase(InvocationPhase::WaitingForRunner);
         let applied = self.invoke(runner, tool, &cancellation, false)?;
+        progress.phase(InvocationPhase::ValidatingResult);
         let applied_receipt = self.validate(&applied, false)?;
         if applied_receipt != receipt {
             return Err(self.fail(

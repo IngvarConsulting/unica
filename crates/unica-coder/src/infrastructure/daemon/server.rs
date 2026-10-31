@@ -681,6 +681,13 @@ impl unica_execution::receipt_runtime::ports::PreparedInvocation for V5PreparedC
     fn execute(self, cancellation: CancellationToken) -> Result<DomainResult, InvocationFailure> {
         V5PreparedCanonicalInvocation::execute(self, cancellation)
     }
+    fn execute_with_progress(
+        self,
+        cancellation: CancellationToken,
+        progress: unica_execution::receipt_runtime::progress::InvocationProgress,
+    ) -> Result<DomainResult, InvocationFailure> {
+        self.execute_observed(cancellation, progress)
+    }
 }
 
 #[derive(Clone)]
@@ -1361,6 +1368,14 @@ impl V5PreparedCanonicalInvocation {
         self,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
+        self.execute_observed(cancellation, Default::default())
+    }
+
+    fn execute_observed(
+        self,
+        cancellation: CancellationToken,
+        progress: unica_execution::receipt_runtime::progress::InvocationProgress,
+    ) -> Result<DomainResult, InvocationFailure> {
         match self.0 {
             PreparedCanonicalInvocationState::WorkspaceInspection { inspection } => {
                 inspection.execute(cancellation)
@@ -1382,7 +1397,7 @@ impl V5PreparedCanonicalInvocation {
                 extensions,
                 delivery,
             } => Ok(delivery.execute(cancellation, |cancellation| {
-                extensions.execute(cancellation)
+                extensions.execute_observed(cancellation, progress)
             })),
             PreparedCanonicalInvocationState::InfobaseExport { export, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| export.execute(cancellation)))

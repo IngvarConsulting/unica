@@ -1,0 +1,77 @@
+{
+  "id": "S-2327-silent-task-progress",
+  "issue": 2327,
+  "area": "Выполнение и задания",
+  "task": "Молчащий раннер: этап виден без shell, отмена заканчивает Task",
+  "workspace": "tests/fixtures/acceptance/workspace-task-progress",
+  "profile": "fault-injection",
+  "driver": "silent-extension-runner",
+  "wire": [
+    {
+      "tool": "unica.run",
+      "args": {
+        "op": "extensions.list",
+        "args": {},
+        "dryRun": false
+      },
+      "expect": [
+        "task"
+      ]
+    },
+    {
+      "tool": "unica.task.get",
+      "args": {
+        "taskId": "$task"
+      },
+      "expect": [
+        "task"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/task/progress/phase",
+          "eq": "waitingForRunner"
+        },
+        {
+          "pointer": "/data/task/pollIntervalMs",
+          "eq": 1000
+        }
+      ]
+    },
+    {
+      "tool": "unica.task.cancel",
+      "args": {
+        "taskId": "$task"
+      },
+      "expect": [
+        "task",
+        "cancelled"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/task/cancelRequested",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.task.result",
+      "args": {
+        "taskId": "$task",
+        "waitMs": 7000
+      },
+      "expect": [
+        "cancelled"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/task/status",
+          "eq": "cancelled"
+        },
+        {
+          "pointer": "/data/task/progress",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}
