@@ -1,0 +1,20 @@
+<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:unica:serialization" targetNamespace="urn:unica:serialization" elementFormQualified="false" attributeFormQualified="true">
+ <property name="Global" type="xs:string" form="Attribute" nillable="true" fixed="false" default=""/>
+ <valueType name="String" base="xs:string"/>
+ <objectType name="Base"/>
+ <objectType name="Probe" base="tns:Base" open="false" mixed="true">
+  <property name="F2RegId" type="xs:string" form="Element" nillable="false" fixed="false" default="FIRSTSHIPMENT" lowerBound="0" upperBound="-1"/>
+  <property name="Absent" type="xs:string"/>
+  <property name="Empty" type="xs:string" form="Attribute" nillable="0" fixed="1" default=""/>
+  <property name="Whitespace" type="xs:string" default="  keep &#x9; &amp; &quot;  "/>
+  <property name="Nested"><typeDef xsi:type="ObjectType">
+   <property name="contentType" type="xs:string" form="Attribute" lowerBound="0"/>
+   <property name="__content" type="xs:string" form="Text"/>
+  </typeDef></property>
+  <property name="Broken" type="xs:string" form="Unknown" nillable="maybe" fixed="NaN" default="keep"/>
+  <property xmlns:f="urn:foreign" name="Foreign" type="xs:string" f:form="Attribute" f:nillable="true" f:default="foreign"/>
+  <property xmlns:f="urn:foreign" name="Dual" type="xs:string" form="Element" f:form="Text"/>
+  <property ref="tns:Global" nillable="invalid"/>
+  <property name="Opaque"><typeDef xsi:type="ObjectType" open="true" mixed="false"><property name="Child" type="xs:string" form="Text"/></typeDef></property>
+ </objectType>
+</package>

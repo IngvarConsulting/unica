@@ -95,6 +95,7 @@ pub fn build_xdto_info(
     };
     let location = addressed_location(identity);
     Ok(XdtoInfoData {
+        serialization: model.serialization.clone(),
         source_set: identity.source_set().to_string(),
         metadata_path: identity.metadata_path().to_string(),
         location,
@@ -203,6 +204,7 @@ fn type_info(
     named: &model::NamedType,
 ) -> XdtoTypeInfo {
     XdtoTypeInfo {
+        serialization: named.serialization.clone(),
         facets: named.facets.clone(),
         kind: match named.kind {
             model::TypeKind::Value => XdtoTypeKind::Value,
@@ -221,6 +223,7 @@ fn type_info(
 }
 fn type_summary(package: &impl XdtoIdentity, named: &model::NamedType) -> XdtoTypeSummary {
     XdtoTypeSummary {
+        serialization: named.serialization.clone(),
         kind: match named.kind {
             model::TypeKind::Value => XdtoTypeKind::Value,
             model::TypeKind::Object => XdtoTypeKind::Object,
@@ -240,6 +243,7 @@ fn property_info(package: &impl XdtoIdentity, property: &model::Property) -> Xdt
         .as_ref()
         .map_or("1", |value| value.value.as_str());
     XdtoPropertyInfo {
+        serialization: property.serialization.clone(),
         name: property.name.as_ref().map(|name| name.value.clone()),
         reference: property.reference.as_ref().map(qname_info),
         type_name: property.type_ref.as_ref().map(qname_info),
