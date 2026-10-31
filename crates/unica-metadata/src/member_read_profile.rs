@@ -8,11 +8,13 @@ use unica_source_contract::SourceSetKind;
 #[serde(rename_all = "camelCase")]
 pub enum MetaMemberReadProfile {
     CatalogTabularSection220,
+    InformationRegisterDimension220,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaMemberReadContext {
     TabularSection,
+    InformationRegisterDimension,
     TabularAttribute,
 }
 
@@ -69,10 +71,20 @@ impl MetaMemberReadProfile {
         owner: MetadataKind,
         format: Option<&str>,
     ) -> Option<Self> {
-        (source_kind == SourceSetKind::Configuration
-            && owner == MetadataKind::Catalog
-            && format == Some("2.20"))
-        .then_some(Self::CatalogTabularSection220)
+        if source_kind != SourceSetKind::Configuration || format != Some("2.20") {
+            return None;
+        }
+        match owner {
+            MetadataKind::Catalog => Some(Self::CatalogTabularSection220),
+            MetadataKind::InformationRegister => Some(Self::InformationRegisterDimension220),
+            _ => None,
+        }
+    }
+    pub fn owner_kind(self) -> MetadataKind {
+        match self {
+            Self::CatalogTabularSection220 => MetadataKind::Catalog,
+            Self::InformationRegisterDimension220 => MetadataKind::InformationRegister,
+        }
     }
 
     pub fn properties(
@@ -81,6 +93,11 @@ impl MetaMemberReadProfile {
     ) -> impl Iterator<Item = &'static MetaMemberPropertySpec> {
         let properties = match self {
             Self::CatalogTabularSection220 => CATALOG_MEMBER_PROPERTIES,
+            Self::InformationRegisterDimension220 => &[MetaMemberPropertySpec {
+                name: "TypeReductionMode",
+                context: MetaMemberReadContext::InformationRegisterDimension,
+                kind: MetaMemberValueKind::Text(&["TransformValues", "Deny", "DeleteData"]),
+            }],
         };
         properties
             .iter()
@@ -88,6 +105,11 @@ impl MetaMemberReadProfile {
     }
 
     pub fn context_for_field(self, field: &str) -> Option<MetaMemberReadContext> {
+        if self == Self::InformationRegisterDimension220 {
+            return indexed_field_suffix(field, "collections.dimensions[")?
+                .is_empty()
+                .then_some(MetaMemberReadContext::InformationRegisterDimension);
+        }
         let rest = indexed_field_suffix(field, "collections.tabularSections[")?;
         if rest.is_empty() {
             return Some(MetaMemberReadContext::TabularSection);
@@ -102,6 +124,20 @@ impl MetaMemberReadProfile {
         address: &QualifiedAddress,
         kind: NodeKind,
     ) -> Option<MetaMemberReadContext> {
+        if self == Self::InformationRegisterDimension220 {
+            return match address.segments() {
+                [owner, member]
+                    if owner.kind() == NodeKind::InformationRegister
+                        && owner.name().is_some()
+                        && member.kind() == NodeKind::Dimension
+                        && member.name().is_some()
+                        && kind == NodeKind::Dimension =>
+                {
+                    Some(MetaMemberReadContext::InformationRegisterDimension)
+                }
+                _ => None,
+            };
+        }
         match address.segments() {
             [owner, section]
                 if owner.kind() == NodeKind::Catalog
@@ -144,6 +180,7 @@ fn indexed_field_suffix<'a>(field: &'a str, prefix: &str) -> Option<&'a str> {
 impl MetaMemberReadContext {
     pub fn xml_tag(self) -> &'static str {
         match self {
+            Self::InformationRegisterDimension => "Dimension",
             Self::TabularSection => "TabularSection",
             Self::TabularAttribute => "Attribute",
         }
