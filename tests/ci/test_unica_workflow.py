@@ -361,7 +361,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Матрица — один macOS; Windows только в ночном large.
         self.assertEqual(
             normalized(other["strategy"]["matrix"]["runner"]),
-            "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && '[\"macos-14\", \"windows-latest\"]' || '[\"macos-14\"]') }}",
+            "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && '[\"macos-15\", \"windows-latest\"]' || '[\"macos-15\"]') }}",
         )
         self.assertEqual(needs(other), [])
         # Pull request без `ci:full` и push в `main` macOS не занимают.
@@ -375,7 +375,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                     self.assertNotIn("ci-python-ordinary", upload["name"])
         self.assertEqual(
             [download.get("pattern") for download in downloads(gate)],
-            ["{plan,results}-{macos-14,windows-latest}"],
+            ["{plan,results}-{macos-15,windows-latest}"],
         )
         # `Unica CI` ждёт джобу ОС по API, а не через `needs`.
         wait = step_by_id(gate, "os-jobs")
@@ -1091,9 +1091,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Две полосы: pull request — ubuntu, обе ОС — в очереди, на push
         # и по кнопке; ci:full возвращает macOS на следующем прогоне pull request.
         runners = step_by_id(gate, "runners")
-        self.assertIn('runners=["ubuntu-latest", "macos-14", "windows-latest"]', runners["run"])
+        self.assertIn('runners=["ubuntu-latest", "macos-15", "windows-latest"]', runners["run"])
         self.assertIn('runners=["ubuntu-latest"]', runners["run"])
-        self.assertIn('runners=["ubuntu-latest", "macos-14"]', runners["run"])
+        self.assertIn('runners=["ubuntu-latest", "macos-15"]', runners["run"])
         self.assertEqual(
             normalized(runners["env"]["FULL_MATRIX"]),
             "${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}",
@@ -1372,7 +1372,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         expected_targets = {
             "linux-x64": "ubuntu-latest",
             "win-x64": "windows-2022",
-            "darwin-arm64": "macos-14",
+            "darwin-arm64": "macos-15",
         }
 
         self.assertEqual(dict(targets(probe)), expected_targets)
@@ -1627,7 +1627,7 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
             [
                 ("linux-x64", "ubuntu-latest"),
                 ("win-x64", "windows-latest"),
-                ("darwin-arm64", "macos-14"),
+                ("darwin-arm64", "macos-15"),
             ],
         )
         authoritative_targets = {target for target, _ in authoritative}
