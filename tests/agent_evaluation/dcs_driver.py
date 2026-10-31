@@ -644,32 +644,92 @@ def verify_dcs_images(workspace):
             "registeredTemplates": registered}
 
 
+def observed_task(call, task_id):
+    """Validate a compatibility snapshot without treating observation as completion."""
+    result = call["result"]
+    data = result.get("data") if isinstance(result, dict) else None
+    task = data.get("task") if isinstance(data, dict) else None
+    if not isinstance(task, dict) or task.get("taskId") != task_id:
+        raise ValueError("Task observer changed or omitted the observed identity")
+    status = task.get("status")
+    if not isinstance(status, str) or status not in {"queued", "working", "completed", "failed", "cancelled"}:
+        raise ValueError("Task identity or state changed")
+    if status in {"failed", "cancelled"}:
+        diagnostics = result.get("diagnostics")
+        if (result.get("ok") is not False or call.get("isError") is not True
+                or not isinstance(diagnostics, list) or len(diagnostics) != 1):
+            raise ValueError("Task terminal refusal is malformed")
+        diagnostic = diagnostics[0]
+        if (not isinstance(diagnostic, dict) or diagnostic.get("code") != "task_" + status
+                or not isinstance(diagnostic.get("message"), str) or not diagnostic["message"]):
+            raise ValueError("Task terminal refusal disagrees with its state")
+        if status == "failed":
+            reason = diagnostic.get("failureReason")
+            if not isinstance(reason, str) or reason not in {
+                    "invocation_failed", "result_too_large", "interrupted", "resume_unsupported",
+                    "persistence_failed", "outcome_uncertain", "task_capacity", "workspace_capacity",
+                    "workspace_registry_failed", "workspace_changed"}:
+                raise ValueError("Task failure has no closed failure reason")
+        elif "failureReason" in diagnostic:
+            raise ValueError("Cancelled Task invented a failure reason")
+    elif call.get("isError", False):
+        raise ValueError("MCP error on non-error Task state")
+    elif result.get("ok") is not True or result.get("diagnostics"):
+        raise ValueError("Task state disagrees with its response envelope")
+    return status
+
+
 def terminal_calls(calls):
     pending = {}
     terminal = []
     for call in calls:
         name = call["params"]["name"]
-        result = call["result"] or {}
-        task = (result.get("data") or {}).get("task")
+        result = call["result"]
+        if result is None and name not in {"unica.task.result", "unica.task.get", "unica.task.cancel"}:
+            # Keep ordinary refusals on their existing terminal-call path.
+            # A Task observer still needs its structured completion evidence.
+            terminal.append(call)
+            continue
+        if not isinstance(result, dict):
+            raise ValueError("Tool result omitted its structured response")
+        data = result.get("data")
+        if data is not None and not isinstance(data, dict):
+            raise ValueError("Tool result data is malformed")
+        has_task = isinstance(data, dict) and "task" in data
+        task = data.get("task") if has_task else None
         if name == "unica.task.result":
             task_id = call["params"]["arguments"].get("taskId")
+            if not isinstance(task_id, str) or not task_id:
+                raise ValueError("Task observer omitted its identity")
             original = pending.get(task_id)
             if original is None:
                 raise ValueError("Task result has no observed originating call")
-            if task:
-                if task.get("taskId") != task_id or task.get("status") not in {"queued", "working", "completed"}:
-                    raise ValueError("Task identity or state changed")
-                continue
+            if has_task:
+                if observed_task(call, task_id) not in {"failed", "cancelled"}:
+                    continue
+            else:
+                diagnostics = result.get("diagnostics", [])
+                if (not isinstance(result.get("ok"), bool) or not isinstance(diagnostics, list)
+                        or (result.get("ok") is False and not diagnostics)
+                        or any(not isinstance(item, dict) or not isinstance(item.get("code"), str)
+                               or item["code"].startswith("task_")
+                               or item["code"] in {"invalid_task_id", "bad_wait_ms", "bad_task_arguments"}
+                               for item in diagnostics)):
+                    raise ValueError("Task observer refusal is not an originating operation result")
+                if bool(call.get("isError", False)) != (result["ok"] is False):
+                    raise ValueError("MCP error envelope disagrees with originating operation result")
             pending.pop(task_id)
             terminal.append({**original, "done": call["done"], "after": call["after"], "filesAfter": call.get("filesAfter"), "rootsAfter": call.get("rootsAfter"), "result": call["result"], "isError": original.get("isError", False) or call.get("isError", False)})
         elif name in {"unica.task.get", "unica.task.cancel"}:
             task_id = call["params"]["arguments"].get("taskId")
-            if task_id not in pending or not task or task.get("taskId") != task_id:
+            if not isinstance(task_id, str) or task_id not in pending:
                 raise ValueError("Task observer changed or omitted the observed identity")
-        elif task:
-            task_id = task.get("taskId")
+            observed_task(call, task_id)
+        elif has_task:
+            task_id = task.get("taskId") if isinstance(task, dict) else None
             if not isinstance(task_id, str) or not task_id or task_id in pending:
                 raise ValueError("missing or duplicate originating Task identity")
+            observed_task(call, task_id)
             pending[task_id] = call
         elif name not in {"unica.task.get", "unica.task.cancel"}:
             terminal.append(call)
