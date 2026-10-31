@@ -1,0 +1,1596 @@
+{
+  "id": "S-1627-constant-family-typeset",
+  "issue": 1627,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-constant-family-typeset",
+  "task": "Читать ExchangePlanRef как readonly-семейство с QName URI без выдуманного адреса. Discovery ведёт к константам; именованные ссылки, четыре DefinedType и примитивные квалификаторы сохраняются. Отсутствие Type, неизвестный тип и повреждение различаются, семейство не становится входом записи, исходные XML неизменны после чтения и preview.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "config": {
+          "pointer": "/next/0/args/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.config"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/28/at",
+          "eq": "main:Constant"
+        }
+      ],
+      "captures": {
+        "constants": {
+          "pointer": "/data/branches/28/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.constants",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Constant.ГлавныйУзел"
+        }
+      ],
+      "captures": {
+        "c0": {
+          "pointer": "/data/items/0/at"
+        },
+        "c1": {
+          "pointer": "/data/items/1/at"
+        },
+        "c2": {
+          "pointer": "/data/items/2/at"
+        },
+        "c3": {
+          "pointer": "/data/items/3/at"
+        },
+        "c4": {
+          "pointer": "/data/items/4/at"
+        },
+        "c5": {
+          "pointer": "/data/items/5/at"
+        },
+        "c6": {
+          "pointer": "/data/items/6/at"
+        },
+        "c7": {
+          "pointer": "/data/items/7/at"
+        },
+        "c8": {
+          "pointer": "/data/items/8/at"
+        },
+        "c9": {
+          "pointer": "/data/items/9/at"
+        },
+        "c10": {
+          "pointer": "/data/items/10/at"
+        },
+        "c11": {
+          "pointer": "/data/items/11/at"
+        },
+        "c12": {
+          "pointer": "/data/items/12/at"
+        },
+        "c13": {
+          "pointer": "/data/items/13/at"
+        },
+        "c14": {
+          "pointer": "/data/items/14/at"
+        },
+        "c15": {
+          "pointer": "/data/items/15/at"
+        },
+        "c16": {
+          "pointer": "/data/items/16/at"
+        },
+        "c17": {
+          "pointer": "/data/items/17/at"
+        },
+        "c18": {
+          "pointer": "/data/items/18/at"
+        },
+        "c19": {
+          "pointer": "/data/items/19/at"
+        },
+        "c20": {
+          "pointer": "/data/items/20/at"
+        },
+        "c21": {
+          "pointer": "/data/items/21/at"
+        },
+        "c22": {
+          "pointer": "/data/items/22/at"
+        },
+        "c23": {
+          "pointer": "/data/items/23/at"
+        },
+        "c24": {
+          "pointer": "/data/items/24/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "referenceFamily",
+                "typeName": "ExchangePlanRef",
+                "namespaceUri": "http://v8.1c.ru/8.1/data/enterprise/current-config"
+              }
+            ],
+            "mutationCapability": "readOnly"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "referenceFamily",
+                "typeName": "ExchangePlanRef",
+                "namespaceUri": "http://v8.1c.ru/8.1/data/enterprise/current-config"
+              }
+            ],
+            "mutationCapability": "readOnly"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "ExchangePlan.Node"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "ExchangePlan.Node"
+              },
+              {
+                "kind": "referenceFamily",
+                "typeName": "ExchangePlanRef",
+                "namespaceUri": "http://v8.1c.ru/8.1/data/enterprise/current-config"
+              }
+            ],
+            "mutationCapability": "readOnly"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "boolean"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 12,
+                "allowedLength": "fixed"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c6"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 0,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c7"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "number",
+                "digits": 15,
+                "fraction": 2,
+                "sign": "any"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c8"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "number",
+                "digits": 12,
+                "fraction": 0,
+                "sign": "nonNegative"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c9"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "valueStorage"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c10"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "uuid"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c11"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c12"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "validation_warning"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c13"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "unsupported namespace"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c14"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "prefix is not declared"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c15"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "number digits"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c16"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "Fixed requires a positive length"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c17"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "ValueStorage must be the only"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c18"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "date",
+                "fractions": "date"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c19"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "date",
+                "fractions": "time"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c20"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "date",
+                "fractions": "dateTime"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c21"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "definedType",
+                "metadataPath": "DefinedType.ВидКартыСерверЛояльности"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c22"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "definedType",
+                "metadataPath": "DefinedType.ЕдиницаИзмеренияКилограммИС"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c23"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "definedType",
+                "metadataPath": "DefinedType.ЕдиницаИзмеренияЛитрИС"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.c24"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/MinValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "definedType",
+                "metadataPath": "DefinedType.ПрофильБезопасностиИнформационнойБазы"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MixedPlan.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Constant.ГлавныйУзел"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "meta"
+          ]
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Constant.MissingType"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "meta"
+          ]
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Constant.UnknownFamily"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "meta"
+          ]
+        },
+        {
+          "pointer": "/data/diagnostics/0/code",
+          "eq": "validation_warning"
+        },
+        {
+          "pointer": "/data/diagnostics/0/severity",
+          "eq": "warning"
+        },
+        {
+          "pointer": "/data/diagnostics/0/field",
+          "eq": "details.type"
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Constant.ForeignFamily"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "failed"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "meta"
+          ]
+        },
+        {
+          "pointer": "/data/diagnostics/0/code",
+          "eq": "validation_failed"
+        },
+        {
+          "pointer": "/data/diagnostics/0/severity",
+          "eq": "error"
+        },
+        {
+          "pointer": "/data/diagnostics/0/field",
+          "eq": "details.type"
+        }
+      ],
+      "status": "failed",
+      "validators": [
+        "meta"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Constant.BadNumberFamily"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "failed"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "meta"
+          ]
+        },
+        {
+          "pointer": "/data/diagnostics/0/code",
+          "eq": "validation_failed"
+        },
+        {
+          "pointer": "/data/diagnostics/0/severity",
+          "eq": "error"
+        },
+        {
+          "pointer": "/data/diagnostics/0/field",
+          "eq": "details.type"
+        }
+      ],
+      "status": "failed",
+      "validators": [
+        "meta"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.BooleanControl",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Type": {
+                  "variants": [
+                    {
+                      "kind": "number",
+                      "digits": 10,
+                      "fraction": 0,
+                      "sign": "any"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.BooleanControl",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Type": {
+                  "variants": [
+                    {
+                      "kind": "referenceFamily",
+                      "typeName": "ExchangePlanRef",
+                      "namespaceUri": "http://v8.1c.ru/8.1/data/enterprise/current-config"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.Type.variants[0].kind"
+        }
+      ],
+      "refusal": "bad_value: unsupported type kind `referenceFamily`",
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "c80f359ad2c154e34d58fe48e643cc0a75f6348a2b94b2c1b48beb5b0618243d"
+        },
+        {
+          "path": "src/Constants/AliasFamily.xml",
+          "kind": "sha256",
+          "eq": "8e5566d95de92e777b23f84030081ea3e638e6b0c02104381a135223758eb14d"
+        },
+        {
+          "path": "src/Constants/BadFixedFamily.xml",
+          "kind": "sha256",
+          "eq": "3c811e63fa693119381caa2d826b9bfa5057d34046689b1ea342b4a7a6a7b538"
+        },
+        {
+          "path": "src/Constants/BadNumberFamily.xml",
+          "kind": "sha256",
+          "eq": "8502a6b84c2ef1b640202291f7c69d93ddb2b67774f106ea8206a3af7f6689a2"
+        },
+        {
+          "path": "src/Constants/BadStorageFamily.xml",
+          "kind": "sha256",
+          "eq": "a8488816185d1eaffd4db6a7a9562205d99787eb0856e494f6c06f507a92a33b"
+        },
+        {
+          "path": "src/Constants/BooleanControl.xml",
+          "kind": "sha256",
+          "eq": "4926832dd6bb051492dba714be0ba6f6781ac882b7bc95cfccbcb2ce35606a99"
+        },
+        {
+          "path": "src/Constants/DateControl.xml",
+          "kind": "sha256",
+          "eq": "d4db3038699919e622a626a9ac0aaf77af4e21a059ca3366b889278212ac5e54"
+        },
+        {
+          "path": "src/Constants/DateTimeControl.xml",
+          "kind": "sha256",
+          "eq": "aa93b214bff7acd0a6a36306b4841565a51792625785abf4448ce382c41002f0"
+        },
+        {
+          "path": "src/Constants/FixedString.xml",
+          "kind": "sha256",
+          "eq": "dbb315a7ede724c39d90096aa060ec71cbaeb1f684e29ccd4a40fada67beedfc"
+        },
+        {
+          "path": "src/Constants/ForeignFamily.xml",
+          "kind": "sha256",
+          "eq": "2d720b88a63c153c743039c0e10dc70e18a72f842764e48fafb01d5278f5e2c4"
+        },
+        {
+          "path": "src/Constants/MalformedQName.xml",
+          "kind": "sha256",
+          "eq": "9ca0c1e5718796df9ed14c4b20fb071d748b6e76497d6cd76143cbddc58ad9fe"
+        },
+        {
+          "path": "src/Constants/MissingType.xml",
+          "kind": "sha256",
+          "eq": "07b7377986451af450de300908de44a01d9d49768164557e43af641e6d6428c5"
+        },
+        {
+          "path": "src/Constants/MixedPlan.xml",
+          "kind": "sha256",
+          "eq": "d999ff8a03bab93ed67b1e4f7465c5bcfb160db129de7ab1600af8d8b2577fa8"
+        },
+        {
+          "path": "src/Constants/NamedPlan.xml",
+          "kind": "sha256",
+          "eq": "018a39826c844e71b7be55f5018efd9771f50349c01f2656b5d5f66c290eae9c"
+        },
+        {
+          "path": "src/Constants/NumberAny.xml",
+          "kind": "sha256",
+          "eq": "177a9b77b410bdf3370577a51020874f462ee4fafba298a16696b5a89b98943c"
+        },
+        {
+          "path": "src/Constants/NumberNonNegative.xml",
+          "kind": "sha256",
+          "eq": "d47d7f604ed07d7e60dfc542dcd0c1b24b4dc55fa37118f8d875a5ce26ab72b2"
+        },
+        {
+          "path": "src/Constants/TimeControl.xml",
+          "kind": "sha256",
+          "eq": "0e7d5e6ff7a1f628ab7e93dfa288c683f5317d0f682f901ea72de5f4bd08d5b0"
+        },
+        {
+          "path": "src/Constants/UUIDControl.xml",
+          "kind": "sha256",
+          "eq": "144b90eaf19e1b879315164bf091896c4da26d3651df88948ac3412a18b22472"
+        },
+        {
+          "path": "src/Constants/UnknownFamily.xml",
+          "kind": "sha256",
+          "eq": "70512dbcbd14e8dbaf5c635bdedf3e7421f0d9c0f28cffef77a0d944b748c107"
+        },
+        {
+          "path": "src/Constants/ValueStorageControl.xml",
+          "kind": "sha256",
+          "eq": "38b8edae517de6aa531447d31310b7ecf2cd3ebfdd9535a204811e93374d2774"
+        },
+        {
+          "path": "src/Constants/VariableString.xml",
+          "kind": "sha256",
+          "eq": "d0019a852a86089b40e77006f906a384ea96c3ada9be5a48b7ad560a60c11dc3"
+        },
+        {
+          "path": "src/Constants/ВидКартыСерверЛояльности.xml",
+          "kind": "sha256",
+          "eq": "b7d332972d87eca18f193812c8155845313cf1d309d4409052080490a0100f61"
+        },
+        {
+          "path": "src/Constants/ГлавныйУзел.xml",
+          "kind": "sha256",
+          "eq": "3566d7a4fe2be8710bdcfb37c568ea0d9fa355b3b83b455fe522ee51c8d2cb28"
+        },
+        {
+          "path": "src/Constants/ЕдиницаИзмеренияКилограммИС.xml",
+          "kind": "sha256",
+          "eq": "66b333490e9e4d79941eac7be1386c79b7c191a98e8f4112640aa72078be92b9"
+        },
+        {
+          "path": "src/Constants/ЕдиницаИзмеренияЛитрИС.xml",
+          "kind": "sha256",
+          "eq": "a9906e9109b1679638e0f1369abf91b03e7906eb829e6e046f0e5b54ffce0235"
+        },
+        {
+          "path": "src/Constants/ПрофильБезопасностиИнформационнойБазы.xml",
+          "kind": "sha256",
+          "eq": "f46e05e9936e387f2da47c05a86608adcf9cbf0f7b343e05868709fad2dbb49a"
+        },
+        {
+          "path": "src/DefinedTypes/ВидКартыСерверЛояльности.xml",
+          "kind": "sha256",
+          "eq": "9ac12e6e4ef6b64a46319a44932e2ff525071562444a827375a22a55e196bca7"
+        },
+        {
+          "path": "src/DefinedTypes/ЕдиницаИзмеренияКилограммИС.xml",
+          "kind": "sha256",
+          "eq": "78a2cf965f72a0ca16b9c0ed9467ed2c34bba30efeb5c1eb954e7373da33fcfc"
+        },
+        {
+          "path": "src/DefinedTypes/ЕдиницаИзмеренияЛитрИС.xml",
+          "kind": "sha256",
+          "eq": "45553eb0b182360431589d4815a729e194ff06001d38b418e58fa078556cf213"
+        },
+        {
+          "path": "src/DefinedTypes/ПрофильБезопасностиИнформационнойБазы.xml",
+          "kind": "sha256",
+          "eq": "51d45b6951a5888f1801477a9a3f105f3cbff5a424b63a34a30b66822279b9c8"
+        },
+        {
+          "path": "src/ExchangePlans/Node.xml",
+          "kind": "sha256",
+          "eq": "79e2cf282c9602c8c5ae66089c85ca6947705a25ef1ff80b295636fec75a4c41"
+        },
+        {
+          "path": "src/ExchangePlans/Other.xml",
+          "kind": "sha256",
+          "eq": "d6d7cf811e5d454980242cc92f74e8e42db208a6d0fd7c479b034d0ae8ea92c1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "7654708398f01cf93b276ea1cb3fe49efb45cf6e49dc9c0de83af972c2a0faa8"
+        }
+      ]
+    }
+  ]
+}
