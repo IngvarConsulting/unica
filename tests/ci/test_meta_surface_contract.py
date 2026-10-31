@@ -616,7 +616,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         )
         self.assertTrue(
             {
-                "parse_metadata_plan_operation_in", "plan_metadata_batch",
+                "parse_metadata_plan_operation_in", "plan_metadata_batch_with_context",
                 "build_typed_operation_post_image", "read_typed_meta_info",
                 "plan_borrow_object_with_identity", "plan_borrow_enum_value",
                 "stage_metadata_resource_plan",

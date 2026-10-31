@@ -41,6 +41,73 @@ pub trait MetadataPlanningRead {
         crate::remove::RemoveObservationHooks::NONE
     }
 }
+
+/// Explicit bindings supplied later in the same request, across family runs.
+/// The metadata planner owns their meaning; the coordinator only supplies
+/// its already parsed metadata operations in request order.
+#[derive(Default)]
+pub struct MetadataCreationOverrides {
+    by_index: std::collections::HashMap<
+        usize,
+        crate::template_catalog::MetadataTemplateOperationOverrides,
+    >,
+}
+
+impl MetadataCreationOverrides {
+    pub fn from_operations<'a>(
+        operations: impl IntoIterator<Item = &'a IndexedPlanOperation<MetadataPlanOperation>>,
+    ) -> Self {
+        let operations = operations.into_iter().collect::<Vec<_>>();
+        let mut pending = std::collections::HashMap::<
+            MetadataAddress,
+            crate::template_catalog::MetadataTemplateOperationOverrides,
+        >::new();
+        let mut result = Self::default();
+        for operation in operations.into_iter().rev() {
+            match &operation.operation().kind {
+                MetadataPlanKind::Edit {
+                    target,
+                    operation: edit,
+                    ..
+                } => match edit {
+                    MetaEditOperation::EditRelations {
+                        relation: unica_metadata::MetaRelation::Source,
+                        mode: unica_metadata::RelationEditMode::Replace,
+                        ..
+                    } => pending.entry(target.clone()).or_default().source = true,
+                    MetaEditOperation::SetProperties { values }
+                        if values
+                            .entries()
+                            .iter()
+                            .any(|(key, _)| *key == unica_metadata::MetaPropertyKey::Handler) =>
+                    {
+                        pending.entry(target.clone()).or_default().handler = true
+                    }
+                    _ => {}
+                },
+                MetadataPlanKind::Create { kind, name } => {
+                    let Ok(target) = MetadataAddress::parse(
+                        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        &format!("{}.{name}", kind.as_str()),
+                    ) else {
+                        // The ordinary creation validator reports the invalid
+                        // name; an intent hint must never turn it into a panic.
+                        continue;
+                    };
+                    let overrides = pending.remove(&target).unwrap_or_default();
+                    if *kind == MetadataKind::EventSubscription {
+                        result.by_index.insert(operation.index(), overrides);
+                    }
+                }
+                MetadataPlanKind::Remove { target, .. } => {
+                    pending.remove(target);
+                }
+                _ => {}
+            }
+        }
+        result
+    }
+}
 /// Local composition belongs to the final descriptor, after every operation
 /// family has contributed its image. A borrowed descriptor contains only the
 /// extension's contribution and cannot establish the parent's composition.
@@ -104,10 +171,33 @@ pub fn validate_final_object_integrity(
     Ok(())
 }
 
-/// The source classes and the event a subscription descriptor binds.
+struct EventSubscriptionBinding {
+    sources: Vec<unica_metadata::MetaEventSource>,
+    event: String,
+    handler: String,
+}
+
+fn event_subscription_binding_fields(bytes: &[u8]) -> Option<[Vec<&str>; 3]> {
+    let (_, document) = unica_xml_format::read::parse_metadata_image(bytes).ok()?;
+    let owner = document
+        .root_element()
+        .children()
+        .find(|node| node.has_tag_name((crate::xml_model::MD_CLASSES_NS, "EventSubscription")))?;
+    let properties = crate::info_projection::direct_md_child(owner, "Properties")?;
+    let text = document.input_text();
+    Some(["Source", "Event", "Handler"].map(|field| {
+        properties
+            .children()
+            .filter(|node| node.has_tag_name((crate::xml_model::MD_CLASSES_NS, field)))
+            .map(|node| &text[node.range()])
+            .collect()
+    }))
+}
+
+/// The source classes, event and handler a subscription descriptor binds.
 fn event_subscription_binding(
     bytes: &[u8],
-) -> Result<(Vec<unica_metadata::MetaEventSource>, String), (&'static str, String)> {
+) -> Result<EventSubscriptionBinding, (&'static str, String)> {
     let (_, document) = unica_xml_format::read::parse_metadata_image(bytes)
         .map_err(|message| ("resources", message))?;
     let source = crate::xml_model::meta_event_subscription_source_node(&document)
@@ -119,7 +209,15 @@ fn event_subscription_binding(
         .parent_element()
         .and_then(|properties| unica_xml_format::read::child_direct_text(properties, "Event"))
         .unwrap_or_default();
-    Ok((sources, event))
+    let handler = source
+        .parent_element()
+        .and_then(|properties| unica_xml_format::read::child_direct_text(properties, "Handler"))
+        .unwrap_or_default();
+    Ok(EventSubscriptionBinding {
+        sources,
+        event,
+        handler,
+    })
 }
 
 /// INV.SOURCE.EVENT-DEFINED-TYPE: a changed source or event is checked against
@@ -127,7 +225,8 @@ fn event_subscription_binding(
 /// classes, nested ones included. A cycle or an unfit member refuses the plan.
 /// Defined types are read through the proposal: their descriptors become
 /// inputs of the plan, so changing one after planning makes the token stale.
-/// The handler contract stays with `check` (#931).
+/// Source, event and handler are checked together against the final images,
+/// including module edits contributed by other operation families.
 fn validate_final_event_subscription(
     staged: &mut ApplyProposal<'_>,
     relative: &Path,
@@ -143,20 +242,20 @@ fn validate_final_event_subscription(
     if final_object_inherits_composition(MetadataKind::EventSubscription, bytes) {
         return Ok(());
     }
-    let binding = event_subscription_binding(bytes);
-    // Only a changed source or event is checked; an edit of another property
-    // keeps whatever the descriptor held, including a source this reader
-    // cannot parse.
-    if staged
-        .original_image(relative)
-        .is_some_and(|original| event_subscription_binding(original) == binding)
-    {
+    // An unrelated property edit preserves an existing binding, including
+    // one that is incomplete. Compare all occurrences so damaged fields do
+    // not hide a related change behind the same parsing error.
+    let binding_fields = event_subscription_binding_fields(bytes);
+    if staged.original_image(relative).is_some_and(|original| {
+        binding_fields.is_some() && event_subscription_binding_fields(original) == binding_fields
+    }) {
         return Ok(());
     }
-    let (sources, event) = binding.map_err(|(field, message)| refuse(field, message))?;
-    if sources.is_empty() || event.is_empty() {
-        return Ok(());
-    }
+    let EventSubscriptionBinding {
+        sources,
+        event,
+        handler,
+    } = event_subscription_binding(bytes).map_err(|(field, message)| refuse(field, message))?;
     let mut classes = Vec::new();
     let mut visiting = std::collections::HashSet::new();
     for (index, source) in sources.iter().enumerate() {
@@ -167,6 +266,71 @@ fn validate_final_event_subscription(
         let (field, message) = crate::validation::event_binding_error_message(error);
         refuse(field, message)
     })?;
+    let parts = handler.split('.').collect::<Vec<_>>();
+    let ["CommonModule", module_name, method_name] = parts.as_slice() else {
+        return Err(refuse(
+            "properties.handler",
+            "EventSubscription Handler must use CommonModule.<Module>.<Procedure>".to_string(),
+        ));
+    };
+    let target = MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("CommonModule.{module_name}"),
+    )
+    .map_err(|_| {
+        refuse(
+            "properties.handler",
+            "EventSubscription Handler CommonModule is invalid".to_string(),
+        )
+    })?;
+    let missing = || {
+        refuse(
+            "properties.handler",
+            format!(
+                "CommonModule `{module_name}` handler evidence is unavailable in this source set"
+            ),
+        )
+    };
+    let registration = staged
+        .read(Path::new("Configuration.xml"))
+        .map_err(|error| ApplyPlanError::staging(error, at))?
+        .ok_or_else(missing)?;
+    if crate::validation_context::validate_configuration_registration(
+        &registration,
+        "CommonModule",
+        module_name,
+        "EventSubscription handler",
+    )
+    .is_err()
+    {
+        return Err(missing());
+    }
+    let descriptor_path = metadata_descriptor_relative(&target, source_kind)
+        .map_err(|message| refuse("properties.handler", message))?;
+    let descriptor = staged
+        .read(&descriptor_path)
+        .map_err(|error| ApplyPlanError::staging(error, at))?
+        .ok_or_else(missing)?;
+    let module_path = PathBuf::from("CommonModules")
+        .join(module_name)
+        .join("Ext/Module.bsl");
+    let module = staged
+        .read(&module_path)
+        .map_err(|error| ApplyPlanError::staging(error, at))?
+        .ok_or_else(missing)?;
+    let facts = crate::validation::event_handler_facts_from_images(
+        module_name,
+        method_name,
+        &descriptor,
+        &module,
+    )
+    .map_err(|message| refuse("properties.handler", message))?;
+    unica_metadata::validate_event_subscription_binding(&classes, &event, facts).map_err(
+        |error| {
+            let (field, message) = crate::validation::event_binding_error_message(error);
+            refuse(field, message)
+        },
+    )?;
     Ok(())
 }
 
@@ -237,6 +401,25 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
     authority: &dyn ApplySourceAuthority,
     operations: &[IndexedPlanOperation<MetadataPlanOperation>],
 ) -> Result<Vec<ProvisionalApplyEffect>, ApplyPlanError> {
+    let creation_overrides = MetadataCreationOverrides::from_operations(operations);
+    plan_metadata_batch_with_context(
+        reader,
+        template_seed,
+        staged,
+        authority,
+        operations,
+        &creation_overrides,
+    )
+}
+
+pub fn plan_metadata_batch_with_context<R: MetadataPlanningRead>(
+    reader: &R,
+    template_seed: TemplateSeedEmitter,
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
+    operations: &[IndexedPlanOperation<MetadataPlanOperation>],
+    creation_overrides: &MetadataCreationOverrides,
+) -> Result<Vec<ProvisionalApplyEffect>, ApplyPlanError> {
     if operations.is_empty() {
         return Err(empty_apply_family_batch());
     }
@@ -292,6 +475,11 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                     authority.source_root(),
                     *kind,
                     name,
+                    creation_overrides
+                        .by_index
+                        .get(&op_index)
+                        .copied()
+                        .unwrap_or_default(),
                     op_index,
                     &mut provisional,
                 )?;
@@ -731,6 +919,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
     root: &std::path::Path,
     kind: MetadataKind,
     name: &str,
+    overrides: crate::template_catalog::MetadataTemplateOperationOverrides,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
@@ -743,10 +932,7 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
             source,
             kind,
             name,
-            crate::template_catalog::MetadataTemplateOperationOverrides {
-                source: false,
-                handler: false,
-            },
+            overrides,
             source_set_name,
             &language,
         )

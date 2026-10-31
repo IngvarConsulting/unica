@@ -3,6 +3,9 @@ id: INV.APP.EVENT-BINDING
 check:
   - crates/unica-metadata/src/event_subscription.rs::event_subscription_binding_requires_exact_case_presence_and_one_signature
   - crates/unica-metadata/src/event_subscription.rs::event_subscription_binding_validates_the_complete_handler_contract
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/object_integrity_tests.rs::canonical_subscription_creation_uses_the_explicit_final_document_binding
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/object_integrity_tests.rs::canonical_subscription_handler_only_edits_use_the_source_signature
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/object_integrity_tests.rs::canonical_subscription_never_substitutes_a_module_outside_its_source_set
 gap: https://github.com/IngvarConsulting/unica/issues/931
 ---
 
@@ -20,8 +23,5 @@ gap: https://github.com/IngvarConsulting/unica/issues/931
 события плюс один для источника. Отсутствующий флаг не заменяется
 подходящим значением по умолчанию; имена параметров не проверяются.
 
-Эти проверки доказывают работу валидатора. Его обязательное применение
+Обязательное применение валидатора
 к итоговому объекту относится к [корректности изменения](metadata-mutation-validity.md).
-
-Изоляция при разрешении обработчика требует отдельной проверки текущего `apply`;
-тесты валидатора принимают уже подготовленные сведения о модуле.

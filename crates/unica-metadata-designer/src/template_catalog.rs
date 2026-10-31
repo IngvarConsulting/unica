@@ -212,11 +212,16 @@ impl<G> MinimalTemplateContext<G> {
             }
             MetadataKind::EventSubscription => {
                 if !overrides.handler {
+                    let event = unica_metadata::event_definition(
+                        unica_metadata::EventSourceClass::CatalogObject,
+                        "BeforeWrite",
+                    )
+                    .expect("the checked catalog defines CatalogObject.BeforeWrite");
                     let (module, method, module_guard) = required_common_module_method(
                         source,
                         source_set,
                         kind,
-                        BslProcedureRequirement::ExactArity(2),
+                        BslProcedureRequirement::ExactArity(event.parameters.len() + 1),
                     )?;
                     context.event_handler = Some(format!("CommonModule.{module}.{method}"));
                     context.dependencies.push(read_dependency(
@@ -252,7 +257,8 @@ pub fn required_common_module_method<G>(
     requested: MetadataKind,
     requirement: BslProcedureRequirement,
 ) -> Result<(String, String, MetadataTemplateFile<G>), unica_metadata::request::MetaFailure> {
-    for module in registered_names(source.owner_preimage, "CommonModule") {
+    let modules = registered_names(source.owner_preimage, "CommonModule");
+    for module in modules {
         let relative_path = PathBuf::from("CommonModules")
             .join(&module)
             .join("Ext/Module.bsl");
@@ -292,6 +298,39 @@ pub fn required_common_module_method<G>(
         else {
             continue;
         };
+        if requested == MetadataKind::EventSubscription {
+            if crate::validation_context::validate_configuration_registration(
+                source.owner_preimage,
+                "CommonModule",
+                &module,
+                "EventSubscription handler",
+            )
+            .is_err()
+            {
+                continue;
+            }
+            let descriptor_path = PathBuf::from("CommonModules").join(format!("{module}.xml"));
+            let Ok(descriptor) = source.reader.read_relative_regular_file(&descriptor_path) else {
+                continue;
+            };
+            let Ok(facts) = crate::validation::event_handler_facts_from_images(
+                &module,
+                &method,
+                &descriptor,
+                &bytes,
+            ) else {
+                continue;
+            };
+            if unica_metadata::validate_event_subscription_binding(
+                &[unica_metadata::EventSourceClass::CatalogObject],
+                "BeforeWrite",
+                facts,
+            )
+            .is_err()
+            {
+                continue;
+            }
+        }
         let module_target = MetadataAddress::parse(
             PLATFORM_XML_8_3_27_FORMAT_2_20,
             &format!("CommonModule.{module}"),
