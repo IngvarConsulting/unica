@@ -121,7 +121,7 @@ jobs:
           persist-credentials: false
           # Классификатор и страж неизменности продукта сравнивают с базой.
           fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       # Раннеры прогона. Pull request идёт только на Linux; метка `ci:full`,
@@ -197,7 +197,7 @@ jobs:
       # отдельно. Токен нужен сетевым проверкам: подменённые коммиты, известные
       # уязвимости действий.
       - if: ${{ !cancelled() }}
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: zizmor@1.30.0
       # Отчёты лежат в игнорируемом `.build/`: неотслеживаемый файл в дереве
@@ -212,17 +212,17 @@ jobs:
       # исчезает после вливания) не красит гейт: это отчёт, не проверка.
       - if: ${{ !cancelled() && hashFiles('.build/zizmor.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: .build/zizmor.sarif
           category: zizmor
 
       - if: ${{ !cancelled() && (steps.classify.outputs.rust_required == 'true' || steps.classify.outputs.cache_required == 'true') }}
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-nextest@0.9.148
       - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: clippy-sarif@0.8.0,sarif-fmt@0.8.0
       # Один ключ зависимостей на ОС для всего, что собирает джоба: архивы
@@ -232,7 +232,7 @@ jobs:
       # новым точным ключом, а точное попадание уже не пересохраняется.
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR, очередь и тег читают область main; поставку собирает build-tools
         if: ${{ !cancelled() && (steps.classify.outputs.rust_required == 'true' || steps.classify.outputs.cache_required == 'true' || (steps.classify.outputs.docs_only != 'true' && !(github.event_name == 'push' && github.ref == 'refs/heads/main'))) }}
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ci-rust-ordinary
           save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
@@ -309,7 +309,7 @@ jobs:
       # потерять историю оповещений.
       - if: always() && hashFiles('.build/clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: .build/clippy.sarif
           category: clippy-ubuntu-latest
@@ -497,7 +497,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - id: line
@@ -525,13 +525,13 @@ jobs:
           toolchain: stable
           components: clippy
       - if: steps.classify.outputs.rust_required == 'true'
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: clippy-sarif@0.8.0,sarif-fmt@0.8.0
       # Только чтение: pull request ключ не пишет.
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; PR читает область main, джоба публикует только SARIF и отчёт Python
         if: steps.classify.outputs.rust_required == 'true'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ci-rust-ordinary
           save-if: false
@@ -579,7 +579,7 @@ jobs:
       # потерять историю оповещений.
       - if: always() && hashFiles('.build/clippy.sarif') != '' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: .build/clippy.sarif
           category: clippy-ubuntu-latest
@@ -637,7 +637,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - id: line
@@ -666,12 +666,12 @@ jobs:
           toolchain: stable
           components: clippy
       - if: steps.classify.outputs.rust_required == 'true'
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-nextest@0.9.148
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR, очередь и тег читают область main; поставку собирает build-tools
         if: steps.classify.outputs.rust_required == 'true'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ci-rust-ordinary
           save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
@@ -759,7 +759,7 @@ jobs:
           persist-credentials: false
           # Классификатор сравнивает дерево с базой записи очереди.
           fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - id: line
@@ -789,7 +789,7 @@ jobs:
       # `large` джобой `Rust (windows-latest)`.
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; очередь и кнопка читают область main, джоба ничего не публикует
         if: steps.classify.outputs.rust_required == 'true'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ci-rust-ordinary
           save-if: false
@@ -826,7 +826,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Check bootstrap smoke process cleanup on Windows
@@ -1145,7 +1145,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       # Packaging requires release.tag == v{pluginVersion}, so a non-tag build
@@ -1230,7 +1230,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1311,7 +1311,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1344,7 +1344,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Resolve the release tag for non-tag builds
@@ -1463,7 +1463,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1511,7 +1511,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Download release assets from GitHub
