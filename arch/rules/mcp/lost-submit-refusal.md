@@ -6,6 +6,10 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_without_a_receipt_whose_fence_meets_the_call_names_its_task
   - crates/unica-coder/src/interfaces/daemon_router.rs::recovery_without_a_receipt_fences_the_exact_key_and_answers_not_delivered
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_call_whose_connection_never_stood_was_not_delivered
+  - crates/unica-coder/src/interfaces/daemon_router.rs::readiness_timeout_before_outer_cutoff_is_not_delivered
+  - crates/unica-daemon/src/client_v5.rs::failed_readiness_kills_the_child_within_the_original_budget
+  - crates/unica-daemon/src/client_v5.rs::startup_handshake_timeout_is_expiry_but_early_rejection_is_not
+  - crates/unica-daemon/src/client_v5.rs::failed_readiness_preserves_expiry_when_cleanup_cannot_confirm_exit
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_daemon_refusing_the_connection_needs_a_person_not_a_repeat
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_lost_submit_is_the_queued_task_reserved_for_the_call
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_lost_task_the_daemon_does_not_know_answers_task_not_found
@@ -51,11 +55,12 @@ gap: https://github.com/IngvarConsulting/unica/issues/1743
 ([правило](../runtime/receipt-cancel-reservation.md)) преграда не создаёт.
 
 Вызов, кадр которого не ушёл, также получает `submit_not_delivered`, если
-соединение не успело установиться до срока. Если же демон отказал
-в соединении раньше срока — не запустился, отверг рукопожатие или
-принадлежит другому ядру, — ответ `task_backend_failed` с `detailCode:
-backend_incompatible` и исходом `needsHuman`: повтор того же вызова ничего
-не изменит.
+истёк срок ожидания соединения, в том числе готовности запущенного демона.
+Оставшийся запас времени на очистку не меняет этот исход. Если попытка
+соединения получила явный отказ до истечения срока, ответ `task_backend_failed`
+с `detailCode: backend_incompatible` и исходом `needsHuman`. К таким отказам
+относятся ошибка запуска, завершение демона до готовности, отказ рукопожатия
+и несовпадение ядра. Повтор того же вызова ничего не изменит.
 
 Повтор вызова вместо ожидания остаётся новым вызовом. Для чтений его
 поведение описано в [правиле присоединения](../runtime/read-call-joining.md).

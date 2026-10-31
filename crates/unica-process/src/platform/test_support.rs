@@ -7,7 +7,8 @@ pub use super::process::assert_windows_runtime_process_tree_semantics_for_test;
 pub use super::process::{
     inject_runtime_tree_cleanup_timeout_for_test, reset_runtime_tree_cleanup_calls_for_test,
     runtime_process_tree_test_scenario_for_test, runtime_tree_cleanup_calls_for_test,
-    JobAttachGateForTest, RuntimeProcessTreeTestProbe, RuntimeProcessTreeTestScenario,
+    JobAttachGateForTest, ManualStartupTerminationProbe, RuntimeProcessTreeTestProbe,
+    RuntimeProcessTreeTestScenario,
 };
 
 pub use super::host_capability::{
