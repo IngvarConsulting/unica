@@ -672,7 +672,9 @@ def observed_task(call, task_id):
                 raise ValueError("Task failure has no closed failure reason")
         elif "failureReason" in diagnostic:
             raise ValueError("Cancelled Task invented a failure reason")
-    elif result.get("ok") is not True or call.get("isError", False) or result.get("diagnostics"):
+    elif call.get("isError", False):
+        raise ValueError("MCP error on non-error Task state")
+    elif result.get("ok") is not True or result.get("diagnostics"):
         raise ValueError("Task state disagrees with its response envelope")
     return status
 
@@ -707,9 +709,10 @@ def terminal_calls(calls):
                         or any(not isinstance(item, dict) or not isinstance(item.get("code"), str)
                                or item["code"].startswith("task_")
                                or item["code"] in {"invalid_task_id", "bad_wait_ms", "bad_task_arguments"}
-                               for item in diagnostics)
-                        or bool(call.get("isError", False)) != (result["ok"] is False)):
+                               for item in diagnostics)):
                     raise ValueError("Task observer refusal is not an originating operation result")
+                if bool(call.get("isError", False)) != (result["ok"] is False):
+                    raise ValueError("MCP error envelope disagrees with originating operation result")
             pending.pop(task_id)
             terminal.append({**original, "done": call["done"], "after": call["after"], "filesAfter": call.get("filesAfter"), "rootsAfter": call.get("rootsAfter"), "result": call["result"], "isError": original.get("isError", False) or call.get("isError", False)})
         elif name in {"unica.task.get", "unica.task.cancel"}:
