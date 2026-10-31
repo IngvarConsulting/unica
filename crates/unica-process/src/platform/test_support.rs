@@ -198,6 +198,42 @@ pub fn fixture_executable_path(directory: &Path, stem: &str) -> PathBuf {
 }
 
 #[cfg(unix)]
+/// Waits for a detached direct child, with no other owner collecting its status.
+pub fn wait_for_detached_child_exit(pid: u32, timeout: Duration) -> bool {
+    use std::time::Instant;
+
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut status = 0;
+        // SAFETY: the positive PID selects only the caller's detached child.
+        let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if result == pid {
+            return true;
+        }
+        if result == -1 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+        {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(25)));
+    }
+}
+
+#[cfg(not(unix))]
+pub fn wait_for_detached_child_exit(pid: u32, timeout: Duration) -> bool {
+    wait_for_process_exit(pid, timeout)
+}
+
+#[cfg(unix)]
 pub fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
     use std::thread;
     use std::time::Instant;

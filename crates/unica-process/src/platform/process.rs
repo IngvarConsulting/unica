@@ -7855,6 +7855,29 @@ mod tests {
         process_tree_keeps_child_suspended_until_attach();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn detached_child_wait_observes_exit_without_terminating_the_child() {
+        use crate::test_support::wait_for_detached_child_exit;
+
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "read line"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let input = child.stdin.take().unwrap();
+        drop(child);
+
+        assert!(!wait_for_detached_child_exit(
+            pid,
+            Duration::from_millis(50)
+        ));
+        drop(input);
+        assert!(wait_for_detached_child_exit(pid, Duration::from_secs(5)));
+        assert!(!wait_for_detached_child_exit(pid, Duration::ZERO));
+    }
+
     #[test]
     fn startup_child_detach_leaves_process_running() {
         let start = HelperStart::new();

@@ -215,6 +215,45 @@ fn v5_frontend_process_spawns_the_same_binary_and_pings_the_v5_runtime() {
 }
 
 #[test]
+fn stdio_initialize_waits_beyond_ping_budget_for_cold_daemon() {
+    use std::str::FromStr;
+    use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
+
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap().join("state");
+    let workspace = make_stdio_workspace(root.path());
+    let identity = CoreIdentity::from_str(production_identity()).unwrap();
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let spawn_lock = state
+        .acquire_spawn_lock_before(Instant::now() + Duration::from_secs(5))
+        .expect("hold spawn ownership before the cold connection");
+    let started = Instant::now();
+    let mut frontend = thread::scope(|scope| {
+        scope.spawn(move || {
+            thread::sleep(Duration::from_secs(6));
+            drop(spawn_lock);
+        });
+        StdioFrontend::spawn(&state_root, &workspace)
+    });
+    assert!(started.elapsed() >= Duration::from_secs(5));
+    let response = frontend.request(2, "tools/list", serde_json::json!({}));
+    assert!(
+        response["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()),
+        "tools/list after delayed cold startup: {response}"
+    );
+    assert!(frontend.process.0.try_wait().unwrap().is_none());
+    assert!(endpoint_path(&state_root, production_identity()).exists());
+    drop(frontend);
+    wait_until(
+        Duration::from_secs(5),
+        || !endpoint_path(&state_root, production_identity()).exists(),
+        "delayed cold-start daemon shutdown",
+    );
+}
+
+#[test]
 fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
     let root = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(root.path()).unwrap();
