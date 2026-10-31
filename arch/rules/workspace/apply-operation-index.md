@@ -1,6 +1,8 @@
 ---
 id: INV.APP.APPLY-OPERATION-INDEX
-check: []
+check:
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::mixed_event_batch_refusal_names_the_original_operation
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/borrow.rs::mixed_borrow_batch_refusal_names_the_original_operation
 gap: https://github.com/IngvarConsulting/unica/issues/964
 ---
 
@@ -10,5 +12,5 @@ gap: https://github.com/IngvarConsulting/unica/issues/964
 планирования указывает исходный индекс `ops[i]`. Разбиение запроса между
 планировщиками не меняет этот индекс.
 
-Первичный разбор аргументов сохраняет индекс. Сохранение индекса при поздней
-ошибке планировщика Code, XDTO или Event требует исправления и проверки.
+Проверки покрывают поздние отказы Event и Borrow в смешанных планах.
+Они не доказывают сохранение индекса во всех семействах.

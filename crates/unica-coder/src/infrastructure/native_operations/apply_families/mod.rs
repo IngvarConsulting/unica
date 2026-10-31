@@ -1164,6 +1164,7 @@ pub(crate) fn plan_hidden_v13_apply(
                             "an issued metadata authority has the exact writable source profile",
                         ),
                         &operations,
+                        cursor,
                     )
                     ?;
                 provisional.extend(batch_effects_as_provisional(
@@ -1455,6 +1456,32 @@ mod tests {
             "dryRun": true,
         });
         ApplyRequest::parse(input.as_object().unwrap(), &["main"]).unwrap()
+    }
+
+    #[test]
+    fn mixed_event_batch_refusal_names_the_original_operation() {
+        let fixture = ApplySeamFixture::new();
+        let descriptor = fixture.source_dir().join("Documents/First.xml");
+        let before = std::fs::read(&descriptor).unwrap();
+        let input = serde_json::json!({
+            "at": "main:Document.First",
+            "ops": [
+                {"op": "props.set", "args": {"values": {"Comment": "staged only"}}},
+                {"op": "event.implement", "args": {"at": "main:Document.First.Module.Object.Event.BeforeWrite"}},
+                {"op": "event.implement", "args": {"at": "main:Document.First.Module.Object.Event.OnWrite", "callType": "After"}}
+            ],
+            "dryRun": true
+        });
+        let request = ApplyRequest::parse(input.as_object().unwrap(), &["main"]).unwrap();
+        let admission = fixture.admission();
+        let error = plan_hidden_v13_apply(&request, &fixture.binding, &admission).unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[2].args"));
+        assert_eq!(std::fs::read(descriptor).unwrap(), before);
+        assert!(!fixture
+            .source_dir()
+            .join("Documents/First/Ext/ObjectModule.bsl")
+            .exists());
     }
 
     /// Формат макета — фильтр реестра, и планировщик применяет его к
