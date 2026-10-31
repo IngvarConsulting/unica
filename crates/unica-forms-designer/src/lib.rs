@@ -15,3 +15,5 @@ pub mod event_patch;
 #[cfg(any(test, feature = "test-support"))]
 #[path = "../tests/support/text.rs"]
 pub mod test_support;
+
+mod column_add;

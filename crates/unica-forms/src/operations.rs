@@ -55,6 +55,7 @@ form_operations!(
     ItemRemove => ("item.remove", FormItem, Target),
     ItemMove => ("item.move", FormItem, Values),
     AttributeAdd => ("attribute.add", Form, Items),
+    ColumnAdd => ("column.add", FormAttribute, Items),
     CommandAdd => ("command.add", Form, Items),
     EventBind => ("event.bind", FormEvent, Values),
     PropsSet => ("props.set", Form, Values),
@@ -72,6 +73,7 @@ impl FormOperation {
             | Self::ItemRemove
             | Self::ItemMove
             | Self::AttributeAdd
+            | Self::ColumnAdd
             | Self::CommandAdd
             | Self::EventBind
             | Self::PropsSet => Some("Form.xml"),
@@ -86,6 +88,7 @@ impl FormOperation {
             | Self::Set
             | Self::Remove
             | Self::AttributeAdd
+            | Self::ColumnAdd
             | Self::CommandAdd
             | Self::EventBind
             | Self::PropsSet => true,
@@ -125,7 +128,7 @@ impl unica_operations::FamilyOperation for FormOperation {
     ) -> Option<unica_operations::recovery::PreparedRedirect> {
         crate::recovery::prepare(template, at, args, value, members)
     }
-    type Observation = crate::FormItemRole;
+    type Observation = crate::FormObservation;
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Form
     }
@@ -165,10 +168,20 @@ impl unica_operations::FamilyOperation for FormOperation {
         self,
         site: Option<&unica_source_contract::context::OperationSite<'_>>,
     ) -> bool {
-        site.is_none_or(|site| site.terminal().kind() == unica_address::address::NodeKind::Item)
+        self == Self::ColumnAdd
+            || site
+                .is_none_or(|site| site.terminal().kind() == unica_address::address::NodeKind::Item)
     }
     fn admits_observation(self, observation: Option<&Self::Observation>) -> bool {
-        self.admits_form_item(observation.copied())
+        if self == Self::ColumnAdd {
+            observation == Some(&crate::FormObservation::ValueTableAttribute)
+        } else {
+            self.admits_form_item(
+                observation
+                    .copied()
+                    .and_then(crate::FormObservation::item_role),
+            )
+        }
     }
 }
 
@@ -176,6 +189,11 @@ impl unica_operations::FamilyOperation for FormOperation {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn existing_form_attribute_exposes_a_column_creation_operation() {
+        assert!(FormOperation::is_named("column.add"));
+    }
 
     #[test]
     fn registration_metadata_preserves_every_form_operation() {
@@ -220,6 +238,12 @@ mod tests {
                 FormOperation::AttributeAdd,
                 "attribute.add",
                 OperationApplicability::Form,
+                OperationSkeleton::Items,
+            ),
+            (
+                FormOperation::ColumnAdd,
+                "column.add",
+                OperationApplicability::FormAttribute,
                 OperationSkeleton::Items,
             ),
             (
@@ -287,5 +311,50 @@ mod tests {
                 .path,
             "args.items[0].type"
         );
+    }
+    #[test]
+    fn column_creation_contract_reuses_the_attribute_column_shape() {
+        let contract = FormOperation::ColumnAdd.contract();
+        let nested = FormOperation::AttributeAdd.contract();
+        assert_eq!(
+            contract.schema["properties"]["items"]["items"],
+            nested.schema["properties"]["items"]["items"]["properties"]["columns"]["items"]
+        );
+        for input in [
+            json!({"items":[{"name":"Value","type":"CatalogRef.Items"}]}),
+            json!({"items":[{"name":"Value","type":"string(40)","title":"Value"}]}),
+        ] {
+            assert!(contract.normalize(&input, "args").is_ok());
+        }
+        for input in [
+            json!({"items":[]}),
+            json!({"items":[{"name":"Value"}]}),
+            json!({"items":[{"name":"Value","type":true}]}),
+            json!({"items":[{"name":"Value","type":"Boolean","id":3}]}),
+            json!({"items":[{"name":"Value","type":"Boolean","dataPath":"Rows.Value"}]}),
+            json!({"items":[{"name":"Value","type":"Boolean"}],"attribute":"Rows"}),
+        ] {
+            assert!(contract.normalize(&input, "args").is_err(), "{input}");
+        }
+    }
+    #[test]
+    fn column_creation_requires_observed_valuetable_facts() {
+        use crate::FormObservation;
+        use unica_operations::FamilyOperation;
+        assert!(FormOperation::ColumnAdd.needs_observation(None));
+        assert!(FormOperation::ColumnAdd
+            .admits_observation(Some(&FormObservation::ValueTableAttribute)));
+        for observed in [
+            None,
+            Some(FormObservation::Item(FormItemRole::Container)),
+            FormObservation::from_attribute_type("ValueTree"),
+            FormObservation::from_attribute_type("boolean"),
+        ] {
+            assert!(!FormOperation::ColumnAdd.admits_observation(observed.as_ref()));
+        }
+        assert!(FormOperation::ItemAdd
+            .admits_observation(Some(&FormObservation::Item(FormItemRole::Container))));
+        assert!(!FormOperation::ItemAdd
+            .admits_observation(Some(&FormObservation::Item(FormItemRole::Leaf))));
     }
 }
