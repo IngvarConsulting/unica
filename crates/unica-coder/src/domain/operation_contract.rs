@@ -20,6 +20,137 @@ mod tests {
     }
 
     #[test]
+    fn every_dictionary_publishes_each_property_alias_group_once() {
+        use unica_metadata::descriptor_operations::{PropertiesOperation, PropertiesSite};
+        fn compare(internal: &Value, published: &Value, groups: &mut usize) {
+            if let Some(aliases) = internal["x-unica-alias-groups"].as_array() {
+                for group in aliases {
+                    let names = group.as_array().unwrap();
+                    let canonical = names[0].as_str().unwrap();
+                    assert_eq!(
+                        published["properties"][canonical],
+                        internal["properties"][canonical]
+                    );
+                    for alias in &names[1..] {
+                        assert!(
+                            published["properties"]
+                                .get(alias.as_str().unwrap())
+                                .is_none(),
+                            "duplicate published alias {alias}: {published}"
+                        );
+                    }
+                    *groups += 1;
+                }
+                assert!(published.get("x-unica-alias-groups").is_none());
+            }
+            for key in [
+                "properties",
+                "patternProperties",
+                "$defs",
+                "definitions",
+                "dependentSchemas",
+            ] {
+                if let Some(children) = internal[key].as_object() {
+                    for (name, child) in children {
+                        compare(child, &published[key][name], groups);
+                    }
+                }
+            }
+            for key in [
+                "items",
+                "additionalProperties",
+                "contains",
+                "not",
+                "if",
+                "then",
+                "else",
+                "propertyNames",
+            ] {
+                if internal[key].is_object() {
+                    compare(&internal[key], &published[key], groups);
+                }
+            }
+            for key in ["oneOf", "anyOf", "allOf", "prefixItems"] {
+                if let Some(children) = internal[key].as_array() {
+                    for (index, child) in children.iter().enumerate() {
+                        compare(child, &published[key][index], groups);
+                    }
+                }
+            }
+        }
+        let mut groups = 0;
+        let registry = crate::domain::apply::operation_registry();
+        for descriptor in registry.descriptors() {
+            if let Some(contract) = descriptor.argument_contract() {
+                compare(
+                    &contract.schema,
+                    &contract.details()["argsSchema"],
+                    &mut groups,
+                );
+            }
+        }
+        let sites = [
+            PropertiesSite::Configuration { extension: false },
+            PropertiesSite::Configuration { extension: true },
+            PropertiesSite::Role,
+            PropertiesSite::Subsystem,
+        ]
+        .into_iter()
+        .chain(
+            unica_metadata::MetadataKind::ALL
+                .iter()
+                .copied()
+                .map(PropertiesSite::Metadata),
+        );
+        for site in sites {
+            let contract = PropertiesOperation::Set.contract(site);
+            let published = contract.details()["argsSchema"].clone();
+            compare(&contract.schema, &published, &mut groups);
+            assert!(
+                jsonschema::validator_for(&published)
+                    .unwrap()
+                    .is_valid(&contract.example_args),
+                "{site:?}"
+            );
+            let validator = jsonschema::validator_for(&published).unwrap();
+            for field in site.descriptor_fields() {
+                let value = match field.kind() {
+                    unica_metadata::descriptor_operations::DescriptorPropertyKind::String => {
+                        json!("")
+                    }
+                    unica_metadata::descriptor_operations::DescriptorPropertyKind::Boolean => {
+                        json!(false)
+                    }
+                    unica_metadata::descriptor_operations::DescriptorPropertyKind::Enum => {
+                        json!(field.allowed_values()[0])
+                    }
+                };
+                let names = field.names();
+                let canonical = json!({"values":{names[0]:value}});
+                let alias = json!({"values":{names[1]:value}});
+                assert!(validator.is_valid(&canonical));
+                assert!(
+                    !validator.is_valid(&alias),
+                    "aliases are retained only for compatibility"
+                );
+                let decode = |args: &Value| {
+                    unica_metadata::property_input::decode_properties(
+                        PropertiesOperation::Set,
+                        site,
+                        args,
+                        "args",
+                    )
+                };
+                assert_eq!(decode(&canonical).unwrap(), decode(&alias).unwrap());
+            }
+        }
+        assert!(
+            groups > 20,
+            "the root and descriptor profiles must be visited"
+        );
+    }
+
+    #[test]
     fn typed_metadata_contracts_cover_each_registered_identity_and_site() {
         let sites = std::iter::once(None).chain(unica_metadata::MetadataKind::ALL.iter().flat_map(
             |owner| {
