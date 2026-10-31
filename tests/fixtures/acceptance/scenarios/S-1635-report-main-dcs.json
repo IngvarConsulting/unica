@@ -1,0 +1,399 @@
+{
+  "id": "S-1635-report-main-dcs",
+  "name": "assign-and-clear-a-reports-main-data-composition-schema",
+  "issue": 1635,
+  "area": "Метаданные",
+  "task": "Assign a staged DCS template through props.set, read the reference, reject foreign/missing/non-DCS targets and final type changes, then clear and remove the schema.",
+  "workspace": "tests/fixtures/acceptance/workspace-main-dcs",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Reports/CorpusReport.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "MainSchema",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MainDataCompositionSchema": "Report.CorpusReport.Template.MainSchema"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport.xml",
+          "eq": "$capture.before"
+        },
+        {
+          "kind": "exists",
+          "path": "src/Reports/CorpusReport/Templates/MainSchema.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Reports/CorpusReport.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}MainDataCompositionSchema",
+          "eq": [
+            "Report.CorpusReport.Template.MainSchema"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MainDataCompositionSchema",
+          "eq": "Report.CorpusReport.Template.MainSchema"
+        }
+      ],
+      "captures": {
+        "selectedReport": {
+          "kind": "sha256",
+          "file": "src/Reports/CorpusReport.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Template.MainSchema"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MainDataCompositionSchema": "Report.Other.Template.MainSchema"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport.xml",
+          "eq": "$capture.selectedReport"
+        }
+      ],
+      "refusal": "bad_value: MainDataCompositionSchema must name a template of this report"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MainDataCompositionSchema": "Report.CorpusReport.Template.Missing"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport.xml",
+          "eq": "$capture.selectedReport"
+        }
+      ],
+      "refusal": "bad_value: the selected template `Report.CorpusReport.Template.Missing` was not found"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Print",
+                  "templateType": "SpreadsheetDocument"
+                }
+              ]
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MainDataCompositionSchema": "Report.CorpusReport.Template.Print"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport.xml",
+          "eq": "$capture.selectedReport"
+        },
+        {
+          "kind": "exists",
+          "path": "src/Reports/CorpusReport/Templates/Print.xml",
+          "eq": false
+        }
+      ],
+      "refusal": "bad_value: the selected template `Report.CorpusReport.Template.Print` is not DataCompositionSchema"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "template.set",
+            "args": {
+              "at": "main:Report.CorpusReport.Template.MainSchema",
+              "values": {
+                "templateType": "SpreadsheetDocument"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport.xml",
+          "eq": "$capture.selectedReport"
+        }
+      ],
+      "refusal": "bad_value: the selected template `Report.CorpusReport.Template.MainSchema` is not DataCompositionSchema"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MainDataCompositionSchema": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "clear": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.clear"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Reports/CorpusReport.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}MainDataCompositionSchema",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MainDataCompositionSchema": "Report.CorpusReport.Template.MainSchema"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "reassign": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.reassign"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Reports/CorpusReport.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}MainDataCompositionSchema",
+          "eq": [
+            "Report.CorpusReport.Template.MainSchema"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport.Template.MainSchema",
+        "ops": [
+          {
+            "op": "template.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "remove": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.remove"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Reports/CorpusReport.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}MainDataCompositionSchema",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "kind": "exists",
+          "path": "src/Reports/CorpusReport/Templates/MainSchema.xml",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

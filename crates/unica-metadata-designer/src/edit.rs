@@ -1422,6 +1422,29 @@ pub fn apply_typed_properties(
                     value,
                 )
             }
+            (MetaPropertyKey::MainDataCompositionSchema, MetaPropertyValue::String(value)) => {
+                let value = value.trim();
+                if unica_xml_format::read::direct_text(property).trim() == value {
+                    continue;
+                }
+                // The unprefixed replacement needs its own namespace only
+                // when the parent does not supply the MDClasses default.
+                let namespace = if properties.lookup_namespace_uri(None)
+                    == Some("http://v8.1c.ru/8.3/MDClasses")
+                {
+                    ""
+                } else {
+                    " xmlns=\"http://v8.1c.ru/8.3/MDClasses\""
+                };
+                if value.is_empty() {
+                    format!("{indent}<{tag}{namespace}/>")
+                } else {
+                    format!(
+                        "{indent}<{tag}{namespace}>{}</{tag}>",
+                        unica_xml_format::text::escape_xml(value)
+                    )
+                }
+            }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}<{tag}/>")
             }
