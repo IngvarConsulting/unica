@@ -1,0 +1,200 @@
+{
+  "id": "S-2323-column-group-after",
+  "issue": 2323,
+  "area": "Формы",
+  "task": "Добавить поле после существующей группы колонок, сохранив вложенные поля и соседей; preview не пишет, отсутствующий или чужой сосед отклоняется",
+  "workspace": "tests/fixtures/acceptance/workspace-column-group-placement",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order.Form.Main.Item.Rows.Item.Group"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/tag",
+          "eq": "[ColumnGroup]"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Order.Form.Main.Item.Rows",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "AddedField",
+                  "type": "InputField",
+                  "path": "Объект.Ref",
+                  "readOnly": true,
+                  "after": "Missing"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Documents/Order/Forms/Main/Ext/Form.xml",
+          "eq": "4a6aa1dc8ee0740e48e3cf4cdff6f4cc0bf7262e72622be28c29e112034dad65"
+        }
+      ],
+      "refusal": "bad_value: `after` names a sibling inside the addressed container; `Missing` is not there"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Order.Form.Main.Item.Rows.Item.Group",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "AddedField",
+                  "type": "InputField",
+                  "path": "Объект.Ref",
+                  "readOnly": true,
+                  "after": "Last"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Documents/Order/Forms/Main/Ext/Form.xml",
+          "eq": "4a6aa1dc8ee0740e48e3cf4cdff6f4cc0bf7262e72622be28c29e112034dad65"
+        }
+      ],
+      "refusal": "bad_value: `after` names a sibling inside the addressed container; `Last` is not there"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Order.Form.Main.Item.Rows",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "AddedField",
+                  "type": "InputField",
+                  "path": "Объект.Ref",
+                  "readOnly": true,
+                  "after": "Group"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Documents/Order/Forms/Main/Ext/Form.xml",
+          "eq": "4a6aa1dc8ee0740e48e3cf4cdff6f4cc0bf7262e72622be28c29e112034dad65"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xmlTags",
+          "path": "src/Documents/Order/Forms/Main/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}Table[@name='Rows']/{*}ChildItems/*",
+          "eq": [
+            "ColumnGroup",
+            "InputField",
+            "InputField"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Documents/Order/Forms/Main/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}Table[@name='Rows']/{*}ChildItems/{*}ColumnGroup[@name='Group'][@id='2']/{*}ChildItems/{*}InputField[@name='Nested'][@id='3']",
+          "eq": [
+            "InputField"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Documents/Order/Forms/Main/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}Table[@name='Rows']/{*}ChildItems/{*}InputField[@name='AddedField']/{*}DataPath",
+          "eq": [
+            "Объект.Ref"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Documents/Order/Forms/Main/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}Table[@name='Rows']/{*}ChildItems/{*}InputField[@name='Last'][@id='4']",
+          "eq": [
+            "InputField"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Documents/Order/Forms/Main/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}Table[@name='Rows']/{*}ChildItems/{*}InputField[1][@name='AddedField']",
+          "eq": [
+            "InputField"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order.Form.Main.Item.Rows.Item.AddedField"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Order.Form.Main.Item.Rows.Item.AddedField"
+        },
+        {
+          "pointer": "/data/props/tag",
+          "eq": "[Input]"
+        }
+      ]
+    }
+  ]
+}

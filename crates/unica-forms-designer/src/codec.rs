@@ -4701,6 +4701,16 @@ pub fn form_edit_find_element_nodes<'a, 'input>(
     root: roxmltree::Node<'a, 'input>,
     name: &str,
 ) -> Vec<roxmltree::Node<'a, 'input>> {
+    form_edit_find_named_element_nodes(root, name, |tag| {
+        FormElementKind::from_xml_tag(tag).is_some()
+    })
+}
+
+fn form_edit_find_named_element_nodes<'a, 'input>(
+    root: roxmltree::Node<'a, 'input>,
+    name: &str,
+    accepts_tag: impl Fn(&str) -> bool,
+) -> Vec<roxmltree::Node<'a, 'input>> {
     let auto_command_bar = root.children().find(|child| {
         child.is_element()
             && child.tag_name().namespace() == Some(FORM_LOGFORM_NS)
@@ -4733,7 +4743,7 @@ pub fn form_edit_find_element_nodes<'a, 'input>(
             node.is_element()
                 && node.tag_name().namespace() == Some(FORM_LOGFORM_NS)
                 && node.attribute("name") == Some(name)
-                && FormElementKind::from_xml_tag(node.tag_name().name()).is_some()
+                && accepts_tag(node.tag_name().name())
         }));
     }
     matches
@@ -5702,9 +5712,11 @@ fn form_edit_find_placement_element<'a, 'input>(
     root: roxmltree::Node<'a, 'input>,
     name: &str,
 ) -> Result<Option<roxmltree::Node<'a, 'input>>, String> {
-    // Share the working-tree lookup used for event targets. It includes
-    // root/table AutoCommandBar but never descends into the root BaseForm.
-    let matches = form_edit_find_element_nodes(root, name);
+    // A column group can anchor placement without being an event target.
+    // Keep the same working tree and exclude the root BaseForm.
+    let matches = form_edit_find_named_element_nodes(root, name, |tag| {
+        tag == "ColumnGroup" || FormElementKind::from_xml_tag(tag).is_some()
+    });
     match matches.as_slice() {
         [] => Ok(None),
         [node] => Ok(Some(*node)),

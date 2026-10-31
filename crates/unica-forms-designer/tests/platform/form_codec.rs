@@ -208,6 +208,57 @@ fn form_edit_rejects_malformed_or_unsupported_attribute_columns() {
 }
 
 #[test]
+fn placement_after_column_group_preserves_the_whole_subtree() {
+    let group = "<ColumnGroup name=\"Group\" id=\"2\"><ChildItems><InputField name=\"Nested\" id=\"3\"/></ChildItems></ColumnGroup>";
+    let mut xml = format!(
+        "<Form xmlns=\"{FORM_LOGFORM_NS}\"><ChildItems><Table name=\"Rows\" id=\"1\"><ChildItems>{group}<InputField name=\"Last\" id=\"4\"/></ChildItems></Table></ChildItems></Form>"
+    );
+    let target = form_edit_target_child_items_range(&xml, None, Some("Group")).unwrap();
+    form_edit_insert_lines_into_target(
+        &mut xml,
+        target,
+        &["<InputField name=\"Added\" id=\"5\"/>".to_string()],
+    )
+    .unwrap();
+    assert!(
+        xml.contains(group),
+        "the existing group must remain byte-for-byte intact"
+    );
+    let doc = Document::parse(&xml).unwrap();
+    let rows = doc
+        .descendants()
+        .find(|n| n.attribute("name") == Some("Rows"))
+        .unwrap();
+    let names = form_child(rows, "ChildItems")
+        .unwrap()
+        .children()
+        .filter_map(|n| n.attribute("name"))
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Group", "Added", "Last"]);
+    assert!(form_edit_target_child_items_range(&xml, None, Some("Missing")).is_err());
+}
+
+#[test]
+fn column_group_placement_keeps_namespace_base_form_and_event_boundaries() {
+    let own = "<ColumnGroup name=\"Group\" id=\"1\"/>";
+    let foreign = "<ColumnGroup xmlns=\"urn:foreign\" name=\"Group\"/>";
+    let base = "<BaseForm><ChildItems><ColumnGroup name=\"Group\"/></ChildItems></BaseForm>";
+    let xml = format!(
+        "<Form xmlns=\"{FORM_LOGFORM_NS}\"><ChildItems>{own}{foreign}</ChildItems>{base}</Form>"
+    );
+    let doc = Document::parse(&xml).unwrap();
+    let target = form_edit_find_placement_element(doc.root_element(), "Group")
+        .unwrap()
+        .unwrap();
+    assert_eq!(target.attribute("id"), Some("1"));
+    assert!(form_edit_find_element_nodes(doc.root_element(), "Group").is_empty());
+
+    let xml = xml.replace(foreign, &format!("{foreign}{own}"));
+    let doc = Document::parse(&xml).unwrap();
+    assert!(form_edit_find_placement_element(doc.root_element(), "Group").is_err());
+}
+
+#[test]
 fn auto_command_bar_placement_covers_root_and_table_panels() {
     for self_closing in [true, false] {
         for populated in [true, false] {
