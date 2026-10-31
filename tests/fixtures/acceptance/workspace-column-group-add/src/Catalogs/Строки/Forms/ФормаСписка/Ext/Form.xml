@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+	<AutoCommandBar name="Панель" id="-1"/>
+	<ChildItems>
+		<Table name="Список" id="1">
+			<DataPath>Список</DataPath>
+			<ContextMenu name="СписокКонтекстноеМеню" id="2"/>
+			<AutoCommandBar name="RowsBar" id="3"/><SearchStringAddition name="RowsSearch" id="6"/><ViewStatusAddition name="RowsStatus" id="7"/><SearchControlAddition name="RowsControl" id="8"/>
+			<ChildItems><ColumnGroup name="Columns" id="4"><ChildItems><InputField name="Existing" id="5"><ContextMenu name="ExistingMenu" id="9"/><ExtendedTooltip name="ExistingTip" id="10"/></InputField></ChildItems></ColumnGroup></ChildItems>
+		</Table>
+	</ChildItems>
+	<Attributes>
+		<Attribute name="Список" id="1">
+			<Type>
+				<v8:Type>v8:ValueTable</v8:Type>
+			</Type>
+		</Attribute>
+	</Attributes>
+</Form>

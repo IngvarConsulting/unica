@@ -3643,15 +3643,41 @@ fn form_edit_apply_definition_lf(
                     defn.get("into").and_then(Value::as_str),
                     defn.get("after").and_then(Value::as_str),
                 )?;
-                let in_command_bar = {
+                let (in_command_bar, in_column_group) = {
                     let document = Document::parse(xml_text)
                         .map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
-                    form_edit_placement_is_command_bar(
+                    let container = form_edit_placement_container(
                         document.root_element(),
                         defn.get("into").and_then(Value::as_str),
                         defn.get("after").and_then(Value::as_str),
-                    )?
+                    )?;
+                    (
+                        container.is_some_and(|node| {
+                            matches!(node.tag_name().name(), "AutoCommandBar" | "CommandBar")
+                        }),
+                        container.is_some_and(|node| {
+                            node.has_tag_name((FORM_LOGFORM_NS, "ColumnGroup"))
+                        }),
+                    )
                 };
+                if in_column_group {
+                    for element in elements {
+                        let Some(object) = element.as_object() else {
+                            continue;
+                        };
+                        let kind = FormEditElementDefinitionKind::from_object(object)?;
+                        if !matches!(
+                            kind,
+                            FormEditElementDefinitionKind::InputField
+                                | FormEditElementDefinitionKind::LabelField
+                                | FormEditElementDefinitionKind::CheckBox
+                                | FormEditElementDefinitionKind::HtmlDocumentField
+                                | FormEditElementDefinitionKind::TextDocumentField
+                        ) {
+                            return Err("[ERROR] a column group holds only fields; add this element to the form or another compatible container".into());
+                        }
+                    }
+                }
                 // Командная панель держит кнопки: поле или группа в ней
                 // записались бы в XML, который платформа не загрузит (#1447).
                 if in_command_bar {
@@ -5684,6 +5710,15 @@ fn form_edit_placement_is_command_bar(
     into_name: Option<&str>,
     after_name: Option<&str>,
 ) -> Result<bool, String> {
+    Ok(form_edit_placement_container(root, into_name, after_name)?
+        .is_some_and(|node| matches!(node.tag_name().name(), "AutoCommandBar" | "CommandBar")))
+}
+
+fn form_edit_placement_container<'a, 'input>(
+    root: roxmltree::Node<'a, 'input>,
+    into_name: Option<&str>,
+    after_name: Option<&str>,
+) -> Result<Option<roxmltree::Node<'a, 'input>>, String> {
     let container = if let Some(name) = into_name.filter(|name| !name.is_empty()) {
         form_edit_find_placement_element(root, name)?
     } else if let Some(name) = after_name.filter(|name| !name.is_empty()) {
@@ -5694,8 +5729,7 @@ fn form_edit_placement_is_command_bar(
     } else {
         None
     };
-    Ok(container
-        .is_some_and(|node| matches!(node.tag_name().name(), "AutoCommandBar" | "CommandBar")))
+    Ok(container)
 }
 
 fn form_edit_find_placement_element<'a, 'input>(
@@ -5704,7 +5738,16 @@ fn form_edit_find_placement_element<'a, 'input>(
 ) -> Result<Option<roxmltree::Node<'a, 'input>>, String> {
     // Share the working-tree lookup used for event targets. It includes
     // root/table AutoCommandBar but never descends into the root BaseForm.
-    let matches = form_edit_find_element_nodes(root, name);
+    let mut matches = form_edit_find_element_nodes(root, name);
+    if let Some(items) = root
+        .children()
+        .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "ChildItems")))
+    {
+        matches.extend(items.descendants().filter(|node| {
+            node.has_tag_name((FORM_LOGFORM_NS, "ColumnGroup"))
+                && node.attribute("name") == Some(name)
+        }));
+    }
     match matches.as_slice() {
         [] => Ok(None),
         [node] => Ok(Some(*node)),
