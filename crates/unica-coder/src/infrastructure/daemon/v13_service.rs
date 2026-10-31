@@ -1,6 +1,5 @@
 use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};
 use crate::domain::apply::OperationDescriptorExt;
-use crate::domain::apply::OperationRegistryExt;
 use crate::domain::apply::RetiredOperationExt;
 use crate::domain::apply::SourceSetWriteSupport;
 use crate::domain::engine::MissingEngineRefusal;
@@ -465,16 +464,16 @@ impl CanonicalV13ReadService {
                 &admission, &binding, container, name,
             )
         };
-        let form_item = |item: &QualifiedAddress| {
-            crate::infrastructure::native_operations::apply_families::staged_form_item_role(
+        let form_observation = |item: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_form_observation(
                 &admission, &binding, item,
             )
         };
-        if let Err(refusal) = preflight_apply_operations_with(
+        if let Err(refusal) = preflight_apply_operations_observed(
             &request,
             traits,
             &template_format,
-            &form_item,
+            &form_observation,
             &member_path,
         ) {
             return *refusal;
@@ -5385,6 +5384,25 @@ pub(super) fn preflight_apply_operations_with(
     form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
     members: unica_operations::recovery::MemberPathLookup<'_>,
 ) -> Result<(), Box<DomainResult>> {
+    preflight_apply_operations_observed(
+        request,
+        source,
+        template_format,
+        &|at| form_item(at).map(unica_forms::FormObservation::Item),
+        members,
+    )
+}
+
+pub(super) fn preflight_apply_operations_observed(
+    request: &crate::domain::apply::ApplyRequest,
+    source: unica_source_contract::context::SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    form_observation: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormObservation>,
+    members: unica_operations::recovery::MemberPathLookup<'_>,
+) -> Result<(), Box<DomainResult>> {
+    let form_item = &|at: &QualifiedAddress| {
+        form_observation(at).and_then(unica_forms::FormObservation::item_role)
+    };
     let registry = crate::domain::apply::operation_registry();
     for (index, operation) in request.ops().iter().enumerate() {
         let Some(descriptor) = registry.lookup(operation.name()) else {
@@ -5595,10 +5613,16 @@ pub(super) fn preflight_apply_operations_with(
             }
             return Err(Box::new(refusal));
         }
-        // Роль элемента формы — фильтр поверх места: в поле элемент не
-        // добавить, автоматическую панель отдельно не удалить.
+        // Наблюдаемые факты формы сужают структурную применимость:
+        // роль элемента и тип реквизита проверяет само семейство.
         if descriptor.applies_at(&site)
-            && admits_form_item_at(descriptor, operation.at(), form_item)
+            && (!descriptor
+                .observation_type()
+                .is::<unica_forms::FormObservation>()
+                || descriptor.applies_with_observations(
+                    &site,
+                    &crate::domain::apply::observation_lookup(template_format, form_observation),
+                ))
         {
             continue;
         }
@@ -5626,11 +5650,10 @@ pub(super) fn preflight_apply_operations_with(
             target_kind.as_str(),
             operation.at()
         );
-        let nearest = registry.nearest_applicable_ancestor_with(
+        let nearest = registry.nearest_ancestor_with_observations(
             operation.name(),
             &site,
-            template_format,
-            form_item,
+            &crate::domain::apply::observation_lookup(template_format, form_observation),
         );
         let refusal = match nearest {
             Some((descriptor, target)) => with_operation_dictionary(

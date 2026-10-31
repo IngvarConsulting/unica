@@ -3,7 +3,7 @@ use unica_bsl::operations::CodeOperation;
 use unica_bsl::profile::PlatformProfile;
 use unica_dcs::operations::Primitive;
 use unica_forms::operations::FormOperation;
-use unica_forms::FormItemRole;
+use unica_forms::{FormItemRole, FormObservation};
 
 use unica_metadata::event::EventOperation;
 use unica_metadata::MetadataKind;
@@ -432,13 +432,13 @@ pub(crate) trait OperationDescriptorExt {
 
 pub(crate) fn observation_lookup<'a>(
     template: &'a dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
-    item: &'a dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    item: &'a dyn Fn(&QualifiedAddress) -> Option<FormObservation>,
 ) -> impl Fn(&QualifiedAddress, unica_operations::ObservationType) -> Option<Box<dyn std::any::Any>> + 'a
 {
     move |at, requested| {
         if requested.is::<TemplateFormat>() {
             template(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
-        } else if requested.is::<FormItemRole>() {
+        } else if requested.is::<FormObservation>() {
             item(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
         } else {
             None
@@ -453,8 +453,10 @@ impl OperationDescriptorExt for OperationDescriptor {
                 .admits_context(&|_| format.map(|value| Box::new(value) as Box<dyn std::any::Any>))
     }
     fn admits_form_item(self, role: Option<FormItemRole>) -> bool {
-        !self.observation_type().is::<FormItemRole>()
-            || self.admits_context(&|_| role.map(|value| Box::new(value) as Box<dyn std::any::Any>))
+        !self.observation_type().is::<FormObservation>()
+            || self.admits_context(&|_| {
+                role.map(|value| Box::new(FormObservation::Item(value)) as Box<dyn std::any::Any>)
+            })
     }
     fn applies_to_node(
         self,
@@ -462,7 +464,10 @@ impl OperationDescriptorExt for OperationDescriptor {
         format: Option<TemplateFormat>,
         role: Option<FormItemRole>,
     ) -> bool {
-        self.applies_with_observations(site, &observation_lookup(&|_| format, &|_| role))
+        self.applies_with_observations(
+            site,
+            &observation_lookup(&|_| format, &|_| role.map(FormObservation::Item)),
+        )
     }
     /// Ближайший узел по цепочке предков `at` (до корня набора включительно),
     /// где операция исполнима. Туда ведёт `next` отказа «не тот узел».
@@ -492,7 +497,9 @@ impl OperationDescriptorExt for OperationDescriptor {
         self.nearest_ancestor_with_observations(
             site,
             context,
-            &observation_lookup(template_format, form_item),
+            &observation_lookup(template_format, &|at| {
+                form_item(at).map(FormObservation::Item)
+            }),
         )
     }
 }
@@ -683,7 +690,9 @@ impl OperationRegistryExt for OperationRegistry {
         self.nearest_ancestor_with_observations(
             name,
             site,
-            &observation_lookup(template_format, form_item),
+            &observation_lookup(template_format, &|at| {
+                form_item(at).map(FormObservation::Item)
+            }),
         )
     }
 }
@@ -708,7 +717,9 @@ impl RetiredOperationExt for unica_operations::recovery::RetiredOperation {
         self.replacement_with_observations(
             site,
             context,
-            &observation_lookup(template_format, form_item),
+            &observation_lookup(template_format, &|at| {
+                form_item(at).map(FormObservation::Item)
+            }),
         )
     }
 }

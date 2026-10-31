@@ -643,6 +643,18 @@ pub fn form(operation: FormOperation) -> OperationContract {
 }
 
 /// `props.set` at a form: the root properties of its `Form.xml` (#1984).
+pub fn form_column_type_set() -> OperationContract {
+    OperationContract {
+        schema: object(&[("at", text(true)), ("values", object(&[("type", text(true))], &["type"]))], &["values"]),
+        target: "An existing data column of a ValueTable form attribute: <set>:<Kind>.<Name>.Form.<Form>.Attribute.<Attribute>.Column.<Column>.",
+        effect: "Replace only the column type. Preserve its name, ID, other settings, other columns and form bindings.",
+        notes: "type is the complete type composition in the form DSL shown by view. To add a type, retain the existing alternatives and join the new one with |. DefinedType stays a TypeSet reference; its definition is not changed. Unsupported or damaged source types are refused. Preview writes nothing; execute the saved token.",
+        example_args: json!({"values":{"type":"DefinedType.Existing | CatalogRef.Additional"}}),
+        help: FORM_HELP,
+        format_validators: &[],
+    }
+}
+
 pub fn form_props_set() -> OperationContract {
     use crate::root_properties::{writable_root_properties, RootValue};
     let mut values = Map::new();
