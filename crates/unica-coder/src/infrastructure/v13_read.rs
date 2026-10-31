@@ -1436,6 +1436,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                             .strip_prefix(prefix)
                             .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
                     })
+                    || field
+                        .strip_prefix("collections.addressingAttributes")
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
                     || (field.starts_with("collections.tabularSections[")
                         && field.contains("].standardAttributes"))
                     || local
