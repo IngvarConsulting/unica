@@ -1241,6 +1241,11 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    unica_metadata_designer::planner::finalize_subscription_defaults(
+        &mut staged.proposal(),
+        binding.source_kind(),
+        &metadata_creation_overrides,
+    )?;
     unica_metadata_designer::planner::validate_final_object_integrity(
         &mut staged.proposal(),
         binding.source_set_name(),

@@ -51,6 +51,7 @@ pub struct MetadataCreationOverrides {
         usize,
         crate::template_catalog::MetadataTemplateOperationOverrides,
     >,
+    automatic_handlers: std::collections::BTreeMap<String, (MetadataAddress, usize)>,
 }
 
 impl MetadataCreationOverrides {
@@ -63,7 +64,7 @@ impl MetadataCreationOverrides {
             crate::template_catalog::MetadataTemplateOperationOverrides,
         >::new();
         let mut result = Self::default();
-        for operation in operations.into_iter().rev() {
+        for operation in operations.iter().copied().rev() {
             match &operation.operation().kind {
                 MetadataPlanKind::Edit {
                     target,
@@ -105,8 +106,153 @@ impl MetadataCreationOverrides {
                 _ => {}
             }
         }
+        // Keep only the last live incarnation. An explicit Handler, even an
+        // empty one, is the caller's choice and is never filled by a default.
+        for operation in operations {
+            match &operation.operation().kind {
+                MetadataPlanKind::Create {
+                    kind: MetadataKind::EventSubscription,
+                    name,
+                } => {
+                    if let Ok(target) = MetadataAddress::parse(
+                        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        &format!("EventSubscription.{name}"),
+                    ) {
+                        result.automatic_handlers.remove(target.as_str());
+                        if !result.by_index[&operation.index()].handler {
+                            result
+                                .automatic_handlers
+                                .insert(target.as_str().to_owned(), (target, operation.index()));
+                        }
+                    }
+                }
+                MetadataPlanKind::Remove { target, .. } => {
+                    result.automatic_handlers.remove(target.as_str());
+                }
+                _ => {}
+            }
+        }
         result
     }
+}
+
+/// Fill only newly-created default handlers, after every family has staged
+/// its images. The create already owns the descriptor's publication effect.
+pub fn finalize_subscription_defaults(
+    staged: &mut ApplyProposal<'_>,
+    source_kind: SourceSetKind,
+    context: &MetadataCreationOverrides,
+) -> Result<(), ApplyPlanError> {
+    for (target, op_index) in context.automatic_handlers.values() {
+        let at = format!("ops[{op_index}].args");
+        let error =
+            |message| ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&at);
+        let relative = metadata_descriptor_relative(target, source_kind).map_err(error)?;
+        let Some(bytes) = staged
+            .read(&relative)
+            .map_err(|e| ApplyPlanError::staging(e, &at))?
+        else {
+            continue;
+        };
+        let binding = event_subscription_binding(&bytes).map_err(|(_, message)| error(message))?;
+        let mut classes = Vec::new();
+        let mut visiting = std::collections::HashSet::new();
+        for source in &binding.sources {
+            expand_staged_event_source(staged, source_kind, source, &mut classes, &mut visiting)
+                .map_err(error)?;
+        }
+        let definition =
+            unica_metadata::validate_event_subscription_sources(&classes, &binding.event)
+                .map_err(|e| error(crate::validation::event_binding_error_message(e).1))?;
+        let registration = staged
+            .read(Path::new("Configuration.xml"))
+            .map_err(|e| ApplyPlanError::staging(e, &at))?
+            .ok_or_else(|| error("the configuration descriptor was not found".to_string()))?;
+        let mut selected = None;
+        for module_name in crate::template_catalog::registered_names(&registration, "CommonModule")
+        {
+            staged
+                .checkpoint("select event subscription handler")
+                .map_err(|e| ApplyPlanError::staging(e, &at))?;
+            if crate::validation_context::validate_configuration_registration(
+                &registration,
+                "CommonModule",
+                &module_name,
+                "EventSubscription handler",
+            )
+            .is_err()
+            {
+                continue;
+            }
+            let Ok(module_target) = MetadataAddress::parse(
+                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("CommonModule.{module_name}"),
+            ) else {
+                continue;
+            };
+            let path = metadata_descriptor_relative(&module_target, source_kind).map_err(error)?;
+            let Some(descriptor) = staged
+                .read(&path)
+                .map_err(|e| ApplyPlanError::staging(e, &at))?
+            else {
+                continue;
+            };
+            let path = PathBuf::from("CommonModules")
+                .join(&module_name)
+                .join("Ext/Module.bsl");
+            let Some(module) = staged
+                .read(&path)
+                .map_err(|e| ApplyPlanError::staging(e, &at))?
+            else {
+                continue;
+            };
+            let Ok(text) = std::str::from_utf8(&module) else {
+                continue;
+            };
+            let Ok(Some(method)) = unica_bsl_parser::first_exported_bsl_procedure(
+                text.trim_start_matches('\u{feff}'),
+                unica_bsl_parser::BslProcedureRequirement::ExactArity(
+                    definition.parameters.len() + 1,
+                ),
+            ) else {
+                continue;
+            };
+            let Ok(facts) = crate::validation::event_handler_facts_from_images(
+                &module_name,
+                &method,
+                &descriptor,
+                &module,
+            ) else {
+                continue;
+            };
+            if unica_metadata::validate_event_subscription_binding(&classes, &binding.event, facts)
+                .is_ok()
+            {
+                selected = Some(format!("CommonModule.{module_name}.{method}"));
+                break;
+            }
+        }
+        let handler = selected.ok_or_else(|| error(format!(
+            "sourceSet has no exported common-module procedure with exactly {} parameters for EventSubscription {}({})",
+            definition.parameters.len() + 1, binding.event,
+            std::iter::once("Source").chain(definition.parameters.iter().copied()).collect::<Vec<_>>().join(", "),
+        )))?;
+        let changes = unica_metadata::MetaPropertyChanges::convert(
+            MetadataKind::EventSubscription,
+            vec![unica_metadata::MetaPropertyInput::new(
+                "Handler",
+                unica_metadata::MetaPropertyValue::String(handler),
+            )],
+        )
+        .map_err(|e| meta_failure_to_plan_error(e.into(), *op_index))?;
+        let mut text = String::from_utf8(bytes.clone()).map_err(|e| error(e.to_string()))?;
+        crate::edit::apply_typed_properties(&mut text, &changes, "")
+            .map_err(|e| meta_failure_to_plan_error(e.into(), *op_index))?;
+        staged
+            .replace(&relative, &bytes, text.into_bytes())
+            .map_err(|e| ApplyPlanError::staging(e, &at))?;
+    }
+    Ok(())
 }
 /// Local composition belongs to the final descriptor, after every operation
 /// family has contributed its image. A borrowed descriptor contains only the
@@ -402,14 +548,16 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
     operations: &[IndexedPlanOperation<MetadataPlanOperation>],
 ) -> Result<Vec<ProvisionalApplyEffect>, ApplyPlanError> {
     let creation_overrides = MetadataCreationOverrides::from_operations(operations);
-    plan_metadata_batch_with_context(
+    let effects = plan_metadata_batch_with_context(
         reader,
         template_seed,
         staged,
         authority,
         operations,
         &creation_overrides,
-    )
+    )?;
+    finalize_subscription_defaults(staged, authority.source_kind(), &creation_overrides)?;
+    Ok(effects)
 }
 
 pub fn plan_metadata_batch_with_context<R: MetadataPlanningRead>(
@@ -932,7 +1080,10 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
             source,
             kind,
             name,
-            overrides,
+            crate::template_catalog::MetadataTemplateOperationOverrides {
+                source: overrides.source,
+                handler: kind == MetadataKind::EventSubscription || overrides.handler,
+            },
             source_set_name,
             &language,
         )

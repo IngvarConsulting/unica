@@ -1373,6 +1373,12 @@ fn subscription_source(fixture: &Fixture) -> Vec<(String, String)> {
 #[test]
 fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
     let fixture = event_source_without_catalogs();
+    let module_path = fixture
+        .source
+        .join("CommonModules/EventHandlers/Ext/Module.bsl");
+    let mut module = std::fs::read_to_string(&module_path).unwrap();
+    module.push_str("\nProcedure OnFormGetProcessing(Source, FormType, Parameters, SelectedForm, AdditionalInformation, StandardProcessing) Export\nEndProcedure\n");
+    std::fs::write(module_path, module).unwrap();
     let runtime = runtime();
     let at = "main:EventSubscription.CorpusEventSubscription";
     assert!(!fixture.source.join("Catalogs").exists());
@@ -1428,16 +1434,18 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
         json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"Constant","name":"Sample"}}}]}),
     );
     // Each manager class has its own events; the plan checks the source
-    // against the event, so the event that fits is set in the same batch.
-    for (class, event, written) in [
+    // against the event and handler, so the complete binding is set in the same batch.
+    for (class, event, handler, written) in [
         (
             "constantManager",
             "FormGetProcessing",
+            "OnFormGetProcessing",
             "ConstantManager.Sample",
         ),
         (
             "constantValueManager",
             "BeforeWrite",
+            "OnBeforeWrite",
             "ConstantValueManager.Sample",
         ),
     ] {
@@ -1446,7 +1454,7 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
         batch["ops"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"op":"props.set","args":{"values":{"Event":event}}}));
+            .push(json!({"op":"props.set","args":{"values":{"Event":event,"Handler":format!("CommonModule.EventHandlers.{handler}")}}}));
         let published = publish(&runtime, &fixture, batch);
         assert_eq!(published.data.as_ref().unwrap()["effects"], 1, "{class}");
         assert_eq!(
@@ -1459,6 +1467,8 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
             json!([{"relation":"source","at":"main:Constant.Sample","kind":"Constant","target":target}]),
             "{class}"
         );
+        let checked = call(&runtime, &fixture, ToolIdentity::Check, json!({"at":at}));
+        assert_eq!(check_status(&checked), "passed", "{class}: {checked:?}");
         assert_noop(target);
     }
 }

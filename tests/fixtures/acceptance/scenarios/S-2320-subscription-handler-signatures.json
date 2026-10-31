@@ -207,6 +207,92 @@
             "op": "object.create",
             "args": {
               "values": {
+                "kind": "EventSubscription",
+                "name": "AutomaticDocument"
+              }
+            }
+          },
+          {
+            "op": "relation.replace",
+            "args": {
+              "at": "main:EventSubscription.AutomaticDocument",
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Document.Records"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/AutomaticDocument.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/AutomaticDocument.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}EventSubscription/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Handler",
+          "eq": [
+            "CommonModule.Handlers.DocumentBeforeWrite"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:EventSubscription.AutomaticDocument"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
                 "kind": "Catalog",
                 "name": "Items"
               }
