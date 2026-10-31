@@ -412,20 +412,20 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     let method = method.data.unwrap();
     assert_eq!(method["kind"], "Method");
     assert_eq!(method["props"]["export"], true);
-    assert_eq!(
-        method["props"]["compile"]["contexts"],
-        serde_json::Value::Null,
-        "contexts of a borrowed module without environment flags are unknown"
+    assert!(
+        method["props"].get("compile").is_none(),
+        "computed compilation facts stay internal"
     );
     let body = service
         .view(ViewRequest::new("main:CommonModule.КешЗначений.Method.ПР_Удвоенное.Body").unwrap());
     assert!(body.ok, "body must succeed");
     let methods = service.view(ViewRequest::new("main:CommonModule.КешЗначений.Method").unwrap());
     assert!(methods.ok, "methods of a borrowed module stay readable");
-    assert_eq!(
-        methods.data.unwrap()["items"][0]["props"]["compile"]["contexts"],
-        serde_json::Value::Null,
-        "the collection keeps the unknown contexts of its methods"
+    assert!(
+        methods.data.unwrap()["items"][0]["props"]
+            .get("compile")
+            .is_none(),
+        "computed compilation facts stay internal"
     );
 
     let view = service.view(ViewRequest::new("main:CommonModule.СерверныеФункции").unwrap());
@@ -438,14 +438,9 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     let method = service
         .view(ViewRequest::new("main:CommonModule.СерверныеФункции.Method.ПР_Удвоенное").unwrap());
     assert!(method.ok, "method must succeed");
-    assert_eq!(
-        method.data.unwrap()["props"]["compile"]["contexts"],
-        json!([
-            "server",
-            "mobileAppServer",
-            "mobileStandaloneServer",
-            "externalConnection"
-        ])
+    assert!(
+        method.data.unwrap()["props"].get("compile").is_none(),
+        "computed compilation facts stay internal"
     );
 }
 
@@ -507,10 +502,9 @@ fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contex
             ViewRequest::new("main:CommonModule.СерверныеФункции.Method.ПР_Разность").unwrap(),
         );
         assert!(method.ok, "{flag}: method view must succeed");
-        assert_eq!(
-            method.data.unwrap()["props"]["compile"]["contexts"],
-            serde_json::Value::Null,
-            "{flag}"
+        assert!(
+            method.data.unwrap()["props"].get("compile").is_none(),
+            "computed compilation facts stay internal"
         );
     }
 }
@@ -6261,17 +6255,16 @@ fn platform_borrowed_common_module_preserves_unknown_contexts_and_independent_fa
         .view(ViewRequest::new("main:CommonModule.CorpusModule.Method.Проверка").unwrap())
         .data
         .unwrap();
-    assert_eq!(
-        method["props"]["compile"]["contexts"],
-        serde_json::Value::Null
+    assert!(
+        method["props"].get("compile").is_none(),
+        "computed compilation facts stay internal"
     );
-    assert_eq!(method["props"]["compile"]["guard"], "Server");
+    assert!(
+        method["props"].get("compile").is_none(),
+        "computed compilation facts stay internal"
+    );
     assert_eq!(method["props"]["export"], true);
-    let compilation = service
-        .view(ViewRequest::new("main:CommonModule.CorpusModule.Compilation").unwrap())
-        .data
-        .unwrap();
-    assert_eq!(compilation["items"][0]["contexts"], serde_json::Value::Null);
+    assert!(QualifiedAddress::parse("main:CommonModule.CorpusModule.Compilation").is_err());
     assert_eq!(fs::read_to_string(&path).unwrap(), descriptor);
     assert_eq!(fs::read_to_string(&module).unwrap(), source);
 

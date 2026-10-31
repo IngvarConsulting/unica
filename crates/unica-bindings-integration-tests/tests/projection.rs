@@ -372,7 +372,7 @@ mod tests {
             "Процедура Пустая(\n)\nКонецПроцедуры\n"
         );
         let serialized = serde_json::to_value(empty).unwrap();
-        assert_eq!(serialized["branches"][1]["count"], 3);
+        assert_eq!(serialized["branches"][0]["count"], 3);
     }
 
     #[test]
@@ -384,7 +384,8 @@ mod tests {
             .find(|method| method.name == "Контекстная")
             .unwrap();
         let serialized = serde_json::to_value(method).unwrap();
-        assert_eq!(serialized["branches"][0]["count"], 3);
+        assert_eq!(method.compilation_count, 3);
+        assert!(serialized["props"].get("compile").is_none());
         assert_eq!(method.compile.guard.as_deref(), Some("Client"));
         assert!(method.compile.conditional_body);
         let ranges = projection

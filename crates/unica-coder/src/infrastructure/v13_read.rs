@@ -3339,7 +3339,7 @@ fn module_projection_view_data(
     if (branch == NodeKind::Method && suffix.len() > 2)
         || (matches!(
             branch,
-            NodeKind::Interface | NodeKind::Event | NodeKind::Compilation | NodeKind::Body
+            NodeKind::Interface | NodeKind::Event | NodeKind::Body
         ) && suffix.len() > 1)
     {
         return Err(ViewError::new(
@@ -3378,20 +3378,6 @@ fn module_projection_view_data(
                 projections.method_text(method),
                 method.text_from_line,
             )
-        }
-        (NodeKind::Method, Some(name), Some(detail))
-            if detail.name().is_none() && detail.kind() == NodeKind::Compilation =>
-        {
-            let method = find_method(projections, name)?;
-            let from = method.body_from_line.saturating_sub(1);
-            let to = method.body_to_line.saturating_add(1);
-            let items = projections
-                .compilation()
-                .iter()
-                .filter(|range| range.from_line <= to && range.to_line >= from)
-                .map(|range| serde_json::to_value(range).unwrap_or(Value::Null))
-                .collect();
-            module_collection(requested, NodeKind::Compilation, items)
         }
         (NodeKind::Region, None, None) => module_collection(
             requested,
@@ -3445,15 +3431,6 @@ fn module_projection_view_data(
                     format!("event `{name}` was not found"),
                 )
             }),
-        (NodeKind::Compilation, None, None) => module_collection(
-            requested,
-            NodeKind::Compilation,
-            projections
-                .compilation()
-                .iter()
-                .map(|range| serde_json::to_value(range).unwrap_or(Value::Null))
-                .collect(),
-        ),
         (NodeKind::Body, None, None) => module_text(requested, projections.source_text(), 1),
         _ => Err(ViewError::new(
             RefusalCode::NotFound,
@@ -3587,7 +3564,6 @@ fn method_node(method: &MethodProjection) -> NodeView {
         ("signature".to_string(), json!(method.signature)),
         ("methodKind".to_string(), json!(method.method_kind)),
         ("export".to_string(), json!(method.export)),
-        ("compile".to_string(), json!(method.compile)),
         // Область называет свои строки; метод называет строки своего текста
         // `Body` — от документирующего комментария до строки окончания.
         // Это координата внутри модуля, а не физическая раскладка.
@@ -3608,10 +3584,6 @@ fn method_node(method: &MethodProjection) -> NodeView {
         props.insert("area".to_string(), json!(area));
     }
     NodeView::new(&method.at, NodeKind::Method.as_str(), &method.name, props).with_branches(vec![
-        BranchRef::new(
-            format!("{}.Compilation", method.at),
-            method.compilation_count,
-        ),
         BranchRef::new(format!("{}.Body", method.at), method.text_line_count()),
     ])
 }
