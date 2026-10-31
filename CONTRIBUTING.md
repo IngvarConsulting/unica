@@ -318,7 +318,7 @@ Guards сохраняют проверку форматирования чере
 смена типа или режима файла также не получают этот пропуск.
 
 Прогон занимает одну джобу на ОС: запись очереди — Linux-джоба `Unica CI`,
-джоба `Rust (macos-14)` и лёгкая `Clippy (windows-latest)`, pull request — `Unica CI` и `Lint and Python` (Clippy
+джоба `Rust (macos-15)` и лёгкая `Clippy (windows-latest)`, pull request — `Unica CI` и `Lint and Python` (Clippy
 и Python small; метка `ci:full` добавляет macOS). `Unica CI` подряд исполняет guards, сборки, тесты, Clippy
 и Python, в конце ждёт джобы macOS и Clippy Windows и сверяет общий инвентарь. Красный шаг
 не отменяет следующие: ошибка линта или отправки SARIF не лишает отчёт

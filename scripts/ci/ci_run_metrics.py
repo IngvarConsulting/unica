@@ -56,7 +56,7 @@ DELIVERY_TAIL = (
 # Джобы раскладки до #1813: по ним прогон узнаётся как прежний.
 LEGACY_JOBS = ("Rust tests (", "Build Rust ", "Python tests (", "Guards")
 RUST_JOB = re.compile(r"^(Rust |Build Rust |Warm Rust |Ordinary binary|Clippy |Unica CI$)")
-RUNNER_ARTIFACT = re.compile(r"(plan|results)-(ubuntu-latest|macos-14|windows-latest)\Z")
+RUNNER_ARTIFACT = re.compile(r"(plan|results)-(ubuntu-latest|macos-14|macos-15|windows-latest)\Z")
 LANE_MEMBER_ROOT = re.compile(r"lane\.json\Z")
 SHARD_MEMBER_ROOT = re.compile(r"shard\.json\Z")
 LANE_MEMBER = re.compile(r"(?:.*/)?plan-rust-[^/]+/lane\.json\Z")
