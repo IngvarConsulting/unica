@@ -918,7 +918,7 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 **Прочее:**
 
 ```xml
-<EditType>InDialog</EditType>               <!-- InDialog | InList | Both -->
+<EditType>InDialog</EditType>               <!-- InDialog | InList | BothWays -->
 <QuickChoice>true</QuickChoice>
 <ChoiceMode>BothWays</ChoiceMode>            <!-- BothWays -->
 <PredefinedDataUpdate>Auto</PredefinedDataUpdate>  <!-- Auto | DontAutoUpdate -->

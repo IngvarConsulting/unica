@@ -326,6 +326,7 @@ default-filter = '''(
     | (binary(unica_metadata_designer) & test(/^edit::dimension_deny_tests::/))
     | (binary(unica_metadata_designer) & test(/^edit::dump_parity_tests::/))
     | (binary(unica_metadata_designer) & test(/^edit::empty_child_objects_tests::/))
+    | (binary(unica_metadata_designer) & test(/^edit_type::native_tests::/))
     | (binary(unica_metadata_designer) & test(/^extension::tests::/))
     | (binary(unica_metadata_designer) & test(/^info_projection::tests::/))
     | (binary(unica_metadata_designer) & test(/^interface::tests::/))

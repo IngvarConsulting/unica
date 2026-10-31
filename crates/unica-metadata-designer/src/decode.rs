@@ -1064,7 +1064,7 @@ pub fn parse_properties(
     ) {
         PropertiesSite::root_of(binding.source_kind)
     } else {
-        PropertiesSite::from_address(&target)
+        PropertiesSite::from_address(&target, binding.source_kind)
     }
     .ok_or_else(|| {
         ApplyPlanError::new(

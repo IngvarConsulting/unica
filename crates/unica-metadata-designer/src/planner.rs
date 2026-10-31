@@ -407,6 +407,14 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
             )
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
+        crate::edit_type::guard(
+            staged,
+            authority.source_kind(),
+            target,
+            &preimage,
+            edit,
+            op_index,
+        )?;
         let mut postimage = source.to_string();
         let (actual_kind, actual_name) = crate::edit::meta_edit_object_identity(&postimage)
             .map_err(|message| {
