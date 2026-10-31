@@ -1203,6 +1203,20 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "IntegrationService" {
+            match unica_metadata_designer::integration_service_address::read(&descriptor) {
+                Ok(Some(address)) => {
+                    payload["properties"] = json!([{
+                        "key": "ExternalIntegrationServiceAddress",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value: address },
+                    }]);
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    payload["unreadable"] = json!([{"field":"properties.ExternalIntegrationServiceAddress", "message":message}]);
+                }
+            }
+        }
         if evidence.artifact_kind() == "SessionParameter" {
             match unica_metadata_designer::session_parameter_comment::read_comment(&descriptor) {
                 Ok(Some(comment)) => {

@@ -1,0 +1,53 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<IntegrationService uuid="036dd778-5f50-4ec4-9ebd-6a4bf5a06257">
+		<InternalInfo>
+			<xr:GeneratedType name="IntegrationServiceManager.Шина" category="Manager">
+				<xr:TypeId>a7151541-c8b0-4713-bf66-2194e1db5147</xr:TypeId>
+				<xr:ValueId>dbd474ef-ba8d-427c-b50a-e17bd1c425aa</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>Шина</Name>
+			<Synonym/>
+			<Comment>retain-owner</Comment>
+			<ExternalIntegrationServiceAddress/>
+		</Properties>
+		<ChildObjects>
+			<IntegrationServiceChannel uuid="7e0118b2-0e6a-4975-acb4-73c309cc8c58">
+				<InternalInfo>
+					<xr:GeneratedType name="IntegrationServiceChannelManager.Шина.Первый" category="Manager">
+						<xr:TypeId>3f835765-1ea5-457c-b136-402e75e85aab</xr:TypeId>
+						<xr:ValueId>480d4403-a7ac-475e-b026-1993087b7eec</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>Первый</Name>
+					<Synonym/>
+					<Comment>retain-0</Comment>
+					<ExternalIntegrationServiceChannelName>queue-0</ExternalIntegrationServiceChannelName>
+					<MessageDirection>Send</MessageDirection>
+					<ReceiveMessageProcessing/>
+					<Transactioned>false</Transactioned>
+				</Properties>
+			</IntegrationServiceChannel>
+			<IntegrationServiceChannel uuid="89987524-4c3d-46b8-ab37-a39bdc3938bc">
+				<InternalInfo>
+					<xr:GeneratedType name="IntegrationServiceChannelManager.Шина.Второй" category="Manager">
+						<xr:TypeId>26f9da2a-add6-460a-a3dd-08aa352e6781</xr:TypeId>
+						<xr:ValueId>25f0326a-ed9d-439b-aa5d-736763ed24fc</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>Второй</Name>
+					<Synonym/>
+					<Comment>retain-1</Comment>
+					<ExternalIntegrationServiceChannelName>queue-1</ExternalIntegrationServiceChannelName>
+					<MessageDirection>Send</MessageDirection>
+					<ReceiveMessageProcessing/>
+					<Transactioned>false</Transactioned>
+				</Properties>
+			</IntegrationServiceChannel>
+		</ChildObjects>
+	</IntegrationService>
+</MetaDataObject>

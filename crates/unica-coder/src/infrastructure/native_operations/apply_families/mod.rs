@@ -1313,6 +1313,9 @@ pub(crate) fn plan_hidden_v13_apply(
 }
 
 #[cfg(test)]
+mod integration_service_address_tests;
+
+#[cfg(test)]
 mod inherited_content_tests;
 
 #[cfg(test)]
