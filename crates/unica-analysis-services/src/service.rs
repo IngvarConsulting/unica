@@ -277,14 +277,6 @@ impl WorkspaceServiceCallDeadline {
         self.check(cancellation)?;
         match self.caller {
             Some(deadline) => {
-                let deadline = if matches!(
-                    &request.kind,
-                    ServiceRequestKind::Ping | ServiceRequestKind::Shutdown
-                ) {
-                    deadline.earlier(ProviderDeadline::from_budget(SERVICE_REQUEST_TIMEOUT))
-                } else {
-                    deadline
-                };
                 connector.send_operation_before(record, request, cancellation, deadline)
             }
             None => connector.send(record, request, cancellation, self.remaining(cancellation)?),
@@ -771,12 +763,20 @@ impl<'a> WorkspaceServiceManager<'a> {
             token: record.token.clone(),
             kind: ServiceRequestKind::Ping,
         };
-        let result = deadline
-            .send(self.connector, record, request, cancellation)
-            .map(|response| service_response_is_alive(&response))
-            .unwrap_or(false);
+        let result = deadline.send(self.connector, record, request, cancellation);
         deadline.check(cancellation)?;
-        Ok(result)
+        match result {
+            // A timed-out probe cannot authorize shutting down an unobserved
+            // service: it may still own accepted operations of other callers.
+            Err(error)
+                if error == workspace_service_request_timeout_error(SERVICE_REQUEST_TIMEOUT) =>
+            {
+                Err(error)
+            }
+            result => Ok(result
+                .map(|response| service_response_is_alive(&response))
+                .unwrap_or(false)),
+        }
     }
 
     fn reusable_record(
@@ -1036,6 +1036,26 @@ impl ConnectorRequestDeadline for ProviderDeadline {
     }
 }
 
+// A reuse probe has a finite transport step without changing its caller's
+// operation deadline. Each I/O observes both clocks and the earlier endpoint.
+struct ControlStepDeadline {
+    operation: ProviderDeadline,
+    step: Deadline,
+}
+
+impl ConnectorRequestDeadline for ControlStepDeadline {
+    fn remaining_or_timeout(&self, clock: &dyn ConnectorClock) -> Result<Option<Duration>, String> {
+        let operation = self.operation.remaining_or_timeout(clock)?;
+        let step = self
+            .step
+            .remaining(clock)
+            .ok_or_else(|| workspace_service_request_timeout_error(self.step.budget))?;
+        Ok(Some(
+            operation.map_or(step, |remaining| remaining.min(step)),
+        ))
+    }
+}
+
 pub trait ConnectorStream: Read + Write {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
     fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
@@ -1106,30 +1126,56 @@ impl ServiceConnector for SystemServiceConnector {
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<ServiceResponse, String> {
-        let clock = SystemClock::start();
-        if matches!(&request.kind, ServiceRequestKind::BslMcpBegin { .. }) {
-            self.send_prepared_with(
-                record,
-                request,
-                cancellation,
-                deadline,
-                &SystemConnectorIo,
-                &clock,
-            )
-        } else {
-            self.send_with_deadline(
-                record,
-                request,
-                cancellation,
-                &deadline,
-                &SystemConnectorIo,
-                &clock,
-            )
-        }
+        self.send_operation_with(
+            record,
+            request,
+            cancellation,
+            deadline,
+            &SystemConnectorIo,
+            &SystemClock::start(),
+        )
     }
 }
 
 impl SystemServiceConnector {
+    fn send_operation_with(
+        &self,
+        record: &WorkspaceServiceRecord,
+        request: ServiceRequest,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+        io: &dyn ConnectorIo,
+        clock: &dyn ConnectorClock,
+    ) -> Result<ServiceResponse, String> {
+        if matches!(&request.kind, ServiceRequestKind::BslMcpBegin { .. }) {
+            self.send_prepared_with(record, request, cancellation, deadline, io, clock)
+        } else if matches!(
+            &request.kind,
+            ServiceRequestKind::Ping | ServiceRequestKind::Shutdown
+        ) {
+            let deadline = ControlStepDeadline {
+                operation: deadline,
+                step: Deadline::new(clock, SERVICE_REQUEST_TIMEOUT),
+            };
+            self.send_with_deadline(record, request, cancellation, &deadline, io, clock)
+        } else {
+            self.send_with_deadline(record, request, cancellation, &deadline, io, clock)
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_send_operation_with(
+        &self,
+        record: &WorkspaceServiceRecord,
+        request: ServiceRequest,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+        io: &dyn ConnectorIo,
+        clock: &dyn ConnectorClock,
+    ) -> Result<ServiceResponse, String> {
+        self.send_operation_with(record, request, cancellation, deadline, io, clock)
+    }
+
     pub fn send_prepared_with(
         &self,
         record: &WorkspaceServiceRecord,

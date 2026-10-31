@@ -3804,6 +3804,37 @@ fn main() {
         fn now() -> Instant {
             *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
         }
+        struct AckIo;
+        struct AckStream;
+        impl ConnectorIo for AckIo {
+            fn connect(&self, _: u16, _: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+                Ok(Box::new(AckStream))
+            }
+        }
+        impl Read for AckStream {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                ADVANCE.store(3, Ordering::Release);
+                let reply = b"{\"ok\":true,\"status\":\"alive\"}\n";
+                bytes[..reply.len()].copy_from_slice(reply);
+                Ok(reply.len())
+            }
+        }
+        impl Write for AckStream {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl ConnectorStream for AckStream {
+            fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
+                Ok(())
+            }
+            fn set_write_timeout(&self, _: Option<Duration>) -> io::Result<()> {
+                Ok(())
+            }
+        }
         struct Connector {
             original: ProviderDeadline,
             controls: AtomicUsize,
@@ -3830,41 +3861,31 @@ fn main() {
             }
             fn send_operation_before(
                 &self,
-                _: &WorkspaceServiceRecord,
+                record: &WorkspaceServiceRecord,
                 request: ServiceRequest,
-                _: &CancellationToken,
+                cancellation: &CancellationToken,
                 deadline: ProviderDeadline,
             ) -> Result<ServiceResponse, String> {
-                match request.kind {
+                assert_eq!(deadline, self.original, "the manager must not replace an absent/long business deadline with a control deadline");
+                match &request.kind {
                     ServiceRequestKind::Ping | ServiceRequestKind::Shutdown => {
-                        let remaining = deadline.remaining().expect("Ping/Shutdown require a finite step even when the business call has no deadline");
-                        assert!(remaining > Duration::ZERO && remaining <= SERVICE_REQUEST_TIMEOUT);
-                        if self.original.remaining() == Some(Duration::from_secs(10)) {
-                            assert_eq!(
-                                deadline, self.original,
-                                "a shorter original endpoint must win"
-                            );
-                            ADVANCE.store(3, Ordering::Release);
-                            assert_eq!(
-                                deadline.remaining(),
-                                Some(Duration::from_secs(7)),
-                                "the selected original deadline must retain its own clock"
-                            );
-                        }
                         self.controls.fetch_add(1, Ordering::AcqRel);
-                        Ok(ServiceResponse {
-                            ok: true,
-                            status: Some("alive".into()),
-                            ..ServiceResponse::default()
-                        })
+                        let result = SYSTEM_SERVICE_CONNECTOR.test_send_operation_with(
+                            record,
+                            request,
+                            cancellation,
+                            deadline,
+                            &AckIo,
+                            &ManualClock::default(),
+                        );
+                        if self.original.remaining() == Some(Duration::from_secs(7)) {
+                            assert_eq!(deadline.remaining(), Some(Duration::from_secs(7)), "the selected original deadline must retain its clock through control I/O");
+                        }
+                        result
                     }
                     ServiceRequestKind::BslMcpBegin {
                         deadline: offered, ..
                     } => {
-                        assert_eq!(
-                            deadline, self.original,
-                            "the control cap must not escape into the operation"
-                        );
                         assert_eq!(offered.remaining().unwrap(), self.original.remaining());
                         self.begins.fetch_add(1, Ordering::AcqRel);
                         Ok(ServiceResponse {
@@ -3995,29 +4016,210 @@ fn main() {
         fn now() -> Instant {
             *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
         }
-        struct SilentIo {
+        #[derive(Clone, Copy, Debug)]
+        enum Reply {
+            AfterPoll,
+            StepExpired,
+            CallerExpired,
+            Late,
+            Cancel,
+        }
+        struct ProbeIo {
+            clock: ManualClock,
             reads: Arc<AtomicUsize>,
+            reply: Reply,
+            cancellation: CancellationToken,
+        }
+        struct ProbeStream {
+            clock: ManualClock,
+            reads: Arc<AtomicUsize>,
+            reply: Reply,
+            cancellation: CancellationToken,
+        }
+        impl ConnectorIo for ProbeIo {
+            fn connect(&self, _: u16, timeout: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+                assert!(timeout > Duration::ZERO && timeout <= SERVICE_REQUEST_TIMEOUT);
+                Ok(Box::new(ProbeStream {
+                    clock: self.clock.clone(),
+                    reads: self.reads.clone(),
+                    reply: self.reply,
+                    cancellation: self.cancellation.clone(),
+                }))
+            }
+        }
+        impl Read for ProbeStream {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                let read = self.reads.fetch_add(1, Ordering::AcqRel);
+                let reply = if read == 0 {
+                    b"{\"ok\":".as_slice()
+                } else {
+                    assert!(
+                        read == 1 || (read == 2 && matches!(self.reply, Reply::AfterPoll)),
+                        "the actual control-step deadline must stop further polling"
+                    );
+                    if read == 1 {
+                        let (step_elapsed, caller_elapsed) = match self.reply {
+                            Reply::AfterPoll => (3, 3),
+                            Reply::CallerExpired => (0, 11),
+                            _ => (121, 121),
+                        };
+                        self.clock.advance(Duration::from_secs(step_elapsed));
+                        ADVANCE.store(caller_elapsed, Ordering::Release);
+                        if matches!(self.reply, Reply::Cancel) {
+                            self.cancellation.cancel();
+                        }
+                        if !matches!(self.reply, Reply::Late) {
+                            return Err(io::Error::new(
+                                ErrorKind::TimedOut,
+                                "control polling slice",
+                            ));
+                        }
+                    }
+                    b"true}\n".as_slice()
+                };
+                bytes[..reply.len()].copy_from_slice(reply);
+                Ok(reply.len())
+            }
+        }
+        impl Write for ProbeStream {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl ConnectorStream for ProbeStream {
+            fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+                assert!(timeout.is_some_and(
+                    |timeout| timeout > Duration::ZERO && timeout <= Duration::from_millis(100)
+                ));
+                Ok(())
+            }
+            fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+                assert!(timeout.is_some_and(
+                    |timeout| timeout > Duration::ZERO && timeout <= Duration::from_millis(100)
+                ));
+                Ok(())
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        for shutdown in [false, true] {
+            for budget in [
+                None,
+                Some(Duration::from_secs(240)),
+                Some(Duration::from_secs(10)),
+            ] {
+                for reply in [
+                    Reply::StepExpired,
+                    Reply::CallerExpired,
+                    Reply::AfterPoll,
+                    Reply::Late,
+                    Reply::Cancel,
+                ] {
+                    if matches!(reply, Reply::CallerExpired)
+                        && budget != Some(Duration::from_secs(10))
+                    {
+                        continue;
+                    }
+                    ADVANCE.store(0, Ordering::Release);
+                    let original = budget.map_or(ProviderDeadline::no_deadline(), |budget| {
+                        ProviderDeadline::with_clock(start + budget, now)
+                    });
+                    let cancellation = CancellationToken::new();
+                    let clock = ManualClock::default();
+                    let reads = Arc::new(AtomicUsize::new(0));
+                    let io = ProbeIo {
+                        clock: clock.clone(),
+                        reads: reads.clone(),
+                        reply,
+                        cancellation: cancellation.clone(),
+                    };
+                    let kind = if shutdown {
+                        ServiceRequestKind::Shutdown
+                    } else {
+                        ServiceRequestKind::Ping
+                    };
+                    let result = SYSTEM_SERVICE_CONNECTOR.test_send_operation_with(
+                        &connector_test_record(),
+                        connector_test_request(kind),
+                        &cancellation,
+                        original,
+                        &io,
+                        &clock,
+                    );
+                    if matches!(reply, Reply::AfterPoll) {
+                        assert!(
+                            result.unwrap().ok,
+                            "the prefix before a polling timeout must survive"
+                        );
+                        assert_eq!(reads.load(Ordering::Acquire), 3);
+                    } else {
+                        let error = result.unwrap_err();
+                        if matches!(reply, Reply::Cancel) {
+                            assert!(error.starts_with("cancelled:"), "{error}");
+                        } else if budget == Some(Duration::from_secs(10)) {
+                            assert!(
+                                error.contains("operation deadline elapsed"),
+                                "the original caller clock must win: {error}"
+                            );
+                        } else {
+                            assert_eq!(
+                                error,
+                                workspace_service_request_timeout_error(SERVICE_REQUEST_TIMEOUT),
+                                "the transport step, not the business operation, expired"
+                            );
+                        }
+                        assert_eq!(reads.load(Ordering::Acquire), 2);
+                        if matches!(reply, Reply::CallerExpired) {
+                            assert_eq!(
+                                clock.elapsed(),
+                                Duration::ZERO,
+                                "the transport step is still live"
+                            );
+                            assert_eq!(
+                                original.remaining(),
+                                Some(Duration::ZERO),
+                                "only the independent caller clock expired"
+                            );
+                        }
+                    }
+                    assert_eq!(
+                        original.remaining().is_none(),
+                        budget.is_none(),
+                        "the control step must never overwrite the caller's absence"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_ping_step_timeout_preserves_the_live_service_and_accepted_neighbor() {
+        struct SilentIo {
+            clock: ManualClock,
         }
         struct SilentStream {
-            reads: Arc<AtomicUsize>,
+            clock: ManualClock,
+            read: bool,
         }
         impl ConnectorIo for SilentIo {
-            fn connect(&self, _: u16, timeout: Duration) -> io::Result<Box<dyn ConnectorStream>> {
-                assert!(timeout > Duration::ZERO && timeout <= Duration::from_secs(10));
+            fn connect(&self, _: u16, _: Duration) -> io::Result<Box<dyn ConnectorStream>> {
                 Ok(Box::new(SilentStream {
-                    reads: self.reads.clone(),
+                    clock: self.clock.clone(),
+                    read: false,
                 }))
             }
         }
         impl Read for SilentStream {
             fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-                assert_eq!(
-                    self.reads.fetch_add(1, Ordering::AcqRel),
-                    0,
-                    "an expired original deadline must not start another polling slice"
+                assert!(
+                    !self.read,
+                    "the actual control step must expire after this polling slice"
                 );
-                ADVANCE.store(11, Ordering::Release);
-                Err(io::Error::new(ErrorKind::TimedOut, "silent control peer"))
+                self.read = true;
+                self.clock.advance(Duration::from_secs(121));
+                Err(io::Error::new(ErrorKind::TimedOut, "silent Ping peer"))
             }
         }
         impl Write for SilentStream {
@@ -4029,10 +4231,7 @@ fn main() {
             }
         }
         impl ConnectorStream for SilentStream {
-            fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-                assert!(timeout.is_some_and(
-                    |timeout| timeout > Duration::ZERO && timeout <= Duration::from_millis(100)
-                ));
+            fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
                 Ok(())
             }
             fn set_write_timeout(&self, _: Option<Duration>) -> io::Result<()> {
@@ -4040,8 +4239,9 @@ fn main() {
             }
         }
         struct Connector {
-            original: ProviderDeadline,
-            io: SilentIo,
+            stall_ping: std::cell::Cell<bool>,
+            shutdowns: AtomicUsize,
+            begins: AtomicUsize,
         }
         impl ServiceConnector for Connector {
             fn send(
@@ -4051,7 +4251,7 @@ fn main() {
                 _: &CancellationToken,
                 _: Duration,
             ) -> Result<ServiceResponse, String> {
-                panic!("typed deadline required");
+                panic!("typed calls required");
             }
             fn send_before(
                 &self,
@@ -4069,72 +4269,168 @@ fn main() {
                 cancellation: &CancellationToken,
                 deadline: ProviderDeadline,
             ) -> Result<ServiceResponse, String> {
-                assert!(matches!(
-                    request.kind,
-                    ServiceRequestKind::Ping | ServiceRequestKind::Shutdown
-                ));
-                assert_eq!(deadline, self.original);
-                let result = SYSTEM_SERVICE_CONNECTOR.send_with_deadline(
-                    record,
-                    request,
-                    cancellation,
-                    &deadline,
-                    &self.io,
-                    &ManualClock::default(),
-                );
-                assert!(result.as_ref().unwrap_err().starts_with("timeout:"));
-                result
+                assert_eq!(deadline, ProviderDeadline::no_deadline());
+                match &request.kind {
+                    ServiceRequestKind::Ping if self.stall_ping.get() => {
+                        let clock = ManualClock::default();
+                        SYSTEM_SERVICE_CONNECTOR.test_send_operation_with(
+                            record,
+                            request,
+                            cancellation,
+                            deadline,
+                            &SilentIo {
+                                clock: clock.clone(),
+                            },
+                            &clock,
+                        )
+                    }
+                    ServiceRequestKind::Ping => SYSTEM_SERVICE_CONNECTOR.send_operation_before(
+                        record,
+                        request,
+                        cancellation,
+                        deadline,
+                    ),
+                    ServiceRequestKind::Shutdown => {
+                        self.shutdowns.fetch_add(1, Ordering::AcqRel);
+                        // A forbidden shutdown reaches the real helper and its real held worker.
+                        SYSTEM_SERVICE_CONNECTOR.send_operation_before(
+                            record,
+                            request,
+                            cancellation,
+                            deadline,
+                        )
+                    }
+                    ServiceRequestKind::BslMcpBegin {
+                        deadline: offered, ..
+                    } => {
+                        assert_eq!(offered.remaining().unwrap(), None);
+                        self.begins.fetch_add(1, Ordering::AcqRel);
+                        Ok(ServiceResponse {
+                            ok: true,
+                            result_text: Some("reused-service".into()),
+                            ..ServiceResponse::default()
+                        })
+                    }
+                    other => panic!("unexpected request {other:?}"),
+                }
             }
         }
-        let start = *START.get_or_init(Instant::now);
-        let current_build = CoreIdentity::production();
-        for mismatch in [false, true] {
-            ADVANCE.store(0, Ordering::Release);
-            let context = test_context(&format!("prepared-control-transport-{mismatch}"));
-            let root = context.workspace_root.join("src");
-            let identity = WorkspaceServiceIdentity::new(&context, &root).unwrap();
-            write_record(
-                &identity,
-                test_record(
-                    &identity,
-                    34567,
-                    if mismatch {
-                        "replaced-build"
-                    } else {
-                        current_build.as_str()
-                    },
-                ),
-            );
-            let original = ProviderDeadline::with_clock(start + Duration::from_secs(10), now);
-            let reads = Arc::new(AtomicUsize::new(0));
-            let connector = Connector {
-                original,
-                io: SilentIo {
-                    reads: reads.clone(),
-                },
-            };
-            let spawner = RecordingSpawner::default();
-            let result = WorkspaceServiceManager::with_io(
-                &connector,
-                &spawner,
-                analysis_composition::service_environment(),
-            )
-            .call_bsl_mcp_before(
-                &context,
-                &root,
-                PreparedBslCall {
-                    tool_name: "symbol_info".into(),
-                    tool_args: json!({}),
-                    yields: false,
-                },
-                &CancellationToken::new(),
-                original,
-            );
-            assert!(result.unwrap_err().starts_with("timeout:"));
-            assert_eq!(reads.load(Ordering::Acquire), 1);
-            assert_eq!(*spawner.spawns.borrow(), 0);
-            cleanup(&context);
+        struct Spawner {
+            record: WorkspaceServiceRecord,
+            calls: AtomicUsize,
         }
+        impl ServiceSpawner for Spawner {
+            fn spawn(
+                &self,
+                _: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                _: &str,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                panic!("typed startup required");
+            }
+            fn spawn_operation_before(
+                &self,
+                _: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                _: &str,
+                _: &CancellationToken,
+                _: ProviderDeadline,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                self.calls.fetch_add(1, Ordering::AcqRel);
+                Ok(self.record.clone())
+            }
+        }
+        let mut server = WorkspaceAdmissionTestServer::start("prepared-probe-neighbor");
+        let mut neighbor_reader = server.work("held-probe-neighbor");
+        server.executor.wait_started(1);
+        let neighbor = server.token("held-probe-neighbor");
+        let source_root = server.context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&server.context, &source_root).unwrap();
+        let connector = Connector {
+            stall_ping: std::cell::Cell::new(true),
+            shutdowns: AtomicUsize::new(0),
+            begins: AtomicUsize::new(0),
+        };
+        let spawner = Spawner {
+            record: server.record.clone(),
+            calls: AtomicUsize::new(0),
+        };
+        let manager = WorkspaceServiceManager::with_io(
+            &connector,
+            &spawner,
+            analysis_composition::service_environment(),
+        );
+        let deadline = ProviderDeadline::no_deadline();
+        let call = || PreparedBslCall {
+            tool_name: "symbol_info".into(),
+            tool_args: json!({}),
+            yields: false,
+        };
+        let result = manager.call_bsl_mcp_before(
+            &server.context,
+            &source_root,
+            call(),
+            &CancellationToken::new(),
+            deadline,
+        );
+        assert!(!neighbor.is_cancelled(), "a Ping step timeout must not send Shutdown and cancel an accepted neighboring operation");
+        assert!(!server.runtime.test_shutting_down().load(Ordering::Acquire));
+        assert_eq!(
+            result.unwrap_err(),
+            workspace_service_request_timeout_error(SERVICE_REQUEST_TIMEOUT)
+        );
+        assert!(
+            !deadline.is_elapsed(),
+            "transport failure is not expiry of this caller's absent operation deadline"
+        );
+        assert_eq!(connector.shutdowns.load(Ordering::Acquire), 0);
+        assert_eq!(connector.begins.load(Ordering::Acquire), 0);
+        assert_eq!(spawner.calls.load(Ordering::Acquire), 0);
+        assert!(server
+            .runtime
+            .test_owns_record(&read_record(&identity).unwrap()));
+        assert!(server
+            .runtime
+            .test_operation_ids()
+            .iter()
+            .any(|id| id == "held-probe-neighbor"));
+        connector.stall_ping.set(false);
+        assert_eq!(
+            manager
+                .call_bsl_mcp_before(
+                    &server.context,
+                    &source_root,
+                    call(),
+                    &CancellationToken::new(),
+                    deadline
+                )
+                .unwrap()
+                .result_text,
+            "reused-service"
+        );
+        assert_eq!(connector.shutdowns.load(Ordering::Acquire), 0);
+        assert_eq!(spawner.calls.load(Ordering::Acquire), 0);
+        assert_eq!(connector.begins.load(Ordering::Acquire), 1);
+        assert!(!neighbor.is_cancelled());
+        assert!(server
+            .runtime
+            .test_owns_record(&read_record(&identity).unwrap()));
+        assert!(
+            send_test_request(
+                &server.record,
+                ServiceRequestKind::Cancel {
+                    operation_id: "held-probe-neighbor".into()
+                }
+            )
+            .ok
+        );
+        assert!(!read_test_response(&mut neighbor_reader).ok);
+        assert!(
+            neighbor.is_cancelled(),
+            "explicit exact cancellation still owns the retained operation"
+        );
     }
 
     #[test]
