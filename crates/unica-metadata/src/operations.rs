@@ -559,6 +559,7 @@ pub struct MetaElementUpdateInput {
     pub indexing: Option<String>,
     /// `DenyIncompleteValues` of a register dimension.
     pub deny_incomplete_values: Option<bool>,
+    pub use_in_totals: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -573,6 +574,7 @@ pub struct MetaElementUpdate {
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
     pub deny_incomplete_values: Option<bool>,
+    pub use_in_totals: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -858,6 +860,7 @@ impl MetaElementUpdate {
             && input.position.is_none()
             && input.indexing.is_none()
             && input.deny_incomplete_values.is_none()
+            && input.use_in_totals.is_none()
         {
             return Err(invalid_operation(
                 field,
@@ -868,6 +871,12 @@ impl MetaElementUpdate {
             return Err(invalid_operation(
                 format!("{field}.denyIncompleteValues"),
                 "denyIncompleteValues is a property of register dimensions",
+            ));
+        }
+        if input.use_in_totals.is_some() && collection != MetaCollection::Dimensions {
+            return Err(invalid_operation(
+                format!("{field}.useInTotals"),
+                "useInTotals is a property of accumulation register dimensions",
             ));
         }
         let spec = metadata_collection_spec(collection);
@@ -893,6 +902,7 @@ impl MetaElementUpdate {
             position: input.position,
             indexing: input.indexing,
             deny_incomplete_values: input.deny_incomplete_values,
+            use_in_totals: input.use_in_totals,
         })
     }
 }
@@ -1698,6 +1708,13 @@ pub fn validate_metadata_operation_capabilities(
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
             for (index, element) in elements.iter().enumerate() {
+                if element.use_in_totals.is_some()
+                    && (owner_kind != MetadataKind::AccumulationRegister
+                        || *collection != MetaCollection::Dimensions
+                        || scope.is_some())
+                {
+                    return Err(invalid_operation(format!("elements[{index}].useInTotals"), "useInTotals is available only for top-level dimensions of accumulation registers"));
+                }
                 if element.deny_incomplete_values.is_some()
                     && !metadata_deny_incomplete_values_is_allowed(owner_kind)
                 {
@@ -3404,5 +3421,92 @@ mod tests {
         .unwrap();
 
         assert!(update.validate_targets(&existing).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod use_in_totals_tests {
+    use super::*;
+    use crate::apply_operations::MetadataOperation;
+    use crate::contracts::MetadataSite;
+    use serde_json::json;
+    #[test]
+    fn totals_contract_and_decoder_have_a_closed_update_matrix() {
+        for owner in MetadataKind::ALL.iter().copied() {
+            for in_section in [false, true] {
+                for op in [
+                    MetadataOperation::DimensionSet,
+                    MetadataOperation::DimensionAdd,
+                    MetadataOperation::ResourceSet,
+                ] {
+                    let schema = op
+                        .contract_at(Some(MetadataSite { owner, in_section }))
+                        .schema;
+                    let props = if op == MetadataOperation::DimensionAdd {
+                        &schema["properties"]["items"]["items"]["properties"]
+                    } else {
+                        &schema["properties"]["values"]["properties"]
+                    };
+                    assert_eq!(
+                        props.get("useInTotals").is_some(),
+                        owner == MetadataKind::AccumulationRegister
+                            && !in_section
+                            && op == MetadataOperation::DimensionSet
+                    );
+                }
+            }
+        }
+        for value in [false, true] {
+            let input = crate::request::parse_element_update(
+                &json!({"name":"Item","useInTotals":value}),
+                "elements[0]",
+            )
+            .unwrap();
+            let update = MetaElementUpdate::convert_at(
+                MetaCollection::Dimensions,
+                input.clone(),
+                "elements[0]",
+            )
+            .unwrap();
+            assert_eq!(update.use_in_totals, Some(value));
+            assert!(
+                MetaElementUpdate::convert_at(MetaCollection::Resources, input, "elements[0]")
+                    .is_err()
+            );
+            let at = MetadataAddress::parse(
+                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                "AccumulationRegister.Test",
+            )
+            .unwrap();
+            let operation = MetaEditOperation::Update {
+                collection: MetaCollection::Dimensions,
+                scope: None,
+                elements: vec![update],
+            };
+            for owner in [
+                MetadataKind::AccumulationRegister,
+                MetadataKind::InformationRegister,
+                MetadataKind::AccountingRegister,
+                MetadataKind::CalculationRegister,
+            ] {
+                assert_eq!(
+                    validate_metadata_operation_capabilities(owner, &at, &operation).is_ok(),
+                    owner == MetadataKind::AccumulationRegister
+                );
+            }
+        }
+        for (key, value) in [
+            ("useInTotals", json!(null)),
+            ("useInTotals", json!("false")),
+            ("useInTotals", json!(0)),
+            ("UseInTotals", json!(true)),
+            ("unknown", json!(false)),
+        ] {
+            assert!(crate::request::parse_element_update(
+                &json!({"name":"Item",key:value}),
+                "elements[0]"
+            )
+            .is_err());
+        }
     }
 }

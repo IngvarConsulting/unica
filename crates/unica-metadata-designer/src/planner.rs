@@ -104,6 +104,47 @@ pub fn validate_final_object_integrity(
     Ok(())
 }
 
+/// Check the final image only for owners whose request explicitly touched totals.
+/// Later operations may move dimensions, including across operation-family runs.
+pub fn validate_final_dimension_totals<'a>(
+    staged: &mut ApplyProposal<'_>,
+    source_kind: SourceSetKind,
+    operations: impl Iterator<Item = &'a IndexedPlanOperation<MetadataPlanOperation>>,
+) -> Result<(), ApplyPlanError> {
+    let mut seen = std::collections::HashSet::new();
+    for operation in operations {
+        let MetadataPlanKind::Edit {
+            target,
+            operation: edit,
+            ..
+        } = &operation.operation().kind
+        else {
+            continue;
+        };
+        if !crate::dimension_totals::requested(edit) {
+            continue;
+        }
+        let at = format!("ops[{}].args.useInTotals", operation.index());
+        let fail = |message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at.clone())
+        };
+        let relative = metadata_descriptor_relative(target, source_kind).map_err(fail)?;
+        if !seen.insert(relative.clone()) {
+            continue;
+        }
+        let Some(bytes) = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, at.clone()))?
+        else {
+            continue;
+        };
+        let text = std::str::from_utf8(&bytes).map_err(|error| fail(error.to_string()))?;
+        crate::dimension_totals::validate(text.trim_start_matches('\u{feff}'))
+            .map_err(|error| fail(error.message))?;
+    }
+    Ok(())
+}
+
 /// The source classes and the event a subscription descriptor binds.
 fn event_subscription_binding(
     bytes: &[u8],

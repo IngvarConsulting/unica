@@ -1,0 +1,660 @@
+{
+  "id": "S-1670-dimension-use-in-totals",
+  "issue": 1670,
+  "area": "Регистры накопления",
+  "workspace": "tests/fixtures/acceptance/workspace-nested-member-properties",
+  "task": "Переключить участие существующего измерения в итогах true→false→true через preview/token, прочитать результат, проверить no-op, закрытый Can, отказ пакета и конфликт входов без частичной записи. Позднее перемещение после изменения флага в том же пакете проверяется по конечному состоянию; недопустимый порядок отклоняется, допустимый пакет публикуется.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Dimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:AccumulationRegister.Movements.Dimension.StatusIncluded"
+        },
+        {
+          "pointer": "/data/items/0/props/UseInTotals",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/1/props/UseInTotals",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "selected": {
+          "pointer": "/data/items/0/at"
+        },
+        "original": {
+          "file": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Dimension.StatusIncluded.Can.dimension.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/useInTotals/type",
+          "eq": "boolean"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Resource.Amount.Can.resource.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/useInTotals",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts.Dimension.StringDimension.Can.dimension.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/useInTotals",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.selected",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "useInTotals": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/data/effects",
+          "notEq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "disabled": {
+          "file": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"StatusIncluded\"]/{http://v8.1c.ru/8.3/MDClasses}UseInTotals",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.selected"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseInTotals",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/type/variants/0/length",
+          "eq": 10
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.selected",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "useInTotals": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.disabled"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.disabled"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.selected",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "useInTotals": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.disabled"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.selected"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseInTotals",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Dimension.Status",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "useInTotals": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "allTrue": {
+          "file": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Dimension.Status",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "useInTotals": false
+              }
+            }
+          },
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "position": {
+                  "before": "StatusIncluded"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: UseInTotals values violate register mode or dimension order",
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.allTrue"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Dimension.Status",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "useInTotals": false
+              }
+            }
+          },
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "position": {
+                  "after": "StatusIncluded"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.allTrue"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "StatusIncluded",
+            "Status"
+          ]
+        },
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}UseInTotals",
+          "eq": [
+            "true",
+            "false"
+          ]
+        }
+      ],
+      "captures": {
+        "validState": {
+          "file": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Movements.Dimension.Status"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseInTotals",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Movements",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "at": "main:AccumulationRegister.Movements.Dimension.StatusIncluded",
+              "values": {
+                "useInTotals": false
+              }
+            }
+          },
+          {
+            "op": "dimension.set",
+            "args": {
+              "at": "main:AccumulationRegister.Movements.Dimension.Missing",
+              "values": {
+                "useInTotals": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: element `Missing` was not found",
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.validState"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.selected",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "useInTotals": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.validState"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Movements",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Concurrent totals update"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.validState"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "concurrent": {
+          "file": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: AccumulationRegisters/Movements.xml; input `AccumulationRegisters/Movements.xml`: source write target; the plan retains its ori",
+      "fileAssertions": [
+        {
+          "path": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256",
+          "eq": "$capture.concurrent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.selected"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseInTotals",
+          "eq": true
+        }
+      ]
+    }
+  ]
+}

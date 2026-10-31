@@ -177,3 +177,58 @@ fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attribu
         assert_no_section_properties(column);
     }
 }
+
+#[test]
+fn accumulation_totals_profile_preserves_false_absence_and_local_damage() {
+    let native = include_str!("../../../../tests/fixtures/acceptance/workspace-register-dimensions/src/AccumulationRegisters/Остатки.xml");
+    for (replacement, expected, damaged) in [
+        ("<UseInTotals>true</UseInTotals>", Some(true), false),
+        ("<UseInTotals>false</UseInTotals>", Some(false), false),
+        ("", None, false),
+        ("<UseInTotals/>", None, true),
+        (
+            "<UseInTotals>true</UseInTotals><UseInTotals>false</UseInTotals>",
+            None,
+            true,
+        ),
+        (
+            "<UseInTotals xmlns=\"urn:foreign\">true</UseInTotals>",
+            None,
+            true,
+        ),
+    ] {
+        let xml = native.replacen("<UseInTotals>true</UseInTotals>", replacement, 1);
+        let info = read(
+            &xml,
+            "AccumulationRegister.Остатки",
+            Some(SourceSetKind::Configuration),
+        );
+        let item = &info.collections.dimensions[0];
+        let fact = item.properties.iter().find(|p| p.name == "UseInTotals");
+        assert_eq!(
+            fact.map(|p| serde_json::to_value(&p.value).unwrap()),
+            expected.map(|value| json!({"kind":"boolean","value":value})),
+            "{replacement}"
+        );
+        assert_eq!(
+            item.property_limits
+                .iter()
+                .any(|l| l.contains("UseInTotals")),
+            damaged
+        );
+        assert!(item.r#type.is_some());
+    }
+    for kind in [
+        SourceSetKind::Extension,
+        SourceSetKind::ExternalProcessor,
+        SourceSetKind::ExternalReport,
+    ] {
+        let info = read(native, "AccumulationRegister.Остатки", Some(kind));
+        assert!(info.member_read_profile.is_none());
+        assert!(info
+            .collections
+            .dimensions
+            .iter()
+            .all(|d| d.properties.iter().all(|p| p.name != "UseInTotals")));
+    }
+}

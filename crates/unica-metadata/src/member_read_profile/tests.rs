@@ -100,3 +100,43 @@ fn member_profile_owns_only_exact_context_property_diagnostics() {
         );
     }
 }
+
+#[test]
+fn accumulation_totals_profile_is_exactly_configuration_dimensions() {
+    use super::*;
+    let p = MetaMemberReadProfile::AccumulationRegisterDimension220;
+    assert!(p.context_for_field("collections.dimensions[0]").is_some());
+    for field in [
+        "effect",
+        "collections.resources[0]",
+        "collections.dimensions[0].attributes[0]",
+    ] {
+        assert!(p.context_for_field(field).is_none());
+    }
+    for (at, allowed) in [
+        ("main:AccumulationRegister.Facts.Dimension.Item", true),
+        ("main:InformationRegister.Facts.Dimension.Item", false),
+        ("main:AccumulationRegister.Facts.Resource.Item", false),
+    ] {
+        assert_eq!(
+            p.context_for_address(&QualifiedAddress::parse(at).unwrap(), NodeKind::Dimension)
+                .is_some(),
+            allowed
+        );
+    }
+    for kind in [
+        SourceSetKind::Configuration,
+        SourceSetKind::Extension,
+        SourceSetKind::ExternalReport,
+    ] {
+        assert_eq!(
+            MetaMemberReadProfile::for_source(
+                kind,
+                MetadataKind::AccumulationRegister,
+                Some("2.20")
+            )
+            .is_some(),
+            kind == SourceSetKind::Configuration
+        );
+    }
+}

@@ -833,6 +833,7 @@ pub fn parse_element_update(
     Ok(MetaElementUpdateInput {
         indexing: reader.read("indexing", optional_string_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
+        use_in_totals: reader.read("useInTotals", optional_bool_at)?,
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,
         synonym: reader.read("synonym", optional_string_at)?,
@@ -1839,5 +1840,16 @@ mod shared_primitive_contract_tests {
         let error = parse_predefined_fields(&reader).unwrap_err();
         assert_eq!(error.field.as_deref(), Some(field), "{pointer}: {error:?}");
     }
+    }
+}
+
+#[cfg(test)]
+mod totals_tests {
+    use super::*;
+    #[test]
+    fn use_in_totals_accepts_explicit_false_on_update_only() {
+        let value = json!({"name":"Item","useInTotals":false});
+        assert!(parse_element_update(&value, "elements[0]").is_ok());
+        assert!(parse_element_input(&value, "elements[0]", false).is_err());
     }
 }
