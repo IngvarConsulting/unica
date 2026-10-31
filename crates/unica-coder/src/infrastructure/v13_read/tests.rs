@@ -7909,3 +7909,263 @@ fn an_open_buffer_is_read_in_place_of_its_module_file_and_the_file_is_untouched(
         .join("Ext/Module.bsl")
         .exists());
 }
+
+#[test]
+fn broken_bsl_body_keeps_text_and_reports_full_module_syntax_in_ranges() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let source = "Процедура А()\r\nЕсли Истина Тогда\r\nКонецПроцедуры";
+    fs::write(&module, source).unwrap();
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    for suffix in ["", "#L1-L2"] {
+        let result = fixture
+            .view_service()
+            .view(ViewRequest::new(&format!("{at}{suffix}")).unwrap());
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        let limits = data["limits"]
+            .as_array()
+            .expect("broken Body carries syntax diagnostics");
+        assert!(
+            limits.iter().any(|limit| limit
+                .as_str()
+                .is_some_and(|text| text.contains("КонецЕсли")
+                    && text.contains("line 3")
+                    && text.contains("column 1"))),
+            "{limits:?}"
+        );
+        assert_eq!(
+            result.source_text.as_deref(),
+            Some(if suffix.is_empty() {
+                source
+            } else {
+                "Процедура А()\r\nЕсли Истина Тогда\r\n"
+            })
+        );
+    }
+    assert_eq!(fs::read_to_string(module).unwrap(), source);
+}
+
+#[test]
+fn broken_bsl_many_errors_keep_body_available_with_bounded_diagnostics() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let source = "Процедура А()\n".repeat(300);
+    fs::write(&module, &source).unwrap();
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Module.Form.Body").unwrap());
+    assert!(result.ok, "{result:?}");
+    assert_eq!(result.source_text.as_deref(), Some(source.as_str()));
+    let limits = result.data.as_ref().unwrap()["limits"].as_array().unwrap();
+    assert!(
+        limits
+            .iter()
+            .any(|limit| limit.as_str().unwrap().contains("omitted")),
+        "{limits:?}"
+    );
+    assert!(serde_json::to_vec(limits).unwrap().len() < 1800);
+}
+
+#[test]
+fn bsl_body_range_never_parses_the_window_or_an_oversized_prefix() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    fs::write(&module, "Процедура А()\r\nВозврат;\r\nКонецПроцедуры").unwrap();
+    let healthy = fixture
+        .view_service()
+        .view(ViewRequest::new(&format!("{at}#L2-L2")).unwrap());
+    assert!(healthy.ok);
+    assert_eq!(healthy.source_text.as_deref(), Some("Возврат;\r\n"));
+    assert!(healthy.data.as_ref().unwrap().get("limits").is_none());
+    let large = format!("// retained window\n{}", "// padding\n".repeat(10000));
+    fs::write(&module, &large).unwrap();
+    let window = fixture
+        .view_service()
+        .view(ViewRequest::new(&format!("{at}#L1-L1")).unwrap());
+    assert!(window.ok, "{window:?}");
+    assert_eq!(window.source_text.as_deref(), Some("// retained window\n"));
+    assert!(window.data.as_ref().unwrap()["limits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v.as_str().unwrap().contains("not assessed")));
+    let whole = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert_eq!(whole.diagnostics[0]["code"], "result_too_large");
+}
+
+#[test]
+fn broken_bsl_structure_refuses_with_reason_and_body_route_without_empty_structure() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    fs::write(&module, "Процедура А()\nЕсли Истина Тогда\nКонецПроцедуры").unwrap();
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form";
+    for suffix in [
+        "",
+        ".Method",
+        ".Method.А",
+        ".Event",
+        ".Interface",
+        ".Compilation",
+    ] {
+        let result = fixture
+            .view_service()
+            .view(ViewRequest::new(&format!("{at}{suffix}")).unwrap());
+        assert!(!result.ok, "{suffix}: {result:?}");
+        assert_eq!(result.diagnostics[0]["code"], "invalid_source");
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("КонецЕсли"));
+        assert!(result.data.is_none());
+        assert_eq!(result.next[0]["args"]["at"], format!("{at}.Body"));
+    }
+}
+
+#[test]
+fn broken_bsl_projection_cache_retains_invalid_evidence_only_for_its_revision() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
+    fs::write(&module, "Процедура А()\nЕсли Истина Тогда\nКонецПроцедуры").unwrap();
+    let authority = fixture.read_authority();
+    for suffix in [".Method", ".Event", ""] {
+        let at = QualifiedAddress::parse(&format!("main:CommonModule.РеактивныйСервер{suffix}"))
+            .unwrap();
+        let snapshot = authority.snapshot(&at).unwrap();
+        assert_eq!(
+            authority.read_exact(&at, &snapshot).unwrap_err().code(),
+            RefusalCode::InvalidSource
+        );
+    }
+    assert_eq!(
+        authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
+        1
+    );
+    fs::write(&module, "Процедура Исправлено()\nКонецПроцедуры").unwrap();
+    let fresh = fixture
+        .view_service()
+        .view(ViewRequest::new("main:CommonModule.РеактивныйСервер.Method.Исправлено").unwrap());
+    assert!(fresh.ok, "{fresh:?}");
+}
+
+#[test]
+fn broken_bsl_body_uses_buffer_syntax_and_preserves_cancellation_and_disk() {
+    use unica_workspace::documents::{DocumentOverlay, DocumentText};
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().canonicalize().unwrap();
+    let relative = Path::new("CommonModules/Общий/Ext/Module.bsl");
+    fs::create_dir_all(workspace.join(relative).parent().unwrap()).unwrap();
+    fs::write(workspace.join(relative), "// disk remains\n").unwrap();
+    let overlay = DocumentOverlay::default();
+    let broken = "\u{feff}Процедура А()\r\nЕсли Истина Тогда\r\nКонецПроцедуры";
+    overlay
+        .put(
+            "editor",
+            "main",
+            relative,
+            DocumentText {
+                version: 1,
+                text: Arc::from(broken),
+            },
+        )
+        .unwrap();
+    let root = Arc::new(unica_workspace::read::open_source_directory(&workspace).unwrap());
+    let reader = ProviderReadAuthority::new("main", "actor", SourceSetKind::Configuration, root)
+        .with_documents(overlay.session_documents("editor", "main").unwrap());
+    let target =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Общий.Module")
+            .unwrap();
+    let at = QualifiedAddress::parse("main:CommonModule.Общий.Body#L1-L1").unwrap();
+    let body = reader
+        .module_body_read(&target, at.line_range(), || Ok(()))
+        .unwrap();
+    assert!(body.syntax.is_invalid());
+    assert_eq!(
+        body.text,
+        crate::application::v13::source_text::ModuleText::Text("Процедура А()\r\n".into())
+    );
+    for cancel_on in [1, 2, 3] {
+        let mut checkpoints = 0;
+        let result = reader.module_body_read(&target, None, || {
+            checkpoints += 1;
+            if checkpoints == cancel_on {
+                Err(ViewError::new(RefusalCode::Cancelled, "cancelled"))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(result.unwrap_err().code(), RefusalCode::Cancelled);
+    }
+    assert_eq!(
+        fs::read_to_string(workspace.join(relative)).unwrap(),
+        "// disk remains\n"
+    );
+}
+
+#[test]
+fn bsl_body_parser_resource_diagnostics_preserve_full_and_ranged_source() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form";
+    for (source, expected) in [
+        (
+            format!("// window\n{}", "a".repeat(70_000)),
+            "line 2, column 1",
+        ),
+        (
+            format!(
+                "// window\nА = {}1{};",
+                "(".repeat(2_000),
+                ")".repeat(2_000)
+            ),
+            "nesting limit reached",
+        ),
+        (
+            format!("// window\nА = 1{};", "+1".repeat(30_000)),
+            "tree depth limit reached",
+        ),
+    ] {
+        fs::write(&module, &source).unwrap();
+        for (suffix, text) in [(".Body", source.as_str()), (".Body#L1-L1", "// window\n")] {
+            let result = fixture
+                .view_service()
+                .view(ViewRequest::new(&format!("{at}{suffix}")).unwrap());
+            assert!(result.ok, "{result:?}");
+            assert_eq!(result.source_text.as_deref(), Some(text));
+            let limits = result.data.as_ref().unwrap()["limits"].as_array().unwrap();
+            assert!(
+                limits
+                    .iter()
+                    .any(|v| v.as_str().unwrap().contains(expected)),
+                "{limits:?}"
+            );
+            assert!(
+                limits
+                    .iter()
+                    .any(|v| v.as_str().unwrap().contains("line 2, column ")),
+                "{limits:?}"
+            );
+        }
+        let structure = fixture
+            .view_service()
+            .view(ViewRequest::new(&format!("{at}.Method")).unwrap());
+        assert!(!structure.ok);
+        assert_eq!(structure.diagnostics[0]["code"], "invalid_source");
+        assert!(structure.data.is_none());
+        assert_eq!(structure.next[0]["args"]["at"], format!("{at}.Body"));
+        assert_eq!(fs::read_to_string(&module).unwrap(), source);
+    }
+}

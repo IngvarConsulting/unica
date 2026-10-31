@@ -1995,3 +1995,46 @@ mod tests {
         }
     }
 }
+
+#[test]
+fn broken_bsl_read_outcome_keeps_strict_projection_closed() {
+    let at = unica_address::address::QualifiedAddress::parse("main:Catalog.Items.Module.Object")
+        .unwrap();
+    let capability = unica_bsl::profile::PlatformProfile::v8_3_27()
+        .module_capability(&at)
+        .unwrap();
+    let source = "Процедура А()\r\nЕсли Истина Тогда\r\nКонецПроцедуры";
+    let request = || ModuleProjectionRequest {
+        at: &at,
+        capability,
+        title: "Object".into(),
+        rev: "test",
+        source: Some(source),
+        common_module: None,
+        handles: &[],
+        declarative_bindings: &[],
+        extension_targets: &[],
+        platform_event_write: PlatformEventWriteCapability::Proven,
+    };
+    let outcome = project_module_for_read(request()).unwrap();
+    match outcome {
+        ModuleReadProjection::Invalid(syntax) => {
+            let messages = syntax.diagnostic_messages(&at.to_string());
+            assert!(messages[0].contains("КонецЕсли"));
+            assert!(messages[0].contains("line 3, column 1"));
+        }
+        ModuleReadProjection::Valid(_) => {
+            panic!("broken syntax must never masquerade as an empty valid module")
+        }
+    }
+    let refused = project_module(request()).unwrap_err();
+    assert!(refused.contains("КонецЕсли"));
+    let event = project_module_event_record(
+        request(),
+        "main:Catalog.Items.Module.Object.Event.BeforeWrite",
+    );
+    assert!(matches!(
+        event,
+        Err(PlatformEventProjectionRecordError::InvalidSource(_))
+    ));
+}

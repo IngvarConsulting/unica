@@ -1,5 +1,5 @@
 use crate::application::v13::resolve::{ModuleLine, ResolvedLines};
-use crate::application::v13::source_text::{admit_text, ModuleText};
+use crate::application::v13::source_text::admit_text;
 use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
@@ -23,7 +23,8 @@ use unica_bindings::events::{
     project_property_events_from_projection,
 };
 use unica_bindings::projection::{
-    project_module, FormEventBindingInput, ModuleProjectionRequest, PlatformEventWriteCapability,
+    project_module_for_read, FormEventBindingInput, ModuleProjectionRequest, ModuleReadProjection,
+    PlatformEventWriteCapability,
 };
 use unica_source_designer::module_layout::module_source_address as shared_module_source_address;
 
@@ -111,7 +112,7 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     read: ProviderReadAuthority,
     profile: PlatformProfile,
     deadline: ProviderDeadline,
-    module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
+    module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleReadProjection>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
@@ -1780,6 +1781,26 @@ impl<'a> LogicalViewReadAuthority<'a> {
         capability: ModuleCapability,
         admitted: &ViewSourceSnapshot,
     ) -> Result<Arc<ModuleProjectionSet>, ViewError> {
+        match self
+            .module_read_projection(module_at, capability, admitted)?
+            .as_ref()
+        {
+            ModuleReadProjection::Valid(projection) => Ok(Arc::clone(projection)),
+            ModuleReadProjection::Invalid(syntax) => {
+                let mut error = ViewError::new(RefusalCode::InvalidSource,
+                    format!("{}; dependent changes are stopped. Restore a confirmed working state only with explicit approval", syntax.diagnostic_messages(&module_at.to_string()).join("; ")));
+                error.set_next(json!({"tool":"unica.view", "args":{"at":format!("{module_at}.Body")}, "reason":"read the original BSL source and syntax diagnostics"}));
+                Err(error)
+            }
+        }
+    }
+
+    fn module_read_projection(
+        &self,
+        module_at: &QualifiedAddress,
+        capability: ModuleCapability,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Arc<ModuleReadProjection>, ViewError> {
         let key = ModuleProjectionCacheKey {
             source_set_identity: admitted.source_set_identity.clone(),
             revision: admitted.revision.clone(),
@@ -1821,7 +1842,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             Vec::new()
         };
         let projection = Arc::new(
-            project_module(ModuleProjectionRequest {
+            project_module_for_read(ModuleProjectionRequest {
                 at: module_at,
                 capability,
                 title: module_title(module_at, capability),
@@ -2204,7 +2225,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         &self,
         at: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
-    ) -> Result<Option<ModuleText>, ViewError> {
+    ) -> Result<Option<crate::application::v13::source_text::ModuleBodyRead>, ViewError> {
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() != LogicalReader::Module {
@@ -2235,14 +2256,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             ));
         }
         let target = module_source_address(&module_at, capability)?;
-        let text = match at.line_range() {
-            Some(range) => self
-                .read
-                .module_text_range(&target, range, || self.read_checkpoint())?,
-            None => self
-                .read
-                .module_text_within_limit(&target, || self.read_checkpoint())?,
-        };
+        let text = self
+            .read
+            .module_body_read(&target, at.line_range(), || self.read_checkpoint())?;
         Ok(Some(text))
     }
 

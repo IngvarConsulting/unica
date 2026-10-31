@@ -24,8 +24,11 @@ use super::v13_call_graph::{
     declare_method_branches, fetch_summary, module_file_for_placed, placed_for_module_file,
     unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
+#[cfg(test)]
+use super::v13_read_modes::attach_can;
 use super::v13_read_modes::{
-    attach_can, operation_node_with, search_scope_route, source_backed, SearchScopeRoute,
+    attach_can_with_syntax, operation_node_with_syntax, search_scope_route, source_backed,
+    SearchScopeRoute,
 };
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
@@ -965,7 +968,9 @@ impl CanonicalV13ReadService {
             authority.platform_profile(),
         );
         let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
-        let enrich_and_project = |data: &Value| -> Result<Value, ViewError> {
+        let enrich_and_project = |data: &Value,
+                                  syntax: &unica_bsl::syntax::SyntaxObservation|
+         -> Result<Value, ViewError> {
             let mut data = data.clone();
             if source.source_kind() == unica_source_contract::SourceSetKind::Extension
                 && data
@@ -1010,28 +1015,34 @@ impl CanonicalV13ReadService {
                             .as_str()
                             .map(unica_forms::FormItemRole::from_tag)
                     };
-                    operation_node_with(&data, op, &owner_at, can_context, &ancestor_role).map_err(
-                        |error| {
-                            let mut refused = ViewError::new(error.code(), error.to_string());
-                            // Снятая операция ведёт к контракту заменившей (#1465).
-                            refused.set_next(match error.next() {
-                                Some(contract) => json!({
-                                    "tool": "unica.view",
-                                    "args": {"at": contract},
-                                    "reason": "контракт операции, заменившей снятую",
-                                }),
-                                None => json!({
-                                    "tool": "unica.view",
-                                    "args": {"at": owner_at},
-                                    "reason": "операции, применимые к этому узлу",
-                                }),
-                            });
-                            refused
-                        },
+                    operation_node_with_syntax(
+                        &data,
+                        op,
+                        &owner_at,
+                        can_context,
+                        syntax,
+                        &ancestor_role,
                     )
+                    .map_err(|error| {
+                        let mut refused = ViewError::new(error.code(), error.to_string());
+                        // Снятая операция ведёт к контракту заменившей (#1465).
+                        refused.set_next(match error.next() {
+                            Some(contract) => json!({
+                                "tool": "unica.view",
+                                "args": {"at": contract},
+                                "reason": "контракт операции, заменившей снятую",
+                            }),
+                            None => json!({
+                                "tool": "unica.view",
+                                "args": {"at": owner_at},
+                                "reason": "операции, применимые к этому узлу",
+                            }),
+                        });
+                        refused
+                    })
                 }
                 None => {
-                    attach_can(&mut data, can_context);
+                    attach_can_with_syntax(&mut data, can_context, syntax);
                     Ok(data)
                 }
             }

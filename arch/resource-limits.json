@@ -6877,6 +6877,62 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "bsl.body-diagnostic-detail-bytes",
+      "class": "result",
+      "resource": "JSON-байты подробных сообщений о синтаксисе в ответе Body, без отдельного сообщения о пропусках.",
+      "unit": "bytes",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-bsl/src/syntax.rs",
+        "symbol": "DETAIL_BYTES",
+        "within": "fn diagnostic_messages"
+      },
+      "expr": "1280",
+      "value": 1280,
+      "applied": [
+        "crates/unica-bsl/src/syntax.rs"
+      ],
+      "problem": "Множество ошибок или длинные сообщения могут вытеснить исходный текст из ограниченного ответа Body.",
+      "onReach": "Сообщение сокращается по границе UTF-8; явный счётчик называет пропущенные или сокращённые диагностики, текст Body сохраняется.",
+      "evidence": [
+        "crates/unica-bsl/src/syntax.rs::syntax_read_diagnostics_bound_encoded_bytes_and_name_omissions",
+        "crates/unica-coder/src/infrastructure/v13_read/tests.rs::broken_bsl_many_errors_keep_body_available_with_bounded_diagnostics"
+      ],
+      "status": "unproven",
+      "origin": "#944: диагностика чтения повреждённого BSL",
+      "issue": "#944",
+      "decision": null,
+      "review": "Временный предел без подтверждённого основания для точного значения; проверен синтетический сценарий, замеров на представительной выборке проектов нет."
+    },
+    {
+      "id": "bsl.body-diagnostic-coordinate-count",
+      "class": "step",
+      "resource": "Число синтаксических ошибок, для которых за чтение вычисляются координаты сканированием исходного текста.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-bsl/src/syntax.rs",
+        "literal": ".take(5)",
+        "count": 1
+      },
+      "expr": "5",
+      "value": 5,
+      "applied": [
+        "crates/unica-bsl/src/syntax.rs"
+      ],
+      "problem": "Вычисление координат каждой ошибки повторно сканирует префикс исходника; обработка всех ошибок умножает стоимость чтения.",
+      "onReach": "Вычисляются первые пять диагностик; число оставшихся сохраняется и явно показывается в ответе. Полный исходный текст остаётся доступен.",
+      "evidence": [
+        "crates/unica-bsl/src/syntax.rs::syntax_read_diagnostics_bound_encoded_bytes_and_name_omissions",
+        "crates/unica-coder/src/infrastructure/v13_read/tests.rs::broken_bsl_body_keeps_text_and_reports_full_module_syntax_in_ranges"
+      ],
+      "status": "unproven",
+      "origin": "#944: диагностика чтения повреждённого BSL",
+      "issue": "#944",
+      "decision": null,
+      "review": "Временный предел без подтверждённого основания для точного значения; проверен синтетический сценарий, замеров на представительной выборке проектов нет."
     }
   ],
   "excluded": [

@@ -1763,56 +1763,54 @@ impl ProviderReadAuthority {
         Ok(Some(newlines + usize::from(last != Some(b'\n'))))
     }
 
-    /// Текст модуля для `Body`: без начальных U+FEFF и не длиннее
-    /// `MAX_SOURCE_TEXT_BYTES`. Больший файл дочитывается без накопления
-    /// ради проверки UTF-8 и полного размера. Отсутствующий файл — пустой
-    /// текст, как у прежнего `Body`.
-    pub(crate) fn module_text_within_limit(
+    /// Retain the requested window and a bounded whole-module candidate in one
+    /// stream; syntax is never inferred from a window or a truncated prefix.
+    pub(crate) fn module_body_read(
         &self,
         target: &MetadataAddress,
-        checkpoint: impl FnMut() -> Result<(), ViewError>,
-    ) -> Result<ModuleText, ViewError> {
-        let mut text = ModuleTextAccumulator::default();
-        let len = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
-            text.push(chunk);
+        range: Option<unica_address::address::BodyLineRange>,
+        mut checkpoint: impl FnMut() -> Result<(), ViewError>,
+    ) -> Result<crate::application::v13::source_text::ModuleBodyRead, ViewError> {
+        use crate::application::v13::source_text::ModuleBodyRead;
+        let mut whole = ModuleTextAccumulator::default();
+        let mut window = range.map(ModuleTextAccumulator::with_range);
+        let exists = self.visit_module_utf8_chunks(target, &mut checkpoint, |chunk| {
+            whole.push(chunk);
+            if let Some(window) = &mut window {
+                window.push(chunk);
+            }
             Ok(())
         })?;
-        if len.is_none() {
-            return Ok(ModuleText::Text(String::new()));
+        if let Some(range) = range {
+            if exists.is_none() {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the BSL module source file does not exist",
+                ));
+            }
+            if range.to > whole.line_count() {
+                return Err(ViewError::new(
+                    RefusalCode::BadValue,
+                    "Body line selector exceeds the file's last line",
+                ));
+            }
         }
-        text.finish().map_err(|_| {
-            ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")
-        })
-    }
-
-    /// Retains only the requested complete file lines, while validating the
-    /// entire stream and preserving retained-source identity/cancellation.
-    pub(crate) fn module_text_range(
-        &self,
-        target: &MetadataAddress,
-        range: unica_address::address::BodyLineRange,
-        checkpoint: impl FnMut() -> Result<(), ViewError>,
-    ) -> Result<ModuleText, ViewError> {
-        let mut text = ModuleTextAccumulator::with_range(range);
-        let exists = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
-            text.push(chunk);
-            Ok(())
-        })?;
-        if exists.is_none() {
-            return Err(ViewError::new(
-                RefusalCode::NotFound,
-                "the BSL module source file does not exist",
-            ));
-        }
-        if range.to > text.line_count() {
-            return Err(ViewError::new(
-                RefusalCode::BadValue,
-                "Body line selector exceeds the file's last line",
-            ));
-        }
-        text.finish().map_err(|_| {
-            ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")
-        })
+        let invalid_utf8 =
+            || ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8");
+        let whole = whole.finish().map_err(|_| invalid_utf8())?;
+        checkpoint()?;
+        let syntax = match &whole {
+            ModuleText::Text(source) => unica_bsl::syntax::parse_source(source)
+                .map(|(_, syntax)| syntax)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?,
+            ModuleText::TooLarge { .. } => unica_bsl::syntax::SyntaxObservation::Unassessed,
+        };
+        checkpoint()?;
+        let text = match window {
+            Some(window) => window.finish().map_err(|_| invalid_utf8())?,
+            None => whole,
+        };
+        Ok(ModuleBodyRead { text, syntax })
     }
 
     /// Streams the module only after one shared UTF-8 check, so every Body

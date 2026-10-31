@@ -21,7 +21,8 @@ use unica_refusal::RefusalCode;
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
 pub(crate) const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
-type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;
+type ViewProjector<'a> =
+    dyn Fn(&Value, &unica_bsl::syntax::SyntaxObservation) -> Result<Value, ViewError> + 'a;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ViewRequest {
@@ -149,7 +150,7 @@ pub(crate) trait ViewReadAuthority: Send + Sync {
         &self,
         _at: &QualifiedAddress,
         _admitted: &ViewSourceSnapshot,
-    ) -> Result<Option<ModuleText>, ViewError> {
+    ) -> Result<Option<crate::application::v13::source_text::ModuleBodyRead>, ViewError> {
         Ok(None)
     }
 }
@@ -308,12 +309,13 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 Some(text) => module_body_view(&canonical_at, text)?,
                 None => self.authority.read_exact(&canonical_at, &snapshot)?,
             };
+            let syntax = view.syntax().clone();
             text = view.take_text();
             let serialized = serde_json::to_value(view).map_err(|error| {
                 ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
             })?;
             match project {
-                Some(project) => project(&serialized)?,
+                Some(project) => project(&serialized, &syntax)?,
                 None => serialized,
             }
         };
@@ -450,8 +452,9 @@ impl<A: ViewReadAuthority> ViewService<A> {
 /// где отдаётся сам: контракт `.Can.<op>` того же узла его не касается.
 fn module_body_view(
     body_at: &QualifiedAddress,
-    text: ModuleText,
+    read: crate::application::v13::source_text::ModuleBodyRead,
 ) -> Result<NodeViewData, ViewError> {
+    let text = read.text;
     let (text, count) = match text {
         ModuleText::TooLarge {
             bytes,
@@ -472,7 +475,13 @@ fn module_body_view(
         to,
     };
     Ok(NodeViewData::Text(TextView::new(
-        NodeView::new(body_at.to_string(), "Body", "Body", Map::new()),
+        NodeView::new(body_at.to_string(), "Body", "Body", Map::new())
+            .with_limits(if matches!(read.syntax, unica_bsl::syntax::SyntaxObservation::Unassessed) {
+                vec!["BSL syntax was not assessed: the complete module exceeds the bounded source analysis limit".into()]
+            } else {
+                read.syntax.diagnostic_messages(&body_at.prefix(body_at.segments().len()-1).to_string())
+            })
+            .with_syntax(read.syntax),
         text,
     )))
 }
@@ -793,8 +802,15 @@ mod tests {
             &self,
             _at: &QualifiedAddress,
             _admitted: &ViewSourceSnapshot,
-        ) -> Result<Option<ModuleText>, ViewError> {
-            Ok(self.module_text.clone())
+        ) -> Result<Option<crate::application::v13::source_text::ModuleBodyRead>, ViewError>
+        {
+            Ok(self.module_text.clone().map(|text| {
+                let syntax = match &text {
+                    ModuleText::Text(_) => unica_bsl::syntax::SyntaxObservation::Valid,
+                    ModuleText::TooLarge { .. } => unica_bsl::syntax::SyntaxObservation::Unassessed,
+                };
+                crate::application::v13::source_text::ModuleBodyRead { text, syntax }
+            }))
         }
     }
 
@@ -1085,7 +1101,9 @@ mod tests {
             )),
         );
         let service = ViewService::new(authority, ViewCursorStore::default());
-        let project = |data: &serde_json::Value| -> Result<serde_json::Value, ViewError> {
+        let project = |data: &serde_json::Value,
+                       _: &unica_bsl::syntax::SyntaxObservation|
+         -> Result<serde_json::Value, ViewError> {
             let mut projected = data.clone();
             projected["can"] = json!(["operation".repeat(1_000)]);
             Ok(projected)
@@ -1117,7 +1135,7 @@ mod tests {
     fn projection_without_items_returns_one_node_without_a_spurious_cursor() {
         let at = "main:Document.Заказ.Module.Object.Body";
         let service = ViewService::new(FixtureAuthority::new(), ViewCursorStore::default());
-        let result = service.view_projected(ViewRequest::new(at).unwrap(), &|data| {
+        let result = service.view_projected(ViewRequest::new(at).unwrap(), &|data, _syntax| {
             let mut projected = data.clone();
             projected.as_object_mut().unwrap().remove("items");
             Ok(projected)
@@ -1136,7 +1154,7 @@ mod tests {
         authority.module_text = Some(ModuleText::Text(text.into()));
         let service = ViewService::new(authority, ViewCursorStore::default());
         let request = ViewRequest::new(at).unwrap().with_limit(1).unwrap();
-        let result = service.view_projected(request, &|data| {
+        let result = service.view_projected(request, &|data, _syntax| {
             let mut projected = data.clone();
             projected["can"] = json!([{"op": "code.replace"}]);
             Ok(projected)
@@ -1162,7 +1180,7 @@ mod tests {
         });
         let result = ViewService::new(authority, ViewCursorStore::default()).view_projected(
             ViewRequest::new(at).unwrap(),
-            &|data| {
+            &|data, _syntax| {
                 let mut contract = data.clone();
                 contract["kind"] = json!("Can");
                 Ok(contract)
