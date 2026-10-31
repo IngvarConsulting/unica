@@ -2012,3 +2012,121 @@ fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_own
         }
     }
 }
+
+#[test]
+fn constant_exchange_plan_family_is_read_only_without_a_metadata_address() {
+    let xml = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/constant-exchange-plan-family.xml"
+    ));
+    let details = project(xml, MetadataKind::Constant, "Constant.ГлавныйУзел");
+    assert_eq!(
+        details["type"],
+        serde_json::json!({
+            "variants":[{"kind":"referenceFamily", "typeName":"ExchangePlanRef", "namespaceUri":"http://v8.1c.ru/8.1/data/enterprise/current-config"}],
+            "mutationCapability":"readOnly"
+        })
+    );
+}
+
+fn parse_reference_family_control(
+    fragment: &str,
+) -> (
+    Result<unica_metadata::ObservedMetadataType, unica_metadata::MetaDiagnostic>,
+    bool,
+) {
+    let xml = format!(
+        r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:alias="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:bad="urn:foreign"><Type>{fragment}</Type></Properties>"#
+    );
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    (
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()),
+        crate::info_projection::observed_type_is_strict_but_unmodelled(document.root_element()),
+    )
+}
+
+#[test]
+fn exchange_plan_reference_family_admission_is_qname_exact_and_preserves_concrete_controls() {
+    use unica_metadata::MetadataMutationCapability;
+    let (family, unmodelled) =
+        parse_reference_family_control("<v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet>");
+    let family = family.unwrap();
+    assert!(!unmodelled);
+    assert_eq!(
+        family,
+        parse_reference_family_control("<v8:TypeSet>alias:ExchangePlanRef</v8:TypeSet>")
+            .0
+            .unwrap()
+    );
+    for invalid in [
+        "<v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet><v8:TypeSet>alias:ExchangePlanRef</v8:TypeSet>",
+        "<v8:Type>cfg:ExchangePlanRef</v8:Type>",
+        "<v8:TypeSet>bad:ExchangePlanRef</v8:TypeSet>",
+        "<v8:TypeSet>unbound:ExchangePlanRef</v8:TypeSet>",
+        "<v8:TypeSet>cfg:ExchangePlanRef:broken</v8:TypeSet>",
+        "<v8:TypeSet>cfg:ExchangePlanRef.Node</v8:TypeSet>",
+        "<v8:TypeSet><Nested>cfg:ExchangePlanRef</Nested></v8:TypeSet>",
+    ] {
+        assert!(parse_reference_family_control(invalid).0.is_err(), "{invalid}");
+    }
+    let (unknown, unmodelled) =
+        parse_reference_family_control("<v8:TypeSet>cfg:CatalogRef</v8:TypeSet>");
+    assert!(unknown.is_err());
+    assert!(unmodelled);
+    let named = parse_reference_family_control("<v8:Type>cfg:ExchangePlanRef.Node</v8:Type>")
+        .0
+        .unwrap();
+    assert_eq!(
+        named.mutation_capability,
+        MetadataMutationCapability::Editable
+    );
+    assert_eq!(
+        serde_json::to_value(&named.variants[0]).unwrap(),
+        serde_json::json!({"kind":"reference", "metadataPath":"ExchangePlan.Node"})
+    );
+    let union = parse_reference_family_control(
+        "<v8:Type>cfg:ExchangePlanRef.Node</v8:Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet>",
+    )
+    .0
+    .unwrap();
+    assert_eq!(
+        union.mutation_capability,
+        MetadataMutationCapability::ReadOnly
+    );
+    assert_eq!(union.variants[0], named.variants[0]);
+    assert_eq!(union.variants[1], family.variants[0]);
+    for name in [
+        "ВидКартыСерверЛояльности",
+        "ЕдиницаИзмеренияКилограммИС",
+        "ЕдиницаИзмеренияЛитрИС",
+        "ПрофильБезопасностиИнформационнойБазы",
+    ] {
+        let observed = parse_reference_family_control(&format!(
+            "<v8:TypeSet>cfg:DefinedType.{name}</v8:TypeSet>"
+        ))
+        .0
+        .unwrap();
+        assert_eq!(
+            observed.mutation_capability,
+            MetadataMutationCapability::Editable
+        );
+        assert_eq!(
+            serde_json::to_value(&observed.variants[0]).unwrap(),
+            serde_json::json!({"kind":"definedType", "metadataPath":format!("DefinedType.{name}")})
+        );
+    }
+}
+
+#[test]
+fn reference_family_never_downgrades_malformed_qualifiers_or_value_storage_composition() {
+    for primitive in [
+        "<v8:Type>xs:decimal</v8:Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet><v8:NumberQualifiers><v8:Digits>39</v8:Digits><v8:FractionDigits>0</v8:FractionDigits><v8:AllowedSign>Any</v8:AllowedSign></v8:NumberQualifiers>",
+        "<v8:Type>xs:string</v8:Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet><v8:StringQualifiers><v8:Length>0</v8:Length><v8:AllowedLength>Fixed</v8:AllowedLength></v8:StringQualifiers>",
+        "<v8:Type>xs:string</v8:Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet><v8:StringQualifiers><v8:Length>1025</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers>",
+        "<v8:Type>v8:ValueStorage</v8:Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet>",
+    ] {
+        let (observed, unmodelled) = parse_reference_family_control(primitive);
+        assert!(observed.is_err(), "{primitive}");
+        assert!(!unmodelled, "invalid composition must remain an error: {primitive}");
+    }
+}

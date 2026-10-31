@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <Constant uuid="16270000-0000-4000-8000-000000000001">
+    <Properties>
+      <Name>ГлавныйУзел</Name>
+      <Comment/>
+      <Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet></Type>
+      <UseStandardCommands>false</UseStandardCommands>
+      <MinValue xsi:nil="true"/>
+      <MaxValue xsi:nil="true"/>
+    </Properties>
+    <ChildObjects/>
+  </Constant>
+</MetaDataObject>
