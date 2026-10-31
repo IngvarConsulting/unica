@@ -1550,7 +1550,7 @@ fn relation_readers_preserve_conversion_and_unknown_field_diagnostic_order() {
                 json!([{"kind": "unknown", "metadataPath": false, "extra": true}]),
             ),
             "targets[0].kind",
-            "unsupported event source kind `unknown`",
+            "unsupported event source kind `unknown`; use object, manager, recordSet, definedType, family; example: {\"kind\":\"object\",\"metadataPath\":\"Document.Order\"}",
         ),
         (
             call(
@@ -1608,6 +1608,21 @@ fn relation_readers_preserve_conversion_and_unknown_field_diagnostic_order() {
     assert_eq!(error.operation_index, Some(1));
     assert_eq!(error.field.as_deref(), Some("mode"));
     assert_eq!(error.message, "unsupported relation mode `unknown`");
+}
+
+#[test]
+fn unknown_event_source_kind_names_supported_variants_and_an_object_target() {
+    for kind in ["Document", "DocumentObject", "document"] {
+        let error = parse_event_source(
+            &json!({"kind": kind, "at": "main:Document.Order"}),
+            "targets[0]",
+        )
+        .unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("targets[0].kind"));
+        assert_eq!(error.message, format!(
+            "unsupported event source kind `{kind}`; use object, manager, recordSet, definedType, family; example: {{\"kind\":\"object\",\"metadataPath\":\"Document.Order\"}}"
+        ));
+    }
 }
 
 #[test]
