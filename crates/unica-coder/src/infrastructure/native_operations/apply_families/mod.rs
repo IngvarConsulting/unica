@@ -1089,6 +1089,12 @@ pub(crate) fn plan_hidden_v13_apply(
         )
         .at_path("ops"));
     }
+    let code_type_plan = unica_metadata_designer::planner::PredefinedCodeTypePlan::from_operations(
+        parsed.iter().filter_map(|operation| match operation {
+            ParsedApplyOperation::Metadata(operation) => Some(operation),
+            _ => None,
+        }),
+    );
     let mut provisional = Vec::new();
     let mut xdto_validation = unica_xdto_designer::planner::XdtoValidationLedger::default();
     let mut borrowing = Vec::new();
@@ -1197,7 +1203,7 @@ pub(crate) fn plan_hidden_v13_apply(
                     .collect::<Vec<_>>();
                 let authority = admission.metadata_planning_authority(binding)?;
                 let planned =
-                    unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml),&mut staged.proposal(), &authority, &operations)?;
+                    unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml),&mut staged.proposal(), &authority, &operations, &code_type_plan)?;
                 provisional.extend(planned);
             }
             ParsedApplyOperation::FormResource(_) => {
@@ -1234,6 +1240,7 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    code_type_plan.validate_final(&mut staged.proposal(), binding.source_kind())?;
     unica_metadata_designer::planner::validate_final_object_integrity(
         &mut staged.proposal(),
         binding.source_set_name(),
@@ -1313,6 +1320,9 @@ pub(crate) fn plan_hidden_v13_apply(
 }
 
 #[cfg(test)]
+mod calculation_code_type_tests;
+
+#[cfg(test)]
 mod inherited_content_tests;
 
 #[cfg(test)]
@@ -1349,12 +1359,21 @@ mod tests {
         }
 
         pub(super) fn new() -> Self {
+            Self::with_kind(SourceSetKind::Configuration)
+        }
+
+        pub(super) fn with_kind(kind: SourceSetKind) -> Self {
             let root = tempfile::tempdir().unwrap();
             let source = root.path().join("src");
             std::fs::create_dir_all(source.join("Documents")).unwrap();
+            let project_kind = match kind {
+                SourceSetKind::Configuration => "CONFIGURATION",
+                SourceSetKind::Extension => "EXTENSION",
+                other => panic!("unsupported fixture kind {other:?}"),
+            };
             std::fs::write(
                 root.path().join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                format!("format: DESIGNER\nsource-set:\n  - name: main\n    type: {project_kind}\n    path: src\n"),
             )
             .unwrap();
             std::fs::write(
@@ -1390,7 +1409,7 @@ mod tests {
                 [WorkspaceSourceSetInput::new(
                     "main",
                     &source,
-                    SourceSetKind::Configuration,
+                    kind,
                     SourceFormat::PlatformXml,
                     SourceProfile::platform_xml_8_3_27_format_2_20(),
                 )],

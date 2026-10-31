@@ -1,4 +1,8 @@
 //! Canonical metadata descriptor/resource planning over an issued proposal and read observations.
+#[path = "predefined_code_type_plan.rs"]
+mod predefined_code_type_plan;
+pub use predefined_code_type_plan::PredefinedCodeTypePlan;
+
 use crate::decode::*;
 use crate::edit::apply_typed_operations_to_image_with_seed;
 use crate::layout::metadata_layout;
@@ -236,6 +240,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
     operations: &[IndexedPlanOperation<MetadataPlanOperation>],
+    code_type_plan: &PredefinedCodeTypePlan,
 ) -> Result<Vec<ProvisionalApplyEffect>, ApplyPlanError> {
     if operations.is_empty() {
         return Err(empty_apply_family_batch());
@@ -279,6 +284,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                     *kind,
                     change,
                     op_index,
+                    code_type_plan.render_type(op_index),
                     &mut provisional,
                 )?;
                 continue;
@@ -2339,6 +2345,7 @@ fn stage_template_remove(
 /// batch is visible to a later `set` or `remove` of the same batch. `set` and
 /// `remove` find the item by the name in their address; the platform keeps
 /// predefined names unique within the owner, nested items included.
+#[allow(clippy::too_many_arguments)]
 fn stage_predefined(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
@@ -2346,6 +2353,7 @@ fn stage_predefined(
     kind: MetadataKind,
     change: &PredefinedChange,
     op_index: usize,
+    final_code_type: Option<crate::predefined::PredefinedCodeType>,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     let at_path = format!("ops[{op_index}].args.at");
@@ -2398,13 +2406,23 @@ fn stage_predefined(
             op_index,
         )?),
     };
-    let post_image = crate::predefined::predefined_post_image(
-        kind,
-        owner,
-        &owner_source,
-        original.as_deref(),
-        &operation,
-    )
+    let post_image = match final_code_type {
+        Some(code_type) => crate::predefined::predefined_post_image_for_final_code_type(
+            kind,
+            owner,
+            &owner_source,
+            original.as_deref(),
+            &operation,
+            code_type,
+        ),
+        None => crate::predefined::predefined_post_image(
+            kind,
+            owner,
+            &owner_source,
+            original.as_deref(),
+            &operation,
+        ),
+    }
     .map_err(|failure| {
         // A name or id already taken is the caller's to change: the
         // refusal asks for another value rather than for a human.
