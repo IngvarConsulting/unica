@@ -137,19 +137,19 @@ impl PredefinedCodeTypePlan {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(&path)
             };
             let relative = metadata_descriptor_relative(&intent.owner, source_kind)
-                .map_err(&invalid_source)?;
+                .map_err(invalid_source)?;
             let Some(current) = staged
                 .read(&relative)
                 .map_err(|error| ApplyPlanError::staging(error, &path))?
             else {
                 continue;
             };
-            let observed = observe_code_type(&current).map_err(&invalid_source)?;
+            let observed = observe_code_type(&current).map_err(invalid_source)?;
             let original = staged
                 .original_image(&relative)
                 .map(observe_code_type)
                 .transpose()
-                .map_err(&invalid_source)?;
+                .map_err(invalid_source)?;
             let changed_type = intent.created
                 || original
                     .as_ref()
@@ -177,9 +177,9 @@ impl PredefinedCodeTypePlan {
                         invalid_source("CodeType source preimage is unavailable".to_string())
                     })?
                     .value
-                    .map_err(&invalid_source)?;
+                    .map_err(invalid_source)?;
             }
-            let code_type = observed.value.map_err(&invalid_source)?;
+            let code_type = observed.value.map_err(invalid_source)?;
             if code_type != intent.code_type {
                 return Err(ApplyPlanError::new(
                     ApplyPlanErrorKind::Postcondition,
