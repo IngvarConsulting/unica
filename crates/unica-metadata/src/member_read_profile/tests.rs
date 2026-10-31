@@ -100,3 +100,53 @@ fn member_profile_owns_only_exact_context_property_diagnostics() {
         );
     }
 }
+
+#[test]
+fn base_dimension_profile_requires_exact_source_owner_format_and_dimension_context() {
+    use crate::{MetaMemberReadContext, MetadataKind};
+    use unica_source_contract::SourceSetKind;
+    let profile = MetaMemberReadProfile::CalculationRegisterDimension220;
+    for kind in [
+        SourceSetKind::Configuration,
+        SourceSetKind::Extension,
+        SourceSetKind::ExternalReport,
+        SourceSetKind::ExternalProcessor,
+    ] {
+        for format in [Some("2.20"), Some("2.19"), None] {
+            assert_eq!(
+                MetaMemberReadProfile::for_source(kind, MetadataKind::CalculationRegister, format),
+                (kind == SourceSetKind::Configuration && format == Some("2.20")).then_some(profile)
+            );
+        }
+    }
+    assert_eq!(
+        profile
+            .properties(MetaMemberReadContext::CalculationRegisterDimension)
+            .count(),
+        1
+    );
+    assert!(profile
+        .context_for_field("collections.dimensions[0]")
+        .is_some());
+    for field in [
+        "collections.dimensions[]",
+        "collections.resources[0]",
+        "collections.dimensions[0].attributes[0]",
+        "collections.tabularSections[0]",
+    ] {
+        assert!(profile.context_for_field(field).is_none());
+    }
+    let valid = QualifiedAddress::parse("main:CalculationRegister.Facts.Dimension.Item").unwrap();
+    assert!(profile
+        .context_for_address(&valid, NodeKind::Dimension)
+        .is_some());
+    for at in [
+        "main:AccumulationRegister.Facts.Dimension.Item",
+        "main:CalculationRegister.Facts.Resource.Item",
+        "main:CalculationRegister.Facts.Dimension",
+    ] {
+        assert!(profile
+            .context_for_address(&QualifiedAddress::parse(at).unwrap(), NodeKind::Dimension)
+            .is_none());
+    }
+}
