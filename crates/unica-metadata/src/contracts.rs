@@ -112,7 +112,9 @@ fn deny_incomplete_values_allowed(
     site: Option<MetadataSite>,
 ) -> bool {
     collection == crate::MetaCollection::Dimensions
-        && site.is_some_and(|site| crate::metadata_deny_incomplete_values_is_allowed(site.owner))
+        && site.is_some_and(|site| {
+            !site.in_section && crate::metadata_deny_incomplete_values_is_allowed(site.owner)
+        })
 }
 
 pub const IDENTIFIER_PATTERN: &str = r"^[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$";
@@ -130,6 +132,9 @@ fn metadata_element_base_fields() -> &'static Map<String, Value> {
         ("comment".into(), json!({"type":"string"})),
         ("type".into(), metadata_type_schema()),
         ("required".into(), json!({"type":"boolean"})),
+        ("master".into(), json!({"type":"boolean"})),
+        ("mainFilter".into(), json!({"type":"boolean"})),
+        ("denyIncompleteValues".into(), json!({"type":"boolean"})),
         ("fillValue".into(), fill_value_schema()),
         ("position".into(), position_schema()),
         (
@@ -183,7 +188,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
             }
         } else {
             fields.remove("templateType");
-            fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
+
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
@@ -223,14 +228,28 @@ fn metadata_element_schema(
             "position" => spec.allows_position,
             "indexing" => spec.allows_indexing,
             "templateType" => false,
+            "master" | "mainFilter" => {
+                collection == MetaCollection::Dimensions
+                    && site.is_some_and(|site| {
+                        site.owner == crate::MetadataKind::InformationRegister && !site.in_section
+                    })
+            }
+            "denyIncompleteValues" => {
+                if update {
+                    deny_incomplete_values_allowed(collection, site)
+                } else {
+                    collection == MetaCollection::Dimensions
+                        && site.is_some_and(|site| {
+                            site.owner == crate::MetadataKind::InformationRegister
+                                && !site.in_section
+                        })
+                }
+            }
             "synonym" | "comment" => true,
             _ => unreachable!("unclassified Metadata input field: {name}"),
         })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
-    if update && deny_incomplete_values_allowed(collection, site) {
-        fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
-    }
     let selector = if update { "newName" } else { "name" };
     fields[selector]
         .as_object_mut()

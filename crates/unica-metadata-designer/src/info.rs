@@ -314,6 +314,9 @@ pub fn typed_element(
             comment: None,
             r#type: None,
             required: None,
+            master: None,
+            main_filter: None,
+            deny_incomplete_values: None,
             fill_value: None,
             addressing_dimension: None,
             properties: properties_readback,
@@ -426,6 +429,73 @@ pub fn typed_element(
     } else {
         None
     };
+    let dimension_owner = (node.tag_name().name() == "Dimension")
+        .then(|| target.segments().next())
+        .flatten();
+    let mut dimension_flag = |tag: &str, key: &str, applicable: bool| {
+        if !applicable {
+            return None;
+        }
+        let candidates: Vec<_> = properties
+            .children()
+            .filter(|child| child.is_element() && child.tag_name().name() == tag)
+            .collect();
+        // Absence is an unobserved optional property, not an invented false
+        // value or evidence of a damaged descriptor. Present tags stay strict.
+        if candidates.is_empty() {
+            return None;
+        }
+        let value = candidates
+            .first()
+            .filter(|child| {
+                candidates.len() == 1
+                    && child.tag_name().namespace()
+                        == Some(crate::info_projection::MD_CLASSES_NAMESPACE)
+                    && crate::info_projection::strict_text_leaf_is_valid(**child)
+            })
+            .and_then(
+                |child| match crate::info_projection::direct_text_content(*child).trim() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                },
+            );
+        if value.is_none() {
+            incomplete = true;
+            diagnostics.push(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ValidationFailed,
+                    format!("dimension {tag} is not a unique boolean property"),
+                )
+                .with_metadata_path(target.clone())
+                .with_field(format!("{field}.{key}")),
+            );
+        }
+        value
+    };
+    let master = dimension_flag(
+        "Master",
+        "master",
+        dimension_owner == Some("InformationRegister"),
+    );
+    let main_filter = dimension_flag(
+        "MainFilter",
+        "mainFilter",
+        dimension_owner == Some("InformationRegister"),
+    );
+    let deny_incomplete_values = dimension_flag(
+        "DenyIncompleteValues",
+        "denyIncompleteValues",
+        matches!(
+            dimension_owner,
+            Some(
+                "InformationRegister"
+                    | "AccumulationRegister"
+                    | "AccountingRegister"
+                    | "CalculationRegister"
+            )
+        ),
+    );
     let own_limits = diagnostics[own_diagnostics..]
         .iter()
         .map(element_diagnostic_limit)
@@ -482,6 +552,9 @@ pub fn typed_element(
         comment,
         r#type,
         required,
+        master,
+        main_filter,
+        deny_incomplete_values,
         fill_value,
         addressing_dimension,
         properties: properties_readback,
@@ -1028,5 +1101,94 @@ mod predefined_code_type_tests {
         )
         .iter()
         .any(|error| error.field == "properties.CodeType"));
+    }
+}
+
+#[cfg(test)]
+mod dimension_flag_tests {
+    use super::*;
+
+    fn read_flags(flags: &str) -> (MetaElementData, Vec<MetaDiagnostic>) {
+        let xml = format!(
+            r#"<ChildObjects xmlns="http://v8.1c.ru/8.3/MDClasses"><Dimension uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Item</Name>{flags}</Properties></Dimension></ChildObjects>"#
+        );
+        let document = Document::parse(&xml).unwrap();
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "InformationRegister.Facts")
+                .unwrap();
+        let mut diagnostics = Vec::new();
+        let mut elements = typed_elements_with_diagnostics(
+            &xml,
+            Some(document.root_element()),
+            "Dimension",
+            false,
+            "dimensions",
+            &target,
+            &mut diagnostics,
+        );
+        (elements.remove(0), diagnostics)
+    }
+
+    #[test]
+    fn dimension_flags_preserve_true_and_false_as_typed_observations() {
+        for value in ["true", "false"] {
+            let (element, diagnostics) = read_flags(&format!("<Master>{value}</Master><MainFilter>{value}</MainFilter><DenyIncompleteValues>{value}</DenyIncompleteValues>"));
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            assert_eq!(element.master, Some(value == "true"));
+            assert_eq!(element.main_filter, Some(value == "true"));
+            assert_eq!(element.deny_incomplete_values, Some(value == "true"));
+            assert!(!element.incomplete);
+        }
+    }
+
+    #[test]
+    fn absent_dimension_flags_remain_unobserved_without_incompleteness() {
+        for flags in [
+            "",
+            "<Master>false</Master>",
+            "<MainFilter>true</MainFilter>",
+            "<DenyIncompleteValues>false</DenyIncompleteValues>",
+        ] {
+            let (element, diagnostics) = read_flags(flags);
+            assert!(diagnostics.is_empty(), "{flags}: {diagnostics:?}");
+            assert!(!element.incomplete, "{flags}");
+            assert!(element.property_limits.is_empty(), "{flags}");
+            assert_eq!(element.master, flags.contains("<Master>").then_some(false));
+            assert_eq!(
+                element.main_filter,
+                flags.contains("<MainFilter>").then_some(true)
+            );
+            assert_eq!(
+                element.deny_incomplete_values,
+                flags.contains("<DenyIncompleteValues>").then_some(false)
+            );
+        }
+    }
+
+    #[test]
+    fn damaged_dimension_flags_are_local_incompleteness_not_false() {
+        for damaged in [
+            "<Master/>",
+            "<Master>yes</Master>",
+            "<Master>true</Master><Master>false</Master>",
+            "<Master xmlns=\"urn:foreign\">true</Master>",
+            "<Master>true<Unexpected/></Master>",
+            "<Master unexpected=\"x\">true</Master>",
+        ] {
+            let (element, diagnostics) = read_flags(&format!("{damaged}<MainFilter>false</MainFilter><DenyIncompleteValues>true</DenyIncompleteValues>"));
+            assert_eq!(element.master, None, "{damaged}");
+            assert_eq!(element.main_filter, Some(false));
+            assert_eq!(element.deny_incomplete_values, Some(true));
+            assert!(element.incomplete);
+            assert_eq!(diagnostics.len(), 1);
+            assert_eq!(
+                diagnostics[0].field.as_deref(),
+                Some("dimensions[0].master")
+            );
+            assert!(element
+                .property_limits
+                .iter()
+                .any(|limit| limit.contains("master")));
+        }
     }
 }
