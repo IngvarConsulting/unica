@@ -323,6 +323,7 @@ default-filter = '''(
     | (binary(unica_metadata_designer) & test(/^borrowed_object::tests::/))
     | (binary(unica_metadata_designer) & test(/^configuration::tests::/))
     | (binary(unica_metadata_designer) & test(/^edit::attribute_copy_tests::/))
+    | (binary(unica_metadata_designer) & test(/^edit::catalog_code_series_tests::/))
     | (binary(unica_metadata_designer) & test(/^edit::dimension_deny_tests::/))
     | (binary(unica_metadata_designer) & test(/^edit::dump_parity_tests::/))
     | (binary(unica_metadata_designer) & test(/^edit::empty_child_objects_tests::/))
