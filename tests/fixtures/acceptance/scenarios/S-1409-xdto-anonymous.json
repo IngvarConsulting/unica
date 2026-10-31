@@ -475,6 +475,49 @@
           "pointer": "/data/items/0/at",
           "eq": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.Строки.Property.Получатель"
         }
+      ],
+      "captures": {
+        "beforeOverflow": {
+          "file": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Overflow",
+                  "type": "xs:string",
+                  "upperBound": 9223372036854775808
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: upperBound must be -1 or a positive integer",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.upperBound"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/ПримерФормата/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeOverflow"
+        }
       ]
     }
   ],
