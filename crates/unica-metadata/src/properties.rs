@@ -6,6 +6,7 @@ use std::collections::HashSet;
 #[serde(rename_all = "PascalCase")]
 pub enum MetaPropertyKey {
     Type,
+    EditType,
     Synonym,
     Comment,
     ActionPeriod,
@@ -339,7 +340,15 @@ const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
 const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
+const EDIT_TYPE_VALUES: &[&str] = &["InDialog", "InList", "BothWays"];
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
+    enum_property(
+        "EditType",
+        "EditType",
+        MetaPropertyKey::EditType,
+        &[MetadataKind::Catalog, MetadataKind::InformationRegister],
+        EDIT_TYPE_VALUES,
+    ),
     property(
         "Type",
         MetaPropertyKey::Type,
@@ -892,6 +901,39 @@ mod tests {
                 "{property_name} for {}",
                 kind.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn edit_type_is_a_closed_catalog_and_information_register_property() {
+        for kind in MetadataKind::ALL {
+            for value in ["InDialog", "InList", "BothWays"] {
+                let result = MetaPropertyChanges::convert(
+                    *kind,
+                    vec![MetaPropertyInput::new(
+                        "EditType",
+                        MetaPropertyValue::String(value.into()),
+                    )],
+                );
+                assert_eq!(
+                    result.is_ok(),
+                    matches!(
+                        kind,
+                        MetadataKind::Catalog | MetadataKind::InformationRegister
+                    ),
+                    "{kind:?}/{value}: {result:?}"
+                );
+            }
+        }
+        for value in ["", "Unknown", "inlist", "Both"] {
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::Catalog,
+                vec![MetaPropertyInput::new(
+                    "EditType",
+                    MetaPropertyValue::String(value.into())
+                )]
+            )
+            .is_err());
         }
     }
 

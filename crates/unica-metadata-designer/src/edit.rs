@@ -1380,6 +1380,36 @@ pub fn apply_typed_properties(
                     Some("values"),
                 )
             })?;
+        if *key == MetaPropertyKey::EditType {
+            let (field, observed) =
+                crate::edit_type::existing(object, kind).map_err(|message| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        message,
+                        Some("values.EditType"),
+                    )
+                })?;
+            let MetaPropertyValue::String(value) = value else {
+                unreachable!("the EditType profile proved a string enumeration")
+            };
+            if observed == *value {
+                continue;
+            }
+            let replacement =
+                crate::edit_type::replacement(parsed_body, field, value).map_err(|message| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        message,
+                        Some("values.EditType"),
+                    )
+                })?;
+            let field_range = field.range();
+            replacements.push((
+                field_range.start - range.start..field_range.end - range.start,
+                replacement,
+            ));
+            continue;
+        }
         let property = unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
             typed_diagnostic(
                 MetaDiagnosticCode::InvalidArguments,

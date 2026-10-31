@@ -18,6 +18,7 @@ pub mod validation_context;
 pub mod format_contract;
 
 pub mod edit;
+pub mod edit_type;
 
 pub mod info;
 pub mod numerator_read;
