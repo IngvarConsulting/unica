@@ -132,6 +132,17 @@ impl MetadataOperations {
         .validate(subject, context)
     }
 
+    pub(crate) fn validate_check(
+        subject: &unica_metadata::validation_subject::MetadataValidationSubject,
+        context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> unica_metadata::validation_subject::MetadataValidationResult {
+        MetadataValidator::new(unica_metadata_designer::validation::FormRootValidator(
+            unica_forms_designer::root::require_form_root,
+        ))
+        .validate_check(subject, context)
+    }
+
     pub(crate) fn validate_read(
         subject: &unica_metadata::validation_subject::MetadataValidationSubject,
         context: &WorkspaceContext,

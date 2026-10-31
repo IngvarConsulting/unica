@@ -1,0 +1,133 @@
+{
+  "id": "S-2317-extension-subscription-source",
+  "issue": 2317,
+  "area": "Метаданные",
+  "task": "Проверить подписку на незаимствованный документ расширения, затем заимствовать документ из явно указанного base и убедиться в passed без изменения подписки",
+  "workspace": "tests/fixtures/acceptance/workspace-extension-subscription-source",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "failed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics/0/code",
+          "eq": "validation_failed"
+        },
+        {
+          "pointer": "/data/diagnostics/0/severity",
+          "eq": "error"
+        }
+      ],
+      "captures": {
+        "subscription": {
+          "file": "ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+          "kind": "sha256"
+        },
+        "baseDocument": {
+          "file": "base/Documents/Приход.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Configuration",
+        "ops": [
+          {
+            "op": "object.borrow",
+            "args": {
+              "from": "base:Document.Приход"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "ext/Documents/Приход.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "ext/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Document/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ObjectBelonging",
+          "eq": [
+            "Adopted"
+          ]
+        },
+        {
+          "path": "ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+          "kind": "sha256",
+          "eq": "$capture.subscription"
+        },
+        {
+          "path": "base/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.baseDocument"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+          "kind": "sha256",
+          "eq": "$capture.subscription"
+        }
+      ]
+    }
+  ]
+}

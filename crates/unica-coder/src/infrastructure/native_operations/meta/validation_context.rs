@@ -94,6 +94,32 @@ mod tests {
     }
 
     #[test]
+    fn event_source_identity_does_not_change_the_complete_generated_type_profile() {
+        let descriptor = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/acceptance/workspace-extension-subscription-source/base/Documents/Приход.xml"));
+        let custom =
+            replace_first_xr_leaf(descriptor, "TypeId", "5039d9bf-09e9-842f-8556-f5efb414a49a");
+        unica_metadata_designer::validation_context::validate_event_source_dependency_identity(
+            custom.as_bytes(),
+            "Document",
+            "Приход",
+        )
+        .unwrap();
+        let strict = unica_metadata_designer::validation_context::validate_event_source_dependency_descriptor(
+            custom.as_bytes(), "Document", "Приход", None, &["DocumentObject".to_owned()]);
+        assert!(strict.unwrap_err().contains("version 4 UUID"));
+        let start = descriptor.find("<InternalInfo>").unwrap();
+        let end = descriptor.find("</InternalInfo>").unwrap() + "</InternalInfo>".len();
+        let mut without_internal = descriptor.to_owned();
+        without_internal.replace_range(start..end, "");
+        let strict = unica_metadata_designer::validation_context::validate_event_source_dependency_descriptor(
+            without_internal.as_bytes(), "Document", "Приход", None, &[]);
+        assert!(
+            strict.unwrap_err().contains("InternalInfo"),
+            "empty prefixes keep the strict caller's profile"
+        );
+    }
+
+    #[test]
     fn event_source_registration_requires_one_exact_direct_owner_entry() {
         let owner = |registrations: &str| {
             format!(
