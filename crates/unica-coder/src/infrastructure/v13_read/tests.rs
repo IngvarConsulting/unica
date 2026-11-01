@@ -4,6 +4,7 @@ mod catalog_tabular_properties;
 mod common_module_synonym;
 mod dcs_parameter_expression;
 mod defined_type_reference;
+mod document_form_relations;
 mod external_artifact_alias;
 mod form;
 mod form_conditional_appearance;

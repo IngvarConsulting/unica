@@ -1,0 +1,939 @@
+{
+  "id": "S-1630-document-form-relations",
+  "name": "document-form-relations",
+  "issue": 1630,
+  "area": "Навигация по исходникам",
+  "task": "Прочитать шесть ролей форм документа через Relation, сохранить пагинацию и отдельные роли одной цели, проверить изоляцию наборов и пустые назначения без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-document-form-relations",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "h0": {
+          "kind": "sha256",
+          "file": "README.md"
+        },
+        "h1": {
+          "kind": "sha256",
+          "file": "other/Catalogs/Items.xml"
+        },
+        "h2": {
+          "kind": "sha256",
+          "file": "other/Configuration.xml"
+        },
+        "h3": {
+          "kind": "sha256",
+          "file": "other/Documents/Empty.xml"
+        },
+        "h4": {
+          "kind": "sha256",
+          "file": "other/Documents/Order/Forms/Shared/Ext/Form.xml"
+        },
+        "h5": {
+          "kind": "sha256",
+          "file": "other/Documents/Order/Forms/Shared.xml"
+        },
+        "h6": {
+          "kind": "sha256",
+          "file": "other/Documents/Order.xml"
+        },
+        "h7": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Items.xml"
+        },
+        "h8": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "h9": {
+          "kind": "sha256",
+          "file": "src/Documents/Empty.xml"
+        },
+        "h10": {
+          "kind": "sha256",
+          "file": "src/Documents/Order/Forms/Shared/Ext/Form.xml"
+        },
+        "h11": {
+          "kind": "sha256",
+          "file": "src/Documents/Order/Forms/Shared.xml"
+        },
+        "h12": {
+          "kind": "sha256",
+          "file": "src/Documents/Order.xml"
+        },
+        "h13": {
+          "kind": "sha256",
+          "file": "v8project.yaml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultObjectForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/DefaultListForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/DefaultChoiceForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/AuxiliaryObjectForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/AuxiliaryListForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/AuxiliaryChoiceForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Document.Order.Relation",
+            "count": 7
+          }
+        }
+      ],
+      "captures": {
+        "branchmain": {
+          "pointer": "/data/branches/5/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchmain",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "defaultObjectForm",
+              "at": "main:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetmain0": {
+          "pointer": "/data/items/0/at"
+        },
+        "pagemain0": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetmain0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchmain",
+        "limit": 1,
+        "cursor": "$capture.pagemain0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "defaultListForm",
+              "at": "main:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetmain1": {
+          "pointer": "/data/items/0/at"
+        },
+        "pagemain1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetmain1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchmain",
+        "limit": 1,
+        "cursor": "$capture.pagemain1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "defaultChoiceForm",
+              "at": "main:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetmain2": {
+          "pointer": "/data/items/0/at"
+        },
+        "pagemain2": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetmain2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchmain",
+        "limit": 1,
+        "cursor": "$capture.pagemain2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "auxiliaryObjectForm",
+              "at": "main:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetmain3": {
+          "pointer": "/data/items/0/at"
+        },
+        "pagemain3": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetmain3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchmain",
+        "limit": 1,
+        "cursor": "$capture.pagemain3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "auxiliaryListForm",
+              "at": "main:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetmain4": {
+          "pointer": "/data/items/0/at"
+        },
+        "pagemain4": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetmain4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchmain",
+        "limit": 1,
+        "cursor": "$capture.pagemain4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "auxiliaryChoiceForm",
+              "at": "main:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetmain5": {
+          "pointer": "/data/items/0/at"
+        },
+        "pagemain5": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetmain5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchmain",
+        "limit": 1,
+        "cursor": "$capture.pagemain5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "basedOn",
+              "at": "main:Catalog.Items",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Empty.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:Document.Order"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultObjectForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/DefaultListForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/DefaultChoiceForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/AuxiliaryObjectForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/AuxiliaryListForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/AuxiliaryChoiceForm",
+          "eq": "Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "other:Document.Order.Relation",
+            "count": 7
+          }
+        }
+      ],
+      "captures": {
+        "branchother": {
+          "pointer": "/data/branches/5/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchother",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "defaultObjectForm",
+              "at": "other:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetother0": {
+          "pointer": "/data/items/0/at"
+        },
+        "pageother0": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetother0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "other:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchother",
+        "limit": 1,
+        "cursor": "$capture.pageother0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "defaultListForm",
+              "at": "other:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetother1": {
+          "pointer": "/data/items/0/at"
+        },
+        "pageother1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetother1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "other:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchother",
+        "limit": 1,
+        "cursor": "$capture.pageother1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "defaultChoiceForm",
+              "at": "other:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetother2": {
+          "pointer": "/data/items/0/at"
+        },
+        "pageother2": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetother2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "other:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchother",
+        "limit": 1,
+        "cursor": "$capture.pageother2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "auxiliaryObjectForm",
+              "at": "other:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetother3": {
+          "pointer": "/data/items/0/at"
+        },
+        "pageother3": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetother3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "other:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchother",
+        "limit": 1,
+        "cursor": "$capture.pageother3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "auxiliaryListForm",
+              "at": "other:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetother4": {
+          "pointer": "/data/items/0/at"
+        },
+        "pageother4": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetother4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "other:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchother",
+        "limit": 1,
+        "cursor": "$capture.pageother4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "auxiliaryChoiceForm",
+              "at": "other:Document.Order.Form.Shared",
+              "kind": "Form"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetother5": {
+          "pointer": "/data/items/0/at"
+        },
+        "pageother5": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetother5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "other:Document.Order.Form.Shared"
+        },
+        {
+          "pointer": "/data/props/properties/AutoTitle",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchother",
+        "limit": 1,
+        "cursor": "$capture.pageother5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "basedOn",
+              "at": "other:Catalog.Items",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:Document.Empty.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order.Relation.Shared"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: the relation branch lists targets; read the target at its own address",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "other/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "other/Documents/Empty.xml",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        },
+        {
+          "path": "other/Documents/Order/Forms/Shared/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.h4"
+        },
+        {
+          "path": "other/Documents/Order/Forms/Shared.xml",
+          "kind": "sha256",
+          "eq": "$capture.h5"
+        },
+        {
+          "path": "other/Documents/Order.xml",
+          "kind": "sha256",
+          "eq": "$capture.h6"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.h7"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h8"
+        },
+        {
+          "path": "src/Documents/Empty.xml",
+          "kind": "sha256",
+          "eq": "$capture.h9"
+        },
+        {
+          "path": "src/Documents/Order/Forms/Shared/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.h10"
+        },
+        {
+          "path": "src/Documents/Order/Forms/Shared.xml",
+          "kind": "sha256",
+          "eq": "$capture.h11"
+        },
+        {
+          "path": "src/Documents/Order.xml",
+          "kind": "sha256",
+          "eq": "$capture.h12"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h13"
+        }
+      ]
+    }
+  ]
+}

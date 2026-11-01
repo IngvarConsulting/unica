@@ -208,7 +208,10 @@ pub fn typed_relations(
         }
         Err(_) => Default::default(),
     };
+    let document_forms = (owner_kind == MetadataKind::Document)
+        .then(|| crate::document_form_relations::read(properties, target, diagnostics));
     MetaRelationsData {
+        document_forms,
         content: (owner_kind == MetadataKind::ExchangePlan).then_some(None),
         owners,
         register_records,
