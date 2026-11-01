@@ -1592,6 +1592,17 @@ impl ProviderReadAuthority {
             })
     }
 
+    pub(crate) fn prove_column_attribute_target(
+        &self,
+        owner: &MetadataAddress,
+        target: &unica_metadata::ColumnAttributeReference,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<(), ViewError> {
+        let bytes = self.metadata_descriptor_with_checkpoint(owner, checkpoint)?;
+        unica_metadata_designer::column_references::prove_attribute_target(&bytes, target)
+            .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))
+    }
+
     pub(crate) fn metadata_descriptor_export_path(
         &self,
         target: &MetadataAddress,

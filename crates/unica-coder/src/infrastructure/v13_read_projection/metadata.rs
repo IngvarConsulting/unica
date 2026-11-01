@@ -376,6 +376,31 @@ fn project_metadata(
             format!("metadata node `{name}` was not found"),
         )
     })?;
+    if first.kind() == NodeKind::Column
+        && suffix
+            .get(1)
+            .is_some_and(|part| part.kind() == NodeKind::Relation)
+    {
+        if suffix.len() != 2 || suffix[1].name().is_some() {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "the relation branch lists targets; read the target at its own address",
+            ));
+        }
+        if payload.get("kind").and_then(Value::as_str) != Some("DocumentJournal")
+            || item.get("columnReferences").is_none()
+        {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "column reference profile is unavailable",
+            ));
+        }
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Relation", "References", Map::new())
+                .with_limits(column_reference_limits(item)),
+            column_reference_rows(address, item),
+        )));
+    }
     let mut kind = first.kind();
     for segment in &suffix[1..] {
         if kind == NodeKind::TabularSection
@@ -430,12 +455,30 @@ fn project_metadata(
         item,
         payload,
         member_profile,
+        true,
     )))
 }
 
 fn metadata_limits(payload: &Value) -> Vec<String> {
     let mut limits = unreadable_limits(payload);
     limits.extend(metadata_missing_relation_limits(payload));
+    if payload.get("kind").and_then(Value::as_str) == Some("DocumentJournal") {
+        for column in metadata_collection(payload, NodeKind::Column)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let name = column
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            limits.extend(
+                column_reference_limits(column)
+                    .into_iter()
+                    .map(|limit| format!("Column.{name}: {limit}")),
+            );
+        }
+    }
     limits
 }
 
@@ -807,10 +850,27 @@ fn metadata_items(
                 item,
                 payload,
                 member_profile,
+                false,
             ))
             .ok()
         })
         .collect()
+}
+
+fn column_reference_limits(item: &Value) -> Vec<String> {
+    item.get("columnReferences")
+        .and_then(|facts| facts.get("limits"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn column_reference_rows(address: &QualifiedAddress, item: &Value) -> Vec<Value> {
+    item.get("columnReferences").and_then(|facts| facts.get("targets")).and_then(Value::as_array).into_iter().flatten()
+        .filter_map(|target| Some(json!({"relation":"reference", "at":format!("{}:{}.Attribute.{}", address.source_set(), target.get("owner")?.as_str()?, target.get("attribute")?.as_str()?), "kind":"Attribute"}))).collect()
 }
 
 fn metadata_item_with_context(
@@ -819,8 +879,21 @@ fn metadata_item_with_context(
     item: &Value,
     payload: &Value,
     member_profile: Option<unica_metadata::MetaMemberReadProfile>,
+    reference_detail: bool,
 ) -> NodeView {
-    let node = metadata_item_node(address, kind, item, member_profile);
+    let mut node = metadata_item_node(address, kind, item, member_profile);
+    if kind == NodeKind::Column
+        && payload.get("kind").and_then(Value::as_str) == Some("DocumentJournal")
+        && item.get("columnReferences").is_some()
+    {
+        node = node.with_additional_limits(column_reference_limits(item));
+        if reference_detail {
+            node = node.with_branch(BranchRef::new(
+                format!("{address}.Relation"),
+                column_reference_rows(address, item).len(),
+            ));
+        }
+    }
     if kind == NodeKind::TabularSection {
         node.with_additional_limits(tabular_standard_attribute_limits(payload, item))
     } else {
