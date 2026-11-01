@@ -1,0 +1,1 @@
+<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:imports:АгрегацияМОТП"><import namespace="http://ismotp.crptech.ru/types"/><objectType name="Probe" xmlns:external="http://ismotp.crptech.ru/types" base="external:Base"/></package>

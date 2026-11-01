@@ -1,6 +1,7 @@
 ---
 id: INV.WIRE.READ-PAGE-BUDGET
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/xdto_imports.rs::xdto_import_pages_preserve_large_lists_and_one_indivisible_uri_without_addresses
   - crates/unica-coder/src/application/v13/view.rs::addressed_collection_prefers_64_kib_pages_and_replays
   - crates/unica-coder/src/application/v13/view.rs::one_item_over_the_page_target_is_returned_whole
   - crates/unica-coder/src/application/v13/view.rs::snapshot_over_byte_quota_refuses_before_promising_a_continuation

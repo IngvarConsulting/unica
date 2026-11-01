@@ -129,6 +129,8 @@ pub struct XdtoInfoData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_namespace: Option<String>,
     pub imports: Vec<XdtoImportInfo>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub import_read_limits: Vec<String>,
     pub counts: XdtoTypeCounts,
     pub global_properties: Vec<XdtoPropertyInfo>,
     pub types: Vec<XdtoTypeSummary>,

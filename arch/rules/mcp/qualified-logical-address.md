@@ -1,6 +1,7 @@
 ---
 id: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 check:
+  - crates/unica-address/src/address.rs::import_collection_tests::import_is_nameless_and_preserves_named_package_identity
   - crates/unica-address/src/address.rs::body_line_suffix_keeps_the_bsl_node_and_round_trips
   - crates/unica-address/src/address.rs::body_line_suffix_rejects_malformed_ranges_and_other_nodes
   - crates/unica-address/src/address.rs::a_hash_inside_a_free_text_dcs_item_is_not_a_body_line_selector
@@ -54,7 +55,7 @@ check:
 так же.
 
 Вид в конце без имени обозначает ветвь, например
-`main:Catalog.Валюты.Attribute`. У `Configuration`, `Interface`, `Metadata` и `Schedule` имени
+`main:Catalog.Валюты.Attribute`. У `Configuration`, `Interface`, `Metadata`, `Schedule` и `Import` имени
 не бывает: следующий сегмент разбирается как вид. Выдуманное имя
 отклоняется с объяснением этой причины. `Configuration` разрешён только
 как самостоятельный корень `main:Configuration` и перед вопросом к его

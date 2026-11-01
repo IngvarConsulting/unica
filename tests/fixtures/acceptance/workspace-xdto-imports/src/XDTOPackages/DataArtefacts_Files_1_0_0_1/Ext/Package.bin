@@ -1,0 +1,1 @@
+<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:imports:DataArtefacts_Files_1_0_0_1"><import namespace="http://www.1c.ru/1cFresh/Data/Dump/1.0.2.1"/><objectType name="Probe" xmlns:external="http://www.1c.ru/1cFresh/Data/Dump/1.0.2.1" base="external:Base"/></package>
