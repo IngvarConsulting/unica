@@ -2818,3 +2818,66 @@ fn an_oversized_form_item_title_is_named_by_a_limit() {
         "the title reads whole at its address"
     );
 }
+
+#[test]
+fn canonical_root_command_profile_preserves_warning_and_error_verdicts() {
+    for (raw,status,code,severity) in [
+        ("<v:Type>x:boolean</v:Type>","passed",None,None),
+        ("<v:Type>x:futureType</v:Type>","passed",Some("validation_warning"),Some("warning")),
+        ("<v:Type>x:string</v:Type><v:StringQualifiers><v:Length>bad</v:Length><v:AllowedLength>Variable</v:AllowedLength></v:StringQualifiers>","failed",Some("validation_failed"),Some("error")),
+    ] {
+        let runtime=runtime();let fixture=Fixture::blank();
+        let config=fixture.source.join("Configuration.xml");std::fs::write(&config,std::fs::read_to_string(&config).unwrap().replace("</ChildObjects>","<CommonCommand>Probe</CommonCommand></ChildObjects>")).unwrap();
+        std::fs::create_dir_all(fixture.source.join("CommonCommands")).unwrap();
+        let path=fixture.source.join("CommonCommands/Probe.xml");
+        let xml=format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v="http://v8.1c.ru/8.1/data/core" xmlns:x="http://www.w3.org/2001/XMLSchema" version="2.20"><CommonCommand uuid="16160000-0000-4000-8000-000000000001"><Properties><Name>Probe</Name><Representation>PictureAndText</Representation><ModifiesData>false</ModifiesData><Picture/><CommandParameterType>{raw}</CommandParameterType></Properties></CommonCommand></MetaDataObject>"#);
+        std::fs::write(&path,&xml).unwrap();
+        let (actual,diagnostics)=check(&runtime,&fixture,"main:CommonCommand.Probe");assert_eq!(actual,status,"{diagnostics:?}");
+        if let Some(code)=code {let d=finding(&diagnostics,code,"properties.CommandParameterType");assert_eq!(d["severity"],severity.unwrap());assert_eq!(d["metadataPath"],"CommonCommand.Probe");}else{assert!(diagnostics.is_empty(),"{diagnostics:?}");}
+        let node=view(&runtime,&fixture,"main:CommonCommand.Probe");assert_eq!(node["props"]["ModifiesData"],false);assert_eq!(node["props"]["Representation"],"PictureAndText");assert_eq!(!limits(&node).is_empty(),code.is_some());
+        assert_eq!(std::fs::read_to_string(path).unwrap(),xml);
+    }
+}
+
+#[test]
+fn canonical_root_command_check_refuses_unavailable_or_wrong_owner_images() {
+    for variant in ["unregistered", "malformed", "wrongKind"] {
+        let runtime = runtime();
+        let fixture = Fixture::blank();
+        let config = fixture.source.join("Configuration.xml");
+        if variant != "unregistered" {
+            std::fs::write(
+                &config,
+                std::fs::read_to_string(&config).unwrap().replace(
+                    "</ChildObjects>",
+                    "<CommonCommand>Probe</CommonCommand></ChildObjects>",
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(fixture.source.join("CommonCommands")).unwrap();
+        let bytes = if variant == "malformed" {
+            "<MetaDataObject>".to_string()
+        } else {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="16160000-0000-4000-8000-000000000001"><Properties><Name>Probe</Name><Picture/><CommandParameterType/></Properties></{kind}></MetaDataObject>"#,
+                kind = if variant == "wrongKind" {
+                    "CommandGroup"
+                } else {
+                    "CommonCommand"
+                }
+            )
+        };
+        let path = fixture.source.join("CommonCommands/Probe.xml");
+        std::fs::write(&path, &bytes).unwrap();
+        let result = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Check,
+            json!({"at":"main:CommonCommand.Probe"}),
+        );
+        assert!(!result.ok, "{variant}: {result:?}");
+        assert!(result.data.is_none(), "{result:?}");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), bytes);
+    }
+}

@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/command_root_facts.rs::command_root_relations_refresh_registration_and_recovery_in_the_same_service
   - crates/unica-coder/src/infrastructure/daemon/server.rs::logical_read_of_one_object_opens_only_its_own_files
   - crates/unica-coder/src/infrastructure/daemon/server.rs::borrowed_logical_read_admits_and_publishes_without_unrelated_objects
   - crates/unica-coder/src/infrastructure/daemon/server.rs::logical_reads_run_without_deadline_tree_scans_or_mutation_lane_wait

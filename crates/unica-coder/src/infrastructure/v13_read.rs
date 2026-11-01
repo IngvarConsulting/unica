@@ -1054,6 +1054,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         .job_schedule(target, &mut || self.read_checkpoint())?;
                     return Ok(json!({"properties": schedule}));
                 }
+                // These new root observations include independently mutable
+                // reference evidence; a new request reads the current inputs.
+                if matches!(
+                    target.as_str().split('.').next(),
+                    Some("CommonCommand" | "CommandGroup")
+                ) {
+                    return self.uncached_typed_payload_for(route, admitted);
+                }
                 let key = TypedPayloadCacheKey {
                     revision: RevisionCacheKey {
                         source_set_identity: admitted.source_set_identity.clone(),
@@ -1355,6 +1363,83 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 json!([{"key":"TemplateType", "value":facts.template_type.descriptor_value()}]);
             if let Some(message) = facts.unreadable_synonym {
                 payload["unreadable"] = json!([{"field":"properties.Synonym", "message":message}]);
+            }
+            return Ok(payload);
+        }
+        if matches!(kind, "CommonCommand" | "CommandGroup") {
+            // The retained artifact cache checks Configuration.xml's current
+            // stamp; admission-only owner caches cannot prove a changed input.
+            let registrations = self
+                .read
+                .streamed_configuration_registration_index(&|| self.read_checkpoint())?;
+            let (_, owner_name) = target
+                .as_str()
+                .split_once('.')
+                .expect("root metadata target");
+            if !registrations.contains(kind, owner_name, &|| self.read_checkpoint())? {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "command owner is no longer registered",
+                ));
+            }
+            let mut payload = self.read.identity_metadata_payload(target)?;
+            for field in ["commandPicture", "commandParameterTypes"] {
+                let Some(links) = payload["relations"][field].as_array().cloned() else {
+                    continue;
+                };
+                let mut proven = Vec::new();
+                for link in links {
+                    let Some(raw) = link["value"].as_str() else {
+                        continue;
+                    };
+                    let reference = MetadataAddress::parse(
+                        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        raw,
+                    )
+                    .map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+                    let result = (|| {
+                        let (kind, name) = raw.split_once('.').ok_or_else(|| {
+                            ViewError::detailed(
+                                RefusalDetail::SourceUnreadable,
+                                "reference has no root identity",
+                            )
+                        })?;
+                        if !registrations.contains(kind, name, &|| self.read_checkpoint())? {
+                            return Err(ViewError::new(
+                                RefusalCode::NotFound,
+                                "reference target is no longer registered",
+                            ));
+                        }
+                        let evidence = self
+                            .read
+                            .metadata_owner_evidence(&reference, &mut || self.read_checkpoint())?;
+                        if evidence.artifact_kind() != kind
+                            || evidence.artifact_name() != Some(name)
+                        {
+                            return Err(ViewError::detailed(
+                                RefusalDetail::SourceUnreadable,
+                                "current reference descriptor has a different identity",
+                            ));
+                        }
+                        Ok(())
+                    })();
+                    match result {
+                        Ok(()) => proven.push(link),
+                        Err(error)
+                            if error.code() == RefusalCode::NotFound
+                                || error.detail() == Some(RefusalDetail::SourceUnreadable) =>
+                        {
+                            if !payload["unreadable"].is_array() {
+                                payload["unreadable"] = json!([]);
+                            }
+                            payload["unreadable"].as_array_mut().expect("initialized array").push(json!({"field":format!("relations.{field}"),"message":format!("target {raw} is unavailable: {error}")}));
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                payload["relations"][field] = json!(proven);
             }
             return Ok(payload);
         }

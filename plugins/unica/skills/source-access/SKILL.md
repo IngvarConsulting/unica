@@ -216,6 +216,17 @@ allowed-tools:
 | Подсистема | `Subsystem.<Имя>` → `Interface` → `Command` |
 | Методы модуля | `<объект>.Module.<Роль>` → `Method`, `Region`, `Event`, `Body` |
 
+У корневой `CommonCommand` доступны явно заданные `Representation`, `ToolTip`,
+`Picture`, `CommandParameterType`, `ParameterUseMode` и `ModifiesData`.
+У `CommandGroup` — `Comment`, `Representation`, `ToolTip` и `Picture`.
+Подсказка сохраняет все переводы; картинка — `Ref` и `LoadTransparent`,
+тип параметра — наблюдаемые варианты и `mutationCapability`. Конкретные
+ссылки на картинку и тип дополнительно доступны в `Relation` как `picture`
+и `parameterType`; `StdPicture` и идентификатор типа адресов не получают.
+`check` этих владельцев проверяет этот закрытый профиль: неизвестный
+корректный тип даёт предупреждение, повреждённый квалификатор — ошибку.
+Тексты обработчиков читай по существующим `Module` → `Method` → `Body`.
+
 Поддержка поставщика приходит в `props.support` объекта — читай её перед любой
 правкой объекта на замке и решай через release-support, а не правкой напрямую.
 

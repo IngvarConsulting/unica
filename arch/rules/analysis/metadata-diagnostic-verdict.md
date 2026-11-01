@@ -1,6 +1,7 @@
 ---
 id: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
 check:
+  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_root_command_profile_preserves_warning_and_error_verdicts
   - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_unmodelled_type_is_a_localized_warning_in_check_and_view
   - crates/unica-metadata/src/diagnostics.rs::diagnostic_codes_serialize_to_the_stable_exhaustive_vocabulary
   - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::legacy_metadata_warnings_use_a_warning_code_and_keep_error_verdicts
