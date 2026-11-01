@@ -251,25 +251,70 @@ pub fn predefined_post_image(
     original: Option<&[u8]>,
     operation: &MetaEditOperation,
 ) -> Result<Option<Vec<u8>>, unica_metadata::request::MetaFailure> {
-    predefined_post_image_inner(kind, owner, descriptor_text, original, operation).map_err(
-        |mut failure| {
-            for diagnostic in &mut failure.diagnostics {
-                if let Some(field) = diagnostic.field.as_mut() {
-                    if let Some(rest) = field.strip_prefix("operations[0].") {
-                        *field = rest.to_string();
-                    }
-                }
-            }
-            failure
-        },
-    )
+    predefined_post_image_inner(kind, owner, descriptor_text, original, operation)
+        .map_err(addressed_predefined_failure)
 }
+fn addressed_predefined_failure(
+    mut failure: unica_metadata::request::MetaFailure,
+) -> unica_metadata::request::MetaFailure {
+    for diagnostic in &mut failure.diagnostics {
+        if let Some(field) = diagnostic.field.as_mut() {
+            if let Some(rest) = field.strip_prefix("operations[0].") {
+                *field = rest.to_string();
+            }
+        }
+    }
+    failure
+}
+#[derive(Clone, Copy)]
+enum CodeTypePlanning {
+    Descriptor,
+    Final(PredefinedCodeType),
+}
+/// Render explicit fields for an already typed final owner intent. Whole-file
+/// compatibility belongs to the final staged descriptor/resource pair.
+pub(crate) fn predefined_post_image_for_final_code_type(
+    kind: MetadataKind,
+    owner: &MetadataAddress,
+    descriptor_text: &str,
+    original: Option<&[u8]>,
+    operation: &MetaEditOperation,
+    code_type: PredefinedCodeType,
+) -> Result<Option<Vec<u8>>, unica_metadata::request::MetaFailure> {
+    predefined_post_image_with_code_type(
+        kind,
+        owner,
+        descriptor_text,
+        original,
+        operation,
+        CodeTypePlanning::Final(code_type),
+    )
+    .map_err(addressed_predefined_failure)
+}
+
 pub fn predefined_post_image_inner(
     kind: MetadataKind,
     owner: &MetadataAddress,
     descriptor_text: &str,
     original: Option<&[u8]>,
     operation: &MetaEditOperation,
+) -> Result<Option<Vec<u8>>, unica_metadata::request::MetaFailure> {
+    predefined_post_image_with_code_type(
+        kind,
+        owner,
+        descriptor_text,
+        original,
+        operation,
+        CodeTypePlanning::Descriptor,
+    )
+}
+fn predefined_post_image_with_code_type(
+    kind: MetadataKind,
+    owner: &MetadataAddress,
+    descriptor_text: &str,
+    original: Option<&[u8]>,
+    operation: &MetaEditOperation,
+    planning: CodeTypePlanning,
 ) -> Result<Option<Vec<u8>>, unica_metadata::request::MetaFailure> {
     let invalid = |message: String| {
         failure(
@@ -280,17 +325,20 @@ pub fn predefined_post_image_inner(
             None,
         )
     };
-    let code_type = predefined_code_type(kind, descriptor_text)
-        .and_then(|code_type| code_type.ok_or_else(|| MISSING_PREDEFINED_CODE_TYPE.to_string()))
-        .map_err(|message| {
-            failure(
-                owner,
-                MetaDiagnosticCode::ValidationFailed,
-                message,
-                None,
-                Some("properties.CodeType".to_string()),
-            )
-        })?;
+    let code_type = match planning {
+        CodeTypePlanning::Final(code_type) => code_type,
+        CodeTypePlanning::Descriptor => predefined_code_type(kind, descriptor_text)
+            .and_then(|code_type| code_type.ok_or_else(|| MISSING_PREDEFINED_CODE_TYPE.to_string()))
+            .map_err(|message| {
+                failure(
+                    owner,
+                    MetaDiagnosticCode::ValidationFailed,
+                    message,
+                    None,
+                    Some("properties.CodeType".to_string()),
+                )
+            })?,
+    };
     let (mut text, has_bom) = match original {
         Some(bytes) => {
             let text = std::str::from_utf8(bytes).map_err(|_| {
@@ -331,7 +379,9 @@ pub fn predefined_post_image_inner(
         }
     }
     validate_predefined_text_allowing_self_closing_items(kind, &text).map_err(invalid)?;
-    validate_predefined_text_for_code_type(kind, code_type, &text).map_err(invalid)?;
+    if matches!(planning, CodeTypePlanning::Descriptor) {
+        validate_predefined_text_for_code_type(kind, code_type, &text).map_err(invalid)?;
+    }
     if !document_has_items(&text).map_err(invalid)? {
         return Ok(None);
     }

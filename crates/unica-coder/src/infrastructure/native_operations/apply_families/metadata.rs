@@ -58,7 +58,10 @@ pub(crate) fn plan_metadata_batch_owned_for_test(
     ),
     ApplyPlanError,
 > {
-    let effects = unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml), &mut staged.proposal(), &authority, operations)?;
+    let code_type_plan =
+        unica_metadata_designer::planner::PredefinedCodeTypePlan::from_operations(operations);
+    let effects = unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml), &mut staged.proposal(), &authority, operations, &code_type_plan)?;
+    code_type_plan.validate_final(&mut staged.proposal(), authority.source_kind())?;
     Ok((staged, effects))
 }
 
