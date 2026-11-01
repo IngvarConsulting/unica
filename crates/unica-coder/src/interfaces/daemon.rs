@@ -155,7 +155,8 @@ pub fn connect_owner_for_protocol_test(
         identity,
         executable.to_path_buf(),
         idle_grace,
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     Ok(DaemonOwnerLease { inner })
 }
 

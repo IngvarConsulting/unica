@@ -477,9 +477,10 @@ fn cancel_exact_endpoint(
                 uncertain = true;
                 std::thread::sleep(RECOVERY_POLL_INTERVAL);
             }
-            Err(V5TransportError::RequestNotSent(message)) if !uncertain => {
-                return Err(ControlFailure::BeforeSend(message))
-            }
+            Err(
+                V5TransportError::RequestNotSent(message)
+                | V5TransportError::SpawnReadinessExpired(message),
+            ) if !uncertain => return Err(ControlFailure::BeforeSend(message)),
             Err(error) => return Err(ControlFailure::Uncertain(error.to_string())),
             Ok(response) => {
                 return Err(ControlFailure::Uncertain(format!(
@@ -693,12 +694,8 @@ fn lost_submit_task(receipt_key: &ReceiptKey) -> CanonicalCallOutcome {
     })
 }
 
-/// A connection that could not stand before the cutoff is transient: the
-/// call never left the frontend and may be repeated as is. One refused
-/// earlier — the daemon could not be started, rejected the handshake or
-/// belongs to another core — stays refused on a repeat: a person has to look.
 fn unconnected_refusal(error: &V5TransportError, cutoff: Instant) -> ErrorData {
-    if Instant::now() >= cutoff {
+    if matches!(error, V5TransportError::SpawnReadinessExpired(_)) || Instant::now() >= cutoff {
         return not_sent_refusal(error);
     }
     let detail = unica_refusal::RefusalDetail::BackendIncompatible;
@@ -1891,6 +1888,15 @@ mod tests {
         assert_is_the_reserved_task(&task, &fake);
     }
 
+    #[test]
+    fn readiness_timeout_before_outer_cutoff_is_not_delivered() {
+        let error = V5TransportError::SpawnReadinessExpired(
+            "protocol-v5 deadline expired during spawn readiness".to_string(),
+        );
+        let cutoff = Instant::now() + Duration::from_secs(60);
+        let refusal = unconnected_refusal(&error, cutoff);
+        assert_not_delivered(&refusal);
+    }
     #[test]
     fn a_daemon_refusing_the_connection_needs_a_person_not_a_repeat() {
         // The anchor stands; every further session is dropped right after its
