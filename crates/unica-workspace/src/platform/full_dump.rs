@@ -2436,11 +2436,9 @@ impl PreparedPublication {
             |_| {
                 self.recheck_inputs()?;
                 self.recheck_platform()?;
-                let current = validate_staged_dump_with(
-                    &self.private.staged_tree,
-                    self.source_kind,
-                    self.semantic_validator.as_ref(),
-                )?;
+                // The validated snapshot binds every file to its digest, so an
+                // equal recapture proves the bytes that passed validation.
+                let current = TreeSnapshot::capture_target(&self.private.staged_tree)?;
                 if &current != staged_snapshot {
                     return Err("private staged dump changed after validation".into());
                 }
@@ -2500,11 +2498,9 @@ impl PreparedPublication {
             |_| {
                 self.recheck_inputs()?;
                 self.recheck_platform()?;
-                let current = validate_staged_dump_with(
-                    &self.private.staged_tree,
-                    self.source_kind,
-                    self.semantic_validator.as_ref(),
-                )?;
+                // The validated snapshot binds every file to its digest, so an
+                // equal recapture proves the bytes that passed validation.
+                let current = TreeSnapshot::capture_target(&self.private.staged_tree)?;
                 if &current != staged_snapshot {
                     return Err("private staged dump changed after validation".to_string());
                 }
@@ -6377,16 +6373,6 @@ fn capture_directory_snapshot_recursive(
     ))
 }
 
-fn validate_staged_dump_with(
-    root: &Path,
-    kind: SourceSetKind,
-    validator: &dyn DumpSemanticValidator,
-) -> Result<TreeSnapshot, String> {
-    let snapshot = TreeSnapshot::capture_target(root)?;
-    validate_staged_dump_snapshot(root, kind, &snapshot, validator)
-        .map_err(|error| error.to_string())?;
-    Ok(snapshot)
-}
 fn validate_staged_dump_snapshot(
     root: &Path,
     kind: SourceSetKind,
